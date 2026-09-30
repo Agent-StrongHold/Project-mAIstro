@@ -134,6 +134,27 @@ def test_editor_member_can_edit(admin_client, authed_client) -> None:
     assert r.json()["version"] == 2
 
 
+def test_workspace_id_is_not_generic_editable(admin_client, authed_client) -> None:
+    """An editor of one workspace cannot publish an item into another.
+
+    Generic edits authorize against the item's current scope only, so a
+    ``workspace_id`` change would let an editor drop an item into any
+    workspace whose id they know. Scoping is creation-time; moving between
+    workspaces needs an explicit destination-authorized path.
+    """
+    ws = _create_workspace(admin_client)
+    other_ws = _create_workspace(admin_client)
+    _add_member(admin_client, ws, "user", "editor")
+    item = _create_item(admin_client, workspace_id=ws)
+
+    r = authed_client.patch(
+        f"/v1/backlog/{item['id']}",
+        json={"expected_version": 1, "changes": {"workspace_id": other_ws}},
+    )
+    assert r.status_code == 422
+    assert authed_client.get(f"/v1/backlog/{item['id']}").json()["item"]["workspace_id"] == ws
+
+
 # ---------------------------------------------------------------------------
 # Optimistic concurrency: conflicts visible and recoverable
 # ---------------------------------------------------------------------------

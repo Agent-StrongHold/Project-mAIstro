@@ -116,7 +116,12 @@ _EDITABLE_FIELDS = frozenset(
         "paused_reason",
         "archived",
         "blocked_reason",
-        "workspace_id",
+        # Deliberately absent: ``workspace_id``. Generic edits authorize the
+        # caller against the item's current scope only, so a workspace editor
+        # could otherwise publish an item into any workspace whose id they
+        # know. Scope is set at creation (which checks destination
+        # membership); moving between workspaces must go through an explicit,
+        # destination-authorized path, not a field edit.
     }
 )
 
@@ -280,17 +285,25 @@ async def get_detail(actor: str, item_id: str) -> dict[str, Any]:
             "archived": other.archived,
         }
 
-    dependencies = [
-        summary(dep) for dep in (_get(dep_id) for dep_id in item.dependencies) if dep is not None
-    ]
-    dependents = [
-        summary(other) for other in stores.backlog_items.values() if item.id in other.dependencies
-    ]
-    children = [
-        summary(other)
+    async def visible_summaries(candidates):
+        # Related items leak through the same visibility rule as the main
+        # item: a private personal item or another workspace's item must
+        # not expose even its id/title/status to this caller.
+        return [
+            summary(other)
+            for other in candidates
+            if other is not None and await _resolve_role(actor, other) is not None
+        ]
+
+    dependencies = await visible_summaries(_get(dep_id) for dep_id in item.dependencies)
+    dependents = await visible_summaries(
+        other for other in stores.backlog_items.values() if item.id in other.dependencies
+    )
+    children = await visible_summaries(
+        other
         for other in stores.backlog_items.values()
         if other.parent_id == item.id and not other.archived
-    ]
+    )
     return {
         "item": item.model_dump(mode="json"),
         "dependencies": dependencies,
@@ -359,18 +372,23 @@ async def update_item(
     await _require_editor(actor, item)
     if expected_version != item.version:
         raise VersionConflictError(item)
-    applied = _apply_field_changes(item, changes)
-    if item.archived and "archived" not in applied:
+    # Stage the whole edit on a copy: _get() hands back the object the store
+    # itself holds, so in-place mutation would leak partial edits (and the
+    # version/provenance bump) into reads whenever a later check refuses the
+    # patch. The stored object is replaced only after every step validates.
+    staged = item.model_copy(deep=True)
+    applied = _apply_field_changes(staged, changes)
+    if staged.archived and "archived" not in applied:
         raise BacklogValidationError("restore the item before editing it")
-    if "status" in applied and item.status == "blocked" and "blocked_reason" not in applied:
+    if "status" in applied and staged.status == "blocked" and "blocked_reason" not in applied:
         # Leaving the blocked column through a plain edit clears the stale
         # park evidence; an explicit unblock sets its own record either way.
-        item.blocked_reason = None
-    item.version += 1
-    item.updated_at = _now()
-    _record(item, actor, "updated", {"fields": applied})
-    stores.backlog_items[item.id] = item
-    return item
+        staged.blocked_reason = None
+    staged.version += 1
+    staged.updated_at = _now()
+    _record(staged, actor, "updated", {"fields": applied})
+    stores.backlog_items[staged.id] = staged
+    return staged
 
 
 async def reorder_item(
