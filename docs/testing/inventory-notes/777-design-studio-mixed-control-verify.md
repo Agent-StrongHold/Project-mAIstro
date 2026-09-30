@@ -1920,3 +1920,56 @@ lane stays **BLOCKED on unlanded canonical dependencies** (#458 behavior,
 #804/#805/#806, #774, #775, #776). No repair code written — none possible
 without violating the issue stop condition (no Design-Studio-private Agent
 runtime/Goal owner/reconciler). No closure keywords used (`Refs #777` only).
+
+## 29th-head addendum — repair round at `1d7773114b67` (job 6e2a4c08f433450d9ff80516560b8473)
+
+**Start state:** lane-declared head `1d7773114b679f5eb4366677b4fc60a92a071fc0`
+== 28th-round commit; working tree clean. Prior block: worker-requested
+BLOCKED (unlanded dependencies, NOT a develop sync conflict). Driver produced
+no `check-*.log` files for this job (manifest `checks: []`), so every check
+below was executed directly.
+
+**Develop sync re-checked:** `git fetch origin`; `origin/develop` **unmoved
+at `742e4e8fd3f7`**; `git merge-base --is-ancestor origin/develop HEAD` ->
+YES. No merge needed or performed this round.
+
+**Dependency audit re-run fresh at `1d7773114` (greps on merged tree):**
+- `git grep -l 'GoalRevision' -- '*.py'` -> **0 files** (#458 Goal behavior
+  absent; only the ontology ConceptSpec seed in
+  `packages/maistro-core/src/maistro/interop/contract.py`).
+- `git grep -lEi 'GoalReconcil|goal_reconcil' -- '*.py'` -> **0 files**
+  (#804/#805/#806 absent).
+- `git grep -liE 'owning_agent|subgoal.?delegat' -- '*.py'` -> **0 files**.
+- `packages/hive-conductor/backend/services/brief_store.py:5` still
+  disclaims: "The interview is chat state, not a Goal: nothing here is a Goal
+  or CreativeBrief record" (#774 absent).
+- `packages/hive-conductor/backend/routes/design.py`: **0** matches for
+  `workspace_agent|control_mode|delegat` (no #804/#53 consumption seam).
+- `git grep -il ladybug -- '*.py'` -> only `dags/author_examples.py` book
+  title (#776 absent). `packages/hive-conductor/tests/e2e/` still has no
+  mixed-control/Goal-lineage spec (only design-studio keyboard/truthfulness,
+  pm-workflow, deck-sanitization, visual-artifact-boundary etc.).
+- Nuance re-confirmed: `services/workspace_agent.py` is the #53/#1037
+  persistent-identity front door (one stable Agent row per Workspace,
+  ADR-092326-7ed7) — it exists, but carries no Goal ownership/revision/
+  delegation/reconciliation behavior, so it does not satisfy any #777
+  acceptance criterion by itself.
+
+**Gates executed at `1d7773114` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2642 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; base
+  `742e4e8fd3f7` -> candidate `1d7773114b67`, 1402/1402 banked, **0
+  unbanked**; the CI-repair ledger round is a no-op (no unbanked identities
+  exist, nothing genuinely dead to remove, no amendment performed).
+- `uv run pytest packages/hive-conductor/backend/tests -x -q` — **2952
+  passed, 6 skipped** (88.27s; matches the 26th/27th-round baseline).
+
+**Conclusion (29th inspected head):** no change to the block. All 13 #777
+acceptance criteria remain UNMET at this head. Lane stays **BLOCKED on
+unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
+#774, #775, #776); no repair code written — none possible without violating
+the issue stop condition (no Design-Studio-private Agent runtime/Goal owner/
+reconciler/memory/permissions/Persona/Graph/artifact authority). No closure
+keywords used (`Refs #777` only).
