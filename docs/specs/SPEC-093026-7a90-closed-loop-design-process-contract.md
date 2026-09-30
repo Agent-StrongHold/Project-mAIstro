@@ -158,35 +158,50 @@ Attempt's lineage.
 ## Acceptance criteria
 
 Each id is stable for `@pytest.mark.ac` marking by the child PR that proves it.
+None is proven by this contract document itself: they are the obligations the
+child issues discharge, declared deliberately unproven here so the
+acceptance-state mandate holds them at zero tolerance from the moment each
+child PR touches them (every marker below is retired by the PR that proves its
+criterion, per `check-ac-state.py --mandate`).
 
-- **AC-1 (boundary):** `rubric` is a registered `maistro.ontology` kind whose
+<!-- ac-state: unproven AC-1 - proven by #791 (Rubric ontology); this contract is the M7-A1 document, not the ontology implementation -->
+- **AC-1** (boundary): `rubric` is a registered `maistro.ontology` kind whose
   semantic payload validates at `upsert`; version bumps create new versions;
   no second Rubric store exists.
-- **AC-2 (behavioral):** a Goal binds exactly one Rubric version at a time;
+<!-- ac-state: unproven AC-2 - proven by #791/#792 (Rubric binding + eval-on-Run) -->
+- **AC-2** (behavioral): a Goal binds exactly one Rubric version at a time;
   the binding records `rubric_id` + `rubric_version`; historical eval remains
   resolvable to the version that scored it after a rebind.
-- **AC-3 (boundary + behavioral):** an eval record names the
+<!-- ac-state: unproven AC-3 - proven by #792 (eval scores written onto Run/NodeRun/Attempt) -->
+- **AC-3** (boundary + behavioral): an eval record names the
   `run_id`/`node_run_id`/`attempt_id` that produced the artifact and the
   `rubric_id`/`rubric_version` scored; eval records cannot be keyed to
   execution objects they did not score.
-- **AC-4 (behavioral):** writing or updating eval records never mutates Goal
+<!-- ac-state: unproven AC-4 - proven by #792 (eval records never mutate execution truth) -->
+- **AC-4** (behavioral): writing or updating eval records never mutates Goal
   terminal truth or Run/NodeRun/Attempt lifecycle state.
-- **AC-5 (behavioral):** product, game, and book packs execute the same Goal
+<!-- ac-state: unproven AC-5 - proven by #793 (product/game/book domain packs) -->
+- **AC-5** (behavioral): product, game, and book packs execute the same Goal
   through the same Run model and are interchangeable at the pack boundary; a
   pack introduces no identity, lifecycle, ownership, or private registry.
-- **AC-6 (behavioral):** pack outputs reach Canvas/Deck/Builders only through
+<!-- ac-state: unproven AC-6 - proven by #793 (pack egress through Capability → Provider → Binding → Invocation) -->
+- **AC-6** (behavioral): pack outputs reach Canvas/Deck/Builders only through
   `Capability → Provider → Binding → Invocation`; no pack or product identity
   is minted at that boundary (extends #990).
-- **AC-7 (behavioral):** `park`/`redirect`/`accept` apply only to a NodeRun in
+<!-- ac-state: unproven AC-7 - proven by #794 (park/redirect/accept HITL fence) -->
+- **AC-7** (behavioral): `park`/`redirect`/`accept` apply only to a NodeRun in
   `RunStatus.WAITING`; each transition is attributed and durable; `redirect`
   refines via a later Attempt of the same NodeRun/Run; `accept` records
   accepted evidence; no new lifecycle state is introduced.
-- **AC-8 (behavioral):** refine lineage is recoverable: earlier scored Attempt
+<!-- ac-state: unproven AC-8 - proven by #794/#795 (refine lineage on the fence + proof Run) -->
+- **AC-8** (behavioral): refine lineage is recoverable: earlier scored Attempt
   → Rubric version → `goal_revision` → later Attempt; later Goal revisions do
   not rewrite historical evidence.
-- **AC-9 (behavioral + cross-service):** Evolve/RSI can read eval records and
+<!-- ac-state: unproven AC-9 - proven by #796 (Evolve/RSI consumer map; forbid a second loop) -->
+- **AC-9** (behavioral + cross-service): Evolve/RSI can read eval records and
   cannot write them from inside a Run; exactly one refinement loop exists.
-- **AC-10 (cross-service):** the shipped Design Studio proof path reads only
+<!-- ac-state: unproven AC-10 - proven by #795 (one public proof Run in shipped Design Studio) -->
+- **AC-10** (cross-service): the shipped Design Studio proof path reads only
   canonical records (no private projection is authoritative) and exhibits:
   Goal → Rubric version → pack Run → eval records → fence action → refine
   lineage.
