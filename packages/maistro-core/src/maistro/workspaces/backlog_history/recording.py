@@ -396,9 +396,7 @@ async def reconciliation_recorded(
                 decision_ref=decision_ref, outcome=outcome, reason=reason
             ),
             goal_link=(
-                None
-                if goal_id is None
-                else GoalLink(goal_id=goal_id, goal_revision=goal_revision)
+                None if goal_id is None else GoalLink(goal_id=goal_id, goal_revision=goal_revision)
             ),
             run_refs=tuple(run_refs),
             actor_principal_id=actor_principal_id,

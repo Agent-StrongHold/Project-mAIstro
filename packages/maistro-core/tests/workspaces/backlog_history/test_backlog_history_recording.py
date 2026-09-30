@@ -244,9 +244,7 @@ async def test_reconciliation_records_the_pointer_not_the_decision(
     assert event.goal_link is not None and event.goal_link.goal_revision == "r8"
 
 
-@pytest.mark.parametrize(
-    ("goal_id", "goal_revision"), [("g-1", None), (None, "r8")]
-)
+@pytest.mark.parametrize(("goal_id", "goal_revision"), [("g-1", None), (None, "r8")])
 async def test_reconciliation_rejects_a_partial_goal_identity(
     store: BacklogHistoryStore,
     goal_id: str | None,

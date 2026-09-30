@@ -1,12 +1,18 @@
 """SQLite persistence for the Workspace BacklogItem history (#101).
 
 Append-only by construction: the only write is an `INSERT`, and the only read
-is ordered by the per-(workspace, item) `sequence` the store assigns inside the
-paired `SqliteProjectScopeStore`'s `transaction()` — its lock and its
-`BEGIN IMMEDIATE` on the one shared connection, the `SqliteWorkspaceStore`
-precedence (#1121) that #98 followed for the items themselves. The sequence
-claim is also the `UNIQUE` index's own constraint, so a second process on the
-same file cannot record two entries as the same point in the story.
+is ordered by the per-(workspace, item) `sequence` the store assigns inside
+its own `BEGIN IMMEDIATE` — read and insert are one transaction, so a second
+process on the same file cannot record two entries as the same point in the
+story, and the `UNIQUE` index is the constraint's own backstop.
+
+The journal holds its own connection, as the session (#327) and schedule
+(#1199) stores hold theirs: the connection the Project and Run stores share
+carries writers — `ClaimingSqliteRunStore` foremost — whose locks, commits and
+rollbacks are their own, so a journal transaction paused between its sequence
+read and its insert would have a sibling's `commit()` land inside it, or a
+sibling's `rollback()` discard it, while `append()` reported success. A
+transaction belongs to its connection; this one is the journal's alone.
 
 There is deliberately no foreign key to `workspace_backlog_items`: that table
 belongs to the #98 slice and this journal must not fail to exist where items
@@ -16,6 +22,7 @@ identity, the same identity the item store uses.
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import sqlite3
 from collections.abc import AsyncIterator
@@ -23,7 +30,6 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from maistro.projects.scope_store import DurableProjectScopeStore, TransactionalProjectScopeStore
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.workspaces.backlog_history.model import (
     BacklogEventAlreadyExists,
@@ -34,8 +40,6 @@ from maistro.workspaces.backlog_history.model import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
-
-    from maistro.projects.scope_store import ProjectScopeStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspace_backlog_history (
@@ -72,16 +76,17 @@ SELECT payload FROM workspace_backlog_history
 class SqliteBacklogHistoryStore:
     """Durable, append-only BacklogItem history for a single instance."""
 
-    def __init__(self, conn: aiosqlite.Connection, *, project_store: ProjectScopeStore) -> None:
-        if not isinstance(project_store, TransactionalProjectScopeStore):
-            msg = (
-                "SqliteBacklogHistoryStore writes inside its Project store's transaction; "
-                f"{type(project_store).__name__} has none. Pair it with "
-                "SqliteProjectScopeStore on the same connection."
-            )
-            raise TypeError(msg)
+    def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
-        self._project_store: DurableProjectScopeStore = project_store
+        # One connection, so this orders same-process writers; `BEGIN
+        # IMMEDIATE` is what protects a second process sharing this file.
+        # The lock is this store's, so the connection must be too: a sibling
+        # store paused between its DML and its commit on a shared connection
+        # is an unlocked writer mid-transaction, and this rollback below would
+        # then discard *its* work — the reason the container opens the journal
+        # its own connection, as it does the session store's (#327) and the
+        # schedule store's (#1199).
+        self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         await self._conn.execute("PRAGMA foreign_keys = ON")
@@ -89,20 +94,35 @@ class SqliteBacklogHistoryStore:
             await execute_schema_script(self._conn, _SCHEMA)
 
     @asynccontextmanager
-    async def _write(self) -> AsyncIterator[aiosqlite.Connection]:
-        async with self._project_store.transaction() as conn:
-            yield conn
+    async def _serialized_write(self) -> AsyncIterator[None]:
+        """Take this connection's one write-critical section.
+
+        `BEGIN IMMEDIATE` takes SQLite's write lock before the sequence read
+        rather than at the insert, which is what makes `append`'s read-then-
+        write one unit instead of two halves another writer can land between.
+        """
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            else:
+                await self._conn.commit()
 
     async def append(self, event: BacklogHistoryEvent) -> BacklogHistoryEvent:
-        async with self._write() as conn:
-            async with conn.execute(_NEXT_SEQUENCE, (event.workspace_id, event.item_id)) as cursor:
+        async with self._serialized_write():
+            async with self._conn.execute(
+                _NEXT_SEQUENCE, (event.workspace_id, event.item_id)
+            ) as cursor:
                 row = await cursor.fetchone()
             if row is None:  # pragma: no cover - COALESCE always yields one row
                 raise BacklogHistoryError("the history sequence query returned no row")
             (sequence,) = row
             recorded = event.model_copy(update={"sequence": sequence}, deep=True)
             try:
-                await conn.execute(
+                await self._conn.execute(
                     """INSERT INTO workspace_backlog_history
                            (event_id, workspace_id, project_id, item_id, sequence,
                             kind, occurred_at, payload)

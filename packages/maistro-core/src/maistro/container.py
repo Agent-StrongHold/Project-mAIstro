@@ -290,6 +290,14 @@ class Container:
     #: spine stores without colliding with, or rolling back, their open
     #: transactions.
     schedule_conn: Any = None
+    #: The BacklogItem history journal's own SQLite connection (#101), on the
+    #: same terms as `session_conn` and `schedule_conn`: the journal holds a
+    #: `BEGIN IMMEDIATE` across its sequence read and its insert, and the
+    #: spine stores sharing `db_pool` — `ClaimingSqliteRunStore` foremost —
+    #: commit and roll back on their own locks' cadence, so a journal
+    #: transaction paused between read and insert would be committed or
+    #: discarded by a sibling while `append` reported success.
+    history_conn: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -450,10 +458,11 @@ class Container:
         when the last holder lets go (Codex, #335).
 
         SQLite follows the same ownership rule (#1161): the connections this
-        container opened -- `db_pool`, the session store's `session_conn` and
-        the schedule store's `schedule_conn`, all from one
-        `_wire_sqlite_backend` call -- are closed here, each exactly once, and
-        a connection the caller supplied stays the caller's.
+        container opened -- `db_pool`, the session store's `session_conn`, the
+        schedule store's `schedule_conn` and the history journal's
+        `history_conn`, all from one `_wire_sqlite_backend` call -- are closed
+        here, each exactly once, and a connection the caller supplied stays
+        the caller's.
         aiosqlite's `close()` drains the operations still queued on its worker
         thread before releasing the database, so a durable write a store has
         already issued completes rather than being dropped by the shutdown;
@@ -487,15 +496,20 @@ class Container:
                 self.pg_pool = None
                 self.holds_pg_pool = False
         if self.holds_db_pool:
-            # Three connections, one ownership decision (#327, #1199): the
-            # session and schedule stores' connections were opened by the same
-            # `_wire_sqlite_backend` call, so the same flag governs all of
-            # them. A close that raises must not strand the others -- the pg
+            # Four connections, one ownership decision (#327, #1199, #101): the
+            # session, schedule and history stores' connections were opened by
+            # the same `_wire_sqlite_backend` call, so the same flag governs
+            # all of them. A close that raises must not strand the others -- the pg
             # block above exists because a shutdown that stops at the first
             # failure leaves the rest unreleased -- and must not leave the
             # container looking open, though `closed` is already True, so no
             # retry re-enters here.
-            for connection in (self.db_pool, self.session_conn, self.schedule_conn):
+            for connection in (
+                self.db_pool,
+                self.session_conn,
+                self.schedule_conn,
+                self.history_conn,
+            ):
                 if connection is None:
                     continue
                 try:
@@ -510,6 +524,7 @@ class Container:
             self.db_pool = None
             self.session_conn = None
             self.schedule_conn = None
+            self.history_conn = None
             self.holds_db_pool = False
 
     def _resolve_chat_auth(self, auth: Any) -> Any:
@@ -1889,6 +1904,7 @@ async def create_container(
     db_pool: Any = None
     session_conn: Any = None
     schedule_conn: Any = None
+    history_conn: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
@@ -1910,12 +1926,13 @@ async def create_container(
             db_pool,
             session_conn,
             schedule_conn,
+            history_conn,
             quota_tracker,
             learning_store,
             outcome_store,
             session_store,
         ) = await _wire_sqlite_backend(config.database_url)
-        # All three connections were opened for this container (#1161);
+        # All four connections were opened for this container (#1161);
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
         holds_db_pool = True

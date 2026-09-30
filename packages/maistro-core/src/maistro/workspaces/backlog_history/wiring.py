@@ -49,7 +49,12 @@ async def wire_backlog_history_store(
             raise ConfigError(msg)
         from maistro.workspaces.backlog_history.sqlite_store import SqliteBacklogHistoryStore
 
-        store = SqliteBacklogHistoryStore(conn, project_store=project_store)
+        # `conn` is the journal's own connection (`Container.history_conn`),
+        # not the spine's shared one: the journal holds a `BEGIN IMMEDIATE`
+        # across its sequence read and its insert, and a transaction belongs
+        # to its connection — on the shared connection a sibling writer's
+        # commit or rollback would land inside it (#327, #1199).
+        store = SqliteBacklogHistoryStore(conn)
         await store.ensure_schema()
         return store
     return InMemoryBacklogHistoryStore()

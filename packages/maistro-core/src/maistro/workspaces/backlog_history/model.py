@@ -213,9 +213,12 @@ class BacklogHistoryEvent(BaseModel):
         so the guards are mutually exclusive and the split across this and
         `_linked_facts` below cannot reorder which refusal an event meets.
         """
-        if self.kind is BacklogHistoryEventKind.CLOSURE_RECORDED and not self.evidence_refs:
+        if self.kind is BacklogHistoryEventKind.CLOSURE_RECORDED and (
+            not self.evidence_refs or any(not ref.strip() for ref in self.evidence_refs)
+        ):
             raise ValueError(
-                "closure_recorded requires evidence_refs: completion is evidence-driven, "
+                "closure_recorded requires non-blank evidence_refs: completion is "
+                "evidence-driven, "
                 "never a model assertion and never merely a Run that reported success"
             )
         if self.kind is BacklogHistoryEventKind.DECOMPOSITION_RECORDED and not self.child_item_ids:
