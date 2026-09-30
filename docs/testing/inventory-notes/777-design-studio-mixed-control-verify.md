@@ -1671,3 +1671,75 @@ without violating the issue stop condition. Lane remains BLOCKED on unlanded
 canonical dependencies; no repair code was written this round, and the two
 full-suite pytest runs above are the widest green evidence recorded for this
 lane. No closure keywords used (`Refs #777` only).
+
+---
+
+## Re-verification at `d5dd2318a4b3` (repair round 2026-09-30, job `909ac38cdc71`)
+
+Documentation-only verifier note. No production or test code changed by this
+lane; the round's one tree mutation is the develop sync merge itself.
+
+**Block resolution per lane brief — develop sync, resolved this round.**
+Unlike the two prior rounds (where `merge-base == origin/develop == c5e070d97`
+and there was nothing to merge), `git fetch origin` this round shows
+origin/develop **advanced**: `c5e070d97d07` -> `306db1754d888` — exactly the
+develop base declared in the lane assignment, 1 new commit (#1703 "M3-A8 —
+Final truthfulness sweep for README, SECURITY, COMPLIANCE, KNOWN-GAPS, and
+release"). `git merge-base HEAD origin/develop` was still `c5e070d97d07`, so
+the branch had genuinely diverged from its assigned base (1390 vs 1 commits).
+Per the lane directive, resolved **in place**:
+
+- `git merge origin/develop --no-edit` -> merge commit `d5dd2318a4b3`,
+  **zero conflicts** (19 files changed: schedules/scheduler hardening tests,
+  maistro-core scheduling admission/cron/engine/enumeration limits, canvas
+  package-lock, new inventory note 1200).
+- `git merge-base --is-ancestor origin/develop HEAD` -> **SYNC OK**; the
+  assigned develop base `306db1754` is now fully contained in `auto-777`.
+- The merged content (#1703) is a truthfulness/docs sweep plus scheduling
+  hardening — its own message reconfirms Design Studio ships "with visual
+  generation disabled and nothing simulated". It lands **none** of
+  #458/#804/#805/#806/#774/#775/#776.
+
+**Dependency re-audit on the merged tree at `d5dd2318a4b3` (fresh greps):**
+
+- `git grep -l GoalRevision -- '*.py'` -> **0 files** (#458 absent).
+- `git grep -lE 'GoalReconcil|goal_reconcil' -- '*.py'` -> **0 files**
+  (#804/#805/#806 absent).
+- `git grep -lE 'SubgoalDelegat|reclaim_subgoal|reassign_subgoal' -- '*.py'`
+  -> **0 files** (no delegation/ownership seam).
+- `git grep -l control_mode -- '*.py'` -> **0 files** (no control-continuum
+  representation).
+- `grep -cE 'workspace_agent|control_mode|delegat'
+  packages/hive-conductor/backend/routes/design.py` -> **0** (no #804/#53
+  consumption seam in Design Studio).
+- `services/brief_store.py:5` still: "The interview is chat state, not a
+  Goal: nothing here is a Goal or CreativeBrief record" (#774 absent).
+- `grep -rin ladybug packages/hive-conductor --include='*.py'` -> single hit
+  `dags/author_examples.py:29`, a book title string (#776 absent).
+- `packages/hive-conductor/tests/e2e/` still has only
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts` for
+  Design Studio — no Goal-lineage / mixed-control / delegated-control spec.
+
+**Gates executed on the merged tree at `d5dd2318a4b3` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2641 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, ratchet base
+  `e7212a5cfee6` (new merge-base) -> candidate `d5dd2318a4b3`, 1402 reviewed
+  identities -> 1402 findings, **0 unbanked**; no ledger amendment required.
+- `uv run pytest packages/hive-conductor/backend/tests -x -q` — **2952
+  passed, 6 skipped** (89.62s) — includes the 15 scheduler tests landed by
+  the merge.
+- `uv run pytest packages/maistro-core/tests -x -q` — **10855 passed, 735
+  skipped, 1 xfailed** (182.46s) — includes the 20 new scheduling tests
+  landed by the merge.
+
+**Conclusion (25th inspected head):** the develop-sync component of the
+prior block is now **resolved** (merge committed, base contained, gates
+green). The persisting block is unchanged: all 13 #777 acceptance criteria
+remain UNMET at `d5dd2318a4b3` because none of #804/#805/#806/#458/#774/
+#775/#776 has landed on the assigned develop base `306db1754` — every
+criterion remains structurally unreachable without violating the issue stop
+condition (no Design-Studio-private Agent/Goal/reconciler substitutes). Lane
+remains **BLOCKED on unlanded canonical dependencies**; no repair code was
+written. No closure keywords used (`Refs #777` only).
