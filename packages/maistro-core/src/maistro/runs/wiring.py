@@ -17,6 +17,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat_admission import ChatRunAdmitter
+from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.store import RunStore
 from maistro.scheduling.store import ScheduleStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
@@ -166,6 +167,7 @@ async def wire_execution_spine(
     archive_store: ArchiveStore | None = None,
     prime: bool = True,
     schedule_conn: Any = None,
+    concurrency_limits: RunConcurrencyLimits | None = None,
 ) -> tuple[
     ProjectScopeStore,
     RunStore,
@@ -214,7 +216,13 @@ async def wire_execution_spine(
     store has its own connection (#327). None falls back to `conn`, which is
     only sound for a caller that never writes schedules while another store
     writes, such as the read-only repair CLI.
+
+    `concurrency_limits` are the active root-Run ceilings the Run store
+    enforces (#1182). None reads them from the validated settings, so the
+    ceiling an operator tightened is the one enforced and the one `/health`
+    reports.
     """
+    limits = concurrency_limits or RunConcurrencyLimits.configured()
     project_scope_store: ProjectScopeStore
     run_store: RunStore
     template_store: GraphTemplateStore
@@ -231,7 +239,10 @@ async def wire_execution_spine(
 
         project_scope_store = PgProjectScopeStore(pg_pool)
         run_store = ClaimingPgRunStore(
-            pg_pool, project_store=project_scope_store, archive_store=archive_store
+            pg_pool,
+            project_store=project_scope_store,
+            archive_store=archive_store,
+            concurrency_limits=limits,
         )
         template_store = PgGraphTemplateStore(pg_pool)
         schedule_store = await _pg_schedule_store(pg_pool)
@@ -245,7 +256,9 @@ async def wire_execution_spine(
 
         sqlite_scope_store = SqliteProjectScopeStore(conn)
         await sqlite_scope_store.ensure_schema()
-        sqlite_run_store = ClaimingSqliteRunStore(conn, project_store=sqlite_scope_store)
+        sqlite_run_store = ClaimingSqliteRunStore(
+            conn, project_store=sqlite_scope_store, concurrency_limits=limits
+        )
         await sqlite_run_store.ensure_schema()
         sqlite_template_store = SqliteGraphTemplateStore(conn)
         await sqlite_template_store.ensure_schema()
@@ -269,7 +282,9 @@ async def wire_execution_spine(
 
         project_scope_store = InMemoryProjectScopeStore()
         run_store = ClaimingInMemoryRunStore(
-            project_store=project_scope_store, archive_store=archive_store
+            project_store=project_scope_store,
+            archive_store=archive_store,
+            concurrency_limits=limits,
         )
         template_store = InMemoryGraphTemplateStore()
         schedule_store = InMemoryScheduleStore()

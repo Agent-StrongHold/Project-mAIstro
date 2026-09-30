@@ -495,3 +495,44 @@ def test_create_users_requires_a_batch_and_distinct_names() -> None:
         registry.create_users([])
     with pytest.raises(UsernameTakenError, match="duplicate usernames"):
         registry.create_users([_user("x", "Dup"), _user("y", "dup")])
+
+
+def test_create_users_blocks_an_unindexed_legacy_row() -> None:
+    """Allocation sees the identities login sees.
+
+    A user row written without a claim (a direct import, or the seeded
+    development accounts) is lazily indexed by every read path. The write
+    path must index it too: registering that name must be refused, not
+    silently mint a second account behind the same username.
+    """
+    users = ModelStore("users", HiveUser)
+    claims = JsonStore("username_claims")
+    users["legacy-1"] = _user("legacy-1", "TestUser")
+    registry = UsernameRegistry(users, claims)
+
+    with pytest.raises(UsernameTakenError, match="already claimed"):
+        registry.create_users([_user("new-1", "testuser")])
+
+    # The refusal indexed the legacy row, so the claim now names it and the
+    # read path resolves the original identity.
+    record = claims["username:testuser"]
+    assert record["status"] == "active"
+    assert record["user_id"] == "legacy-1"
+    assert registry.resolve("testuser") is not None
+    assert "new-1" not in users
+
+
+def test_create_users_fails_closed_on_unindexed_legacy_duplicates() -> None:
+    """A quarantined historical duplicate blocks its name for allocation."""
+    users = ModelStore("users", HiveUser)
+    claims = JsonStore("username_claims")
+    users["legacy-a"] = _user("legacy-a", "Zara")
+    users["legacy-b"] = _user("legacy-b", "zara")
+    registry = UsernameRegistry(users, claims)
+
+    with pytest.raises(UsernameTakenError, match="already claimed"):
+        registry.create_users([_user("new-1", "ZARA")])
+
+    record = claims["username:zara"]
+    assert record["status"] == "quarantined"
+    assert "new-1" not in users

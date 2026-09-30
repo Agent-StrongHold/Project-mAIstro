@@ -644,6 +644,29 @@ async def test_stranded_running_admission_with_no_noderun_is_cancelled() -> None
     assert current.error == EXECUTION_NEVER_STARTED
 
 
+@pytest.mark.parametrize("stage", [RunStatus.CREATED, RunStatus.QUEUED])
+async def test_an_admission_stranded_before_running_is_cancelled(stage: RunStatus) -> None:
+    """A crash between `create_run` and the RUNNING write strands the Run
+    earlier, and it holds an active-root slot all the same (#1182)."""
+    container = await _container()
+    admitted = await container.chat_admitter.admit(  # type: ignore[union-attr]
+        [{"role": "user", "content": "hi"}], known_task_types=container.config.task_types
+    )
+    if stage is RunStatus.QUEUED:
+        await container.run_store.transition_run(admitted.run_id, RunStatus.QUEUED)
+
+    assert await container.recover_stranded_chat_admissions() == 0
+    recovered = await container.recover_stranded_chat_admissions(
+        now=datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    assert recovered == 1
+    current = await container.run_store.get_run(admitted.run_id)
+    assert current is not None
+    assert current.status is RunStatus.CANCELLED
+    assert current.error == ADMISSION_INCOMPLETE
+
+
 async def test_a_running_admission_still_within_its_grace_period_is_left_alone() -> None:
     """A turn that started a moment ago is in flight, not stranded."""
     container = await _container()

@@ -332,7 +332,9 @@ async def test_maistro_server_task_backend_submit_get_list_cancel(
 
     transport = httpx.MockTransport(_handler)
 
-    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key="k")
+    backend = MaistroServerTaskBackend(
+        base_url="http://maistro-server", api_key="k", delegation_key="test-delegation"
+    )
 
     _OrigAsyncClient = httpx.AsyncClient
     _OrigClient = httpx.Client
@@ -384,8 +386,34 @@ async def test_maistro_server_task_backend_get_missing_returns_none(
         ),
     )
 
-    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    backend = MaistroServerTaskBackend(
+        base_url="http://maistro-server", api_key=None, delegation_key="test-delegation"
+    )
     assert backend.get("missing") is None
+
+
+async def test_maistro_server_task_backend_get_async_maps_404_and_errors() -> None:
+    import httpx
+    from adapters.task_backend import MaistroServerTaskBackend
+
+    from maistro.http import override_transport
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404 if request.url.path == "/tasks/missing" else 500)
+
+    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    with override_transport(httpx.MockTransport(_handler)):
+        assert await backend.get_async("missing") is None
+        with pytest.raises(httpx.HTTPStatusError):
+            await backend.get_async("broken")
+
+
+async def test_maistro_server_task_backend_stop_without_sync_calls_is_safe() -> None:
+    from adapters.task_backend import MaistroServerTaskBackend
+
+    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    await backend.stop()
+    await backend.stop()
 
 
 # --- submit_task ---------------------------------------------------------
@@ -587,6 +615,32 @@ async def test_iter_task_events_yields_then_terminates() -> None:
     assert statuses == ["running", "completed"]
 
 
+async def test_iter_task_events_scoped_probe_is_awaited_and_fails_closed() -> None:
+    from services.engine import EngineService, TaskRecord
+
+    probed: list[tuple[str, Any]] = []
+
+    async def _events(tid: str) -> AsyncIterator[dict[str, Any]]:
+        yield {"id": tid, "status": "completed", "progress": 1.0, "current_step": "done"}
+
+    class _B:
+        def get(self, tid: str, *, user_id: Any = None) -> Any:
+            raise AssertionError("sync get must not run on the event loop")
+
+        async def get_async(self, tid: str, *, user_id: Any = None) -> Any:
+            probed.append((tid, user_id))
+            return TaskRecord(_fake_task(task_id=tid)) if user_id == "owner" else None
+
+        def iter_events(self, tid: str, *, user_id: Any = None) -> Any:
+            return _events(tid)
+
+    svc = EngineService()
+    svc._backend = _B()
+    assert [e["id"] async for e in svc.iter_task_events("t-1", user_id="owner")] == ["t-1"]
+    assert [e async for e in svc.iter_task_events("t-1", user_id="intruder")] == []
+    assert probed == [("t-1", "owner"), ("t-1", "intruder")]
+
+
 async def test_iter_task_events_returns_when_task_disappears() -> None:
     from services.engine import EngineService
 
@@ -658,3 +712,148 @@ def test_agent_port_exposes_the_bound_runtime() -> None:
     svc._agent_port = port
 
     assert svc.agent_port is port
+
+
+# --- principal-scoped engine operations (#1057) ---------------------------
+
+
+class _ScopedBackend:
+    """Records the owner every scoped call carries, like the real backends."""
+
+    def __init__(self, owner: str) -> None:
+        self.owner = owner
+        self.cancel_scoped_with: str | None = None
+        self.events_scoped_with: str | None = None
+
+    def get(self, task_id: str, *, user_id: str | None = None):
+        if user_id is not None and user_id != self.owner:
+            return None
+        return object()
+
+    async def get_async(self, task_id: str, *, user_id: str | None = None):
+        return self.get(task_id, user_id=user_id)
+
+    async def cancel(self, task_id: str, *, user_id: str | None = None) -> bool:
+        self.cancel_scoped_with = user_id
+        return True
+
+    def iter_events(self, task_id: str, *, user_id: str | None = None):
+        self.events_scoped_with = user_id
+        return iter([])
+
+
+async def test_cancel_task_refuses_a_task_owned_by_someone_else() -> None:
+    from services.engine import EngineService
+
+    backend = _ScopedBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    assert await service.cancel_task("t-1", user_id="bob") is False
+    assert backend.cancel_scoped_with is None
+
+
+async def test_cancel_task_preserves_the_caller_scope_on_the_backend() -> None:
+    from services.engine import EngineService
+
+    backend = _ScopedBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    assert await service.cancel_task("t-1", user_id="alice") is True
+    assert backend.cancel_scoped_with == "alice"
+
+
+async def test_iter_task_events_yields_nothing_for_another_users_task() -> None:
+    from services.engine import EngineService
+
+    backend = _ScopedBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    events = [event async for event in service.iter_task_events("t-1", user_id="bob")]
+
+    assert events == []
+    assert backend.events_scoped_with is None
+
+
+def test_delete_task_refuses_another_users_task() -> None:
+    from services.engine import EngineService
+
+    class _RemovableBackend(_ScopedBackend):
+        def remove(self, task_id: str) -> bool:
+            self.removed = task_id
+            return True
+
+    backend = _RemovableBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    assert service.delete_task("t-1", user_id="bob") is False
+    assert not hasattr(backend, "removed")
+
+
+def test_delete_task_with_no_backend_is_false() -> None:
+    from services.engine import EngineService
+
+    service = EngineService()
+    service._backend = None
+
+    assert service.delete_task("t-1", user_id="alice") is False
+
+
+def test_delete_task_with_a_backend_that_cannot_remove_is_false() -> None:
+    from services.engine import EngineService
+
+    backend = _ScopedBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    assert service.delete_task("t-1", user_id="alice") is False
+
+
+async def _async_events():
+    yield {"step": 1}
+
+
+async def test_iter_task_events_without_a_scope_streams_the_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.engine import EngineService
+
+    class _EventBackend:
+        def __init__(self) -> None:
+            self.scoped_with: str | None = "unset"
+
+        def get(self, task_id: str, *, user_id: str | None = None):
+            return object()
+
+        def iter_events(self, task_id: str, *, user_id: str | None = None):
+            self.scoped_with = user_id
+            return _async_events()
+
+    backend = _EventBackend()
+    service = EngineService()
+    service._backend = backend
+
+    events = [event async for event in service.iter_task_events("t-1", user_id=None)]
+
+    assert events == [{"step": 1}]
+    assert backend.scoped_with is None
+
+
+async def test_local_task_backend_get_async_scopes_to_the_owner() -> None:
+    from adapters.task_backend import LocalTaskBackend
+
+    from maistro.tasks.models import TaskCreate
+
+    async def _executor(*_: Any, **__: Any) -> None:
+        return None
+
+    backend = LocalTaskBackend(executor=_executor)
+    rec = await backend.submit(TaskCreate(description="ship it"), user_id="owner")
+
+    got = await backend.get_async(rec.id, user_id="owner")
+    assert got is not None and got.id == rec.id
+    assert await backend.get_async(rec.id, user_id="intruder") is None
+    assert await backend.get_async("missing") is None

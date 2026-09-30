@@ -336,9 +336,10 @@ verify_env_file() {
 }
 
 write_new_env() {
-    local token router_key db_pass litellm_key langfuse_secret langfuse_salt
+    local token router_key delegation_key db_pass litellm_key langfuse_secret langfuse_salt
     token="$(random_secret "" 32)"
     router_key="$(random_secret "" 32)"
+    delegation_key="$(random_secret "" 32)"
     db_pass="$(random_secret "" 24)"
     litellm_key="$(random_secret "sk-" 32)"
     langfuse_secret="$(random_secret "" 32)"
@@ -356,6 +357,7 @@ write_new_env() {
 MAISTRO_ACCESS_TOKEN=${token}
 API_KEYS=["conductor:${token}"]
 ROUTER_API_KEY=${router_key}
+TASK_DELEGATION_KEY=${delegation_key}
 REQUIRE_AUTH=true
 MAISTRO_BIND_HOST=${BIND_HOST}
 MAISTRO_PORT=${PORT}
@@ -411,7 +413,7 @@ EOF
 }
 
 repair_existing_env() {
-    local token router_key db_pass litellm_key
+    local token router_key delegation_key db_pass litellm_key
 
     warn "$ENV_FILE exists; preserving values and appending missing installer keys."
 
@@ -425,6 +427,12 @@ repair_existing_env() {
     if [[ -z "$router_key" ]]; then
         router_key="$(random_secret "" 32)"
         fill_env_value ROUTER_API_KEY "$router_key"
+    fi
+
+    delegation_key="$(env_get TASK_DELEGATION_KEY)"
+    if [[ -z "$delegation_key" ]]; then
+        delegation_key="$(random_secret "" 32)"
+        fill_env_value TASK_DELEGATION_KEY "$delegation_key"
     fi
 
     db_pass="$(env_get DB_PASSWORD)"
@@ -601,6 +609,64 @@ version_ge() {
 # with a cryptic negotiation error. Refuse it here instead. Skips quietly when
 # there is no docker CLI (podman-only hosts) or no answering daemon — the
 # bootstrap paths already report those.
+# Docker Desktop keeps registry credentials behind a helper backed by the macOS
+# keychain (`credsStore: desktop`). When the keychain cannot put up its prompt
+# -- an ssh session, launchd, a locked login keychain -- that helper blocks
+# forever, and so does every pull and every build behind it: `compose up
+# --build` sits at "load metadata for docker.io/library/python" with no output
+# and no end. It ignores SIGTERM and SIGALRM, so nothing short of SIGKILL
+# stops it. Measured on a real Mac: a 14-minute wait with docker-buildx's only
+# child a `docker-credential-desktop get` that never returned.
+#
+# One bounded probe up front turns that into a clear error in seconds. `list`
+# reads the keychain the same way `get` does but needs no input, and on a
+# healthy helper it answers in milliseconds.
+check_docker_credential_helper() {
+    command -v docker >/dev/null 2>&1 || return 0
+    [[ ${#PYTHON_CMD[@]} -gt 0 ]] || return 0
+    local config store helper secs rc
+    config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+    [[ -f "$config" ]] || return 0
+    store="$("${PYTHON_CMD[@]}" - "$config" 2>/dev/null <<'PY'
+import json
+import sys
+
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("credsStore", ""))
+except Exception:
+    pass
+PY
+)"
+    [[ -n "$store" ]] || return 0
+    helper="docker-credential-$store"
+    command -v "$helper" >/dev/null 2>&1 || return 0
+
+    secs="${MAISTRO_CRED_HELPER_TIMEOUT:-15}"
+    rc=0
+    run_with_timeout "$secs" "$helper" list >/dev/null 2>&1 || rc=$?
+    if [[ $rc -eq 124 ]]; then
+        # Guidance in a heredoc so it reads as prose, not as shell words.
+        cat >&2 <<EOF
+
+Every image pull and build waits on $helper, so the install would hang here
+with no further output. On macOS this almost always means the keychain needs
+you:
+
+  - run the installer from Terminal on this Mac (not over ssh), and approve
+    the keychain prompt if one appears; or
+  - unlock the login keychain:
+      security unlock-keychain ~/Library/Keychains/login.keychain-db
+
+If you do not pull from private registries, removing "credsStore": "$store"
+from $config also works: the images this stack uses are public.
+Set MAISTRO_CRED_HELPER_TIMEOUT to wait longer than ${secs}s.
+
+EOF
+        fail "Docker's credential helper ($helper) did not answer within ${secs}s."
+    fi
+    return 0
+}
+
 ensure_docker_engine_supported() {
     command -v docker >/dev/null 2>&1 || return 0
 
@@ -937,7 +1003,7 @@ record_docker_sock() {
 
     if [[ "$path" != "/var/run/docker.sock" ]]; then
         info "Detected non-default Docker socket at $path; recording MAISTRO_DOCKER_SOCK."
-        upsert_env MAISTRO_DOCKER_SOCK "$path"
+        set_env_value MAISTRO_DOCKER_SOCK "$path"
     fi
 }
 
@@ -952,20 +1018,94 @@ report_arch() {
     command -v docker >/dev/null 2>&1 || return 0
 
     info "ARM64 host detected; checking base images for native arm64 builds..."
-    local img missing=0
-    for img in \
-        "pgvector/pgvector:pg17" \
-        "ghcr.io/berriai/litellm:main-latest" \
-        "langfuse/langfuse:2"
-    do
-        if docker manifest inspect "$img" 2>/dev/null | grep -q "arm64"; then
+
+    # The images come from the compose file itself. This list was hardcoded
+    # and had drifted: it checked pgvector:pg17 while the stack runs pg18, so
+    # the one image it was meant to vouch for was never looked at.
+    #
+    # Skip names with no "/": in this stack those are the locally built
+    # engine and conductor images, which are native by construction and not
+    # in any registry to inspect.
+    local images
+    images="$("${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" config --images 2>/dev/null | sort -u)" || images=""
+    [[ -n "$images" ]] || { warn "Could not list the stack's images; skipping the arm64 check."; return 0; }
+
+    # A config with no credential helper. On Docker Desktop for Mac,
+    # `credsStore: desktop` makes `docker manifest inspect` block forever
+    # whenever the helper cannot reach the keychain UI -- measured at 8+
+    # minutes with no output while the registries answered in under half a
+    # second, and 7 seconds without the helper. These are public images, so
+    # the lookup needs no credentials at all; that it asked for them froze the
+    # installer at this line on every Apple Silicon Mac it happened to.
+    local anon_config
+    anon_config="$(mktemp -d "${TMPDIR:-/tmp}/maistro-anon-docker.XXXXXX")"
+    printf '{}\n' > "$anon_config/config.json"
+
+    local img missing=0 unknown=0 out rc
+    while IFS= read -r img; do
+        [[ -n "$img" && "$img" == */* ]] || continue
+        # To a file, not `$(...)`: a pipe stays open while anything holds its
+        # write end, so a killed `docker` whose child -- the credential helper
+        # on a real Mac -- is still alive would block the read forever, and
+        # the timeout would bound nothing.
+        rc=0
+        DOCKER_CONFIG="$anon_config" run_with_timeout "${MAISTRO_ARCH_CHECK_TIMEOUT:-20}" \
+            docker manifest inspect "$img" > "$anon_config/manifest" 2>/dev/null || rc=$?
+        out="$(cat "$anon_config/manifest" 2>/dev/null)"
+        if [[ $rc -eq 0 ]] && grep -q "arm64" <<< "$out"; then
             ok "arm64 image available: $img"
-        else
-            warn "No confirmed arm64 manifest for $img — Docker may emulate it (slower)."
+        elif [[ $rc -eq 0 ]]; then
+            warn "No arm64 manifest for $img — Docker will emulate it (slower)."
             missing=$((missing + 1))
+        else
+            # Not the same claim. Saying "will be emulated" here -- what this
+            # used to print -- told users a native image was not native.
+            warn "Could not check $img (registry slow or unreachable); continuing."
+            unknown=$((unknown + 1))
         fi
-    done
+    done <<< "$images"
+    rm -rf "$anon_config"
+
     [[ $missing -eq 0 ]] || warn "Emulated images run via QEMU; functional but slower on Apple Silicon."
+    [[ $unknown -eq 0 ]] || info "Unchecked images are pulled normally; this check is advisory only."
+    return 0
+}
+
+# Run "$@" but give up after $1 seconds, returning 124 like coreutils'
+# timeout(1) -- which macOS does not ship, so it cannot be assumed here.
+#
+# Written for this script's `set -euo pipefail`, which every line here has to
+# survive: `wait` on the watcher returns 143 once it is killed, `kill` fails if
+# it already exited, and `pkill` returns 1 when there are no children -- and
+# under -e each of those aborts the install. An earlier draft did exactly that
+# on a *successful* lookup, so every `|| true` below is load-bearing. The
+# watcher gets its own `set +e` so a childless command is still killed.
+run_with_timeout() {
+    local secs="$1" pid watcher rc=0
+    shift
+    "$@" &
+    pid=$!
+    # Stop, then reap, then kill. `docker` blocked in a credential helper is
+    # waiting on that child, so the child has to go too -- but killing it
+    # first lets the parent resume and finish in the gap before its own kill
+    # lands: CI caught a "hung" lookup printing a clean result that way. A
+    # stopped parent cannot run, and SIGSTOP cannot be caught, so nothing
+    # moves between the three signals.
+    (
+        set +e
+        sleep "$secs"
+        kill -STOP "$pid" 2>/dev/null
+        pkill -9 -P "$pid" 2>/dev/null
+        kill -9 "$pid" 2>/dev/null
+    ) &
+    watcher=$!
+    wait "$pid" 2>/dev/null || rc=$?
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    if [[ $rc -eq 137 ]]; then
+        return 124
+    fi
+    return "$rc"
 }
 
 start_engine() {
@@ -976,9 +1116,12 @@ start_engine() {
 
     ensure_compose_runtime
     ensure_docker_engine_supported
+    check_docker_credential_helper
     record_docker_sock
-    report_arch
+    # compose_files first: report_arch reads the image list from the same
+    # file set `up` will use, so an addon's images are checked too.
     compose_files
+    report_arch
     info "Starting maistro-engine..."
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_UP_ARGS[@]}"
 

@@ -13,6 +13,7 @@ restart does not manufacture a new authorization universe for governed effects.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from maistro.capabilities.binding import Binding
@@ -34,6 +35,14 @@ CREATE TABLE IF NOT EXISTS capability_bindings (
 );
 CREATE INDEX IF NOT EXISTS idx_capability_binding_scope
     ON capability_bindings (workspace_id, project_id, capability, binding_id);
+-- A tombstone, not a column. `revoke` deletes the binding row -- that is what
+-- makes a revoked identity unrecoverable -- so a `revoked_at` on
+-- `capability_bindings` would be deleted along with the thing it forbids, and
+-- the id could be re-registered by an actor that still remembers it (#846).
+CREATE TABLE IF NOT EXISTS capability_binding_revocations (
+    binding_id TEXT PRIMARY KEY,
+    revoked_at REAL NOT NULL
+);
 """
 
 
@@ -55,7 +64,12 @@ class BindingDisabled(BindingResolutionError):
 
 @runtime_checkable
 class BindingStore(Protocol):
-    """Canonical Binding definition and scope-resolution contract."""
+    """Canonical Binding definition and scope-resolution contract.
+
+    Implementable by both the ephemeral in-memory authority and durable
+    (SQLite/PostgreSQL) backends: every member is either async or usable at
+    boot over an open connection.
+    """
 
     async def put(self, binding: Binding) -> Binding: ...
 
@@ -70,6 +84,31 @@ class BindingStore(Protocol):
         node_id: str,
         capability: str,
     ) -> Binding: ...
+
+
+@runtime_checkable
+class RevocableBindingStore(BindingStore, Protocol):
+    """A BindingStore that additionally supports operator revocation (#846).
+
+    Every backend implements this as of #1133: a capability can be cut off
+    for already-constructed actors without a process restart, and on SQLite
+    or PostgreSQL the revocation outlives the process that issued it.
+
+    ``register`` is deliberately *not* here. It was, while
+    :class:`InMemoryBindingStore` was the only implementation -- declared
+    sync, because that store needs no I/O to register. No durable store can
+    satisfy a synchronous write, so the one member that made this contract
+    unmeetable was the member no effect path uses: production calls
+    ``register`` in two places, both of which narrow to the concrete
+    in-memory class first. Revocation is what the runtime needs from this
+    protocol, and revocation is what it now asks for.
+
+    Boot registration on a durable backend is a separate gap, tracked apart
+    from this one: hive-conductor still disables self_repair and the harness
+    route when the store is durable.
+    """
+
+    async def revoke(self, binding_id: str) -> None: ...
 
 
 def _scope_checked(
@@ -146,18 +185,43 @@ class InMemoryBindingStore:
 
     def __init__(self) -> None:
         self._items: dict[str, Binding] = {}
+        self._revoked: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def put(self, binding: Binding) -> Binding:
         async with self._lock:
-            existing = self._items.get(binding.binding_id)
-            if existing is not None and existing != binding:
-                raise ValueError(
-                    f"Binding {binding.binding_id!r} is immutable and already registered"
-                )
-            persisted = binding.model_copy(deep=True)
-            self._items[binding.binding_id] = persisted
-            return persisted.model_copy(deep=True)
+            return self._put_locked(binding)
+
+    def register(self, binding: Binding) -> Binding:
+        """Register a boot-time Binding without creating a runtime grant.
+
+        Composition roots use this before serving requests. Runtime effect paths
+        must use ``resolve``; in particular, a revoked identity can never be
+        re-created by an actor that still remembers its id.
+
+        Not part of :class:`RevocableBindingStore`: it is synchronous because
+        this store needs no I/O, and that is precisely what no durable
+        backend can offer.
+        """
+        if binding.binding_id in self._revoked:
+            raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
+        return self._put_locked(binding)
+
+    def _put_locked(self, binding: Binding) -> Binding:
+        if binding.binding_id in self._revoked:
+            raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
+        existing = self._items.get(binding.binding_id)
+        if existing is not None and existing != binding:
+            raise ValueError(f"Binding {binding.binding_id!r} is immutable and already registered")
+        persisted = binding.model_copy(deep=True)
+        self._items[binding.binding_id] = persisted
+        return persisted.model_copy(deep=True)
+
+    async def revoke(self, binding_id: str) -> None:
+        """Withdraw a Binding permanently for this store's lifetime."""
+        async with self._lock:
+            self._items.pop(binding_id, None)
+            self._revoked.add(binding_id)
 
     async def get(self, binding_id: str) -> Binding | None:
         item = self._items.get(binding_id)
@@ -172,6 +236,10 @@ class InMemoryBindingStore:
         node_id: str,
         capability: str,
     ) -> Binding:
+        if binding_id in self._revoked:
+            # Revocation is a distinct denial: the identity is known and
+            # forbidden, never merely "unknown" (#846).
+            raise BindingNotFound(f"Binding {binding_id!r} has been revoked")
         return await _resolve(
             self,
             binding_id,
@@ -193,32 +261,68 @@ class SqliteBindingStore:
         await self._conn.executescript(_SQLITE_SCHEMA)
         await self._conn.commit()
 
+    async def _is_revoked(self, binding_id: str) -> bool:
+        cursor = await self._conn.execute(
+            "SELECT 1 FROM capability_binding_revocations WHERE binding_id = ?",
+            (binding_id,),
+        )
+        return await cursor.fetchone() is not None
+
     async def put(self, binding: Binding) -> Binding:
         async with self._lock:
-            existing = await self.get(binding.binding_id)
-            if existing is not None:
-                if existing != binding:
-                    raise ValueError(
-                        f"Binding {binding.binding_id!r} is immutable and already registered"
-                    )
-                return existing
-            await self._conn.execute(
-                """INSERT INTO capability_bindings (
-                    binding_id, workspace_id, project_id, capability, node_id,
-                    created_at, payload_json
-                ) VALUES (?,?,?,?,?,?,?)""",
-                (
-                    binding.binding_id,
-                    binding.workspace_id,
-                    binding.project_id,
-                    binding.capability,
-                    binding.node_id,
-                    binding.created_at.timestamp(),
-                    binding.model_dump_json(),
-                ),
-            )
-            await self._conn.commit()
+            return await self._put_locked(binding)
+
+    async def _put_locked(self, binding: Binding) -> Binding:
+        if await self._is_revoked(binding.binding_id):
+            raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
+        existing = await self.get(binding.binding_id)
+        if existing is not None:
+            if existing != binding:
+                raise ValueError(
+                    f"Binding {binding.binding_id!r} is immutable and already registered"
+                )
+            return existing
+        await self._conn.execute(
+            """INSERT INTO capability_bindings (
+                binding_id, workspace_id, project_id, capability, node_id,
+                created_at, payload_json
+            ) VALUES (?,?,?,?,?,?,?)""",
+            (
+                binding.binding_id,
+                binding.workspace_id,
+                binding.project_id,
+                binding.capability,
+                binding.node_id,
+                binding.created_at.timestamp(),
+                binding.model_dump_json(),
+            ),
+        )
+        await self._conn.commit()
         return binding.model_copy(deep=True)
+
+    async def revoke(self, binding_id: str) -> None:
+        """Withdraw a Binding permanently -- across restarts, not just this process.
+
+        Tombstone first, then delete: if the process dies between the two the
+        identity is already forbidden, which is the safe order. The reverse
+        would leave a window where the binding is gone but re-registrable.
+        """
+        async with self._lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                await self._conn.execute(
+                    "INSERT OR IGNORE INTO capability_binding_revocations "
+                    "(binding_id, revoked_at) VALUES (?,?)",
+                    (binding_id, datetime.now(UTC).timestamp()),
+                )
+                await self._conn.execute(
+                    "DELETE FROM capability_bindings WHERE binding_id = ?",
+                    (binding_id,),
+                )
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
 
     async def get(self, binding_id: str) -> Binding | None:
         cursor = await self._conn.execute(
@@ -237,6 +341,9 @@ class SqliteBindingStore:
         node_id: str,
         capability: str,
     ) -> Binding:
+        if await self._is_revoked(binding_id):
+            # The identity is known and forbidden, never merely "unknown" (#846).
+            raise BindingNotFound(f"Binding {binding_id!r} has been revoked")
         return await _resolve(
             self,
             binding_id,
@@ -253,7 +360,16 @@ class PgBindingStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
+    async def _is_revoked(self, binding_id: str) -> bool:
+        found = await self._pool.fetchval(
+            "SELECT 1 FROM capability_binding_revocations WHERE binding_id = $1",
+            binding_id,
+        )
+        return found is not None
+
     async def put(self, binding: Binding) -> Binding:
+        if await self._is_revoked(binding.binding_id):
+            raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
         await self._pool.execute(
             """INSERT INTO capability_bindings (
                 binding_id, workspace_id, project_id, capability, node_id,
@@ -270,10 +386,35 @@ class PgBindingStore:
         )
         persisted = await self.get(binding.binding_id)
         if persisted is None:
+            # Either the insert lost a race with a concurrent revoke, or the
+            # row never landed. Re-reading the tombstone tells the caller
+            # which, instead of reporting a storage fault for a policy
+            # decision another replica made.
+            if await self._is_revoked(binding.binding_id):
+                raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
             raise RuntimeError(f"Binding {binding.binding_id!r} was not persisted")
         if persisted != binding:
             raise ValueError(f"Binding {binding.binding_id!r} is immutable and already registered")
         return persisted
+
+    async def revoke(self, binding_id: str) -> None:
+        """Withdraw a Binding permanently, for every replica on this database.
+
+        One transaction, tombstone before delete: a replica that reads
+        between the two statements must see the identity as forbidden rather
+        than as absent-and-re-registrable.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO capability_binding_revocations (binding_id, revoked_at) "
+                "VALUES ($1,$2) ON CONFLICT (binding_id) DO NOTHING",
+                binding_id,
+                datetime.now(UTC),
+            )
+            await conn.execute(
+                "DELETE FROM capability_bindings WHERE binding_id = $1",
+                binding_id,
+            )
 
     async def get(self, binding_id: str) -> Binding | None:
         payload = await self._pool.fetchval(
@@ -291,6 +432,9 @@ class PgBindingStore:
         node_id: str,
         capability: str,
     ) -> Binding:
+        if await self._is_revoked(binding_id):
+            # The identity is known and forbidden, never merely "unknown" (#846).
+            raise BindingNotFound(f"Binding {binding_id!r} has been revoked")
         return await _resolve(
             self,
             binding_id,
@@ -309,5 +453,6 @@ __all__ = [
     "BindingStore",
     "InMemoryBindingStore",
     "PgBindingStore",
+    "RevocableBindingStore",
     "SqliteBindingStore",
 ]

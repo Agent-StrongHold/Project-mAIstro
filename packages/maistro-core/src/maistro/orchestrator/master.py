@@ -27,7 +27,7 @@ from maistro.graph.durable_runs import (
 from maistro.graph.durable_runs.attempt_executor import run_durable_graph
 from maistro.graph.durable_runs.executor import MAX_NODE_VISITS
 from maistro.graph.durable_runs.protocol import DurableRunStore
-from maistro.graph.nodes.base import NodeContext, NodeResult
+from maistro.graph.nodes.base import NodeContext, NodeResult, ReplaySemantics, replay_effect_key
 from maistro.orchestrator.output_security import (
     HANDLER_ERROR_RESULT,
     HANDLER_INVALID_RESULT,
@@ -146,6 +146,9 @@ class _RootNode:
 
 class _WorkItemNode:
     kind = "orchestrator.work_item"
+    # Handler retries are an explicit orchestrator contract. The handler's
+    # logical WorkItem identity is the effect key for this adapter.
+    replay_semantics = ReplaySemantics.EFFECT_KEY
 
     def __init__(
         self,
@@ -310,7 +313,11 @@ class _WorkItemNode:
         return status, message, metadata
 
     async def run(self, inputs: Any, ctx: NodeContext) -> NodeResult:
-        del ctx
+        effect_key = replay_effect_key(
+            ctx,
+            self.kind,
+            {"task_id": self._item.task_id},
+        )
         resolved_inputs = inputs if isinstance(inputs, Mapping) else {}
         blocked = self._blocked_dependencies(resolved_inputs)
         if blocked:
@@ -319,11 +326,14 @@ class _WorkItemNode:
                 success=True,
                 status="completed",
                 output=self._output(WorkItemStatus.BLOCKED, message, {}),
+                metadata={"replay_effect_key": effect_key},
             )
 
         handled = await self._run_handler()
         if isinstance(handled, NodeResult):
-            return handled
+            return handled.model_copy(
+                update={"metadata": {**handled.metadata, "replay_effect_key": effect_key}}
+            )
         status, message, metadata = await self._apply_security_gate(handled)
         succeeded = status == WorkItemStatus.PASSED
         security_outcome = metadata.get(OUTPUT_SECURITY_OUTCOME_KEY)
@@ -343,6 +353,7 @@ class _WorkItemNode:
                 None if physical_success else (message or WORK_ITEM_EXECUTION_FAILED_RESULT)
             ),
             output=self._output(status, message, metadata),
+            metadata={"replay_effect_key": effect_key},
         )
 
 

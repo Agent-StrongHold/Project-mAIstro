@@ -120,7 +120,7 @@ def create_test_environment(
     outcome_store = InMemoryOutcomeStore()
     session_store = InMemorySessionStore()
 
-    router = RouterEngine(quota_tracker)
+    router = RouterEngine()
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
     intent_registry = IntentRegistry()

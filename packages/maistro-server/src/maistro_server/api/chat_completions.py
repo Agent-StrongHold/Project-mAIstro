@@ -34,7 +34,8 @@ stream starts the Run is already terminal — a client that disconnects mid-stre
 cannot leave one open. `_close_if_open` remains for the one case it cannot
 cover: a client that disconnects at the very first `yield`, before
 `route_request` is ever called, would otherwise strand a Run this module
-admitted for the response header.
+admitted for the response header. It leaves alone a Run `route_request`
+deliberately left open for recovery after `ChatDispatchUnrecorded` (#1108).
 
 The Run is admitted here, not by `route_request`, for exactly that header: the
 streaming branch has to name the Run before the first byte, and the seam cannot
@@ -60,7 +61,9 @@ from pydantic import BaseModel, Field
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
 from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S, ChatTurnRefused
-from maistro.runs.model import Run
+from maistro.runs.concurrency import RunConcurrencyExceeded
+from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus, Run
+from maistro.runs.store import RunStore
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -229,6 +232,9 @@ async def _admit_turn(
     The turn's provenance travels with the admission: `session_id` keeps the
     conversation identity on the Run, and `request_id` the HTTP request that
     carried it, exactly as the task path records them.
+
+    A full active-Run ceiling (#1182) is answered with 429 instead: that is
+    backpressure, not an outage.
     """
     if _container is None:
         raise _unavailable()
@@ -245,6 +251,13 @@ async def _admit_turn(
             # its first Attempt, turning a live turn into a refusal.
             dispatch_pending=True,
         )
+    except RunConcurrencyExceeded as exc:
+        # Backpressure, not an admission outage (#1182): 429, not 503.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except ChatTurnRefused as exc:
         logger.warning("chat_completions_turn_refused", reason=exc.detail)
         raise _unavailable(exc.retry_after_s) from exc
@@ -330,15 +343,40 @@ ABANDONED = "stream abandoned before the turn completed"
 _pending_closes: set[asyncio.Task[None]] = set()
 
 
+async def _left_for_recovery(store: RunStore, run_id: str) -> bool:
+    """Whether an Attempt under this Run is recovery's to settle, not ours.
+
+    A live Attempt is reclaimed by `recover_abandoned_attempts`; a COMPLETED
+    one is the evidence `AttemptLifecycleReconciler` re-derives the record
+    from. A failed or cancelled Attempt, or none at all, leaves nothing to
+    recover, so a Run still open over one is the stream's to close.
+    """
+    for node_run in await store.list_node_runs(run_id):
+        for attempt in await store.list_attempts(node_run.node_run_id):
+            if (
+                attempt.status not in TERMINAL_ATTEMPT_STATUSES
+                or attempt.status is AttemptStatus.COMPLETED
+            ):
+                return True
+    return False
+
+
 async def _close_if_open(run: Run) -> None:
-    """Terminalize a Run nothing else closed.
+    """Terminalize a Run abandoned before its turn was dispatched.
 
     Idempotent by design: every ordinary path closes its own Run, so this reads
     the Run back and does nothing when it is already terminal.
+
+    After `ChatDispatchUnrecorded`, `Container.route_request` leaves the Run
+    RUNNING on purpose over an Attempt recovery can settle (#1108).
+    Cancelling it here would overwrite that evidence with an abandonment that
+    never happened, so such a Run is left alone.
     """
     if _container is None:
         return
     try:
+        if await _left_for_recovery(_container.run_store, run.run_id):
+            return
         from maistro.runs.service import RunExecutionService
         from maistro.runtime import PythonExecutionRuntime
 

@@ -57,6 +57,8 @@ def _mission(
     t = now()
     return Mission(
         id=id,
+        # Seeded demo work is an explicit system actor, not an ownerless task.
+        user_id="system",
         name=name,
         description=f"Stub mission: {name}",
         status=status,
@@ -178,6 +180,17 @@ def configure_persistence(persisted_store: Any) -> None:
         store._persisted = persisted_store
     for store in _all_json_stores:
         store._persisted = persisted_store
+
+
+def persistence_backend() -> Any | None:
+    """The configured persistence backend, or None when everything is in-memory.
+
+    Health and the persistence map (#1135, #1179) read the durability/ack mode
+    from here rather than reaching for the module private: a non-None backend
+    means every ModelStore/JsonStore write is an acknowledged write that
+    returns only after the State writer commits.
+    """
+    return _persisted
 
 
 def purge_all_sessions() -> int:
