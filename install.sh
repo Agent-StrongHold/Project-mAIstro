@@ -25,6 +25,13 @@ MACOS_RUNTIME="${MAISTRO_MACOS_RUNTIME:-}"
 INSTALL_CLI="${MAISTRO_INSTALL_CLI:-1}"
 OPEN_BROWSER="${MAISTRO_OPEN_BROWSER:-1}"
 
+# How this install was launched — recorded so `maistro upgrade` can report it.
+# get.sh sets MAISTRO_INSTALL_SURFACE=curl; a direct `./install.sh` is a checkout.
+INSTALL_SURFACE="${MAISTRO_INSTALL_SURFACE:-checkout}"
+# Marker an archive install leaves at the install root (get.sh writes it;
+# install.sh reads it to classify archive vs. source-tree upgrades).
+ARCHIVE_MARKER="${MAISTRO_ARCHIVE_MARKER:-.maistro-archive-install}"
+
 # Docker API floor the embedded docker CLI can negotiate (Engine 25 exposes
 # API 1.44; Engine 24 tops out at 1.43). The engine images COPY the CLI from
 # docker:29-cli, whose floor rose with the go1.26.8 toolchain rebuild that
@@ -1321,6 +1328,59 @@ note_residual_risk() {
     info "destruction rather than on this step."
 }
 
+# Durable install manifest consumed by `maistro upgrade`. Records the install
+# type (git/tag/archive), the authoritative root, the release ref and the
+# image tag so upgrade resolves its target from metadata — never from the
+# caller's current directory (#353). Written once install.sh has settled the
+# source tree and credentials; get.sh delegates here, so every supported curl
+# and direct-checkout install produces one.
+write_install_manifest() {
+    local manifest_dir="$PLAN_DIR"
+    local manifest="$manifest_dir/install-manifest.json"
+    mkdir -p "$manifest_dir" 2>/dev/null || true
+    local itype="" ref="" rev="" source_url="" ts version_json
+
+    if [[ -f "$ARCHIVE_MARKER" ]]; then
+        itype="archive"
+        ref="$MAISTRO_IMAGE_TAG"
+        version_json="null"
+    elif git rev-parse --git-dir >/dev/null 2>&1; then
+        rev="$(git rev-parse HEAD 2>/dev/null || true)"
+        source_url="$(git remote get-url origin 2>/dev/null | sed 's#\.git$##' || true)"
+        if git describe --tags --exact-match >/dev/null 2>&1; then
+            itype="tag"
+            ref="$(git describe --tags --exact-match 2>/dev/null || true)"
+            version_json="\"$ref\""
+        else
+            itype="git"
+            ref="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+            version_json="null"
+        fi
+    else
+        warn "Could not classify the install type (no git checkout or archive marker); \
+writing no install manifest. 'maistro upgrade' will fall back to detection."
+        return 0
+    fi
+
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    cat > "$manifest" <<MANIFEST_EOF
+{
+  "kind": "maistro_install_manifest",
+  "schema_version": 1,
+  "install_type": "$itype",
+  "install_root": "$PWD",
+  "install_surface": "$INSTALL_SURFACE",
+  "version": $version_json,
+  "ref": "$ref",
+  "revision": "$rev",
+  "image_tag": "$MAISTRO_IMAGE_TAG",
+  "source_url": "$source_url",
+  "installed_at": "$ts"
+}
+MANIFEST_EOF
+    ok "Wrote install manifest ($itype@$ref) to $manifest"
+}
+
 # Write operator recovery commands next to the plan artifacts and echo the
 # path in print_success (SPEC-072726-3439 Phase 3).
 write_recovery_md() {
@@ -1491,6 +1551,7 @@ main() {
 
     [[ -f "$COMPOSE_FILE" ]] || fail "Missing $COMPOSE_FILE. Run this from the maistro-engine repo root."
     run_feature_wizard
+    write_install_manifest
     sync_env_file
     validate_env_contract
     start_engine

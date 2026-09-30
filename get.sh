@@ -337,6 +337,9 @@ bootstrap_source() {
     # download_with_git and the missing-marker guard in download_with_archive,
     # blocking legacy users from installing/updating. Copy the .env afterward,
     # once the checkout exists.
+    # Tag the install as the curl bootstrapper's responsibility so install.sh
+    # records install_surface=curl in the upgrade manifest (#353).
+    export MAISTRO_INSTALL_SURFACE=curl
     if command -v git >/dev/null 2>&1; then
         download_with_git
     else
