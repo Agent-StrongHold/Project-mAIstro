@@ -70,6 +70,20 @@ class ParkNotFound(KeyError):
         super().__init__(park_id)
 
 
+class ItemNotEligible(Exception):
+    """A claim was attempted for an item the campaign policy deems ineligible.
+
+    Claims run the same eligibility evaluation as selection, so an item an
+    actor cannot access, or one that is paused, parked, excluded, human-only
+    or over budget, cannot be claimed by calling ``claim`` directly. The
+    decision's reasons are carried for audit evidence."""
+
+    def __init__(self, item_id: str, reasons: Sequence[str]) -> None:
+        self.item_id = item_id
+        self.reasons = list(reasons)
+        super().__init__(f"{item_id}: {', '.join(reasons) or 'policy decision was ineligible'}")
+
+
 @runtime_checkable
 class CampaignStore(Protocol):
     """Durable, attributed campaign records (Q4: beside the campaign, never
@@ -556,15 +570,32 @@ class CampaignSelector:
         )
         return ranked[:limit]
 
-    async def claim(self, *, actor: Actor, item: BacklogItemView) -> CampaignAuditRecord:
+    async def claim(
+        self,
+        *,
+        actor: Actor,
+        item: BacklogItemView,
+        can_actor_access: Callable[[BacklogItemView], bool],
+    ) -> CampaignAuditRecord:
         """Record that ``actor`` claimed ``item``.
 
         A claim is a decision record and nothing else: no permission is
         granted, no Goal field is written, and the linked Goal's owning Agent
         is untouched (invariants 1 and 2). The read-only goal reference in
-        the payload is the item's own linkage, unchanged."""
-        campaigns = applicable_campaigns(item, await self._store.list_campaigns())
-        primary = campaigns[0] if campaigns else None
+        the payload is the item's own linkage, unchanged.
+
+        Recording a claim is gated on eligibility: the same evaluation
+        ``select_next`` runs decides whether this actor may claim this item,
+        and an ineligible item raises :class:`ItemNotEligible` with nothing
+        appended. A claim therefore cannot bypass the restrictions selection
+        enforces, no matter who calls this method."""
+        campaigns = await self._campaigns_for(None)
+        (decision,) = await self._evaluate(actor, [item], campaigns, can_actor_access)
+        await self._store.append_audit(*audit_eligibility(actor=actor, decisions=[decision]))
+        if not decision.eligible:
+            raise ItemNotEligible(item.item_id, decision.reasons)
+        reached = applicable_campaigns(item, campaigns)
+        primary = reached[0] if reached else None
         record = CampaignAuditRecord(
             actor=actor,
             kind=AuditKind.ITEM_CLAIMED,
@@ -575,6 +606,7 @@ class CampaignSelector:
                 "goal_id": item.goal_id,
                 "goal_revision": item.goal_revision,
                 "goal_owner_written": False,
+                "eligibility_reasons": list(decision.reasons),
             },
         )
         await self._store.append_audit(record)

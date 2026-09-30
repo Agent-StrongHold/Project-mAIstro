@@ -45,6 +45,7 @@ from maistro.workspaces.campaigns.store import (
     CampaignStore,
     ControlNotFound,
     InMemoryCampaignStore,
+    ItemNotEligible,
     ParkNotFound,
 )
 
@@ -72,6 +73,7 @@ __all__ = [
     "EligibilityDecision",
     "GoalReader",
     "InMemoryCampaignStore",
+    "ItemNotEligible",
     "ItemPolicyRecord",
     "ParkEvidence",
     "ParkNotFound",

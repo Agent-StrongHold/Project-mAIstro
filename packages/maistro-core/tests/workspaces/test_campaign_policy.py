@@ -22,6 +22,7 @@ from maistro.workspaces.campaigns import (
     CampaignSelector,
     ControlKind,
     InMemoryCampaignStore,
+    ItemNotEligible,
     ParkEvidence,
     SelectionSignals,
 )
@@ -463,7 +464,9 @@ async def test_claiming_never_writes_goal_state_or_ownership() -> None:
     await _campaign(store)
     reader = _RecordingGoalReader({"goal-1": "active"})
     item = _item("work", goal_id="goal-1", goal_revision="rev-1")
-    record = await _selector(store, reader).claim(actor=AGENT, item=item)
+    record = await _selector(store, reader).claim(
+        actor=AGENT, item=item, can_actor_access=_everyone
+    )
     assert record.kind is AuditKind.ITEM_CLAIMED
     assert record.item_id == "work"
     assert record.payload["goal_owner_written"] is False
@@ -472,6 +475,67 @@ async def test_claiming_never_writes_goal_state_or_ownership() -> None:
     # supports reads and was never called.
     assert reader.reads == []
     assert reader.writes == []
+
+
+@pytest.mark.ac("SPEC-092626-1831/AC-7")
+async def test_claim_cannot_bypass_eligibility() -> None:
+    """Calling ``claim`` directly enforces exactly what ``select_next`` does:
+    an inaccessible, paused, parked, excluded or human-only item raises
+    ``ItemNotEligible`` and records no claim."""
+    store = InMemoryCampaignStore()
+    campaign = await _campaign(store)
+    campaign_pause = await store.set_control(
+        campaign.campaign_id, ControlKind.PAUSE, actor=OPERATOR
+    )
+    selector = _selector(store)
+    with pytest.raises(ItemNotEligible) as exc:
+        await selector.claim(actor=AGENT, item=_item("any"), can_actor_access=_everyone)
+    assert "campaign:paused" in exc.value.reasons
+    await store.clear_control(campaign_pause.control_id, actor=OPERATOR)
+    await store.set_control(
+        campaign.campaign_id, ControlKind.PAUSE, actor=OPERATOR, item_id="paused-item"
+    )
+    await store.set_control(
+        campaign.campaign_id, ControlKind.EXCLUDE, actor=OPERATOR, item_id="excluded-item"
+    )
+    await store.park_item(
+        campaign.campaign_id,
+        "parked-item",
+        evidence=ParkEvidence(reason="waiting on upstream"),
+        actor=OPERATOR,
+    )
+    await store.update_policy(
+        campaign.campaign_id,
+        CampaignPolicy.model_validate(
+            {
+                "constraints": CampaignConstraints(),
+                "default_autonomy_mode": AutonomyMode.HUMAN_ONLY,
+            }
+        ),
+        actor=OPERATOR,
+    )
+    inaccessible = _item("inaccessible")
+    for item in (_item("paused-item"), _item("excluded-item"), _item("parked-item")):
+        with pytest.raises(ItemNotEligible) as exc:
+            await selector.claim(actor=AGENT, item=item, can_actor_access=_everyone)
+        assert exc.value.item_id == item.item_id
+        assert exc.value.reasons
+    with pytest.raises(ItemNotEligible) as exc:
+        await selector.claim(actor=AGENT, item=_item("human-item"), can_actor_access=_everyone)
+    assert "mode:human-only" in exc.value.reasons
+    with pytest.raises(ItemNotEligible) as exc:
+        await selector.claim(actor=AGENT, item=inaccessible, can_actor_access=lambda _: False)
+    assert exc.value.reasons == ["authorization:actor-cannot-access"]
+    # Nothing was recorded: no claim, and only the eligibility decisions
+    # that document the refusals.
+    trail = await store.audit_trail(campaign.campaign_id)
+    assert not [r for r in trail if r.kind is AuditKind.ITEM_CLAIMED]
+    # The compliant path still records the claim, with the decision's
+    # reasons as evidence. The campaign is now human-only, so the claim
+    # comes from the human operator an agent could never substitute for.
+    record = await selector.claim(actor=OPERATOR, item=_item("fine"), can_actor_access=_everyone)
+    assert record.kind is AuditKind.ITEM_CLAIMED
+    assert record.payload["eligibility_reasons"] == []
 
 
 @pytest.mark.ac("SPEC-092626-1831/AC-8")
