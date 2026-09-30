@@ -198,6 +198,14 @@ class CreativeBriefVersion:
         ):
             msg = "artifact_requirements must be a tuple of ArtifactRequirement values"
             raise CreativeBriefError(msg)
+        branch_names = [req.branch for req in self.artifact_requirements]
+        if len(branch_names) != len(set(branch_names)):
+            duplicates = sorted({name for name in branch_names if branch_names.count(name) > 1})
+            msg = (
+                "artifact_requirements must declare each branch at most once "
+                f"(requirement_for returns the first match); duplicates: {duplicates}"
+            )
+            raise CreativeBriefError(msg)
 
     def requirement_for(self, branch: str) -> ArtifactRequirement | None:
         """The declared channel requirement for ``branch``, if the brief declares one."""
@@ -228,6 +236,7 @@ class CreativeBriefVersion:
             success_criteria=self.success_criteria,
             audience=self.audience,
             source_references=self.source_references,
+            creative_constraints=self.creative_constraints,
             branch=branch,
             requirement=requirement.requirement if requirement is not None else None,
         )
@@ -281,8 +290,12 @@ class SharedCreativeContext:
     success_criteria: tuple[str, ...]
     audience: str
     source_references: tuple[str, ...]
+    creative_constraints: tuple[str, ...]
     branch: str | None
     requirement: str | None
+
+    def __post_init__(self) -> None:
+        _require_str_tuple("creative_constraints", self.creative_constraints)
 
     def to_dict(self) -> dict[str, object]:
         """JSON-safe serialization with the canonical interop field names."""
@@ -300,6 +313,7 @@ class SharedCreativeContext:
             "success_criteria": list(self.success_criteria),
             "audience": self.audience,
             "source_references": list(self.source_references),
+            "creative_constraints": list(self.creative_constraints),
             "branch": self.branch,
             "requirement": self.requirement,
         }

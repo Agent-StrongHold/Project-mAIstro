@@ -208,6 +208,7 @@ class TestSharedContext:
             assert context.design_system_slug == "atelier-zero"
             assert context.audience == "indie makers"
             assert context.source_references == ("memory://workspace/brand-voice",)
+            assert context.creative_constraints == ("no dark patterns",)
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
@@ -243,6 +244,7 @@ class TestSharedContext:
         assert payload["goal_revision"] == GOAL_REVISION
         assert payload["brief_id"] == brief.brief_id
         assert payload["brief_version"] == 1
+        assert payload["creative_constraints"] == ["no dark patterns"]
 
 
 # ── Versioned evolution without identity mutation ────────────────────────────
@@ -422,6 +424,19 @@ class TestVersionValidation:
     def test_artifact_requirements_must_hold_requirement_values(self):
         with pytest.raises(CreativeBriefError, match="ArtifactRequirement"):
             make_version(artifact_requirements=("coupon: plain string, not a requirement",))
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_duplicate_branch_names_in_artifact_requirements_refused(self):
+        """requirement_for() returns the first match, so duplicates would make
+        serialized requirements branch-order-dependent; refuse them outright."""
+        requirements = (
+            ArtifactRequirement("coupon", "one per customer"),
+            ArtifactRequirement("website", "WCAG 2.2 AA"),
+            ArtifactRequirement("coupon", "no stacking with other offers"),
+        )
+        with pytest.raises(CreativeBriefError, match="at most once.*coupon"):
+            make_version(artifact_requirements=requirements)
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
