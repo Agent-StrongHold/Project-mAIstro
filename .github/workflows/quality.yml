@@ -801,7 +801,8 @@ jobs:
         run: uv run python scripts/vendor_bfcl.py --check
 
       # Ratchet, not a 0-baseline: the backlog (140 ERROR blocks over all
-      # shipped src, measured 2026-09-29) is too large to clear in one PR.
+      # shipped src, measured 2026-09-29; 139 by 2026-09-30) is too large to
+      # clear in one PR.
       # Hard-fails on REGRESSION (new violations beyond the recorded
       # baselines) on every branch; lower the floor as the backlog is worked
       # down, and drop the ratchet for a strict 0-baseline once the counts
@@ -809,7 +810,7 @@ jobs:
       #
       # This step's unique value after #1682 is the module-rank and
       # project-average axes: check-radon-baseline.py now carries the same
-      # 140 blocks as a per-identity ledger, which is strictly stronger than
+      # 139 blocks as a per-identity ledger, which is strictly stronger than
       # a count for the per-block axis.
       - name: xenon (per-function ≤ B; per-module ≤ B; project avg ≤ A — ratchet)
         env:
@@ -820,11 +821,15 @@ jobs:
           # core 67, evolve 25, rsi 30, canvas 11, bootstrap 2, registry 2,
           # design 1, server 1, turing 1.
           #
-          # 140 is the same number check-radon-baseline.py now carries, and that
+          # 140 -> 139 before this even merged: #1674 took
+          # tau_bench.py::_score_tool_usage from C (14) to B (9), and the radon
+          # ledger dropped the same row.
+          #
+          # 139 is the same number check-radon-baseline.py now carries, and that
           # is the point: the two tools measure the same blocks over the same
           # scope, so a divergence between this count and the ledger's length is
           # itself a signal that one of them stopped looking.
-          XENON_BASELINE: 140
+          XENON_BASELINE: 139
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
@@ -838,8 +843,11 @@ jobs:
           # than for blocks: a module average crosses into C through added
           # B-ranked blocks, which the per-block radon ledger does not track,
           # so this is the only instrument watching that axis.
-          XENON_MODULE_LEDGER: |
-            packages/maistro-evolve/src/maistro_evolve/benchmarks/tau_bench.py C
+          #
+          # Empty, and still enforcing. Its one entry, tau_bench.py at C, was
+          # fixed by #1674 (the module is now A); an empty ledger means any
+          # module reaching C fails by name. Add a row only with the reason.
+          XENON_MODULE_LEDGER: ""
         run: |
           # -i third_party for the same reason check-radon-baseline.py excludes
           # it: vendored BFCL/IFEval source is kept byte-faithful to upstream on
