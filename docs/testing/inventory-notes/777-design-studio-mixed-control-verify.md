@@ -1857,3 +1857,66 @@ this job, so every check above was executed directly. Lane stays **BLOCKED
 on unlanded canonical dependencies** (#458, #804/#805/#806, #774, #775,
 #776); no repair code written, none possible without violating the issue
 stop condition. No closure keywords used (`Refs #777` only).
+
+## 28th-head addendum — round at `9b00fe98d640` (job 092eaba0cdde40d8a294f7ad692f4046)
+
+**Develop sync:** fetched `origin` fresh; `origin/develop` is **unmoved at
+`742e4e8fd3f7`** and `git merge-base --is-ancestor origin/develop HEAD` ->
+YES. No sync conflict this round; no merge needed. The prior block was not
+a develop conflict — it is the unlanded-dependency block, re-confirmed:
+
+- `git grep -l 'GoalRevision' -- '*.py'` -> **0 files**.
+- `git grep -lE 'GoalReconcil|goal_reconcil' -- '*.py'` -> **0 files**
+  (#804/#805/#806 absent).
+- `git grep -liE 'owning_agent|subgoal.?delegat' -- '*.py'` -> **0 files**.
+- `packages/hive-conductor/backend/services/brief_store.py:5` still
+  disclaims: "nothing here is a Goal or CreativeBrief record" (#774 absent).
+- `packages/hive-conductor/backend/routes/design.py`: **0** matches for
+  `workspace_agent|control_mode|delegat` (no #804/#53 consumption seam).
+- `git grep -il ladybug -- '*.py'` -> only `dags/author_examples.py` book
+  title (#776 absent). No mixed-control e2e spec in `tests/e2e/`.
+- Nuance: #458's *ontology seed* does exist as identity declarations —
+  `packages/maistro-core/src/maistro/interop/contract.py:301-316`
+  (`INTEROP_ONTOLOGY_V1`, `issue=458`, `Goal` ConceptSpec with
+  `revision="goal_revision"`, plus Run/NodeRun/Attempt). That is ConceptSpec
+  identity metadata only; no Goal ownership, revision records, delegation
+  or reconciliation behavior exists, so nothing consumable for #777.
+
+**New this round — live-server e2e error investigated and resolved as
+environmental:** `uv run pytest packages/hive-conductor` (whole package,
+`-x -q`) hit a fixture error in
+`tests/e2e/test_pm_workflow_api.py::TestAuth::test_login_success`
+(`/v1/auth/login` -> 401 "Invalid credentials"). Cause: a **stray host
+process already listens on 127.0.0.1:8101** (plus 18101/28101/38101 from
+sibling lanes) whose setup was completed with different credentials; the
+module's `setup_done` fixture sees `setup_complete: true` and skips the
+wizard, so login 401s. Not a tree defect: CI runs this module only inside
+`docker-compose.test.yml` against a **fresh** hive (`ci.yml`
+`hive-conductor-e2e`, `down -v` between runs). Proof at this head: ran the
+canonical compose mode with a randomized host-port override (host 8101 is
+occupied by the stray process; only my two containers were created and
+torn down with `down -v` afterward) —
+`docker compose -f docker-compose.test.yml --profile test up --build
+--abort-on-container-exit --exit-code-from api-tests api-tests` ->
+**exit 0, 10 passed, 13 skipped**. Offline re-run excluding that
+live-service module: `uv run pytest packages/hive-conductor -q --ignore=...
+test_pm_workflow_api.py` -> **2952 passed, 9 skipped** (passed count equals
+the prior rounds' baseline; the skip-count delta is the same module's
+environment-dependent skips).
+
+**Gates executed at `9b00fe98d640` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2642 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; base
+  `742e4e8fd3f7` -> candidate `9b00fe98d640`, 1402/1402 banked, **0
+  unbanked**; no ledger amendment required or performed.
+- `uv run python scripts/check-suite-inventory.py` — ok, 14/14 suites match.
+- `uv run python scripts/check-doc-links.py` — 0 broken relative links.
+
+**Conclusion:** block unchanged and now rounded out with the e2e-error
+explanation. All 13 #777 acceptance criteria remain UNMET at this head;
+lane stays **BLOCKED on unlanded canonical dependencies** (#458 behavior,
+#804/#805/#806, #774, #775, #776). No repair code written — none possible
+without violating the issue stop condition (no Design-Studio-private Agent
+runtime/Goal owner/reconciler). No closure keywords used (`Refs #777` only).
