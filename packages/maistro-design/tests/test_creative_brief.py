@@ -361,29 +361,108 @@ class TestRevision:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
-    async def test_lineage_rejects_discontiguous_or_foreign_versions(self):
-        """A lineage is contiguous, single-goal, single-scope by construction."""
-        version = CreativeBriefVersion(
-            brief_id="b1",
-            version=2,
-            goal_id=GOAL,
-            goal_revision=GOAL_REVISION,
-            workspace_id=WORKSPACE,
-            project_id=PROJECT,
-            owner_agent_id=AGENT,
-            persona_id=None,
-            design_system_slug=None,
-            design_system_version=None,
-            success_criteria=(),
-            audience="readers",
-            source_references=(),
-            artifact_requirements=(),
-            creative_constraints=(),
-            summary="starts at two",
-            created_at=datetime(2026, 1, 1, tzinfo=UTC),
-        )
+    async def test_lineage_rejects_discontiguous_versions(self):
+        """A lineage is contiguous from 1 by construction."""
         with pytest.raises(CreativeBriefError, match="contiguous"):
-            CreativeBrief(brief_id="b1", versions=(version,))
+            CreativeBrief(brief_id="b1", versions=(make_version(version=2),))
+
+
+# ── Version boundary validation ───────────────────────────────────────────────
+
+
+def make_version(**overrides: object) -> CreativeBriefVersion:
+    """A valid reference version, with per-test overrides."""
+    kwargs: dict[str, object] = {
+        "brief_id": "b1",
+        "version": 1,
+        "goal_id": GOAL,
+        "goal_revision": GOAL_REVISION,
+        "workspace_id": WORKSPACE,
+        "project_id": PROJECT,
+        "owner_agent_id": AGENT,
+        "persona_id": None,
+        "design_system_slug": None,
+        "design_system_version": None,
+        "success_criteria": (),
+        "audience": "readers",
+        "source_references": (),
+        "artifact_requirements": (),
+        "creative_constraints": (),
+        "summary": "reference version",
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    kwargs.update(overrides)
+    return CreativeBriefVersion(**kwargs)  # type: ignore[arg-type]
+
+
+class TestVersionValidation:
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        ("field", "bad_value"),
+        [
+            ("success_criteria", ["a list, not a tuple"]),
+            ("source_references", "a bare string"),
+            ("creative_constraints", ("",)),
+        ],
+    )
+    def test_non_tuple_or_blank_string_collections_refused(self, field: str, bad_value: object):
+        with pytest.raises(CreativeBriefError, match=field):
+            make_version(**{field: bad_value})
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize("bad_version", ["1", 1.0, True, 0, -1])
+    def test_version_number_must_be_a_positive_int(self, bad_version: object):
+        with pytest.raises(CreativeBriefError, match="positive integer"):
+            make_version(version=bad_version)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_artifact_requirements_must_hold_requirement_values(self):
+        with pytest.raises(CreativeBriefError, match="ArtifactRequirement"):
+            make_version(artifact_requirements=("coupon: plain string, not a requirement",))
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_to_dict_round_trips_the_published_context(self):
+        """A published version serializes everything a Run/artifact must recover."""
+        requirement = ArtifactRequirement("coupon", "one per customer")
+        version = make_version(
+            persona_id="persona-atelier",
+            design_system_slug="atelier-zero",
+            design_system_version="2.1.0",
+            success_criteria=("launch-ready",),
+            source_references=("memory://workspace/brand-voice",),
+            artifact_requirements=(requirement,),
+            creative_constraints=("no dark patterns",),
+        )
+
+        payload = version.to_dict()
+        assert payload["brief_id"] == "b1"
+        assert payload["version"] == 1
+        assert payload["goal_id"] == GOAL
+        assert payload["goal_revision"] == GOAL_REVISION
+        assert payload["persona_id"] == "persona-atelier"
+        assert payload["design_system_version"] == "2.1.0"
+        assert payload["success_criteria"] == ["launch-ready"]
+        assert payload["artifact_requirements"] == [
+            {"branch": "coupon", "requirement": "one per customer"}
+        ]
+        assert payload["created_at"] == version.created_at.isoformat()
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_lineage_rejects_empty_or_foreign_versions(self):
+        with pytest.raises(CreativeBriefError, match="at least one CreativeBriefVersion"):
+            CreativeBrief(brief_id="b1", versions=())
+        with pytest.raises(CreativeBriefError, match="share the brief_id"):
+            CreativeBrief(brief_id="b1", versions=(make_version(), make_version(brief_id="b2")))
+        with pytest.raises(CreativeBriefError, match="same Goal revision and scope"):
+            CreativeBrief(
+                brief_id="b1",
+                versions=(make_version(), make_version(version=2, workspace_id="other-ws")),
+            )
 
 
 # ── Scope isolation (#326 lesson: no defaults, no cross-scope leakage) ───────
