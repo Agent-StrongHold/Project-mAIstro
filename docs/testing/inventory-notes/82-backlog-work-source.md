@@ -33,3 +33,41 @@ admission of exactly one winner.
 Until #102 performs the authority cutover, root `BACKLOG.md` stays canonical;
 these tests pin the structured service that cutover will migrate into, not a
 replacement authority.
+
+## CI-repair addendum (merge-queue round at a483af0e0)
+
+Two merge-queue gates were red at this head. Test node counts are unchanged by
+this repair; no test was added or removed.
+
+- **Supply chain (pip-audit):** urllib3 2.7.0 carried CVE-2026-97687/88/89
+  (fixed upstream in 2.8.0). Lockfile-only bump via `uv lock --upgrade-package
+  urllib3`; the backlog slice introduced no dependency. Gate re-executed
+  locally: `pip_audit_gate.py` exit 0 (ecdsa PYSEC-2026-1325 remains the
+  pre-triaged ALLOWED set; direct-dependency usage ledger unchanged).
+- **exact-debt-ledger:** the new package tripped four ratchets at once.
+  - *Dead code fixed:* `_require_fresh_version_removed` in sqlite_store.py was
+    a never-called stub (`# pragma: no cover - never called`) — deleted, no
+    behavior change, conformance suite green.
+  - *Enumeration gap eliminated by declaration:* `maistro.backlog` joined
+    CORE_PUBLIC_SURFACE in scripts/verify-wheel-imports.py (the #94 canvas
+    pattern): the module is intended public core API, imports cleanly on the
+    bare tier (the package `__init__` pulls only model + in-memory store), and
+    the core_surface gap disappears instead of being banked as tolerated.
+  - *Retained identities banked:* 52 vulture findings (41 unique stable
+    identities — store.py's protocol declarations and in-memory methods share
+    names, as do two same-named validators) banked in
+    quality/vulture-baseline.json via `--update`; the 5 unreachable modules
+    banked in quality/reachability-baseline.json with a CONNECT disposition
+    group in quality/reachability-dispositions.json naming the #99 server
+    wiring as the root.
+  - *Authorizations staged:* the vulture (41) and reachability (5) grants are
+    written into quality/ratchet-authorizations.json with owner/issue/reason.
+    load_authorizations() reads grants from the trusted BASE revision by
+    design (#534; the #1683 radon precedent), so a candidate branch cannot
+    authorize its own debt: these gates stay red on exactly the
+    "not previously authorized" half until the grants land on develop in a
+    grants-only merge FIRST, after which this branch re-enters the queue with
+    every half green. All candidate-side bookkeeping is provably complete
+    in-branch: `--update` idempotent, enumerations/shipped-surface/
+    dispositions-shape/lifecycle green, and the only remaining gate messages
+    name the missing base grants.

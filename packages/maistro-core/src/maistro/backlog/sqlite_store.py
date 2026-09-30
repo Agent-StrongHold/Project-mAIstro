@@ -655,10 +655,6 @@ class SqliteBacklogStore:
             walker = await self._fetch_item(conn, walker.parent_id)
 
 
-def _require_fresh_version_removed() -> None:  # pragma: no cover - never called
-    pass
-
-
 async def _apply_changes(
     conn: aiosqlite.Connection,
     item: BacklogItem,

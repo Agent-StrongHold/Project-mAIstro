@@ -62,6 +62,31 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1154",
       "reason": "Holds GraphRun, the ADR-062 Graph-domain traversal (phase machine, iteration budget, beam scoring). Its only src importer is maistro.testing.harness, the shipped test harness of ADR-065 / SPEC-224. The canonical durable executor in maistro.graph.durable_runs never imported it -- the two executors shared a name, not code -- so retiring run_graph in #1154 removes the single import edge that made this module reachable. Traversal semantics are still exercised by packages/maistro-core/tests/graph/; canonical execution coverage is separate and untouched."
+    },
+    "maistro.backlog": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
+    },
+    "maistro.backlog.model": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
+    },
+    "maistro.backlog.pg_store": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
+    },
+    "maistro.backlog.sqlite_store": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
+    },
+    "maistro.backlog.store": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
     }
   },
   "vulture": {
@@ -279,6 +304,211 @@
       "owner": "repair lane auto-1194 (maistro-implementer)",
       "issue": "#1194",
       "reason": "GET /a2a/tasks/by-idempotency-key/{idempotency_key} is the receipt-recovery half of #1194's transport idempotency: a dispatching worker that lost its lease after an ambiguous POST polls this endpoint with the same key and receives the original receipt (find_run_by_effect), distinguishing 'never accepted' (404) from 'accepted, receipt lost' - so the same logical delegation cannot be filed twice after a lease loss without explicit new-work semantics. Vulture reports it as an unused function at 60% confidence because FastAPI registers route handlers through the @router.get decorator; already banked under fastapi-route-handler in quality/vulture-baseline.json on this branch. Trusted-base note: same two-merge rule as the create_a2a_task grant above - effective from the next base, per the #1310 post-merge reconciliation precedent."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_clean_tags'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_enforce_consistency'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_normalize_at'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_normalize_closed_at'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_normalize_timestamps'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_require_non_blank'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_require_non_blank_identity'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_require_non_blank_summary'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_require_positive_revision'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused method '_require_resolvable_refs'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "pydantic field/model validator registered by decorator: pydantic invokes it at validation time, so no static call site exists. Its refusal behavior is pinned by the backlog conformance suite (packages/maistro-core/tests/backlog; see docs/testing/inventory-notes/82-backlog-work-source.md)."
+    },
+    "packages/maistro-core/src/maistro/backlog/model.py::unused variable 'created_by'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "Declarative pydantic field on BacklogItem: required at construction, persisted in every store payload (model_dump round-trip) and returned by get/list; shipped code has no attribute read yet because all three backends round-trip the payload dict rather than field-access it. The conformance suite asserts its non-blank refusal."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'active_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'claim_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'close_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'create_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'extend_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'get_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'list_items'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'release_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'reopen_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/pg_store.py::unused method 'update_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'active_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'claim_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'close_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'create_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'extend_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'get_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'list_items'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'release_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'reopen_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/sqlite_store.py::unused method 'update_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'active_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'claim_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'close_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'create_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'extend_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'get_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'list_items'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'release_claim'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'reopen_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::unused method 'update_item'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#98",
+      "reason": "BacklogStore protocol surface (#98): one contract, three backends, exercised through dynamic dispatch by the three-backend conformance suite, so no static call site exists in shipped code. In-repo callers arrive with #99 server wiring and #804 Workspace-Agent consumption; until then this is the #61 events-envelope pattern - a shipped maistro-core library surface for downstream products, retained by review rather than deletion."
     }
   },
   "model-egress": {

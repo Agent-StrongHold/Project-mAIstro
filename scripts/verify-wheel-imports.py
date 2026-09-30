@@ -57,6 +57,14 @@ CORE_PUBLIC_SURFACE = [
     # is absent, rather than failing at import.
     "maistro.archive",
     "maistro.auth",
+    # Canonical Workspace BacklogItem work-source (#82/#98): one
+    # backend-independent store contract for portfolio/control-plane state.
+    # Declared rather than tolerated: the enumeration gate would otherwise
+    # report it as a core_surface gap, and the bare tier should assert what
+    # the epic promises is importable without extras (the package __init__
+    # pulls only model + in-memory store; asyncpg/aiosqlite stay inside the
+    # durable backend modules).
+    "maistro.backlog",
     "maistro.builders",
     "maistro.capabilities",
     "maistro.classifier",

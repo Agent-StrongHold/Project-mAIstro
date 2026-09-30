@@ -637,6 +637,20 @@
         "maistro.graph.executor",
         "maistro.graph.run"
       ]
+    },
+    {
+      "id": "workspace-backlog-work-source",
+      "subsystem": "Workspace / Project scope",
+      "disposition": "CONNECT",
+      "rationale": "The #82/#98 canonical DB-backed Workspace BacklogItem work-source: one store contract (memory, SQLite, PostgreSQL) for portfolio/control-plane state, deliberately not a Goal and not RSI infrastructure. It ships as a published maistro-core surface with its behavior pinned by the three-backend conformance suite (packages/maistro-core/tests/backlog), but no process entry point imports it yet because the server wiring is deliberately later epic scope, not an oversight: #99 exposes the Conductor backlog board/list/detail editing UI over this store, #102 migrates root BACKLOG.md into it at the authority cutover, and #103/#804 consume campaigns and claims from it. CONNECT rather than LIBRARY because the wiring is committed roadmap work with a nameable root, not an open question; all five modules leave the baseline together when the server imports the store.",
+      "root": "maistro_server backlog routes over maistro.backlog stores (#99 server wiring of the #98 slice)",
+      "modules": [
+        "maistro.backlog",
+        "maistro.backlog.model",
+        "maistro.backlog.pg_store",
+        "maistro.backlog.sqlite_store",
+        "maistro.backlog.store"
+      ]
     }
   ]
 }
