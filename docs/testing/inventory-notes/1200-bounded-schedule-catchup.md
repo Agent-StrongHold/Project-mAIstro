@@ -41,7 +41,7 @@ bounded at startup.
   itself (one new test, plus one `catchup_window_seconds` case in the
   parametrized invalid-definition matrix).
 
-`packages/hive-conductor/backend/tests` (+14):
+`packages/hive-conductor/backend/tests` (+15):
 
 - `test_schedule_frequency_floor.py` (+11, new) — the product floor and cap:
   a per-minute create is a 422 naming `schedule_min_frequency_gap_s` and
