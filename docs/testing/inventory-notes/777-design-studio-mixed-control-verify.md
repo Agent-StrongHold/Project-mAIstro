@@ -1447,3 +1447,50 @@ working graph); the issue stop condition still forbids a Design-Studio-private
 Agent runtime / Goal owner / reconciliation loop / artifact authority
 substitute, so no repair code was written. No closure keywords used
 (`Refs #777` only).
+
+## Round addendum — re-verification at `3a6b57dfc` (job d3b4fdea68)
+
+**Develop sync:** `git fetch origin` then
+`git merge-base HEAD origin/develop` = `c5e070d97d07` = `git rev-parse
+origin/develop` exactly — develop is fully merged into the lane; the prior
+BLOCKED was not a develop sync conflict and there is nothing to merge.
+
+**Independent absence re-verification (fresh greps this round, whole-tree
+pathspecs, not inherited from the prior round):**
+- `git grep -l GoalRevision -- '*.py' '*.ts' '*.tsx'` -> 0 files (#458 absent).
+- `git grep -lE 'GoalReconcil|goal_reconcil' -- '*.py' '*.ts' '*.tsx'` -> 0
+  files (#804/#805/#806 absent; `runs/reconciliation.py` docstring confirms it
+  is physical Attempt/NodeRun bookkeeping only).
+- `git grep -lE 'CreativeBrief|creative_brief' -- '*.py' '*.ts' '*.tsx'` ->
+  only `brief_store.py` / `brief_chat.py` / `brief_interview.py` (requirements
+  interview chat state, self-described "not a Goal or CreativeBrief record"),
+  `routes/program.py` + its tests (interview routes), and a test-local
+  `_CreativeBriefNode` stub in
+  `packages/maistro-core/tests/graph/test_cross_domain_substrate.py:44`. No
+  versioned CreativeBrief record (#774 absent).
+- `git grep -il ladybug -- '*.py' '*.ts' '*.tsx'` -> only
+  `packages/hive-conductor/dags/author_examples.py:29` book-title string
+  (#776 absent).
+- `git grep -l control_mode -- '*.py' '*.ts' '*.tsx'` -> 0 files.
+- `grep -cE 'workspace_agent|control_mode|delegat|goal'
+  packages/hive-conductor/backend/routes/design.py` -> 0 (no consumption seam).
+- Landed prerequisites re-confirmed present:
+  `packages/hive-conductor/backend/services/workspace_agent.py` (#53 front
+  door) and `packages/maistro-core/src/maistro/personas/model.py` (#39).
+
+**Gates re-executed at `3a6b57dfc` (fresh runs this round):**
+- `uv run ruff check .` — All checks passed! (exit 0)
+- `uv run ruff format --check .` — 2638 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **EXIT=0, gate PASS**:
+  ratchet base `c5e070d97d07` -> candidate `3a6b57dfcb56`, `1402 reviewed
+  identities -> 1402 findings`, 0 unbanked. No amendment required.
+- `uv run pytest` (design preview/renderers/scope/startup/systems-route +
+  chat-brief-interview + program-brief-routes + workspace-agent-identity +
+  interop contract) — **131 passed** (8.40s).
+
+**Conclusion (unchanged across twenty-one heads):** all 13 #777 acceptance
+criteria remain UNMET at `3a6b57dfc`; origin/develop unmoved, so no new
+dependency landed. Lane stays BLOCKED on unlanded canonical dependencies
+(#458, #804/#805/#806, #774, #775, #776); the stop condition still forbids
+Design-Studio-private substitutes, so no repair code was written this round.
