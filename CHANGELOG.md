@@ -335,6 +335,18 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace BacklogItem service (#98, partial).** `maistro.workspaces.backlog`
+  adds a Workspace/Project-scoped `BacklogItem` record, a backend-independent
+  `BacklogItemStore` contract with version compare-and-set updates, acyclic
+  same-Workspace dependency and parent relations, and an exact
+  `(goal_id, goal_revision)` Goal reference. It has in-memory and SQLite
+  (`workspace_backlog_items`, `workspace_backlog_dependencies`) stores, wired
+  as `Container.backlog_store`. maistro-server serves it at
+  `/workspaces/{workspace_id}/backlog`: members read it, contributors and
+  owners write it, and a stale `expected_version` gets 409 with the current
+  item. On PostgreSQL the store is still in-process and logs a warning.
+  BACKLOG.md remains the authority.
+
 - **Proposed spec for Workspace work campaigns (#103, partial).**
   SPEC-092626-1831 (Proposed), with its boundary decision ADR-092626-c1e7
   (Proposed), records the campaign contract before any code: a
