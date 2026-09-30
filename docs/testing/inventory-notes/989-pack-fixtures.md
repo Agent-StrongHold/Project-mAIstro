@@ -144,3 +144,42 @@ the parked fence decision and `taught_by_play` reason readable through
 canonical NodeRun reads); the table output names the shared Workspace and the
 provisioned file; the unified `maistro --help` routes the command. Canonical
 all-package mypy stays clean (729 files); ruff check/format clean.
+
+## CI-gate repair round (merge-queue reds at head d098bb082, reproduced locally)
+
+Merge-queue evaluation of `d098bb082` failed three gates: `Supply chain
+(pip-audit)`, `security` (same pip-audit step), and `test`. Both root causes
+were pulled from the actual CI logs (runs 36780462446/36780462379) and
+reproduced locally before fixing; both fixes are transitive lockfile bumps
+only — no source, no ledger amendment (vulture re-proven at 1402 → 1402 with
+CI's exact arguments after the bumps).
+
+- **pip-audit: `urllib3==2.7.0` CVE-2026-97687/88/89 (fix 2.8.0).** The
+  `uv.lock`-only bump supersedes the "inherited red" note above: the lane
+  absorbed the repo-wide bump per the CI-repair brief rather than deferring
+  it to integration. `uv run pip-audit --strict` +
+  `scripts/pip_audit_gate.py` proven green in both `uv sync --locked
+  --extra dev` and CI's exact `uv sync --locked --all-extras` shapes (pip-audit
+  installed after sync, as CI does): only the triaged `ecdsa`
+  PYSEC-2026-1325 remains, gate exit 0, direct-dependency ratchet still OK.
+- **test job: `npm audit --audit-level=high` in
+  `packages/maistro-canvas/frontend` — `brace-expansion` 5.0.9 (high,
+  GHSA-q2hr-2g5m-vwhr / GHSA-qhr7-859c-m2p7 / GHSA-6j4f-fj2g-mc7p) and
+  `ip-address` 10.7.0 (moderate).** `package-lock.json`-only bump to
+  brace-expansion 5.0.12 / ip-address 10.7.2 (`npm audit fix`; `package.json`
+  untouched). The full canvas frontend battery CI runs was re-executed
+  locally on the new lock: `npm ci`, `npm run test:ci` (79/79), `npm run
+  lint` (0 errors), `npm run build`, `npm audit --audit-level=high` (0
+  vulnerabilities).
+- **The core pytest step was never the failure.** The `test` job log shows
+  `packages/maistro-core/tests` passing (10880 passed, 700 skipped, 1
+  xfailed); its `RuntimeError: Event loop is closed` lines are
+  `PytestUnhandledThreadExceptionWarning` annotations from aiosqlite worker
+  threads, not failing tests. Re-proven locally at this head after the
+  urllib3 bump: 10845 passed, 735 skipped, 1 xfailed (skip-count delta is
+  postgres-parametrized tests that skip without a local server).
+
+Fixture evidence unchanged by the bumps and re-proven: the 10 core
+fixture/CLI tests and 2 host run-list tests pass, both `check-suite-inventory.py`
+gates match the ledger, and `check-reachability-provenance.py`
+(RATCHET_BASE_REV=origin/develop) stays at 188 → 188 unreachable.
