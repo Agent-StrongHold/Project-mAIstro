@@ -134,6 +134,27 @@ def test_editor_member_can_edit(admin_client, authed_client) -> None:
     assert r.json()["version"] == 2
 
 
+def test_workspace_id_is_not_generic_editable(admin_client, authed_client) -> None:
+    """An editor of one workspace cannot publish an item into another.
+
+    Generic edits authorize against the item's current scope only, so a
+    ``workspace_id`` change would let an editor drop an item into any
+    workspace whose id they know. Scoping is creation-time; moving between
+    workspaces needs an explicit destination-authorized path.
+    """
+    ws = _create_workspace(admin_client)
+    other_ws = _create_workspace(admin_client)
+    _add_member(admin_client, ws, "user", "editor")
+    item = _create_item(admin_client, workspace_id=ws)
+
+    r = authed_client.patch(
+        f"/v1/backlog/{item['id']}",
+        json={"expected_version": 1, "changes": {"workspace_id": other_ws}},
+    )
+    assert r.status_code == 422
+    assert authed_client.get(f"/v1/backlog/{item['id']}").json()["item"]["workspace_id"] == ws
+
+
 # ---------------------------------------------------------------------------
 # Optimistic concurrency: conflicts visible and recoverable
 # ---------------------------------------------------------------------------
@@ -293,6 +314,20 @@ def test_unknown_enums_are_refused(admin_client) -> None:
             f"/v1/backlog/{item['id']}", json={"expected_version": 1, "changes": changes}
         )
         assert r.status_code == 422, changes
+
+
+def test_create_refuses_a_status_outside_the_legend(admin_client) -> None:
+    """Creation is the one path the service's own enum check does not guard.
+
+    ``PATCH`` refuses an unknown status in ``_apply_field_changes`` before the
+    model is touched; creation hands ``status`` straight to ``BacklogItem``, so
+    the model's legend validator is the boundary that must fail closed. The
+    error names the legend so the editor can recover without round-tripping.
+    """
+    r = admin_client.post("/v1/backlog", json={"title": "off-ledger", "status": "doing"})
+    assert r.status_code == 422
+    assert "todo" in r.json()["detail"] and "doing" in r.json()["detail"]
+    assert not stores.backlog_items
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +515,37 @@ def test_archived_item_refuses_plain_edits_until_restored(admin_client) -> None:
         f"/v1/backlog/{item['id']}", json={"expected_version": 2, "changes": {"title": "x"}}
     )
     assert r.status_code == 422
+
+
+def test_refused_patches_leave_stored_state_untouched(admin_client) -> None:
+    """Edits stage on a copy; a refusal never publishes a partial mutation.
+
+    Before copy-staging, ``_get()`` handed back the store's own object, so a
+    patch refused by the archived-item check (or by a later invalid field)
+    had already mutated the live row: a follow-up GET showed the new title at
+    the old version with no provenance. Both leak shapes are pinned here.
+    """
+    item = _create_item(admin_client)
+    item_id = item["id"]
+
+    # A valid field followed by an invalid one must apply neither.
+    r = admin_client.patch(
+        f"/v1/backlog/{item_id}",
+        json={"expected_version": 1, "changes": {"title": "staged", "priority": 9}},
+    )
+    assert r.status_code == 422
+    after = admin_client.get(f"/v1/backlog/{item_id}").json()["item"]
+    assert after["title"] == item["title"] and after["priority"] == item["priority"]
+    assert after["version"] == 1 and after["provenance"][-1]["action"] == "created"
+
+    # Same guarantee when the archived-item check is what refuses the patch.
+    admin_client.post(f"/v1/backlog/{item_id}/archive", json={"expected_version": 1})
+    r = admin_client.patch(
+        f"/v1/backlog/{item_id}", json={"expected_version": 2, "changes": {"title": "x"}}
+    )
+    assert r.status_code == 422
+    after = admin_client.get(f"/v1/backlog/{item_id}").json()["item"]
+    assert after["title"] == item["title"] and after["version"] == 2
 
 
 def test_provenance_records_every_actor_and_action(admin_client) -> None:

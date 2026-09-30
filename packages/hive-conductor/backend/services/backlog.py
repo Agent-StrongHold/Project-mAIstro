@@ -71,7 +71,12 @@ _EDITABLE_FIELDS = frozenset(
         "paused_reason",
         "archived",
         "blocked_reason",
-        "workspace_id",
+        # Deliberately absent: ``workspace_id``. Generic edits authorize the
+        # caller against the item's current scope only, so a workspace editor
+        # could otherwise publish an item into any workspace whose id they
+        # know. Scope is set at creation (which checks destination
+        # membership); moving between workspaces must go through an explicit,
+        # destination-authorized path, not a field edit.
     }
 )
 
@@ -323,24 +328,33 @@ async def update_item(
     if expected_version != item.version:
         raise VersionConflictError(item)
     was_blocked = item.status == "blocked"
-    applied = _apply_field_changes(item, changes)
-    if item.archived and "archived" not in applied:
+    # Stage the whole edit on a copy: _get() hands back the object the store
+    # itself holds, so in-place mutation would leak partial edits (and the
+    # version/provenance bump) into reads whenever a later check refuses the
+    # patch. The stored object is replaced only after every step validates.
+    staged = item.model_copy(deep=True)
+    applied = _apply_field_changes(staged, changes)
+    if staged.archived and "archived" not in applied:
         raise BacklogValidationError("restore the item before editing it")
-    if item.status == "blocked" and not was_blocked:
+    if staged.status == "blocked" and not was_blocked and not (staged.blocked_reason or "").strip():
         # Entering blocked through a plain edit must carry evidence, the same
         # rule the explicit block endpoint enforces; the UI echoes ``status``
         # on every save, so a no-evidence park would otherwise slip through.
+        # A supplied reason is part of the same staged edit, so judge the
+        # staged row — before the copy-staging fix this branch only saw the
+        # supply-then-refuse case pass because a refused patch leaked status
+        # into the live object.
         raise BacklogValidationError("a blocked_reason is required when marking an item blocked")
-    if was_blocked and "status" in applied and item.status != "blocked":
+    if was_blocked and "status" in applied and staged.status != "blocked":
         # Leaving the blocked column through a plain edit clears the stale
         # park evidence; an explicit unblock sets its own record either way.
         # Staying blocked keeps the reason unless the save supplies a new one.
-        item.blocked_reason = None
-    item.version += 1
-    item.updated_at = _now()
-    _record(item, actor, "updated", {"fields": applied})
-    stores.backlog_items[item.id] = item
-    return item
+        staged.blocked_reason = None
+    staged.version += 1
+    staged.updated_at = _now()
+    _record(staged, actor, "updated", {"fields": applied})
+    stores.backlog_items[staged.id] = staged
+    return staged
 
 
 async def reorder_item(
