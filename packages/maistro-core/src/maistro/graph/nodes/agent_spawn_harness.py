@@ -27,7 +27,9 @@ from .base import (
     PAUSE_AWAITING_HARNESS,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     pause_until,
+    replay_effect_key,
 )
 from .capability_effect import invoke_capability_effect
 
@@ -84,7 +86,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
     input_schema: ClassVar[type[BaseModel]] = SpawnHarnessIn
     output_schema: ClassVar[type[BaseModel]] = SpawnHarnessOut
     cost_hint: ClassVar[float] = 5.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: spawn harness"
     description: ClassVar[str] = (
@@ -101,6 +103,13 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
     ) -> None:
         self._adapters: dict[str, HarnessAdapter] = adapters or {}
         self._effects = effect_context or default_effect_context()
+
+    def replay_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
+        return replay_effect_key(
+            ctx,
+            "agent.spawn_harness.dispatch",
+            inputs.model_dump(mode="json"),
+        )
 
     @staticmethod
     def _resume_output(resumed: Any) -> SpawnHarnessOut:
@@ -179,7 +188,9 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 "harness_type": handle.harness_type,
             }
 
-        effect_key = f"agent.spawn_harness.dispatch:{inputs.harness_type}"
+        # Include the logical request in the key: a changed task is explicit
+        # new work, while a retry with a new NodeRun keeps the same identity.
+        effect_key = self.replay_effect_key(inputs, ctx)
         invocation = await invoke_capability_effect(
             lambda: self._effects.invocations.invoke(
                 binding=binding,
@@ -190,6 +201,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 request=request_payload,
                 resolver=resolve_provider,
                 executor=execute_provider,
+                logical_effect=True,
             ),
             effect_key=effect_key,
         )

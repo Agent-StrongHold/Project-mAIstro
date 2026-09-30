@@ -201,7 +201,10 @@ class GuestPeerManager:
                     json={
                         "agent_id": agent_id,
                         "messages": messages,
-                        "delegation_key": idempotency_key,
+                        # The receiver contract is the canonical A2A admission
+                        # endpoint's `A2ATaskCreate.idempotency_key`; a durable
+                        # receiver dedupes the physical POST by this key.
+                        "idempotency_key": idempotency_key,
                     },
                     headers=headers,
                 )

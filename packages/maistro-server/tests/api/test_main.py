@@ -1,14 +1,14 @@
 """Tests for the FastAPI app entrypoint — lifespan, shutdown, exception handlers.
 
-Evidence: main.py wires the task runner into the app lifecycle, registers
-graceful-shutdown signal handlers, and wraps both HTTPException and unhandled
-exceptions in a consistent ErrorResponse envelope (request_id, type, message).
+Evidence: main.py wires the task runner into the app lifecycle, drains it
+through lifespan shutdown (leaving SIGTERM/SIGINT authority with Uvicorn),
+and wraps both HTTPException and unhandled exceptions in a consistent
+ErrorResponse envelope (request_id, type, message).
 """
 
 from __future__ import annotations
 
 import json
-import signal
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,7 +21,6 @@ import maistro_server.main as main_module
 from maistro.config.settings import Settings
 from maistro_server.api.health import router as health_router
 from maistro_server.main import (
-    _graceful_shutdown,
     _validate_startup,
     app,
     lifespan,
@@ -36,11 +35,11 @@ def client() -> TestClient:
 
 
 class _FakeLoop:
-    """Minimal event-loop stand-in for lifespan signal registration tests.
+    """Minimal event-loop stand-in for lifespan signal-handling assertions.
 
     structlog's async logger also calls ``get_running_loop().run_in_executor``;
-    this fake preserves that awaitable contract while letting the tests assert
-    signal handler registration does not raise.
+    this fake preserves that awaitable contract while recording whether the
+    lifespan touches ``add_signal_handler`` — which it must not (#819).
     """
 
     def __init__(self) -> None:
@@ -93,19 +92,52 @@ class TestExceptionHandlers:
         assert "request_id" in body["error"]
 
 
-class TestGracefulShutdown:
-    async def test_drains_runner_on_signal(self) -> None:
-        mock_runner = MagicMock()
-        mock_runner.drain = AsyncMock()
-        with patch.object(main_module, "_runner", mock_runner):
-            await _graceful_shutdown(signal.SIGTERM)
-        mock_runner.drain.assert_awaited_once_with(timeout=30)
+class TestSignalAuthority:
+    """#819 — Uvicorn owns SIGTERM/SIGINT for the process.
 
-    async def test_noop_when_no_runner(self) -> None:
-        with patch.object(main_module, "_runner", None):
-            await _graceful_shutdown(signal.SIGTERM)
+    The lifespan used to install its own `loop.add_signal_handler` for both
+    signals, which *replaced* Uvicorn's `handle_exit`: `should_exit` was never
+    set, so the server ignored SIGTERM, the lifespan shutdown block (runner
+    drain, sandbox cleanup, client close, engine disposal) never ran, and the
+    container grace deadline ended in SIGKILL. Cleanup must compose through
+    lifespan shutdown instead of taking over the server's signal handling.
+    """
 
-            assert main_module._runner is None
+    @pytest.fixture(autouse=True)
+    def _no_database_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Same input the TestLifespan tests pin: no database resolver input,
+        # and the router key the Container build requires. This class is about
+        # signal authority, not about either of those checks.
+        for name in (
+            "DATABASE_URL",
+            "DB_HOST",
+            "DB_PORT",
+            "DB_NAME",
+            "DB_USER",
+            "DB_PASSWORD",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
+
+    @pytest.mark.contract("behavioral")
+    async def test_lifespan_does_not_install_signal_handlers(self) -> None:
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+
+        loop = _FakeLoop()
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
+            patch("asyncio.get_running_loop", return_value=loop),
+        ):
+            async with lifespan(test_app):
+                pass
+
+        loop.add_signal_handler.assert_not_called()
 
 
 def _stopped_runner() -> MagicMock:
@@ -273,7 +305,13 @@ class TestLifespan:
         """
         test_app = MagicMock()
         test_app.state = MagicMock()
-        server_logger = MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())
+        server_logger = MagicMock(ainfo=AsyncMock(), awarning=AsyncMock(), aerror=AsyncMock())
+        # Shutdown owns the usage-log flush (#72, #1204): the lifespan awaits
+        # `flush_usage_log()` then `aclose()` on whatever container it built.
+        mock_container = MagicMock()
+        mock_container.run_store = MagicMock(list_by_status=AsyncMock(return_value=[]))
+        mock_container.flush_usage_log = AsyncMock()
+        mock_container.aclose = AsyncMock()
 
         with (
             patch("maistro.agents.conductor.run_task"),
@@ -288,11 +326,7 @@ class TestLifespan:
             # the branch emits, not about wiring a real one.
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(
-                    return_value=MagicMock(
-                        run_store=MagicMock(list_by_status=AsyncMock(return_value=[]))
-                    )
-                ),
+                AsyncMock(return_value=mock_container),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -307,6 +341,89 @@ class TestLifespan:
             if call.args and call.args[0] == "run_store_in_process_only"
         ]
         assert bool(warned) is expects_warning
+        # The write-behind contract runs on both branches: whatever the run
+        # store said, rate-accounting events still get flushed at shutdown.
+        mock_container.flush_usage_log.assert_awaited_once()
+        mock_container.aclose.assert_awaited_once()
+
+    async def test_a_failed_shutdown_flush_still_closes_the_container(self) -> None:
+        """The shutdown flush must not block the rest of the shutdown.
+
+        A raising `flush_usage_log` is logged, not propagated (#72, #1204):
+        the events are lost either way at process exit, and an exception here
+        would also skip `aclose()` — leaving the durable twins' connections
+        to be torn down by the event loop's louder complaints.
+        """
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        server_logger = MagicMock(ainfo=AsyncMock(), awarning=AsyncMock(), aerror=AsyncMock())
+        mock_container = MagicMock()
+        mock_container.run_store = MagicMock(list_by_status=AsyncMock(return_value=[]))
+        mock_container.flush_usage_log = AsyncMock(side_effect=RuntimeError("snapshot failed"))
+        mock_container.aclose = AsyncMock()
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", server_logger),
+            patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
+            patch(
+                "maistro_server.main._build_container",
+                AsyncMock(return_value=mock_container),
+            ),
+            patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                pass
+
+        logged = [
+            call
+            for call in server_logger.aerror.await_args_list
+            if call.args and call.args[0] == "usage_log_flush_failed"
+        ]
+        assert len(logged) == 1
+        mock_container.aclose.assert_awaited_once()
+
+    async def test_shutdown_treats_a_cleared_container_as_nothing_to_close(self) -> None:
+        """The defensive container read at shutdown is a real contract (#72).
+
+        Whatever emptied `app.state.container` before the lifespan exited —
+        a teardown that already closed the engine, a test harness, a hot
+        swap — the shutdown block must treat the absent container as
+        nothing to flush and nothing to close, not crash on it.
+        """
+        test_app = MagicMock()
+        server_logger = MagicMock(ainfo=AsyncMock(), awarning=AsyncMock(), aerror=AsyncMock())
+        mock_container = MagicMock()
+        mock_container.run_store = MagicMock(list_by_status=AsyncMock(return_value=[]))
+        mock_container.flush_usage_log = AsyncMock()
+        mock_container.aclose = AsyncMock()
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", server_logger),
+            patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
+            patch(
+                "maistro_server.main._build_container",
+                AsyncMock(return_value=mock_container),
+            ),
+            patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                test_app.state.container = None
+
+        mock_container.flush_usage_log.assert_not_awaited()
+        mock_container.aclose.assert_not_awaited()
+        assert server_logger.aerror.await_count == 0
 
     async def test_lifespan_configures_progress_webhook_when_url_set(
         self, monkeypatch: pytest.MonkeyPatch

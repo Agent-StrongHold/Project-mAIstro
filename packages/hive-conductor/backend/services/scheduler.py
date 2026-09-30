@@ -24,6 +24,7 @@ from maistro.observability.correlation import (
     detached_execution_context,
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES
+from maistro.runs.sources import canonical_occurrence_instant
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 from maistro.scheduling.admission import ScheduleRunAdmitter
 
@@ -399,9 +400,20 @@ class _ScheduleRunner:
         container = self._canonical_container()
         if container is not None:
             try:
-                executed = await container.execute_admitted_runs()
-                if executed:
-                    logger.info("Consumed %d admitted canonical Run(s)", executed)
+                accounting = await container.execute_admitted_runs_accounting()
+                if accounting.attempted or accounting.skipped:
+                    # The attempted count alone could present an all-failing
+                    # batch as a fully executed one (#849), so the tick's own
+                    # breakdown is what gets logged.
+                    logger.info(
+                        "Consumed %d admitted canonical Run(s) (succeeded=%d failed=%d "
+                        "parked=%d skipped=%d)",
+                        accounting.attempted,
+                        accounting.succeeded,
+                        accounting.failed,
+                        accounting.parked,
+                        accounting.skipped,
+                    )
             except Exception as exc:
                 logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
@@ -1013,7 +1025,7 @@ class _ScheduleRunner:
             target=sid,
             detail={
                 "name": schedule.name,
-                "scheduled_for": (scheduled_for or t).isoformat(),
+                "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
                 "catchup": catchup,
             },
         )
@@ -1056,7 +1068,11 @@ class _ScheduleRunner:
                             "admission_source": "schedule",
                             "schedule_id": sid,
                             "schedule_name": schedule.name,
-                            "scheduled_for": (scheduled_for or t).isoformat(),
+                            # The instant in UTC (#850): this provenance forms
+                            # the occurrence claim the run stores compare as
+                            # text, and a wall-clock rendering would change
+                            # identity with the schedule's timezone.
+                            "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
                             "catchup": catchup,
                             "request_id": effective_request_id,
                         },
