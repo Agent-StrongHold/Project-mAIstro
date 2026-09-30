@@ -216,6 +216,8 @@ class SqliteBacklogStore:
         source: str = "human",
         dependencies: tuple[str, ...] = (),
         origin: BacklogOrigin | None = None,
+        priority: int = 3,
+        rank: float = 1000.0,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
@@ -234,6 +236,8 @@ class SqliteBacklogStore:
             source=source,
             dependencies=dependencies,
             origin=origin,
+            priority=priority,
+            rank=rank,
             **({"item_id": item_id} if item_id is not None else {}),
         )
         async with self._write() as conn:
@@ -286,6 +290,8 @@ class SqliteBacklogStore:
         status: BacklogItemStatus | None = None,
         dependencies: tuple[str, ...] | None = None,
         origin: BacklogOrigin | None | object = UNSET,
+        priority: int | None = None,
+        rank: float | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
         async with self._write() as conn:
@@ -305,6 +311,8 @@ class SqliteBacklogStore:
                 status=status,
                 dependencies=dependencies,
                 origin=origin,
+                priority=priority,
+                rank=rank,
             )
             if not changes:
                 return item

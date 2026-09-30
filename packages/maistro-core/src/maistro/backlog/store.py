@@ -81,6 +81,8 @@ class BacklogStore(Protocol):
         source: str = "human",
         dependencies: tuple[str, ...] = (),
         origin: BacklogOrigin | None = None,
+        priority: int = 3,
+        rank: float = 1000.0,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem: ...
@@ -105,6 +107,8 @@ class BacklogStore(Protocol):
         status: BacklogItemStatus | None = None,
         dependencies: tuple[str, ...] | None = None,
         origin: BacklogOrigin | None | object = UNSET,
+        priority: int | None = None,
+        rank: float | None = None,
         at: datetime | None = None,
     ) -> BacklogItem: ...
 
@@ -204,6 +208,8 @@ def _plan_changes(
     status: BacklogItemStatus | None,
     dependencies: tuple[str, ...] | None,
     origin: BacklogOrigin | None | object,
+    priority: int | None,
+    rank: float | None,
 ) -> dict[str, object]:
     """Compute the changed fields for ``update_item``, or ``{}`` for a no-op.
 
@@ -222,6 +228,8 @@ def _plan_changes(
         # "no opinion" semantics for dependencies too: an empty tuple is a
         # real state (no blockers), so absence of the argument cannot clear.
         "dependencies": dependencies,
+        "priority": priority,
+        "rank": rank,
     }
     changes.update({field: value for field, value in provided.items() if value is not None})
     clearable = (
@@ -313,6 +321,8 @@ class InMemoryBacklogStore:
         source: str = "human",
         dependencies: tuple[str, ...] = (),
         origin: BacklogOrigin | None = None,
+        priority: int = 3,
+        rank: float = 1000.0,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
@@ -331,6 +341,8 @@ class InMemoryBacklogStore:
             source=source,
             dependencies=dependencies,
             origin=origin,
+            priority=priority,
+            rank=rank,
             **({"item_id": item_id} if item_id is not None else {}),
         )
         if item.item_id in self._items:
@@ -380,6 +392,8 @@ class InMemoryBacklogStore:
         status: BacklogItemStatus | None = None,
         dependencies: tuple[str, ...] | None = None,
         origin: BacklogOrigin | None | object = UNSET,
+        priority: int | None = None,
+        rank: float | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
         item = self._require_item(item_id)
@@ -398,6 +412,8 @@ class InMemoryBacklogStore:
             status=status,
             dependencies=dependencies,
             origin=origin,
+            priority=priority,
+            rank=rank,
         )
         if "parent_id" in changes and changes["parent_id"] is not None:
             new_parent = str(changes["parent_id"])

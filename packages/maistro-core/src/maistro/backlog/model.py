@@ -171,12 +171,16 @@ class BacklogOrigin(BaseModel):
     #: The item's non-header lines, verbatim, in document order.
     body: tuple[str, ...] = ()
 
-    @field_validator("document", "section", "status_word")
+    @field_validator("document", "status_word")
     @classmethod
     def _require_non_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("must be a non-empty string")
         return value
+
+    # ``section`` is deliberately allowed to be empty: an item above the
+    # first ``## `` heading sits in the document preamble, and that is a
+    # real position, not missing data.
 
 
 class BacklogItem(BaseModel):
@@ -208,6 +212,13 @@ class BacklogItem(BaseModel):
     #: dropped. Referential integrity is enforced at the store/service layer,
     #: not here: the model is data, the graph check is a decision.
     dependencies: tuple[str, ...] = ()
+    #: Explicit human priority: 1 is highest, 5 is lowest. Stored as given,
+    #: never rewritten by the system (SPEC-092626-1831) — an agent's
+    #: "what should I work on" selection is deterministic on this plus rank,
+    #: and a human re-prioritizing is what changes the answer.
+    priority: int = Field(default=3, ge=1, le=5)
+    #: Manual ordering within a priority band; selection's tiebreaker.
+    rank: float = 1000.0
     #: Import provenance for items that came from the Markdown backlog (#102).
     #: ``None`` for items created natively in the database.
     origin: BacklogOrigin | None = None

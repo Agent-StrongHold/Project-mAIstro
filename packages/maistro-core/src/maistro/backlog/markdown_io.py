@@ -137,33 +137,34 @@ def _split_state(state: str) -> tuple[str, str | None]:
     return status.strip(), (marker or None)
 
 
-def _resolve_dep(token: str, own_prefix: str, known: set[str]) -> str | None:
+def _resolve_dep(token: str, own_prefix: str) -> str | None:
     """Resolve one dependency reference to an item id, or ``None`` for prose.
 
     ``engine-030`` and ``[engine-030]`` name the id directly; a bare ``030``
     is a sibling reference and resolves within the referencing item's prefix.
     The resolver is shape-first: anything the reference grammar cannot read
     (prose fragments around the marker) is ignored rather than guessed.
+    Membership in the document is the caller's check (validation), not ours.
     """
     match = _DEP_REF.fullmatch(token.strip().strip(",.;"))
     if match is None:
         return None
     prefix, number = match.group(1), match.group(2)
     candidate = prefix.rstrip("-") + "-" + number if prefix else f"{own_prefix}-{number}"
-    return candidate if candidate in known else None
+    return candidate
 
 
-def parse_dependencies(item: ParsedItem, known: set[str]) -> tuple[str, ...]:
-    """Extract the ``blocked-by`` ids from one item's written annotations.
+def parse_dependency_candidates(item: ParsedItem) -> tuple[str, ...]:
+    """Every ``blocked-by`` reference the item's annotations name, resolved.
 
-    Only text at a dependency marker counts: the marker's remainder (up to the
-    next sentence boundary or end of line) is scanned for references, so
-    ``Depends on [engine-030]`` resolves while ordinary prose mentioning
-    ``[engine-094]`` does not invent a dependency.
+    Unlike :func:`parse_dependencies` this does not filter to ids the
+    document defines -- validation needs the unresolved ones so it can
+    refuse the document honestly instead of silently dropping the edge.
     """
     deps: list[str] = []
     own_prefix = item.item_id.rsplit("-", 1)[0]
-    for line in item.body:
+    lines = (item.header_suffix, *item.body) if item.header_suffix else item.body
+    for line in lines:
         position = 0
         while (marker := _DEP_MARKER.search(line, position)) is not None:
             rest = line[marker.end() :]
@@ -171,11 +172,25 @@ def parse_dependencies(item: ParsedItem, known: set[str]) -> tuple[str, ...]:
             # are read out of that span only.
             span = re.split(r"(?<=\w)[.;](?:\s|$)", rest, maxsplit=1)[0]
             for token in span.split():
-                resolved = _resolve_dep(token, own_prefix, known)
-                if resolved is not None and resolved != item.item_id and resolved not in deps:
-                    deps.append(resolved)
+                # One token may pack several references: "010/011/012" or
+                # "010,011". Split the separators before resolving.
+                for part in re.split(r"[/,]+", token):
+                    resolved = _resolve_dep(part, own_prefix)
+                    if resolved is not None and resolved != item.item_id and resolved not in deps:
+                        deps.append(resolved)
             position = marker.end()
     return tuple(deps)
+
+
+def parse_dependencies(item: ParsedItem, known: set[str]) -> tuple[str, ...]:
+    """The item's structured dependency projection: ids the document defines.
+
+    Only text at a dependency marker counts, so a ``Depends on`` annotation
+    resolves while ordinary prose mentioning ``[engine-094]`` does not
+    invent a dependency. References to ids the document never defines are
+    validation failures (:func:`validate_document`), never silent drops.
+    """
+    return tuple(dep for dep in parse_dependency_candidates(item) if dep in known)
 
 
 def parse_markdown(text: str) -> ParsedDocument:
@@ -216,7 +231,7 @@ def parse_markdown(text: str) -> ParsedDocument:
         seen.add(item_id)
         status_word, gap_marker = _split_state(match.group("state"))
         suffix = match.group("suffix")
-        body_lines: list[str] = []
+        body_lines = []
         header = ParsedItem(
             item_id=item_id,
             title=match.group("title"),
@@ -263,21 +278,21 @@ def validate_document(document: ParsedDocument) -> None:
     known = set(document.item_ids)
     edges: dict[str, tuple[str, ...]] = {}
     for item in document.items:
-        deps = parse_dependencies(item, known)
-        for dep in deps:
+        candidates = parse_dependency_candidates(item)
+        for dep in candidates:
             if dep not in known:
                 raise MarkdownBacklogError(
                     f"{item.item_id}: blocked-by names {dep!r}, which is not in the document"
                 )
-        edges[item.item_id] = deps
+        edges[item.item_id] = candidates
     _require_acyclic(edges)
 
 
 def _require_acyclic(edges: Mapping[str, tuple[str, ...]]) -> None:
-    state: dict[str, int] = {}  # 0 = visiting, 1 = done
+    state: dict[str, int] = {}  # 0 = visiting, 1 = done; absent = unvisited
 
     def walk(node: str, path: list[str]) -> None:
-        mark = state.get(node, 1)
+        mark = state.get(node)
         if mark == 0:
             cycle = [*path[path.index(node) :], node]
             raise MarkdownBacklogError("blocked-by cycle: " + " -> ".join(cycle))
@@ -395,6 +410,7 @@ __all__ = [
     "ParsedItem",
     "is_terminal_word",
     "parse_dependencies",
+    "parse_dependency_candidates",
     "parse_markdown",
     "render_document",
     "render_item",
