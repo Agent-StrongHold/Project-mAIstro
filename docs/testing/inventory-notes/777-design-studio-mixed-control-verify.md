@@ -1743,3 +1743,72 @@ criterion remains structurally unreachable without violating the issue stop
 condition (no Design-Studio-private Agent/Goal/reconciler substitutes). Lane
 remains **BLOCKED on unlanded canonical dependencies**; no repair code was
 written. No closure keywords used (`Refs #777` only).
+
+## Re-verification at merge of `origin/develop` 742e4e8fd (repair round 2026-09-30, job `d4aec561d3c44b8c96bb471e79bc52ef`)
+
+**Trigger:** prior round reported BLOCKED; lane brief instructed: if the block
+was a develop sync conflict, fetch origin, merge `origin/develop`, resolve
+conflicts, commit. This round found exactly that situation had re-arisen:
+`origin/develop` had fast-forwarded past the previously merged `306db1754` by
+three commits (`46066dfb8` M3-B product-gap disposition, `46e0e7d5c` M3-A
+release-path reconciliation, `742e4e8fd` Conductor store-architecture
+convergence) while the branch sat at `0d01ac346` (merge-base `e7212a5cf`,
+i.e. `HEAD..origin/develop` = 3).
+
+**Sync performed:** `git fetch origin` (no further movement; ref already at
+`742e4e8fd`), then `git merge origin/develop` -> automatic merge, **zero
+conflicts** (the incoming diff touches release tooling/docs: `release.yml`,
+`scripts/check-release-consistency.py`, `scripts/release_guard.py`,
+`scripts/release_notes.py`, new
+`packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py`,
+`tests/test_check_release_consistency.py`, `tests/test_release_guard.py`,
+inventory notes; nothing on Design Studio / Goal / dependency surfaces).
+`origin/develop` is again an ancestor of HEAD.
+
+**Dependency audit re-run fresh on the merged tree (not trusted from prior
+rounds):**
+- `git grep -l 'GoalRevision' -- '*.py'` -> **0 files** (#458 absent).
+- `git grep -lE 'GoalReconcil|goal_reconcil' -- '*.py'` -> **0 files**
+  (#804/#805/#806 absent).
+- `git grep -inE 'owning_agent|subgoaldelegat' -- '*.py'` -> **0 files** (no
+  canonical Goal ownership/delegation seam for reclaim/reassign).
+- `git grep -lE 'CreativeBrief|creative_brief' -- '*.py'` -> 6 files, all
+  forward references; `services/brief_store.py:5` still: "The interview is
+  chat state, not a Goal: nothing here is a Goal or CreativeBrief record";
+  `brief_chat.py:9` and `routes/program.py:160` explicitly defer to "the Goal
+  and CreativeBrief writers (#458, #774)" (#774 absent).
+- `grep -cE 'workspace_agent|control_mode|delegat'
+  packages/hive-conductor/backend/routes/design.py` -> **0** (no #804/#53
+  consumption seam).
+- `git grep -il 'ladybug' -- '*.py'` -> single hit
+  `dags/author_examples.py:29` ("The Grouchy Ladybug", book title; #776
+  absent).
+- `packages/hive-conductor/tests/e2e/` still has only
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts`
+  for Design Studio — no mixed-control/Goal-lineage spec.
+
+**Gates executed on the merged tree (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2642 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; ratchet base
+  `742e4e8fd3f7` (new develop base) -> candidate `f044d75f0734`, 1402
+  reviewed identities -> 1402 findings, **0 unbanked**; no ledger amendment
+  required or performed.
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **2952 passed,
+  6 skipped** (84.17s).
+- `uv run pytest tests/test_check_release_consistency.py
+  tests/test_release_guard.py -q` — **76 passed** (newly merged tests green).
+- `uv run pytest
+  packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py
+  -q` — **1 passed, 1 skipped** (newly merged test green).
+
+**Conclusion (26th inspected head):** the develop-sync component of the
+block is resolved again (merge of `742e4e8fd` committed with zero
+conflicts; all gates green, including the tests newly landed by the merge).
+The substantive block is unchanged: all 13 #777 acceptance criteria remain
+UNMET because #804/#805/#806, #458, #774, #775, #776 are still unlanded on
+the assigned develop base — and the issue stop condition forbids
+Design-Studio-private Agent/Goal/reconciler substitutes. Lane remains
+**BLOCKED on unlanded canonical dependencies**; no repair code was written.
+No closure keywords used (`Refs #777` only).
