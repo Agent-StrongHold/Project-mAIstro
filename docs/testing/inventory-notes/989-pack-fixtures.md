@@ -40,6 +40,12 @@ No existing node IDs moved; the deltas are purely additive.
   PR branch. Lane workers are assigned driver-owned worktree branches (`auto-989`);
   the driver applies the integration branch/PR name when the lane lands. The
   `feat/...` criterion is satisfied at integration, not in the worktree.
+- **Suite-inventory gate timeout was environmental, not a regression.** The
+  prior round's failed check was
+  `check-suite-inventory.py --suite packages/maistro-core/tests` timing out at
+  900 s; re-run on the same head it collects 11565 tests and matches the
+  ledger in ~8 s (the hive-conductor suite likewise: 2945 in ~4 s). No code
+  change was needed; the count in the delta block above is unchanged.
 - **Vulture per-identity ledger (CI-repair).**
   `scripts/check-vulture-baseline.py` initially failed: the three host-facing
   functions (`seed_book_fixture`, `seed_game_fixture`, `open_pack_fixture`) were
