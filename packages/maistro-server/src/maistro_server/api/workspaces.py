@@ -20,7 +20,7 @@ from maistro.workspaces import (
     WorkspaceRole,
     WorkspaceStore,
 )
-from maistro_server.api import projects
+from maistro_server.api import backlog_history, projects
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
     configure_workspace_store,
@@ -34,6 +34,7 @@ from maistro_server.api.workspace_access import (
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 router.include_router(projects.router)
+router.include_router(backlog_history.router)
 
 # Compatibility for callers/tests from the #37 slice. The implementation now
 # lives in workspace_access so Project and Workspace routes share one boundary.
