@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
+from models.backlog import BacklogItem
 from models.persona_feedback import PersonaFeedback
 from models.schemas import (
     Agent,
@@ -91,6 +92,10 @@ workspaces: ModelStore = ModelStore("workspaces", Workspace)
 # Phase I: thumbs +/- + comment feedback, persisted per-persona (see
 # services/persona_feedback.py for aggregation across workspaces).
 persona_feedback: ModelStore = ModelStore("persona_feedback", PersonaFeedback)
+# Canonical backlog records (#98 shape). The board/list/detail UI (#99) and
+# the /v1/backlog routes are clients of services.backlog, the single write
+# path; the store is the durability layer underneath it.
+backlog_items: ModelStore = ModelStore("backlog_items", BacklogItem)
 
 
 # `settings` is deliberately absent from this module. It used to be a
@@ -150,6 +155,7 @@ _all_model_stores: list[ModelStore] = [
     users,
     workspaces,
     persona_feedback,
+    backlog_items,
 ]
 _all_json_stores: list[JsonStore] = [
     mission_steps,
