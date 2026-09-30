@@ -375,7 +375,17 @@ async def reconciliation_recorded(
     actor_agent_id: str | None = None,
 ) -> BacklogHistoryEvent:
     """A reconciliation decision touched the item; the decision stays where it
-    was made, the journal keeps the pointer and the outcome."""
+    was made, the journal keeps the pointer and the outcome.
+
+    A Goal is linked only by its exact (goal_id, goal_revision) identity
+    (#458): supplying one half without the other is rejected, never silently
+    dropped — a partial pair must not become a link-less journal entry.
+    """
+    if (goal_id is None) != (goal_revision is None):
+        raise BacklogHistoryError(
+            "reconciliation_recorded needs goal_id and goal_revision together "
+            "(the exact Goal identity) or neither — a partial pair is rejected"
+        )
     return await store.append(
         BacklogHistoryEvent(
             workspace_id=subject.workspace_id,
@@ -387,7 +397,7 @@ async def reconciliation_recorded(
             ),
             goal_link=(
                 None
-                if goal_id is None or goal_revision is None
+                if goal_id is None
                 else GoalLink(goal_id=goal_id, goal_revision=goal_revision)
             ),
             run_refs=tuple(run_refs),

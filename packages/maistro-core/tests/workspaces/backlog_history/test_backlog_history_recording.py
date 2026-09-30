@@ -244,6 +244,26 @@ async def test_reconciliation_records_the_pointer_not_the_decision(
     assert event.goal_link is not None and event.goal_link.goal_revision == "r8"
 
 
+@pytest.mark.parametrize(
+    ("goal_id", "goal_revision"), [("g-1", None), (None, "r8")]
+)
+async def test_reconciliation_rejects_a_partial_goal_identity(
+    store: BacklogHistoryStore,
+    goal_id: str | None,
+    goal_revision: str | None,
+) -> None:
+    """Half an exact (goal_id, goal_revision) reference is rejected, not
+    silently dropped into a link-less reconciliation entry."""
+    with pytest.raises(BacklogHistoryError, match="together"):
+        await recording.reconciliation_recorded(
+            store,
+            _subject(),
+            decision_ref="reconciliation:rec-43",
+            goal_id=goal_id,
+            goal_revision=goal_revision,
+        )
+
+
 async def test_run_evidence_records_why_a_replan_was_needed(
     store: BacklogHistoryStore,
 ) -> None:
