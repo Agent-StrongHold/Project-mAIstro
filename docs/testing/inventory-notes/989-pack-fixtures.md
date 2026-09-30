@@ -56,3 +56,42 @@ No existing node IDs moved; the deltas are purely additive.
   exports in `__all__` (the pattern `graph/seeds/__init__.py` already uses), which
   eliminates the false positives: the gate passes with 1402 reviewed identities →
   1402 findings, no ledger amendment required.
+
+## Verify round (independent, head 3bc4e71fd138e04c0954a373c1f5a1bd3a1a1de7)
+
+Re-executed locally, all green: both fixture suites (7 + 2 tests), the full
+`packages/maistro-core/tests/graph` tree (1485 passed, 97 skipped), `ruff check .`,
+canonical all-package mypy (728 files, clean), both `check-suite-inventory.py`
+gates, and the vulture identity gate with CI's exact arguments
+(`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+1402 reviewed → 1402 findings, exit 0). Frontend anti-fixture scan is
+non-vacuous: 121 scan-eligible files across both frontend trees.
+
+**Blocking finding (reproduced locally, red on CI at this head): the
+reachability candidate baseline was never re-banked for the new module.**
+`RATCHET_BASE_REV=origin/develop uv run python scripts/check-reachability-provenance.py`
+exits 1 — `maistro.graph.seeds.pack_fixtures: NEW unreachable module absent
+from trusted base and not previously authorized` / `current unreachable module
+missing from candidate baseline` (188 → 189 unreachable of 1144 modules). This
+is one root cause under three CI failures on the PR head: `exact-debt-ledger`
+(Vulture Ratchet) FAIL, the quality gate's `reachability ratchet
+(built-but-never-wired modules)` step exit 1, and three unit tests
+(`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+`tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+`tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`;
+reproduced locally: 3 failed in 11.71s). The prior round repaired the vulture
+*identity* gate via `__all__` but missed this second gate. Repair: re-bank
+`quality/reachability-baseline.json` (`unreachable`) — and the matching
+`quality/reachability-dispositions.json` entry if required — for
+`maistro.graph.seeds.pack_fixtures`.
+
+**Inherited red (not lane code):** CI `Supply chain (pip-audit)` fails at this
+head on `urllib3==2.7.0` CVE-2026-97687/88/89 (upgrade to 2.8.0). The lane
+diff touches no lockfile; the bump is repo-wide work the integration lane must
+absorb.
+
+**Environmental:** this round's first local test attempt failed with ENOSPC —
+`/tmp` tmpfs at 100% inode usage from stale prior-run scratch. Only `/tmp`
+entries older than one day were purged; no repository or job-artifact paths
+were touched. This corroborates the prior round's environmental-failure
+attribution for its suite-inventory timeout.
