@@ -20,10 +20,7 @@ related:
 supersedes: []
 blocks: []
 blocked-by: []
-contracts:
-  - boundary
-  - behavioral
-  - cross-service
+contracts: []      # kinds declared here once #791-#796 land the marked tests (ADR-032 cross-check)
 tests: []
 layer: Orchestration
 owners:
