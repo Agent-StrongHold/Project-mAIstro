@@ -434,7 +434,6 @@
       "root": "the real Conductor chat and tool paths (#66)",
       "modules": [
         "maistro.security.guardrail",
-        "maistro.security.secure_random",
         "maistro.security.strike_recovery",
         "maistro.security.task_policy",
         "maistro.security.trust_boundary",

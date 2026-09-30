@@ -14,6 +14,7 @@ import {
   Brain,
   Plug,
   KeyRound,
+  Palette,
   Settings,
   Workflow,
   PlayCircle,
@@ -26,6 +27,11 @@ import {
 const fullNav = [
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+  // #95: Design Studio is the parent creative-production surface, so it is a
+  // first-class nav destination at its canonical route. Canvas is a tool it
+  // consumes, not a sibling studio; the implementation-era /cli/canvas path is
+  // only a compatibility redirect (App.tsx).
+  { to: "/design-studio", icon: Palette, label: "Design Studio" },
   { to: "/dags", icon: Workflow, label: "DAG Builder" },
   { to: "/dag-runs", icon: PlayCircle, label: "DAG Runs" },
   // Missions was reachable only from `pocNav`, so retiring POC mode left a
