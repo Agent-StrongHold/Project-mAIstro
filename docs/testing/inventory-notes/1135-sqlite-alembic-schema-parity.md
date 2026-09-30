@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py: +2 node IDs (new file, parametrized sqlite/postgres)
+  packages/maistro-core/tests: +2
 ---
 
 # SQLite/Alembic schema parity for the canonical scope stores (#1135)
