@@ -68,11 +68,17 @@ Tracking: finish the visible degraded-mode behavior in F3 (#302).
 
 Design Studio is the parent creative-production surface; Canvas is one
 visual/fixed-page/rendering capability it consumes, not the identity of the
-Studio. The shipped Design Studio currently supports resource discovery,
-artifact-mode selection, and prompt entry only. Visual generation is disabled,
-fixed-page editing and preview are not yet available, Deck editing remains
-contained, and publish/export are not available. The product does not simulate
-those unavailable operations.
+Studio. The product information architecture is now cut over (#95): the
+canonical deep link is `/design-studio`, the route is a first-class primary
+navigation entry, and the implementation-era `/cli/canvas` path survives only
+as a compatibility redirect that browser E2E asserts. Backend capability APIs
+keep their `/v1/canvas/**` and `/v1/design/**` namespaces; product routing no
+longer borrows the Canvas tool's name. The shipped Design Studio currently
+supports resource discovery, artifact-mode selection, and prompt entry only.
+Visual generation is disabled and server-side artifact publish/export are not
+available; durable artifact state is browser-local rather than
+server-persisted. The product does
+not simulate those unavailable operations.
 
 The repository contains and mounts Canvas capability routes, but the default
 shipped `maistro-server` does not inject the required Canvas store into that
