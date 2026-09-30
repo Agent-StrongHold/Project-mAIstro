@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +7
   packages/hive-conductor/backend/tests: +2
+  packages/maistro-core/tests: +10
 ---
 # 989-pack-fixtures
 
@@ -95,3 +95,52 @@ absorb.
 entries older than one day were purged; no repository or job-artifact paths
 were touched. This corroborates the prior round's environmental-failure
 attribution for its suite-inventory timeout.
+
+## Repair round 2: the fixture module is wired, not banked (head 5f5003180+)
+
+The owed repair was examined before executing it, and the re-bank was
+**rejected on evidence**: `scripts/check-reachability-provenance.py` reads the
+trusted ledger *and* its authorizations from the merge base
+(two-merge design, `scripts/ratchet_provenance.py`). A branch cannot authorize
+its own new unreachable module, so adding `maistro.graph.seeds.pack_fixtures`
+to `quality/reachability-baseline.json` here would still leave
+`added = current - trusted` non-empty and the provenance ratchet — and CI —
+red at this head. The same rule is stated in the checker's own failure text:
+new debt "may grow only behind a prior landed reachability authorization".
+
+The repair actually applied is the checker's other prescription — "give them
+a call path" — which is also the issue's own alternative fixture contract
+("a documented seed command that writes those APIs"):
+
+- `maistro/cli/_fixtures.py` — new `maistro fixtures seed [--db PATH] [--json]`
+  subcommand on the existing `maistro.cli` STATIC_ROOT. It constructs the
+canonical SQLite stores (`SqliteProjectScopeStore`, `SqliteRunStore`) and
+invokes `seed_book_fixture` / `seed_game_fixture` — the same calls the tests
+make, and nothing else. Precedent: maistro-turing's `provision` root ("a
+script a person launches is an entry point the import graph can root — not
+unreachable debt to baseline") and `maistro archive` ("a library nobody can
+invoke does not make history reachable").
+- `maistro/graph/seeds/pack_fixtures.py` — docstring now documents the seed
+command, so the module's Design-Studio claim is backed by a production path.
+
+Effect: the module is genuinely reachable, so **no baseline or dispositions
+edit is needed at all** — `check-reachability-provenance.py` reports 188 → 188
+unreachable of 1145 modules (no candidate-approved expansion),
+`check-reachability-dispositions.py` still passes on 188, and the three
+baseline-identity unit tests pass unchanged. An operator can now provision a
+real store; the printed identities are canonical and durable.
+
+Vulture (CI-args run): the new command function was one unbanked
+`maistro-cli-command-surface` identity — new debt this branch cannot authorize
+either. Eliminated the same way the prior round cleared pack_fixtures' host
+functions: `__all__` declares the module's public exports, so the
+decorator-registered, test-exercised command is not a dead-code finding
+(1402 reviewed → 1402 findings, exit 0; no ledger amendment).
+
+Test delta +3 (`packages/maistro-core/tests/test_cli_pack_fixtures.py`): the
+command's `--json` output is the open path and the store it leaves survives a
+fresh reopen (book COMPLETED over the redirected lineage, game WAITING with
+the parked fence decision and `taught_by_play` reason readable through
+canonical NodeRun reads); the table output names the shared Workspace and the
+provisioned file; the unified `maistro --help` routes the command. Canonical
+all-package mypy stays clean (729 files); ruff check/format clean.

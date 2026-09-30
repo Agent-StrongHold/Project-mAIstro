@@ -5,6 +5,19 @@ makes `book` and `game` visible as the *same* loop on canonical objects, so a
 reviewer can open a completed (book) and a parked (game) Run in Design Studio
 without running explore/judge at all.
 
+## Seeding a real store (documented seed command)
+
+Tests seed through the same calls an operator does. To provision a durable
+store so Design Studio can list and open the fixtures, run the documented seed
+command — it constructs the canonical SQLite stores and invokes these seeders
+and nothing else:
+
+    maistro fixtures seed --db ./pack-fixtures.db [--json]
+
+The printed Run identities are canonical and durable: refresh, reconnect, and
+restart all show the same ids. Opening a fixture is a read (see
+``open_pack_fixture``); it never executes explore/judge.
+
 ## What gets written, and through which APIs
 
 Every identity here is written through the canonical spine only:
