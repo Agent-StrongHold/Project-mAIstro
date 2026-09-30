@@ -87,6 +87,21 @@ GAME_PACK = "game"
 BOOK_GRAPH_ID = "book-picture-book-read-aloud-v1"
 GAME_GRAPH_ID = "game-session-feel-heuristics-v1"
 
+# Public fixture API: hosts (Design Studio run list, #986) import the seeders
+# and the read-only open path; tests pin the lineage through them. Declaring
+# the exports keeps package-local dead-code scans from misreading
+# host-consumed surface as unused (same pattern as seeds/__init__.py).
+__all__ = [
+    "BOOK_GRAPH_ID",
+    "GAME_GRAPH_ID",
+    "PACK_FIXTURE_PROVENANCE_KEY",
+    "PACK_FIXTURE_WORKSPACE_ID",
+    "PackFixtureSeed",
+    "open_pack_fixture",
+    "seed_book_fixture",
+    "seed_game_fixture",
+]
+
 BOOK_CATALOG: dict[str, Any] = {
     "catalog_id": "picture-book-read-aloud",
     "title": "Picture-book read-aloud",

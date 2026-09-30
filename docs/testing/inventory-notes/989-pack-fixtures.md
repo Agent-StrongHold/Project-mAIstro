@@ -33,3 +33,20 @@ lineage a reviewer must be able to query without executing explore/judge:
   changes no canonical status.
 
 No existing node IDs moved; the deltas are purely additive.
+
+## Lane reconciliation (repair round)
+
+- **Branch naming.** The issue's acceptance line names a `feat/m7-a13-pack-fixtures`
+  PR branch. Lane workers are assigned driver-owned worktree branches (`auto-989`);
+  the driver applies the integration branch/PR name when the lane lands. The
+  `feat/...` criterion is satisfied at integration, not in the worktree.
+- **Vulture per-identity ledger (CI-repair).**
+  `scripts/check-vulture-baseline.py` initially failed: the three host-facing
+  functions (`seed_book_fixture`, `seed_game_fixture`, `open_pack_fixture`) were
+  unbanked `core-public-api-surface` findings. They are the issue's deliverable,
+  not dead code, and a grant in `quality/ratchet-authorizations.json` cannot take
+  effect inside the branch that introduces it (the gate reads grants from the
+  merge base — two-merge design). Repaired by declaring the module's public
+  exports in `__all__` (the pattern `graph/seeds/__init__.py` already uses), which
+  eliminates the false positives: the gate passes with 1402 reviewed identities →
+  1402 findings, no ledger amendment required.
