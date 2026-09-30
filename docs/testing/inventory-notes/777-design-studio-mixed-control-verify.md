@@ -1557,3 +1557,60 @@ dependency landed. Lane stays BLOCKED on unlanded canonical dependencies
 forbids Design-Studio-private Agent runtime/Goal owner/reconciliation-loop
 substitutes, so no repair code was written this round. No closure keywords
 used (`Refs #777` only).
+
+---
+
+## Re-verification at `461293669213` (repair round 2026-09-30, job `2539448257a3`)
+
+Documentation-only verifier note. No production or test code changed.
+
+**Block resolution per lane brief:** the prior block was *not* a develop sync
+conflict. `git fetch origin` -> origin/develop still at `c5e070d97d07`;
+`git merge-base HEAD origin/develop` == `c5e070d97d07` == origin/develop, so
+HEAD strictly descends from develop — **nothing to merge, no conflict**. The
+persisting block is unlanded canonical dependencies, re-confirmed by fresh
+greps this round at `461293669`:
+
+- `git grep -l GoalRevision -- '*.py'` -> 0 files (#458 Goal store absent).
+- `git grep -lE 'GoalReconcil|goal_reconcil' -- '*.py'` -> 0 files
+  (#804/#805/#806 Goal reconciliation absent).
+- `git grep -l control_mode -- '*.py'` -> 0 files; `grep -c
+  'workspace_agent\|control_mode' packages/hive-conductor/backend/routes/design.py`
+  -> 0 (no #804/#53 consumption seam in Design Studio);
+  `grep -c delegat` on the same file -> 0.
+- `CreativeBrief` code hits remain interview chat state only
+  (`services/brief_store.py:4-6`: "nothing here is a Goal or CreativeBrief
+  record"; `maistro/agents/brief_interview.py`) (#774 record absent).
+- `git grep -il ladybug` -> ADR/docs + `dags/author_examples.py` book-title
+  string only (#776 working graph absent).
+- Design Studio browser E2E remains `design-studio-keyboard.spec.ts` +
+  `design-studio-truthfulness.spec.ts` only — no Goal-lineage / mixed-control
+  spec (`packages/hive-conductor/tests/e2e/`).
+- `tests/test_shared_interop_ontology.py` still declares `workspace_agent`/
+  `design_studio` as M3 *consumers* — declarations, not implementations.
+
+**Gates re-executed at `461293669` (fresh runs this round):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2638 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, ratchet base
+  `c5e070d97d07` -> candidate `461293669213`, 1402 reviewed identities ->
+  1402 findings, **0 unbanked**; no ledger amendment required.
+- `uv run pytest packages/maistro-design/tests -x -q` — **351 passed**
+  (1.72s).
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py -q` —
+  **18 passed** (1.33s).
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_agent_materialization.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q` —
+  **53 passed** (3.23s).
+
+**Conclusion (unchanged across twenty-three inspected heads):** all 13 #777
+acceptance criteria remain UNMET at `461293669`; origin/develop unmoved since
+the declared base, so no #804/#458/#774/#775/#776 dependency landed. Lane
+remains BLOCKED on unlanded canonical dependencies; the issue stop condition
+still forbids Design-Studio-private Agent runtime/Goal owner/reconciliation-
+loop substitutes, so no repair code was written. No closure keywords used
+(`Refs #777` only).
