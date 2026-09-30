@@ -27,9 +27,15 @@ Legs proven, per acceptance criterion:
 3. Governed Invocation seam (canonical node path): the shipped ``llm.summarize``
    node runs through the same canonical executor, crosses Binding -> governed
    Invocation -> approved Provider, and persists Invocation evidence with
-   token/cost/model/provider usage; an unauthorized node fails closed before
-   any gateway traffic (policy evaluator on the seam = the Sentinel-backed
-   permission authority in full deployments).
+   token/cost/model/provider usage. The governed seam also appends the
+   canonical ``capability.invocation.policy_decision`` and
+   ``capability.invocation.completed`` EventEnvelopes to the effect context's
+   event store; both are asserted here, including the causal chain between
+   them. An unauthorized node fails closed before any gateway traffic — the
+   seam's policy evaluator is the shipped ``binding_scope_policy`` M1 baseline
+   (the same evaluator the production Container composes), and an unbound node
+   is refused at Binding resolution before any policy evaluation. This is NOT
+   a Sentinel decision: Sentinel is not wired onto this seam.
 4. Warden on the authenticated model surface: an injection turn is refused
    (``content_filter``) before any model call is made.
 """
@@ -437,6 +443,35 @@ async def test_canonical_llm_node_crosses_the_governed_invocation_seam(
     # 11 in @ 0.5c/1k + 7 out @ 1.0c/1k = 0.0122c of measured cost, not zero.
     assert usage.cost_cents > 0
 
+    # Event evidence: the shipped governed seam announced the policy decision
+    # and the settled Invocation on the canonical event stream
+    # (governed_invocation.GovernedInvocationExecutionService.invoke), with the
+    # causal chain intact — the terminal fact is caused by its policy decision.
+    events = await effects.event_store.list_stream("workspace:ws-e2e")
+    policy_events = [e for e in events if e.type == "capability.invocation.policy_decision"]
+    assert len(policy_events) == 1, [e.type for e in events]
+    policy_event = policy_events[0]
+    assert policy_event.payload["decision"] == "allow", policy_event.payload
+    assert policy_event.payload["rule"] == "m1.binding-scope", policy_event.payload
+    assert policy_event.payload["binding_id"] == binding.binding_id
+    assert policy_event.payload["capability"] == MODEL_CHAT_CAPABILITY
+    assert policy_event.payload["effect_key"] == f"llm.summarize.complete:{GATEWAY_MODEL}"
+    assert policy_event.run_id == record.run_id
+    assert policy_event.node_run_id == node_run.node_run_id
+    assert policy_event.attempt_id in {attempt.attempt_id for attempt in record.attempts}
+    terminal = await effects.event_store.get(
+        f"capability-invocation-{invocation.invocation_id}-completed"
+    )
+    assert terminal is not None, "no completion event for the settled Invocation"
+    assert terminal.type == "capability.invocation.completed"
+    assert terminal.invocation_id == invocation.invocation_id
+    assert terminal.causation_id == policy_event.event_id
+    assert terminal.run_id == record.run_id
+    assert terminal.node_run_id == node_run.node_run_id
+    assert terminal.payload["status"] == "completed"
+    assert terminal.payload["provider_name"] == GATEWAY_MODEL
+    assert terminal.payload["error"] is None
+
     # And the gateway saw the one real bearer-authenticated model call.
     assert len(gateway.requests) == 1, gateway.requests
     assert gateway.requests[0]["authorization"] == f"Bearer {GATEWAY_KEY}"
@@ -469,6 +504,13 @@ async def test_unauthorized_model_node_fails_closed_before_any_gateway_call(
         effect_key=f"llm.summarize.complete:{GATEWAY_MODEL}",
     )
     assert invocations == [], "a refused node must leave no Invocation evidence"
+    # And the seam recorded nothing at all: the refusal is Binding resolution
+    # (no Binding exists to authorize), which happens before any policy
+    # evaluation — no policy-decision event, no terminal event, no manufactured
+    # evidence of any kind.
+    assert await effects.event_store.list_stream("workspace:ws-e2e") == [], (
+        "a refused node left event evidence on the canonical stream"
+    )
 
 
 # --- Leg 3: the Warden on the authenticated model surface --------------------

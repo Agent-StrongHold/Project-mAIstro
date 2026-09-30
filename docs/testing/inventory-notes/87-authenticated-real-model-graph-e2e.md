@@ -24,7 +24,7 @@ seeded exactly the way `main._seed_outbound_policy` does), and loud refusal
 when no gateway is configured. A leg gated on live provider keys would not be
 repeatable; this one is (6/6 twice consecutively, 5.0 s / 4.2 s).
 
-## Per-criterion evidence (all executed in this worktree at c5e070d9 + this delta)
+## Per-criterion evidence (executed at c5e070d9 + this delta; event assertions and claim-accuracy repair at 3f096274 + this repair)
 
 - **no fake/stub/degraded response accepted as success** —
   `test_dag_run_without_a_gateway_refuses_instead_of_fake_success`: with every
@@ -40,8 +40,19 @@ repeatable; this one is (6/6 twice consecutively, 5.0 s / 4.2 s).
   `actor_principal_id` equal to the authenticated `whoami` id and the
   authorized Workspace/Project scope, one completed `NodeRun` per DAG node, and
   completed `Attempt`s linked to those NodeRuns. Invocation evidence is on the
-  governed leg below. Event projection is the shipped
-  `record_run_completion`/DagRunStore path exercised by the run itself.
+  governed leg below. Event evidence is on the governed leg too: the shipped
+  `GovernedInvocationExecutionService.invoke` appends the
+  `capability.invocation.policy_decision` and `capability.invocation.completed`
+  EventEnvelopes into the effect context's event store
+  (`maistro/capabilities/governed_invocation.py`), and the test asserts them —
+  decision/rule/binding/capability/effect identity, Run/NodeRun/Attempt
+  linkage, and the causal chain (terminal event `causation_id` == policy event
+  `event_id`). The fail-closed leg additionally asserts the refused node left
+  the event stream empty. The DAG leg itself appends no capability events (its
+  legacy adapter calls the gateway directly — see reconciliation notes), so
+  event evidence is claimed on the governed leg only; the earlier claim that
+  the `record_run_completion`/DagRunStore path is the event evidence was wrong
+  and is retracted.
 - **Warden/Sentinel and auth context on the path** — auth: real
   `POST /v1/auth/login` session; the Run carries the authenticated actor id;
   Workspace admission refuses unauthorized scopes (covered by
@@ -49,31 +60,71 @@ repeatable; this one is (6/6 twice consecutively, 5.0 s / 4.2 s).
   re-run green). Warden: `test_injection_turn_is_refused_by_the_warden_before_
   any_model_call` — an authenticated injection turn is refused
   (`content_filter`) before dispatch and the gateway sees zero requests.
-  Sentinel side of the seam: `test_unauthorized_model_node_fails_closed_before_
-  any_gateway_call` — the governed capability seam with its policy evaluator
-  (in full deployments fed live by Sentinel's `CapabilityPermissionSource`,
-  `container.py`) refuses an unbound `llm.summarize` node: Run failed, no
-  Invocation, zero gateway traffic.
+  Sentinel is NOT on this path, stated plainly:
+  `test_unauthorized_model_node_fails_closed_before_any_gateway_call` — the
+  governed capability seam refuses an unbound `llm.summarize` node: Run
+  failed, no Invocation, zero gateway traffic, and an empty event stream. The
+  seam's policy evaluator is the shipped `binding_scope_policy` M1 baseline
+  (`effect_context.py`) — the same evaluator the production Container composes
+  (`container.py`), so the exercised refusal is shipped behavior. But
+  `CapabilityPermissionSource` feeds Sentinel's own permission decisions
+  (`container.py`), not this seam, and Binding resolution refuses the node
+  before any policy evaluation. The acceptance's "Sentinel" component is
+  therefore satisfied here as fail-closed refusal at the seam, not as a
+  Sentinel decision; a Sentinel-derived evaluator on the governed seam remains
+  unproven and is not claimed.
 - **cost/token/model/provider telemetry present** —
   `test_canonical_llm_node_crosses_the_governed_invocation_seam`: the shipped
   `llm.summarize` node runs through `run_durable_graph` and crosses
   Binding -> governed Invocation -> approved Provider; the persisted Invocation
   carries `usage.input_units/output_units` (11/7), `model`, `provider`,
-  and measured `cost_cents > 0`; the DAG leg carries the model and the
-  gateway-reported usage at the boundary.
+  and measured `cost_cents > 0`; the governed node's own output carries the
+  same usage (`tokens_in`/`tokens_out` = 11/7). The DAG boundary carries the
+  model only — `canonical_dag_runner._node_results` projects
+  role/response/success/model/isolation, no usage — so gateway-side usage at
+  the DAG boundary is NOT claimed; the usage-telemetry criterion is met by the
+  governed leg's persisted Invocation.
 - **automated E2E repeatable** — the file passes twice consecutively
   (6 passed in 5.0 s, then 4.2 s) with no external services.
 
 ## Executed validation
 
 - `uv run pytest packages/hive-conductor/backend/tests/test_e2e_authenticated_real_model_graph.py -q`
-  → 6 passed (three consecutive rounds, incl. post-ruff-format).
+  → 6 passed (three consecutive rounds pre-repair; re-run green post-repair:
+  6 passed in 4.0 s with the new event assertions active).
 - Neighbor sweep (global outbound-policy save/restore must not leak):
   `uv run pytest .../test_e2e_authenticated_real_model_graph.py
   .../test_dags_routes.py .../test_graph_runner.py
   .../test_chat_voice_gates.py .../test_outbound_gateway_policy.py -q`
-  → 112 passed.
+  → 112 passed (pre-repair and again post-repair, 5.1 s).
 - `uv run ruff check` and `uv run ruff format --check` clean on the new file.
+
+## Repair round (verify finding → fix, at 3f096274 + this repair)
+
+The verify round found three claim-drift items; all three are addressed with
+evidence, not wording alone:
+
+1. **Event evidence was claimed but never asserted** — the note attributed
+   event evidence to `record_run_completion`/DagRunStore, which is not event
+   evidence. The shipped event path is `GovernedInvocationExecutionService`
+   appending `capability.invocation.policy_decision` and
+   `capability.invocation.completed` EventEnvelopes into the effect context's
+   event store. The governed-leg test now asserts both envelopes (identity,
+   linkage, causal chain), and the fail-closed leg now asserts the refused
+   node left the event stream empty. The wrong note claim is retracted.
+2. **Sentinel was claimed on the seam** — it is not: the seam evaluator is the
+   container's own `binding_scope_policy` baseline, and
+   `CapabilityPermissionSource` feeds Sentinel's decisions, not this seam.
+   Note and test docstring now state this plainly; no Sentinel claim remains.
+3. **Usage at the DAG boundary was overstated** — `_node_results` projects
+   model only. Note corrected; usage telemetry is claimed only via the
+   governed leg's persisted Invocation (which the test asserts).
+
+CI-gate checks in this round: `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` → exit 0 (1402 reviewed
+identities, all banked; no ledger amendment needed — this repair touches only
+tests and docs), and `check-suite-inventory.py --suite
+packages/hive-conductor/backend/tests` → ok:2949.
 
 ## Environmental caveats (workstation I/O, not product defects)
 
