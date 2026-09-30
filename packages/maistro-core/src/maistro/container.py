@@ -2005,9 +2005,13 @@ async def create_container(
     )
     # Same backend decision as the Workspace store above (#516): an item's
     # history is filed where the item's Projects are, or restart loses exactly
-    # the provenance that made the item auditable.
+    # the provenance that made the item auditable. On SQLite the journal gets
+    # its own connection (`history_conn`): its append holds a `BEGIN
+    # IMMEDIATE` across read and write, and the spine stores sharing
+    # `db_pool` commit and roll back on their own locks' cadence (#327,
+    # #1199).
     backlog_history_store = await wire_backlog_history_store(
-        db_pool,
+        history_conn,
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
@@ -2261,6 +2265,7 @@ async def create_container(
         db_pool=db_pool,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
+        history_conn=history_conn,
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
         holds_db_pool=holds_db_pool,
@@ -2790,6 +2795,7 @@ async def _wire_sqlite_backend(
     Any,
     Any,
     Any,
+    Any,
     QuotaTracker,
     LearningStore,
     OutcomeStore,
@@ -2801,9 +2807,11 @@ async def _wire_sqlite_backend(
     ``sqlite://`` for an in-memory DB) selects this backend instead of the
     default in-memory stores — no Postgres server required.
 
-    Returns the shared connection first and the session store's own connection
-    second (#327), so `create_container` can hold both and record ownership of
-    them: `aclose` closes what this function opened (#1161).
+    Returns the shared connection first, the session store's own connection
+    second (#327), the schedule store's third (#1199) and the history
+    journal's fourth (#101), so `create_container` can hold them all and
+    record ownership of them: `aclose` closes what this function opened
+    (#1161).
     """
     import aiosqlite  # type: ignore[import-not-found, unused-ignore]
 
@@ -2848,6 +2856,15 @@ async def _wire_sqlite_backend(
     # on their own cadence. Same pathless-`sqlite://` caveat as above: only
     # the schedule store reads `schedules`.
     schedule_conn = await aiosqlite.connect(path)
+    # The BacklogItem history journal's, for the same reason (#101): its
+    # `append` holds `BEGIN IMMEDIATE` across its sequence read and its
+    # insert, and the spine stores it would otherwise share `conn` with --
+    # `ClaimingSqliteRunStore` foremost -- hold transactions of their own
+    # under their own locks, so a sibling's commit or rollback would land
+    # inside the journal's while `append` reported success. Same
+    # pathless-`sqlite://` caveat as above: only the journal reads
+    # `workspace_backlog_history`.
+    history_conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn)
@@ -2867,6 +2884,7 @@ async def _wire_sqlite_backend(
         conn,
         session_conn,
         schedule_conn,
+        history_conn,
         quota_tracker,
         learning_store,
         outcome_store,

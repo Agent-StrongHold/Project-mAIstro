@@ -2,8 +2,9 @@
 
 The in-memory store is the reference; running the same bodies against the
 SQLite store is what makes "the durable journal behaves like the reference" a
-comparison rather than a hope. Both are paired with a real Project scope
-store, because the SQLite journal writes inside that store's transaction.
+comparison rather than a hope. The SQLite journal is built on its own
+connection, the one the container opens it (#327, #1199): its append holds
+its own `BEGIN IMMEDIATE`, so it pairs with no other store's transaction.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.workspaces.backlog_history import (
     BacklogEventAlreadyExists,
     BacklogHistoryEvent,
@@ -27,7 +27,6 @@ class _MemoryBackend:
     def __init__(self) -> None:
         from maistro.workspaces.backlog_history.store import InMemoryBacklogHistoryStore
 
-        self.projects = InMemoryProjectScopeStore()
         self._store = InMemoryBacklogHistoryStore()
 
     async def store(self) -> BacklogHistoryStore:
@@ -44,19 +43,15 @@ class _SqliteBackend:
     def __init__(self, tmp_path: object) -> None:
         self._path = tmp_path / "backlog-history.db"  # type: ignore[operator]
         self._connections: list[object] = []
-        self.projects = None
 
     async def store(self) -> BacklogHistoryStore:
         import aiosqlite
 
-        from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
         from maistro.workspaces.backlog_history.sqlite_store import SqliteBacklogHistoryStore
 
         conn = await aiosqlite.connect(self._path)
         self._connections.append(conn)
-        self.projects = SqliteProjectScopeStore(conn)
-        await self.projects.ensure_schema()
-        store = SqliteBacklogHistoryStore(conn, project_store=self.projects)
+        store = SqliteBacklogHistoryStore(conn)
         await store.ensure_schema()
         return store
 
