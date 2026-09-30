@@ -253,8 +253,10 @@ def test_authenticated_dag_run_executes_a_real_model_call_end_to_end(
         assert seen["body"]["model"] == GATEWAY_MODEL, seen
         assert any(message["role"] == "system" for message in seen["body"]["messages"]), seen
 
-    # The usage the gateway returned is the telemetry the boundary reports;
-    # the node projection carries the model that answered.
+    # The node projection carries the model that answered. The DAG boundary
+    # projects role/response/success/model/isolation only — no usage — so
+    # usage telemetry is claimed on the governed leg's persisted Invocation,
+    # not here.
     for node in node_results.values():
         assert node["model"] == GATEWAY_MODEL, node
 

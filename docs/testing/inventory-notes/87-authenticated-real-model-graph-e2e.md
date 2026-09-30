@@ -69,10 +69,21 @@ repeatable; this one is (6/6 twice consecutively, 5.0 s / 4.2 s).
   (`container.py`), so the exercised refusal is shipped behavior. But
   `CapabilityPermissionSource` feeds Sentinel's own permission decisions
   (`container.py`), not this seam, and Binding resolution refuses the node
-  before any policy evaluation. The acceptance's "Sentinel" component is
-  therefore satisfied here as fail-closed refusal at the seam, not as a
-  Sentinel decision; a Sentinel-derived evaluator on the governed seam remains
-  unproven and is not claimed.
+  before any policy evaluation. Deep-review resolution of the acceptance's
+  "Sentinel" component, by ADR reconciliation (accepted ADRs govern where
+  issue text conflicts): ADR-081226-6b46 puts authorization and policy
+  narrowing on the **Binding** and security/policy audit on the **Invocation**
+  — exactly what this seam ships and the tests assert (fail-closed Binding
+  refusal, `binding_scope_policy` verdict, policy_decision/completed audit
+  events on the canonical stream) — while ADR-073 scopes Sentinel to the
+  model-facing **tool-call boundary**, where the Container does arm it
+  fail-closed (ADR-072726-0d6b; wiring proven by
+  `packages/maistro-core/tests/test_container_security_wiring.py`). Sentinel
+  is therefore proven as armed-on-its-ADR-scope plus a fail-closed
+  policy-refusing seam on the executed path — not as a Sentinel decision on
+  the node->Binding seam, which would need its own ADR to wire. That
+  Sentinel-derived seam evaluator is a genuine, here-recorded residual; it is
+  neither wired nor claimed.
 - **cost/token/model/provider telemetry present** —
   `test_canonical_llm_node_crosses_the_governed_invocation_seam`: the shipped
   `llm.summarize` node runs through `run_durable_graph` and crosses
@@ -125,6 +136,19 @@ CI-gate checks in this round: `check-vulture-baseline.py packages/*/src
 identities, all banked; no ledger amendment needed — this repair touches only
 tests and docs), and `check-suite-inventory.py --suite
 packages/hive-conductor/backend/tests` → ok:2949.
+
+### Repair round 2 (deep-review resolution, ADR reconciliation)
+
+The prior verify round asked for an acceptance re-scope or an ADR for
+"Sentinel on the path". Resolved by reconciliation against the two accepted
+ADRs that already answer it, recorded in the per-criterion section above:
+ADR-081226-6b46 assigns seam authorization to the Binding and audit to the
+Invocation; ADR-073 assigns Sentinel to the tool-call boundary. A
+Sentinel-derived evaluator on the governed seam is recorded as a residual
+requirement (needs its own ADR), not silently claimed. Also tightened the
+Leg-1 comment that still implied gateway-reported usage at the DAG boundary —
+the boundary projects model only; usage is claimed via the governed leg's
+persisted Invocation.
 
 ## Environmental caveats (workstation I/O, not product defects)
 
