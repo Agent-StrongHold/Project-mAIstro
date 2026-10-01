@@ -2186,3 +2186,73 @@ unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
 #774, #775, #776). No repair code written — none possible without
 violating the issue stop condition. No closure keywords used
 (`Refs #777` only).
+
+## Round 34 — head `bf9bc7efc` (merge of origin/develop `54d4c391e`)
+
+**Driver checks:** none to inspect — manifest `checks: []`, no `check-*.log`
+in job dir; prior job `a60644e3` died on provider 503 before performing any
+work. All validation below was executed directly.
+
+**Sync:** origin/develop advanced `d4ccd452e` -> `54d4c391e` (3 commits:
+M7-A13 pack fixture Runs #1691, M3-B4 governed Design Studio publish/export
+#1693/#94, installer WSL distro detection #1710). Merged cleanly as
+`bf9bc7efc` with zero conflicts; no file overlap with lane changes.
+
+**Dependency re-audit at merged head (fresh greps):**
+- `GoalRevision|GoalReconcil|owning_agent` across `packages/*/src`: 0 files
+  (#804/#805/#806 reconciliation and #458 canonical Goal ownership still
+  absent).
+- `goal_revision` appears only in `interop/contract.py:316`,
+  `graph/seeds/pack_fixtures.py`, `cli/_fixtures.py` — Run.provenance
+  fields per ADR-092626-c1e7 narrowing policy; not a canonical Goal
+  revision entity.
+- `workspace_agent.py` remains
+  `packages/hive-conductor/backend/services/workspace_agent.py` — the #53
+  front-door identity seam only; it consumes no Goal reconciliation APIs.
+- `brief_store.py:5` still disclaims: "nothing here is a Goal or
+  CreativeBrief record" (#774 absent).
+- `ladybug`: 0 hits anywhere in `packages/*/src` (#776 absent).
+- `packages/maistro-design` re-confirmed: pre-existing Design-System
+  package, not #777 work.
+- NEW dependency progress: **#94 governed Design Studio publish/export
+  LANDED** — `maistro_canvas/canvas/publishing.py` (DesignExportProvider,
+  canvas_state_digest pinning, GovernedCanvasExporter over the governed
+  Invocation seam, append-only ExportStore) and governed
+  `maistro_server/api/canvas.py` routes (`export`/`list_design_exports`/
+  `get_design_export`, `design.exported`/`design.published` events). This
+  advances the "#93/#94/#95 production Canvas/Design Studio path"
+  dependency, but lands none of #777's own acceptance: there is still no
+  persistent Workspace Agent consumption, no Goal/CreativeBrief binding,
+  and no mixed-control flow.
+- No mixed-control execution tests: 0 hits for
+  `mixed.?control|delegated.*branch|cancel_branch` across all test trees;
+  browser specs remain keyboard/truthfulness only.
+
+**Gates executed at head `bf9bc7efc` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2655 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; base
+  `54d4c391e09b` -> candidate `bf9bc7efc78b`, 1390 reviewed identities ->
+  1390 findings, **0 unbanked** (ledger shrank 1402 -> 1390 from develop's
+  own #94 CI-repair pruning stale rows; this round's ledger check is a
+  no-op, no amendment required or performed).
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **2996
+  passed, 6 skipped** (98.58s); +2 vs prior baseline from merged develop.
+- `uv run pytest packages/maistro-canvas/tests -q` — **426 passed, 73
+  skipped**, covering the new #94 governed export tests.
+- `uv run pytest tests/test_get_ps1_wsl_detection.py -q` — 24 skipped
+  (pwsh installer harness, environment-gated on this runner).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites
+  match the recorded inventory.
+- `uv run python scripts/check-doc-links.py` — 0 broken relative links.
+- `uv run python scripts/check-adr-index.py` — OK: every ADR-INDEX row
+  agrees with its ADR front matter.
+
+**Conclusion (34th inspected head):** unchanged block. All 13 #777
+acceptance criteria remain UNMET at this head; lane stays **BLOCKED on
+unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
+#774, #775, #776). The only movement is inbound dependency progress (#94
+governed export), which #777 will consume but does not satisfy. No repair
+code written — none possible without violating the issue stop condition.
+No closure keywords used (`Refs #777` only).
