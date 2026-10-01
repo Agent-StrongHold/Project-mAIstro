@@ -1027,8 +1027,12 @@ def _reconciled_update(
     """The fields one reconciliation writes onto the Invocation row.
 
     Pure, so the guarded transition above stays a single readable sequence --
-    validate, build, save, repair -- and what each disposition actually records
-    can be read in one place.
+    validate, build, save, repair. The history and scope half lives here; the
+    terminal status half is `_settlement_fields`, which arrived from the same
+    refactor on the other side of this branch's merge. Composing them rather
+    than keeping both was the merge's job and it did not get done: the two
+    carried identical disposition logic and only this one was called, which
+    is how vulture found the other dead.
     """
 
     update: dict[str, Any] = {
@@ -1040,23 +1044,7 @@ def _reconciled_update(
         update["workspace_id"] = workspace_id
     if not invocation.project_id and project_id:
         update["project_id"] = project_id
-    if disposition is ReconciliationDisposition.APPLIED:
-        update.update(
-            status=InvocationStatus.COMPLETED,
-            result=result,
-            error=None,
-            finished_at=datetime.now(UTC),
-        )
-        if usage is not None:
-            update["usage"] = usage
-    elif disposition is ReconciliationDisposition.NOT_APPLIED:
-        update.update(
-            status=InvocationStatus.FAILED,
-            error=reason,
-            finished_at=datetime.now(UTC),
-        )
-    else:
-        update["error"] = reason
+    update.update(_settlement_fields(disposition, result=result, reason=reason, usage=usage))
     return update
 
 

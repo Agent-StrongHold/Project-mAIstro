@@ -142,6 +142,13 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # Routing an effect onto a more privileged credential is self-grant by
     # another name, so this is containment, not configuration.
     "maistro/credentials/",
+    # The sole image-effect boundary. `_require_image_binding` re-reads the
+    # registered Binding record, refuses a caller-built or altered one, and
+    # checks the capability and disabled state before any HTTP; the egress
+    # then installs credential routing around the Invocation. `model_chat.py`
+    # has no equivalent function, so this is not "one capability like the
+    # others" -- it is where an image effect is authorized (Codex, #1763).
+    "maistro/capabilities/image_generation.py",
     "maistro/capabilities/invocation.py",
     "maistro/capabilities/invocation_store.py",
     "maistro/capabilities/pg_invocation_store.py",
