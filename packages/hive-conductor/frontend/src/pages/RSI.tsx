@@ -169,6 +169,7 @@ function useResilientPoll(
     if (!enabled) return;
     let cancelled = false;
     let inFlight = false;
+    let rerunPending = false;
     let failures = 0;
     let timer: number | null = null;
     let controller: AbortController | null = null;
@@ -183,7 +184,17 @@ function useResilientPoll(
     };
 
     const run = async (manual: boolean) => {
-      if (cancelled || inFlight) return;
+      if (cancelled) return;
+      if (inFlight) {
+        // A trigger landing mid-flight (manual refresh, resume, or the
+        // post-create refresh in startRun) must not be silently dropped: the
+        // response about to settle can predate a just-created run and then
+        // rearm the backoff cadence. Record the demand and let this
+        // request's finally re-kick the loop the moment it settles — the
+        // no-overlap guarantee is untouched.
+        rerunPending = true;
+        return;
+      }
       // Hidden or offline pauses the loop: return WITHOUT rescheduling. The
       // resume listener re-kicks it when the tab comes back or the network
       // does. A manual refresh is an explicit act, so it runs regardless.
@@ -213,8 +224,17 @@ function useResilientPoll(
         inFlight = false;
         controller = null;
         // The next poll exists only after this one settled — overlap is
-        // impossible by construction — and its delay carries the backoff.
-        if (!cancelled) timer = window.setTimeout(() => void run(false), backoffDelayMs());
+        // impossible by construction. A recorded rerun fires immediately so
+        // the fresh result decides the cadence; otherwise the delay carries
+        // the backoff.
+        if (!cancelled) {
+          if (rerunPending) {
+            rerunPending = false;
+            timer = window.setTimeout(() => void run(false), 0);
+          } else {
+            timer = window.setTimeout(() => void run(false), backoffDelayMs());
+          }
+        }
       }
     };
     runRef.current = (manual: boolean) => void run(manual);
@@ -222,7 +242,8 @@ function useResilientPoll(
     const resume = () => {
       if (cancelled || document.hidden || !navigator.onLine) return;
       // Poll now instead of waiting out a possibly backoff-inflated timer.
-      // If a poll is in flight run() no-ops and its finally re-arms the loop.
+      // If a poll is in flight run() records a pending rerun and the settled
+      // request's finally re-kicks the loop immediately.
       if (timer !== null) window.clearTimeout(timer);
       timer = null;
       void run(false);
