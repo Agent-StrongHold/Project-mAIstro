@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import random
 import uuid
+from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 
+from .attribution import (
+    CandidateOrigin,
+    EvalContext,
+    ProducerKind,
+    producer_identity,
+    stamp_origin,
+)
 from .fixer_genome import (
     FixerGenome,
     FixerStrategy,
@@ -54,8 +62,77 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+# The mutation-operator registry (M4-A8): the closed set of typed mutation
+# operators the ledger can credit and favor. Order is the application order
+# used by ``mutate_all``.
+MUTATION_OPERATOR_NAMES: tuple[str, ...] = (
+    "mutate_topology",
+    "mutate_node",
+    "mutate_prompt",
+    "mutate_fixer_genome",
+    "mutate_eval_weights",
+)
+
+_MUTATION_SHORT_NAMES: dict[str, str] = {
+    "mutate_topology": "topo",
+    "mutate_node": "node",
+    "mutate_prompt": "prompt",
+    "mutate_fixer_genome": "fixer",
+    "mutate_eval_weights": "weight",
+}
+
+
+def _mutation_origin(
+    producer_name: str,
+    parent: PipelineGenome,
+    origin_context: EvalContext | None,
+    *,
+    note: str = "",
+) -> CandidateOrigin:
+    """Build the CandidateOrigin a mutation operator stamps onto its child:
+    the operator's registered identity+version, the parent link, the parent's
+    stored scores as the credit baseline, and the (optional) eval context."""
+    producer = producer_identity(producer_name, ProducerKind.MUTATION_OPERATOR)
+    return CandidateOrigin(
+        producer=producer,
+        parents=(parent.id,),
+        chain=(producer.key(),),
+        baseline_scores=dict(parent.eval_scores),
+        context=origin_context or EvalContext(),
+        note=note,
+    )
+
+
+def _apply_mutation_operator(
+    name: str,
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None,
+    *,
+    stamp: bool,
+    origin_context: EvalContext | None = None,
+) -> PipelineGenome:
+    """Uniform dispatch over the registry for composite chains."""
+    if name == "mutate_topology":
+        return mutate_topology(genome, rate, models, origin_context=origin_context, _stamp=stamp)
+    if name == "mutate_node":
+        return mutate_node(genome, rate, models, origin_context=origin_context, _stamp=stamp)
+    if name == "mutate_prompt":
+        return mutate_prompt(genome, rate, origin_context=origin_context, _stamp=stamp)
+    if name == "mutate_fixer_genome":
+        return mutate_fixer_genome(genome, rate, origin_context=origin_context, _stamp=stamp)
+    if name == "mutate_eval_weights":
+        return mutate_eval_weights(genome, rate, origin_context=origin_context, _stamp=stamp)
+    raise ValueError(f"unknown mutation operator {name!r}; known: {list(MUTATION_OPERATOR_NAMES)}")
+
+
 def mutate_topology(
-    genome: PipelineGenome, rate: float, models: list[str] | None = None
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None = None,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
 ) -> PipelineGenome:
     pool = models or MODEL_REGISTRY
     topo = deepcopy(genome.topology)
@@ -108,7 +185,7 @@ def mutate_topology(
                 )
             )
 
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-topo-mut",
         topology=topo,
@@ -122,10 +199,18 @@ def mutate_topology(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_topology", genome, origin_context))
 
 
 def mutate_node(
-    genome: PipelineGenome, rate: float, models: list[str] | None = None
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None = None,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
 ) -> PipelineGenome:
     pool = models or MODEL_REGISTRY
     topo = deepcopy(genome.topology)
@@ -142,7 +227,7 @@ def mutate_node(
             node.strategy = random.choice(STRATEGY_LIST)
         if random.random() < rate:
             node.max_tool_rounds = random.randint(1, 20)
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-node-mut",
         topology=topo,
@@ -156,9 +241,18 @@ def mutate_node(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_node", genome, origin_context))
 
 
-def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
+def mutate_prompt(
+    genome: PipelineGenome,
+    rate: float,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
+) -> PipelineGenome:
     topo = deepcopy(genome.topology)
     for node in topo.nodes:
         if random.random() < rate:
@@ -169,7 +263,7 @@ def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
             if len(sentences) > 2:
                 sentences.pop(random.randint(0, len(sentences) - 1))
                 node.system_prompt = ". ".join(sentences)
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-prompt-mut",
         topology=topo,
@@ -183,11 +277,20 @@ def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_prompt", genome, origin_context))
 
 
-def mutate_eval_weights(genome: PipelineGenome, rate: float) -> PipelineGenome:
+def mutate_eval_weights(
+    genome: PipelineGenome,
+    rate: float,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
+) -> PipelineGenome:
     if random.random() > rate:
-        return PipelineGenome(
+        child = PipelineGenome(
             id=_new_id(),
             name=genome.name + "-weight-mut",
             topology=deepcopy(genome.topology),
@@ -201,6 +304,9 @@ def mutate_eval_weights(genome: PipelineGenome, rate: float) -> PipelineGenome:
             created_at=_fresh_timestamp(),
             updated_at=_fresh_timestamp(),
         )
+        if not _stamp:
+            return child
+        return stamp_origin(child, _mutation_origin("mutate_eval_weights", genome, origin_context))
     fields = EvalWeights.model_fields
     new_vals: dict[str, float] = {}
     for name in fields:
@@ -213,7 +319,7 @@ def mutate_eval_weights(genome: PipelineGenome, rate: float) -> PipelineGenome:
     if renorm_total != 1.0:
         first_key = next(iter(new_vals))
         new_vals[first_key] = round(new_vals[first_key] + (1.0 - renorm_total), 4)
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-weight-mut",
         topology=deepcopy(genome.topology),
@@ -227,6 +333,9 @@ def mutate_eval_weights(genome: PipelineGenome, rate: float) -> PipelineGenome:
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_eval_weights", genome, origin_context))
 
 
 def _mutate_one_fixer(fixer: FixerGenome, rate: float) -> FixerGenome:
@@ -254,7 +363,13 @@ def _mutate_one_fixer(fixer: FixerGenome, rate: float) -> FixerGenome:
     return f
 
 
-def mutate_fixer_genome(genome: PipelineGenome, rate: float) -> PipelineGenome:
+def mutate_fixer_genome(
+    genome: PipelineGenome,
+    rate: float,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
+) -> PipelineGenome:
     """Apply `_mutate_one_fixer` to every node that carries a FixerGenome. Nodes
     without one (genomes predating ADR-070126-6386 v2, or non-fixer roles) are
     left untouched — this operator only mutates the RSI-fixer strategy layer."""
@@ -262,7 +377,7 @@ def mutate_fixer_genome(genome: PipelineGenome, rate: float) -> PipelineGenome:
     for node in topo.nodes:
         if node.fixer is not None:
             node.fixer = _mutate_one_fixer(node.fixer, rate)
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-fixer-mut",
         topology=topo,
@@ -276,10 +391,60 @@ def mutate_fixer_genome(genome: PipelineGenome, rate: float) -> PipelineGenome:
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_fixer_genome", genome, origin_context))
+
+
+def mutate_selected(
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None = None,
+    *,
+    operators: Sequence[str],
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
+) -> PipelineGenome:
+    """Apply exactly the selected mutation operators, in the given order, and
+    stamp the child with a composite ``mutate_selected`` origin naming the
+    applied subset — this is the entry point ledger-driven operator favoring
+    uses (the cycle selects a productive, diversity-floored subset instead of
+    always applying every operator).
+    """
+    unknown = [name for name in operators if name not in MUTATION_OPERATOR_NAMES]
+    if unknown:
+        raise ValueError(
+            f"unknown mutation operator(s) {unknown}; known: {list(MUTATION_OPERATOR_NAMES)}"
+        )
+    if not operators:
+        raise ValueError("mutate_selected requires at least one operator")
+    current = genome
+    for name in operators:
+        current = _apply_mutation_operator(
+            name, current, rate, models, stamp=False, origin_context=origin_context
+        )
+    shorts = "-".join(_MUTATION_SHORT_NAMES[name] for name in operators)
+    current.name = f"{genome.name}-sel-{shorts}-mut"
+    if not _stamp:
+        return current
+    return stamp_origin(
+        current,
+        _mutation_origin(
+            "mutate_selected",
+            genome,
+            origin_context,
+            note="components: " + ", ".join(operators),
+        ),
+    )
 
 
 def mutate_all(
-    genome: PipelineGenome, rate: float, models: list[str] | None = None
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None = None,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
 ) -> PipelineGenome:
     """
     Apply all mutation operators to the genome in sequence.
@@ -295,14 +460,30 @@ def mutate_all(
         models: Optional model pool constraint — the run's routable roster. When
             given, model mutation/new nodes only draw from it (an unroutable
             model is a guaranteed-0 evaluation whose gene spreads via breeding).
+        origin_context: Optional evaluation context to freeze into the child's
+            CandidateOrigin (M4-A8). When omitted the origin records an
+            "unknown" context, which keeps its credit in a separate, weaker
+            scope until evaluated under a known one.
 
     Returns:
-        A new PipelineGenome with all mutations applied.
+        A new PipelineGenome with all mutations applied, stamped with a
+        composite ``mutate_all`` CandidateOrigin (the intermediate per-operator
+        children are transient and carry no origin into the population).
     """
-    current = mutate_topology(genome, rate, models)
-    current = mutate_node(current, rate, models)
-    current = mutate_prompt(current, rate)
-    current = mutate_fixer_genome(current, rate)
-    current = mutate_eval_weights(current, rate)
+    current = mutate_topology(genome, rate, models, _stamp=False)
+    current = mutate_node(current, rate, models, _stamp=False)
+    current = mutate_prompt(current, rate, _stamp=False)
+    current = mutate_fixer_genome(current, rate, _stamp=False)
+    current = mutate_eval_weights(current, rate, _stamp=False)
     current.name = genome.name + "-all-mut"
-    return current
+    if not _stamp:
+        return current
+    return stamp_origin(
+        current,
+        _mutation_origin(
+            "mutate_all",
+            genome,
+            origin_context,
+            note="components: " + ", ".join(MUTATION_OPERATOR_NAMES),
+        ),
+    )

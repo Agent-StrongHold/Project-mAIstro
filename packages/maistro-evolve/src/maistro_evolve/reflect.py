@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .attribution import CandidateOrigin, EvalContext, ProducerKind, producer_identity, stamp_origin
 from .harness import EvalHarness
 from .types import NodeGenome, PipelineGenome
 
@@ -194,7 +195,21 @@ def spawn_challenger(genome: PipelineGenome, node_id: str, new_prompt: str) -> P
         if node.id == node_id:
             node.system_prompt = new_prompt
             break
-    return child
+    # M4-A8 producer attribution: the structured twin of the harness_params
+    # marker above — this candidate was produced by the reflective prompt
+    # operator, and its credit baseline is the parent's stored scores.
+    producer = producer_identity("reflective_improve", ProducerKind.PROMPT_OPERATOR)
+    return stamp_origin(
+        child,
+        CandidateOrigin(
+            producer=producer,
+            parents=(genome.id,),
+            chain=(producer.key(),),
+            baseline_scores=dict(genome.eval_scores),
+            context=EvalContext(),
+            note="GEPA-style propose-then-verify prompt evolution",
+        ),
+    )
 
 
 def _target_node(genome: PipelineGenome) -> NodeGenome:

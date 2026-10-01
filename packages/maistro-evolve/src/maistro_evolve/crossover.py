@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 
-from .mutate import mutate_all
+from .attribution import CandidateOrigin, EvalContext, ProducerKind, producer_identity, stamp_origin
+from .mutate import MUTATION_OPERATOR_NAMES, mutate_all, mutate_selected
 from .types import (
     DAGEdgeGenome,
     DAGTopology,
@@ -22,7 +24,27 @@ def _fresh_timestamp() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def crossover(parent_a: PipelineGenome, parent_b: PipelineGenome) -> PipelineGenome:
+def _crossover_baseline(parent_a: PipelineGenome, parent_b: PipelineGenome) -> dict[str, float]:
+    """Per-benchmark credit baseline for a crossover child: the better parent's
+    stored score. A child must beat the best parent to earn its producer
+    positive credit — the honest measure of whether crossover adds value."""
+    baseline: dict[str, float] = {}
+    for bench, score_a in parent_a.eval_scores.items():
+        score_b = parent_b.eval_scores.get(bench)
+        baseline[bench] = score_a if score_b is None else max(score_a, score_b)
+    for bench, score_b in parent_b.eval_scores.items():
+        if bench not in baseline:
+            baseline[bench] = score_b
+    return baseline
+
+
+def crossover(
+    parent_a: PipelineGenome,
+    parent_b: PipelineGenome,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
+) -> PipelineGenome:
     entry_node = None
     for n in parent_a.topology.nodes:
         if n.id == parent_a.topology.entry_node:
@@ -78,7 +100,7 @@ def crossover(parent_a: PipelineGenome, parent_b: PipelineGenome) -> PipelineGen
         use_scout=parent_a.topology.use_scout or parent_b.topology.use_scout,
     )
 
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=f"cross-{parent_a.id[:6]}-{parent_b.id[:6]}",
         topology=child_topo,
@@ -92,6 +114,19 @@ def crossover(parent_a: PipelineGenome, parent_b: PipelineGenome) -> PipelineGen
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    if not _stamp:
+        return child
+    producer = producer_identity("crossover", ProducerKind.GENERATOR)
+    return stamp_origin(
+        child,
+        CandidateOrigin(
+            producer=producer,
+            parents=(parent_a.id, parent_b.id),
+            chain=(producer.key(),),
+            baseline_scores=_crossover_baseline(parent_a, parent_b),
+            context=origin_context or EvalContext(),
+        ),
+    )
 
 
 def crossover_and_mutate(
@@ -99,9 +134,52 @@ def crossover_and_mutate(
     parent_b: PipelineGenome,
     mutation_rate: float = 0.3,
     models: list[str] | None = None,
+    *,
+    operators: Sequence[str] | None = None,
+    origin_context: EvalContext | None = None,
 ) -> PipelineGenome:
     """``models`` constrains the child's model mutation to the run's routable
     roster (see ``mutate_all``) — without it, breeding can drift a lineage onto
-    models the gateway can't serve."""
-    child = crossover(parent_a, parent_b)
-    return mutate_all(child, mutation_rate, models)
+    models the gateway can't serve.
+
+    M4-A8 producer attribution: the produced child carries a CandidateOrigin
+    whose direct producer is the mutation composite that last shaped it
+    (``mutate_all``/``mutate_selected``), with ``upstream`` recording the two
+    crossover parents (the intermediate crossover child itself is transient,
+    so the parent_a_id chain alone would dead-end at an unstorred id) and
+    ``chain`` preserving the full crossover→mutation pipeline for audit.
+    ``operators=None`` applies every mutation operator (legacy behavior);
+    a ledger-driven subset is how the cycle favors productive operators.
+    """
+    cross_child = crossover(parent_a, parent_b, origin_context=origin_context, _stamp=False)
+    cross_baseline = _crossover_baseline(parent_a, parent_b)
+    if operators is None:
+        final = mutate_all(
+            cross_child, mutation_rate, models, origin_context=origin_context, _stamp=False
+        )
+        applied: list[str] = list(MUTATION_OPERATOR_NAMES)
+        composite = "mutate_all"
+    else:
+        final = mutate_selected(
+            cross_child,
+            mutation_rate,
+            models,
+            operators=operators,
+            origin_context=origin_context,
+            _stamp=False,
+        )
+        applied = list(operators)
+        composite = "mutate_selected"
+    producer = producer_identity(composite, ProducerKind.MUTATION_OPERATOR)
+    return stamp_origin(
+        final,
+        CandidateOrigin(
+            producer=producer,
+            parents=(cross_child.id,),
+            upstream=(parent_a.id, parent_b.id),
+            chain=(producer_identity("crossover", ProducerKind.GENERATOR).key(), producer.key()),
+            baseline_scores=cross_baseline,
+            context=origin_context or EvalContext(),
+            note="crossover then " + composite + " (" + ", ".join(applied) + ")",
+        ),
+    )
