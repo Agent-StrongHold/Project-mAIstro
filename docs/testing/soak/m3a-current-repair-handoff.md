@@ -85,3 +85,64 @@ Do not repeat a host preflight and count elapsed time as artifact proof.
 
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: exact-RC prerequisites and sustained soak}`.
 Local checkpoint commit required; final diff validation recorded below.
+
+## Revalidation at assigned head `cd1c4d7e24e9` (job `491961ec77874eb880d641ddc0ff9113`)
+
+This section records a new validation, not a runtime repair or a new soak. Scope
+was frozen to issue #860, its existing branch evidence/tests, and the explicitly
+requested Vulture CI gate. Starting HEAD matched the assignment exactly; the
+worktree was clean. Assigned base: `8e8db3ad21dc7deaa5c75097e281ecbc52fd7ac5`.
+The supplied previous result was read. No `check-*.log` files were present in the
+job directory at initial inspection; no driver success is assumed.
+
+Read `AGENTS.md`, `CLAUDE.md`, accepted ADR-081426-1f7c, ADR-081626-f383 and
+ADR-085, plus proposed ADR-081. Reconciliation: durable admission is not proof
+of physical-work uniqueness; the accepted lease contract does not itself define
+expiry takeover. Do not invent a scheduler/reclaim authority to satisfy this
+soak issue. Per-principal rate policy does not establish shared replica state.
+No canonical execution, authorization, store or event ownership changes.
+
+Fresh commands (1200–1800 second timeouts), with logs under the job directory:
+
+| Command | Outcome | Log |
+| --- | --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1402 reviewed identities / 1402 findings; zero unclassified or never-allowlist findings. No ledger delta justified. | `worker-vulture.log` |
+| `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-server/tests/api/test_rate_limit.py -x -q -rs` | 102 passed, 5 skipped in 11.03s. All skips require a migrated `MAISTRO_TEST_PG_DSN`; no live PostgreSQL proof. | `worker-pytest.log` |
+| `uv run ruff check .` | PASS | `worker-ruff-check.log` |
+| `uv run ruff format --check .` | PASS: 2624 files | `worker-ruff-format.log` |
+| `uv run python scripts/check-suite-inventory.py --suite tests/` | PASS: 4198 tests | `worker-inventory.log` |
+| `uv run python -` importing the current harness and evaluating preserved round-6 JSON | PASS: assertions confirm 90.43 < 14400 seconds; failed gates are `sustain_duration` and `exact_rc_artifact`; current artifact check is false. This does not rerun the soak. | `worker-evidence-check.log` |
+
+Reachability inspected: `maistro_server/main.py:478` installs the limiter;
+lines 544/559 mount the task router. The executed middleware counterexample
+(`tests/test_soak_promotion_gates.py:439`) gives the same identity an independent
+`[200, 200, 429]` allowance on each instance, for authenticated and unauthenticated
+traffic. The backpressure test uses the production router and canonical in-memory
+spine; the DDL fence regression uses a fake connection. Neither substitutes for
+production multi-replica traffic. The old H3 shared-store overclaim is already
+corrected in `m3a-soak-evidence.md:171`; no redundant repair is needed.
+
+Current acceptance disposition (all ten criteria reviewed):
+
+| Criterion | Fresh evidence / remaining gap |
+| --- | --- |
+| Representative RC profile | PARTIAL: profile inspected; its declared missing multi-user/Workspace, fan-out, successful tool/model, Design/Canvas and Goal/background workloads remain UNVERIFIED. |
+| Two application replicas | UNVERIFIED: production Compose declares two, but no designated RC deployment was executed. |
+| Sustained saturation/reclaim/retry/leak observation | UNVERIFIED: current evaluator rejects the historical 90.43-second run; sampler unit coverage is not long-window observation. |
+| No duplicated physical work / Goal reconciliation | UNVERIFIED: admission-oracle tests pass; physical-effect and sustained Goal recovery oracles are absent from this validation. |
+| Rate/security/degraded non-bypass | NOT MET for a cluster-wide principal allowance: real middleware regression confirms replica selection gains another allowance. Full RC security/degraded traffic remains UNVERIFIED. |
+| Complete resource/DB/loop/queue/error metrics and thresholds | PARTIAL: profile and live child-process sampler regression checked; complete RC time series and application-loop/lease/pool-pressure observations UNVERIFIED. |
+| Active-work kill/restart recovery | UNVERIFIED: no new RC kill/restart; historical exit/rejoin does not prove Attempt fencing or physical-effect recovery. |
+| Long-running exact RC / re-soak after changes | BLOCKED: assignment supplies no immutable promotion RC/configuration; current runner explicitly fails artifact equivalence even at four hours. |
+| Findings filed/reclassified | PARTIAL: existing local classifications preserved; external filing UNVERIFIED and prohibited in this lane. No new load findings claimed. |
+| Machine/human hash-tied evidence | PARTIAL: historical evidence inspected and preserved; qualifying exact-RC evidence UNVERIFIED. |
+
+**BLOCKED**, not integration approval. Only this handoff changes; no code,
+runtime config, tests, raw evidence, ledger or grants are changed. Test inventory
+delta is zero. A speculative ledger amendment cannot resolve the absent soak.
+Next action remains release-owner designation of immutable RC/configuration,
+resolution of the aggregate rate-limit acceptance mismatch, representative
+production workloads and physical-effect/metric oracles, then a new >=4-hour
+exact-artifact run. No GitHub mutations performed.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: designated RC and qualifying sustained evidence}`.
