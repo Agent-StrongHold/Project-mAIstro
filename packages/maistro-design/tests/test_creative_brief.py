@@ -435,7 +435,7 @@ class TestVersionValidation:
             ArtifactRequirement("website", "WCAG 2.2 AA"),
             ArtifactRequirement("coupon", "no stacking with other offers"),
         )
-        with pytest.raises(CreativeBriefError, match="at most once.*coupon"):
+        with pytest.raises(CreativeBriefError, match=r"at most once.*coupon"):
             make_version(artifact_requirements=requirements)
 
     @pytest.mark.contract("boundary")
