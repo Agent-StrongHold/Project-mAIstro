@@ -20,8 +20,8 @@ and assert the post-#819 contract:
 
 The subprocesses need no PostgreSQL, Redis or LLM: the app boots its in-memory
 spine (`run_store_in_process_only`), and the one seam the tests substitute —
-`conductor.run_task`, the executor `TaskRunner` is constructed with — is the
-package's own injection point. Sandbox workspaces resolve under
+`conductor.run_task`, which `main`'s `runner_executor` calls and `TaskRunner`
+is constructed around — is the package's own injection point. Sandbox workspaces resolve under
 `tempfile.gettempdir()/maistro-workspace`, which
 `maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS` already allowlists.
 """
@@ -288,7 +288,14 @@ class TestSigtermDrainsInflightTask:
             import asyncio, sys
             from pathlib import Path
 
-            async def _unfinished(request):
+            async def _unfinished(request, **_authority):
+                # `main.runner_executor` calls `conductor.run_task` with the
+                # Container's governed egress and the workspace/project it was
+                # built for (#718). A stub that takes only the request raises
+                # TypeError before it can write the marker, and the drain this
+                # test is about never gets an in-flight task to drain. The
+                # kwargs are swallowed on purpose: what crosses that seam is
+                # #718's contract to assert, not this test's.
                 Path({str(started_marker)!r}).write_text("started")
                 await asyncio.Event().wait()
 
