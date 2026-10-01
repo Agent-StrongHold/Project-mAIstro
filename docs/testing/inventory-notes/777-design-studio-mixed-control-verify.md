@@ -2620,3 +2620,85 @@ unlanded canonical dependencies**. No repair code written — none
 possible without violating the issue stop condition (creating a
 Design-Studio-private reconciler/Goal owner is expressly
 prohibited). No closure keywords used.
+
+## Round 40 (job 4f1db018f8dd4bc7ad6ad127ac1e1a8c) — re-verified at
+## 76a7fb4158 (develop sync + fresh gates)
+
+**Prior block resolution:** the previous worker's BLOCKED (job
+`3d2aa619…`) was a **provider context-size death, not a finding**:
+its `result.json` shows `failure_kind: provider_error` (request
+34926 tokens > 32768 n_ctx), `checks: []`, no `check-*.log` files,
+and the worktree was clean at the exact expected head `23c18df1a`,
+so there was no uncommitted work to salvage.
+
+**Develop sync performed this round:** `git fetch origin` + merge —
+`origin/develop` advanced `4e7ef1ab1ceb` -> `cd258510bd24` (2
+commits: M3-A first-run wizard dedup #1720 touching setup routes/
+Setup.tsx/bootstrap wizard + core `config/first_run.py`, and M4-A
+optimizer immutable candidates #1679 touching hive-conductor
+`optimizer.py`/new `optimizer_candidates.py` + tests). Merged cleanly
+as `76a7fb4158` with **zero conflicts**; the lane brief's develop
+base `cd258510bd24…` is now contained (merge-base == origin/develop,
+0 behind). Neither commit is a #777 dependency (no Goal/revision/
+reconciliation/CreativeBrief/Ladybug content).
+
+**Fresh dependency audit at `76a7fb4158` (re-run, not inherited):**
+- `GoalRevision|GoalReconcil|owning_agent` across `packages/*/src`:
+  **0** files. No `maistro-goals` package. `^class Goal` grep now
+  has exactly 1 hit and it is `GoalReader(Protocol)` at
+  `packages/maistro-core/src/maistro/workspaces/campaigns/policy.py:54`
+  — read-only, unchanged since round 35, not a Goal store. (#458
+  still declaration-only.)
+- `workspace_agent.py` (hive-conductor backend service): **0**
+  goal/reconcil matches — front door only, consumes no #804 API.
+- `brief_store.py:5` still disclaims: "nothing here is a Goal or
+  CreativeBrief record" (#774 absent).
+- `ladybug`: **0** src hits (#776 absent).
+- `mixed.control|delegated.*pause|reclaim.*subgoal` across all
+  tests: **0** files — no mixed-control E2E.
+- Nearest near-miss re-checked directly: `_CreativeBriefNode` is a
+  **test-local stub** in
+  `packages/maistro-core/tests/graph/test_cross_domain_substrate.py:44`
+  ("Stand-in for what `llm.summarize` would produce"), not a
+  #774/#775 implementation.
+- Goal ownership seam unchanged: `agent_goal_ownership` exists only
+  as an ontology `RelationshipSpec`
+  (`packages/maistro-core/src/maistro/interop/contract.py:354`).
+
+**Gates executed at `76a7fb4158` (fresh runs on the merged tree):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2680 files already formatted
+  (exit 0; +6 vs round 39 = merge's new files).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **exit 0**,
+  base `cd258510bd24` -> candidate `76a7fb4158`, **1383 reviewed
+  identities -> 1383 findings, 0 unbanked**. Ledger round is a
+  no-op — no amendment required, none made.
+- `uv run pytest packages/maistro-core/tests -k "cross_domain_substrate
+  or first_run" …/config/test_first_run.py -q` — **14 passed**
+  (16.70s) — covers merged #1720 core first-run config.
+- `uv run pytest packages/maistro-bootstrap/tests/
+  test_wizard_first_run_prompts.py …/test_credentials.py -q` —
+  **29 passed** (2.82s) — covers merged #1720 bootstrap wizard.
+- `uv run pytest hive-conductor …/test_optimizer.py
+  …/test_optimizer_candidate_apply.py …/test_setup_first_run_questions.py
+  …/test_registration_policy.py -q` — **149 passed** (22.65s) —
+  covers merged #1679 optimizer candidates + #1720 setup routes.
+- `uv run pytest hive-conductor -k "workspace_agent or
+  workspace_mode or brief_store" -q` — **27 passed** (12.99s) at
+  the #777-adjacent surfaces.
+- `uv run python scripts/check-suite-inventory.py` — PASS (14/14).
+- `uv run python scripts/check-doc-links.py` — PASS.
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**Conclusion (40th inspected head):** unchanged block after a clean
+develop sync. The two new develop commits are M3-A wizard-dedup and
+M4-A optimizer-candidate work; every canonical owner #777 must
+consume (#458 GoalRevision/ownership, #804/#805/#806 reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Ladybug retrieval) is
+still absent from the tree, and no mixed-control E2E exists. All 13
+acceptance criteria remain **UNMET**. Lane stays **BLOCKED on
+unlanded canonical dependencies**. No repair code written — none
+possible without violating the issue stop condition (creating a
+Design-Studio-private reconciler/Goal owner is expressly
+prohibited). No closure keywords used.
