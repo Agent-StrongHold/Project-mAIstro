@@ -77,13 +77,20 @@ def _pure_constant(node: ast.expr) -> bool:
 
 
 def _performs_real_work(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True when the body calls anything except HTTPException construction."""
-    for node in ast.walk(func):
-        if isinstance(node, ast.Call):
-            func_node = node.func
-            if isinstance(func_node, ast.Name) and func_node.id == "HTTPException":
-                continue
-            return True
+    """True when the body calls anything except HTTPException construction.
+
+    Walks the body statements, not the whole function node: the handler's own
+    ``@router.<method>(...)`` decorator is a Call on every decorated handler,
+    and counting it here made every handler look like it did real work — the
+    detector could never fire (found by the in-process coverage tests).
+    """
+    for statement in func.body:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Call):
+                func_node = node.func
+                if isinstance(func_node, ast.Name) and func_node.id == "HTTPException":
+                    continue
+                return True
     return False
 
 
@@ -200,11 +207,15 @@ def main() -> int:
     failures.extend(registry_failures)
 
     for finding in canned:
+        try:
+            registry_name = str(REGISTRY.relative_to(ROOT))
+        except ValueError:  # relocated/synthetic registry (tests, tooling)
+            registry_name = str(REGISTRY)
         failures.append(
             f"canned route handler: {finding} returns only constants and performs no "
             f"operation; implement it against its canonical owner, refuse with an "
             f"explicit unsupported status, or register a temporary disposition in "
-            f"{REGISTRY.relative_to(ROOT)}"
+            f"{registry_name}"
         )
 
     if not INVENTORY_DOC.exists():
