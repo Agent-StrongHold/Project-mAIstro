@@ -250,7 +250,10 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
     # `ConductorAgent` provides exactly that and deliberately does not subclass
     # `BaseAgent`, which would bring a second strategy stack and a second
     # extraction pass over an answer `run_task` has already produced.
-    container.agents = cast("dict[str, Agent]", {CONDUCTOR_AGENT_NAME: ConductorAgent()})
+    container.agents = cast(
+        "dict[str, Agent]",
+        {CONDUCTOR_AGENT_NAME: ConductorAgent(router=container.llm_router)},
+    )
     await logger.ainfo("container_wired", agents=sorted(container.agents))
     return container
 
