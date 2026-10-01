@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .curriculum import RESERVED_BENCHMARK_PREFIX
 from .types import FitnessComponents, PipelineGenome
 
 # Tuned per-benchmark minimums. A genome scoring below any of these on a
@@ -77,11 +78,31 @@ def _check_hard_gate(genome: PipelineGenome) -> tuple[bool, list[str]]:
     failures: list[str] = []
     scores = genome.eval_scores
 
-    # A genome must have been evaluated on *something* to be gated meaningfully.
-    if not scores:
-        return False, ["no benchmarks evaluated"]
+    # M4-D (#24, SPEC-282): self-generated curriculum practice scores are not
+    # external evaluation. They cannot satisfy the hard gate, however high
+    # they are, and they are skipped by the per-benchmark loop below — a
+    # genome scored ONLY on its own generated challenges has no external
+    # evidence and must not breed.
+    reserved = sorted(b for b in scores if b.startswith(RESERVED_BENCHMARK_PREFIX))
+    if reserved:
+        failures.append(
+            "self-generated curriculum scores ("
+            + ", ".join(reserved)
+            + ") are not external evaluation — they cannot satisfy the hard gate"
+        )
 
-    for bench, score in sorted(scores.items()):
+    external_scores = {
+        b: s for b, s in scores.items() if not b.startswith(RESERVED_BENCHMARK_PREFIX)
+    }
+
+    # A genome must have been evaluated on *something* external to be gated
+    # meaningfully. Curriculum-only scores are not that something.
+    if not external_scores:
+        if "no benchmarks evaluated" not in failures:
+            failures.append("no external benchmarks evaluated")
+        return False, failures
+
+    for bench, score in sorted(external_scores.items()):
         tuned = _HARD_GATE_THRESHOLDS.get(bench)
         threshold = _DEFAULT_GATE_FLOOR if tuned is None else tuned
         if score < threshold:
@@ -105,7 +126,15 @@ def _weighted_eval_score(genome: PipelineGenome) -> float:
     # subset run isn't penalised for the benchmarks it deliberately skipped. A
     # scored benchmark outside the standard EvalWeights set (code_rsi) gets a
     # default weight so it drives fitness rather than being silently dropped.
+    #
+    # M4-D (#24, SPEC-282): scores under the reserved self-generated namespace
+    # are excluded outright — they must not drive the weighted eval score, not
+    # even through the default-weight fallback that admits unlisted external
+    # benchmarks, and they must not shift the renormalisation denominator for
+    # the benchmarks that legitimately ran.
     for bench, score in scores.items():
+        if bench.startswith(RESERVED_BENCHMARK_PREFIX):
+            continue
         weight = getattr(weights, bench, None)
         if weight is None:
             weight = _DEFAULT_BENCH_WEIGHT

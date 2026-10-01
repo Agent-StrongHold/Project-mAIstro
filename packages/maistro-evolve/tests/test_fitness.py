@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from maistro_evolve.fitness import (
     _FITNESS_WEIGHTS,
     _HARD_GATE_THRESHOLDS,
@@ -117,6 +119,37 @@ class TestHardGate:
         passed, failures = _check_hard_gate(_genome(eval_scores={"ifeval": 0.9}))
         assert passed and failures == []
 
+    @pytest.mark.ac("SPEC-282/AC-7")
+    def test_self_generated_scores_fail_the_hard_gate(self):
+        """SPEC-282 AC-7: curriculum practice scores are not external evidence.
+
+        A perfect self-generated score alongside genuine external evidence
+        still fails the gate — the practice number cannot satisfy it, and the
+        failure names the reserved key so the refusal is legible.
+        """
+        passed, failures = _check_hard_gate(
+            _genome(
+                eval_scores={
+                    "proxy_ifeval": 0.9,
+                    "self_generated/challenge-1": 1.0,
+                }
+            )
+        )
+        assert not passed
+        assert any("self_generated/challenge-1" in f for f in failures)
+
+    @pytest.mark.ac("SPEC-282/AC-7")
+    def test_genome_scored_only_on_curriculum_cannot_breed(self):
+        """SPEC-282 AC-7: no external evidence means no hard-gate pass — even
+        with a perfect self-generated score."""
+        genome = _genome(eval_scores={"self_generated/challenge-1": 1.0})
+        passed, failures = _check_hard_gate(genome)
+        assert not passed
+        assert any("no external benchmarks" in f for f in failures)
+        result = compute_fitness(genome, [genome])
+        assert not result.passed_hard_gate
+        assert result.total == 0.0
+
 
 class TestWeightedEvalScore:
     def test_empty_scores_returns_zero(self):
@@ -138,6 +171,18 @@ class TestWeightedEvalScore:
         g = _genome(eval_scores=scores)
         score = _weighted_eval_score(g)
         assert 0.0 < score < 1.0
+
+    @pytest.mark.ac("SPEC-282/AC-7")
+    def test_self_generated_scores_do_not_drive_the_weighted_score(self):
+        """SPEC-282 AC-7: curriculum practice scores are excluded outright.
+
+        Naive inclusion would both add the practice score at the default
+        weight (0.15 * 1.0) and shift the renormalisation denominator,
+        lifting 0.5 of external evidence to ~0.75. Exclusion keeps the
+        weighted score driven by external benchmarks only.
+        """
+        g = _genome(eval_scores={"proxy_ifeval": 0.5, "self_generated/challenge-1": 1.0})
+        assert _weighted_eval_score(g) == pytest.approx(0.5)
 
 
 class TestCostEfficiency:
