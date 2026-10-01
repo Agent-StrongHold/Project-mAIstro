@@ -38,9 +38,12 @@ def _reset_singleton():
     import services.engine as e
 
     prev = e._singleton
+    prev_failed = e._failed_startup
     e._singleton = None
+    e._failed_startup = None
     yield
     e._singleton = prev
+    e._failed_startup = prev_failed
 
 
 # --- TaskRecord properties ----------------------------------------------
