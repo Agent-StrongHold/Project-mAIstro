@@ -1395,10 +1395,22 @@ writing no install manifest. 'maistro upgrade' will fall back to detection."
   "image_tag": "$MAISTRO_IMAGE_TAG",
   "delivery_mode": "$(effective_delivery_mode)",
   "source_url": "$source_url",
+  "plan_dir": "$PLAN_DIR",
   "installed_at": "$ts"
 }
 MANIFEST_EOF
     ok "Wrote install manifest ($itype@$ref) to $manifest"
+
+    # Discovery pointer: `maistro upgrade` reads the manifest from the
+    # canonical <root>/.maistro-install regardless of where the plan
+    # artifacts were materialized, so a custom --plan-dir install leaves a
+    # copy there recording the selected plan_dir. Without it, upgrade would
+    # discard the manifest and regenerate guessed compose defaults.
+    if [[ "$PLAN_DIR" != ".maistro-install" && "$PLAN_DIR" != "$PWD/.maistro-install" ]]; then
+        mkdir -p "$PWD/.maistro-install" 2>/dev/null || true
+        cp "$manifest" "$PWD/.maistro-install/install-manifest.json" 2>/dev/null || true
+        ok "Recorded plan_dir pointer at $PWD/.maistro-install/install-manifest.json"
+    fi
 }
 
 # Write operator recovery commands next to the plan artifacts and echo the

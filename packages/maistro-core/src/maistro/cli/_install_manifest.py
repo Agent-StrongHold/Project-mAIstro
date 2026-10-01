@@ -101,6 +101,17 @@ class InstallManifest(BaseModel):
     delivery_mode: str | None = Field(
         default=None, description="image_pull | source_build (from install answers)."
     )
+    plan_dir: str | None = Field(
+        default=None,
+        description=(
+            "Directory holding the materialized plan artifacts "
+            "(compose.install.yml, overrides) — as passed to ``install.sh "
+            "--plan-dir`` / ``MAISTRO_INSTALL_PLAN_DIR``, relative to ``install_root``. "
+            "None means the default ``<install_root>/.maistro-install``. The "
+            "manifest itself always lives at the canonical location so "
+            "discovery finds it regardless of this setting."
+        ),
+    )
     installed_at: str | None = Field(
         default=None, description="ISO-8601 timestamp the install completed."
     )
@@ -193,6 +204,23 @@ def is_engine_checkout(root: Path) -> bool:
 def manifest_path_for_root(root: Path) -> Path:
     """Where the durable manifest lives relative to an install root."""
     return root / PLAN_SUBDIR / MANIFEST_FILENAME
+
+
+def plan_dir_for_root(root: Path, manifest: InstallManifest | None = None) -> Path:
+    """Effective plan-artifact directory for an install root.
+
+    Installs created with ``install.sh --plan-dir`` (or
+    ``MAISTRO_INSTALL_PLAN_DIR``) keep their generated compose files outside
+    the default ``.maistro-install``; the manifest records the selected
+    directory so upgrade reads — and refreshes — the artifacts that are
+    actually deployed, instead of silently regenerating defaults.
+    """
+    if manifest is not None and manifest.plan_dir:
+        chosen = Path(manifest.plan_dir).expanduser()
+        if not chosen.is_absolute():
+            chosen = root / chosen
+        return chosen.resolve()
+    return manifest_path_for_root(root).parent
 
 
 def _load_at(path: Path) -> InstallManifest | None:

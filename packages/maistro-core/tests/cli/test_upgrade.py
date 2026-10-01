@@ -20,7 +20,12 @@ from types import SimpleNamespace
 import pytest
 
 import maistro.cli._upgrade as upgrade_mod
-from maistro.cli._install_manifest import MANIFEST_FILENAME, PLAN_SUBDIR, InstallManifest
+from maistro.cli._install_manifest import (
+    MANIFEST_FILENAME,
+    PLAN_SUBDIR,
+    InstallManifest,
+    load_manifest,
+)
 from maistro.cli._upgrade import upgrade_main
 
 
@@ -99,6 +104,7 @@ def _manifest(root: Path, install_type: str = "git", **extra) -> InstallManifest
     elif install_type == "container":
         kwargs["image_tag"] = extra.pop("image_tag", "v1.0.0")
         kwargs["delivery_mode"] = extra.pop("delivery_mode", "image_pull")
+    kwargs.update(extra)
     return InstallManifest(**kwargs)
 
 
@@ -294,6 +300,64 @@ def test_archive_swap_and_rollback_execute_for_real(tmp_path: Path) -> None:
         assert not old.exists(), "retained tree is consumed by the rollback"
     finally:
         mp.undo()
+
+
+def test_upgrade_honors_custom_plan_dir_for_compose_artifacts(
+    tmp_path: Path, unrelated_cwd: Path
+) -> None:
+    """Upgrading a ``--plan-dir`` install keeps its manifest and overrides.
+
+    Regression (review): discovery and the compose command builder hardcoded
+    ``<root>/.maistro-install``, so a custom plan-dir install's manifest was
+    never found (git fell back to guessed defaults, archive was rejected) and
+    its generated compose.override.yml was ignored in favor of regeneration.
+    """
+    root = tmp_path / "maistro-engine"
+    root.mkdir()
+    plan = root / "plans" / "prod"
+    plan.mkdir(parents=True)
+    (plan / "compose.override.yml").write_text(
+        'services:\n  maistro-engine:\n    ports: ["7000:8000"]\n', encoding="utf-8"
+    )
+    (root / "docker-compose.yml").write_text(
+        "services:\n  maistro-engine:\n    image: maistro-engine\n", encoding="utf-8"
+    )
+    (root / ".env").write_text("MAISTRO_PORT=8000\n", encoding="utf-8")
+    _write_manifest(root, _manifest(root, install_type="git", plan_dir="plans/prod"))
+
+    # The installer leaves the manifest at the canonical location; upgrade
+    # resolves the artifact directory from the recorded plan_dir.
+    loaded = load_manifest(root)
+    assert loaded is not None and loaded.plan_dir == "plans/prod"
+    driver = upgrade_mod._Upgrade(root, loaded, "git")
+    assert driver.plan_dir == plan
+    assert any(str(plan / "compose.override.yml") in a for a in driver._compose_args())
+
+
+def test_archive_swap_carries_custom_plan_dir_and_manifest_round_trips(
+    tmp_path: Path,
+) -> None:
+    """Archive upgrades of custom plan-dir installs survive the tree swap."""
+    root = tmp_path / "maistro-engine"
+    root.mkdir()
+    plan = root / "plans" / "prod"
+    plan.mkdir(parents=True)
+    (plan / MANIFEST_FILENAME).write_text("{}\n", encoding="utf-8")
+    manifest = _manifest(
+        root, install_type="archive", ref="v2.0.0", version="v2.0.0", plan_dir="plans/prod"
+    )
+    driver = upgrade_mod._Upgrade(root, manifest, "archive")
+
+    (swap_cmd,) = driver._archive_swap_cmds()
+    assert "plans/prod" in swap_cmd.argv[2], "swap must carry the recorded plan dir"
+
+    # The refreshed manifest is written where the version probe reads it —
+    # the custom plan dir — and the canonical pointer stays current.
+    driver._record_archive_manifest()
+    refreshed = json.loads((plan / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert refreshed["version"] == "v2.0.0"
+    canonical = json.loads((root / PLAN_SUBDIR / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert canonical["plan_dir"] == "plans/prod"
 
 
 def test_checkout_without_manifest_is_upgraded_from_detected_type(
@@ -685,6 +749,56 @@ def test_readiness_failure_after_cutover_rolls_back_the_stack(
     assert any("compose" in c and "up -d" in c for c in flat)
     # The health probe polled with its bounded budget before giving up.
     assert sum(1 for c in flat if "health/ready" in c) == upgrade_mod._HEALTH_ATTEMPTS
+
+
+def test_source_build_rollback_restores_pre_upgrade_images(
+    tmp_path: Path,
+    unrelated_cwd: Path,
+    recorder: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source build must not destroy the previous release's images.
+
+    ``compose build`` retags the fixed local image tags before cutover; a
+    later rollback that just runs ``down`` + ``up -d`` would restart the NEW
+    images. The pre-upgrade images are therefore snapshotted under rollback
+    tags before the build and retagged back before the post-rollback ``up``.
+    """
+    monkeypatch.setattr(upgrade_mod.time, "sleep", lambda _s: None)
+    root = tmp_path / "maistro-engine"
+    root.mkdir()
+    _seed_compose_and_env(root)
+    _write_manifest(root, _manifest(root, install_type="git"))
+
+    recorder.failures["curl"] = "connection refused"
+    with pytest.raises(SystemExit) as exc_info:
+        _drive(root, recorder)
+    assert exc_info.value.code == 1
+
+    seq = [" ".join(a) for a, _ in recorder.calls]
+    snap_i = next(i for i, c in enumerate(seq) if "pre-upgrade-rollback" in c and " tag " in c)
+    build_i = next(i for i, c in enumerate(seq) if "compose" in c and " build" in c)
+    restore_i = next(i for i, c in enumerate(seq) if "image inspect" in c)
+    up_i = max(i for i, c in enumerate(seq) if "up -d" in c)
+    assert snap_i < build_i, "images must be snapshotted before compose build retags them"
+    assert restore_i < up_i, "snapshot must be restored before the post-rollback restart"
+
+
+def test_committed_source_build_drops_image_snapshot_tags(
+    tmp_path: Path, unrelated_cwd: Path, recorder: _Recorder
+) -> None:
+    """On success the rollback tags are cleaned up, not left to accumulate."""
+    root = tmp_path / "maistro-engine"
+    root.mkdir()
+    _seed_compose_and_env(root)
+    _write_manifest(root, _manifest(root, install_type="git"))
+
+    _drive(root, recorder)
+
+    seq = [" ".join(a) for a, _ in recorder.calls]
+    up_i = max(i for i, c in enumerate(seq) if "up -d" in c)
+    cleanup = [c for c in seq[up_i:] if "pre-upgrade-rollback" in c and " rmi " in c]
+    assert cleanup, "commit must remove the pre-upgrade rollback tags"
 
 
 def test_compose_args_prefer_install_compose_for_image_pull(tmp_path: Path) -> None:

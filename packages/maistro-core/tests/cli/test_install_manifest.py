@@ -24,6 +24,7 @@ from maistro.cli._install_manifest import (
     is_engine_checkout,
     load_manifest,
     locate_install_root,
+    plan_dir_for_root,
     write_manifest,
 )
 
@@ -372,6 +373,58 @@ class TestVersionAndImages:
 
 
 # -- helpers ------------------------------------------------------------------
+
+
+class TestPlanDirResolution:
+    """``--plan-dir`` installs must keep their manifest discoverable.
+
+    The installer materializes the plan (and generated compose files) into the
+    selected directory but always leaves the manifest at the canonical
+    ``<root>/.maistro-install`` location, recording the plan dir so upgrade
+    reads the artifacts that are actually deployed.
+    """
+
+    def test_defaults_to_canonical_subdir(self, tmp_path: Path) -> None:
+        root = tmp_path / "maistro-engine"
+        root.mkdir()
+        assert plan_dir_for_root(root) == root / PLAN_SUBDIR
+        assert plan_dir_for_root(root, None) == root / PLAN_SUBDIR
+
+    def test_custom_relative_dir_from_manifest(self, tmp_path: Path) -> None:
+        root = tmp_path / "maistro-engine"
+        root.mkdir()
+        manifest = InstallManifest(
+            install_type="git", install_root=str(root), plan_dir="plans/prod"
+        )
+        assert plan_dir_for_root(root, manifest) == (root / "plans" / "prod").resolve()
+
+    def test_custom_absolute_dir_from_manifest(self, tmp_path: Path) -> None:
+        root = tmp_path / "maistro-engine"
+        root.mkdir()
+        external = tmp_path / "elsewhere" / "plan"
+        manifest = InstallManifest(
+            install_type="git", install_root=str(root), plan_dir=str(external)
+        )
+        assert plan_dir_for_root(root, manifest) == external.resolve()
+
+    def test_pointer_manifest_discovery_and_round_trip(self, tmp_path: Path) -> None:
+        """The canonical pointer records the custom plan dir for upgrade."""
+        root = tmp_path / "maistro-engine"
+        plan = root / "plans" / "prod"
+        plan.mkdir(parents=True)
+        write_manifest(
+            root,
+            InstallManifest(
+                install_type="archive",
+                install_root=str(root),
+                ref="v1.0.0",
+                plan_dir="plans/prod",
+            ),
+        )
+        loaded = load_manifest(root)
+        assert loaded is not None
+        assert loaded.plan_dir == "plans/prod"
+        assert plan_dir_for_root(root, loaded) == plan.resolve()
 
 
 def _tag_manifest(root: Path) -> InstallManifest:

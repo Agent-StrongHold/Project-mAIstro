@@ -47,6 +47,7 @@ from maistro.cli._install_manifest import (
     git_revision,
     image_references,
     locate_install_root,
+    plan_dir_for_root,
     write_manifest,
 )
 from maistro.security.warden.sanitizer import strip_terminal_escapes
@@ -197,13 +198,19 @@ class _Upgrade:
     and returns a non-zero exit code, never an implied success.
     """
 
+    #: Extra tag under which the pre-``compose build`` images are retained so
+    #: a post-cutover rollback can restore the previous release's images.
+    _ROLLBACK_IMAGE_SUFFIX = "-pre-upgrade-rollback"
+
     def __init__(self, root: Path, manifest: InstallManifest, install_type: str) -> None:
         self.root = root
         self.manifest = manifest
         self.install_type = install_type
-        self.plan_dir = root / PLAN_SUBDIR
+        # The installer may have materialized the plan outside the default
+        # ``.maistro-install`` (--plan-dir); the manifest records where.
+        self.plan_dir = plan_dir_for_root(root, manifest)
         self.backup_dir: Path | None = None
-        self._cutover_done = False
+        self._cutover_attempted = False
         self._previous_revision: str | None = None
         self._compose = _resolve_compose_runtime()
         # Archive-swap bookkeeping: the previous release tree is retained as a
@@ -295,10 +302,15 @@ class _Upgrade:
         """Undo an interrupted upgrade to a consistent state.
 
         Config is restored from the preflight backup, source is rewound to the
-        pre-upgrade revision (source installs), and — only after a cutover —
-        the new containers are stopped and the previous image restarted. The
-        rollback is best-effort; the invariant is that the tree is left
-        internally consistent, never half-upgraded.
+        pre-upgrade revision (source installs), and — once a cutover has been
+        attempted — the new containers are stopped and the previous image
+        restarted. For source builds the previous image is the one snapshotted
+        before ``compose build`` retagged the fixed local tags
+        (``_image_snapshot_cmd``), restored here before ``up -d``. A failed
+        ``compose up -d`` can still have recreated services, so any cutover
+        attempt counts as touching the stack. The rollback is best-effort; the
+        invariant is that the tree is left internally consistent, never
+        half-upgraded.
         """
         console.print("[yellow]Rolling back upgrade...[/yellow]")
         if self._archive_swapped and self._archive_old is not None:
@@ -308,16 +320,34 @@ class _Upgrade:
             if self._archive_old.is_dir():
                 _run(_Cmd(["mv", str(self._archive_old), str(self.root)]))
         self.restore_config()
-        if self._cutover_done:
+        if self._cutover_attempted:
             _run_sequence(self._compose_cmds("down", "-t", "0"))
+        self._rewind_source()
+        self._restart_previous_stack()
+        if self.backup_dir is not None:
+            console.print(f"[dim]Backup retained at {self.backup_dir}[/dim]")
+
+    def _rewind_source(self) -> None:
+        """Point a source install back at its pre-upgrade revision."""
         if self._source_rewind_candidate() and self._previous_revision:
             _run(
                 _Cmd(["git", "-C", str(self.root), "checkout", "--force", self._previous_revision])
             )
-        if self._cutover_done:
-            _run_sequence(self._compose_cmds("up", "-d"))
-        if self.backup_dir is not None:
-            console.print(f"[dim]Backup retained at {self.backup_dir}[/dim]")
+
+    def _restart_previous_stack(self) -> None:
+        """Bring the stack back up on the previous release's artifacts.
+
+        A no-op until a cutover has been attempted: before that boundary no
+        phase has touched running containers, so there is nothing to restart.
+        """
+        if not self._cutover_attempted:
+            return
+        if self._builds_local_images():
+            # `compose build` retagged the live image tags with the new
+            # artifacts; restore the pre-upgrade snapshot so `up -d`
+            # restarts the previous release, not the failed new one.
+            _run(self._image_restore_cmd())
+        _run_sequence(self._compose_cmds("up", "-d"))
 
     def _source_rewind_candidate(self) -> bool:
         return self.install_type in ("git", "tag", "archive")
@@ -328,6 +358,9 @@ class _Upgrade:
             shutil.rmtree(self.backup_dir, ignore_errors=True)
         if self._archive_old is not None:
             shutil.rmtree(self._archive_old, ignore_errors=True)
+        if self._builds_local_images():
+            # Committed: the pre-upgrade image snapshot is no longer needed.
+            _run(self._image_snapshot_cleanup_cmd())
 
     # -- command builders ------------------------------------------------------
 
@@ -507,7 +540,13 @@ class _Upgrade:
             shlex.quote(str(work)),
             shlex.quote(str(old)),
         )
-        q_plan = shlex.quote(str(old / PLAN_SUBDIR))
+        # The plan directory lives under the (now renamed) previous root until
+        # the copy below; honor a custom --plan-dir recorded in the manifest.
+        try:
+            plan_rel = self.plan_dir.relative_to(self.root)
+        except ValueError:
+            plan_rel = Path(self.plan_dir.name)
+        q_plan = shlex.quote(str(old / plan_rel))
         return [
             _Cmd(
                 [
@@ -538,11 +577,68 @@ class _Upgrade:
         self.manifest.revision = None  # archive trees carry no git metadata
         # Non-fatal: the swapped tree itself is the release proof; the
         # readiness probe below fails honestly if the file cannot be written.
+        # Write into the plan directory the probe reads, and keep the canonical
+        # discovery pointer current when the two differ (--plan-dir installs).
         with contextlib.suppress(OSError):
-            write_manifest(self.root, self.manifest)
+            self.plan_dir.mkdir(parents=True, exist_ok=True)
+            (self.plan_dir / MANIFEST_FILENAME).write_text(
+                json.dumps(self.manifest.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            if self.plan_dir != self.root / PLAN_SUBDIR:
+                write_manifest(self.root, self.manifest)
 
     def sync_cmds(self) -> list[_Cmd]:
         return [_Cmd(["uv", "sync", "--all-extras"], cwd=str(self.root))]
+
+    def _builds_local_images(self) -> bool:
+        """True when artifacts come from ``compose build`` under fixed local image tags."""
+        if self.install_type in ("container", "package"):
+            return False
+        return (self.manifest.delivery_mode or "source_build") != "image_pull"
+
+    def _image_snapshot_cmd(self) -> _Cmd:
+        """Retag the currently deployed images onto rollback tags before ``compose build``.
+
+        A source build retags the fixed local image tags with the newly built
+        artifacts. Without this snapshot, a post-cutover rollback (``down`` +
+        ``up -d``) would restart the NEW images instead of the previous
+        release. Best-effort: on a first install there is nothing to snapshot,
+        and per-image failures never block the upgrade.
+        """
+        compose = " ".join(shlex.quote(a) for a in [*self._compose, *self._compose_args()])
+        engine = shlex.quote(self._compose[0])
+        sfx = self._ROLLBACK_IMAGE_SUFFIX
+        script = (
+            f"for img in $({compose} config --images); do "
+            f'{engine} tag "$img" "${{img}}{sfx}" 2>/dev/null || true; done; exit 0'
+        )
+        return _Cmd(["bash", "-c", script], cwd=str(self.root))
+
+    def _image_restore_cmd(self) -> _Cmd:
+        """Retag the pre-upgrade snapshot back onto the live tags (rollback path)."""
+        compose = " ".join(shlex.quote(a) for a in [*self._compose, *self._compose_args()])
+        engine = shlex.quote(self._compose[0])
+        sfx = self._ROLLBACK_IMAGE_SUFFIX
+        script = (
+            f"for img in $({compose} config --images); do "
+            f'old="${{img}}{sfx}"; '
+            f'if {engine} image inspect "$old" >/dev/null 2>&1; then '
+            f'{engine} tag "$old" "$img" 2>/dev/null || true; '
+            f'{engine} rmi "$old" >/dev/null 2>&1 || true; fi; done; exit 0'
+        )
+        return _Cmd(["bash", "-c", script], cwd=str(self.root))
+
+    def _image_snapshot_cleanup_cmd(self) -> _Cmd:
+        """Drop the rollback tags once the upgrade has committed."""
+        compose = " ".join(shlex.quote(a) for a in [*self._compose, *self._compose_args()])
+        engine = shlex.quote(self._compose[0])
+        sfx = self._ROLLBACK_IMAGE_SUFFIX
+        script = (
+            f"for img in $({compose} config --images); do "
+            f'{engine} rmi "${{img}}{sfx}" >/dev/null 2>&1 || true; done; exit 0'
+        )
+        return _Cmd(["bash", "-c", script], cwd=str(self.root))
 
     def build_cmds(self) -> list[_Cmd]:
         """Rebuild (source) or pull (image_pull / container) the new artifacts BEFORE cutover."""
@@ -553,7 +649,9 @@ class _Upgrade:
             return self._compose_cmds("pull")
         # `compose build --pull` is a boolean flag (always refresh base
         # images); plain `build` rebuilds the services from the upgraded tree.
-        return self._compose_cmds("build")
+        # The snapshot runs first so the pre-upgrade images survive the
+        # retagging and the advertised rollback can actually restore them.
+        return [self._image_snapshot_cmd(), *self._compose_cmds("build")]
 
     def verify_assets_cmds(self) -> list[_Cmd]:
         """Confirm the rebuilt/pulled images are present and correctly tagged.
@@ -640,7 +738,10 @@ class _Upgrade:
         for name, cmds in self.phases():
             outcome = _run_sequence(cmds)
             if name == "cutover":
-                self._cutover_done = outcome.ok
+                # Cutover is the first phase that touches running containers;
+                # a failed `compose up -d` may still have recreated services,
+                # so rollback must run from the first attempt, success or not.
+                self._cutover_attempted = True
             if name == "swap-tree" and outcome.ok:
                 self._archive_swapped = True
                 self._record_archive_manifest()
