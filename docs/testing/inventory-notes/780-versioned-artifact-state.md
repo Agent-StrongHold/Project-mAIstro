@@ -14,6 +14,15 @@ prior AI/human versions with distinct provenance, locks, guidance, and
 per-branch control state across a refresh/reconnect or process restart.
 No existing node IDs were removed or renamed.
 
+## Migration renumbering during the origin/develop sync (this merge)
+
+The branch originally introduced the versioned-artifact schema as alembic
+revision `047`; `origin/develop` independently took `047` for
+`capability_binding_revocations` (#1133). In the develop-sync merge the
+branch's migration is renumbered to `048` (`down_revision = "047"`). The
+`through 047` mentions below are historical evidence records gathered while
+the migration carried that number; the schema itself is unchanged.
+
 ## Independent verification record (job e1159b024b074099b9264c209f586f98, head d3f3aa468419)
 
 Executed by the verifier (not trusted from the implement phase):

@@ -75,7 +75,7 @@ lineage. Deep DAG-level invalidation lands with #775 and must consume
 
 ## Goals
 
-- Migration 047 adds `design_artifact_versions` (append-only,
+- Migration 048 adds `design_artifact_versions` (append-only,
   UNIQUE (project_id, lineage_id, version), first-writer-wins),
   `design_artifact_locks`, `design_project_guidance`, and
   `design_branch_controls`.

@@ -67,6 +67,11 @@ EXPECTED_TABLES = frozenset(
         # after a collision with 032_asset_instance_org_scope; #1079).
         # Bindings and Invocations are separate tables: Bindings are immutable
         # authorization records, Invocations the logical effect ledger.
+        # The tombstone half of the same authority (047). Separate from
+        # `capability_bindings` because revoking deletes the binding row,
+        # so a `revoked_at` column would be deleted along with the thing
+        # it forbids and the id could be registered again (#846).
+        "capability_binding_revocations",
         "capability_bindings",
         "capability_invocations",
         "consumer_cursors",
@@ -89,7 +94,7 @@ EXPECTED_TABLES = frozenset(
         "canonical_workspaces",
         "canonical_workspace_memberships",
         "child_profiles",
-        # The versioned creative artifact state (#780, 047): the append-only
+        # The versioned creative artifact state (#780, 048): the append-only
         # version ledger, its explicit user locks, durable project guidance,
         # and per-branch control rows projected onto canonical execution.
         "design_artifact_versions",

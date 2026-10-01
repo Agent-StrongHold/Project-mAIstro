@@ -2,7 +2,7 @@
 #
 # Implements ADR-073126-c4e1 "Release and versioning process":
 #   §1 lockstep versioning from the root VERSION file,
-#   §2 annotated vX.Y.Z tags on `main` (rc exception: `integration`),
+#   §2 annotated vX.Y.Z tags on `main` (rc exception: `develop`, per ADR-095),
 #   §3 release.yml is the sole publish path — no local twine upload, no manual
 #      docker push,
 #   §4 the `release` GitHub environment approval is the publish gate: guard,
@@ -117,8 +117,9 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      # ADR §2: a final tag may only point at a commit on `main`; an rc is the
-      # sole exception and may point at `integration` so a candidate can soak.
+      # ADR §2 (as amended for ADR-095): a final tag may only point at a
+      # commit on `main`; an rc is the sole exception and may point at
+      # `develop`, the canonical integration branch, so a candidate can soak.
       # `merge-base --is-ancestor` accepts the branch tip itself, so "the tag
       # IS main's head" passes too.
       - name: Tag commit must descend from the release branch
@@ -131,7 +132,7 @@ jobs:
           if ! git merge-base --is-ancestor "${tag_sha}" "origin/${TARGET_BRANCH}"; then
             echo "::error::tag ${GITHUB_REF_NAME} (${tag_sha}) is not an ancestor of origin/${TARGET_BRANCH}."
             echo "::error::ADR-073126-c4e1 §2: a final vX.Y.Z tag may only point at a commit on main;"
-            echo "::error::an rc tag vX.Y.Z-rcN may point at integration. Tags are immutable — supersede"
+            echo "::error::an rc tag vX.Y.Z-rcN may point at develop. Tags are immutable — supersede"
             echo "::error::this one with a higher version rather than moving it."
             exit 1
           fi
@@ -620,7 +621,7 @@ jobs:
 #  3. ghcr.io packages for `maistro-engine` and `hive-conductor` must accept
 #     writes from GITHUB_TOKEN (the default for packages created by this repo;
 #     pre-existing packages may need the repo added under Package settings).
-#  4. `main` and `integration` branch protection, which §2 turns into a
+#  4. `develop` and `main` branch protection, which §2 turns into a
 #     release control: the ancestry guard is only as strong as the rules on
 #     the branch it checks against.
 # -----------------------------------------------------------------------------

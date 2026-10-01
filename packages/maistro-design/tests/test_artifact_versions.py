@@ -818,7 +818,7 @@ class TestTheStoreKeepsItsPromises:
     async def test_fk_violation_is_not_misread_as_version_exists(self, tmp_path: Path) -> None:
         """A missing parent `design_projects` row is SQLSTATE 23503, not 23505.
 
-        The real schema (migration 047) foreign-keys project_id to
+        The real schema (migration 048) foreign-keys project_id to
         design_projects; writing an orphan version must surface the integrity
         failure itself, never a false "version already exists" supersession
         conflict — and a false conflict would mask a broken reference.
