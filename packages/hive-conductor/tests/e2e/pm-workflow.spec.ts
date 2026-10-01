@@ -181,9 +181,10 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     await loginAsPM(page);
     const auditResp = await page.request.get("/v1/audit");
     expect(auditResp.status()).toBe(200);
-    const entries = await auditResp.json();
-    expect(Array.isArray(entries)).toBe(true);
-    expect(entries.length).toBeGreaterThan(0);
+    // #358: bounded page envelope, not the whole corpus as a bare array.
+    const auditPage = await auditResp.json();
+    expect(Array.isArray(auditPage.entries)).toBe(true);
+    expect(auditPage.entries.length).toBeGreaterThan(0);
   });
 
   test("11 — PM can view DAG metrics", async ({ page }) => {
