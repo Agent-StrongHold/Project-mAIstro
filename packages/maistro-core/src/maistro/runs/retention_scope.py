@@ -31,6 +31,7 @@ tasks.run_id, session_turns.run_id                none — logical (004/028)    
 learnings/outcomes/design_outputs/episodic_memories .run_id, .node_run_id, .attempt_id   none — logical (026/028/031)   Preserve. Producer provenance (#709, #64): "this execution produced this learning/outcome/design output/memory" is attribution history exactly like a task receipt — it names an execution that did happen. The purge never touches these tables; the reference resolving to a purged Run is the same residue an Event reference is, and the same policy — observable, not destroyed — applies.
 capability_invocations .run_id, .node_run_id, .attempt_id   none — logical (035)   Preserve. The capability-invocation ledger is an effect receipt ("this Attempt invoked this binding with this effect key"): attribution history, the same class as a task receipt, and it outlives the execution identity it names.
 capability_approvals.run_id (+ node_run_id)       none — logical (runtime DDL)  Preserve. A durable approval request for one effect of one execution is receipt history like the invocation ledger and is never selected by the purge.
+design_artifact_versions / design_project_guidance / design_branch_controls .run_id   none — logical (048)   Preserve. Producer provenance (#780): a version-ledger row, a durable guidance record or a branch-control row names the canonical execution that produced or last authorized it — attribution history exactly like `design_outputs`, and the purge never touches it. (`design_artifact_locks` carries no `run_id` column and so is outside this inventory.)
 task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key, bounded by its own replay window rather than by the Run's retention. `_ClaimFlow.claim` (#325, #1577) drives `purge_expired` on every claim, so the window is swept in production; `quality/durable-table-retention.json` records it as `ttl_purge`. The Run purge does not stand in for it.
 durable_graph_runs.run_id                         PK only, separate store       Not touched, and not yet decided. `SqliteDurableRunStore`'s checkpoint table belongs to a store the canonical purge does not reach; its retention is recorded as `undecided` in `quality/durable-table-retention.json` rather than claimed here.
 ================================================  ============================  ====================================================
@@ -73,6 +74,9 @@ RUN_REFERENCING_TABLES: tuple[str, ...] = (
     "learnings",
     "outcomes",
     "design_outputs",
+    "design_artifact_versions",
+    "design_project_guidance",
+    "design_branch_controls",
     "episodic_memories",
     "capability_invocations",
     "capability_approvals",
