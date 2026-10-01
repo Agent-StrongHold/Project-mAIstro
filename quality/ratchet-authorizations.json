@@ -279,6 +279,51 @@
       "owner": "repair lane auto-1194 (maistro-implementer)",
       "issue": "#1194",
       "reason": "GET /a2a/tasks/by-idempotency-key/{idempotency_key} is the receipt-recovery half of #1194's transport idempotency: a dispatching worker that lost its lease after an ambiguous POST polls this endpoint with the same key and receives the original receipt (find_run_by_effect), distinguishing 'never accepted' (404) from 'accepted, receipt lost' - so the same logical delegation cannot be filed twice after a lease loss without explicit new-work semantics. Vulture reports it as an unused function at 60% confidence because FastAPI registers route handlers through the @router.get decorator; already banked under fastapi-route-handler in quality/vulture-baseline.json on this branch. Trusted-base note: same two-merge rule as the create_a2a_task grant above - effective from the next base, per the #1310 post-merge reconciliation precedent."
+    },
+    "packages/maistro-core/src/maistro/identity/_crypto.py::unused variable 'curve'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "A path rename, not new debt. This exact identity was reviewed and banked at `packages/maistro-core/src/maistro/identity/__init__.py` before #430139cb, which moved the symbol into `_crypto.py` without moving its ledger row. The symbol itself is unchanged -- `git show 430139cb` relocates it verbatim. Vulture identities are `path::message`, deliberately line-number-independent, so a file move reads as one new identity plus one orphaned row; the orphan is pruned in the same PR (#1770). The underlying justification is unchanged and carries over: `curve` is a declarative dataclass field, the category this rule exists for. This grant authorizes only the relocation of an already-reviewed identity. It approves no new surface."
+    },
+    "packages/maistro-core/src/maistro/identity/_crypto.py::unused method 'from_mnemonic'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "A path rename, not new debt. This exact identity was reviewed and banked at `packages/maistro-core/src/maistro/identity/__init__.py` before #430139cb, which moved the symbol into `_crypto.py` without moving its ledger row. The symbol itself is unchanged -- `git show 430139cb` relocates it verbatim. Vulture identities are `path::message`, deliberately line-number-independent, so a file move reads as one new identity plus one orphaned row; the orphan is pruned in the same PR (#1770). The underlying justification is unchanged and carries over: a public constructor on the core identity surface, reached by callers outside this package. This grant authorizes only the relocation of an already-reviewed identity. It approves no new surface."
+    },
+    "packages/maistro-core/src/maistro/identity/_crypto.py::unused method 'derive_named'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "A path rename, not new debt. This exact identity was reviewed and banked at `packages/maistro-core/src/maistro/identity/__init__.py` before #430139cb, which moved the symbol into `_crypto.py` without moving its ledger row. The symbol itself is unchanged -- `git show 430139cb` relocates it verbatim. Vulture identities are `path::message`, deliberately line-number-independent, so a file move reads as one new identity plus one orphaned row; the orphan is pruned in the same PR (#1770). The underlying justification is unchanged and carries over: a public derivation entry point on the core identity surface. This grant authorizes only the relocation of an already-reviewed identity. It approves no new surface."
+    },
+    "packages/maistro-core/src/maistro/identity/_crypto.py::unused method 'did_key'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "A path rename, not new debt. This exact identity was reviewed and banked at `packages/maistro-core/src/maistro/identity/__init__.py` before #430139cb, which moved the symbol into `_crypto.py` without moving its ledger row. The symbol itself is unchanged -- `git show 430139cb` relocates it verbatim. Vulture identities are `path::message`, deliberately line-number-independent, so a file move reads as one new identity plus one orphaned row; the orphan is pruned in the same PR (#1770). The underlying justification is unchanged and carries over: a public accessor on the core identity surface. This grant authorizes only the relocation of an already-reviewed identity. It approves no new surface."
+    },
+    "packages/maistro-core/src/maistro/identity/_crypto.py::unused method 'mnemonic_words'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "A path rename, not new debt. This exact identity was reviewed and banked at `packages/maistro-core/src/maistro/identity/__init__.py` before #430139cb, which moved the symbol into `_crypto.py` without moving its ledger row. The symbol itself is unchanged -- `git show 430139cb` relocates it verbatim. Vulture identities are `path::message`, deliberately line-number-independent, so a file move reads as one new identity plus one orphaned row; the orphan is pruned in the same PR (#1770). The underlying justification is unchanged and carries over: a public accessor on the core identity surface. This grant authorizes only the relocation of an already-reviewed identity. It approves no new surface."
+    },
+    "packages/maistro-core/src/maistro/identity/_crypto.py::unused method 'zero'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "A path rename, not new debt. This exact identity was reviewed and banked at `packages/maistro-core/src/maistro/identity/__init__.py` before #430139cb, which moved the symbol into `_crypto.py` without moving its ledger row. The symbol itself is unchanged -- `git show 430139cb` relocates it verbatim. Vulture identities are `path::message`, deliberately line-number-independent, so a file move reads as one new identity plus one orphaned row; the orphan is pruned in the same PR (#1770). The underlying justification is unchanged and carries over: a public key-zeroing entry point on the core identity surface. This grant authorizes only the relocation of an already-reviewed identity. It approves no new surface."
+    },
+    "packages/maistro-core/src/maistro/identity/__init__.py::unused function '__getattr__'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "PEP 562 module-level `__getattr__`, which the interpreter calls on attribute miss and which no code ever names. Vulture is structurally blind to this caller -- there is no call site to find, in this package or any other. It exists because #430139cb split the crypto and lifecycle implementations into separate modules and kept `maistro.identity`'s import surface intact by resolving `_CRYPTO_NAMES` and `_LIFECYCLE_NAMES` lazily, so importing the package no longer pulls in the cryptography stack. Removing it would break every existing `from maistro.identity import ...`. Exercised through those imports across the suite and directly by packages/maistro-core/tests/identity/test_extra_guard.py."
+    },
+    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'from_legacy_dict'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "New in #430139cb. The classmethod that narrows an untyped legacy principal dict into a typed `Principal`. It has callers, but none Vulture can see: CI scans `packages/*/src` only, and both call sites are tests reaching it through dynamic attribute access -- packages/maistro-core/tests/fitness/test_principal_identity.py:41 via a `DirectPrincipal` alias and packages/maistro-core/tests/identity/test_extra_guard.py:94 via `module.Principal`. Neither spelling is resolvable statically. Its in-tree production callers arrive with #1095/#842/#843, which this grant does not anticipate or approve."
+    },
+    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'to_legacy_dict'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1772",
+      "reason": "New in #430139cb, and genuinely uncalled -- unlike its inverse it has no caller anywhere in the tree, tests included. Stated plainly, because the ledger is worth more as an honest record than a flattering one. It is banked rather than deleted for one reason: it is the serialization half of a round trip whose other half (`from_legacy_dict`) is live and tested, and deleting half of a legacy-compatibility boundary is a judgement for that boundary's author, not for a repair PR whose only job is to make develop green. If #1095/#842/#843 land without ever needing it, the right follow-up is to delete the method and this grant together, not to let the grant stand."
     }
   },
   "model-egress": {
