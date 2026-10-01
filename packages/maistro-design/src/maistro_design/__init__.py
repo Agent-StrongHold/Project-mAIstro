@@ -12,6 +12,19 @@ try:
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
 
+from maistro_design.creative_brief import (
+    ArtifactProvenance,
+    ArtifactRequirement,
+    BriefRevision,
+    CreativeBrief,
+    CreativeBriefConflictError,
+    CreativeBriefError,
+    CreativeBriefNotFoundError,
+    CreativeBriefStore,
+    CreativeBriefVersion,
+    InMemoryCreativeBriefStore,
+    SharedCreativeContext,
+)
 from maistro_design.engine import DesignEngine
 from maistro_design.protocols import (
     DesignEngineProtocol,
@@ -81,8 +94,17 @@ __all__ = [
     "NATIVE_SLOTS",
     "ArtifactKind",
     "ArtifactNode",
+    "ArtifactProvenance",
+    "ArtifactRequirement",
+    "BriefRevision",
     "CatalogImportPolicyError",
     "ColorToken",
+    "CreativeBrief",
+    "CreativeBriefConflictError",
+    "CreativeBriefError",
+    "CreativeBriefNotFoundError",
+    "CreativeBriefStore",
+    "CreativeBriefVersion",
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
@@ -100,6 +122,7 @@ __all__ = [
     "DiscoveryIncompleteError",
     "DiscoveryResult",
     "HTMLRenderer",
+    "InMemoryCreativeBriefStore",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
     "InMemoryTrustBanishList",
@@ -117,6 +140,7 @@ __all__ = [
     "RendererRegistry",
     "SVGRenderer",
     "ScanReport",
+    "SharedCreativeContext",
     "SkillMode",
     "SkillModeError",
     "SkillNotFoundError",
