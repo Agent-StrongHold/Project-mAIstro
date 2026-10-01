@@ -5,6 +5,27 @@ inventory-delta:
 
 # 776 — per-Workspace working-memory seam (M3 product floor)
 
+> Round note (develop-sync repair, this branch): the branch merged
+> `origin/develop` (fa2deb0a4, 28 commits) — no textual conflicts, but one
+> semantic merge defect had to be resolved: develop's `create_container`
+> passes `project_store=` / `project_scope_store=` into the `Container`
+> constructor, and this branch's earlier removal of the (then-dead)
+> compat field won the silent merge, leaving `project_scope_store=None` in
+> every in-memory container — 77 test failures across the runs
+> consumption/parked-run/claim-recovery/lease and container wiring/chat
+> suites. Resolution: took develop's side (compat field and both kwargs
+> restored). Evidence at the fixed head: full `packages/maistro-core/tests`
+> → 11599 passed, 117 skipped, 1 xfailed (PG DSN set; previously 77 failed);
+> `pytest formal/models/ --timeout=300 --hypothesis-seed=0` → 664 passed
+> (pgvector/pg18, fresh `alembic upgrade head`); `ruff check` /
+> `ruff format --check` clean; `check-suite-inventory.py` ok (suite grew to
+> 11717 recorded node IDs via develop, +0 from this round — no node IDs
+> added or removed); `check-vulture-baseline.py` exit 0 (1390 reviewed →
+> 1389 findings; the seam's LRU eviction legitimately calls
+> `OrderedDict.popitem`, so `runs/model.py::popitem` is no longer a finding
+> and its pruned bank entry stays pruned); `check-reachability.py` exit 0
+> (188 unreachable = baseline); `check-ratchet-provenance.py` exit 0.
+
 Issue #776 adds the minimum per-Workspace Ladybug working graph
 (ADR-082226-5104): a disposable, non-authoritative projection of durable
 memory that the persistent Workspace Agent can hydrate lazily, query, discard

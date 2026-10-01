@@ -211,6 +211,8 @@ class Container:
     prompt_manager: PromptManager = None  # type: ignore[assignment]
     capabilities: CapabilityRegistry = None  # type: ignore[assignment]  # wired in create_container
     episodic_store: EpisodicStore = None  # type: ignore[assignment]  # wired in create_container
+    # Compatibility name retained for callers; it is the canonical scope store.
+    project_store: ProjectScopeStore = None  # type: ignore[assignment]  # wired in create_container
     # Canonical execution spine (#41): the Project scope tree work is filed in,
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
@@ -2273,6 +2275,8 @@ async def create_container(
         intent_registry=intent_registry,
         capabilities=capabilities,
         episodic_store=episodic_store,
+        project_store=project_scope_store,
+        project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         campaign_store=campaign_store,
         run_store=run_store,
