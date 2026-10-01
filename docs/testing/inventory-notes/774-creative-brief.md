@@ -123,3 +123,57 @@ unclassified, and the brief-contract identities stay held by the documented
 
 Provenance audit: the PR body ("Refs #774", draft claim-stake) and every commit body on
 the branch contain no GitHub closure keywords (`fixes/closes/resolves #N`).
+
+## CI-repair round 2 — develop sync (merge `a9d243ef1` onto develop `9fe61e216`)
+
+The previous launch died in preflight: the driver's orphan-rebuild patch was corrupt
+("corrupt patch at line 526123"), leaving an index that matched no ref (staged = a
+partial develop tree; worktree = this branch's HEAD, byte-identical except the repair
+plan). Salvage: both diffs + the plan are preserved verbatim under the job directory
+(`salvage/incoming-774-{staged-index-vs-HEAD,unstaged}.patch`); the worktree was then
+normalized to HEAD (nothing unique was lost — the disk differed from HEAD only by the
+untracked plan file) and develop was merged properly instead.
+
+The only merge conflict was the predicted migration collision: develop's
+`047_capability_binding_revocations` (#1133) and this branch's
+`047_design_creative_briefs` both claimed `down_revision = 046`. Per the chain's
+one-linear-head convention the briefs migration is renumbered to
+**`048_design_creative_briefs`** (`down_revision = "047"`); the effect-index chain test
+now walks to `048` and asserts `get_heads() == ["048"]`. `SPEC-092826`'s "migration
+047" mention follows the renumber. No test node IDs moved; the inventory holds.
+
+Re-executed on the merged head:
+
+- `uv run ruff check .` / `ruff format --check .` clean (2693 files); `uv run pytest
+  packages/maistro-design/tests` 409 passed + PG leg 1 passed (live server), 1 skipped
+  without a server; `tests/migrations/` **100/100 pass against live PostgreSQL** —
+  `alembic upgrade head` applies `…046 → 047 (revocations) → 048 (briefs)`, and
+  `test_migration_chain.py` asserts both new tables in the live catalog.
+- The whole deterministic Quality-gate step list re-run green: radon ratchet,
+  version consistency, release consistency, doc links, enumerations, vendored IFEval
+  and BFCL provenance, xenon (67 ≤ 77), **vulture per-identity ledger (the named
+  CI-repair gate — exits 0)**, reachability, credential authority, wiring reads,
+  agent-store writes, contract markers, convergence matrix, reachability dispositions,
+  security/image inventories, backlog consistency, execution lifecycles, model egress,
+  `mypy --strict packages/maistro-core/src`, pyright (21 = baseline 21), `formal/`
+  (663 passed), fitness (22 passed), suite inventory (14 suites), lifecycle lint,
+  registry lint `--strict`, merge markers, cross-package imports, durable-table
+  inventory, monorepo layout.
+- The acceptance-state **mandate** halves are green (14 criteria this change declares:
+  all proven; chain: no orphan spec/ADR/criterion-less doc introduced).
+- The diff-coverage failure stays fixed: `maistro_design/__init__.py` measures 100%
+  (29 stmts / 0 miss) under `coverage run --branch`.
+
+**Residual (inherited, not #774 debt):** the acceptance-state ratchet's
+`design_coverage` floor is unsatisfiable at this base for *any* candidate. The fold at
+develop `9fe61e216` takes `auto-374`/`auto-1096`'s banked **38.4867**, but develop's own
+tree now measures **33.9609** (measured at develop tip `b9bcdd255`: 157 decisions, 92
+at zero — the M3-C6/M7-A doc merges added Accepted ADRs without proportional proof).
+The merged #774 tree measures **34.5978 — strictly above develop**, and the single
+per-decision delta is this lane's own contribution (ADR-036: 0.0 → 100.0 from
+SPEC-092826's 14 reachable criteria). Closing the remaining ~3.9 points would mean
+proving ~6 other epics' Accepted ADRs (out of lane scope), and the sanctioned
+corrections (`--bank` writes only this branch's note; grants are read at the base, and
+no `ac-state` grant exists there) cannot lower a `max`-folded floor from a candidate
+commit by design. This needs a trunk-side correction (prove decisions up or a
+develop-landed grant) — recorded here as the handoff, not gamed in this lane.
