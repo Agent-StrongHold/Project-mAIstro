@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +27
+  packages/maistro-core/tests: +28
   tests/: +3
 ---
 
@@ -32,7 +32,7 @@ no parallel runtime: fields + lifecycle functions + durable transitions.
 - Authority invariant: nothing on the authorization path reads knowledge
   state; pinned by test.
 
-## Tests (+5 files, 30 cases)
+## Tests (+5 files, 31 cases)
 
 - `packages/maistro-core/tests/memory/learnings/test_learning_lifecycle.py`
   — the pure rule set (`plan_advance`) and the in-memory store run: backward
@@ -47,7 +47,11 @@ no parallel runtime: fields + lifecycle functions + durable transitions.
   real in-process SQLite: row+ledger co-persistence, restart survival (a
   reconnect cannot demote a validated learning or erase its trail),
   promoted-reader compatibility, pre-ladder file upgrade without fabricated
-  provenance, illegal-transition atomicity, scope-bound writes.
+  provenance, illegal-transition atomicity, scope-bound writes, and the
+  concurrent-loser contract: two racing writers for the same rung produce
+  exactly one applied transition and one ledger row — the loser raises
+  `InvalidStageTransition` from the guarded UPDATE's rowcount check (ADR-103
+  rule 3, same `UPDATE 0` contract as the PG twin) instead of half-applying.
 - `packages/maistro-core/tests/persistence/test_pg_learning_stage.py` —
   FakeConnection twin: transaction ordering (transaction → select → guarded
   update → ledger insert), `UPDATE 0` raises instead of half-applying,

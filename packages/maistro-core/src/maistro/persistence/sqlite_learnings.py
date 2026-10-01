@@ -6,7 +6,11 @@ import itertools
 import json
 from typing import TYPE_CHECKING, Any
 
-from maistro.memory.learnings.lifecycle import StageTransition, plan_advance
+from maistro.memory.learnings.lifecycle import (
+    InvalidStageTransition,
+    StageTransition,
+    plan_advance,
+)
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
@@ -442,7 +446,7 @@ class SqliteLearningStore:
         current = LearningStage(row.get("stage") or "memory")
         candidate = _row_to_learning(row)
         updated, transition = plan_advance(candidate, to_stage=to_stage, actor=actor, reason=reason)
-        await self._conn.execute(
+        cursor = await self._conn.execute(
             "UPDATE learnings SET stage = ?, validated_by = ?, promoted_by = ?, "
             "status = ? WHERE id = ? AND stage = ? AND org_id = ?",
             (
@@ -455,6 +459,18 @@ class SqliteLearningStore:
                 row.get("org_id") or "",
             ),
         )
+        if cursor.rowcount == 0:
+            # The row moved underneath us between the read and the guarded
+            # UPDATE — a concurrent transition won this rung first. Raise
+            # rather than half-apply: the ledger INSERT below never runs, so
+            # the audit trail never records a transition the row does not
+            # carry (ADR-103 rule 3; same contract as PgLearningStore's
+            # `UPDATE 0`). The failed UPDATE matched no rows, so no rollback
+            # is needed — the shared connection's in-flight writer is untouched.
+            raise InvalidStageTransition(
+                f"learning #{learning_id} left stage {candidate.stage} "
+                "before the transition committed"
+            )
         await self._conn.execute(
             "INSERT INTO learning_stage_transitions "
             "(learning_id, org_id, from_stage, to_stage, actor, reason) "

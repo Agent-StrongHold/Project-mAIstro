@@ -10,6 +10,7 @@ before the ladder existed.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -179,3 +180,63 @@ async def test_another_org_cannot_read_or_advance(
         await store.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="x", org_id="org-b")
     with pytest.raises(KeyError):
         await store.stage_history(lid, org_id="org-b")
+
+
+@pytest.mark.asyncio
+async def test_a_losing_concurrent_transition_raises_and_leaves_no_ledger_row() -> None:
+    """Two writers race for the same rung: one wins, one loses loudly.
+
+    ADR-103 rule 3: a concurrent double-transition must *lose loudly* — the
+    loser raises instead of half-applying, and the ledger never records a
+    transition the row does not carry. The interleave is deterministic: the
+    loser's read is parked on a gate while the winner commits, so the
+    loser's guarded UPDATE provably runs against the row the winner already
+    moved (its `plan_advance` still sees the stale `memory` stage, so the
+    rejection can only come from the rowcount check on the UPDATE itself).
+    """
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = str(Path(tmp) / "race.db")
+        winner, conn_w = await _open(db_path)
+        loser, conn_l = await _open(db_path)
+        try:
+            lid = await winner.store(make_learning())
+
+            real_scoped_row = loser._scoped_row
+            loser_has_read = asyncio.Event()
+            winner_may_commit = asyncio.Event()
+
+            async def parked_scoped_row(learning_id: int, *, org_id: str) -> dict[str, Any]:
+                row = await real_scoped_row(learning_id, org_id=org_id)
+                loser_has_read.set()  # holding a stale read of stage=memory
+                await winner_may_commit.wait()
+                return row
+
+            loser._scoped_row = parked_scoped_row  # type: ignore[method-assign]
+            losing_task = asyncio.create_task(
+                loser.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="loser", org_id=ORG)
+            )
+            await loser_has_read.wait()
+            winner_learning = await winner.advance_stage(
+                lid, to_stage=LearningStage.LEARNING, actor="winner", org_id=ORG
+            )
+            assert winner_learning.stage is LearningStage.LEARNING
+            winner_may_commit.set()
+
+            with pytest.raises(InvalidStageTransition):
+                await losing_task
+
+            # Exactly one applied transition, exactly one ledger row: the
+            # loser left neither a moved row nor a phantom audit record.
+            rows = await winner.list_all(org_id=ORG)
+            assert rows[0].stage is LearningStage.LEARNING
+            history = await winner.stage_history(lid, org_id=ORG)
+            assert [(t.actor, t.from_stage, t.to_stage) for t in history] == [
+                ("winner", LearningStage.MEMORY, LearningStage.LEARNING)
+            ]
+        finally:
+            await conn_l.close()
+            await conn_w.close()
