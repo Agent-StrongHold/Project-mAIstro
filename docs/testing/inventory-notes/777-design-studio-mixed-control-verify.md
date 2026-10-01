@@ -2403,3 +2403,84 @@ still absent. All 13 #777 acceptance criteria remain UNMET; lane stays
 possible without violating the issue stop condition (no Design-Studio-
 private Agent runtime, Goal owner, reconciliation loop, memory system,
 or artifact authority). No closure keywords used (`Refs #777` only).
+
+## Round 37 — develop sync (69827fc62 -> fa2deb0a4) + re-verification at
+merged head `e70bddd5a2de` (37th head; job
+11cf7157575e4df6a1b243fd760934eb)
+
+**Prior block resolution:** round 36's BLOCKED was dependency-unlanded
+(not a sync conflict), but `origin/develop` **advanced** since: `git
+fetch origin` shows HEAD..origin/develop = 2 commits, `fa3391e5e`
+(#1717 — #1180 mission-cancel ownership probe moved onto the pooled
+async client in `hive-conductor/backend/services/engine.py`) and
+`fa2deb0a4` (#1719 — #1183 DAG streaming made live/keepalive-aware:
+`graph_runner.execute_dag_streaming` live mode + heartbeats + resync
+frames, new `dag_run_live.py` LiveRunProjection, `dag_run_store` durable
+per-run `event_seq`, SSE `pm_resync` in `routes/dag_runs.py`, shipped
+frontend `DagBuilder`/`DagRuns` resync handling). Merged cleanly as
+`e70bddd5a` with **zero conflicts** (21 files, +1580/−57, all under
+`packages/hive-conductor/`, `quality/shipped-surface-truth.json`, and
+two new inventory notes `1180-...`/`1183-...`). Manifest base for this
+job is `fa2deb0a4`, so the branch now contains it. **Neither commit is a
+#777 dependency**: no Goal reconciliation (#804/#805/#806), no
+CreativeBrief (#774), no creative Graph (#775), no Ladybug (#776), no
+GoalRevision (#458 behavior) — #1717/#1719 are M1/M3-B execution-
+transport work inside the existing canonical Run/NodeRun machinery.
+Prior job `0d702ebe` died on a provider context-size error (32905 >
+32768 prompt tokens) with `checks: []` — no driver checks, no
+`check-*.log`, and no uncommitted work to salvage (`git status` clean
+at `dda257f7d` = round 36's exact end head).
+
+**Dependency re-audit (fresh greps at merged head `e70bddd5a2de`):**
+- `GoalRevision|GoalReconcil|owning_agent` across `packages/*/src`:
+  still **0 files**; no `maistro-goals` package; `class GoalRevision`
+  defined nowhere.
+- `workspace_agent.py`: still **0** `goal|reconcil` matches — front
+  door only (#53).
+- `brief_store.py:5` still disclaims "nothing here is a Goal or
+  CreativeBrief record" (#774 absent).
+- `ladybug`: **0** hits in `packages/*/src` (#776 absent);
+  `creative_graph|creative-graph`: **0** hits (#775 absent).
+- #103 campaigns `GoalReader` (`workspaces/campaigns/policy.py:54`)
+  remains a read-only eligibility Protocol.
+
+**Gates executed at merged head `e70bddd5a2de` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2670 files already formatted (exit
+  0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **exit 0**; base
+  `fa2deb0a4515` -> candidate `e70bddd5a2de`, 1390 reviewed identities
+  -> 1390 findings, **0 unbanked** (CI-repair ledger round is a no-op;
+  no amendment required — the merged #1717/#1719 code introduced no
+  dead identities).
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **3013
+  passed, 6 skipped** (344.33s; +16 vs round 36 = the merge's new
+  #1183/#1180 tests).
+- `uv run pytest packages/maistro-core/tests packages/maistro-server/
+  tests -q` — **11409 passed, 736 skipped, 1 xfailed** (665.44s).
+  Round 36's load-dependent flake `test_sigterm_shutdown` **passed
+  within the full suite this round** — confirmed flake, not a
+  regression.
+- `uv run pytest packages/maistro-canvas/tests -q` — **426 passed, 73
+  skipped** (21.20s).
+- `uv run python scripts/check-suite-inventory.py` — PASS.
+- `uv run python scripts/check-shipped-surface-truth.py` — PASS (the
+  merged `shipped-surface-truth.json` prose update is consistent).
+- `uv run python scripts/check-doc-links.py` — PASS (0 broken links,
+  including the two new inventory notes).
+- `uv run python scripts/check-adr-index.py` — PASS.
+- `uv run python scripts/check-execution-lifecycles.py` — PASS.
+- `uv run python scripts/check-reachability.py` — PASS.
+- `uv run python scripts/check-contract-markers.py` — PASS.
+
+**Conclusion (37th inspected head):** unchanged block after a required
+develop sync. The two new develop commits touch the canonical
+Run/NodeRun execution-transport layer only — none of the 13 #777
+acceptance criteria gained reachable behavior. All 13 remain **UNMET**
+(no #804/#805/#806 reconciliation API to consume, no #458 GoalRevision,
+no #774 CreativeBrief projection, no #775 creative Graph, no #776
+Ladybug retrieval, no mixed-control E2Es). Lane stays **BLOCKED on
+unlanded canonical dependencies**. No repair code written — none
+possible without violating the issue stop condition. No closure
+keywords used (`Refs #777` only).
