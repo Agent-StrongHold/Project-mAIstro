@@ -49,6 +49,23 @@ are. They get issues of their own (§7) and Phase 0 blocks on A.
 Each item is an invariant with a check that is **red on develop today** and must be green
 before the item closes. Land the check first, failing, with a baseline; then make it pass.
 
+**Landing a check that starts with debt takes two merges.** Under
+[RATCHET-PROVENANCE.md](../ci/RATCHET-PROVENANCE.md) a checker reads its tolerated set and
+its grants in `quality/ratchet-authorizations.json` from the trusted merge base, never
+from the change under review. A ledger that does not exist at the base tolerates nothing,
+so a check cannot introduce its own baseline. The first PR grants each starting entry under
+the ratchet's name; the second, stackable on it, adds the checker and a ledger matching
+those grants. Each checker gets a row in RATCHET-PROVENANCE.md's inventory in the same
+PR.
+
+**Acceptance criteria are registered in SPEC-100126-c041**
+(`docs/specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md`, PR [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768)). The
+acceptance-state checker accepts numeric IDs only, so plan label AC-P*n* is
+`SPEC-100126-c041/AC-n`: a test proving AC-P1 carries
+`@pytest.mark.ac("SPEC-100126-c041/AC-1")`, and the PR that proves it deletes that
+criterion's `ac-state: unproven` comment from the spec. P0.6 had no AC line here; the
+spec derives AC-6 from P0.6's invariant and check.
+
 ### P0.1 One principal
 
 **Invariant.** Exactly one principal type crosses a service boundary. It lives in
@@ -60,11 +77,20 @@ hive `HiveUser` → `request.state.user` dict (`middleware/auth.py:296`), Turing
 `dict` **or** `ServiceIdentity`, canvas `CurrentUser`, core `AuthContext`, core `UserInfo`.
 maistro-server bridges by hand at `api/chat_completions.py:187`.
 
-**Check.** `packages/maistro-core/tests/fitness/test_principal_identity.py`: AST scan of
-`packages/*/src` and `packages/hive-conductor/backend` — any route handler, middleware or
-service reading `request.state.user[...]`, or any class named `*Principal`/`*User`/
-`*Identity` with a `role`/`roles` attribute outside `maistro.identity.principal`, fails.
-Baseline ledger `quality/principal-identity-baseline.json`, ratchet to zero.
+**Check.** `scripts/check-principal-identity.py`, run in `quality.yml`, with
+`packages/maistro-core/tests/fitness/test_principal_identity.py` asserting the ledger
+matches the tree. An AST scan of `packages/*/src` and the hive and Turing backends records
+two kinds of entry: each file that touches `<x>.state.user`, directly or through
+`getattr`/`setattr`/`hasattr`, and each class named `*Principal`/`*User`/`*Identity` with
+a `role`/`roles` field outside the listed owner modules. Baseline ledger
+`quality/principal-identity-baseline.json`, ratchet to zero.
+
+**Measured starting debt (2026-10-01): 31 entries.** Three parallel principal classes —
+hive `HiveUser` (`models/schemas.py`), canvas `CurrentUser` (`auth.py`) and core
+`_SubsystemIdentity` (`privilege.py`) — and 28 files reading dict-shaped `state.user`:
+23 hive routes, 2 hive services, hive and Turing auth middleware, and Turing
+`security.py`. Most hive reads go through `getattr(request.state, "user", ...)`, which an
+attribute-only scan misses (a first draft of the check counted 3).
 
 **AC text (for #53).** "AC-P1: every authenticated request in maistro-server, hive-conductor
 and the Turing backend yields one `maistro.identity.Principal`; no handler reads a
@@ -85,12 +111,20 @@ suffix needs an explicit reviewed policy like every other route — leaving
 `endswith("/feedback")` as the only suffix exemption.
 `PrivilegeMiddleware` is a no-op.
 
-**Check.** Extend `scripts/check-public-routes.py` (already bound to this middleware) with a
-second registry, `quality/route-permissions.json`: every prefix from `app.routes` must
-appear with a permission or an `exempt_reason` + owner + expiry, exactly the shape
-`quality/public-routes.json` already uses for unauthenticated paths. Suffix exemptions are
-listed as exact paths, not suffixes. Baseline = today's 18; ratchet to zero exemptions
+**Check.** `scripts/check-route-permissions.py`, a sibling of `check-public-routes.py`
+rather than an extension of it: it imports the hive app to read the mounted `/v1/{segment}`
+prefixes, so it runs in `quality.yml` beside `check_enumerations.py`, not in the
+bare-`python3` lint job. Registry `quality/route-permissions.json`: every mounted prefix
+not public by `quality/public-routes.json` must appear with exactly one of a permission or
+an `exempt_reason`, plus owner, disposition and reason; a temporary entry also needs an
+issue and an unexpired date — the shape `public-routes.json` already uses. A registry entry
+for a prefix nobody mounts fails, because it would pre-approve a future route. Suffix
+exemptions are listed as exact paths, not suffixes. Undeclared prefixes are ledgered in
+`quality/route-permissions-baseline.json`; ratchet to zero, and to zero exemptions
 without an expiry.
+
+**Measured starting debt (2026-10-01): 40 prefixes**, not the 18 counted by hand — every
+authenticated `/v1` prefix the hive app mounts, since the registry starts empty.
 
 **AC text (for #53 / #373).** "AC-P2: `check-public-routes.py` proves every registered
 Conductor route is either scoped, public-by-declaration, or exempt-by-declaration; an
@@ -304,7 +338,8 @@ PROJECT onto canonical services and re-register under the declared permission ta
 `/v1/memory`, `/v1/messages`, `/v1/quotas`, `/v1/widgets`, `dashboard_layout`,
 `/v1/topology`, `/v1/eval-judge`, `/v1/cli`, `/v1/setup-checklist`.
 RETIRED: `/v1/confirms` (#48) — unreachable process-local HA confirmation store; human
-approval is a waiting human NodeRun answered through `/v1/hitl`.
+approval is a waiting human NodeRun answered through `/v1/hitl`. It has no router module
+left, so it has no ledger row. `/v1/dag-metrics` is served by `routes/metrics.py`.
 KEEP with scoped entries: `/v1/auth`, `/v1/setup`, `/v1/install`, `/v1/hitl` (scoping via
 #1058/#1110), `/v1/workspaces`, `/v1/dags`, `/v1/schedules`, `/v1/credentials`,
 `/v1/capabilities`, `/v1/providers`, `/v1/harness`, `/v1/ws`, `/v1/profile`, `/v1/audit`
@@ -328,9 +363,13 @@ the P0.1 identity store. `audit_log` retires under P0.4. `dag_runs` and
 ## 6. Guards that keep the plan honest
 
 **Epic closure by evidence, not keyword.** `scripts/check-closure-targets.py`: parse the
-PR body for `Closes/Fixes/Resolves #N`; fail if the target's title starts with `[EPIC]`,
-`[MILESTONE]`, `[INITIATIVE]`, or the target has sub-issues. Epics close by hand when
-`check-ac-state` reports every criterion `reachable`. This is the #56 hole.
+PR body for `Closes/Fixes/Resolves #N`; fail if the target's leading bracketed tag contains
+the word EPIC, MILESTONE or INITIATIVE, or the target has sub-issues. The tag test, not a
+literal `[EPIC]` prefix, because real titles qualify the tag: `[EPIC M1-B]`,
+`[MILESTONE M4]`, `[MASTER INITIATIVE]`. Epics close by hand when `check-ac-state` reports
+every criterion `reachable`. This is the #56 hole. The check re-runs only when a PR is
+opened, reopened or pushed to, so adding `Closes #N` by editing the body alone is caught on
+the next push.
 
 **Freeze extended to surfaces.** Add to `quality/m1-convergence-freeze.json` (or an M3
 sibling) a rule: a new file under `frontend/src/pages` that declares a backend entity type
@@ -367,6 +406,20 @@ fails startup (#122 fixed this for the memory stores; P0.5 extends it to the eff
 Open §7 issues → land P0 checks red with baselines → P0.1–P0.4 green → A green → P0.5
 green → **M1 RunStore unification (#251)** → Phase 1 steps 1–6 (step 7 deferred v1.1), each PR
 retiring its ledger row → Phase 2 deletes → epics close by ac-state, never by keyword.
+
+### Phase 0 progress (2026-10-01)
+
+| Item | State |
+|---|---|
+| §5 retirement ledger + gate | in review, [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766) |
+| §6 epic-closure guard | in review, [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) |
+| AC-P1–P9 registration | in review, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
+| P0.1, P0.2 checks | grants PR, then checks PR (the two merges above); measured debt 31 and 40 |
+| P0.3–P0.9 checks | not started |
+
+An early draft of the P0.1/P0.2 checks reached `develop` without review on 2026-10-01 and
+was reverted by [#1769](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1769); the
+checks described in P0.1 and P0.2 above are the corrected design.
 
 ## 9. v1.0 stakeholder amendments (2026-10-01)
 
