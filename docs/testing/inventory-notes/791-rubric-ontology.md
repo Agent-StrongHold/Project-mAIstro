@@ -7,6 +7,15 @@ inventory-delta:
 Issue #791 registers `Rubric` as a first-class ontology kind bound to a Goal
 and adds the Project-scoped, ontology-backed Rubric store.
 
+Provenance note: the 18 vulture identities these tests/modules introduce are
+banked in `quality/vulture-baseline.json` (multiplicity-preserving, per the
+Counter comparison in `scripts/check-vulture-baseline.py`) and granted in
+`quality/ratchet-authorizations.json` (18 vulture + 2 reachability entries,
+keyed to the `ontology` CONNECT group and the `projects-rubric-store` LIBRARY
+group in `quality/reachability-dispositions.json`), following the repo's
+two-merge grant doctrine: grants are read from the base revision, so they
+take effect once this branch lands.
+
 New tests under `packages/maistro-core/tests`:
 
 - `ontology/test_rubric_model.py` (+16): the `rubric` kind's SEMANTIC model —
