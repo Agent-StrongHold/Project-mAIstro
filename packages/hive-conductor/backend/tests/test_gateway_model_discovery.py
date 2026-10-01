@@ -229,10 +229,10 @@ def test_an_empty_catalog_is_its_own_state(
     monkeypatch.setattr(
         settings_routes.httpx, "get", lambda *a, **k: _gateway_response(200, {"data": []})
     )
-    out = _assert_failure_kind(monkeypatch, "empty", source="gateway", models=[])
     # An empty gateway catalog is reported as the gateway's (empty) answer,
-    # not substituted: the caller must see that the gateway said "nothing".
-    return out
+    # not substituted: the caller must see that the gateway said "nothing"
+    # (source="gateway", models=[]) rather than a stored-default stand-in.
+    _assert_failure_kind(monkeypatch, "empty", source="gateway", models=[])
 
 
 # --- the back-compat list view keeps its contract --------------------------

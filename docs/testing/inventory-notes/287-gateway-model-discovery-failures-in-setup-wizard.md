@@ -89,3 +89,31 @@ looked usable, and a failed fetch was indistinguishable from a valid catalog.
 - The wizard treats a *pending* fetch as non-blocking (offline usability);
   the final preflight at completion time is what prevents a never-answered
   catalog from being recorded as verified.
+
+## CI repair (merge-queue round, head 5a4103e10)
+
+The new step-0 gate — next stays disabled while discovery has failed and the
+unverified acknowledgement is unchecked — correctly classified the e2e
+harness itself: `tests/e2e/session.ts` `setupIfNeeded()` filled the conductor
+name and clicked Next, but the harness ships no gateway, so
+`/v1/settings/models` returns `discovered:false` (`not_configured`), the
+acknowledgement rendered, and every spec that boots through setup timed out
+waiting on a disabled button (~40 failures in `hive-conductor-e2e-ui`, which
+took the `integration-scope` aggregator down with it).
+
+Repair: `setupIfNeeded()` now waits briefly for the
+`unverified-ack` checkbox and checks it when it renders (the bounded wait
+gives up if a real catalog is ever discovered, leaving the already-unlocked
+step untouched). The harness therefore walks the same explicit
+acknowledged-unverified path a human must. No spec count changed: the
+compose Playwright suite is not part of this pytest ledger, and the pytest
+delta above is still +18 node IDs (`test_gateway_model_discovery.py` also
+lost an accidental `return out` that tripped `PytestReturnNotNoneWarning`;
+assertions unchanged).
+
+Local proof: `docker compose -f docker-compose.test.yml --profile test up
+--build --abort-on-container-exit --exit-code-from e2e-tests e2e-tests` →
+**106 passed (2.9m), exit 0** (host port 8101 was occupied by an unrelated
+container, so the run used a local-only compose override dropping the host
+port mapping; the tests address the service over the compose network at
+`http://hive:8101`, so the exercise is identical).
