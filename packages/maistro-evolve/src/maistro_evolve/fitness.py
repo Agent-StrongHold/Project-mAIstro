@@ -45,6 +45,18 @@ _HARD_GATE_THRESHOLDS: dict[str, float] = {
 # the alternative is the fail-open behaviour this replaces.
 _DEFAULT_GATE_FLOOR = 0.01
 
+
+def hard_gate_thresholds() -> dict[str, float]:
+    """Public, read-only view of the tuned per-benchmark gate thresholds.
+
+    ``promotion.objective_version`` folds these into the objective digest, so
+    the thresholds participate in the objective's immutable identity: changing
+    a gate changes the objective version, which (per the #854 governed-promotion
+    contract) invalidates evidence produced under the old one.
+    """
+    return dict(_HARD_GATE_THRESHOLDS)
+
+
 _FITNESS_WEIGHTS = {
     "eval_score": 0.65,
     "cost_efficiency": 0.15,
