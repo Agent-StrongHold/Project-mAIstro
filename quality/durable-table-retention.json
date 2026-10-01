@@ -126,7 +126,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#82",
-      "notes": "Canonical Workspace BacklogItem work-source rows (alembic 048 on PostgreSQL, ensure_schema on SQLite). Work-source history is deliberately append-and-revise; closure/reopen keeps the row. No DELETE path exists yet; a Workspace deletion cascade is an owner decision this service does not make."
+      "notes": "Canonical Workspace BacklogItem work-source rows (alembic 049 on PostgreSQL, ensure_schema on SQLite). Work-source history is deliberately append-and-revise; closure/reopen keeps the row. No DELETE path exists yet; a Workspace deletion cascade is an owner decision this service does not make."
     },
     {
       "table": "books",

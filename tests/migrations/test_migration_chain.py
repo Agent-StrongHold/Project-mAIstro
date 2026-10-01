@@ -55,6 +55,9 @@ EXPECTED_TABLES = frozenset(
         "asset_instances",
         "asset_sheets",
         "audit_log",
+        "backlog_claims",
+        "backlog_events",
+        "backlog_items",
         "books",
         # The Canvas store's own tables (044), created outside the repository
         # until #286 put them in the chain.

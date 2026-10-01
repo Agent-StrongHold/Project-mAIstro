@@ -169,7 +169,8 @@ Carryover: the NEEDS-DEEP-REVIEW trusted-base half from 54830db28.
   their convergence is #102-cutover scope, not a repair item for this branch.
 - **Durable leg proven against a live database (first time, not skipped):**
   pgvector/pgvector:pg18 container on :5434, `alembic upgrade head` ran the
-  full 000→048 chain cleanly (048 = backlog work-source tables), then the
+  full 000→048 chain cleanly (048 = backlog work-source tables; **superseded
+  by the second CI-repair addendum below: that revision is now `049`**), then the
   conformance suite with `MAISTRO_TEST_PG_DSN` set: **53 passed / 1 skipped**
   (vs 38/16 without a DSN). The remaining skip is the structural
   memory-reference reopen test ("the reference has no substrate to reopen").
@@ -196,3 +197,71 @@ Carryover: the NEEDS-DEEP-REVIEW trusted-base half from 54830db28.
   +5 reachability) onto develop in a grants-only merge, then re-queue —
   at that base the exact-debt-ledger and reachability provenance gates pass
   with the candidate exactly as committed here.
+
+## Second CI-repair addendum (merge-queue round at 5ae1a1306+)
+
+Repair scope this round: the alembic two-head collision introduced by the
+develop sync, the four unregistered ratchet-provenance reads develop's
+P0.1/P0.2 checks brought with them, and fresh proof for the named pip-audit
+gate. Test node counts are unchanged; the migration-chain suite gained no
+nodes (its `EXPECTED_TABLES` fixture set gained the three backlog tables the
+catalog assertion is defined to spell out).
+
+- **Alembic collision fixed by renumbering, not by weakening:** develop's
+  `048_canvas_job_retry_backoff` and this branch's backlog migration both
+  declared `revision = "048" / down_revision = "047"`, so `alembic upgrade
+  head` died with "Multiple head revisions are present". The backlog migration
+  is now `alembic/versions/049_backlog_work_source.py` (`revision = "049",
+  down_revision = "048"`), keeping the chain linear with exactly one head
+  (`uv run alembic heads` → `049 (head)`), per the same convention the #1341
+  collision repair recorded. Docstring/comment references updated in
+  `maistro.backlog.model`, `maistro.backlog.pg_store`, and
+  `quality/durable-table-retention.json`.
+- **Migration chain re-proven on a pristine database:** disposable
+  pgvector/pgvector:pg18 (`auto-82-pg`, fresh database `migr82`),
+  `MAISTRO_TEST_DATABASE_URL=… uv run pytest
+  tests/migrations/test_migration_chain.py` → **13 passed** (pre-repair at
+  the collision: 11 failed / 2 passed). The catalog assertion
+  (`EXPECTED_TABLES`) now names `backlog_items` / `backlog_claims` /
+  `backlog_events`, so a future migration that drops them fails the suite
+  instead of the product.
+- **Supply chain (pip-audit), both CI shapes green at this head:**
+  security.yml's `--all-extras` shape and ci.yml `security`'s `--extra dev`
+  shape were each run end-to-end (`uv sync --locked …; uv pip install
+  pip-audit; uv pip freeze --exclude-editable; pip-audit --strict
+  --format=json; scripts/pip_audit_gate.py`): gate exit 0 both times —
+  exactly one known advisory (ecdsa==0.19.2 PYSEC-2026-1325), triaged in
+  ALLOWED; direct-dependency usage ratchet OK (10 packages / 60 runtime deps
+  / 4 reviewed dispositions). The merge-queue-reported failure is not
+  reproducible at this head.
+- **Ratchet provenance: the four unregistered reads are fixed at the
+  mechanism, not by exception-only:** `check-principal-identity.py` and
+  `check-route-permissions.py` (inherited byte-identical from develop base
+  430139cb7, where the gate fails identically — verified against a pristine
+  `git archive` of origin/develop) read their tolerated-debt baselines from
+  the candidate tree. Two new delegated adapters
+  (`scripts/check-principal-identity-provenance.py`,
+  `scripts/check-route-permissions-provenance.py`) now base-resolve those
+  baselines via `ratchet_provenance` (trusted: 3 tolerated principal
+  violations, 40 tolerated route gaps at base — both green, zero expansion);
+  the two reviewed *specification* registries (`route-permissions.json`,
+  `public-routes.json`) are registered candidate-authored in
+  `check-ratchet-provenance.py` with the same justification shape as
+  shipped-surface-truth. The provenance policy unit tests pass unchanged
+  (38 passed).
+- **exact-debt-ledger re-run at this head:** candidate ledger remains exact
+  (no candidate-added / candidate-removed); no identity among the 60
+  trusted-added findings is genuinely dead — 51 are the granted #98/#100
+  store/model API (two-merge driver step unchanged from the previous
+  addendum), and 9 are develop-side ledger drift on the identity module
+  (`identity/` is byte-identical base↔head; the base ledger still points at
+  pre-refactor `identity/__init__.py` paths). The drift rows are develop's
+  to re-bank; nothing in this branch's diff moves them.
+- **Remaining red after this round is exactly the documented two-merge
+  half:** `check-reachability-provenance.py`,
+  `check-reachability-dispositions-provenance.py`, and (through its delegated
+  adapters) `check-ratchet-provenance.py` fail solely on
+  `maistro.backlog.*` "NEW … not previously authorized";
+  `check-vulture-baseline.py` fails solely on the 41 granted backlog
+  identities plus the 9 develop-side identity-drift rows. Driver step
+  unchanged: land the staged grants on develop, then re-queue.

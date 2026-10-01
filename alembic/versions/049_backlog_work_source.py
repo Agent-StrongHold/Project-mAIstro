@@ -1,8 +1,10 @@
 """Durable tables for the canonical Workspace BacklogItem work-source (#82).
 
-Attaches after the trunk chain tip `047` per the convention 046 records: the
+Attaches after the trunk chain tip `048` per the convention 046 records: the
 id/parent numbering tracks the chain, not the issue number, so the chain stays
-linear with exactly one head.
+linear with exactly one head. Originally filed as ``048`` alongside develop's
+``048_canvas_job_retry_backoff`` -- the same two-head collision #1341 removed --
+and renumbered to ``049`` so the chain keeps exactly one head.
 
 The DDL is guarded (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
 EXISTS`), matching the SQLite twin's `ensure_schema`
@@ -22,8 +24,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "048"
-down_revision = "047"
+revision = "049"
+down_revision = "048"
 branch_labels = None
 depends_on = None
 
