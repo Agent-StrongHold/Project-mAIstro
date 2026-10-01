@@ -802,3 +802,83 @@ async def test_projection_never_overlays_a_canonical_run_from_another_workspace(
     }
 
     assert await _canonical_projection(dict(record), "user") == record
+
+
+# ─── stream continuity: seq cursors + resync markers (#1183) ────────────────
+
+
+async def _stream_frames(run_id: str, limit: int) -> list[str]:
+    from routes.dag_runs import stream_run_events
+
+    response = await stream_run_events(run_id, _ScopedRequest(_AUTHED_USER_ID))
+    iterator = response.body_iterator
+    frames: list[str] = []
+    try:
+        for _ in range(limit):
+            frames.append(await anext(iterator))
+    except StopAsyncIteration:
+        pass
+    finally:
+        await iterator.aclose()
+    return frames
+
+
+@pytest.mark.asyncio
+async def test_sse_events_carry_their_projection_seq(authed_client: Any) -> None:
+    """#1183: every streamed event carries the projection's per-run sequence
+    number — the cursor a consumer resumes and gap-detects against."""
+    ws = _workspace(authed_client, "Seq cursor")
+    await _seed_run_async("r-seq", workspace_id=ws)
+    from services.dag_run_store import get_dag_run_store
+
+    await get_dag_run_store().append_event(
+        "r-seq", event_type="pm_node_completed", role="intake", capability="create_initiative"
+    )
+
+    frames = await _stream_frames("r-seq", limit=2)
+    assert ": connected" in frames[0]
+    assert '"seq": 1' in frames[1]
+
+
+@pytest.mark.asyncio
+async def test_sse_does_not_mark_resync_for_contiguous_history(authed_client: Any) -> None:
+    """A replay that starts at seq 1 is contiguous: no resync marker."""
+    ws = _workspace(authed_client, "Contiguous")
+    await _seed_run_async("r-contig", workspace_id=ws)
+
+    frames = await _stream_frames("r-contig", limit=2)
+    assert ": connected" in frames[0]
+    assert "pm_resync" not in frames[1]
+    assert "pm_node_started" in frames[1]
+
+
+@pytest.mark.asyncio
+async def test_sse_marks_resync_when_replayed_history_was_trimmed(authed_client: Any) -> None:
+    """#1183: a bounded history that lost its oldest events must not reach a
+    reconnecting consumer as silence — the stream announces the discontinuity
+    and points at the durable record before the first replayed event."""
+    ws = _workspace(authed_client, "Trimmed")
+    await _seed_run_async("r-trimmed", workspace_id=ws)
+    from services.dag_run_store import MAX_EVENTS_PER_RUN, get_dag_run_store
+
+    store = get_dag_run_store()
+    for _ in range(MAX_EVENTS_PER_RUN + 3):
+        await store.append_event(
+            "r-trimmed", event_type="pm_node_started", role="intake", capability="c"
+        )
+
+    frames = await _stream_frames("r-trimmed", limit=3)
+    assert ": connected" in frames[0]
+    # 1 seeded event + (MAX+3) appended = MAX+4 total; the buffer keeps the
+    # last MAX, so replay begins at seq 5.
+    total_events = MAX_EVENTS_PER_RUN + 4
+    first_surviving = total_events - MAX_EVENTS_PER_RUN + 1
+    # First delivered frame: the explicit resync, before any event data.
+    assert "event: pm_resync" in frames[1]
+    assert '"last_seq": 0' in frames[1]
+    assert f'"resumed_at": {first_surviving}' in frames[1]
+    assert f'"missed": {first_surviving - 1}' in frames[1]
+    assert "GET /v1/dag-runs/r-trimmed" in frames[1]
+    # Then the replayed events, starting at the first surviving seq.
+    assert "pm_node_started" in frames[2]
+    assert f'"seq": {first_surviving}' in frames[2]
