@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib.metadata
 import os
-import signal
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -30,7 +28,7 @@ from maistro.observability.middleware import RequestIDMiddleware
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
-from maistro.tasks.queue import configure_task_queue, reset_task_queue
+from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.api import (
@@ -252,9 +250,29 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
     # `ConductorAgent` provides exactly that and deliberately does not subclass
     # `BaseAgent`, which would bring a second strategy stack and a second
     # extraction pass over an answer `run_task` has already produced.
-    container.agents = cast("dict[str, Agent]", {CONDUCTOR_AGENT_NAME: ConductorAgent()})
+    container.agents = cast(
+        "dict[str, Agent]",
+        {CONDUCTOR_AGENT_NAME: ConductorAgent(router=container.llm_router)},
+    )
     await logger.ainfo("container_wired", agents=sorted(container.agents))
     return container
+
+
+async def _drain_queue_singleton() -> None:
+    """Drain the task queue's in-flight receipt writes before teardown (#849).
+
+    The runner drains its own workers' writes in `stop()`; this covers a
+    straggler request that terminalized a task after the runner stopped, whose
+    scheduled write would otherwise be abandoned when the singleton is dropped.
+    Idempotent after the runner's drain — a queue with nothing scheduled returns
+    immediately — and best-effort, because shutdown must proceed even if the
+    drain itself fails (the canonical Run still holds the truth, and recovery
+    reconciles from it).
+    """
+    try:
+        await get_task_queue().drain_persistence()
+    except Exception:
+        await logger.awarning("task_receipt_drain_on_shutdown_failed", exc_info=True)
 
 
 @asynccontextmanager
@@ -366,18 +384,24 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _runner.start()
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 
-    # Register graceful shutdown handler
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(
-            sig,
-            lambda s=sig: asyncio.create_task(_graceful_shutdown(s)),  # type: ignore[misc]
-        )
+    # No signal handler is installed here. Uvicorn owns SIGTERM/SIGINT for the
+    # process: its `handle_exit` sets `should_exit`, the main loop returns, and
+    # the lifespan shutdown block below runs as part of `server.shutdown()`.
+    # This used to install its own `loop.add_signal_handler` that drained the
+    # runner directly — which *replaced* Uvicorn's handler (asyncio allows one
+    # handler per signal), so `should_exit` was never set: the server ignored
+    # SIGTERM, none of the shutdown block ran, and the container's grace
+    # deadline ended in SIGKILL with sandboxes, pooled clients and the DB
+    # engine all still live (#819). Draining composes through lifespan
+    # shutdown instead; see the `finally` block and `SHUTDOWN_DRAIN_TIMEOUT`.
 
     try:
         yield
     finally:
         # Graceful shutdown: drain tasks → flush quota snapshots → cleanup.
+        # Reached via Uvicorn's SIGTERM/SIGINT handling — the drain is bounded
+        # (`SHUTDOWN_DRAIN_TIMEOUT`), tasks the deadline cancels are marked
+        # FAILED, and shutdown continues to process exit either way.
         if _runner:
             await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
         container = getattr(app.state, "container", None)
@@ -392,6 +416,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # interpreter can install a fresh one. Startup refuses to replace a queue
         # that has accepted tasks — correctly, since a queued task cannot be given a
         # Run afterwards — and without this that guard latched permanently.
+        await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
         a2a.configure_a2a_admission(None, None)
@@ -440,13 +465,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if get_startup_phase(app) is StartupPhase.STARTING:
             set_startup_phase(app, StartupPhase.FAILED)
         raise
-
-
-async def _graceful_shutdown(sig: signal.Signals) -> None:
-    """Handle shutdown signals with task draining."""
-    await logger.ainfo("shutdown_signal_received", signal=sig.name)
-    if _runner:
-        await _runner.drain(timeout=30)
 
 
 app = FastAPI(

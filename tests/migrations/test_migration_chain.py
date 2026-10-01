@@ -68,6 +68,11 @@ EXPECTED_TABLES = frozenset(
         # Bindings and Invocations are separate tables: Bindings are immutable
         # authorization records, Invocations the logical effect ledger.
         "capability_approvals",
+        # The tombstone half of the same authority (047). Separate from
+        # `capability_bindings` because revoking deletes the binding row,
+        # so a `revoked_at` column would be deleted along with the thing
+        # it forbids and the id could be registered again (#846).
+        "capability_binding_revocations",
         "capability_bindings",
         "capability_invocations",
         "consumer_cursors",
