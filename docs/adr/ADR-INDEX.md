@@ -18,7 +18,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ---- | ----- | -------- | --------- | ---------- | --------------- | --------- |
 | ADR-001 | v3 | Superseded | 2026-04-26 | 2026-04-26† | 2026-05-29 17:48 CDT | Original branching strategy (integration as PR base) — superseded by ADR-095. |
 | ADR-002 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Per-port spec-first workflow: a written spec precedes code for each port. |
-| ADR-003 | v3 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Agent-runtime gap analysis — roadmap mapping archived-branch work to future ADRs. |
+| ADR-003 | v3 | Accepted | 2026-04-26 | 2026-04-26† | 2026-10-01 15:22 CDT | Agent-runtime gap analysis — roadmap mapping archived-branch work to future ADRs. |
 | ADR-004 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | AgentSpec + AgentOutput envelopes — the typed invoke/result contract. |
 | ADR-005 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-11 08:14 CDT | Pydantic schemas + `SCHEMA_REGISTRY` for runtime lookup by dotted path. |
 | ADR-006 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-11 08:14 CDT | AgentRecipe + RecipeRegistry — an agent is data (YAML recipe). |
@@ -77,11 +77,11 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-059 | v2 | Proposed | 2026-05-29 | — | 2026-05-29 22:00 CDT | OAuth2 user authentication layered over service-key authz. |
 | ADR-060 | v1 | Proposed | 2026-06-01 | — | 2026-08-20 21:03 CDT | Persona-as-seed: declarative domain templates, pluggable Scorer protocol, and two-tier eval statistics. |
 | ADR-061 | v3 | Accepted | 2026-05-29 | 2026-05-29† | 2026-08-24 21:39 CDT | maistro-design — composable design skills + design systems package. |
-| ADR-062 | v2 | Accepted | 2026-05-19 | 2026-05-19† | 2026-05-29 22:00 CDT | Graph execution protocol — DAG node types, executor, phases. |
-| ADR-063 | v2 | Accepted | 2026-05-20 | 2026-05-20† | 2026-05-29 22:00 CDT | Credential pool + automatic key rotation (strategies, cooldowns). |
-| ADR-064 | v2 | Accepted | 2026-05-20 | 2026-05-20† | 2026-05-29 22:00 CDT | Comprehensive secret redaction (30+ patterns, single-pass). |
+| ADR-062 | v3 | Accepted | 2026-05-19 | 2026-05-19† | 2026-10-01 15:22 CDT | Graph execution protocol — DAG node types, executor, phases. |
+| ADR-063 | v3 | Accepted | 2026-05-20 | 2026-05-20† | 2026-10-01 15:22 CDT | Credential pool + automatic key rotation (strategies, cooldowns). |
+| ADR-064 | v2 | Accepted | 2026-05-20 | 2026-05-20† | 2026-10-01 15:22 CDT | Comprehensive secret redaction (30+ patterns, single-pass). |
 | ADR-065 | v2 | Accepted | 2026-05-20 | 2026-06-10 | 2026-05-29 22:00 CDT | Test harness with a full wiring factory. |
-| ADR-066 | v2 | Proposed | 2026-05-20 | — | 2026-05-29 22:00 CDT | P1 resilience & control (depth, compaction, steering, rate coordination). |
+| ADR-066 | v2 | Proposed | 2026-05-20 | — | 2026-10-01 15:22 CDT | P1 resilience & control (depth, compaction, steering, rate coordination). |
 | ADR-067 | v2 | Accepted | 2026-05-09 | 2026-05-09† | 2026-05-29 22:00 CDT | Canvas asset compositor (scene graph, occlusion, prompt composition). |
 | ADR-068 | v2 | Accepted | 2026-05-29 | 2026-05-29† | 2026-05-29 23:53 CDT | Unified authorization & elevation — tier ladder, approver graph, sudo self-elevation, RLPHD. |
 | ADR-069 | v1 | Accepted | 2026-05-30 | 2026-05-30† | 2026-05-30 00:14 CDT | Code registry — versioned, signed, microVM-isolated execution of code refs. |
@@ -116,9 +116,9 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-098 | v1 | Accepted | 2026-06-10 | 2026-06-10 | 2026-08-20 21:03 CDT | Layer taxonomy extension — Evolve, Crypto, Connectivity, Ability, Identity. |
 | ADR-099 | v1 | Proposed | 2026-06-12 | — | 2026-06-12 | Builders pipeline as a DAG (Epic-15 recreation) with gated verify-and-revise loops and iteration budgets. |
 | ADR-100 | v1 | Accepted | 2026-06-14 | 2026-06-14 | 2026-06-14 | Bundled (T1) + cataloged (T2) Open Design design systems for maistro-design, with a content scan and one-click catalog import. |
-| ADR-101 | v1 | Proposed | 2026-06-15 | — | 2026-08-20 21:03 CDT | Foreign harness adapters, hierarchical orchestration, and agent/skill portability. |
+| ADR-101 | v2 | Proposed | 2026-06-15 | — | 2026-10-01 15:22 CDT | Foreign harness adapters, hierarchical orchestration, and agent/skill portability. |
 | ADR-102 | v1 | Accepted | 2026-09-14 | 2026-09-14 | 2026-09-14 | Sibling packages reuse maistro-core's central guarded outbound HTTP seam; no vendored SSRF control. |
-| ADR-061526-f383 | v1 | Superseded | 2026-06-15 | 2026-10-01 | 2026-08-20 21:03 CDT | Foreign harness adapters, hierarchical orchestration, and agent/skill portability. |
+| ADR-061526-f383 | v2 | Superseded | 2026-06-15 | 2026-10-01 | 2026-10-01 15:22 CDT | Foreign harness adapters, hierarchical orchestration, and agent/skill portability. |
 | ADR-062026-9b30 | v1 | Accepted | 2026-06-20 | 2026-06-20 | 2026-08-20 21:03 CDT | Date-based ADR/SPEC IDs for new records (sequential numbering frozen). |
 | ADR-062226-674b | v1 | Accepted | 2026-06-22 | 2026-06-22† | 2026-08-20 21:03 CDT | Constant tunability ladder — config-backed defaults that mature toward locked constants. |
 | ADR-062326-616c | v3 | Accepted | 2026-06-23 | 2026-06-23† | 2026-08-24 21:39 CDT | Design skills code export capability — React/TSX output format. |
@@ -138,12 +138,12 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-073126-c4e1 | v2 | Accepted | 2026-07-31 | 2026-07-31 | 2026-09-30 16:45 CDT | Release and versioning process: lockstep tags, single publish path. |
 | ADR-081226-034b | v1 | Accepted | 2026-08-12 | 2026-08-12 | 2026-08-20 21:03 CDT | Package Ownership and Dependency Direction. |
 | ADR-081226-69ee | v1 | Accepted | 2026-08-12 | 2026-08-12 | 2026-08-20 21:03 CDT | Graph and Node Execution Model. |
-| ADR-081226-6b46 | v1 | Accepted | 2026-08-12 | 2026-08-12 | 2026-08-20 21:03 CDT | Capability, Provider, Binding and Invocation. |
+| ADR-081226-6b46 | v2 | Accepted | 2026-08-12 | 2026-08-12 | 2026-10-01 15:22 CDT | Capability, Provider, Binding and Invocation. |
 | ADR-081226-6e34 | v1 | Accepted | 2026-08-12 | 2026-08-12 | 2026-08-20 21:03 CDT | Scoped Grants and Deny-Wins Authorization. |
-| ADR-081226-7248 | v2 | Accepted | 2026-08-12 | 2026-08-12 | 2026-09-12 10:22 CDT | Event and Checkpoint Model. |
+| ADR-081226-7248 | v3 | Accepted | 2026-08-12 | 2026-08-12 | 2026-10-01 15:22 CDT | Event and Checkpoint Model. |
 | ADR-081226-9944 | v1 | Accepted | 2026-08-12 | 2026-08-12 | 2026-08-20 21:03 CDT | Canonical Product Hierarchy and Ownership. |
 | ADR-081226-a66b | v1 | Accepted | 2026-08-12 | 2026-08-12 | 2026-08-20 21:03 CDT | Run, NodeRun and Attempt Lifecycle. |
-| ADR-081226-bb3a | v1 | Accepted | 2026-08-12 | 2026-08-12 | 2026-08-20 21:03 CDT | Template, Object and Provenance Semantics. |
+| ADR-081226-bb3a | v2 | Accepted | 2026-08-12 | 2026-08-12 | 2026-10-01 15:22 CDT | Template, Object and Provenance Semantics. |
 | ADR-081226-e626 | v2 | Accepted | 2026-08-12 | 2026-08-12 | 2026-09-19 16:40 CDT | Persona and Product Surface Model. |
 | ADR-081426-1f7c | v1 | Accepted | 2026-08-14 | 2026-08-14 | 2026-08-20 21:03 CDT | ExecutionRuntime Contract. |
 | ADR-081426-b1d3 | v1 | Accepted | 2026-08-14 | 2026-08-14 | 2026-08-20 21:03 CDT | Project Scope Tree. |
