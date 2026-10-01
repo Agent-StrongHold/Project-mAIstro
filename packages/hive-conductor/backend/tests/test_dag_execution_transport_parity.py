@@ -480,3 +480,93 @@ def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both
         pass
     assert refused.value.code == POLICY_VIOLATION
     assert _run_ids() == before
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+def test_ws_live_stream_records_projection_incrementally_with_sequence_identity(
+    admin_client: TestClient, stored_dag: str
+) -> None:
+    """#1183: the websocket Run streams progress while executing, and the
+    projection is written incrementally — every node frame is durable before
+    it is sent, carries the projection's sequence number, and the run record
+    holds the contiguous event history a reconnecting consumer replays."""
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = _create_workspace(admin_client, "Parity live")
+    frames = _run_over_socket(admin_client, stored_dag, workspace_id)
+
+    assert frames[0]["status"] == "started"
+    assert frames[0]["heartbeat_seconds"] > 0
+    terminal = frames[-1]
+    assert terminal["status"] == "completed"
+    run_id = terminal["run_id"]
+
+    node_frames = [frame for frame in frames if frame["status"] == "node_complete"]
+    assert node_frames, "live mode must deliver node frames"
+    for frame in node_frames:
+        assert frame["run_id"] == run_id
+        assert isinstance(frame["seq"], int) and frame["seq"] >= 1
+
+    projection = get_dag_run_store().get_run(run_id)
+    assert projection is not None
+    assert projection["status"] == "completed"
+    seqs = [event["seq"] for event in projection["events"]]
+    # Contiguous 1..N: started + completed per node, in execution order.
+    assert seqs == list(range(1, len(seqs) + 1))
+    assert len(seqs) >= 2 * len(node_frames)
+    types = [event["event_type"] for event in projection["events"]]
+    assert types[0] == "pm_node_started"
+    assert types.count("pm_node_completed") == len(node_frames)
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+@pytest.mark.asyncio
+async def test_live_projection_is_scoped_from_its_first_event(
+    admin_client: TestClient, stored_dag: str
+) -> None:
+    """#1183: a live-run projection row is born with its canonical Workspace.
+
+    The websocket route records node events before the Run settles — the row
+    must be inspectable (and its SSE stream authorizable) from the first live
+    event, at the same Workspace boundary the execution was admitted into,
+    not only after `record_result` lands the terminal scope.
+    """
+    from services.dag_execution_scope import authorize_hive_dag_scope
+    from services.dag_run_inspection import can_inspect_run
+    from services.dag_run_live import LiveRunProjection
+
+    workspace_id = _create_workspace(admin_client, "Live scope")
+    scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id="admin")
+
+    from services.dag_run_store import get_dag_run_store
+
+    assert not await can_inspect_run("admin", "run-live-scope")
+
+    recorder = LiveRunProjection(dag_id=stored_dag, scope=scope)
+    seq = await recorder.record_event(
+        {
+            "kind": "node_started",
+            "run_id": "run-live-scope",
+            "node_run_id": "nr-1",
+            "attempt_id": "a-1",
+            "node_id": "n1",
+            "role": "worker",
+        }
+    )
+    assert seq == 1
+
+    # Mid-run: the row exists, is scoped, and is inspectable — the gate the
+    # SSE stream authorizes against answers before any terminal result.
+    assert await can_inspect_run("admin", "run-live-scope")
+    detail = get_dag_run_store().get_run("run-live-scope")
+    assert detail is not None
+    assert detail["workspace_id"] == workspace_id
+    assert detail["dag_id"] == stored_dag
+    assert detail["canonical_run_id"] == "run-live-scope"
+
+    await recorder.record_result({"run_id": "run-live-scope", "status": "completed"})
+    detail = get_dag_run_store().get_run("run-live-scope")
+    assert detail is not None
+    assert detail["status"] == "completed"
