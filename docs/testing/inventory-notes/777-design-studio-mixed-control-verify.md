@@ -2256,3 +2256,81 @@ unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
 governed export), which #777 will consume but does not satisfy. No repair
 code written — none possible without violating the issue stop condition.
 No closure keywords used (`Refs #777` only).
+
+---
+
+## Round 35 — re-verification at `ef49021b229c` (35th head; job 31eeb03798444d67a9e76fe2d527613d)
+
+**Prior job:** `f3ff57343a5b4c2a8c29a10d1f11b0ef` (repair round) died on
+`provider_error: Request timed out` (llama-cpp-gemma/gemma4-26b-a4b-mtp)
+after ~58 minutes with `checks: []` — the driver ran **no** checks and
+produced **no `check-*.log` files**; no uncommitted work was left behind
+(`git status` clean at `a3485edd7`). All validation below was executed
+directly on this round.
+
+**Develop sync:** `origin/develop` advanced `54d4c391e` -> `69827fc62`
+(3 commits), which is exactly this round's named develop base. Merged
+cleanly as `ef49021b229c` with zero conflicts; no file overlap with lane
+changes. Inbound commits: #1713 (M1: DAG Builder closes Run socket on
+unmount), **#1708 (M3-C6: Workspace work campaigns #103)**, #1714 (M1:
+installer one resolved port configuration).
+
+**Dependency re-audit at merged head (fresh greps):**
+- `GoalRevision|GoalReconcil|owning_agent` across `packages/*/src`: 0
+  files (#804/#805/#806 reconciliation and #458 canonical Goal ownership
+  still absent); no `maistro-goals` package.
+- `workspace_agent.py` remains
+  `packages/hive-conductor/backend/services/workspace_agent.py` — the #53
+  front-door identity seam only (ADR-092326-7ed7); no reconciliation API
+  consumed or offered.
+- `brief_interview.py` + `brief_store.py` are the SPEC-091726-7c2a
+  **pre-commit interview** only; `brief_store.py:5` still disclaims
+  "nothing here is a Goal or CreativeBrief record" (#774 absent).
+- `ladybug`: 0 hits in `packages/*/src` (#776 absent).
+- `creative` markers in `graphs/`/`builders/`: 0 files (#775 absent).
+- No mixed-control E2E: 0 hits for `mixed.?control` across all test
+  trees; browser specs remain keyboard/truthfulness only.
+
+**NEW dependency-adjacent movement (does not unblock):** **#1708 / M3-C6
+(#103) Workspace work campaigns** landed — versioned operator policy
+(`workspaces/campaigns/{model,policy,store,sqlite_store,wiring}.py`,
+`maistro_server/api/campaigns.py`) with narrowing eligibility, value-based
+selection, autonomy modes, parks/pins, per-decision audit, and a
+**read-only `GoalReader` protocol** (`campaigns/policy.py:54`). By its own
+spec it "grants no permission, owns no Goal, schedules nothing, and adds
+no lifecycle beside Goal -> Graph -> Run"; `required_goal_state` is an
+eligibility *filter* over BacklogItems, and no Goal field is ever written.
+This is autonomy-*control* plumbing in #804's neighborhood but is not the
+#804/#805/#806 Goal reconciliation API, provides no CreativeBrief/Goal
+projection, and lands none of #777's 13 acceptance criteria.
+
+**Gates executed at head `ef49021b229c` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2669 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; base
+  `69827fc62e05` -> candidate `ef49021b229c`, 1390 reviewed identities ->
+  1390 findings, **0 unbanked** (no ledger amendment required).
+- `uv run pytest packages/maistro-core/tests packages/maistro-server/tests
+  -q` — **11409 passed, 736 skipped, 1 xfailed** (434.98s); includes the
+  new #103 campaigns policy/store/wiring/API suites green.
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **2997
+  passed, 6 skipped** (94.79s); +1 vs prior baseline from merged develop.
+- `uv run pytest packages/maistro-canvas/tests -q` — **426 passed, 73
+  skipped** (23.68s).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites
+  match the recorded inventory.
+- `uv run python scripts/check-doc-links.py` — 0 broken relative links.
+- `uv run python scripts/check-adr-index.py` — OK: every ADR-INDEX row
+  agrees with its ADR front matter.
+
+**Conclusion (35th inspected head):** unchanged block. All 13 #777
+acceptance criteria remain UNMET at this head; lane stays **BLOCKED on
+unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
+#774, #775, #776). The only movement is inbound and dependency-adjacent
+(#94 governed export landed round 34; #103 campaigns landed this round),
+both of which #777 will eventually consume but neither satisfies. No
+repair code written — none possible without violating the issue stop
+condition (no Design-Studio-private Agent runtime, Goal owner,
+reconciliation loop, memory system, or artifact authority). No closure
+keywords used (`Refs #777` only).
