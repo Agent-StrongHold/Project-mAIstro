@@ -91,7 +91,7 @@ class HashEmbedder:
     def vector_for(self, text: str) -> list[float]:
         vec = [0.0] * self.dim
         for word in _WORD.findall(text.lower()):
-            digest = hashlib.md5(word.encode()).digest()
+            digest = hashlib.blake2b(word.encode(), digest_size=8).digest()
             index = digest[0] % self.dim
             vec[index] += 1.0
         norm = math.sqrt(sum(v * v for v in vec)) or 1.0
