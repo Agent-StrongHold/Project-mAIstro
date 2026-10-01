@@ -1973,3 +1973,61 @@ unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
 the issue stop condition (no Design-Studio-private Agent runtime/Goal owner/
 reconciler/memory/permissions/Persona/Graph/artifact authority). No closure
 keywords used (`Refs #777` only).
+
+---
+
+## Round 30 — develop sync (742e4e8fd -> d4ccd452e), gates re-run, block unchanged
+
+**Develop sync (the "previous block" to resolve this round was BLOCKED, not a
+sync conflict at its time — but origin/develop has since moved, so sync was
+required now):** fetched origin/develop advanced `742e4e8fd` -> `d4ccd452e`
+(3 commits: Conductor backlog board/list/detail UI #1705; M3-A5 authenticated
+real-model canonical Graph E2E #1701; EPIC M7-A design-process contract
+ADR-093026-7a90 / SPEC-093026-7a90 #1698). Merged into `auto-777` as
+`374f95b5f` — **zero conflicts** (no file overlap between lane changes and
+incoming commits: `comm -12` of both changed-file sets is empty).
+
+**New develop content checked for #777 relevance:** ADR-093026-7a90 ("The
+design process is a first-class object graph", status **Proposed**) is a
+contract record for epic #789 M7-A — it explicitly restates that Goal's
+canonical owner `maistro.goals` "is not implemented yet", i.e. the develop
+side itself corroborates that #458 behavior remains unlanded. No
+Design-Studio mixed-control, Goal revision, CreativeBrief, delegation, or
+reconciliation behavior arrived. The new backlog board (#1705) and
+authenticated real-model Graph E2E (#1701) are unrelated surfaces.
+
+**Dependency audit re-run fresh on the merged tree (all still absent):**
+`git grep -l GoalRevision -- '*.py'` -> 0 files; `git grep -liE
+'GoalReconcil|goal_reconcil'` -> 0 files; `git grep -liE
+'owning_agent|subgoal.?delegat'` -> 0 files; no `maistro.goals` package and
+no goals dir under `packages/maistro-core/src/maistro/`;
+`services/brief_store.py:5` still disclaims Goal/CreativeBrief (#774
+absent); `routes/design.py` 0 matches for workspace_agent/control_mode/
+delegat; only `ladybug` hit remains the book title in
+`dags/author_examples.py` (#776 absent); `services/workspace_agent.py` is
+still the #53/#1037 identity front door with no Goal ownership or
+reconciliation behavior.
+
+**Gates executed at merged head `374f95b5f` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2647 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; base
+  `d4ccd452e6a3` -> candidate `374f95b5fe9d`, 1402 reviewed identities ->
+  1402 findings, **0 unbanked**; the CI-repair ledger round is again a
+  no-op (nothing genuinely dead, no amendment required or performed).
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **2994 passed,
+  6 skipped** (98.37s; +42 vs prior round, the merge's backlog + real-model
+  E2E tests, all green).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites match.
+- `uv run python scripts/check-doc-links.py` — 0 broken relative links.
+- `uv run pytest tests/test_check_adr_index.py -q` — 14 passed (merge
+  touched ADR-INDEX.md; check green).
+
+**Conclusion (30th inspected head):** no change to the block. All 13 #777
+acceptance criteria remain UNMET at this head. Lane stays **BLOCKED on
+unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
+#774, #775, #776); no repair code written — none possible without violating
+the issue stop condition (no Design-Studio-private Agent runtime/Goal owner/
+reconciler/memory/permissions/Persona/Graph/artifact authority). No closure
+keywords used (`Refs #777` only).
