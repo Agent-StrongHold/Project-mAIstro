@@ -15,7 +15,6 @@ from typing import Any
 from maistro.capabilities.approval_store import ApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import (
-    BindingStore,
     InMemoryBindingStore,
     RevocableBindingStore,
 )
@@ -126,7 +125,7 @@ class CapabilityEffectContext:
 def new_effect_context(
     *,
     invocation_store: InvocationStore | None = None,
-    binding_store: BindingStore | None = None,
+    binding_store: RevocableBindingStore | None = None,
     event_store: EventStore | None = None,
     approval_store: ApprovalStore | None = None,
     policy_evaluator: PolicyEvaluator | None = None,

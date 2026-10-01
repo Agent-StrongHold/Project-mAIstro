@@ -2874,6 +2874,7 @@ async def _wire_capability_effects(
     same backend so a durable deployment cannot silently keep an in-memory door.
     """
     from maistro.capabilities.approval_store import (
+        ApprovalStore,
         InMemoryApprovalStore,
         PgApprovalStore,
         SqliteApprovalStore,
@@ -2881,9 +2882,10 @@ async def _wire_capability_effects(
     from maistro.capabilities.binding_store import (
         InMemoryBindingStore,
         PgBindingStore,
+        RevocableBindingStore,
         SqliteBindingStore,
     )
-    from maistro.capabilities.invocation import Invocation
+    from maistro.capabilities.invocation import Invocation, InvocationQuota
     from maistro.events.wiring import wire_canonical_events
     from maistro.quota.invocation_quota import QuotaEstimate
 
@@ -2911,29 +2913,35 @@ async def _wire_capability_effects(
             tokens=tokens,
         )
 
-    quota = None
+    # Named by contract, not by the first branch taken: each backend assigns
+    # its own implementation, and `ensure_schema` is called on the concrete
+    # object that has it rather than through the protocol, which does not.
+    bindings: RevocableBindingStore
+    approvals: ApprovalStore
+    quota: InvocationQuota | None = None
     if pg_pool is not None:
         from maistro.quota.pg_invocation_quota import PgInvocationQuota
 
-        bindings = PgBindingStore(pg_pool)
-        approvals = PgApprovalStore(pg_pool)
-        quota = PgInvocationQuota(pg_pool, estimate=estimate)
-        await quota.ensure_schema()
-        await approvals.ensure_schema()
+        pg_approvals = PgApprovalStore(pg_pool)
+        pg_quota = PgInvocationQuota(pg_pool, estimate=estimate)
+        await pg_quota.ensure_schema()
+        await pg_approvals.ensure_schema()
+        bindings, approvals, quota = PgBindingStore(pg_pool), pg_approvals, pg_quota
     elif db_pool is not None:
-        bindings = SqliteBindingStore(db_pool)
-        approvals = SqliteApprovalStore(db_pool)
-        await bindings.ensure_schema()
-        await approvals.ensure_schema()
+        sqlite_bindings = SqliteBindingStore(db_pool)
+        sqlite_approvals = SqliteApprovalStore(db_pool)
+        await sqlite_bindings.ensure_schema()
+        await sqlite_approvals.ensure_schema()
+        bindings, approvals = sqlite_bindings, sqlite_approvals
         sqlite_path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://")
         if sqlite_path and sqlite_path != ":memory:":
             from maistro.quota.sqlite_invocation_quota import SqliteInvocationQuota
 
-            quota = SqliteInvocationQuota(sqlite_path, estimate=estimate)
-            await quota.ensure_schema()
+            sqlite_quota = SqliteInvocationQuota(sqlite_path, estimate=estimate)
+            await sqlite_quota.ensure_schema()
+            quota = sqlite_quota
     else:
-        bindings = InMemoryBindingStore()
-        approvals = InMemoryApprovalStore()
+        bindings, approvals = InMemoryBindingStore(), InMemoryApprovalStore()
 
     return new_effect_context(
         invocation_store=invocation_store,

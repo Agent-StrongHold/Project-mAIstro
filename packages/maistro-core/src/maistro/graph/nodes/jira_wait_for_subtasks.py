@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import timedelta
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -67,19 +67,8 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
         self._effects = effect_context or default_effect_context()
 
     async def _execute(self, inputs: WaitForSubtasksIn, ctx: NodeContext) -> WaitForSubtasksOut:
-        if not inputs.binding_id.strip():
-            raise BindingNotFound(
-                "jira.wait_for_subtasks requires a pre-authorized Binding before any request"
-            )
-        binding = await self._effects.bindings.resolve(
-            inputs.binding_id,
-            workspace_id=str(ctx.workspace_id or ""),
-            project_id=str(ctx.project_id or ""),
-            node_id=ctx.node_id,
-            capability=JIRA_SUBTASKS_CAPABILITY,
-        )
-        pause = resumed_pause(ctx)
-        poll_number = int(pause.get("poll_number", 0) or 0)
+        binding = await self._authorized_binding(inputs, ctx)
+        poll_number = int(resumed_pause(ctx).get("poll_number", 0) or 0)
         statuses = await _fetch_subtask_statuses(
             inputs,
             ctx=ctx,
@@ -87,18 +76,9 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
             binding=binding,
             poll_number=poll_number,
         )
-        if not statuses:
-            return WaitForSubtasksOut(
-                parent_key=inputs.parent_key,
-                subtask_keys=[],
-                statuses={},
-                all_match=True,
-                timed_out=False,
-            )
-
-        target_lower = {s.lower() for s in inputs.target_statuses}
-        all_match = all(s.lower() in target_lower for s in statuses.values())
-        if all_match:
+        if not statuses or _all_match(statuses, inputs.target_statuses):
+            # No subtasks is vacuously satisfied: there is nothing left to wait
+            # for, and parking forever on an empty parent is the wrong answer.
             return WaitForSubtasksOut(
                 parent_key=inputs.parent_key,
                 subtask_keys=list(statuses.keys()),
@@ -106,49 +86,86 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
                 all_match=True,
                 timed_out=False,
             )
+        return _wait_again_or_time_out(inputs, statuses=statuses, poll_number=poll_number, ctx=ctx)
 
-        first_seen = _first_seen(ctx)
-        now = now_utc()
-        if first_seen is None:
-            pause_until(
-                PAUSE_WAITING_ON_JIRA_SUBTASKS,
-                resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
-                metadata={
-                    "parent_key": inputs.parent_key,
-                    "current_statuses": statuses,
-                    "first_seen": now.isoformat(),
-                    "deadline": (now + timedelta(seconds=inputs.timeout_seconds)).isoformat(),
-                    "poll_number": poll_number + 1,
-                },
+    async def _authorized_binding(self, inputs: WaitForSubtasksIn, ctx: NodeContext) -> Any:
+        """The Binding this poll runs under, refused before any Jira request."""
+
+        if not inputs.binding_id.strip():
+            raise BindingNotFound(
+                "jira.wait_for_subtasks requires a pre-authorized Binding before any request"
             )
-            return WaitForSubtasksOut(parent_key=inputs.parent_key)
-
-        try:
-            from datetime import datetime as _dt
-
-            first = _dt.fromisoformat(first_seen)
-        except Exception:
-            first = now
-        if (now - first).total_seconds() >= inputs.timeout_seconds:
-            return WaitForSubtasksOut(
-                parent_key=inputs.parent_key,
-                subtask_keys=list(statuses.keys()),
-                statuses=statuses,
-                all_match=False,
-                timed_out=True,
-            )
-
-        pause_until(
-            PAUSE_WAITING_ON_JIRA_SUBTASKS,
-            resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
-            metadata={
-                "parent_key": inputs.parent_key,
-                "current_statuses": statuses,
-                "first_seen": first_seen,
-                "poll_number": poll_number + 1,
-            },
+        return await self._effects.bindings.resolve(
+            inputs.binding_id,
+            workspace_id=str(ctx.workspace_id or ""),
+            project_id=str(ctx.project_id or ""),
+            node_id=ctx.node_id,
+            capability=JIRA_SUBTASKS_CAPABILITY,
         )
-        return WaitForSubtasksOut(parent_key=inputs.parent_key)
+
+
+def _all_match(statuses: dict[str, str], target_statuses: Sequence[str]) -> bool:
+    """Whether every subtask has reached one of the target statuses."""
+
+    target_lower = {status.lower() for status in target_statuses}
+    return all(status.lower() in target_lower for status in statuses.values())
+
+
+def _wait_again_or_time_out(
+    inputs: WaitForSubtasksIn,
+    *,
+    statuses: dict[str, str],
+    poll_number: int,
+    ctx: NodeContext,
+) -> WaitForSubtasksOut:
+    """Park for another interval, or report the deadline as reached.
+
+    The deadline runs from the *first* time this node saw unmatched subtasks,
+    carried across pauses, so a resumed Run does not restart the clock and wait
+    forever one interval at a time.
+    """
+
+    first_seen = _first_seen(ctx)
+    now = now_utc()
+    if first_seen is not None and (now - _parsed(first_seen, now)).total_seconds() >= (
+        inputs.timeout_seconds
+    ):
+        return WaitForSubtasksOut(
+            parent_key=inputs.parent_key,
+            subtask_keys=list(statuses.keys()),
+            statuses=statuses,
+            all_match=False,
+            timed_out=True,
+        )
+
+    metadata: dict[str, Any] = {
+        "parent_key": inputs.parent_key,
+        "current_statuses": statuses,
+        "first_seen": first_seen if first_seen is not None else now.isoformat(),
+        "poll_number": poll_number + 1,
+    }
+    if first_seen is None:
+        metadata["deadline"] = (now + timedelta(seconds=inputs.timeout_seconds)).isoformat()
+    pause_until(
+        PAUSE_WAITING_ON_JIRA_SUBTASKS,
+        resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
+        metadata=metadata,
+    )
+    return WaitForSubtasksOut(parent_key=inputs.parent_key)
+
+
+def _parsed(first_seen: Any, fallback: datetime) -> datetime:
+    """The carried timestamp, or ``fallback`` when it cannot be read.
+
+    An unreadable timestamp restarts the clock rather than timing the wait out
+    immediately: the node's job is to wait, so a corrupt marker must not be
+    read as "the deadline already passed".
+    """
+
+    try:
+        return datetime.fromisoformat(str(first_seen))
+    except Exception:
+        return fallback
 
 
 def _first_seen(ctx: NodeContext) -> Any:

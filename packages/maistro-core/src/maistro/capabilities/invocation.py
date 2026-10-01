@@ -896,32 +896,16 @@ class InvocationExecutionService:
             attempt_id=invocation.attempt_id,
             invocation_id=invocation.invocation_id,
         )
-        update: dict[str, Any] = {
-            "reconciliation_history": (*invocation.reconciliation_history, audit),
-            "dispatch_active": False,
-        }
-        # A pre-scope row learns its scope from the evidence that settles it.
-        if not invocation.workspace_id and workspace_id:
-            update["workspace_id"] = workspace_id
-        if not invocation.project_id and project_id:
-            update["project_id"] = project_id
-        if disposition is ReconciliationDisposition.APPLIED:
-            update.update(
-                status=InvocationStatus.COMPLETED,
-                result=result,
-                error=None,
-                finished_at=datetime.now(UTC),
-            )
-            if usage is not None:
-                update["usage"] = usage
-        elif disposition is ReconciliationDisposition.NOT_APPLIED:
-            update.update(
-                status=InvocationStatus.FAILED,
-                error=reason,
-                finished_at=datetime.now(UTC),
-            )
-        else:
-            update["error"] = reason
+        update = _reconciled_update(
+            invocation,
+            audit=audit,
+            disposition=disposition,
+            reason=reason,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            result=result,
+            usage=usage,
+        )
         try:
             settled = await self._store.save(invocation.model_copy(update=update))
         except StaleInvocationUpdate:
@@ -965,6 +949,53 @@ class InvocationExecutionService:
         await self._repair_quota(persisted)
         await self._notify_completion(persisted)
         return persisted
+
+
+def _reconciled_update(
+    invocation: Invocation,
+    *,
+    audit: InvocationReconciliation,
+    disposition: ReconciliationDisposition,
+    reason: str,
+    workspace_id: str,
+    project_id: str,
+    result: Any | None,
+    usage: InvocationUsage | None,
+) -> dict[str, Any]:
+    """The fields one reconciliation writes onto the Invocation row.
+
+    Pure, so the guarded transition above stays a single readable sequence --
+    validate, build, save, repair -- and what each disposition actually records
+    can be read in one place.
+    """
+
+    update: dict[str, Any] = {
+        "reconciliation_history": (*invocation.reconciliation_history, audit),
+        "dispatch_active": False,
+    }
+    # A pre-scope row learns its scope from the evidence that settles it.
+    if not invocation.workspace_id and workspace_id:
+        update["workspace_id"] = workspace_id
+    if not invocation.project_id and project_id:
+        update["project_id"] = project_id
+    if disposition is ReconciliationDisposition.APPLIED:
+        update.update(
+            status=InvocationStatus.COMPLETED,
+            result=result,
+            error=None,
+            finished_at=datetime.now(UTC),
+        )
+        if usage is not None:
+            update["usage"] = usage
+    elif disposition is ReconciliationDisposition.NOT_APPLIED:
+        update.update(
+            status=InvocationStatus.FAILED,
+            error=reason,
+            finished_at=datetime.now(UTC),
+        )
+    else:
+        update["error"] = reason
+    return update
 
 
 __all__ = [

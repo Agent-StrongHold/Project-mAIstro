@@ -72,6 +72,18 @@ class ApprovalStatus(StrEnum):
     DENIED = "denied"
 
 
+#: The correlation fields an approval is looked up by; none may be blank.
+_IDENTITY_FIELDS = (
+    "workspace_id",
+    "project_id",
+    "run_id",
+    "node_run_id",
+    "attempt_id",
+    "binding_id",
+    "effect_key",
+)
+
+
 class DurableApproval(BaseModel):
     """Persisted human decision request correlated to canonical execution IDs."""
 
@@ -93,23 +105,36 @@ class DurableApproval(BaseModel):
 
     @model_validator(mode="after")
     def _validate_state(self) -> DurableApproval:
-        required = {
-            "workspace_id": self.workspace_id,
-            "project_id": self.project_id,
-            "run_id": self.run_id,
-            "node_run_id": self.node_run_id,
-            "attempt_id": self.attempt_id,
-            "binding_id": self.binding_id,
-            "effect_key": self.effect_key,
-        }
-        for field, value in required.items():
-            if not value.strip():
+        self._require_identity()
+        if not self.request_digest:
+            self.request_digest = self._derived_digest()
+        self._require_resolution_consistency()
+        return self
+
+    def _require_identity(self) -> None:
+        """Every correlation field an approval is found by must be present.
+
+        A blank one does not narrow a lookup, so the row would answer for a
+        different effect than the one it authorizes.
+        """
+
+        for field in _IDENTITY_FIELDS:
+            if not str(getattr(self, field)).strip():
                 raise ValueError(f"{field} must be a non-empty string")
-        if not self.request_digest:
-            self.request_digest = str(self.request.params.get("request_digest") or "")
-        if not self.request_digest:
-            legacy_payload = self.request.params.get("request", self.request.params)
-            self.request_digest = approval_request_digest(legacy_payload)
+
+    def _derived_digest(self) -> str:
+        """The request digest carried on the params, or computed from them."""
+
+        carried = str(self.request.params.get("request_digest") or "")
+        if carried:
+            return carried
+        legacy_payload = self.request.params.get("request", self.request.params)
+        return approval_request_digest(legacy_payload)
+
+    def _require_resolution_consistency(self) -> None:
+        """A resolved approval names who resolved it and when; a pending one
+        names neither. Either half alone is a row nobody can audit."""
+
         terminal = self.status in {ApprovalStatus.APPROVED, ApprovalStatus.DENIED}
         if terminal and not self.actor.strip():
             raise ValueError("resolved approval requires a non-empty actor")
@@ -117,7 +142,6 @@ class DurableApproval(BaseModel):
             raise ValueError("resolved approval requires resolved_at")
         if not terminal and self.resolved_at is not None:
             raise ValueError("pending approval cannot have resolved_at")
-        return self
 
     @property
     def effect_identity(self) -> tuple[str, str, str, str]:

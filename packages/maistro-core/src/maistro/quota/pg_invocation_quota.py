@@ -86,91 +86,42 @@ class PgInvocationQuota:
             if row is None or json.loads(row[0]) != json.loads(definition):
                 raise QuotaEvidenceConflict("budget identity is immutable")
 
-    async def reserve(  # noqa: C901 - admission checks share one transaction
-        self, invocation: Invocation, binding: Binding
-    ) -> None:
+    async def reserve(self, invocation: Invocation, binding: Binding) -> None:
         estimate = await self._estimate(invocation, binding)
-        identity = {
-            "workspace_id": binding.workspace_id,
-            "principal_id": estimate.principal_id,
-            "provider_name": invocation.binding.provider_name,
-            "capability": binding.capability,
-            "run_id": invocation.run_id,
-            "node_run_id": invocation.node_run_id,
-            "attempt_id": invocation.attempt_id,
-            "binding_id": binding.binding_id,
-            "effect_key": invocation.effect_key,
-            "tokens": estimate.tokens,
-            "micro_usd": estimate.micro_usd,
-        }
+        identity = _reservation_identity(invocation, binding, estimate)
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock($1)", _LOCK_KEY)
-            existing = await conn.fetchrow(
-                "SELECT identity, state, reason FROM invocation_quota_reservations WHERE invocation_id=$1",
-                invocation.invocation_id,
-            )
-            if existing is not None:
-                if _json_value(existing["identity"]) != identity:
-                    raise QuotaEvidenceConflict("Invocation quota identity was reused")
-                if existing["state"] == "denied":
-                    raise InvocationQuotaDenied(existing["reason"])
+            if await _already_reserved(conn, invocation.invocation_id, identity):
                 return
 
-            now = self._clock()
-            if not math.isfinite(now):
-                raise ValueError("invalid admission clock")
-            rows = await conn.fetch("SELECT budget_id, definition FROM invocation_quota_budgets")
-            budgets = [QuotaBudget(**_json_value(row["definition"])) for row in rows]
-            applicable = [
-                budget
-                for budget in budgets
-                if budget.period_start <= now < budget.period_end
-                and (
-                    budget.provider_name is None
-                    or budget.provider_name == invocation.binding.provider_name
-                )
-                and (budget.workspace_id is None or budget.workspace_id == binding.workspace_id)
-                and (budget.principal_id is None or budget.principal_id == estimate.principal_id)
-                and (budget.capability is None or budget.capability == binding.capability)
-            ]
-            reason = "missing applicable quota policy" if not applicable else ""
-            allocations: list[tuple[str, int, int]] = []
-            for budget in applicable:
-                maximum = estimate.maximum(budget.unit)
-                if maximum is None:
-                    reason = f"missing upper bound for budget {budget.budget_id}"
-                    break
-                row = await conn.fetchrow(
-                    """SELECT COALESCE(SUM(spent), 0) AS spent, COALESCE(SUM(held), 0) AS held
-                       FROM invocation_quota_allocations WHERE budget_id=$1""",
-                    budget.budget_id,
-                )
-                available = budget.limit - budget.reserve - int(row["spent"]) - int(row["held"])
-                if maximum > available:
-                    reason = f"quota exhausted for budget {budget.budget_id}"
-                    break
-                allocations.append((budget.budget_id, maximum, maximum))
-
-            await conn.execute(
-                """INSERT INTO invocation_quota_reservations
-                   (invocation_id, identity, state, reason) VALUES ($1,$2::jsonb,$3,$4)""",
-                invocation.invocation_id,
-                json.dumps(identity, sort_keys=True),
-                "denied" if reason else "held",
-                reason,
-            )
-            if not reason:
-                for budget_id, maximum, held in allocations:
-                    await conn.execute(
-                        """INSERT INTO invocation_quota_allocations
-                           (invocation_id, budget_id, maximum, held) VALUES ($1,$2,$3,$4)""",
-                        invocation.invocation_id,
-                        budget_id,
-                        maximum,
-                        held,
-                    )
+            applicable = await self._applicable_budgets(conn, invocation, binding, estimate)
+            reason, allocations = await _hold_against(conn, applicable, estimate)
+            await _write_reservation(conn, invocation.invocation_id, identity, reason, allocations)
         if reason:
             raise InvocationQuotaDenied(reason)
+
+    async def _applicable_budgets(
+        self, conn: Any, invocation: Invocation, binding: Binding, estimate: Any
+    ) -> list[QuotaBudget]:
+        """The budgets this Invocation is admitted against, in the open period."""
+
+        now = self._clock()
+        if not math.isfinite(now):
+            raise ValueError("invalid admission clock")
+        rows = await conn.fetch("SELECT budget_id, definition FROM invocation_quota_budgets")
+        budgets = [QuotaBudget(**_json_value(row["definition"])) for row in rows]
+        return [
+            budget
+            for budget in budgets
+            if _budget_applies(
+                budget,
+                now=now,
+                provider_name=invocation.binding.provider_name,
+                workspace_id=binding.workspace_id,
+                principal_id=estimate.principal_id,
+                capability=binding.capability,
+            )
+        ]
 
     async def observe(self, invocation: Invocation) -> None:
         """Record the absolute terminal fact, including partial usage facts."""
@@ -217,97 +168,257 @@ class PgInvocationQuota:
             raise ValueError("revision zero is reserved for canonical terminal evidence")
         await self._apply(observation, missing_ok=False)
 
-    async def _apply(  # noqa: C901 - evidence settlement is one atomic fold
-        self, observation: QuotaObservation, *, missing_ok: bool
-    ) -> None:
+    async def _apply(self, observation: QuotaObservation, *, missing_ok: bool) -> None:
         payload = json.dumps(observation.payload(), sort_keys=True)
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock($1)", _LOCK_KEY)
-            reservation = await conn.fetchrow(
-                "SELECT * FROM invocation_quota_reservations WHERE invocation_id=$1 FOR UPDATE",
-                observation.invocation_id,
-            )
+            reservation = await _settling_reservation(conn, observation, missing_ok=missing_ok)
             if reservation is None:
-                if missing_ok:
-                    return
-                raise KeyError(
-                    f"unreserved Invocation {observation.invocation_id}: reconcile coverage"
-                )
-            identity = _json_value(reservation["identity"])
-            if identity["provider_name"] != observation.provider_name:
-                raise QuotaEvidenceConflict("provider evidence does not match Invocation")
-            if reservation["state"] == "denied":
-                if observation.outcome != "not_applied":
-                    raise QuotaEvidenceConflict("denied Invocation has no provider dispatch")
                 return
-
-            prior = await conn.fetch(
-                "SELECT payload::text AS payload FROM invocation_quota_evidence "
-                "WHERE invocation_id=$1 AND (revision=$2 OR evidence_id=$3)",
-                observation.invocation_id,
-                observation.revision,
-                observation.evidence_id,
-            )
-            if prior:
-                if any(json.loads(row["payload"]) != json.loads(payload) for row in prior):
-                    raise QuotaEvidenceConflict("evidence identity/revision was reused")
+            if await _record_evidence(conn, observation, payload):
                 return
-            await conn.execute(
-                "INSERT INTO invocation_quota_evidence "
-                "(invocation_id, revision, evidence_id, payload) VALUES ($1,$2,$3,$4::jsonb)",
-                observation.invocation_id,
-                observation.revision,
-                observation.evidence_id,
-                payload,
-            )
             if observation.revision < int(reservation["revision"]):
                 return
-            if observation.outcome == "unknown" and reservation["state"] in {
-                "settled",
-                "released",
-                "pending_usage",
-            }:
-                raise QuotaEvidenceConflict("unknown cannot replace a confirmed provider outcome")
+            _refuse_unknown_over_confirmed(observation, reservation)
 
-            allocations = await conn.fetch(
-                "SELECT a.budget_id, a.maximum, a.measured, b.definition "
-                "FROM invocation_quota_allocations a "
-                "JOIN invocation_quota_budgets b USING (budget_id) "
-                "WHERE a.invocation_id=$1",
-                observation.invocation_id,
-            )
-            pending = False
-            for allocation in allocations:
-                unit = _json_value(allocation["definition"])["unit"]
-                actual = observation.actual(unit)
-                if actual is None:
-                    pending = pending or not bool(allocation["measured"])
-                    continue
-                require_amount(actual, f"{unit} usage")
-                await conn.execute(
-                    "UPDATE invocation_quota_allocations "
-                    "SET held=0, spent=$1, measured=TRUE "
-                    "WHERE invocation_id=$2 AND budget_id=$3",
-                    actual,
-                    observation.invocation_id,
-                    allocation["budget_id"],
-                )
-            state = (
-                "released"
-                if observation.outcome == "not_applied"
-                else "unknown"
-                if observation.outcome == "unknown"
-                else "pending_usage"
-                if pending
-                else "settled"
-            )
+            pending = await _settle_allocations(conn, observation)
             await conn.execute(
                 "UPDATE invocation_quota_reservations SET state=$1, revision=$2 "
                 "WHERE invocation_id=$3",
-                state,
+                _settled_state(observation.outcome, pending=pending),
                 observation.revision,
                 observation.invocation_id,
             )
+
+
+def _reservation_identity(
+    invocation: Invocation, binding: Binding, estimate: Any
+) -> dict[str, Any]:
+    """What this reservation is *for*; a second call that differs is a reuse."""
+
+    return {
+        "workspace_id": binding.workspace_id,
+        "principal_id": estimate.principal_id,
+        "provider_name": invocation.binding.provider_name,
+        "capability": binding.capability,
+        "run_id": invocation.run_id,
+        "node_run_id": invocation.node_run_id,
+        "attempt_id": invocation.attempt_id,
+        "binding_id": binding.binding_id,
+        "effect_key": invocation.effect_key,
+        "tokens": estimate.tokens,
+        "micro_usd": estimate.micro_usd,
+    }
+
+
+async def _already_reserved(conn: Any, invocation_id: str, identity: dict[str, Any]) -> bool:
+    """True when a prior reservation already answers this call.
+
+    The same Invocation reserving twice is a replay, not a second admission:
+    it must find its own identity, and a denial stays denied rather than being
+    re-decided against a budget that may since have freed up.
+    """
+
+    existing = await conn.fetchrow(
+        "SELECT identity, state, reason FROM invocation_quota_reservations WHERE invocation_id=$1",
+        invocation_id,
+    )
+    if existing is None:
+        return False
+    if _json_value(existing["identity"]) != identity:
+        raise QuotaEvidenceConflict("Invocation quota identity was reused")
+    if existing["state"] == "denied":
+        raise InvocationQuotaDenied(existing["reason"])
+    return True
+
+
+def _budget_applies(
+    budget: QuotaBudget,
+    *,
+    now: float,
+    provider_name: str,
+    workspace_id: str | None,
+    principal_id: str | None,
+    capability: str,
+) -> bool:
+    """Whether one budget governs this Invocation. ``None`` on a budget field
+    means "any", so an unscoped budget applies to everything in its period."""
+
+    if not budget.period_start <= now < budget.period_end:
+        return False
+    return (
+        (budget.provider_name is None or budget.provider_name == provider_name)
+        and (budget.workspace_id is None or budget.workspace_id == workspace_id)
+        and (budget.principal_id is None or budget.principal_id == principal_id)
+        and (budget.capability is None or budget.capability == capability)
+    )
+
+
+async def _hold_against(
+    conn: Any, applicable: list[QuotaBudget], estimate: Any
+) -> tuple[str, list[tuple[str, int, int]]]:
+    """The holds this Invocation may take, or the first reason it may not.
+
+    Holds the estimate's *upper bound*, not its point estimate: admission has
+    to be safe against the worst outcome the call can still produce, and
+    settlement lowers the hold to measured usage afterwards.
+    """
+
+    if not applicable:
+        return "missing applicable quota policy", []
+    allocations: list[tuple[str, int, int]] = []
+    for budget in applicable:
+        maximum = estimate.maximum(budget.unit)
+        if maximum is None:
+            return f"missing upper bound for budget {budget.budget_id}", []
+        row = await conn.fetchrow(
+            """SELECT COALESCE(SUM(spent), 0) AS spent, COALESCE(SUM(held), 0) AS held
+               FROM invocation_quota_allocations WHERE budget_id=$1""",
+            budget.budget_id,
+        )
+        available = budget.limit - budget.reserve - int(row["spent"]) - int(row["held"])
+        if maximum > available:
+            return f"quota exhausted for budget {budget.budget_id}", []
+        allocations.append((budget.budget_id, maximum, maximum))
+    return "", allocations
+
+
+async def _write_reservation(
+    conn: Any,
+    invocation_id: str,
+    identity: dict[str, Any],
+    reason: str,
+    allocations: list[tuple[str, int, int]],
+) -> None:
+    """Record the admission decision; a denial is recorded, never just raised."""
+
+    await conn.execute(
+        """INSERT INTO invocation_quota_reservations
+           (invocation_id, identity, state, reason) VALUES ($1,$2::jsonb,$3,$4)""",
+        invocation_id,
+        json.dumps(identity, sort_keys=True),
+        "denied" if reason else "held",
+        reason,
+    )
+    if reason:
+        return
+    for budget_id, maximum, held in allocations:
+        await conn.execute(
+            """INSERT INTO invocation_quota_allocations
+               (invocation_id, budget_id, maximum, held) VALUES ($1,$2,$3,$4)""",
+            invocation_id,
+            budget_id,
+            maximum,
+            held,
+        )
+
+
+async def _settling_reservation(
+    conn: Any, observation: QuotaObservation, *, missing_ok: bool
+) -> Any:
+    """The locked reservation this evidence settles, or ``None`` to stop.
+
+    ``None`` means the caller should return without settling: either there is
+    nothing reserved and the caller tolerates that, or the reservation was
+    denied and the evidence correctly says the provider was never dispatched.
+    """
+
+    reservation = await conn.fetchrow(
+        "SELECT * FROM invocation_quota_reservations WHERE invocation_id=$1 FOR UPDATE",
+        observation.invocation_id,
+    )
+    if reservation is None:
+        if missing_ok:
+            return None
+        raise KeyError(f"unreserved Invocation {observation.invocation_id}: reconcile coverage")
+    identity = _json_value(reservation["identity"])
+    if identity["provider_name"] != observation.provider_name:
+        raise QuotaEvidenceConflict("provider evidence does not match Invocation")
+    if reservation["state"] == "denied":
+        if observation.outcome != "not_applied":
+            raise QuotaEvidenceConflict("denied Invocation has no provider dispatch")
+        return None
+    return reservation
+
+
+async def _record_evidence(conn: Any, observation: QuotaObservation, payload: str) -> bool:
+    """Insert this evidence, or report that it was already recorded.
+
+    Returns ``True`` when the same evidence is already stored, so settlement is
+    a replay and must not be folded a second time. Different bytes under a
+    revision or evidence id already used is a conflict, not an update.
+    """
+
+    prior = await conn.fetch(
+        "SELECT payload::text AS payload FROM invocation_quota_evidence "
+        "WHERE invocation_id=$1 AND (revision=$2 OR evidence_id=$3)",
+        observation.invocation_id,
+        observation.revision,
+        observation.evidence_id,
+    )
+    if prior:
+        if any(json.loads(row["payload"]) != json.loads(payload) for row in prior):
+            raise QuotaEvidenceConflict("evidence identity/revision was reused")
+        return True
+    await conn.execute(
+        "INSERT INTO invocation_quota_evidence "
+        "(invocation_id, revision, evidence_id, payload) VALUES ($1,$2,$3,$4::jsonb)",
+        observation.invocation_id,
+        observation.revision,
+        observation.evidence_id,
+        payload,
+    )
+    return False
+
+
+def _refuse_unknown_over_confirmed(observation: QuotaObservation, reservation: Any) -> None:
+    """An inconclusive outcome may not overwrite a settled one."""
+
+    if observation.outcome == "unknown" and reservation["state"] in {
+        "settled",
+        "released",
+        "pending_usage",
+    }:
+        raise QuotaEvidenceConflict("unknown cannot replace a confirmed provider outcome")
+
+
+async def _settle_allocations(conn: Any, observation: QuotaObservation) -> bool:
+    """Lower each hold to measured usage; report whether any stays unmeasured."""
+
+    allocations = await conn.fetch(
+        "SELECT a.budget_id, a.maximum, a.measured, b.definition "
+        "FROM invocation_quota_allocations a "
+        "JOIN invocation_quota_budgets b USING (budget_id) "
+        "WHERE a.invocation_id=$1",
+        observation.invocation_id,
+    )
+    pending = False
+    for allocation in allocations:
+        unit = _json_value(allocation["definition"])["unit"]
+        actual = observation.actual(unit)
+        if actual is None:
+            pending = pending or not bool(allocation["measured"])
+            continue
+        require_amount(actual, f"{unit} usage")
+        await conn.execute(
+            "UPDATE invocation_quota_allocations "
+            "SET held=0, spent=$1, measured=TRUE "
+            "WHERE invocation_id=$2 AND budget_id=$3",
+            actual,
+            observation.invocation_id,
+            allocation["budget_id"],
+        )
+    return pending
+
+
+def _settled_state(outcome: Outcome, *, pending: bool) -> str:
+    """The reservation state this outcome leaves behind."""
+
+    if outcome == "not_applied":
+        return "released"
+    if outcome == "unknown":
+        return "unknown"
+    return "pending_usage" if pending else "settled"
 
 
 def _json_value(value: Any) -> Any:

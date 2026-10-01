@@ -152,7 +152,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Local state writer | `maistro.reactor`, CLI | `none` | KEEP | — | single-writer concurrency tests | — |
 | Ontology | none | `all` | CONNECT — accepted design, no consumer | ADR-036 | subsystem resolves semantic object through registry | #34 |
 | Portability / backup | none | `all` | CONNECT | — | backup/restore preserves canonical correlated records | #62, #34 |
-| Events and checkpoints | `maistro.container`, `events.durable_log` | `some` | KEEP — canonical envelope, incompletely adopted | ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
+| Events and checkpoints | `maistro.container`, `events.durable_log` | `few` | KEEP — canonical envelope, incompletely adopted | ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `none` | KEEP | ADR-037, ADR-082 | one trace spans request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `some` | KEEP | ADR-038 | circuit/SLO primitives wired to real producers | #63 |
 | Collaboration | none | `all` | CONNECT | — | collaborative edit correlated to Run | #34 |

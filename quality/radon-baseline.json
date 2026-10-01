@@ -113,26 +113,6 @@
       "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
     },
     {
-      "key": "packages/maistro-core/src/maistro/capabilities/approval_store.py::DurableApproval._validate_state",
-      "path": "packages/maistro-core/src/maistro/capabilities/approval_store.py",
-      "line": 95,
-      "name": "_validate_state",
-      "classname": "DurableApproval",
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Durable approval state validation became reachable when the Container began selecting a backed ApprovalStore (#1133); the block is unchanged, it is newly scanned."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService._reconcile_values_locked",
-      "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
-      "line": 863,
-      "name": "_reconcile_values_locked",
-      "classname": "InvocationExecutionService",
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "12 -> 13: reconciliation now also repairs quota evidence for a terminal fact (#718)."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::_norm_docker",
       "path": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py",
       "line": 87,
@@ -291,36 +271,6 @@
       "rank": "C",
       "complexity": 14,
       "rationale": "15 -> 14: endpoint and credential resolution moved onto the Binding, so the node no longer branches on flavor/auth shape (#1195)."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::JiraWaitForSubtasksNode._execute",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py",
-      "line": 69,
-      "name": "_execute",
-      "classname": "JiraWaitForSubtasksNode",
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Absorbed the work of the retired module-level _fetch_subtask_statuses when the node moved onto governed capability egress (#1195); net complexity is lower than the pair it replaces."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-      "line": 85,
-      "name": "LlmSummarizeNode",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "12 -> 13: class-level total follows _execute's governed-egress branch (#1079/#55)."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-      "line": 131,
-      "name": "_execute",
-      "classname": "LlmSummarizeNode",
-      "rank": "C",
-      "complexity": 19,
-      "rationale": "18 -> 19: one extra branch for the governed model-egress path (#1079/#55)."
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py::TransformFilterByTypeNode",
@@ -521,26 +471,6 @@
       "rank": "C",
       "complexity": 12,
       "rationale": "#1391's tenant/project scope parity for SQLite outcome reads layered scope guards onto the tool-call payload loader. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 12."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/quota/pg_invocation_quota.py::PgInvocationQuota._apply",
-      "path": "packages/maistro-core/src/maistro/quota/pg_invocation_quota.py",
-      "line": 220,
-      "name": "_apply",
-      "classname": "PgInvocationQuota",
-      "rank": "C",
-      "complexity": 18,
-      "rationale": "New in the PostgreSQL quota door (#1196): reconciles reserve/release/settle transitions against later evidence. #1196/#718 quota door landing on the canonical Invocation seam; tracked under SPEC-264."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/quota/pg_invocation_quota.py::PgInvocationQuota.reserve",
-      "path": "packages/maistro-core/src/maistro/quota/pg_invocation_quota.py",
-      "line": 89,
-      "name": "reserve",
-      "classname": "PgInvocationQuota",
-      "rank": "D",
-      "complexity": 24,
-      "rationale": "New in the PostgreSQL quota door (#1196): admission resolves budget dimensions, opening spend and held allocations in one statement-bounded pass. #1196/#718 quota door landing on the canonical Invocation seam; tracked under SPEC-264."
     },
     {
       "key": "packages/maistro-core/src/maistro/resilience/classifier.py::_classify_by_message_patterns",
