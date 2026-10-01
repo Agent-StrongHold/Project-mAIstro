@@ -201,17 +201,63 @@ async def test_missing_usage_is_held_but_known_request_count_is_charged(quota):
 
 
 @pytest.mark.asyncio
-async def test_absent_policy_denies_before_physical_dispatch_and_records_refusal(quota):
+async def test_an_unconfigured_door_admits_rather_than_refusing_everything(quota):
+    """No budget registered anywhere means quota admission is not configured.
+
+    `create_container` registers no budget and the migration creates the table
+    empty, so refusing here meant every durable deployment lost all effect
+    execution the moment it upgraded -- model, Jira, Airtable and harness
+    alike -- until someone performed an undocumented post-construction
+    registration (Codex, #1362). An operator opts into quota by registering a
+    budget; until then the door is not in use.
+    """
+
     calls = 0
 
     async def provider(*_):
         nonlocal calls
         calls += 1
 
+    service = InvocationExecutionService(store=InMemoryInvocationStore(), quota=quota)
+
+    await execute(service, executor=provider)
+
+    assert calls == 1
+    with sqlite3.connect(quota._path) as conn:
+        # Admitted, dispatched and settled, with no denial recorded.
+        assert (
+            conn.execute("SELECT state FROM invocation_quota_reservations").fetchone()[0]
+            == "settled"
+        )
+        assert conn.execute("SELECT reason FROM invocation_quota_reservations").fetchone()[0] == ""
+        # Nothing was held against: there is no budget to hold against.
+        assert conn.execute("SELECT COUNT(*) FROM invocation_quota_allocations").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_policy_that_covers_nothing_applicable_still_denies(quota):
+    """A populated registry that misses this call is a gap, not an opt-out.
+
+    The distinction matters: an empty registry says the operator has not
+    configured quota, while a registry whose budgets all exclude this
+    provider/workspace/principal says they configured it and left this call
+    uncovered. The second is refused before any physical dispatch.
+    """
+
+    calls = 0
+
+    async def provider(*_):
+        nonlocal calls
+        calls += 1
+
+    # Registered, in-period, and scoped to a provider this call does not use.
+    await quota.register_budget(budget("elsewhere", provider_name="provider-z"))
     store = InMemoryInvocationStore()
     service = InvocationExecutionService(store=store, quota=quota)
+
     with pytest.raises(InvocationQuotaDenied, match="missing applicable"):
         await execute(service, executor=provider)
+
     assert calls == 0
     latest = await service.latest_effect(
         binding=binding(), run_id="run-one", node_run_id="node-one", effect_key="call"

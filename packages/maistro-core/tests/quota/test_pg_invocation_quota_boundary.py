@@ -10,7 +10,12 @@ import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationStatus
-from maistro.quota.invocation_quota import QuotaBudget, QuotaEstimate, QuotaObservation
+from maistro.quota.invocation_quota import (
+    InvocationQuotaDenied,
+    QuotaBudget,
+    QuotaEstimate,
+    QuotaObservation,
+)
 from maistro.quota.pg_invocation_quota import PgInvocationQuota
 
 
@@ -121,6 +126,94 @@ async def test_pg_quota_releases_not_applied_and_reconciles_partial_usage() -> N
             await conn.execute(
                 "DELETE FROM invocation_quota_allocations WHERE invocation_id IN "
                 "(SELECT invocation_id FROM invocation_quota_reservations WHERE invocation_id LIKE $1)",
+                f"pg-invocation-%-{suffix}",
+            )
+            await conn.execute(
+                "DELETE FROM invocation_quota_reservations WHERE invocation_id LIKE $1",
+                f"pg-invocation-%-{suffix}",
+            )
+            await conn.execute("DELETE FROM invocation_quota_budgets WHERE budget_id=$1", budget_id)
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_pg_admission_subtracts_opening_spend_like_sqlite() -> None:
+    """A budget's verified prior spend bounds what is still admissible.
+
+    `opening_spend` is attested spend already made inside this period, and the
+    SQLite backend has always counted it. PostgreSQL did not, so a limit of 100
+    with opening spend 90 reported 100 units available and admitted a 20-unit
+    request against the 10 that actually remained -- a configured budget
+    exceeded by up to its entire opening balance (Codex, #1362).
+    """
+
+    dsn = os.getenv("MAISTRO_TEST_PG_DSN", "").strip()
+    if "://" not in dsn:
+        pytest.skip("set MAISTRO_TEST_PG_DSN to a PostgreSQL DSN")
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    suffix = uuid4().hex
+    budget_id = f"pg-opening-{suffix}"
+    binding = Binding(
+        binding_id=f"pg-binding-{suffix}",
+        workspace_id=f"pg-workspace-{suffix}",
+        project_id="pg-project",
+        capability="model.chat",
+        provider_name="provider-pg",
+    )
+
+    async def estimate(_invocation: Invocation, _binding: Binding) -> QuotaEstimate:
+        return QuotaEstimate(principal_id="principal-pg", tokens=20)
+
+    quota = PgInvocationQuota(pool, estimate=estimate, clock=lambda: 100)
+    try:
+        await quota.ensure_schema()
+        await quota.register_budget(
+            QuotaBudget(
+                budget_id=budget_id,
+                unit="tokens",
+                limit=100,
+                period_start=0,
+                period_end=1000,
+                coverage_ref="test",
+                opening_spend=90,  # only 10 of the 100 remain
+                provider_name="provider-pg",
+            )
+        )
+        invocation = Invocation(
+            invocation_id=f"pg-invocation-opening-{suffix}",
+            run_id="pg-run",
+            node_run_id="pg-node",
+            attempt_id="pg-attempt-opening",
+            binding=ResolvedBinding(
+                binding_id=binding.binding_id,
+                workspace_id=binding.workspace_id,
+                project_id=binding.project_id,
+                capability=binding.capability,
+                provider_name="provider-pg",
+                provider_trust_tier="trusted",
+            ),
+            effect_key="over-the-opening-balance",
+        )
+
+        with pytest.raises(InvocationQuotaDenied, match="exhausted"):
+            await quota.reserve(invocation, binding)
+
+        # Refused before any hold: a denial records the decision and nothing else.
+        row = await pool.fetchrow(
+            "SELECT state FROM invocation_quota_reservations WHERE invocation_id=$1",
+            invocation.invocation_id,
+        )
+        assert row["state"] == "denied"
+        held = await pool.fetchval(
+            "SELECT COUNT(*) FROM invocation_quota_allocations WHERE invocation_id=$1",
+            invocation.invocation_id,
+        )
+        assert held == 0
+    finally:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM invocation_quota_allocations WHERE invocation_id LIKE $1",
                 f"pg-invocation-%-{suffix}",
             )
             await conn.execute(

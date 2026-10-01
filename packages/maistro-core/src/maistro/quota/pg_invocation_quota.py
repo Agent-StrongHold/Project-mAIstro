@@ -51,6 +51,28 @@ CREATE TABLE IF NOT EXISTS invocation_quota_evidence (
 """
 
 
+#: No budget registered anywhere means quota admission is not configured, and
+#: an unconfigured door admits. Only a *populated* budget table that covers
+#: nothing applicable to this call is a policy gap worth refusing.
+#:
+#: The two were conflated, and the consequence was severe: `create_container`
+#: registers no `QuotaBudget` and the migration creates the table empty, so
+#: every PostgreSQL or file-backed SQLite deployment refused its first governed
+#: effect after upgrading -- model, Jira, Airtable and harness alike -- with
+#: `missing applicable quota policy`, and kept refusing until someone performed
+#: an undocumented post-construction registration (Codex, #1362).
+_UNCONFIGURED = ""
+_NO_APPLICABLE_POLICY = "missing applicable quota policy"
+
+
+def _admission_reason(budgets: list[QuotaBudget], applicable: list[QuotaBudget]) -> str:
+    """Why this call is refused before any budget is checked, or ``""``."""
+
+    if applicable:
+        return _UNCONFIGURED
+    return _UNCONFIGURED if not budgets else _NO_APPLICABLE_POLICY
+
+
 class PgInvocationQuota:
     """Database-serialized quota collaborator at the Invocation boundary."""
 
@@ -94,23 +116,29 @@ class PgInvocationQuota:
             if await _already_reserved(conn, invocation.invocation_id, identity):
                 return
 
-            applicable = await self._applicable_budgets(conn, invocation, binding, estimate)
-            reason, allocations = await _hold_against(conn, applicable, estimate)
+            budgets, applicable = await self._applicable_budgets(
+                conn, invocation, binding, estimate
+            )
+            reason, allocations = await _hold_against(conn, budgets, applicable, estimate)
             await _write_reservation(conn, invocation.invocation_id, identity, reason, allocations)
         if reason:
             raise InvocationQuotaDenied(reason)
 
     async def _applicable_budgets(
         self, conn: Any, invocation: Invocation, binding: Binding, estimate: Any
-    ) -> list[QuotaBudget]:
-        """The budgets this Invocation is admitted against, in the open period."""
+    ) -> tuple[list[QuotaBudget], list[QuotaBudget]]:
+        """Every registered budget, and the subset governing this Invocation.
+
+        Both, because an empty registry and a registry that covers nothing
+        applicable are different situations with different answers.
+        """
 
         now = self._clock()
         if not math.isfinite(now):
             raise ValueError("invalid admission clock")
         rows = await conn.fetch("SELECT budget_id, definition FROM invocation_quota_budgets")
         budgets = [QuotaBudget(**_json_value(row["definition"])) for row in rows]
-        return [
+        return budgets, [
             budget
             for budget in budgets
             if _budget_applies(
@@ -255,7 +283,7 @@ def _budget_applies(
 
 
 async def _hold_against(
-    conn: Any, applicable: list[QuotaBudget], estimate: Any
+    conn: Any, budgets: list[QuotaBudget], applicable: list[QuotaBudget], estimate: Any
 ) -> tuple[str, list[tuple[str, int, int]]]:
     """The holds this Invocation may take, or the first reason it may not.
 
@@ -264,8 +292,9 @@ async def _hold_against(
     settlement lowers the hold to measured usage afterwards.
     """
 
-    if not applicable:
-        return "missing applicable quota policy", []
+    reason = _admission_reason(budgets, applicable)
+    if reason or not applicable:
+        return reason, []
     allocations: list[tuple[str, int, int]] = []
     for budget in applicable:
         maximum = estimate.maximum(budget.unit)
@@ -276,7 +305,18 @@ async def _hold_against(
                FROM invocation_quota_allocations WHERE budget_id=$1""",
             budget.budget_id,
         )
-        available = budget.limit - budget.reserve - int(row["spent"]) - int(row["held"])
+        # `opening_spend` is verified prior/ambient spend inside this period,
+        # and SQLite has always counted it. PostgreSQL did not, so a budget with
+        # limit 100 and opening spend 90 reported 100 available and admitted a
+        # 20-unit request against the 10 that actually remained -- a configured
+        # budget exceeded by up to its whole opening balance (Codex, #1362).
+        available = (
+            budget.limit
+            - budget.reserve
+            - budget.opening_spend
+            - int(row["spent"])
+            - int(row["held"])
+        )
         if maximum > available:
             return f"quota exhausted for budget {budget.budget_id}", []
         allocations.append((budget.budget_id, maximum, maximum))

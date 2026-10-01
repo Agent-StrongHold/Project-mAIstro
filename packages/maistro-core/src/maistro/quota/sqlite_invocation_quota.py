@@ -81,6 +81,28 @@ def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+#: No budget registered anywhere means quota admission is not configured, and
+#: an unconfigured door admits. Only a *populated* budget table that covers
+#: nothing applicable to this call is a policy gap worth refusing.
+#:
+#: The two were conflated, and the consequence was severe: `create_container`
+#: registers no `QuotaBudget` and the migration creates the table empty, so
+#: every PostgreSQL or file-backed SQLite deployment refused its first governed
+#: effect after upgrading -- model, Jira, Airtable and harness alike -- with
+#: `missing applicable quota policy`, and kept refusing until someone performed
+#: an undocumented post-construction registration (Codex, #1362).
+_UNCONFIGURED = ""
+_NO_APPLICABLE_POLICY = "missing applicable quota policy"
+
+
+def _admission_reason(budgets: list[QuotaBudget], applicable: list[QuotaBudget]) -> str:
+    """Why this call is refused before any budget is checked, or ``""``."""
+
+    if applicable:
+        return _UNCONFIGURED
+    return _UNCONFIGURED if not budgets else _NO_APPLICABLE_POLICY
+
+
 class SqliteInvocationQuota:
     """Opt-in SQLite accounting backend for InvocationExecutionService.
 
@@ -256,7 +278,7 @@ class SqliteInvocationQuota:
                     and (b.capability is None or b.capability == binding.capability)
                 )
             ]
-            reason = "missing applicable quota policy" if not applicable else ""
+            reason = _admission_reason(budgets, applicable)
             allocations: list[tuple[str, str, int, int]] = []
             for budget in applicable:
                 maximum = estimate.maximum(budget.unit)
