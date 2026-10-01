@@ -10,7 +10,12 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from maistro.agents.circuit_breaker import CircuitOpenError, llm_circuit
+from maistro.agents.circuit_breaker import (
+    CircuitOpenError,
+    CircuitState,
+    llm_circuits,
+    resolve_failure_domain,
+)
 from maistro.agents.conductor import (
     ConductorCall,
     _call_gateway,
@@ -24,6 +29,7 @@ from maistro.agents.conductor import (
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.config.models import DEFAULT_TIERS, Tier
 from maistro.http import set_test_transport
+from maistro.providers.types import ModelMetadata
 from maistro.tasks.models import TaskCreate
 
 
@@ -35,7 +41,7 @@ def _dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_circuit() -> None:
-    llm_circuit.record_success()
+    llm_circuits.reset()
 
 
 def _patched_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -251,7 +257,7 @@ class TestParseJsonOutput:
 class TestRunWithRetry:
     @pytest.mark.asyncio
     async def test_raises_when_circuit_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(llm_circuit, "allow_request", lambda: False)
+        monkeypatch.setattr(llm_circuits, "admit", lambda _domain: False)
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD]
         with pytest.raises(CircuitOpenError):
@@ -332,6 +338,141 @@ class TestRunWithRetry:
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 2})
         with pytest.raises(LLMProviderError):
             await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+
+
+class TestRunScopedCircuits:
+    """#1203: breaker scope follows the call's failure domain, not one flag."""
+
+    @staticmethod
+    def _call(model: str, base_url: str = "http://gw") -> ConductorCall:
+        return ConductorCall(model=model, base_url=base_url, api_key="key", system_prompt="sys")
+
+    @pytest.mark.asyncio
+    async def test_failing_provider_does_not_block_healthy_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.read())
+            if body["model"] == "flaky-model":
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"success": true}'}}]},
+            )
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+
+        flaky = self._call("flaky-model")
+        with pytest.raises(LLMProviderError):
+            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+        with pytest.raises(LLMProviderError):
+            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+
+        # Two exhausted calls x 3 attempts = 6 failures: the flaky domain is open.
+        flaky_domain = resolve_failure_domain("flaky-model", "http://gw")
+        assert llm_circuits.breaker(flaky_domain).state is CircuitState.OPEN
+
+        # The healthy provider on the same gateway still admits and succeeds.
+        healthy = self._call("healthy-model")
+        result = await _run_with_retry(healthy, "p", tier_config, max_tokens=100)
+        assert result.success is True
+        healthy_domain = resolve_failure_domain("healthy-model", "http://gw")
+        assert llm_circuits.breaker(healthy_domain).state is CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_shared_gateway_failure_blocks_every_provider_behind_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+
+        for model in ("model-a", "model-b"):
+            with pytest.raises(LLMProviderError):
+                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+
+        # ConnectError is an explicit shared-dependency failure: the
+        # gateway-level breaker represents it for both providers.
+        for model in ("model-a", "model-b"):
+            with pytest.raises(CircuitOpenError):
+                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+        # ...while the provider-level breakers stayed closed (not their fault).
+        gw_domain = resolve_failure_domain("model-a", "http://gw")
+        assert llm_circuits.breaker(gw_domain).state is CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_router_fallback_selects_healthy_alternative(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        requested: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.read())
+            requested.append(body["model"])
+            if body["model"] == "flaky-model":
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"success": true}'}}]},
+            )
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+
+        flaky = self._call("flaky-model")
+        with pytest.raises(LLMProviderError):
+            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+        with pytest.raises(LLMProviderError):
+            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+
+        class _Router:
+            """Registry-declared chain: flaky-model falls back to healthy-model."""
+
+            async def fallback_chain(self, name: str) -> list[ModelMetadata]:
+                assert name == "flaky-model"
+                return [
+                    ModelMetadata(
+                        name="flaky-model",
+                        provider="flaky-inc",
+                        cost_per_1k_input=0,
+                        cost_per_1k_output=0,
+                        latency_p50_ms=1,
+                    ),
+                    ModelMetadata(
+                        name="healthy-model",
+                        provider="healthy-inc",
+                        cost_per_1k_input=0,
+                        cost_per_1k_output=0,
+                        latency_p50_ms=2,
+                    ),
+                ]
+
+        result = await _run_with_retry(flaky, "p", tier_config, max_tokens=100, router=_Router())
+        assert result.success is True
+        assert requested[-1] == "healthy-model"
+
+    @pytest.mark.asyncio
+    async def test_blocked_domain_without_router_raises_circuit_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503)
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+        call = self._call("flaky-model")
+        for _ in range(2):
+            with pytest.raises(LLMProviderError):
+                await _run_with_retry(call, "p", tier_config, max_tokens=100)
+        with pytest.raises(CircuitOpenError, match="flaky-model"):
+            await _run_with_retry(call, "p", tier_config, max_tokens=100)
 
 
 async def _noop() -> None:

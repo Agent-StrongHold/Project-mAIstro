@@ -11,7 +11,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from maistro.agents.circuit_breaker import CircuitState
 from maistro.config.settings import SandboxSettings, Settings, get_settings
 from maistro_server.api.health import (
     ProbeResult,
@@ -366,9 +365,16 @@ class TestReadinessEndpoint:
         with (
             patch("maistro_server.api.health._check_docker", AsyncMock(return_value=ok)),
             patch("maistro_server.api.health._check_postgres", AsyncMock(return_value=ok)),
-            patch("maistro.agents.circuit_breaker.llm_circuit") as mock_circuit,
+            patch("maistro.agents.circuit_breaker.llm_circuits") as mock_bank,
         ):
-            mock_circuit.state = CircuitState.OPEN
+            mock_bank.snapshot.return_value = [
+                {
+                    "name": "llm:gw=gw.internal;provider=anthropic",
+                    "gateway": "gw.internal",
+                    "provider": "anthropic",
+                    "state": "open",
+                }
+            ]
             response = client.get("/health/ready")
         assert response.status_code == 503
         assert response.json() == {"status": "not_ready"}
