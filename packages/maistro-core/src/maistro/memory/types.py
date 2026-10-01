@@ -12,14 +12,21 @@ every Learning/Outcome/EpisodicMemory usage resolves to the same class.
 from __future__ import annotations
 
 from maistro.types.memory import (
+    ANTI_PATTERN_CONFIDENCE_FLOOR,
+    ANTI_PATTERN_HALF_LIFE_DAYS,
     CONTRADICT_DELTA,
+    DEFAULT_LEARNING_CONFIDENCE,
+    EMPIRICAL_HALF_LIFE_DAYS,
     INHERITANCE_PRIORITY,
     REINFORCE_DELTA,
     SCOPE_RANK,
+    VALIDATED_CONFIDENCE_FLOOR,
     WEIGHT_BOUNDS,
     DecaySweep,
     EpisodicMemory,
+    EpistemicType,
     Learning,
+    LearningStage,
     MemoryScope,
     MemoryTier,
     Outcome,
@@ -27,14 +34,21 @@ from maistro.types.memory import (
 )
 
 __all__ = [
+    "ANTI_PATTERN_CONFIDENCE_FLOOR",
+    "ANTI_PATTERN_HALF_LIFE_DAYS",
     "CONTRADICT_DELTA",
+    "DEFAULT_LEARNING_CONFIDENCE",
+    "EMPIRICAL_HALF_LIFE_DAYS",
     "INHERITANCE_PRIORITY",
     "REINFORCE_DELTA",
     "SCOPE_RANK",
+    "VALIDATED_CONFIDENCE_FLOOR",
     "WEIGHT_BOUNDS",
     "DecaySweep",
     "EpisodicMemory",
+    "EpistemicType",
     "Learning",
+    "LearningStage",
     "MemoryScope",
     "MemoryTier",
     "Outcome",
