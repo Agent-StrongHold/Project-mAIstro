@@ -12,9 +12,9 @@ corpus, unscoped, unbounded. These tests pin the replacement contract:
 - empty pages and walks past the end are empty pages, not errors;
 - backend parity: the in-memory and durable (SQLite kv_store) engines answer
   identical queries with identical pages;
-- the million-row performance envelope: on the durable backend, a page costs
-  its own rows — measured wall-clock plus EXPLAIN QUERY PLAN evidence that
-  the ordered walk uses idx_audit_log_order and no temp B-tree sort.
+- the million-row performance envelope: wall-clock and deterministic VM work
+  for sparse/absent scopes, every equality-filter shape and deep cursors;
+  EXPLAIN also checks the unfiltered ordered seek needs no temporary sort.
 
 The durable tests run the real `maistro.state` State/PersistedStore pair over
 a temp SQLite file seeded through the writer queue — the same kv_store
@@ -29,7 +29,9 @@ import pathlib
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from itertools import product
 from typing import Any
 
 import pytest
@@ -45,6 +47,7 @@ from services.audit_query import (  # noqa: E402
     _encode_cursor,
     _page_sql,
     clamp_limit,
+    ensure_audit_index,
     iter_export_entries,
     page_entries,
 )
@@ -310,6 +313,27 @@ def test_arrivals_between_pages_never_duplicate_or_skip() -> None:
     assert not ({f"e-{i:06d}" for i in range(200, 260)} & set(ids[50:]))
 
 
+def test_durable_walk_survives_concurrent_acknowledged_inserts(durable: DurableAudit) -> None:
+    durable.seed_rows([entry(i, created_at=ts(0)) for i in range(200)])
+    store = JsonStore("audit_log", persisted=durable.backend)
+    first = page_entries(store, backend=durable.backend, limit=17)
+    written = threading.Event()
+
+    def writer() -> None:
+        for i in range(200, 260):
+            store[f"e-{i:06d}"] = entry(i)
+            written.set()
+            time.sleep(0.001)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(writer)
+        assert written.wait(timeout=10)
+        rest = walk(store, backend=durable.backend, limit=17, start_cursor=first.next_cursor)
+        future.result(timeout=30)
+    assert [e["id"] for e in first.entries + rest] == [f"e-{i:06d}" for i in reversed(range(200))]
+    assert page_entries(store, backend=durable.backend, limit=1).entries[0]["id"] == "e-000259"
+
+
 def test_threaded_writes_keep_the_walk_strictly_ordered() -> None:
     store = JsonStore("audit_threaded")
     seed(store, [entry(i) for i in range(100)])
@@ -412,6 +436,11 @@ def test_durable_backend_pages_identically_to_memory(durable: DurableAudit) -> N
         {"actor": "bob"},
         {"action": "login", "severity": "info", "actor": "alice"},
         {"actor_scope": frozenset({"bob"})},
+        {"actor_scope": frozenset({"alice", "bob"}), "severity": "warning"},
+        {"actor_scope": frozenset({"alice", "bob"}), "actor": "bob", "action": "login"},
+        {"actor_scope": frozenset({"absent", "bob"}), "severity": "warning"},
+        {"actor_scope": frozenset()},
+        {"actor_scope": frozenset({"alice"}), "actor": "bob"},
     ):
         expected = walk(memory_store, limit=9, **kwargs)
         actual = walk(memory_store, limit=9, backend=durable.backend, **kwargs)
@@ -500,14 +529,99 @@ def _perf_row(i: int) -> tuple[str, str, str, str]:
     return ("audit_log", f"perf-{i:08d}", value, created)
 
 
+def test_startup_migrates_audit_indexes_before_serving_pages(
+    durable: DurableAudit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from services import username_registry
+
+    # Upgrade an existing ordering-only database, not just an empty new install.
+    durable.seed_rows([entry(i) for i in range(3)])
+    durable.state.run_migration(
+        "audit_log_order_idx_001",
+        "CREATE INDEX idx_audit_log_order ON kv_store "
+        "(store_name, json_extract(value, '$.created_at') DESC, key DESC)",
+    )
+    audit = JsonStore("audit_log", persisted=durable.backend)
+    monkeypatch.setattr(stores, "_persisted", durable.backend)
+    monkeypatch.setattr(stores, "_all_model_stores", [])
+    monkeypatch.setattr(stores, "_all_json_stores", [audit])
+    monkeypatch.setattr(stores, "_seed_if_empty", lambda: None)
+    monkeypatch.setattr(username_registry, "migrate_legacy_claims", lambda: None)
+    stores.initialize_stores()
+    stores.initialize_stores()  # Idempotent; no destructive rebuild on restart.
+    reader = durable.state.open_reader()
+    try:
+        indexes = reader.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name LIKE 'idx_audit_log_%'"
+        ).fetchall()
+    finally:
+        reader.close()
+    assert len(indexes) == 8
+    assert all("WHERE store_name = 'audit_log'" in sql for (sql,) in indexes)
+    assert len(audit) == 3
+
+    # The migration stamp exists before the first page, not after it.
+    writer = durable.state.open_reader()
+    try:
+        assert writer.execute(
+            "SELECT 1 FROM schema_migrations WHERE name = 'audit_log_seek_idx_002'"
+        ).fetchone()
+    finally:
+        writer.close()
+    assert len(page_entries(audit, backend=durable.backend).entries) == 3
+
+
+def test_scoped_and_deep_queries_have_bounded_work(durable: DurableAudit) -> None:
+    """Count VM work, not just wall time or the presence of an index name."""
+    durable.seed_rows([entry(i, created_at=ts(0)) for i in range(25_000)])
+    store = JsonStore("audit_work")
+    # Apply the existing migration before measuring request work.
+    page_entries(store, backend=durable.backend, limit=1)
+    scenarios = [
+        {"actor_scope": frozenset({"absent", "also-absent"})},
+        {"cursor": _encode_cursor(ts(0), "e-000100")},
+        {"action": "absent"},
+        {"severity": "absent"},
+    ]
+    reader = durable.state.open_reader()
+    try:
+        for scenario in scenarios:
+            ticks = 0
+
+            def progress() -> int:
+                nonlocal ticks
+                ticks += 1
+                return 0
+
+            sql, params = _page_sql(
+                **(
+                    {
+                        "action": None,
+                        "severity": None,
+                        "actor": None,
+                        "cursor": None,
+                        "actor_scope": None,
+                    }
+                    | scenario
+                ),
+                limit=51,
+            )
+            reader.set_progress_handler(progress, 100)
+            reader.execute(sql, params).fetchall()
+            reader.set_progress_handler(None, 0)
+            assert ticks < 500, f"{scenario}: >= {ticks * 100} VM instructions"
+    finally:
+        reader.close()
+
+
 def test_million_row_corpus_pages_in_bounded_time(durable: DurableAudit) -> None:
     """A page costs its own rows, not the corpus (#358 definition of done).
 
     Seeds 1,000,000 audit rows through one batched writer transaction (the
     shape a real corpus arrives in), then measures the ordered keyset walk.
-    The bounds below are generous enough for shared CI hardware; the *plan*
-    assertions carry the structural proof: the ordered walk must use
-    idx_audit_log_order and must not sort.
+    Wall-clock bounds are generous for shared CI hardware. The VM-work checks
+    additionally reject corpus scans even when a plan names an ordering index.
+    Scope/cursor merges may sort bounded candidates, never the whole corpus.
     """
     durable.state.submit_sync(
         lambda conn: conn.executemany(
@@ -517,8 +631,10 @@ def test_million_row_corpus_pages_in_bounded_time(durable: DurableAudit) -> None
         )
     )
 
-    # First page — this is also where production applies the ordering-index
-    # migration (ensure_audit_index runs on the first durable query).
+    # Production migrates at store startup, not on the first HTTP page.
+    started = time.perf_counter()
+    ensure_audit_index(durable.backend)
+    print(f"audit million-row index migration: {time.perf_counter() - started:.3f}s")
     started = time.perf_counter()
     page1 = page_entries(JsonStore("audit_perf"), backend=durable.backend, limit=100)
     first_page_s = time.perf_counter() - started
@@ -526,10 +642,12 @@ def test_million_row_corpus_pages_in_bounded_time(durable: DurableAudit) -> None
     assert first_page_s < 5.0, f"first page took {first_page_s:.3f}s on {_PERF_ROWS} rows"
 
     # Structural evidence: the exact production SQL is index-driven, no sort.
-    sql, params = _page_sql(action=None, severity=None, actor=None, cursor=None, actor_scope=None)
+    sql, params = _page_sql(
+        action=None, severity=None, actor=None, cursor=None, actor_scope=None, limit=50
+    )
     reader = durable.state.open_reader()
     try:
-        plan = reader.execute("EXPLAIN QUERY PLAN " + sql + " LIMIT 50", params).fetchall()
+        plan = reader.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
     finally:
         reader.close()
     plan_text = " ".join(str(row) for row in plan)
@@ -566,3 +684,45 @@ def test_million_row_corpus_pages_in_bounded_time(durable: DurableAudit) -> None
     assert len(scoped.entries) == 50
     assert scoped_s < 5.0, f"scoped page took {scoped_s:.3f}s"
     assert {e["actor"] for e in scoped.entries} == {"perf-actor-0000"}
+    print(f"audit million-row first page: {first_page_s:.4f}s; scope: {scoped_s:.4f}s")
+
+    # Every equality-filter shape, absent/sparse scopes, and deep/past-end
+    # cursors must seek rather than scan even on the million-row corpus.
+    # VM counts are deterministic evidence independent of CI machine speed.
+    max_steps = 0
+    reader = durable.state.open_reader()
+    try:
+        for actor, action, severity, cursor, scope in product(
+            (None, "perf-actor-0000", "absent"),
+            (None, "login", "absent"),
+            (None, "info", "absent"),
+            (None, _encode_cursor(ts(10_000), "perf-00010000"), _encode_cursor(ts(-1), "x")),
+            (None, frozenset({"perf-actor-0000", "absent"})),
+        ):
+            ticks = 0
+
+            def progress() -> int:
+                nonlocal ticks
+                ticks += 1
+                return 0
+
+            kwargs = {
+                "action": action,
+                "severity": severity,
+                "actor": actor,
+                "cursor": cursor,
+                "actor_scope": scope,
+            }
+            sql, params = _page_sql(**kwargs, limit=101)
+            reader.set_progress_handler(progress, 100)
+            rows = reader.execute(sql, params).fetchall()
+            reader.set_progress_handler(None, 0)
+            max_steps = max(max_steps, ticks * 100)
+            assert ticks < 500, f"{kwargs}: >= {ticks * 100} VM instructions"
+            actual = page_entries(
+                JsonStore("audit_perf"), backend=durable.backend, limit=100, **kwargs
+            )
+            assert actual.entries == [json.loads(raw) for _, raw in rows[:100]]
+    finally:
+        reader.close()
+    print(f"audit million-row maximum query VM instructions: <{max_steps + 100}")

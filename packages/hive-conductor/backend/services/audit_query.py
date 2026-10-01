@@ -22,9 +22,10 @@ This module is the one read seam for the audit corpus. It enforces, in order:
 Two backends implement the identical contract:
 
 - **Durable** — SQL over the `kv_store` namespace the `JsonStore` already
-  persists to, filtering with `json_extract` and ordering with an expression
-  index (`ensure_audit_index`). The database does the scoping,
-  filtering, ordering, and limiting; a page costs its own rows, not the corpus.
+  persists to, using filter-shape expression indexes (`ensure_audit_index`).
+  The database scopes and filters each bounded seek before merging aliases
+  and cursor ranges; request work scales with the page, not the corpus.
+  Index construction is corpus-sized work performed during store startup.
 - **In-memory** — the same keyset walk over keys sorted per request. No
   cache: a freshness heuristic over a dict other code mutates directly
   (seeders, tests, future purge jobs) is exactly how stale-index bugs ship,
@@ -48,6 +49,7 @@ from bisect import bisect_left
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import combinations
 from typing import Any
 
 #: Default page size for `GET /v1/audit`.
@@ -77,23 +79,25 @@ _RETENTION: dict[str, Any] = {
     "corpus_purge": "none",  # honest: no purge job exists (#325 owns that lane)
 }
 
-#: Named, idempotent migration creating the expression index the durable
-#: page query orders through. Applied once per database, on the first durable
-#: audit query (or by tests directly). Expression text must match the query's
-#: `json_extract` spelling exactly for SQLite to use it for ORDER BY.
-#:
-#: Not a partial index (`WHERE store_name = 'audit_log'`): SQLite's planner
-#: will not satisfy an ORDER BY through a partial index here and falls back
-#: to a temp B-tree sort over the whole namespace — measured in #358's
-#: envelope test. Leading with the `store_name` column instead gives the same
-#: selectivity and a sort-free backward scan. The leading DROP heals any
-#: database that recorded an earlier partial variant under this name.
-_AUDIT_INDEX_MIGRATION = (
-    "DROP INDEX IF EXISTS idx_audit_log_order;"
-    "CREATE INDEX IF NOT EXISTS idx_audit_log_order ON kv_store "
-    "(store_name, json_extract(value, '$.created_at') DESC, key DESC)"
+# Each supported equality-filter shape needs its own ordered seek. One index
+# with all three fields cannot serve a query omitting a leading field without
+# scanning/sorting the corpus. Eight partial indexes trade audit write/storage
+# amplification for bounded reads; unrelated kv_store namespaces are excluded.
+# Keep store_name in the key as well: SQLite needs the leading equality to
+# satisfy the expression ORDER BY without a temporary sort.
+_FILTER_FIELDS = ("actor", "action", "severity")
+_AUDIT_INDEXES = {
+    fields: "idx_audit_log_" + ("_".join(fields) if fields else "order")
+    for size in range(len(_FILTER_FIELDS) + 1)
+    for fields in combinations(_FILTER_FIELDS, size)
+}
+_AUDIT_INDEX_MIGRATION = "DROP INDEX IF EXISTS idx_audit_log_order;" + ";".join(
+    f"CREATE INDEX IF NOT EXISTS {name} ON kv_store (store_name, "
+    + "".join(f"json_extract(value, '$.{field}'), " for field in fields)
+    + "json_extract(value, '$.created_at') DESC, key DESC) WHERE store_name = 'audit_log'"
+    for fields, name in _AUDIT_INDEXES.items()
 )
-_AUDIT_INDEX_MIGRATION_NAME = "audit_log_order_idx_001"
+_AUDIT_INDEX_MIGRATION_NAME = "audit_log_seek_idx_002"
 
 
 @dataclass(frozen=True)
@@ -152,8 +156,10 @@ def clamp_limit(limit: int | None) -> int:
 
 
 def ensure_audit_index(backend: Any) -> None:
-    """Apply the ordering-index migration, idempotently.
+    """Apply ordered filter indexes at store startup, before serving requests.
 
+    Direct query clients also call this idempotent guard. Production startup
+    pays the corpus-sized migration cost, not the first HTTP page.
     `run_migration` answers from `schema_migrations` (one indexed SELECT) when
     the migration is already applied, so this is safe to call on every durable
     page request — and deliberately not cached by object id: CPython reuses ids
@@ -249,22 +255,6 @@ def iter_export_entries(
 # --------------------------------------------------------------------------- #
 
 
-def _sql_clause(cursor: str | None) -> tuple[str, list[Any]]:
-    """Keyset predicate: strictly older than the cursor's (created_at, id).
-
-    Returned without a leading AND — `_page_sql` joins the WHERE parts with
-    " AND " itself.
-    """
-    if cursor is None:
-        return "", []
-    created_at, entry_id = _decode_cursor(cursor)
-    return (
-        "(json_extract(value, '$.created_at') < ? "
-        "OR (json_extract(value, '$.created_at') = ? AND key < ?))",
-        [created_at, created_at, entry_id],
-    )
-
-
 def _resolve_scope(
     actor: str | None, actor_scope: frozenset[str] | None
 ) -> tuple[frozenset[str] | None, str | None]:
@@ -294,38 +284,52 @@ def _page_sql(
     actor: str | None,
     cursor: str | None,
     actor_scope: frozenset[str] | None,
+    limit: int,
 ) -> tuple[str, list[Any]]:
-    """The exact page SQL (without LIMIT) and its parameters.
+    """Exact bounded production SQL, including each seek's LIMIT.
 
-    Split out so the performance tests can EXPLAIN QUERY PLAN the identical
-    statement the engine runs, rather than a lookalike that could drift.
+    Scope aliases are separate equality seeks, not an IN scan followed by an
+    unbounded sort. A cursor uses two disjoint ranges: same timestamp / lower
+    id, and older timestamps. SQLite does not seek both keys of an expression
+    index for a tuple inequality or OR; splitting the ranges also bounds work
+    when millions of rows share a timestamp. The final merge sorts at most
+    limit * aliases * 2 rows (HTTP principals have at most two aliases).
     """
-    where = ["store_name = 'audit_log'"]
+    allowed, actor_filter = _resolve_scope(actor, actor_scope)
+    actors = [actor_filter] if actor_filter is not None or allowed is None else sorted(allowed)
+    if not actors:
+        return "SELECT key, value FROM kv_store WHERE 0", []
+    boundaries: list[tuple[str, list[Any]]] = [("", [])]
+    if cursor is not None:
+        created_at, entry_id = _decode_cursor(cursor)
+        boundaries = [
+            ("json_extract(value, '$.created_at') = ? AND key < ?", [created_at, entry_id]),
+            ("json_extract(value, '$.created_at') < ?", [created_at]),
+        ]
+    seeks: list[str] = []
     params: list[Any] = []
-    if action is not None:
-        where.append("json_extract(value, '$.action') = ?")
-        params.append(action)
-    if severity is not None:
-        where.append("json_extract(value, '$.severity') = ?")
-        params.append(severity)
-    allowed_actors, actor_filter = _resolve_scope(actor, actor_scope)
-    if actor_filter is not None:
-        where.append("json_extract(value, '$.actor') = ?")
-        params.append(actor_filter)
-    elif allowed_actors is not None:
-        placeholders = ",".join("?" * len(allowed_actors))
-        where.append(f"json_extract(value, '$.actor') IN ({placeholders})")
-        params.extend(sorted(allowed_actors))
-    clause, cursor_params = _sql_clause(cursor)
-    if clause:
-        where.append(clause)
-    params.extend(cursor_params)
-    sql = (
-        "SELECT key, value FROM kv_store WHERE "
-        + " AND ".join(where)
-        + " ORDER BY json_extract(value, '$.created_at') DESC, key DESC"
+    for scoped_actor in actors:
+        filters = {"actor": scoped_actor, "action": action, "severity": severity}
+        fields = tuple(field for field in _FILTER_FIELDS if filters[field] is not None)
+        where = ["store_name = 'audit_log'"] + [
+            f"json_extract(value, '$.{field}') = ?" for field in fields
+        ]
+        filter_params = [filters[field] for field in fields]
+        for boundary, boundary_params in boundaries:
+            clauses = where + ([boundary] if boundary else [])
+            seeks.append(
+                "SELECT key, value, json_extract(value, '$.created_at') AS created_at "
+                f"FROM kv_store INDEXED BY {_AUDIT_INDEXES[fields]} WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY created_at DESC, key DESC LIMIT ?"
+            )
+            params.extend([*filter_params, *boundary_params, limit])
+    # Even the merge happens in SQL; no scope/filter decision follows LIMIT.
+    union = " UNION ALL ".join(f"SELECT * FROM ({seek})" for seek in seeks)
+    return (
+        f"SELECT key, value FROM ({union}) ORDER BY created_at DESC, key DESC LIMIT ?",
+        [*params, limit],
     )
-    return sql, params
 
 
 def _page_durable(
@@ -347,9 +351,8 @@ def _page_durable(
         actor=actor,
         cursor=cursor,
         actor_scope=actor_scope,
+        limit=limit + 1,
     )
-    sql += " LIMIT ?"
-    params.append(limit + 1)
 
     state = getattr(backend, "_state", None)
     reader = state.open_reader()
@@ -387,7 +390,8 @@ def _sorted_ascending(store: Any) -> list[tuple[str, str]]:
     than this module (seed data, tests, any future purge), and a freshness
     heuristic cheap enough to beat a re-sort is not honest about same-length
     corpus replacement. Re-sorting per request is O(n log n) with a small
-    constant — bounded, correct, and off the production path.
+    constant — correct, but not corpus-independent. Durable deployments use
+    the indexed SQL path instead.
 
     The mapping is snapshotted with a C-level `list(store.items())` copy
     before any per-entry work: the copy is a single GIL-atomic operation,
