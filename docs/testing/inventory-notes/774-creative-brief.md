@@ -222,3 +222,10 @@ the provenance of the correction.
 - Vulture per-identity ledger (the named CI-repair gate) exits 0
   (1374 reviewed identities → 1372 findings); no baseline amendment required —
   the two eliminated findings were not banked identities.
+- **Measurement hygiene (proven the hard way):** re-running the gate against the
+  same database *after* the design suite and `tests/migrations` (whose
+  upgrade/downgrade cycles rewrite the schema) measured **34.6668** — shared
+  mutable DB state undercounts and breaks the exact-equality bank. CI is immune
+  (fresh service container, one `alembic upgrade head`, one measurement). Local
+  reproduction must recreate + re-migrate the database per measurement; done,
+  the committed head then measures **39.1237** and the gate exits 0.
