@@ -160,6 +160,12 @@ test.beforeAll(async ({ browser }) => {
   page = await context.newPage();
 });
 
+test.afterAll(async () => {
+  // Detach the RSI page and its polling loops (and the 2.5 s patch-feed
+  // route delay) from the worker-scoped browser before the next spec runs.
+  await context.close();
+});
+
 /** Onboarding seed, pinned jitter, and the page-side request journal — the
  * environment every app page in a context needs. The clock test installs
  * these on its own isolated context, because Playwright's clock API

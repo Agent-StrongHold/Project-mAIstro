@@ -326,6 +326,11 @@ export default function RSI() {
         fetchJson<{ kept: Review[]; flagged: Review[] }>(`${API}/runs/${selectedRun}/reviews`, signal),
         fetchJson<Record<string, unknown>>(`${API}/runs/${selectedRun}/rlphd`, signal),
       ]);
+      // Aborting is how a run switch (key change) or unmark supersedes this
+      // loop. A batch that straddles the switch — one endpoint already
+      // fulfilled, the other rejected by the abort — must not re-apply the
+      // old run's rows over the new run's render-phase reset: drop it whole.
+      if (signal.aborted) return null;
       let worst = worstFailure(null, outcome(rev, (data) => setReviews(data)));
       worst = worstFailure(worst, outcome(rlp, (data) => setRlphd(data)));
       return worst;
