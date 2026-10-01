@@ -570,3 +570,65 @@ async def test_live_projection_is_scoped_from_its_first_event(
     detail = get_dag_run_store().get_run("run-live-scope")
     assert detail is not None
     assert detail["status"] == "completed"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+@pytest.mark.asyncio
+async def test_live_projection_swallows_malformed_events_and_store_failures(
+    admin_client: TestClient,
+    stored_dag: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#1183: projection recording is presentation and may not break the Run.
+
+    A malformed node event records nothing (and mints no sequence cursor), a
+    failing projection store is logged and swallowed for both the live-event
+    and the terminal-result path, and a result without a run identity is
+    dropped on the floor — the executing Run's outcome must never flip
+    because the projection row could not be written.
+    """
+    import logging
+
+    import services.dag_run_store as dag_run_store
+    from services.dag_execution_scope import authorize_hive_dag_scope
+    from services.dag_run_live import LiveRunProjection
+
+    workspace_id = _create_workspace(admin_client, "Live resilience")
+    scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id="admin")
+    recorder = LiveRunProjection(dag_id=stored_dag, scope=scope)
+
+    # Not events: no run identity, no node identity, no known kind. Each is
+    # refused before the store is touched, so no projection row or cursor is
+    # minted from a frame the consumer could never resume from.
+    assert await recorder.record_event({"kind": "node_started"}) is None
+    assert await recorder.record_event({"kind": "node_started", "run_id": "r"}) is None
+    assert (
+        await recorder.record_event({"kind": "node_started", "run_id": "r", "node_id": ""}) is None
+    )
+    assert (
+        await recorder.record_event({"kind": "node_exploded", "run_id": "r", "node_id": "n1"})
+        is None
+    )
+
+    def _explode() -> Any:
+        raise RuntimeError("projection store down")
+
+    monkeypatch.setattr(dag_run_store, "get_dag_run_store", _explode)
+    with caplog.at_level(logging.WARNING, logger="hive.dag_run_live"):
+        # Live event: the failure is logged, never raised ...
+        assert (
+            await recorder.record_event({"kind": "node_started", "run_id": "r", "node_id": "n1"})
+            is None
+        )
+        assert "dag_run_live_projection_event_not_recorded" in caplog.text
+        # ... and the terminal result fails just as softly.
+        await recorder.record_result({"run_id": "r", "status": "completed"})
+        assert "dag_run_live_projection_result_not_recorded" in caplog.text
+
+    # A result without a run identity records nothing at all — with the store
+    # back, the absence of a row proves the guard short-circuits first.
+    monkeypatch.undo()
+    await recorder.record_result({"status": "completed"})
+    assert dag_run_store.get_dag_run_store().get_run("r") is None

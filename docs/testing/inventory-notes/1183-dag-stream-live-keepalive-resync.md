@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +12
+  packages/hive-conductor/backend/tests: +13
 ---
 
 # 1183 — DAG streaming is live, keepalive-aware, and explicit about lost events
@@ -49,7 +49,9 @@ Nine backend tests:
   recorded incrementally with contiguous sequence identity (and the started
   frame announces the heartbeat cadence); `LiveRunProjection` rows are born
   scoped to the authorized Workspace, so mid-run inspection/SSE authorize
-  before any terminal result.
+  before any terminal result; malformed node events and a failing projection
+  store are swallowed with a warning — never raised into the executing Run —
+  and a result without a run identity records nothing.
 
 One pinned record-shape test gained the new durable `event_seq` field
 (`test_dag_run_history_durability.py`) — a deliberate store schema addition,
