@@ -205,6 +205,16 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # Parallel HTTP principal types and dict-shaped request.state.user are
+      # how the last three Conductor attempts kept diverging identity. P0.1
+      # ratchets them to one canonical Principal in maistro-core (#53).
+      - name: One HTTP principal surface (P0.1 ratchet)
+        run: python3 scripts/check-principal-identity.py
+      # Default-allow route prefixes are the other seam P0 closes: every
+      # authenticated /v1/{segment} mount must declare a permission or a
+      # reviewed exempt_reason before Workspace surfaces land (#53 AC-P2).
+      - name: Authenticated route prefixes declared (P0.2 ratchet)
+        run: python3 scripts/check-route-permissions.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it
