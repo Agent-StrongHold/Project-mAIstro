@@ -24,6 +24,14 @@ looked usable, and a failed fetch was indistinguishable from a valid catalog.
 - Discovery lifecycle state `modelCheck: pending | ok | failed` replaces the
   silent catch; the curated `FALLBACK_MODELS` stay as an offline baseline but
   are always labelled as such.
+- Only a catalog the backend explicitly marks `discovered: true` renders as
+  discovered. A 200 that carries `discovered: false` — the backend's
+  stored-default substitute plus its sanitized failure class
+  (`not_configured`, `tls`, `policy`, …) — takes the failure path with the
+  backend's own kind, so gateway-side TLS/policy failures are distinguishable
+  in the wizard, and the substitute is surfaced separately as the cached
+  default (`data-testid=model-cached-default`), distinct from the curated
+  suggestions.
 - Every failure class renders its own actionable message and
   `data-testid` (`model-error-auth|not_found|server|network|empty|malformed|
   http|unexpected`) plus a **Retry gateway discovery** button (effect keyed on
@@ -38,8 +46,8 @@ looked usable, and a failed fetch was indistinguishable from a valid catalog.
 - Confirm step shows `router: <model> · unverified`
   (`router-model-unverified`) when the catalog is not verified.
 - `finish()` runs a final preflight: it re-queries `/v1/settings/models` and
-  only marks the effective default model `verified` when the gateway answers
-  AND lists it; otherwise the completion payload carries
+  only marks the effective default model `verified` when the backend reports
+  `discovered: true` AND lists it; otherwise the completion payload carries
   `model_availability: "unverified"`.
 
 ### Backend — `packages/hive-conductor/backend/routes/settings.py`

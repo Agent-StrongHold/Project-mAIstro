@@ -6,6 +6,9 @@ import { defineConfig } from "@playwright/test";
 // --config=playwright.model-discovery.config.ts` owns the server lifecycle.
 
 const PORT = 8107;
+// Test-only loopback URL for the ephemeral Vite server below; PLAYWRIGHT_BASE_URL
+// overrides it for CI/remote runners, matching playwright.config.ts.
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -14,13 +17,13 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   use: {
-    baseURL: `http://localhost:${PORT}`,
+    baseURL: BASE_URL,
     headless: true,
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: `npm run dev -- --port ${PORT} --strictPort`,
-    url: `http://localhost:${PORT}`,
+    command: `npm run dev -- --port ${PORT} --strictPort --host 127.0.0.1`,
+    url: `http://127.0.0.1:${PORT}`,
     reuseExistingServer: false,
     timeout: 90_000,
   },

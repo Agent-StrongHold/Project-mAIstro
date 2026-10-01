@@ -49,6 +49,10 @@ export default function Setup() {
   const [modelCheck, setModelCheck] = useState<ModelCheck>("pending");
   const [modelError, setModelError] = useState<string | null>(null);
   const [modelErrorKind, setModelErrorKind] = useState<string | null>(null);
+  // The stored default the backend substitutes when the gateway catalog is
+  // NOT discovered. A distinct provenance state (#287): cached, never
+  // discovered, and never rendered as live gateway state.
+  const [cachedDefault, setCachedDefault] = useState<string | null>(null);
   const [fallbackAcknowledged, setFallbackAcknowledged] = useState(false);
   const [manualModel, setManualModel] = useState(false);
   const [fetchKey, setFetchKey] = useState(0);
@@ -116,7 +120,8 @@ export default function Setup() {
     setModelCheck("pending");
     setModelError(null);
     setModelErrorKind(null);
-    apiGet<{ models: unknown }>("/v1/settings/models")
+    setCachedDefault(null);
+    apiGet<{ models?: unknown; discovered?: boolean; source?: string; error?: { kind?: string; message?: string } | null }>("/v1/settings/models")
       .then((data) => {
         if (!active) return;
         // A malformed payload is its own failure class, not an empty catalog:
@@ -126,6 +131,21 @@ export default function Setup() {
           return;
         }
         const models = data.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0);
+        // Only a catalog the backend explicitly DISCOVERED from the gateway
+        // may show as discovered (#287). A 200 with `discovered: false`
+        // carries a sanitized failure class (not_configured, tls, policy, …)
+        // and a *substitute* list — the stored default — never a live
+        // catalog. It takes the failure path with the backend's own kind,
+        // and the substitute is surfaced as the cached default, distinct
+        // from the curated suggestions.
+        if (data.discovered !== true) {
+          setCachedDefault(models[0] ?? null);
+          failDiscovery(
+            data.error?.kind ?? "unexpected",
+            data.error?.message ?? "The gateway catalog could not be discovered.",
+          );
+          return;
+        }
         if (models.length === 0) {
           failDiscovery("empty", "The gateway answered but returned an empty model catalog. Nothing is confirmed available; the list below is curated suggestions.");
           return;
@@ -235,11 +255,14 @@ export default function Setup() {
       // failed fetch silently passing for a valid gateway catalog.
       let modelAvailability: "verified" | "unverified" = "unverified";
       try {
-        const check = await apiGet<{ models: unknown }>("/v1/settings/models");
+        const check = await apiGet<{ models?: unknown; discovered?: boolean }>("/v1/settings/models");
         const models = Array.isArray(check.models)
           ? check.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0)
           : [];
-        if (models.includes(routerModel)) modelAvailability = "verified";
+        // "verified" requires a catalog the backend actually discovered from
+        // the gateway: a 200 that carries the stored-default substitute never
+        // qualifies, so it is recorded as explicitly unverified (#287).
+        if (check.discovered === true && models.includes(routerModel)) modelAvailability = "verified";
       } catch {
         modelAvailability = "unverified";
       }
@@ -404,6 +427,11 @@ export default function Setup() {
                   {modelCheck === "failed" && !manualModel && "Curated suggestions — the gateway was not queried successfully, availability is UNVERIFIED"}
                   {manualModel && "Manual entry — the gateway has not confirmed this ID; availability is UNVERIFIED"}
                 </div>
+                {modelCheck === "failed" && cachedDefault !== null && !manualModel && (
+                  <div data-testid="model-cached-default" style={{ fontFamily: "var(--mono)", fontSize: 12, marginTop: 4, color: "var(--pencil)" }}>
+                    Cached default — <code>{cachedDefault}</code> is the Conductor's stored default, not a model discovered from the gateway.
+                  </div>
+                )}
                 {modelError && (
                   <div role="alert" data-testid={`model-error-${modelErrorKind ?? "unknown"}`} style={{ padding: "6px 10px", background: "rgba(196,69,42,0.12)", border: "1px solid var(--danger)", borderRadius: 4, fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)" }}>
                     <div>{modelError}</div>

@@ -43,7 +43,7 @@ async function mockBaseline(page: Page) {
 
 test.describe("Setup wizard — gateway model discovery", () => {
   test("successful discovery shows the gateway catalog as verified", async ({ page }) => {
-    await mockModels(page, () => ({ status: 200, body: JSON.stringify({ models: ["gw-alpha", "gw-beta"] }) }));
+    await mockModels(page, () => ({ status: 200, body: JSON.stringify({ models: ["gw-alpha", "gw-beta"], discovered: true, source: "gateway", error: null }) }));
     await gotoHiveStep(page);
 
     const status = page.getByTestId("model-discovery-status");
@@ -81,7 +81,7 @@ test.describe("Setup wizard — gateway model discovery", () => {
       { respond: () => ({ status: 500, body: "{}" }), testid: "model-error-server", text: /server error/ },
       { respond: () => ({ status: 404, body: "{}" }), testid: "model-error-not_found", text: /not found \(404\)/ },
       { respond: () => null, testid: "model-error-network", text: /Could not reach the gateway/ },
-      { respond: () => ({ status: 200, body: JSON.stringify({ models: [] }) }), testid: "model-error-empty", text: /empty model catalog/ },
+      { respond: () => ({ status: 200, body: JSON.stringify({ models: [], discovered: false, source: "gateway", error: { kind: "empty", message: "The gateway answered but returned an empty model catalog." } }) }), testid: "model-error-empty", text: /empty model catalog/ },
       { respond: () => ({ status: 200, body: JSON.stringify({ models: "oops" }) }), testid: "model-error-malformed", text: /could not be parsed/ },
     ];
     for (const c of cases) {
@@ -98,7 +98,7 @@ test.describe("Setup wizard — gateway model discovery", () => {
       calls += 1;
       // StrictMode double-invokes the mount effect, so the first two calls
       // are the paired initial fetches; only the explicit retry is call 3.
-      return calls <= 2 ? null : { status: 200, body: JSON.stringify({ models: ["gw-recovered"] }) };
+      return calls <= 2 ? null : { status: 200, body: JSON.stringify({ models: ["gw-recovered"], discovered: true, source: "gateway", error: null }) };
     });
     await gotoHiveStep(page);
 
@@ -111,7 +111,7 @@ test.describe("Setup wizard — gateway model discovery", () => {
   });
 
   test("manual entry requires the unverified acknowledgement", async ({ page }) => {
-    await mockModels(page, () => ({ status: 200, body: JSON.stringify({ models: ["gw-alpha"] }) }));
+    await mockModels(page, () => ({ status: 200, body: JSON.stringify({ models: ["gw-alpha"], discovered: true, source: "gateway", error: null }) }));
     await gotoHiveStep(page);
 
     await page.getByTestId("model-manual-toggle").click();
@@ -121,6 +121,39 @@ test.describe("Setup wizard — gateway model discovery", () => {
 
     await page.getByTestId("unverified-ack").getByRole("checkbox").check();
     await expect(page.locator("button", { hasText: "next" })).toBeEnabled();
+  });
+
+  test("a 200 that is not discovered is a cached substitute, never the gateway catalog", async ({ page }) => {
+    // The backend answers 200 even when the gateway is unusable: `models` is
+    // then the stored-default substitute and `discovered` is false. The
+    // wizard must show the backend's failure class (not_configured, tls, …),
+    // keep the substitute distinct as the cached default, and demand the
+    // unverified acknowledgement — never "N models discovered" (#287).
+    const notDiscovered = (kind: string, message: string) => ({
+      status: 200,
+      body: JSON.stringify({ models: ["stored-default"], discovered: false, source: "stored_default", error: { kind, message } }),
+    });
+    await mockModels(page, () => notDiscovered("not_configured", "No LLM gateway is configured; the stored default is the only known-good model."));
+    await gotoHiveStep(page);
+
+    const status = page.getByTestId("model-discovery-status");
+    await expect(status).toContainText("UNVERIFIED");
+    await expect(status).not.toContainText("discovered from the gateway");
+    await expect(page.getByTestId("model-error-not_configured")).toContainText(/stored default/);
+    // The cached substitute is its own provenance state, distinct from the
+    // curated suggestions and from a discovered catalog.
+    await expect(page.getByTestId("model-cached-default")).toContainText("stored-default");
+    await expect(page.getByTestId("model-retry")).toBeVisible();
+    await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");
+    await expect(page.locator("button", { hasText: "next" })).toBeDisabled();
+    await page.getByTestId("unverified-ack").getByRole("checkbox").check();
+    await expect(page.locator("button", { hasText: "next" })).toBeEnabled();
+
+    // A gateway-side TLS failure classified by the backend arrives through
+    // the same 200 + metadata contract and renders its own class.
+    await mockModels(page, () => notDiscovered("tls", "TLS certificate verification failed while contacting the gateway."));
+    await page.getByTestId("model-retry").click();
+    await expect(page.getByTestId("model-error-tls")).toContainText(/TLS certificate verification failed/);
   });
 
   test("the confirm step marks an unverified router model", async ({ page }) => {
