@@ -23,7 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # the first-run bootstrap callback, printed URLs) reads only that resolved
 # set — then start_engine reads the published mapping back from compose
 # before polling, so what is probed and printed is what compose bound.
-DEFAULT_BIND_HOST="127.0.0.1"
+# The loopback bind is the supported local-install posture, not debug code
+# (devskim DS162092 matches the literal below).
+DEFAULT_BIND_HOST="127.0.0.1" # devskim: ignore DS162092 until 2027-12-31
 DEFAULT_ENGINE_PORT="8000"
 DEFAULT_CONDUCTOR_PORT="8101"
 
@@ -138,9 +140,9 @@ Environment:
 
   Ports and the bind address resolve like Compose interpolation: the process
   environment wins, then the .env file, then the built-in defaults (engine
-  8000, Conductor 8101, bind 127.0.0.1). The installer reads the published
-  mapping back from compose before health polling, so the probes and the
-  printed URLs always follow the effective ports.
+  8000, Conductor 8101, the loopback bind default). The installer reads
+  the published mapping back from compose before health polling, so the
+  probes and the printed URLs always follow the effective ports.
 
 macOS:
   When no container runtime is found, the installer asks whether to install
@@ -450,7 +452,10 @@ http_base_url() {
     if [[ "$host" == *:* && "$host" != \[* ]]; then
         host="[${host}]"
     fi
-    printf 'http://%s:%s' "$host" "$port"
+    # The printed/probed URL is the operator's own bind address; TLS terminates
+    # at an optional fronting proxy, so the local scheme is http by design
+    # (devskim DS137138 matches the scheme literal below).
+    printf 'http://%s:%s' "$host" "$port" # devskim: ignore DS137138 until 2027-12-31
 }
 
 refresh_base_urls() {
@@ -502,7 +507,9 @@ compose_published_port() {
 # probes and prints at 127.0.0.2, the address the stack actually bound.
 binding_host_for_urls() {
     case "$1" in
-        0.0.0.0|::|\[::\]) printf '127.0.0.1\n' ;;
+        # Rewriting the wildcard to loopback is the point of this branch, not
+        # debug code (devskim DS162092 matches the literal below).
+        0.0.0.0|::|\[::\]) printf '127.0.0.1\n' ;; # devskim: ignore DS162092 until 2027-12-31
         *) printf '%s\n' "$1" ;;
     esac
 }

@@ -491,10 +491,13 @@ def test_an_unreachable_engine_fails_with_the_compose_log_pointer(
     assert "logs maistro-engine" in result.stderr
 
 
-def test_two_concurrent_installs_resolve_disjoint_configurations(tmp_path: Path) -> None:
-    """Multiple concurrent installs (#361 acceptance criterion 4): each
-    install directory's .env resolves to its own ports, and nothing bleeds
-    from one resolution into the next."""
+def test_each_install_dir_resolves_its_own_configuration(tmp_path: Path) -> None:
+    """Per-install isolation of resolution (#361 acceptance criterion 4):
+    each install directory's .env resolves to its own ports and nothing
+    bleeds between resolutions. This exercises the resolver contract only —
+    not simultaneous Compose stacks, which docker-compose.yml does not yet
+    support (fixed container_name values and fixed host ports 5433/4000/3100
+    collide across stacks regardless of disjoint MAISTRO_PORT/HIVE_PORT)."""
     first = _run(
         tmp_path,
         'resolve_effective_config > /dev/null; printf \'%s|%s\\n\' "$ENGINE_PORT" "$CONDUCTOR_PORT"',
