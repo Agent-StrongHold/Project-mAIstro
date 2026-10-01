@@ -65,7 +65,26 @@ def session(client: httpx.Client, setup_done):
             "password": "pmpass1234",
         },
     )
-    assert r.status_code == 200, f"Login failed: {r.text}"
+    if r.status_code != 200:
+        # The setup wizard runs once per data dir. Point this file (its
+        # docstring advertises standalone use) at a deployment whose wizard
+        # completed with different credentials and the login is *supposed*
+        # to 401 — the compose harness always seeds pmuser on a fresh data
+        # dir, so only a foreign target can land here. Name that situation
+        # instead of answering a bare "Invalid credentials" that reads like
+        # a regression in the login route.
+        status = client.get("/v1/setup/status")
+        seeded_as = ""
+        if status.status_code == 200:
+            seeded = (status.json().get("config") or {}).get("user_username")
+            if seeded and seeded != "pmuser":
+                seeded_as = (
+                    f" — this deployment's non-admin user is {seeded!r}, "
+                    "not 'pmuser': the setup wizard already ran with "
+                    "different credentials (fresh data dir or a pointed "
+                    "HIVE_BASE_URL at a foreign deployment)"
+                )
+        pytest.fail(f"Login as pmuser failed: {r.text}{seeded_as}")
     cookie = r.cookies.get("hive_session")
     assert cookie, "No session cookie returned"
     client.cookies.set("hive_session", cookie)
