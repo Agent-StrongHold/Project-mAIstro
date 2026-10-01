@@ -16,6 +16,16 @@ offline pauses with immediate re-kick, an unmount that rejects the in-flight
 patch-feed fetch as AbortError and stops both loops, and a slow response that
 never overlaps the next poll.
 
+CI-repair round (#359 lane): a batch returned by `Promise.allSettled` in
+`loadReviews` that straddles a run switch (or unmount) — one endpoint
+fulfilled, the other rejected by the abort — is now dropped whole
+(`if (signal.aborted) return null;`) instead of re-applying the old run's rows
+over the new run's render-phase reset; the spec gained an `afterAll` that
+closes the context so the loops and the 2.5s patch-feed delay cannot leak into
+the next spec. Scenario count unchanged; verified live against a locally built
+stack (`auto359-e2e` compose project): 8/8 rsi-polling-resilience and 3/3
+agents-rsi-keyboard scenarios passed.
+
 The count above does not move: `check-suite-inventory.py` collects this suite
 with pytest, and pytest collects only its `test_*.py` files — `*.spec.ts`
 files run in `ci.yml`'s `hive-conductor-e2e-ui` job instead (the
