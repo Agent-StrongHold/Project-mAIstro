@@ -31,6 +31,12 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from maistro.config.first_run import (
+    DEFAULT_CONDUCTOR_NAME,
+    DEFAULT_DEFAULT_MODEL,
+    DEFAULT_HARDWARE_PRESET,
+    crypto_profile_to_modules,
+)
 from maistro_bootstrap.schema import InstallAnswersV1
 
 BOOTSTRAP_CREDENTIALS_FILENAME = "bootstrap-credentials.json"
@@ -55,19 +61,29 @@ def build_bootstrap_credentials(
     *,
     admin_password: str,
     user_password: str,
-    hardware_preset: str = "auto",
 ) -> dict[str, Any]:
-    """Assemble the /v1/setup/complete payload from answers + collected secrets."""
-    modules: list[str] = []
-    if answers.crypto_profile != "no_crypto":
-        modules.append("crypto_identity")
+    """Assemble the /v1/setup/complete payload from answers + collected secrets.
+
+    The terminal path deliberately defaults hardware_preset to "auto" — the
+    server auto-resolves it from available resources at bring-up time
+    (SPEC-072726-3439 does not require a terminal hardware selection) — and does
+    not prompt for it.  ``conductor_name`` and ``default_model`` are likewise
+    left to the shared defaults rather than collected: the terminal wizard has
+    no equivalent question, so both defaults come from
+    ``maistro.config.first_run`` (#443 AC-2/DOD-2: no first-run question is
+    asked on one path and silently defaulted with a *different* value on the
+    other).
+    """
+    modules = crypto_profile_to_modules(answers.crypto_profile)
     return {
         "admin_username": answers.admin_user,
         "admin_password": admin_password,
         "user_username": answers.daily_driver_user,
         "user_password": user_password,
         "optional_modules": modules,
-        "hardware_preset": hardware_preset,
+        "hardware_preset": DEFAULT_HARDWARE_PRESET,
+        "conductor_name": DEFAULT_CONDUCTOR_NAME,
+        "default_model": DEFAULT_DEFAULT_MODEL,
     }
 
 
