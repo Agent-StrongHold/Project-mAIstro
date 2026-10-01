@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .audit import GenomeAuditTrail
+from .fitness import _check_hard_gate
 from .promotion import (
     PromotionPolicy,
     PromotionRecord,
@@ -154,8 +155,9 @@ class PopulationStore:
             return None
         return max(eligible, key=_fitness_key)
 
-    def _promote(self, genome_id: str) -> PipelineGenome:
-        """The raw promotion transition: approval gate + ``is_active`` flip.
+    def _promote(self, genome_id: str, *, require_capability: bool = True) -> PipelineGenome:
+        """The raw promotion transition: approval gate + capability gate +
+        ``is_active`` flip.
 
         Private (#342): ``promote_audited`` is the only sanctioned public
         entrypoint, precisely so the active genome can never change without
@@ -165,12 +167,29 @@ class PopulationStore:
         immutable audit record" impossible by construction rather than by
         caller discipline.
 
-        Fail closed: a genome that has not been explicitly marked
-        ``approved_for_promotion`` (a human-approval gate — see
-        ``human.approve_draft``/``human.delegate_to_role`` graph nodes,
-        which the caller is responsible for routing through before calling
-        this) is never promoted, no matter how high its fitness/tournament
-        score. Winning sandbox evaluation is necessary but not sufficient.
+        Fail closed, twice (#342, #853):
+
+        1. a genome that has not been explicitly marked
+           ``approved_for_promotion`` (a human-approval gate — see
+           ``human.approve_draft``/``human.delegate_to_role`` graph nodes,
+           which the caller is responsible for routing through before calling
+           this) is never promoted, no matter how high its fitness/tournament
+           score. Winning sandbox evaluation is necessary but not sufficient.
+        2. a genome whose *measured capability evidence* fails the correctness
+           hard gates (``fitness._check_hard_gate``) is never promoted either —
+           this is #853's do-nothing guard. A deliberately no-op /
+           NotImplementedError-flavoured candidate has no (or failing) eval
+           scores; it cannot buy promotion with missing metrics, padded cost/
+           latency/Elo evidence, or an objective reweighting, because this gate
+           reads the recorded scores against fixed thresholds and consults no
+           weight vector at all.
+
+        ``require_capability=False`` is ONLY for the audited compensation path
+        (restoring the previously-active genome after a failed commit-log
+        write): that restores an already-made promotion decision rather than
+        granting a new one, and refusing the restore on evidence that decayed
+        after the original promotion would strand the store mid-transition.
+        The approval gate applies unconditionally in both paths.
         """
         genome = self.get(genome_id)
         if genome is None:
@@ -181,6 +200,15 @@ class PopulationStore:
                 "(approved_for_promotion=False) — tournament/fitness wins "
                 "only qualify a genome for sandbox evaluation, not live traffic"
             )
+        if require_capability:
+            capability_ok, gate_failures = _check_hard_gate(genome)
+            if not capability_ok:
+                raise PermissionError(
+                    f"genome {genome_id} cannot be promoted: measured "
+                    f"capability evidence fails the correctness gates: "
+                    f"{gate_failures} — missing metrics or reweighting cannot "
+                    "clear this gate (#853)"
+                )
         previous = self.get_active()
         if previous is not None and previous.id != genome_id:
             previous.is_active = False
@@ -302,8 +330,12 @@ class PopulationStore:
         try:
             await audit.record("promotion_committed", genome_id, record.to_json())
         except Exception:
+            # Compensation restores the pre-attempt active genome — a revert of
+            # an already-made decision, not a new promotion: the capability
+            # re-gate is intentionally skipped (see _promote), the approval
+            # gate is not.
             if incumbent is not None:
-                self._promote(incumbent.id)
+                self._promote(incumbent.id, require_capability=False)
             else:
                 genome.is_active = False
                 self.add(genome)
