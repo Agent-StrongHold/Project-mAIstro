@@ -184,7 +184,7 @@ class EngineService:
         else:
             self._bind_agent_port(StubAgentPort())
 
-        self._wire_capabilities(settings)
+        await self._wire_capabilities(settings)
         self._wire_outcome_store()
 
         # A fresh metrics buffer per engine start. `set_store` had no
@@ -286,9 +286,13 @@ class EngineService:
             )
         self._agent_port = port
 
-    def _wire_capabilities(self, settings: Settings) -> None:
+    async def _wire_capabilities(self, settings: Settings) -> None:
         """Source the registry (Container when configured, else canonical) and
-        register host-health providers + apply activation. Never crashes startup."""
+        register host-health providers + apply activation. Never crashes startup.
+
+        Awaited rather than called: boot registration writes a Binding, and on
+        a durable store that is I/O (#1133).
+        """
         container = getattr(self._agent_port, "container", None)
         if container is not None and getattr(container, "capabilities", None) is not None:
             self._capabilities = container.capabilities
@@ -307,7 +311,7 @@ class EngineService:
             except Exception:
                 vault = None
 
-            wire_capabilities(
+            await wire_capabilities(
                 self._capabilities,
                 settings_model=settings_store.current(),
                 config=settings,

@@ -33,9 +33,9 @@ def _cfg(**kw) -> Settings:
     return Settings(**kw)
 
 
-def test_registers_host_health_providers_when_url_present() -> None:
+async def test_registers_host_health_providers_when_url_present() -> None:
     reg = default_capability_registry()
-    wire_capabilities(
+    await wire_capabilities(
         reg,
         settings_model=SettingsModel(),
         config=_cfg(host_health_url="http://host:8150", host_health_token=SecretStr("t")),
@@ -45,18 +45,18 @@ def test_registers_host_health_providers_when_url_present() -> None:
     assert "host_health" in reg.installed("infra_action")
 
 
-def test_no_url_leaves_infra_slots_empty() -> None:
+async def test_no_url_leaves_infra_slots_empty() -> None:
     reg = default_capability_registry()
-    wire_capabilities(
+    await wire_capabilities(
         reg, settings_model=SettingsModel(), config=_cfg(host_health_url=None), vault=None
     )
     assert reg.installed("infra_monitor") == []
     assert reg.installed("infra_action") == []
 
 
-def test_action_shares_the_registry_inbox_instance() -> None:
+async def test_action_shares_the_registry_inbox_instance() -> None:
     reg = default_capability_registry()
-    wire_capabilities(
+    await wire_capabilities(
         reg,
         settings_model=SettingsModel(),
         config=_cfg(host_health_url="http://host:8150"),
@@ -69,10 +69,10 @@ def test_action_shares_the_registry_inbox_instance() -> None:
     assert action._approval is inbox  # asserting shared wiring
 
 
-def test_token_prefers_vault_over_env_fallback() -> None:
+async def test_token_prefers_vault_over_env_fallback() -> None:
     reg = default_capability_registry()
     vault = _FakeVault({"HOST_HEALTH_TOKEN": "from-vault"})
-    wire_capabilities(
+    await wire_capabilities(
         reg,
         settings_model=SettingsModel(),
         config=_cfg(host_health_url="http://host:8150", host_health_token=SecretStr("from-env")),
@@ -83,10 +83,10 @@ def test_token_prefers_vault_over_env_fallback() -> None:
     assert action._http._headers.get("Authorization") == "Bearer from-vault"
 
 
-def test_token_env_fallback_when_vault_missing_secret() -> None:
+async def test_token_env_fallback_when_vault_missing_secret() -> None:
     reg = default_capability_registry()
     vault = _FakeVault({})  # no HOST_HEALTH_TOKEN
-    wire_capabilities(
+    await wire_capabilities(
         reg,
         settings_model=SettingsModel(),
         config=_cfg(host_health_url="http://host:8150", host_health_token=SecretStr("from-env")),
@@ -96,7 +96,7 @@ def test_token_env_fallback_when_vault_missing_secret() -> None:
     assert action._http._headers.get("Authorization") == "Bearer from-env"
 
 
-def test_applies_activation_from_settings() -> None:
+async def test_applies_activation_from_settings() -> None:
     reg = default_capability_registry()
     settings_model = SettingsModel(
         capabilities={
@@ -104,7 +104,7 @@ def test_applies_activation_from_settings() -> None:
             "infra_action": CapabilitySetting(enabled=False),
         }
     )
-    wire_capabilities(
+    await wire_capabilities(
         reg,
         settings_model=settings_model,
         config=_cfg(host_health_url="http://host:8150"),
@@ -114,16 +114,16 @@ def test_applies_activation_from_settings() -> None:
     assert reg.is_enabled("infra_action") is False
 
 
-def test_activation_ignores_unknown_slot() -> None:
+async def test_activation_ignores_unknown_slot() -> None:
     reg = default_capability_registry()
     settings_model = SettingsModel(capabilities={"no_such_slot": CapabilitySetting()})
     # Must not raise — bad settings shouldn't crash startup.
-    wire_capabilities(reg, settings_model=settings_model, config=_cfg(), vault=None)
+    await wire_capabilities(reg, settings_model=settings_model, config=_cfg(), vault=None)
 
 
-def test_registers_self_repair_when_infra_present() -> None:
+async def test_registers_self_repair_when_infra_present() -> None:
     reg = default_capability_registry()
-    wire_capabilities(
+    await wire_capabilities(
         reg,
         settings_model=SettingsModel(),
         config=_cfg(host_health_url="http://host:8150"),
@@ -132,9 +132,9 @@ def test_registers_self_repair_when_infra_present() -> None:
     assert "rule_based_repair" in reg.installed("self_repair")
 
 
-def test_no_self_repair_without_infra() -> None:
+async def test_no_self_repair_without_infra() -> None:
     reg = default_capability_registry()
-    wire_capabilities(
+    await wire_capabilities(
         reg, settings_model=SettingsModel(), config=_cfg(host_health_url=None), vault=None
     )
     assert reg.installed("self_repair") == []
@@ -194,7 +194,7 @@ async def test_self_repair_policy_failure_denies_without_provider_call() -> None
         raise RuntimeError("policy store unavailable")
 
     effects = new_effect_context(policy_evaluator=broken_policy)
-    _register_self_repair(reg, _cfg(), effects)
+    await _register_self_repair(reg, _cfg(), effects)
     repair = reg.provider("self_repair", "rule_based_repair")
     assert repair is not None
 
@@ -218,7 +218,7 @@ async def test_self_repair_wiring_uses_canonical_invocation() -> None:
     reg.register(action)
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
 
-    _register_self_repair(reg, _cfg(), effects)
+    await _register_self_repair(reg, _cfg(), effects)
     repair = reg.provider("self_repair", "rule_based_repair")
     assert repair is not None
     cycle = await repair.run_once()
@@ -271,14 +271,14 @@ async def test_run_self_repair_once_killswitch_when_slot_disabled() -> None:
     assert await run_self_repair_once(reg) is None
 
 
-def test_engine_exposes_a_capability_registry_in_stub_mode() -> None:
+async def test_engine_exposes_a_capability_registry_in_stub_mode() -> None:
     # The API reaches capabilities via the engine; it must exist even with no
     # real maistro-core container wired (stub/dev mode).
     from services.engine import EngineService
 
     svc = EngineService()
     svc._agent_port = object()  # not a bridge → no .container
-    svc._wire_capabilities(_cfg(host_health_url="http://host:8150"))
+    await svc._wire_capabilities(_cfg(host_health_url="http://host:8150"))
     assert "inbox" in svc.capabilities.installed("approval")
     assert "host_health" in svc.capabilities.installed("infra_action")
 
@@ -286,43 +286,118 @@ def test_engine_exposes_a_capability_registry_in_stub_mode() -> None:
 # --- #846: self_repair registration must fail closed on a hostile composition
 
 
-class _NoBootSeamStore:
-    """A BindingStore without the composition-time registration seam."""
+class _UnwritableStore:
+    """A BindingStore whose boot write fails, however it is called."""
 
     async def resolve(self, binding_id, *, workspace_id, project_id, node_id, capability):
         raise NotImplementedError
 
-    def register(self, binding):
-        raise NotImplementedError
+    async def put(self, binding):
+        raise RuntimeError("binding store is unavailable")
+
+    async def get(self, binding_id):
+        return None
 
     async def revoke(self, binding_id):
         raise NotImplementedError
 
 
-def test_no_self_repair_registered_without_monitor_provider() -> None:
+async def test_no_self_repair_registered_without_monitor_provider() -> None:
     # A monitor provider is a hard precondition: without it the actor would
     # hold an invoker with nothing to observe, so nothing is registered.
     reg = default_capability_registry(entry_points=[])
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
 
-    _register_self_repair(reg, _cfg(), effects)
+    await _register_self_repair(reg, _cfg(), effects)
 
     assert reg.installed("self_repair") == []
     assert reg.provider("self_repair", "rule_based_repair") is None
 
 
-def test_self_repair_disabled_when_binding_store_lacks_boot_seam() -> None:
+async def test_self_repair_disabled_when_the_boot_write_fails() -> None:
+    """A Binding that could not be written authorizes nothing, so nothing runs.
+
+    Registering the actor anyway would leave it holding an invoker whose
+    identity the store has never heard of -- every repair it attempted would
+    be refused at resolve time, after the actor had already decided to act.
+    """
+
     import dataclasses
 
     reg = default_capability_registry(entry_points=[])
     reg.register(_WiringMonitor())
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
-    degraded = dataclasses.replace(effects, bindings=_NoBootSeamStore())
+    degraded = dataclasses.replace(effects, bindings=_UnwritableStore())
 
-    _register_self_repair(reg, _cfg(), degraded)
+    await _register_self_repair(reg, _cfg(), degraded)
 
     assert reg.installed("self_repair") == []
     assert reg.provider("self_repair", "rule_based_repair") is None
+
+
+async def test_self_repair_registers_against_a_durable_binding_store() -> None:
+    """The point of #1133: persistence must not switch self_repair off.
+
+    Boot registration used to go through the in-memory store's synchronous
+    `register`, so the wiring narrowed to that concrete class and skipped
+    registration entirely on SQLite or PostgreSQL -- exactly the deployments
+    that keep anything across a restart. `put` is on every backend, so the
+    durable store registers the identity and the actor comes up.
+    """
+
+    import dataclasses
+
+    import aiosqlite
+
+    from maistro.capabilities.binding_store import SqliteBindingStore
+
+    async with aiosqlite.connect(":memory:") as conn:
+        durable = SqliteBindingStore(conn)
+        await durable.ensure_schema()
+        reg = default_capability_registry(entry_points=[])
+        reg.register(_WiringMonitor())
+        effects = new_effect_context(policy_evaluator=binding_scope_policy)
+        persisted = dataclasses.replace(effects, bindings=durable)
+
+        await _register_self_repair(reg, _cfg(), persisted)
+
+        assert reg.provider("self_repair", "rule_based_repair") is not None
+        # Registered in the durable store itself, not merely in the registry:
+        # the invoker resolves this identity on every repair it attempts.
+        assert await durable.get("builtin:self-repair:infra-action") is not None
+
+
+async def test_a_revocation_that_outlived_a_restart_still_disables_self_repair() -> None:
+    """Revocation is durable, so boot must not re-grant across a restart.
+
+    The tombstone in `capability_binding_revocations` is the whole reason that
+    table exists apart from `capability_bindings` (#846). A new process that
+    re-registered the identity would quietly undo an operator's revocation --
+    the failure mode that made boot registration worth gating in the first
+    place, and the one that must survive opening the seam.
+    """
+
+    import dataclasses
+
+    import aiosqlite
+
+    from maistro.capabilities.binding_store import SqliteBindingStore
+
+    async with aiosqlite.connect(":memory:") as conn:
+        durable = SqliteBindingStore(conn)
+        await durable.ensure_schema()
+        await durable.revoke("builtin:self-repair:infra-action")
+
+        # A fresh process: same database, new registry, boot wiring runs again.
+        reg = default_capability_registry(entry_points=[])
+        reg.register(_WiringMonitor())
+        effects = new_effect_context(policy_evaluator=binding_scope_policy)
+        persisted = dataclasses.replace(effects, bindings=durable)
+
+        await _register_self_repair(reg, _cfg(), persisted)
+
+        assert reg.installed("self_repair") == []
+        assert await durable.get("builtin:self-repair:infra-action") is None
 
 
 async def test_self_repair_disabled_when_boot_binding_was_revoked() -> None:
@@ -331,7 +406,7 @@ async def test_self_repair_disabled_when_boot_binding_was_revoked() -> None:
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.revoke("builtin:self-repair:infra-action")
 
-    _register_self_repair(reg, _cfg(), effects)
+    await _register_self_repair(reg, _cfg(), effects)
 
     # A revoked identity is never re-granted by boot wiring: the actor that
     # would have held the invoker is not registered at all.

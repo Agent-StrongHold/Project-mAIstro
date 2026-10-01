@@ -98,14 +98,18 @@ class RevocableBindingStore(BindingStore, Protocol):
     :class:`InMemoryBindingStore` was the only implementation -- declared
     sync, because that store needs no I/O to register. No durable store can
     satisfy a synchronous write, so the one member that made this contract
-    unmeetable was the member no effect path uses: production calls
-    ``register`` in two places, both of which narrow to the concrete
-    in-memory class first. Revocation is what the runtime needs from this
-    protocol, and revocation is what it now asks for.
+    unmeetable was the member no effect path uses. Revocation is what the
+    runtime needs from this protocol, and revocation is what it asks for.
 
-    Boot registration on a durable backend is a separate gap, tracked apart
-    from this one: hive-conductor still disables self_repair and the harness
-    route when the store is durable.
+    Boot registration is :meth:`BindingStore.put`, which every backend
+    implements and which has the semantics boot needs on all three:
+    idempotent for an identical Binding, ``ValueError`` for a changed one,
+    and ``BindingNotFound`` over a revocation tombstone -- so a restart
+    cannot re-grant an identity an operator withdrew. hive-conductor's
+    self_repair and harness route went through the in-memory ``register``
+    and narrowed to that concrete class first, which turned both off on
+    exactly the deployments that persist anything; they call ``put`` now
+    (#1133).
     """
 
     async def revoke(self, binding_id: str) -> None: ...

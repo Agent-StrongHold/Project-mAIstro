@@ -22,7 +22,6 @@ from services.engine import get_engine
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities import HarnessSessionManager, Unavailable
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import InMemoryBindingStore
 from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked
 from maistro.policy import BudgetRule, SequencePolicyEngine
@@ -63,12 +62,18 @@ async def _get_manager() -> HarnessSessionManager:
         )
         # This is composition-time registration, not an effect-time grant. Once
         # revoked, the manager only resolves the existing identity and never
-        # recreates it.
-        if isinstance(effects.bindings, InMemoryBindingStore):
-            with contextlib.suppress(Exception):
-                # A revoked route Binding stays revoked; the manager below
-                # exposes the route as unavailable rather than re-granting it.
-                effects.bindings.register(binding)
+        # recreates it -- `put` raises `BindingNotFound` over the tombstone,
+        # and on a durable store that tombstone outlives the process that
+        # wrote it. Suppressed because the manager below already exposes the
+        # route as unavailable when the Binding is absent; the route must not
+        # fail to construct over it.
+        #
+        # `put`, not the in-memory store's synchronous `register`: every
+        # backend implements `put`, and narrowing to the concrete in-memory
+        # class here is what took this route offline on exactly the
+        # deployments that persist anything (#1133).
+        with contextlib.suppress(Exception):
+            await effects.bindings.put(binding)
         _manager = HarnessSessionManager(
             engine.capabilities,
             warden=Warden(),
