@@ -83,11 +83,32 @@ class InMemoryQuotaTracker:
         provider: str,
         billing_cycle: str,
         free_tokens: int,
-    ) -> float:
+    ) -> float | None:
+        """Usage as a fraction of the free allowance, or ``None`` when unknown.
+
+        #718: a provider/cycle whose evidence is incomplete (at least one call
+        recorded without a provider usage report) must not present a measured
+        percentage. The unreported call's tokens are unknowable, so any ratio
+        computed over the reported remainder would read as complete while
+        understating spend — the false ``0.0``/full-headroom presentation this
+        method used to produce. Callers convey ``None`` as "usage unknown",
+        never as zero.
+        """
         if free_tokens <= 0:
             return 0.0
         key = (provider, cycle_key(billing_cycle))
-        entry = self._usage[key]
+        entry = self._usage.get(key)
+        if entry is None:
+            # No call was ever recorded for this provider/cycle: vacuously
+            # complete, a measured zero, not missing evidence.
+            return 0.0
+        # Unreported calls live in their own map, not folded into the usage
+        # aggregate, so the aggregate stays pure measured tokens. This read has
+        # to consult both or an incomplete cycle presents as a measured ratio
+        # over the reported remainder -- the false full-headroom answer #718
+        # exists to prevent.
+        if self._unreported.get(key) or entry.get("usage_complete") is False:
+            return None
         return entry["total_tokens"] / free_tokens
 
     async def get_all_usage(self) -> list[dict[str, object]]:

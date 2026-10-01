@@ -82,13 +82,13 @@ def test_install_is_idempotent(captured):
     assert isinstance(formatter, RedactingFormatter)
     assert not isinstance(formatter.inner, RedactingFormatter)
     # A second install must never double-wrap an already-wrapped handler.
-    # Handlers added after the fixture may legitimately be wrapped — that is
-    # the documented coverage boundary, not an idempotency violation. pytest 9
-    # attaches capture handlers to non-propagating loggers between fixture and
-    # body.
-    already_wrapped = [
-        handler for handler in logger.handlers if isinstance(handler.formatter, RedactingFormatter)
-    ]
+    # Handlers *added after* the fixture's install may legitimately be
+    # wrapped — that is the documented coverage boundary ("handlers added
+    # after this call are not covered"), not an idempotency violation.
+    # pytest 9 exercises exactly this boundary: its log-capture plugin
+    # attaches its own handlers to every non-propagating logger (this one
+    # sets `propagate = False`) between the fixture and the test body.
+    already_wrapped = [h for h in logger.handlers if isinstance(h.formatter, RedactingFormatter)]
     wrapped_now = install_log_redaction(("maistro.test.redaction",))
     assert wrapped_now == len(logger.handlers) - len(already_wrapped)
     for wrapped in already_wrapped:

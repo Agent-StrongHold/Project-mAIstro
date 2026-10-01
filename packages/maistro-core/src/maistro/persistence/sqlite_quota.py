@@ -55,13 +55,16 @@ class SqliteQuotaTracker:
         self._record_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        """Create the quota_usage and quota_usage_events tables.
+        """Create quota aggregates, canonical Invocation evidence, and durable
+        event-identity tables.
 
         `quota_usage_events` carries the durable event identities that make
         `record_usage` retries (and crash-ambiguous commits) harmless.
         """
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
+            # Existing SQLite deployments predate the evidence projection; make
+            # the additive column safe for those databases before recording.
             cursor = await self._conn.execute("PRAGMA table_info(quota_usage)")
             columns = {row[1] for row in await cursor.fetchall()}
             if "unreported_count" not in columns:
@@ -197,34 +200,50 @@ class SqliteQuotaTracker:
         provider: str,
         billing_cycle: str,
         free_tokens: int,
-    ) -> float:
-        """Get usage as a percentage of free tier."""
+    ) -> float | None:
+        """Usage as a fraction of the free allowance, or ``None`` when unknown.
+
+        #718: incomplete evidence (``unreported_count`` set for this
+        provider/cycle) must not present a measured percentage — the
+        unreported calls' tokens are unknowable, so the ratio over the
+        reported remainder would read as complete while understating spend.
+        """
         if free_tokens <= 0:
             return 0.0
         ck = cycle_key(billing_cycle)
         cursor = await self._conn.execute(
-            "SELECT total_tokens FROM quota_usage WHERE provider = ? AND cycle_key = ?",
+            "SELECT total_tokens, unreported_count FROM quota_usage "
+            "WHERE provider = ? AND cycle_key = ?",
             (provider, ck),
         )
         row = await cursor.fetchone()
-        total: int = row[0] if row else 0
+        if row is None:
+            # No call was ever recorded: a measured zero, not missing evidence.
+            return 0.0
+        if row[1]:
+            return None
+        total: int = row[0]
         return total / free_tokens
 
     async def get_all_usage(self) -> list[dict[str, object]]:
         """Get all usage records."""
         cursor = await self._conn.execute(
             "SELECT provider, cycle_key, input_tokens, output_tokens, total_tokens, "
-            "request_count FROM quota_usage ORDER BY provider, cycle_key",
+            "request_count, unreported_count FROM quota_usage ORDER BY provider, cycle_key",
         )
         rows = await cursor.fetchall()
-        return [
-            {
-                "provider": r[0],
-                "cycle_key": r[1],
-                "input_tokens": r[2],
-                "output_tokens": r[3],
-                "total_tokens": r[4],
-                "request_count": r[5],
+        result = []
+        for row in rows:
+            item: dict[str, object] = {
+                "provider": row[0],
+                "cycle_key": row[1],
+                "input_tokens": row[2],
+                "output_tokens": row[3],
+                "total_tokens": row[4],
+                "request_count": row[5],
             }
-            for r in rows
-        ]
+            if row[6]:
+                item["unreported_count"] = row[6]
+                item["usage_complete"] = False
+            result.append(item)
+        return result

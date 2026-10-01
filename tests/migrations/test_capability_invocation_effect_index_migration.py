@@ -61,9 +61,10 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) continued the chain after this
     # branch's `045`, `047_capability_binding_revocations` (#1133) after that,
-    # and this branch's `043_invocation_quota_door` (#1196/#718) is re-parented
-    # onto whichever of those is develop's head at merge time -- `046` before,
-    # `047` now -- so the single linear head is that quota-door revision.
+    # and #398's `048_canvas_job_retry_backoff` after that. This branch's
+    # `043_invocation_quota_door` (#1196/#718) is re-parented onto whichever of
+    # them is develop's head at merge time -- 046, then 047, now 048 -- so the
+    # single linear head is that quota-door revision.
     walked = {
         item.revision for item in directory.walk_revisions("base", "043_invocation_quota_door")
     }
@@ -73,6 +74,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "045" in walked
     assert "046" in walked
     assert "047" in walked
+    assert "048" in walked
     assert directory.get_heads() == ["043_invocation_quota_door"]
 
 

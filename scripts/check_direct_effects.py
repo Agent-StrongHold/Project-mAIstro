@@ -121,6 +121,13 @@ _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
         "_generate_gemini",
         "httpx.post",
     ): ("MODEL_EFFECT", "gemini-image-http"),
+    # The approved image Provider posts to ``images/generations``, which the
+    # chat-endpoint URL match above does not recognise as a model effect.
+    (
+        "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py",
+        "execute_image_generation",
+        "client.post",
+    ): ("MODEL_EFFECT", "openai-compatible-image-http"),
     # These three shipped model callers post through a package-local guarded
     # ``_post`` helper since #1096/ADR-102 (the seam that carries the outbound
     # SSRF policy). The helper receives the URL as a parameter, so URL-shape

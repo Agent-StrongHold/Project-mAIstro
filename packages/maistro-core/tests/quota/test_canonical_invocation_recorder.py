@@ -136,3 +136,85 @@ async def test_usage_only_tracker_without_usage_is_a_no_op_not_a_crash() -> None
 
     assert tracker.usage_calls == []
     assert not hasattr(tracker, "record_unreported")  # the premise of this test
+
+
+class TransientLedgerTracker:
+    """A durable tracker whose first write fails, like a transient DB outage.
+
+    The write is identity-keyed and idempotent, exactly like the SQLite and
+    PostgreSQL ``record_invocation`` implementations.
+    """
+
+    def __init__(self) -> None:
+        self.inner = InMemoryQuotaTracker()
+        self.calls = 0
+
+    async def record_invocation(
+        self,
+        invocation_id: str,
+        provider: str,
+        billing_cycle: str,
+        input_tokens: int,
+        output_tokens: int,
+        usage_reported: bool,
+    ) -> dict[str, object]:
+        self.calls += 1
+        if self.calls == 1:
+            raise OSError("quota ledger transiently unavailable")
+        return await self.inner.record_invocation(
+            invocation_id,
+            provider,
+            billing_cycle,
+            input_tokens,
+            output_tokens,
+            usage_reported,
+        )
+
+    async def get_all_usage(self) -> list[dict[str, object]]:
+        return await self.inner.get_all_usage()
+
+
+@pytest.mark.asyncio
+async def test_transient_ledger_failure_is_retried_not_permanently_lost() -> None:
+    """#718 at-least-once: a failed write leaves the Invocation unmarked.
+
+    The previous behavior pre-marked the Invocation before the awaited tracker
+    write, so a transient ledger failure permanently omitted durable quota
+    evidence — the retry was a silent no-op. Now the retry re-attempts and the
+    ledger ends up charged exactly once, with exactly one usage event.
+    """
+    log = InMemoryUsageLog()
+    tracker = TransientLedgerTracker()
+    recorder = CanonicalInvocationUsageRecorder(log, tracker)
+    usage = InvocationUsage(input_units=11, output_units=5)
+
+    with pytest.raises(OSError, match="transiently unavailable"):
+        await recorder.record(_invocation(usage=usage))
+    # The failed attempt recorded no half-evidence either.
+    assert log.events_for("openai") == ()
+
+    await recorder.record(_invocation(usage=usage))  # the repair attempt
+
+    assert tracker.calls == 2
+    (row,) = [r for r in await tracker.get_all_usage() if r["provider"] == "openai"]
+    assert row["request_count"] == 1
+    assert row["total_tokens"] == 16
+    events = log.events_for("openai")
+    assert len(events) == 1
+    assert events[0].invocation_id == "inv-1"
+
+
+@pytest.mark.asyncio
+async def test_repair_retry_after_success_does_not_double_charge() -> None:
+    """The retry machinery itself must stay at-most-once for charging."""
+    log = InMemoryUsageLog()
+    tracker = InMemoryQuotaTracker()
+    recorder = CanonicalInvocationUsageRecorder(log, tracker)
+    usage = InvocationUsage(input_units=4, output_units=2)
+
+    await recorder.record(_invocation(usage=usage))
+    await recorder.record(_invocation(usage=usage))  # spurious replay
+
+    (row,) = [r for r in await tracker.get_all_usage() if r["provider"] == "openai"]
+    assert row["request_count"] == 1
+    assert len(log.events_for("openai")) == 1

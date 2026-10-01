@@ -1,16 +1,16 @@
 """Quota admission tables and canonical Invocation usage evidence.
 
 Revision ID: 043_invocation_quota_door
-Revises: 047
+Revises: 048
 Create Date: 2026-09-27
 
 The effect door's budget reservations (#1196) and the at-most-once provider
 usage evidence (#718) attach to the canonical Invocation. They follow the
 current chain tip so they do not reuse revision ids 033/035/036, which
 develop already assigned. Re-parented onto each new develop head as this
-branch has stayed open -- 046, now 047: a migration must append after the
-deployed head, never fork beside it, or `alembic upgrade head` refuses with
-multiple heads.
+branch has stayed open -- 046, then 047, now 048: a migration must append
+after the deployed head, never fork beside it, or `alembic upgrade head`
+refuses with multiple heads.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:
@@ -36,82 +36,77 @@ from __future__ import annotations
 from alembic import op
 
 revision = "043_invocation_quota_door"
-down_revision = "047"
+down_revision = "048"
 branch_labels = None
 depends_on = None
 
 
-_EVIDENCE_COLUMNS = (
-    ("provider", "TEXT NOT NULL"),
-    ("cycle_key", "TEXT NOT NULL"),
-    ("input_tokens", "BIGINT NOT NULL DEFAULT 0"),
-    ("output_tokens", "BIGINT NOT NULL DEFAULT 0"),
-    ("usage_reported", "BOOLEAN NOT NULL"),
-)
-_RESERVATION_COLUMNS = (
-    ("identity", "JSONB NOT NULL"),
-    ("state", "TEXT NOT NULL"),
-    ("reason", "TEXT NOT NULL DEFAULT ''"),
-    ("revision", "INTEGER NOT NULL DEFAULT -1"),
-)
-_ALLOCATION_COLUMNS = (
-    ("maximum", "BIGINT NOT NULL"),
-    ("held", "BIGINT NOT NULL"),
-    ("spent", "BIGINT NOT NULL DEFAULT 0"),
-    ("measured", "BOOLEAN NOT NULL DEFAULT FALSE"),
-)
-_APPROVAL_COLUMNS = (
-    ("run_id", "TEXT NOT NULL"),
-    ("node_run_id", "TEXT NOT NULL"),
-    ("binding_id", "TEXT NOT NULL"),
-    ("effect_key", "TEXT NOT NULL"),
-    ("payload", "JSONB NOT NULL"),
+#: Every column this migration adds, as whole literal statements. Written out
+#: rather than built from an f-string over a (table, column) table: the run-id
+#: retention scanner reads migration DDL statically, and an interpolated table
+#: name leaves it unable to verify that the statement introduces no `run_id`
+#: column it would then have to see in the purge inventory. `IF NOT EXISTS`
+#: because the store bootstraps these tables itself, so a live database must be
+#: adopted rather than assumed empty.
+_ADDED_COLUMNS = (
+    "ALTER TABLE invocation_quota_reservations ADD COLUMN IF NOT EXISTS identity JSONB NOT NULL",
+    "ALTER TABLE invocation_quota_reservations ADD COLUMN IF NOT EXISTS state TEXT NOT NULL",
+    "ALTER TABLE invocation_quota_reservations ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE invocation_quota_reservations ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT -1",
+    "ALTER TABLE invocation_quota_allocations ADD COLUMN IF NOT EXISTS maximum BIGINT NOT NULL",
+    "ALTER TABLE invocation_quota_allocations ADD COLUMN IF NOT EXISTS held BIGINT NOT NULL",
+    "ALTER TABLE invocation_quota_allocations ADD COLUMN IF NOT EXISTS spent BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE invocation_quota_allocations ADD COLUMN IF NOT EXISTS measured BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE invocation_quota_evidence ADD COLUMN IF NOT EXISTS evidence_id TEXT NOT NULL",
+    "ALTER TABLE invocation_quota_evidence ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL",
+    "ALTER TABLE capability_approvals ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL",
+    "ALTER TABLE capability_approvals ADD COLUMN IF NOT EXISTS node_run_id TEXT NOT NULL",
+    "ALTER TABLE capability_approvals ADD COLUMN IF NOT EXISTS binding_id TEXT NOT NULL",
+    "ALTER TABLE capability_approvals ADD COLUMN IF NOT EXISTS effect_key TEXT NOT NULL",
+    "ALTER TABLE capability_approvals ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL",
 )
 
 
-def _add_columns(table: str, columns: tuple[tuple[str, str], ...]) -> None:
-    for name, spec in columns:
-        op.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {spec}")
-
-
-def _add_unique(table: str, name: str, columns: str) -> None:
-    """Add a named unique constraint only when it is not already there.
-
-    PostgreSQL has no `ADD CONSTRAINT IF NOT EXISTS`, and an adopted table
-    created by the store's own bootstrap already carries this constraint.
+#: PostgreSQL has no `ADD CONSTRAINT IF NOT EXISTS`, and an adopted table the
+#: store's own bootstrap created already carries these. Written out as whole
+#: literal statements rather than built from an f-string: the run-id retention
+#: scanner reads migration DDL statically and cannot verify an interpolated
+#: table name does not introduce a `run_id` column.
+_UNIQUE_CONSTRAINTS = (
     """
-
-    op.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint WHERE conname = '{name}'
-                  AND conrelid = '{table}'::regclass
-            ) THEN
-                ALTER TABLE {table} ADD CONSTRAINT {name} UNIQUE ({columns});
-            END IF;
-        END
-        $$
-        """
-    )
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'uq_invocation_quota_evidence_id'
+              AND conrelid = 'invocation_quota_evidence'::regclass
+        ) THEN
+            ALTER TABLE invocation_quota_evidence
+                ADD CONSTRAINT uq_invocation_quota_evidence_id
+                UNIQUE (invocation_id, evidence_id);
+        END IF;
+    END
+    $$
+    """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'uq_capability_approval_effect'
+              AND conrelid = 'capability_approvals'::regclass
+        ) THEN
+            ALTER TABLE capability_approvals
+                ADD CONSTRAINT uq_capability_approval_effect
+                UNIQUE (run_id, node_run_id, binding_id, effect_key);
+        END IF;
+    END
+    $$
+    """,
+)
 
 
 def upgrade() -> None:
-    op.execute(
-        "ALTER TABLE quota_usage ADD COLUMN IF NOT EXISTS "
-        "unreported_count BIGINT NOT NULL DEFAULT 0"
-    )
-
-    op.execute(
-        "CREATE TABLE IF NOT EXISTS quota_invocation_evidence (invocation_id TEXT PRIMARY KEY)"
-    )
-    _add_columns("quota_invocation_evidence", _EVIDENCE_COLUMNS)
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_quota_invocation_evidence_provider_cycle"
-        " ON quota_invocation_evidence (provider, cycle_key)"
-    )
-
     op.execute(
         "CREATE TABLE IF NOT EXISTS invocation_quota_budgets ("
         "budget_id TEXT PRIMARY KEY, definition JSONB NOT NULL)"
@@ -120,7 +115,6 @@ def upgrade() -> None:
     op.execute(
         "CREATE TABLE IF NOT EXISTS invocation_quota_reservations (invocation_id TEXT PRIMARY KEY)"
     )
-    _add_columns("invocation_quota_reservations", _RESERVATION_COLUMNS)
 
     op.execute(
         "CREATE TABLE IF NOT EXISTS invocation_quota_allocations ("
@@ -129,7 +123,6 @@ def upgrade() -> None:
         "budget_id TEXT NOT NULL REFERENCES invocation_quota_budgets(budget_id),"
         "PRIMARY KEY (invocation_id, budget_id))"
     )
-    _add_columns("invocation_quota_allocations", _ALLOCATION_COLUMNS)
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_invocation_quota_alloc_budget"
         " ON invocation_quota_allocations (budget_id)"
@@ -142,23 +135,15 @@ def upgrade() -> None:
         "revision INTEGER NOT NULL,"
         "PRIMARY KEY (invocation_id, revision))"
     )
-    _add_columns(
-        "invocation_quota_evidence",
-        (("evidence_id", "TEXT NOT NULL"), ("payload", "JSONB NOT NULL")),
-    )
-    _add_unique(
-        "invocation_quota_evidence",
-        "uq_invocation_quota_evidence_id",
-        "invocation_id, evidence_id",
-    )
 
     op.execute("CREATE TABLE IF NOT EXISTS capability_approvals (request_id TEXT PRIMARY KEY)")
-    _add_columns("capability_approvals", _APPROVAL_COLUMNS)
-    _add_unique(
-        "capability_approvals",
-        "uq_capability_approval_effect",
-        "run_id, node_run_id, binding_id, effect_key",
-    )
+
+    # Every table exists by now, so the column adds run in one pass; each is
+    # `IF NOT EXISTS` and order-independent within its own table.
+    for statement in _ADDED_COLUMNS:
+        op.execute(statement)
+    for statement in _UNIQUE_CONSTRAINTS:
+        op.execute(statement)
 
 
 def downgrade() -> None:
@@ -168,9 +153,3 @@ def downgrade() -> None:
     op.drop_table("invocation_quota_allocations")
     op.drop_table("invocation_quota_reservations")
     op.drop_table("invocation_quota_budgets")
-    op.drop_index(
-        "ix_quota_invocation_evidence_provider_cycle",
-        table_name="quota_invocation_evidence",
-    )
-    op.drop_table("quota_invocation_evidence")
-    op.drop_column("quota_usage", "unreported_count")

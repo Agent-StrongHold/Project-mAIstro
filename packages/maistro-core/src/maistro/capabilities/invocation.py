@@ -19,6 +19,7 @@ Invocation stores.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -30,6 +31,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapabilityProvider
 from maistro.capabilities.types import Unavailable
+
+logger = logging.getLogger("maistro.capabilities.invocation")
 
 
 def _id() -> str:
@@ -377,12 +380,6 @@ ProviderExecutor = Callable[[ResolvedCapabilityProvider, Any], Awaitable[Any]]
 UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 
 
-# Installed once by the composition root: terminal physical effects cross this
-# hook so provider-usage evidence is recorded by the Invocation authority, not
-# by a per-caller response callback.
-InvocationCompletionHook = Callable[["Invocation"], Awaitable[None]]
-
-
 class InvocationQuota(Protocol):
     """Accounting collaborator at the sole physical Invocation boundary.
 
@@ -417,11 +414,51 @@ def _require_scope(invocation: Invocation, *, workspace_id: str, project_id: str
         raise ValueError("reconciliation scope does not match the Invocation")
 
 
+def _settlement_fields(
+    disposition: ReconciliationDisposition,
+    *,
+    result: Any | None,
+    reason: str,
+    usage: InvocationUsage | None,
+) -> dict[str, Any]:
+    """The terminal status fields one reconciliation disposition projects.
+
+    `APPLIED` completes the physical effect (adopting its result and, when the
+    provider reported one, its usage); `NOT_APPLIED` fails it with the
+    settlement reason; `INDETERMINATE` records the reason and leaves the
+    lifecycle where it is.
+    """
+    if disposition is ReconciliationDisposition.APPLIED:
+        fields: dict[str, Any] = {
+            "status": InvocationStatus.COMPLETED,
+            "result": result,
+            "error": None,
+            "finished_at": datetime.now(UTC),
+        }
+        if usage is not None:
+            fields["usage"] = usage
+        return fields
+    if disposition is ReconciliationDisposition.NOT_APPLIED:
+        return {
+            "status": InvocationStatus.FAILED,
+            "error": reason,
+            "finished_at": datetime.now(UTC),
+        }
+    return {"error": reason}
+
+
 @runtime_checkable
 class ProviderReconciliationAdapter(Protocol):
     """Provider-specific evidence seam; it cannot mutate Invocation state."""
 
     async def reconcile(self, invocation: Invocation) -> InvocationReconciliationEvidence: ...
+
+
+# Installed once by the composition root (see `effect_context`): every
+# terminal physical effect — completed directly, or settled `APPLIED` by a
+# reconciliation — crosses this hook so quota evidence is recorded by the
+# Invocation authority itself, never by a per-caller response callback.
+InvocationCompletionHook = Callable[["Invocation"], Awaitable[None]]
 
 
 class InvocationExecutionService:
@@ -483,12 +520,31 @@ class InvocationExecutionService:
             await self._quota.observe(invocation)
 
     async def _notify_completion(self, completed: Invocation) -> None:
-        """Hand a completed effect to the composition-root usage recorder."""
+        """Hand a completed effect to the composition-root usage recorder.
+
+        A recorder failure is isolated rather than raised: the physical effect
+        is already terminal, so failing the caller now would misreport its
+        outcome and could drive a duplicate physical call under attempt retry.
+        The recorder marks an Invocation recorded only after its writes
+        succeed, so the next hand-out of the same completed effect re-confirms
+        evidence and repairs the ledger. The failure is surfaced as an error
+        event -- it is never swallowed silently (#718).
+        """
 
         if completed.status is not InvocationStatus.COMPLETED:
             return
-        if (on_completed := self._on_completed) is not None:
+        if (on_completed := self._on_completed) is None:
+            return
+        try:
             await on_completed(completed)
+        except Exception as exc:
+            logger.error(
+                "quota evidence recording failed for %s (effect %s, provider %s): %s",
+                completed.invocation_id,
+                completed.effect_key,
+                completed.binding.provider_name,
+                exc,
+            )
 
     async def _prior_effect(self, history: list[Invocation], effect_key: str) -> Invocation | None:
         """Replay a completed effect or refuse an outcome that is not FAILED."""
@@ -673,6 +729,12 @@ class InvocationExecutionService:
                     logical_effect=logical_effect,
                 )
                 if replay is not None:
+                    # A deduplicated hand-out re-confirms ledger evidence
+                    # (#718): the recorder and the durable tracker are
+                    # idempotent on Invocation identity, so a healthy ledger
+                    # sees a no-op and one that missed the original
+                    # terminalization is repaired.
+                    await self._notify_completion(replay)
                     return replay
                 raise
             try:

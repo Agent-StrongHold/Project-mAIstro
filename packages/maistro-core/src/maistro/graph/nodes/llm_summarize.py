@@ -129,12 +129,17 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
+        # Gateway configuration is read before the Binding is resolved, as it
+        # always was: a deployment with no gateway configured should be told
+        # that, not told its Binding is missing. Extracting these two steps
+        # for the complexity ratchet must not reorder them.
+        endpoint = _gateway_endpoint(timeout_s=inputs.timeout_s)
         binding = await self._authorized_binding(inputs, ctx)
         egress = ModelChatEgress(
             self._effects,
             registry=self._registry,
             router=self._router,
-            endpoint=_gateway_endpoint(timeout_s=inputs.timeout_s),
+            endpoint=endpoint,
         )
         result = await egress.complete(
             binding=binding,

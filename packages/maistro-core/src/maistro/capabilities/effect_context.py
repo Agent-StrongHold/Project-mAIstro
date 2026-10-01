@@ -136,8 +136,11 @@ def new_effect_context(
 ) -> CapabilityEffectContext:
     """Compose one canonical effect authority from caller-selected stores.
 
-    Production uses this constructor with stores selected by the Container's
-    configured persistence backend. Tests/local ephemeral composition can use
+    ``invocation_store`` selects the canonical effect ledger; ephemeral
+    composition defaults to the in-memory store while durable containers pass
+    the SQLite/PostgreSQL capability Invocation stores. Production uses this
+    constructor with stores selected by the Container's configured persistence
+    backend; tests/local ephemeral composition can use
     :func:`new_in_memory_effect_context`. Keeping the service construction here
     means durability changes storage lifetime only; it cannot create a second
     policy or Invocation execution path.
