@@ -63,10 +63,9 @@
       "id": "governance-conformance",
       "subsystem": "Authorization, privilege, governance",
       "disposition": "CONNECT",
-      "rationale": "The policy-conformance engine of SPEC-206 with no evaluator calling it. ADR-068's approver matrix is the decision it serves and is itself unbuilt (#60).",
+      "rationale": "The policy-conformance engine of SPEC-206 with no evaluator calling it. ADR-068's approver matrix is the decision it serves and is itself unbuilt (#60). The package initializer itself left this list when the canonical promotion contract (SPEC-100126-a9c4) landed under maistro.governance and the graph template promotion gate began importing it.",
       "root": "maistro.security.sentinel policy evaluation (#60)",
       "modules": [
-        "maistro.governance",
         "maistro.governance.conformance",
         "maistro.governance.conformance_types"
       ]
