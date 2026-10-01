@@ -213,8 +213,17 @@ jobs:
       # Default-allow route prefixes are the other seam P0 closes: every
       # authenticated /v1/{segment} mount must declare a permission or a
       # reviewed exempt_reason before Workspace surfaces land (#53 AC-P2).
+      # `uv run`, unlike its neighbours: this one imports the FastAPI app to
+      # enumerate the live route table, so it needs the project's dependencies
+      # on `sys.path`. Under bare `python3` it fails with
+      # `ModuleNotFoundError: No module named 'pydantic'` -- which it reports
+      # as `FAIL: could not import the app` and exits 1, so a missing
+      # interpreter reads as a ratchet violation. The checks around it parse
+      # source and configuration and genuinely need nothing installed;
+      # `check-frontend-api-routes.py` and `check-durable-table-inventory.py`
+      # already use `uv run python3` for the same reason this one must.
       - name: Authenticated route prefixes declared (P0.2 ratchet)
-        run: python3 scripts/check-route-permissions.py
+        run: uv run python3 scripts/check-route-permissions.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it
