@@ -2837,3 +2837,67 @@ remain **UNMET**. Lane stays **BLOCKED on unlanded canonical dependencies**.
 No repair code written — none possible without violating the issue stop
 condition (creating a Design-Studio-private reconciler/Goal owner is expressly
 prohibited). No closure keywords used.
+
+## Round 43 — head `1d48098bd` (develop sync `f8cc3597b -> 9fe61e216`, merged clean)
+
+Prior job `4bf753507e3942b7` completed with verdict **BLOCKED** (13/13
+acceptance UNMET, findings recorded in its `result.json`); worktree was clean
+at the exact expected head `a84baaba422d` — nothing to salvage.
+
+**Develop sync performed this round:** `origin/develop` advanced
+`f8cc3597be20 -> 9fe61e216786` (2 commits: M7-A1 closed-loop design-process
+ADR/SPEC pair #1676, and #403 dead `/invoke` elevation-exemption removal
+#1731). Merged into `auto-777` as `1d48098bd709` with **zero conflicts**
+(13 files, 868 insertions: ADR-092926-7a01 + SPEC-092926-7a01, #790
+design-loop kind-fencing test + inventory note, #403 auth-middleware change +
+tests, `check_enumerations` probe).
+
+**Merged-footprint triage (neither commit is a #777 dependency):**
+- `SPEC-092926-7a01` is M7-A1 (#790, parent #789), status **Proposed**; it
+  pins the design-loop *kind table* to ontology/interop fencing tests and
+  explicitly ships "only the fencing evidence" — its A2–A7 lanes are
+  blocked-by the ADR, and its out-of-bounds list covers fence runtime, eval
+  wiring, packs, any UI, and `packages/maistro-canvas/**`. It implements no
+  Goal revision, CreativeBrief, reconciliation, or mixed-control behavior.
+- #403 removes a dead auth elevation exemption
+  (`packages/hive-conductor/backend/middleware/auth.py`) — unrelated to #777.
+
+**Dependency audit (fresh at `1d48098bd`, unchanged):**
+- 0 files match `GoalRevision|GoalReconcil|owning_agent|ladybug` and 0 match
+  `control_mode|mixed.?control` under `packages/*/src`.
+- `workspace_agent.py`: still **0** `goal|reconcil` matches — #804/#805/#806
+  persistent reconciler absent.
+- `brief_store.py:5` still disclaims Goal/CreativeBrief record semantics
+  (#774 absent); `maistro/agents/brief_interview.py` is interview chat state
+  per SPEC-091726-7c2a, not a CreativeBrief record store.
+- New package `packages/maistro-design` (31 files) is the ADR-061-governed
+  Design-System substrate (renderers, systems loader/importer/registry,
+  skills, trust prescan, DesignEngine) — a possible future *input* to Design
+  Studio, but it contains no Goal/CreativeBrief/mixed-control logic and is
+  not one of #777's unlanded owners.
+- `_CreativeBriefNode` remains a test-local stub
+  (`test_cross_domain_substrate.py:44`); `agent_goal_ownership` remains an
+  ontology `RelationshipSpec` only (`interop/contract.py:354`).
+
+**Gates executed at `1d48098bd` (fresh runs on the merged tree):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2687 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **exit 0**, base
+  `9fe61e216786` -> candidate `1d48098bd709`, **1378 reviewed identities ->
+  1378 findings, 0 unbanked** — no ledger amendment needed, none made.
+- `uv run pytest test_design_loop_kind_fencing.py test_auth_middleware.py -q`
+  — **65 passed** (19.22s) — merged #790/#403 footprint.
+- `uv run pytest test_workspace_agent_identity.py test_workspace_mode.py
+  test_cross_domain_substrate.py test_brief_interview.py -q` — **43 passed**
+  (7.50s) — #777-adjacent surfaces.
+- `uv run python scripts/check-suite-inventory.py` — PASS (14/14, e2e 23 specs).
+- `uv run python scripts/check-doc-links.py` — PASS.
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**Conclusion (43rd inspected head):** unchanged block after a clean develop
+sync. All 13 acceptance criteria remain **UNMET**; the lane stays **BLOCKED
+on unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806
+reconciliation, #774 CreativeBrief, #775 creative Graph, #776 Ladybug
+retrieval). No repair code written — none possible without violating the
+issue stop condition. No closure keywords used.
