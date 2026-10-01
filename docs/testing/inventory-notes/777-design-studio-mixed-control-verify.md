@@ -3264,3 +3264,80 @@ canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
 this round: the develop-sync merge commit `2621dc62a` (develop's own code,
 zero conflicts) + this note. No production or test code authored by this
 lane; inventory deltas all +0. No closure keywords used.
+
+---
+
+## Round 50 — re-verification at `0cd4f091a` (develop sync `3082279f1` -> `234a06c51`)
+
+Round-49 prior result artifact re-read
+(`/home/dev/maistro/jobs/2056d15de4144f21b684328fe45f31c7/result.json`): clean
+dependency-block BLOCKED (success true, agent_exit 0), tree clean at the exact
+expected head `91f12cd60` — not a sync conflict, nothing to salvage.
+
+**Develop sync performed this round:** origin/develop advanced
+`3082279f1` -> `234a06c51` (2 commits: #55 promotion-surface grant touching
+`packages/maistro-rsi/src/maistro_rsi/sensitive_paths.py` #1758, and conductor
+`httpx.ConnectTimeout` treated as retryable #1757 touching
+`packages/maistro-core/src/maistro/agents/conductor.py` + its test + an
+inventory note). Neither is a #777 dependency
+(#804/#805/#806/#458/#774/#775/#776); no lane-surface overlap. Merged cleanly
+as `0cd4f091a` with zero conflicts.
+
+**Dependency audit (fresh at `0cd4f091a`, independently re-run — prior claims
+not trusted):**
+- `grep -ci "goal|reconcil"
+  packages/hive-conductor/backend/services/workspace_agent.py` -> **0
+  matches** — #804/#805/#806 reconciliation APIs still absent (the reconcil
+  text hits in `packages/hive-conductor/backend/` remain evolution/dag/entra
+  recovery reconcilers, not Goal reconciliation).
+- `grep -rli "GoalRevision|GoalReconcil" packages --include="*.py"` -> **0
+  files**. No `maistro-goals` package. #458 Goal remains ontology-declared
+  only.
+- `brief_store.py:5-8` still disclaims: "The interview is chat state, not a
+  Goal: nothing here is a Goal or CreativeBrief record" — #774 absent.
+- `grep -rli ladybug packages/*/src` -> **0 files** — #776 absent.
+- `grep -rli "creative.graph|CreativeGraph" packages --include="*.py"` ->
+  **0 files** — #775 absent. `grep -rli "control_mode|mixed.control"
+  packages/*/src packages/*/backend` -> **0 files** — no mixed-control
+  implementation.
+- e2e: 37 files in `packages/hive-conductor/tests/e2e/`, `ls | grep -i
+  "mixed|777|control"` empty — **no #777 mixed-control browser E2E exists**.
+  Salvage archive unchanged (`docs/research/777-design-studio-salvage/`, 9
+  files).
+
+**Driver checks:** this job's directory contains **no `check-*.log` files** —
+all validation below executed directly by this worker.
+
+**Gates executed at `0cd4f091a` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2716 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, 1374/1374
+  identities banked, 0 unbanked, `never_allowlist: 0` (baseline base
+  `234a06c51` -> candidate `0cd4f091a` tracked automatically; no ledger
+  amendment needed or performed).
+- `uv run pytest packages/maistro-core/tests/agents/test_conductor.py
+  packages/maistro-core/tests/agents/test_brief_interview.py
+  packages/maistro-core/tests/graph/test_cross_domain_substrate.py
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_workspace_mode.py
+  packages/hive-conductor/backend/tests/test_program_brief_routes.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q` —
+  **114 passed** in 13.05s (includes the merge's new
+  `test_connect_timeout_is_retryable` + #777-adjacent surfaces).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites
+  (backend e2e: 23 specs).
+- `uv run python scripts/check-doc-links.py` — PASS (every relative markdown
+  link resolves).
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**All 13 acceptance criteria: still UNMET at this head** (none provable
+against reachable production behavior or meaningful tests; unchanged from
+rounds 46-49).
+
+**Conclusion (50th inspected head):** the lane remains **BLOCKED on unlanded
+canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Ladybug retrieval). Changes
+this round: the develop-sync merge commit `0cd4f091a` (develop's own code,
+zero conflicts) + this note. No production or test code authored by this
+lane; inventory deltas all +0. No closure keywords used.
