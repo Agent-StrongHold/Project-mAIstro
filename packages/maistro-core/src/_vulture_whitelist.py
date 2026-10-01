@@ -7,9 +7,12 @@ usage is implicit through Pydantic or intentionally external through the public
 Invocation execution API.
 """
 
+import maistro.identity
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.identity import Principal
+from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
@@ -80,4 +83,33 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
+    # ADR-068 cutover bridges (Workspace P0.1) between hive
+    # ``request.state.user`` dicts and the canonical Principal. Their callers
+    # are the downstream products still on the dict shape during the
+    # migration, plus the bridge-behavior lock in
+    # tests/identity/test_principal_bridge.py and the extra-guard suite, none
+    # of which this packages/*/src scan walks.
+    Principal.from_legacy_dict,
+    Principal.to_legacy_dict,
+    # ADR-021 BIP39/BIP32 root-of-trust API on ConductorSeed. The methods are
+    # the published seed surface for downstream products: from_mnemonic /
+    # derive_named / mnemonic_words are pinned by
+    # tests/identity/test_seed.py and tests/identity/test_lifecycle.py,
+    # did_key is the seed-level counterpart of lifecycle's
+    # did_key_from_public_key, and zero() is the memory-hygiene call made in
+    # production by packages/hive-conductor/backend/services/
+    # identity_health.py, which this packages/*/src scan does not walk.
+    ConductorSeed.did_key,
+    ConductorSeed.derive_named,
+    ConductorSeed.from_mnemonic,
+    ConductorSeed.mnemonic_words,
+    ConductorSeed.zero,
+    # Declarative curve field of the ADR-021 DerivedKey record, asserted by
+    # tests/identity/test_seed.py; dataclass fields are constructed by
+    # convention, not read at every call site.
+    DerivedKey.curve,
+    # PEP 562 lazy-loading hook: attribute access on maistro.identity (e.g.
+    # ``from maistro.identity import ConductorSeed``) invokes __getattr__
+    # implicitly to keep Principal importable without the crypto extra.
+    maistro.identity.__getattr__,
 )
