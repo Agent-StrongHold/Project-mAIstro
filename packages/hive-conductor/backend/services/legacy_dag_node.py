@@ -24,6 +24,7 @@ from maistro.capabilities.effect_context import (
     default_effect_context,
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext
+from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ model = os.environ.get("DAG_NODE_MODEL", "gemini-3.5-flash")
 system = os.environ.get("DAG_NODE_SYSTEM", "")
 task = os.environ.get("DAG_NODE_TASK", "")
 context = os.environ.get("DAG_NODE_CONTEXT", "")
+# Fallback mirrors the policy default for a bare sandbox run; canonical
+# execution always passes DAG_NODE_TIMEOUT_S (resolved by maistro.graph.policies).
+timeout = float(os.environ.get("DAG_NODE_TIMEOUT_S", "120"))
 user = "Task: " + task + "\\n\\nContext:\\n" + context
 r = httpx.post(
     base + "/chat/completions",
@@ -83,12 +87,29 @@ r = httpx.post(
         ],
         "response_format": {"type": "json_object"},
     },
-    timeout=120,
+    timeout=timeout,
 )
 r.raise_for_status()
 data = r.json()
 print(json.dumps({"content": data["choices"][0]["message"]["content"], "usage": data.get("usage")}))
 """
+
+
+def declared_raw_node_timeout_s(node: Mapping[str, Any]) -> float:
+    """The effective per-node timeout for one legacy raw node.
+
+    ``config.timeout_s`` resolves through the canonical bounded policy
+    (``maistro.graph.policies``); a node that declares nothing keeps the
+    incumbent default. This replaces the hard-coded 120-second constants this
+    module used to carry: the policy module is the only place the default
+    lives, so a declared value reaches the sandbox script, the isolation
+    executor, and the HTTP client as one number, and none of them can extend
+    work past the canonical Attempt deadline the durable walker enforces from
+    the same declaration (#1184).
+    """
+    config = node.get("config")
+    declared = config.get("timeout_s") if isinstance(config, Mapping) else None
+    return resolve_node_timeout_s(declared)
 
 
 def _parse_node_script_output(raw_output: str) -> tuple[str, dict[str, Any] | None]:
@@ -112,12 +133,17 @@ def _run_node_subprocess(
     from services.hyperlight_executor import get_executor
 
     model = node.get("model", "gemini-3.5-flash")
+    timeout_s = declared_raw_node_timeout_s(node)
     node_env = {
         **base_env,
         "DAG_NODE_MODEL": model,
         "DAG_NODE_SYSTEM": node.get("prompt", "") or "",
         "DAG_NODE_TASK": task_desc,
         "DAG_NODE_CONTEXT": context[:2000],
+        # Same resolved policy value the walker enforces at the Attempt
+        # boundary; the in-sandbox HTTP read cannot outwait the canonical
+        # deadline that is actually in charge (#1184).
+        "DAG_NODE_TIMEOUT_S": str(timeout_s),
     }
     try:
         executor = get_executor()
@@ -125,7 +151,7 @@ def _run_node_subprocess(
             executor.execute_node(
                 _NODE_SCRIPT,
                 env=node_env,
-                timeout_s=120,
+                timeout_s=int(timeout_s),
                 allow_network=True,
                 mode=execution_mode,
             )
@@ -434,6 +460,11 @@ async def _run_llm_node(
                 {"role": "user", "content": user_content},
             ],
             model=model,
+            # The node's declared (resolved) timeout reaches the transport as
+            # data. The durable walker enforces the same resolved value as the
+            # Attempt's canonical deadline; a node-level transport timeout can
+            # only agree with it or lose the race (#1184).
+            timeout=declared_raw_node_timeout_s(node),
         )
         results[nid] = {"role": role, "response": response, "success": True, "model": model}
     except Exception as exc:
@@ -518,7 +549,12 @@ def _build_llm_call(on_response: OnResponseHook | None = None):
             else {"type": "json_object"}
         )
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {raw_key}"}
-        async with shared_client(timeout=120.0) as client:
+        # The declared per-node timeout when the caller resolved one; the
+        # incumbent default otherwise. Never a local constant: the value comes
+        # from the shared budget policy so the transport cannot disagree with
+        # the canonical Attempt deadline (#1184).
+        timeout_s = float(kwargs.get("timeout") or DEFAULT_NODE_TIMEOUT_S)
+        async with shared_client(timeout=timeout_s) as client:
             response = await client.post(f"{base}/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
