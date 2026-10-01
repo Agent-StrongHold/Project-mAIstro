@@ -167,6 +167,13 @@ class WorkingMemoryManager:
         durable (content, weight) has not moved, so calling this on every
         retrieval costs one scoped ``list_by_scope`` read and no re-indexing.
 
+        Because every ``list_by_scope`` implementation filters deleted
+        records, the snapshot path cannot carry the explicit tombstones
+        ``hydrate`` consumes; the snapshot is therefore reconciled by ID
+        after hydration — projection records absent from the durable read
+        are dropped, so consolidations that delete or absorb a memory stop
+        leaving it searchable here.
+
         Returns True when the projection is serving, False when hydration
         could not run — with the failure logged at error/warning level and
         recorded in :meth:`degraded_reason`. It does not raise for *source*
@@ -184,6 +191,7 @@ class WorkingMemoryManager:
             # re-derive it. Costs one full re-index; guarantees the projection
             # is rebuilt from durable truth rather than trusted.
             await projection.reset()
+        stale = None
         if memories is None:
             try:
                 memories = await self._episodic_store.list_by_scope(
@@ -194,7 +202,21 @@ class WorkingMemoryManager:
                 self._degraded[wid] = reason
                 logger.error("%s", reason)
                 return False
+            # The snapshot excludes deleted records, so hydrate() never sees
+            # their tombstones; reconcile by ID instead (see docstring).
+            durable_ids = {m.memory_id for m in memories}
+            stale = [
+                r.memory_id for r in projection.records() if r.memory_id not in durable_ids
+            ]
         await projection.hydrate(memories)
+        if stale:
+            for memory_id in stale:
+                await projection.delete(memory_id)
+            logger.info(
+                "working-memory[%s]: reconciled %d record(s) missing from durable snapshot",
+                wid,
+                len(stale),
+            )
         return True
 
     async def hydrate_workspace(

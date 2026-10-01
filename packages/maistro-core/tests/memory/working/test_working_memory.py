@@ -426,6 +426,46 @@ class TestEntityGraph:
             await failing.hydrate([_mem("some content", memory_id="m2")])
 
 
+
+    async def test_project_layer4_skips_entities_with_no_citing_memories(self) -> None:
+        projection = _projection()
+        memories: list[EpisodicMemory] = []
+        for index in range(8):
+            entity = f"Foreign Entity {index}"
+            for dup in range(3):
+                memories.append(
+                    _mem(
+                        f"{entity} operational note {index}-{dup}",
+                        memory_id=f"f-{index}-{dup}",
+                        project_id="proj-other",
+                        context={"entities": [entity]},
+                    )
+                )
+        memories.append(
+            _mem(
+                "Zephyr Tool ships the tiny feature",
+                memory_id="p-1",
+                project_id="proj-1",
+                context={"entities": ["Zephyr Tool"]},
+            )
+        )
+        await projection.hydrate(memories)
+
+        # The eight foreign entities out-rank "zephyr tool" on raw mentions;
+        # Layer 4 for proj-1 must rank only entities citing proj-1 memories,
+        # so the limit cannot crowd the project's own entity out.
+        contexts = await projection.entity_context(project_id="proj-1")
+        assert [e.entity.name for e in contexts] == ["zephyr tool"]
+        assert contexts[0].memories and all(
+            m.project_id == "proj-1" for e in contexts for m in e.memories
+        )
+
+        # Workspace-wide view (no project) keeps the plain mention-ranked
+        # top 8 — the foreign entities out-mention "zephyr tool" there.
+        unscoped = await projection.entity_context()
+        assert len(unscoped) == 8
+        assert all(e.entity.name.startswith("foreign entity") for e in unscoped)
+
 class TestWorkspaceIsolation:
     async def test_identical_ids_and_entities_do_not_cross_workspaces(self) -> None:
         ws_a = _projection(workspace_id="ws-a")

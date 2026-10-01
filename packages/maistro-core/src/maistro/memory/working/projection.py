@@ -511,7 +511,12 @@ class WorkspaceWorkingMemoryProjection:
             key=lambda item: (-len(item[1]), item[0]),
         )
         contexts: list[EntityContext] = []
-        for key, _mentions in ranked[:limit_entities]:
+        # Rank and limit before filtering, but only entities that can cite at
+        # least one memory in the requested project: otherwise foreign-project
+        # entities would fill the limit and crowd out this project's entities.
+        for key, _mentions in ranked:
+            if len(contexts) >= limit_entities:
+                break
             record = self._entity_record(key)
             if record is None:
                 continue
@@ -521,6 +526,8 @@ class WorkspaceWorkingMemoryProjection:
                 if mid in self._records
                 and (not project_id or self._records[mid].project_id == project_id)
             ]
+            if project_id and not citing:
+                continue
             citing.sort(key=lambda m: (-m.weight, m.memory_id))
             contexts.append(
                 EntityContext(
