@@ -39,6 +39,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.store import InMemoryRunStore
 from maistro.testing.postgres import postgres_dsn
 from maistro_canvas.canvas.executor import CanvasExecutor
+from maistro_canvas.canvas.retry_policy import RetryBackoff
 from maistro_canvas.canvas.runner import LEASE_EXPIRED_MESSAGE, CanvasJobRunner
 from maistro_canvas.canvas.store import PgCanvasStore
 from maistro_canvas.protocols import ImageData
@@ -47,6 +48,11 @@ from maistro_canvas.types import JobStatus
 ROOT = Path(__file__).resolve().parents[4]
 
 ORG = "org-e2e"
+
+#: No-wait retry schedule shared by the store, the runner and the reaper in
+#: these tests, so a requeue's durable ``next_retry_at`` never delays a claim
+#: (mirrors ``canvas_testing.job_store_contract.ZERO_BACKOFF``).
+ZERO_BACKOFF = RetryBackoff(base_seconds=0.0, factor=1.0, cap_seconds=0.0)
 
 
 # ── PostgreSQL plumbing (same contract as test_canvas_store_migration) ───
@@ -122,9 +128,15 @@ def migrated_database() -> Iterator[str]:
 async def store(migrated_database: str) -> AsyncIterator[PgCanvasStore]:
     """A fresh store per test: asyncpg connections are event-loop bound, and
     each test gets its own loop. The *database* (module fixture) is shared;
-    no state is (org-scoped rows aside)."""
+    no state is (org-scoped rows aside).
+
+    The store carries the zero backoff schedule so a requeue's durable
+    ``next_retry_at`` gate is immediately claimable — these tests assert the
+    attempt/retry bookkeeping, not wall-clock backoff timing (the runner and
+    store must share one schedule, exactly as in production composition).
+    """
     engine: AsyncEngine = create_async_engine(_async_dsn(migrated_database))
-    yield PgCanvasStore(engine)
+    yield PgCanvasStore(engine, retry_backoff=ZERO_BACKOFF)
     await engine.dispose()
 
 
@@ -200,7 +212,13 @@ async def _runtime(store: PgCanvasStore, image_client: _FakeImageClient) -> Canv
 
 
 def _runner(store: PgCanvasStore, executor: CanvasExecutor, worker_id: str) -> CanvasJobRunner:
-    return CanvasJobRunner(store=store, executor=executor, worker_id=worker_id, lease_seconds=1)
+    return CanvasJobRunner(
+        store=store,
+        executor=executor,
+        worker_id=worker_id,
+        lease_seconds=1,
+        retry_backoff=ZERO_BACKOFF,
+    )
 
 
 async def _admit(
@@ -317,7 +335,7 @@ class TestDurableJobLifecycle:
 
         # Durable truth: a fresh store over the same database reads the same
         # terminal state, and no worker can requeue a FAILED job.
-        fresh = PgCanvasStore(store._engine)
+        fresh = PgCanvasStore(store._engine, retry_backoff=ZERO_BACKOFF)
         assert await fresh.claim_next_pending("worker-b", lease_seconds=1) is None
         again = await fresh.get_job(job.id, org_id=ORG)
         assert again is not None and again.status == JobStatus.FAILED

@@ -338,7 +338,7 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
     failure propagates as a truthful 502 — a configured provider failing is
     never converted into fake success.
     """
-    composite = await store.latest_composite(design_id)
+    composite = await store.latest_composite(design_id, org_id=org_id)
     if composite is None:
         compositor = getattr(request.app.state, "canvas_compositor", None)
         if compositor is None:
@@ -350,7 +350,7 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
         try:
             composite = await compositor.composite(
                 await _require_design(store, design_id, org_id),
-                await store.list_layers(design_id),
+                await store.list_layers(design_id, org_id=org_id),
             )
         except HTTPException:
             raise
@@ -421,7 +421,7 @@ async def publish_design(
     exporter = _exporter(request)
     _validate_format(exporter, body.format)
     composite = await _pinned_composite(request, store, design_id, _owner_id(auth))
-    layers = await store.list_layers(design_id)
+    layers = await store.list_layers(design_id, org_id=_owner_id(auth))
     try:
         version = await exporter.export_canvas(
             record,
@@ -469,7 +469,7 @@ async def export_design(
     fmt = format.lower()
     _validate_format(exporter, fmt)
     composite = await _pinned_composite(request, store, design_id, _owner_id(auth))
-    layers = await store.list_layers(design_id)
+    layers = await store.list_layers(design_id, org_id=_owner_id(auth))
     try:
         version = await exporter.export_canvas(
             record,
