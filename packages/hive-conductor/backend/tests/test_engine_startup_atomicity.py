@@ -534,6 +534,7 @@ async def test_capability_wiring_failure_is_health_visible_degradation(
     await engine_mod.stop_engine()
 
 
+@pytest.mark.contract("behavioral")
 async def test_clean_boot_reports_ready() -> None:
     import services.engine as engine_mod
 
@@ -638,6 +639,7 @@ def _client() -> Any:
     return TestClient(app)
 
 
+@pytest.mark.contract("behavioral")
 def test_health_ready_gates_on_failed_engine_start() -> None:
     """A boot that failed takes the instance out of rotation (#1181): /health
     names the state and sanitized cause; /health/ready answers 503."""
@@ -664,6 +666,7 @@ def test_health_ready_gates_on_failed_engine_start() -> None:
     assert live["status"] == "ok"
 
 
+@pytest.mark.contract("behavioral")
 def test_health_ready_ignores_never_attempted_engine() -> None:
     """Contexts that never run the app lifespan (tests, scripts) keep the
     historical readiness contract; a missing engine is not a failed one."""
@@ -684,6 +687,7 @@ def test_health_ready_ignores_never_attempted_engine() -> None:
     assert live["engine"]["state"] == "not_started"
 
 
+@pytest.mark.contract("behavioral")
 def test_health_ready_gates_on_in_flight_boot() -> None:
     """ADR-100126-f9d6 lists `starting` among the not-ready states: a boot held
     mid-flight takes the instance out of rotation instead of answering the
@@ -713,6 +717,7 @@ def test_health_ready_gates_on_in_flight_boot() -> None:
     assert live["status"] == "ok"
 
 
+@pytest.mark.contract("behavioral")
 def test_health_reports_degraded_engine_state() -> None:
     """A serving engine with an optional-component failure shows in liveness."""
     import services.engine as engine_mod
@@ -729,6 +734,7 @@ def test_health_reports_degraded_engine_state() -> None:
     assert _client().get("/health/ready").json()["checks"]["engine"] is True
 
 
+@pytest.mark.contract("behavioral")
 def test_health_survives_engine_probe_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """The defensive contract every /health probe holds: a broken probe is
     reported, never a 500 — and it never reads as ready."""

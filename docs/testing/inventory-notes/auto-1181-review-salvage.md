@@ -31,10 +31,21 @@ renamed.
   began tracking the in-flight attempt (`_booting`) — and the marker never
   outlives the boot: after a cancelled attempt the snapshot reads
   `startup_failed`.
-- `test_health_ready_gates_on_in_flight_boot` (salvage): `/health/ready`
+- `test_health_ready_gates_on_in_flight_boot` (salvage, contract-marked):
+  `/health/ready`
   answers 503 with `checks["engine"]` false while a boot is mid-flight, per
   ADR-100126-f9d6's decision text, which lists `starting` among the
   not-ready states; liveness stays 200 `ok` with no cause yet.
+
+Contract-marker follow-up (CI-repair round): the six tests above that pin
+ADR-100126-f9d6's decision — `test_clean_boot_reports_ready`, the three
+`test_health_ready_*` gating tests, `test_health_reports_degraded_engine_state`,
+and `test_health_survives_engine_probe_failure` — now carry
+`@pytest.mark.contract("behavioral")` (ADR-032's cross-check marker). The ADR
+declares `contracts: [behavioral]` and lists this file in `tests:`, so the
+markers are what make the claim evidenced instead of a new
+`declared-kind-unproven` row in `quality/contract-markers-baseline.json`.
+Test count is unchanged (+0): markers are annotations, not cases.
 
 Companion production change in `services/engine.py`: the rollback contract
 now covers `BaseException` (cancellation) at the sequence guard, at
