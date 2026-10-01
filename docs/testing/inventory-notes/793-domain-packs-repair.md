@@ -5,6 +5,12 @@ inventory-delta:
 
 # #793 (M7-A4) repair round — pack-contract boundary tests
 
+Round 2 (this round) added **no tests**; it recovered the uncommitted round-1
+salvage (which CI had never seen), merged origin/develop (28 commits, quality
+ledger + uv.lock overlaps resolved), and repaired the exact-debt-ledger and
+reachability gates — see "Round 2" at the bottom. Test-suite count is
+unchanged at 384 (checked by `scripts/check-suite-inventory.py`).
+
 CI-repair for the M7-A4 domain-packs branch: the diff-coverage gate named
 `packs/registry.py` (86% of changed lines) and `packs/types.py` (77.8% of
 changed branch arcs) because the manifest loader's loud-failure paths and the
@@ -49,3 +55,47 @@ metadata now carries `explore_focus` alongside the other pack fields.
   HTTP route outside the scanned tree, pydantic's validator machinery, or
   dynamic value lookup. A reviewed grant for them must land on the base
   revision first — the exact-debt-ledger gate reports exactly that.
+
+## Round 2 — salvage recovery, develop merge, ledger-gate repair
+
+Round 1's edits (the tests above, the typed AC-5 invariant, the ledger
+amendment) were left **uncommitted** on disk when its run died; the driver's
+follow-up "orphan rebuild" then half-applied a corrupt `HEAD..origin/develop`
+patch to the index. Round 2 salvaged the worktree (backed up under the job
+directory), restored the index, committed the salvage, and merged
+origin/develop (fa2deb0a4, 28 commits — overlap was exactly
+quality/reachability-baseline.json, quality/vulture-baseline.json, uv.lock).
+
+Ledger-gate repair, with the constraint that drove it:
+
+- `check-vulture-baseline.py` judges new debt against the ledger **as of the
+  merge base** (`scripts/ratchet_provenance.py`, two-merge rule), so the
+  round-1 candidate-side amendment of `quality/vulture-baseline.json` could
+  never authorize the 12 pack identities — develop has no packs. The
+  references now live in `maistro_design.packs.__init__` (the reachable module
+  the Design Studio route imports through), mirroring
+  `packages/maistro-core/src/_vulture_whitelist.py`: closed-enum members, the
+  route-consumed registry methods, pydantic model validators, the A2
+  Goal-instantiation seam, and the canonical `Node.binding_ids` field. A
+  standalone loose `_vulture_whitelist.py` was tried and reverted: a second
+  top-level stem collides in `check-reachability.py`'s duplicate-module guard,
+  and a new unreachable module needs a prior reachability authorization.
+- Ledger pruning (count-free ratchet): the 12 pack rows, the 2
+  `graph/definitions.py` `binding_ids` rows cleared by the reference, and the
+  `agent.py` `phases` row (identity gone in the merged tree).
+- `maistro.interop` / `maistro.interop.contract` became reachable in the
+  merged tree (develop #997 wired the ontology), so the baseline entries were
+  already pruned and the stale `interop-contract` disposition group left
+  `quality/reachability-dispositions.json` (its own gate's instruction).
+
+Gates proven this round (exit 0 unless noted):
+`check-vulture-baseline.py` (exact-debt-ledger),
+`check-reachability.py`, `check-reachability-dispositions.py`,
+`check-reachability-dispositions-provenance.py`, `check-ratchet-provenance.py`,
+`check-diff-coverage.py --base origin/develop` (design src + conductor backend
+producers; test files exempt by declaration), `check-suite-inventory.py` for
+both touched suites, `check-radon-baseline.py`, `bump_version.py --check`,
+`check-release-consistency.py`, `check-doc-links.py`,
+`check_enumerations.py`, `check-shipped-surface-truth.py`, ruff check/format.
+Suites: maistro-design 384 passed; hive-conductor backend 3018 passed / 6
+skipped; maistro-server 464 passed.
