@@ -94,6 +94,29 @@ def _check_hard_gate(genome: PipelineGenome) -> tuple[bool, list[str]]:
     return len(failures) == 0, failures
 
 
+def hard_gate_threshold(benchmark: str) -> float:
+    """Public per-benchmark hard-gate threshold: the tuned minimum when one
+    exists, else the fail-closed default floor.
+
+    Exposed for the retrodiction prefilter, which must predict gate
+    outcomes per benchmark without duplicating (and drifting from) this
+    table. The gate itself stays in ``_check_hard_gate``.
+    """
+    tuned = _HARD_GATE_THRESHOLDS.get(benchmark)
+    return _DEFAULT_GATE_FLOOR if tuned is None else tuned
+
+
+def passes_hard_gate(genome: PipelineGenome) -> bool:
+    """Public pass/fail read of the hard gate over a genome's current scores.
+
+    Used by the retrodiction prefilter's false-negative accounting: a
+    filtered candidate that later passes full evaluation counts against the
+    filter. Delegates to ``_check_hard_gate`` — same gate, one definition.
+    """
+    passed, _ = _check_hard_gate(genome)
+    return passed
+
+
 def _weighted_eval_score(genome: PipelineGenome) -> float:
     scores = genome.eval_scores
     if not scores:
