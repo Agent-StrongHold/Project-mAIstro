@@ -2979,3 +2979,64 @@ canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
 changes this round are the salvage preservation archive + this note; no
 production or test code changed; inventory deltas all +0. No closure keywords
 used.
+
+## Round 46 — head `ed90dfadf` (develop sync `9fe61e216 -> b9bcdd255`, merged clean; repair job `f00fd90540a7470cba5646ea724ac6a8`)
+
+**Trigger:** round 45 (job `b4a729eb45a44d81b8a2f838469cf26e`) ended verdict
+BLOCKED on unlanded dependencies — **not** a develop-sync conflict. This round
+is a scheduled re-verification + develop sync: `origin/develop` advanced
+`9fe61e216 -> b9bcdd255` (1 commit: M5-A "Remove event-loop blocking from the
+Turing sync bridge" #1728/#397 — Turing sync-seam work, **not a #777
+dependency**). Merged cleanly as `ed90dfadf` with zero conflicts (12 files:
+`maistro-turing` sync_runner + tests, turing runtime chat/producer acomplete
+re-pointing, develop's own vulture ledger prune −3 identities, 1 inventory
+note). Working tree clean before and after the merge.
+
+**Dependency audit (fresh at `ed90dfadf`, independently re-run — not trusted
+from round 45):**
+- `grep -rli "GoalRevision|GoalReconcil|owning_agent" packages/*/src` → **0
+  files**. Only `runs/reconciliation.py` (physical Attempt/NodeRun lifecycle
+  bookkeeping) and `quota/reconciliation.py` exist — no Goal reconciler.
+- `grep -cni "goal|reconcil"
+  packages/hive-conductor/backend/services/workspace_agent.py` → **0** —
+  #804/#805/#806 reconciliation absent.
+- `brief_store.py:5-8` still disclaims: "The interview is chat state, not a
+  Goal: nothing here is a Goal or CreativeBrief record" — #774 absent.
+- `grep -rli "ladybug" packages/*/src` → **0 files** — #776 absent.
+- #458 Goal remains ontology-declared only (`interop/contract.py`: ConceptSpec
+  owner `maistro.goals`, revision `goal_revision`; RelationshipSpecs
+  `project_goal`/`agent_goal_ownership`/`goal_subgoal`/`goal_graph_selection`/
+  `goal_run_evidence`) — no Goal store/revision behavior.
+- #775 creative Graph absent; e2e suite still 23 specs (`check-suite-inventory.py`),
+  the only design-studio specs remain pre-existing `design-studio-keyboard` /
+  `design-studio-truthfulness` — no #777 mixed-control browser E2E exists.
+- Salvage archive unchanged at `docs/research/777-design-studio-salvage/`
+  (labeled research, outside `packages/*/src`, adopts nothing).
+
+**Gates executed at `ed90dfadf` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2698 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, 1375/1375
+  banked, 0 unbanked (develop's merge pruned 3 stale identities; no further
+  ledger amendment needed or performed).
+- `uv run pytest packages/maistro-turing/tests/test_sync_runner.py
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py -q`
+  — 36 passed (merged develop code verified).
+- `uv run pytest test_workspace_mode.py test_program_brief_routes.py
+  test_chat_brief_interview.py packages/maistro-core/tests/graph/test_cross_domain_substrate.py
+  -q` — 33 passed (#777-adjacent surfaces).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites (e2e 23).
+- `uv run python scripts/check-doc-links.py` — PASS.
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**All 13 acceptance criteria: still UNMET at this head** (none provable
+against reachable production behavior or meaningful tests; unchanged from
+round 45).
+
+**Conclusion (46th inspected head):** the lane remains **BLOCKED on unlanded
+canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Ladybug retrieval). Changes this
+round: the develop-sync merge commit `ed90dfadf` (develop's own code, zero
+conflicts) + this note. No production or test code authored by this lane;
+inventory deltas all +0. No closure keywords used.
