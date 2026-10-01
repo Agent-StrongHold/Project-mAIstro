@@ -834,19 +834,6 @@
       "notes": "Every prompt version is kept. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
-      "table": "quota_invocation_evidence",
-      "backends": [
-        "postgres",
-        "sqlite"
-      ],
-      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_quota.py",
-      "data_class": "accounting",
-      "retention": "undecided",
-      "deletion_path": null,
-      "issue": "#325",
-      "notes": "At-most-once provider usage evidence keyed by canonical Invocation id (#718). No DELETE; #325."
-    },
-    {
       "table": "quota_usage",
       "backends": [
         "postgres",

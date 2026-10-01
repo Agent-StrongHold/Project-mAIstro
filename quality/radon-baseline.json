@@ -113,16 +113,6 @@
       "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
     },
     {
-      "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService.invoke",
-      "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
-      "line": 408,
-      "name": "invoke",
-      "classname": "InvocationExecutionService",
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Landed with #1310's rework that makes ambiguous Invocation outcomes recoverable instead of permanently blocking; the recovered/failed-outcome branching concentrates in this single execute path. Post-merge ledger reconciliation records trunk reality under SPEC-264 - the ratchet is set at 13."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::_norm_docker",
       "path": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py",
       "line": 87,
