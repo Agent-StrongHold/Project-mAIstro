@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import pprint
 import re
 from collections import Counter
 from dataclasses import replace
@@ -80,8 +81,32 @@ def _normalize_entity(name: str) -> str:
     return " ".join(name.split()).lower()
 
 
-def _fingerprint(content: str, weight: float) -> str:
-    return hashlib.sha256(f"{content}\x00{weight:.6f}".encode()).hexdigest()
+def _fingerprint(memory: EpisodicMemory) -> str:
+    """Digest of every field the projection's scope and graph behavior reads.
+
+    Keyed on the whole record, not (content, weight): a durable record
+    re-stored with identical text but a different agent/scope/project or
+    changed metadata (including declared entities) must re-hydrate here, or
+    hot recall would keep serving the old visibility snapshot. Context is
+    canonicalized with sorted keys so equal metadata hashes equal regardless
+    of dict insertion order.
+    """
+    payload = (
+        memory.content,
+        f"{memory.weight:.6f}",
+        str(memory.tier.value),
+        memory.org_id,
+        memory.team_id,
+        memory.agent_id or "",
+        memory.user_id or "",
+        str(memory.scope.value),
+        memory.project_id,
+        memory.source,
+        str(memory.shared),
+        str(memory.flagged_for_review),
+        pprint.pformat(memory.context, sort_dicts=True),
+    )
+    return hashlib.sha256("\x00".join(payload).encode()).hexdigest()
 
 
 def _cosine(a: list[float] | tuple[float, ...], b: tuple[float, ...]) -> float:
@@ -123,9 +148,11 @@ class WorkspaceWorkingMemoryProjection:
         # keeps its own copy (the context dict is copied; everything else is
         # immutable scalars).
         self._records: dict[str, EpisodicMemory] = {}
-        # memory_id -> fingerprint of (content, weight) at index time. What
-        # makes re-hydration idempotent: a record whose durable state has not
-        # moved is recognized, not re-processed.
+        # memory_id -> fingerprint of the full record (content, weight, scope
+        # axes, project, visibility markers, metadata/entities) at index time.
+        # What makes re-hydration idempotent: a record whose durable state has
+        # not moved is recognized, not re-processed — and any field the
+        # projection's scope or graph behavior reads counts as movement.
         self._fingerprints: dict[str, str] = {}
 
         # BM25 inverted index: term -> {memory_id: term_frequency}.
@@ -210,7 +237,7 @@ class WorkspaceWorkingMemoryProjection:
                     self._remove(memory.memory_id)
                     report = replace(report, deleted=report.deleted + 1)
                 continue
-            fingerprint = _fingerprint(memory.content, memory.weight)
+            fingerprint = _fingerprint(memory)
             if existing is not None and self._fingerprints.get(memory.memory_id) == fingerprint:
                 report = replace(report, unchanged=report.unchanged + 1)
                 continue
@@ -606,7 +633,7 @@ class WorkspaceWorkingMemoryProjection:
         self._remove(memory.memory_id)
         snapshot = replace(memory, context=dict(memory.context))
         self._records[memory.memory_id] = snapshot
-        self._fingerprints[memory.memory_id] = _fingerprint(memory.content, memory.weight)
+        self._fingerprints[memory.memory_id] = _fingerprint(memory)
         self._index_content(memory.memory_id, memory.content)
         self._attach_entities(memory.memory_id, keys)
         await self._embed_record(memory.memory_id, memory.content, reuse_embedding=reuse_embedding)
