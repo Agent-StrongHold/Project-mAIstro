@@ -44,11 +44,12 @@ type AuditRetention = {
 };
 
 const PAGE_SIZE = 100;
+// Keep a sliding client window, not the entire cursor walk. Virtualization
+// bounds mounted DOM nodes; this cap also bounds JavaScript heap as a user
+// reads an arbitrarily large audit corpus.
+const MAX_LOADED_ENTRIES = PAGE_SIZE * 5;
 
 // Windowed rendering: only the visible slice of rows (+overscan) is mounted.
-// DOM node count stays bounded no matter how many entries are loaded — the
-// loaded window itself is the only thing that grows, and it grows by explicit
-// "load more" steps, not by one giant fetch.
 const ROW_HEIGHT = 44;
 const VIEWPORT_HEIGHT = 560;
 const OVERSCAN_ROWS = 8;
@@ -189,6 +190,10 @@ function AuditRow({
 export default function AuditLog() {
   const toast = useToast();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
+  // Number of newer rows discarded from the front of the bounded client
+  // window. It preserves the scroll coordinate while later pages arrive.
+  const [discardedRows, setDiscardedRows] = useState(0);
+  const entriesRef = useRef<AuditEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -225,7 +230,9 @@ export default function AuditLog() {
     try {
       setLoading(true);
       const page = await apiGet<AuditPage>(`/v1/audit?${buildParams(null)}`);
+      entriesRef.current = page.entries;
       setEntries(page.entries);
+      setDiscardedRows(0);
       setNextCursor(page.next_cursor);
       nextCursorRef.current = page.next_cursor;
       if (scrollRef.current) scrollRef.current.scrollTop = 0;
@@ -244,8 +251,14 @@ export default function AuditLog() {
     setLoadingMore(true);
     try {
       const page = await apiGet<AuditPage>(`/v1/audit?${buildParams(cursor)}`);
-      // Keyset pages are strictly contiguous: append, never merge.
-      setEntries((prev) => [...prev, ...page.entries]);
+      // Keyset pages are strictly contiguous: append, never merge. Retain a
+      // sliding window so a long-lived tab cannot accumulate the whole corpus.
+      const combined = [...entriesRef.current, ...page.entries];
+      const dropCount = Math.max(0, combined.length - MAX_LOADED_ENTRIES);
+      const retained = dropCount === 0 ? combined : combined.slice(dropCount);
+      entriesRef.current = retained;
+      setEntries(retained);
+      if (dropCount > 0) setDiscardedRows((count) => count + dropCount);
       setNextCursor(page.next_cursor);
       nextCursorRef.current = page.next_cursor;
     } catch {
@@ -307,10 +320,16 @@ export default function AuditLog() {
       ? "the actions this account took"
       : "a record of every action taken in the system";
 
-  // Window math: mount only [start, end) of the loaded rows.
-  const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN_ROWS);
-  const visibleCount = Math.ceil(VIEWPORT_HEIGHT / ROW_HEIGHT) + 2 * OVERSCAN_ROWS;
-  const end = Math.min(totalCount, start + visibleCount);
+  // Window math: mount only [start, end) of the retained rows. `discardedRows`
+  // is represented by a spacer, so appending/trimming pages does not make the
+  // scrollbar jump while the client heap remains capped.
+  const viewportStart = Math.floor(scrollTop / ROW_HEIGHT);
+  const viewportEnd = Math.ceil((scrollTop + VIEWPORT_HEIGHT) / ROW_HEIGHT);
+  const start = Math.max(0, viewportStart - discardedRows - OVERSCAN_ROWS);
+  const end = Math.max(
+    start,
+    Math.min(totalCount, viewportEnd - discardedRows + OVERSCAN_ROWS),
+  );
   const windowRows = entries.slice(start, end);
 
   const exportQuery = buildParams(null).replace(/&?limit=\d+/, "").replace(/^&/, "");
@@ -319,7 +338,7 @@ export default function AuditLog() {
     <div style={{ minHeight: "calc(100vh - 60px)" }}>
       <PageHeader
         title="Audit Log"
-        subtitle={`${totalCount} loaded, newest first — ${scopeNote}`}
+        subtitle={`${totalCount} retained locally, newest first — ${scopeNote}`}
         helpHref="/docs#audit"
         actions={[
           <a
@@ -399,7 +418,7 @@ export default function AuditLog() {
               role="rowgroup"
               style={{ height: VIEWPORT_HEIGHT, overflowY: "auto" }}
             >
-              <div style={{ height: start * ROW_HEIGHT }} aria-hidden="true" />
+              <div style={{ height: (discardedRows + start) * ROW_HEIGHT }} aria-hidden="true" />
               {windowRows.map((entry) => (
                 <AuditRow key={entry.id} entry={entry} onOpenDetail={setDetailEntry} />
               ))}

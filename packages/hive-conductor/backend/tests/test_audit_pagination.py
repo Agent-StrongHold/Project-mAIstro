@@ -426,7 +426,7 @@ def test_durable_backend_pages_identically_to_memory(durable: DurableAudit) -> N
 def test_export_is_capped_and_streamable(durable: DurableAudit) -> None:
     corpus = [entry(i) for i in range(EXPORT_MAX_ENTRIES + 50)]
     durable.seed_rows(corpus)
-    exported = iter_export_entries(JsonStore("audit_export_cap"), backend=durable.backend)
+    exported = list(iter_export_entries(JsonStore("audit_export_cap"), backend=durable.backend))
     assert len(exported) == EXPORT_MAX_ENTRIES
     assert all(isinstance(e, dict) and e["id"] for e in exported)
 
@@ -437,7 +437,7 @@ def test_export_honors_filters_and_scope() -> None:
         store,
         [entry(i, actor="testuser" if i % 2 else "hidden", action="login") for i in range(30)],
     )
-    mine = iter_export_entries(store, action="login", actor_scope=frozenset({"testuser"}))
+    mine = list(iter_export_entries(store, action="login", actor_scope=frozenset({"testuser"})))
     assert len(mine) == 15
     assert {e["actor"] for e in mine} == {"testuser"}
 

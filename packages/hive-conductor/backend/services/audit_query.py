@@ -45,9 +45,10 @@ import base64
 import binascii
 import json
 from bisect import bisect_left
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterator
+from typing import Any
 
 #: Default page size for `GET /v1/audit`.
 DEFAULT_AUDIT_PAGE_SIZE = 50
