@@ -2,7 +2,7 @@
 """Keep root BACKLOG.md internally consistent and honest about its references (#30).
 
 `BACKLOG.md` is the hand-maintained work-source of record until the database
-backlog is live (#50), and it is read by agents as well as people. That makes
+cutover runs (#102), and it is read by agents as well as people. That makes
 two failure modes expensive: an item whose status is a word nobody defined, and
 an item citing a decision that does not exist.
 
@@ -22,6 +22,8 @@ Run: `python scripts/check-backlog-consistency.py`
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import sys
 from collections.abc import Mapping
@@ -268,12 +270,55 @@ def _dangling_item_references(text: str, defined: set[str]) -> list[str]:
     ]
 
 
+def _authority_record() -> dict[str, object]:
+    """The committed authority projection for the root backlog (#102).
+
+    Written only by ``scripts/backlog_cutover.py``; a missing file means the
+    pre-cutover default — the hand-maintained Markdown file is canonical.
+    When the record says ``db``, the file is generated documentation: it must
+    carry the generated banner and match the recorded export digest, so a
+    direct edit fails here instead of silently diverging from the database
+    that is now the authority.
+    """
+    path = ROOT / "quality" / "backlog-authority.json"
+    if not path.exists():
+        return {"authority": "markdown", "revision": 0}
+    return json.loads(path.read_text())
+
+
+_GENERATED_BANNER_PREFIX = "<!-- GENERATED from the backlog database"
+
+
+def _authority_failures(text: str, record: Mapping[str, object]) -> list[str]:
+    """Checks that only apply once the database is the authority (#102)."""
+    if record.get("authority") != "db":
+        return []
+    failures: list[str] = []
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith(_GENERATED_BANNER_PREFIX):
+        return [
+            "BACKLOG.md is generated documentation under db authority but does not "
+            "carry the generated banner; regenerate it with "
+            "`scripts/backlog_cutover.py generate` (direct edits are not authoritative)"
+        ]
+    recorded = record.get("export_sha256")
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    if recorded != digest:
+        failures.append(
+            "BACKLOG.md does not match the recorded database export (sha256 mismatch); "
+            "direct edits to the generated backlog are not authoritative — regenerate "
+            "with `scripts/backlog_cutover.py generate` or revert authority first"
+        )
+    return failures
+
+
 def main() -> int:
     if not BACKLOG.exists():
         print(f"FAIL: {BACKLOG} is missing", file=sys.stderr)
         return 1
     text = BACKLOG.read_text()
-    failures = audit(text)
+    authority = _authority_record()
+    failures = audit(text) + _authority_failures(text, authority)
     if failures:
         print("FAIL: BACKLOG.md is inconsistent with its own legends or closure rules\n")
         for failure in failures:
@@ -285,9 +330,15 @@ def main() -> int:
         )
         return 1
     items = sum(1 for line in text.splitlines() if _ITEM_LINE.match(line))
+    authority_note = (
+        "db authority: the file is generated documentation"
+        if authority.get("authority") == "db"
+        else "markdown authority: the file is hand-maintained"
+    )
     print(
         f"OK: {items} backlog items parse, every status, gap marker and citation resolves, "
-        "and every terminal item outside the legacy set carries closure evidence"
+        f"and every terminal item outside the legacy set carries closure evidence "
+        f"({authority_note}, revision {authority.get('revision', 0)})"
     )
     return 0
 

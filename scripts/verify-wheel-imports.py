@@ -57,6 +57,11 @@ CORE_PUBLIC_SURFACE = [
     # is absent, rather than failing at import.
     "maistro.archive",
     "maistro.auth",
+    # The #102 work-source substrate: lossless Markdown import/export, the
+    # canonical BacklogItem store, the authority-cutover ledger and the agent
+    # surface. Published library surface for downstream products; no process
+    # entry point in this repository imports it until the recorded cutover.
+    "maistro.backlog",
     "maistro.builders",
     "maistro.capabilities",
     "maistro.classifier",

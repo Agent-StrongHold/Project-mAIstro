@@ -1,0 +1,7 @@
+{
+ "_doc": "Backlog authority record (#102). Which representation of the root backlog is the work-source of record, as reflected by scripts/check-backlog-consistency.py. 'markdown' (the pre-cutover default, revision 0): BACKLOG.md is hand-maintained and canonical. 'db': the database is authoritative, BACKLOG.md is generated documentation — the file must carry the generated banner and match export_sha256, so a direct edit fails this gate instead of silently diverging. This file is the repo-visible projection of the durable authority ledger (maistro.backlog.cutover, tables backlog_authority/backlog_documents); scripts/backlog_cutover.py is the only writer.",
+ "authority": "markdown",
+ "revision": 0,
+ "updated_at": null,
+ "export_sha256": null
+}

@@ -24,7 +24,14 @@ carrying the current item so the loser can reload and reapply.
 
 from __future__ import annotations
 
+<<<<<<< HEAD
+import json
+import os
 from datetime import UTC, datetime
+from pathlib import Path
+=======
+from datetime import UTC, datetime
+>>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
 from typing import Any
 from uuid import uuid4
 
@@ -41,14 +48,64 @@ from pydantic import ValidationError
 from services import workspace_authority
 
 #: Machine-readable authority statement surfaced by the API and shown by the
+<<<<<<< HEAD
+#: UI (#102). Before the cutover the UI is a preview surface over the
+#: canonical service, never a second authority; once the recorded authority
+#: cutover has run (quality/backlog-authority.json, written by
+#: scripts/backlog_cutover.py), the UI's edits land in the database that is
+#: now the work-source of record, and the flag reads true.
+=======
 #: UI: until issue #102's cutover completes, this UI is a preview surface over
 #: the canonical service, never a second authority.
+>>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
 UI_AUTHORITY: dict[str, Any] = {
     "canonical_service": "services.backlog",
     "ui_authoritative": False,
     "cutover_issue": 102,
 }
 
+<<<<<<< HEAD
+#: Override for the committed authority marker; tests point this at a temp
+#: file so the flip is provable without mutating the repository.
+AUTHORITY_MARKER_ENV = "MAISTRO_BACKLOG_AUTHORITY_FILE"
+
+
+def _authority_marker_path() -> Path | None:
+    override = os.environ.get(AUTHORITY_MARKER_ENV)
+    if override:
+        path = Path(override)
+        return path if path.exists() else None
+    default = Path(__file__).resolve().parents[4] / "quality" / "backlog-authority.json"
+    return default if default.exists() else None
+
+
+def ui_authority_snapshot() -> dict[str, Any]:
+    """The current authority statement, read from the committed marker.
+
+    A missing or unreadable marker means the pre-cutover default: the
+    hand-maintained Markdown backlog is canonical and this UI is explicitly
+    non-authoritative. Failures to read never flip authority on.
+    """
+    authority, revision = "markdown", 0
+    path = _authority_marker_path()
+    if path is not None:
+        try:
+            record = json.loads(path.read_text())
+            authority = str(record.get("authority", "markdown"))
+            revision = int(record.get("revision") or 0)
+        except (OSError, ValueError, TypeError):
+            authority, revision = "markdown", 0
+    return {
+        "canonical_service": "services.backlog",
+        "ui_authoritative": authority == "db",
+        "cutover_issue": 102,
+        "authority": authority,
+        "authority_revision": revision,
+    }
+
+
+=======
+>>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
 #: Provenance is inspection data, not an event log; cap it so a long-lived
 #: item cannot grow without bound. Oldest entries fall off first.
 _PROVENANCE_CAP = 200
@@ -264,7 +321,11 @@ async def get_detail(actor: str, item_id: str) -> dict[str, Any]:
         "dependencies": dependencies,
         "dependents": dependents,
         "children": children,
+<<<<<<< HEAD
+        "authority": ui_authority_snapshot(),
+=======
         "authority": dict(UI_AUTHORITY),
+>>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
     }
 
 
@@ -327,7 +388,10 @@ async def update_item(
     await _require_editor(actor, item)
     if expected_version != item.version:
         raise VersionConflictError(item)
+<<<<<<< HEAD
+=======
     was_blocked = item.status == "blocked"
+>>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
     # Stage the whole edit on a copy: _get() hands back the object the store
     # itself holds, so in-place mutation would leak partial edits (and the
     # version/provenance bump) into reads whenever a later check refuses the
@@ -336,6 +400,11 @@ async def update_item(
     applied = _apply_field_changes(staged, changes)
     if staged.archived and "archived" not in applied:
         raise BacklogValidationError("restore the item before editing it")
+<<<<<<< HEAD
+    if "status" in applied and staged.status == "blocked" and "blocked_reason" not in applied:
+        # Leaving the blocked column through a plain edit clears the stale
+        # park evidence; an explicit unblock sets its own record either way.
+=======
     if staged.status == "blocked" and not was_blocked and not (staged.blocked_reason or "").strip():
         # Entering blocked through a plain edit must carry evidence, the same
         # rule the explicit block endpoint enforces; the UI echoes ``status``
@@ -349,6 +418,7 @@ async def update_item(
         # Leaving the blocked column through a plain edit clears the stale
         # park evidence; an explicit unblock sets its own record either way.
         # Staying blocked keeps the reason unless the save supplies a new one.
+>>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
         staged.blocked_reason = None
     staged.version += 1
     staged.updated_at = _now()
@@ -375,12 +445,15 @@ async def reorder_item(
     if status is not None:
         if status not in BACKLOG_STATUSES:
             raise BacklogValidationError(f"unknown status: {status}")
+<<<<<<< HEAD
+=======
         if status == "blocked" and item.status != "blocked":
             # A drag cannot carry evidence; blocking must go through the
             # explicit block endpoint, which requires a reason.
             raise BacklogValidationError(
                 "a blocked_reason is required when marking an item blocked"
             )
+>>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
         item.status = status
         if status != "blocked":
             item.blocked_reason = None

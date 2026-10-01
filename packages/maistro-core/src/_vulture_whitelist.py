@@ -7,6 +7,17 @@ usage is implicit through Pydantic or intentionally external through the public
 Invocation execution API.
 """
 
+from maistro.backlog.markdown_io import ParsedItem
+from maistro.backlog.model import (
+    BacklogClaim,
+    BacklogClosure,
+    BacklogEvent,
+    BacklogItem,
+    BacklogOrigin,
+)
+from maistro.backlog.pg_store import PgBacklogStore
+from maistro.backlog.sqlite_store import SqliteBacklogStore
+from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
@@ -55,6 +66,47 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
+<<<<<<< HEAD
+    # --- #102 backlog work-source (maistro.backlog) -----------------------
+    # Pydantic invokes these field/model validators at runtime; static import
+    # scanning cannot see decorator-based dispatch (same shape as
+    # Binding._validate_binding above).
+    BacklogClosure._require_non_blank_summary,
+    BacklogClosure._require_resolvable_refs,
+    BacklogClosure._normalize_closed_at,
+    BacklogOrigin._require_non_blank,
+    BacklogItem._require_non_blank,
+    BacklogItem._status_is_a_defined_value,
+    BacklogItem._clean_tags,
+    BacklogItem._clean_dependencies,
+    BacklogItem._require_positive_revision,
+    BacklogItem._enforce_consistency,
+    BacklogClaim._require_non_blank_identity,
+    BacklogClaim._normalize_timestamps,
+    BacklogEvent._require_non_blank_identity,
+    BacklogEvent._normalize_at,
+    # Declarative model field on BacklogItem: written by every store
+    # (created_by=actor), validated at the boundary and serialized into the
+    # item/event tables; vulture cannot count model_dump/INSERT serialization
+    # as a read (same shape as ResolvedBinding.provider_trust_tier above).
+    BacklogItem.created_by,
+    # BacklogStore.extend_claim is the port's lease-extension operation,
+    # conformance-pinned across all three backends
+    # (packages/maistro-core/tests/backlog/test_backlog_store_conformance.py
+    # :: expired-lease reclaim and claim exclusivity). Its production
+    # consumers are the downstream agent/RSI loops the surface exists for;
+    # within this repository no process entry point extends a lease yet.
+    BacklogStore.extend_claim,
+    InMemoryBacklogStore.extend_claim,
+    SqliteBacklogStore.extend_claim,
+    PgBacklogStore.extend_claim,
+    # ParsedItem.written_block is the parse-record accessor the migration
+    # round-trip suite asserts verbatim reconstruction with
+    # (test_markdown_migration.py); it is the import-side twin of the
+    # exporter's _render_header and is consumed outside the scanned tree by
+    # the migration test suite and downstream import tooling.
+    ParsedItem.written_block,
+=======
     # Workspace work campaigns (#103, SPEC-092626-1831). Pydantic invokes the
     # validators; the Actor-valued fields are serialization surface written
     # through model_dump_json and read by consumers outside this scan (the
@@ -80,4 +132,5 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
+>>>>>>> fa3391e5e925e342d6b2a244f29abe058b1b0c13
 )

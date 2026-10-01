@@ -56,6 +56,15 @@ EXPECTED_TABLES = frozenset(
         "asset_sheets",
         "audit_log",
         "books",
+        # The canonical Workspace BacklogItem work-source (#98/#102): the
+        # item/board state, its append-only event history, the imported
+        # document records and the claim leases (048), plus the authority
+        # ledger that records which work source is authoritative (049).
+        "backlog_authority",
+        "backlog_claims",
+        "backlog_documents",
+        "backlog_events",
+        "backlog_items",
         # The Canvas store's own tables (044), created outside the repository
         # until #286 put them in the chain.
         "canvas_blobs",
