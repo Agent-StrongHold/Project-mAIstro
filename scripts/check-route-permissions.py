@@ -12,7 +12,12 @@ Public paths (declared in ``quality/public-routes.json`` / auth middleware) are
 out of scope — this gate covers authenticated surface only.
 
 Baseline: ``quality/route-permissions-baseline.json``. New undeclared prefixes
-fail CI; fixed prefixes must drop their baseline row.
+fail CI; fixed prefixes must drop their baseline row. The comparison ledger is
+resolved from the trusted base revision (``scripts/ratchet_provenance.py``),
+not the candidate tree: a commit that added a gap and the baseline row blessing
+it in the same change could otherwise approve its own regression (#542, #319).
+The worktree copy remains the bookkeeping oracle — a row naming a gap that no
+longer exists must be pruned.
 
 Run: ``python scripts/check-route-permissions.py``
 Bank: ``python scripts/check-route-permissions.py --write-baseline``
@@ -21,6 +26,7 @@ Bank: ``python scripts/check-route-permissions.py --write-baseline``
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -33,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "quality" / "route-permissions.json"
 BASELINE = ROOT / "quality" / "route-permissions-baseline.json"
 PUBLIC_REGISTRY = ROOT / "quality" / "public-routes.json"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 
 REQUIRED = ("owner", "disposition", "reason")
 REQUIRED_PERMISSION = ("permission", *REQUIRED)
@@ -159,26 +166,57 @@ def collect_gaps(today: date | None = None) -> tuple[list[Gap], str | None]:
     return gaps, None
 
 
-def _load_baseline() -> dict[str, str]:
-    if not BASELINE.is_file():
+def _provenance() -> Any:
+    """Load the shared trusted-base resolver (``scripts/ratchet_provenance.py``)."""
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
+def _load_tolerated(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict):
         return {}
-    loaded = json.loads(BASELINE.read_text(encoding="utf-8"))
-    tolerated = loaded.get("tolerated")
+    tolerated = payload.get("tolerated")
     if not isinstance(tolerated, dict):
         return {}
     return {str(key): str(value) for key, value in tolerated.items()}
+
+
+def _load_baseline() -> dict[str, str]:
+    """Candidate ledger (worktree): the bookkeeping oracle for stale-row pruning."""
+    if not BASELINE.is_file():
+        return {}
+    return _load_tolerated(json.loads(BASELINE.read_text(encoding="utf-8")))
+
+
+def _trusted_baseline() -> dict[str, str]:
+    """Ledger at the merge base: the oracle NEW gaps are judged against."""
+    ref = _provenance().resolve_baseline(BASELINE, root=ROOT)
+    return _load_tolerated(ref.loads(default={"tolerated": {}}))
 
 
 def audit() -> tuple[list[Gap], list[str], list[str], str | None]:
     gaps, import_error = collect_gaps()
     if import_error is not None:
         return [], [], [], import_error
-    baseline = _load_baseline()
+    trusted = _trusted_baseline()
+    candidate = _load_baseline()
     current = {item.key(): item.detail for item in gaps}
-    new_keys = sorted(set(current) - set(baseline))
-    stale_keys = sorted(set(baseline) - set(current))
+    new_keys = sorted(set(current) - set(trusted))
+    stale_keys = sorted(set(candidate) - set(current))
     new_gaps = [item for item in gaps if item.key() in new_keys]
-    return new_gaps, stale_keys, sorted(baseline.keys()), None
+    return new_gaps, stale_keys, sorted(candidate.keys()), None
 
 
 def write_baseline(gaps: list[Gap]) -> None:
@@ -190,6 +228,26 @@ def write_baseline(gaps: list[Gap]) -> None:
         "tolerated": {item.key(): item.detail for item in gaps},
     }
     BASELINE.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _audit_or_fail() -> tuple[list[Gap], list[str], list[str], str | None] | None:
+    """``audit()``, rendering a trusted-base provenance failure as a FAIL line."""
+    prov = _provenance()
+    try:
+        return audit()
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return None
+
+
+def _print_tolerated(tolerated_keys: list[str]) -> None:
+    if not tolerated_keys:
+        return
+    print(f"tolerated (baselined): {len(tolerated_keys)}")
+    for key in tolerated_keys[:10]:
+        print(f"  · {key}")
+    if len(tolerated_keys) > 10:
+        print(f"  · … and {len(tolerated_keys) - 10} more")
 
 
 def main() -> int:
@@ -211,18 +269,16 @@ def main() -> int:
         print(f"wrote {len(gaps)} tolerated gap(s) to {BASELINE.relative_to(ROOT)}")
         return 0
 
-    new_gaps, stale_keys, tolerated_keys, import_error = audit()
+    audited = _audit_or_fail()
+    if audited is None:
+        return 1
+    new_gaps, stale_keys, tolerated_keys, import_error = audited
     if import_error is not None:
         print(f"FAIL: {import_error}", file=sys.stderr)
         return 1
 
     print(f"scanned authenticated /v1/ prefixes: {len(gaps)} current gap(s)")
-    if tolerated_keys:
-        print(f"tolerated (baselined): {len(tolerated_keys)}")
-        for key in tolerated_keys[:10]:
-            print(f"  · {key}")
-        if len(tolerated_keys) > 10:
-            print(f"  · … and {len(tolerated_keys) - 10} more")
+    _print_tolerated(tolerated_keys)
 
     failures: list[str] = []
     if new_gaps:

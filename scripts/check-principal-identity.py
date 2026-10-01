@@ -11,6 +11,13 @@ for:
 Baseline: ``quality/principal-identity-baseline.json``. A new violation fails CI;
 a fixed violation must drop its baseline row.
 
+The comparison ledger is resolved from the trusted base revision
+(``scripts/ratchet_provenance.py``), not the candidate tree: a commit that
+added a violation and the baseline row blessing it in the same change could
+otherwise approve its own regression (#542, #319). The worktree copy remains
+the bookkeeping oracle — a row naming a violation that no longer exists must
+be pruned.
+
 Run: ``python scripts/check-principal-identity.py``
 Bank: ``python scripts/check-principal-identity.py --write-baseline``
 """
@@ -19,13 +26,17 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "quality" / "principal-identity-baseline.json"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 
 SCAN_ROOTS = (
     ROOT / "packages" / "maistro-core" / "src",
@@ -174,24 +185,55 @@ def collect_violations() -> list[Violation]:
     return sorted(found, key=lambda item: (item.kind, item.path, item.line, item.detail))
 
 
-def _load_baseline() -> dict[str, str]:
-    if not BASELINE.is_file():
+def _provenance() -> ModuleType:
+    """Load the shared trusted-base resolver (``scripts/ratchet_provenance.py``)."""
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
+def _load_tolerated(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict):
         return {}
-    loaded = json.loads(BASELINE.read_text(encoding="utf-8"))
-    tolerated = loaded.get("tolerated")
+    tolerated = payload.get("tolerated")
     if not isinstance(tolerated, dict):
         return {}
     return {str(key): str(value) for key, value in tolerated.items()}
 
 
+def _load_baseline() -> dict[str, str]:
+    """Candidate ledger (worktree): the bookkeeping oracle for stale-row pruning."""
+    if not BASELINE.is_file():
+        return {}
+    return _load_tolerated(json.loads(BASELINE.read_text(encoding="utf-8")))
+
+
+def _trusted_baseline() -> dict[str, str]:
+    """Ledger at the merge base: the oracle NEW violations are judged against."""
+    ref = _provenance().resolve_baseline(BASELINE, root=ROOT)
+    return _load_tolerated(ref.loads(default={"tolerated": {}}))
+
+
 def audit() -> tuple[list[Violation], list[str], list[str]]:
     violations = collect_violations()
-    baseline = _load_baseline()
+    trusted = _trusted_baseline()
+    candidate = _load_baseline()
     current = {item.key(): item.detail for item in violations}
-    new_keys = sorted(set(current) - set(baseline))
-    stale_keys = sorted(set(baseline) - set(current))
+    new_keys = sorted(set(current) - set(trusted))
+    stale_keys = sorted(set(candidate) - set(current))
     new_violations = [item for item in violations if item.key() in new_keys]
-    return new_violations, stale_keys, sorted(baseline.keys())
+    return new_violations, stale_keys, sorted(candidate.keys())
 
 
 def write_baseline(violations: list[Violation]) -> None:
@@ -220,7 +262,12 @@ def main() -> int:
         print(f"wrote {len(violations)} tolerated violation(s) to {BASELINE.relative_to(ROOT)}")
         return 0
 
-    new_violations, stale_keys, tolerated_keys = audit()
+    try:
+        prov = _provenance()
+        new_violations, stale_keys, tolerated_keys = audit()
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
     print(f"scanned principal identity surface: {len(violations)} current violation(s)")
     if tolerated_keys:
         print(f"tolerated (baselined): {len(tolerated_keys)}")
