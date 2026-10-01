@@ -7,7 +7,7 @@ import logging
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -196,6 +196,10 @@ class SetupCompleteBody(BaseModel):
     optional_modules: list[str] = Field(default_factory=list)
     conductor_name: str = "Hive Conductor"
     default_model: str | None = None
+    # #287: set by the Setup wizard's final gateway preflight. Absent (None)
+    # means the caller predates the field and made no claim; an explicit
+    # "unverified" must be preserved as-is, never silently upgraded.
+    model_availability: Literal["verified", "unverified"] | None = None
 
     @field_validator("hardware_preset")
     @classmethod
@@ -388,6 +392,11 @@ def _provision_first_run(
         "identity_persisted": identity_persisted,
         "completed_at": now_ts.isoformat(),
     }
+    if body.model_availability is not None:
+        # #287: keep the wizard's gateway-preflight verdict next to the model
+        # it qualifies, so a degraded install is explicitly recorded as such
+        # rather than indistinguishable from a verified one.
+        config["model_availability"] = body.model_availability
 
     # Was `stores.settings.default_model = ...` — an in-place mutation of a
     # module-level object, so the Setup wizard's choice never outlived the
