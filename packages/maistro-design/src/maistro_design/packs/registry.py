@@ -18,7 +18,7 @@ import yaml
 from pydantic import ValidationError
 
 from maistro_design.packs.graphs import pack_graph_template
-from maistro_design.packs.types import DomainPack, ExecuteBackend, PackId, PackSummary
+from maistro_design.packs.types import DomainPack, PackId, PackSummary
 
 __all__ = [
     "PackManifestError",
@@ -121,18 +121,3 @@ def parse_manifest(pack_id: PackId, text: str) -> DomainPack:
         raise PackManifestError(
             f"manifest for pack {pack_id.value!r} does not satisfy the pack contract: {exc}"
         ) from exc
-
-
-def assert_no_pack_is_named_after_a_backend(packs: tuple[DomainPack, ...]) -> None:
-    """Contract guard: backend names are binding names, never pack identities.
-
-    Kept as an explicit, callable check (rather than only a model validator)
-    so the registry-level invariant is assertable independently of how a
-    `DomainPack` was constructed.
-    """
-    backend_names = {backend.value for backend in ExecuteBackend}
-    for pack in packs:
-        if pack.pack_id.value in backend_names:
-            raise PackRegistryError(
-                f"pack_id {pack.pack_id.value!r} collides with an execute backend name"
-            )

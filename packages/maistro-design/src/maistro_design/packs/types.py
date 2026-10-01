@@ -23,9 +23,14 @@ contract encodes:
   Canvas pack".
 - **Fence points are declared, not implied.** `fence_points` names the loop
   phases where park/redirect/accept is required; `PackPhase.fenced` marks the
-  gated node inside the Graph shape. (The fence *execution* semantics — the
-  durable HITL park itself — stay with the canonical loop runtime; the pack
-  only declares where the gates sit.)
+  gated node inside the Graph shape, and `_PHASE_GATES` is the single
+  phase→gate mapping. (The fence *execution* semantics — the durable HITL
+  park itself — stay with the canonical loop runtime; the pack only declares
+  where the gates sit.)
+- **A pack id can never name a backend.** `PackId` and `ExecuteBackend` are
+  two closed enums with disjoint member values — a manifest declaring
+  `pack_id: canvas` fails enum validation, and the disjointness itself is
+  pinned by test (AC-5), so no validator-side collision check is needed.
 
 Placement (the A1 documentation hook): this contract lives in ONE place,
 `maistro_design.packs`, because Design Studio hosts all three packs and
@@ -37,6 +42,7 @@ docstring is the recorded placement decision until it does.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
@@ -51,11 +57,6 @@ if TYPE_CHECKING:
     from maistro_design.packs.rubric import GoalRubricCatalog
 
 _LOOP_PHASES = frozenset({"explore", "execute", "evaluate", "refine"})
-
-
-def _fence_gate_for(phase_name: str) -> str:
-    """The fence point a gated node of `phase_name` must have declared."""
-    return "execute.park" if phase_name == "execute" else f"{phase_name}.accept"
 
 
 def _reachable_from_entry(entry: str, edges: tuple[tuple[str, str], ...]) -> set[str]:
@@ -144,6 +145,23 @@ class FencePoint(StrEnum):
     REFINE_ACCEPT = "refine.accept"
 
 
+#: The fence gate each loop phase closes with, declared as data over the
+#: closed `FencePoint` enum — four phases, four gates, one source of truth.
+#: String surgery (`f"{phase}.accept"`) is how a gate spelling drifts from the
+#: enum the manifests declare; this mapping cannot.
+_PHASE_GATES: Mapping[PackPhaseName, FencePoint] = {
+    "explore": FencePoint.EXPLORE_ACCEPT,
+    "execute": FencePoint.EXECUTE_PARK,
+    "evaluate": FencePoint.EVALUATE_ACCEPT,
+    "refine": FencePoint.REFINE_ACCEPT,
+}
+
+
+def _fence_gate_for(phase_name: PackPhaseName) -> str:
+    """The fence point a gated node of `phase_name` must have declared."""
+    return _PHASE_GATES[phase_name].value
+
+
 class PackPhase(BaseModel):
     """One node of a pack's explore → execute → evaluate → refine shape.
 
@@ -187,7 +205,7 @@ class PackGraphShape(BaseModel):
         missing = _LOOP_PHASES - phases
         if missing:
             raise ValueError(f"pack graph shape is missing loop phases: {sorted(missing)}")
-        fence_gates = {point.value for point in FencePoint}
+        fence_gates = {gate.value for gate in _PHASE_GATES.values()}
         for phase in self.nodes:
             if not phase.fenced:
                 continue
@@ -242,13 +260,11 @@ class DomainPack(BaseModel):
         dimension_ids = [dimension.dimension_id for dimension in self.rubric_dimensions]
         if len(set(dimension_ids)) != len(dimension_ids):
             raise ValueError("rubric dimension_ids must be unique within a pack")
-        # A backend name is a binding name, never a pack identity (AC: canvas
-        # is a backend binding, never a pack_id).
-        backend_names = {backend.value for backend in ExecuteBackend}
-        if self.pack_id.value in backend_names:
-            raise ValueError(
-                f"pack_id {self.pack_id.value!r} collides with an execute backend name"
-            )
+        # (A backend name is a binding name, never a pack identity — AC-5. That
+        # invariant needs no validator branch here: `PackId` and
+        # `ExecuteBackend` are two closed enums with disjoint members, so a
+        # colliding manifest fails enum validation before this validator runs.
+        # The disjointness itself is pinned at the enum level by test.)
         # Declared fence points must cover every gated node in the shape.
         declared = {point.value for point in self.fence_points}
         for phase in self.graph.nodes:

@@ -69,5 +69,9 @@ def pack_graph_template(pack: DomainPack, *, workspace_id: str) -> GraphTemplate
             "artifact_kinds": list(pack.artifact_kinds),
             "execute_backends": sorted(backend.value for backend in pack.execute_backends),
             "fence_points": sorted(point.value for point in pack.fence_points),
+            # What the explore phase establishes, riding with the template
+            # like every other pack field — the explore nodes' contract is
+            # inspectable without re-reading the manifest.
+            "explore_focus": list(pack.explore_focus),
         },
     )
