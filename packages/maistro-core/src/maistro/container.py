@@ -91,6 +91,11 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.tasks.idempotency import TaskIdempotencyStore, wire_task_idempotency
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.campaigns.store import CampaignStore
+from maistro.workspaces.campaigns.wiring import (
+    wire_campaign_store,
+    wire_in_memory_campaign_store,
+)
 from maistro.workspaces.store import WorkspaceStore
 from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
@@ -215,6 +220,12 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: Durable home for Workspace work campaigns and their operator controls
+    #: (#103, SPEC-092626-1831). SQLite-backed when the deployment selected
+    #: SQLite, so pin-next / pause / exclude / human-only survive a restart
+    #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
+    #: campaign tables are not part of the schema yet.
+    campaign_store: CampaignStore | None = None
     run_store: RunStore = None  # type: ignore[assignment]
     #: The product read seam over `run_store` (#1152): Workspace membership
     #: decides who may read a Run tree, and foreign ids answer like missing ones.
@@ -1862,6 +1873,14 @@ def _identity_lifecycle_stores() -> tuple[
     return InMemoryIdentityStore(), InMemoryTokenStore(), InMemorySecretStore()
 
 
+async def _wire_campaign_backend(db_pool: Any) -> CampaignStore:
+    """The campaign backend follows the SQLite pool; without one, the
+    in-memory fallback (whose wiring logs the durability cost) stands in."""
+    if db_pool is not None:
+        return await wire_campaign_store(db_pool)
+    return wire_in_memory_campaign_store()
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -2034,6 +2053,10 @@ async def create_container(
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
+    # Campaigns ride the SQLite pool when there is one; a PostgreSQL
+    # deployment gets the in-memory fallback plus a startup warning naming
+    # the cost, rather than a silent durability lie (#103, AC-5).
+    campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
     # reconcile, or the tiers cannot answer a restart the same way.
@@ -2273,6 +2296,7 @@ async def create_container(
         project_store=project_scope_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
+        campaign_store=campaign_store,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
         task_admitter=task_admitter,
