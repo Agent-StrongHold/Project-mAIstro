@@ -855,6 +855,37 @@ async def test_cancel_task_preserves_the_caller_scope_on_the_backend() -> None:
     assert backend.cancel_scoped_with == "alice"
 
 
+async def test_cancel_task_probes_ownership_asynchronously_and_fails_closed() -> None:
+    """The cancel probe must be the async one (#1180): this coroutine runs on
+    the event loop (async `DELETE /v1/missions/{id}`), so the production
+    backend's sync `get` — a 30s-timeout httpx GET — would pin the loop."""
+    from services.engine import EngineService, TaskRecord
+
+    probed: list[tuple[str, Any]] = []
+
+    class _B:
+        def get(self, tid: str, *, user_id: Any = None) -> Any:
+            raise AssertionError("sync get must not run on the event loop")
+
+        async def get_async(self, tid: str, *, user_id: Any = None) -> Any:
+            probed.append((tid, user_id))
+            return TaskRecord(_fake_task(task_id=tid)) if user_id == "owner" else None
+
+        async def cancel(self, tid: str, *, user_id: Any = None) -> bool:
+            self.cancelled = (tid, user_id)
+            return True
+
+    backend = _B()
+    service = EngineService()
+    service._backend = backend
+
+    assert await service.cancel_task("t-1", user_id="intruder") is False
+    assert not hasattr(backend, "cancelled")
+    assert await service.cancel_task("t-1", user_id="owner") is True
+    assert backend.cancelled == ("t-1", "owner")
+    assert probed == [("t-1", "intruder"), ("t-1", "owner")]
+
+
 async def test_iter_task_events_yields_nothing_for_another_users_task() -> None:
     from services.engine import EngineService
 

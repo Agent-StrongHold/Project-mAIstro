@@ -20,7 +20,7 @@ roster, `agents_dir` populates `Container.agents` and this stops being reached.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -28,6 +28,9 @@ from maistro.agents.conductor import run_task
 from maistro.capabilities.model_chat import ModelChatEgress
 from maistro.tasks.models import TaskCreate
 from maistro.types.agent import AgentResponse
+
+if TYPE_CHECKING:
+    from maistro.providers.protocols import LLMRouter
 
 logger = structlog.get_logger()
 
@@ -60,9 +63,15 @@ class ConductorAgent:
         *,
         governed_egress: ModelChatEgress | None = None,
         workspace_id: str = "default",
+        router: LLMRouter | None = None,
     ) -> None:
         self._governed_egress = governed_egress
         self._workspace_id = workspace_id
+        # The container's cost-aware router (#1203): when a provider-scoped
+        # circuit is open, `run_task` falls forward through its declared
+        # fallback chain instead of failing the turn. `None` (no router wired)
+        # keeps the previous fail-fast behavior.
+        self._router = router
 
     async def handle(
         self,
@@ -95,6 +104,7 @@ class ConductorAgent:
                 if turn_id
                 else None,
                 workspace_id=self._workspace_id,
+                router=self._router,
             )
         except Exception as exc:
             # Raised rather than swallowed. `Conduit.route_request` catches

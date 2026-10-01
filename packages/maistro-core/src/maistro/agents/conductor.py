@@ -15,14 +15,20 @@ import json
 import os
 import random
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
 from pydantic import ValidationError
 
-from maistro.agents.circuit_breaker import CircuitOpenError, llm_circuit
+from maistro.agents.circuit_breaker import (
+    CircuitOpenError,
+    DomainCircuitBank,
+    FailureDomain,
+    llm_circuits,
+    resolve_failure_domain,
+)
 from maistro.agents.prompts import CONDUCTOR_SYSTEM
 from maistro.agents.types import ConductorOutput, LLMProviderError, PlanOutput, SubTask
 from maistro.capabilities.binding import Binding
@@ -38,10 +44,14 @@ from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.http import shared_client
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
+from maistro.providers.errors import ModelNotFoundError
 from maistro.quota.default_tracker import get_default_quota_tracker
 from maistro.quota.usage_log import get_default_usage_log
 from maistro.quota.usage_report import reported_usage
 from maistro.tasks.models import TaskCreate
+
+if TYPE_CHECKING:
+    from maistro.providers.protocols import LLMRouter
 
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
 
@@ -297,6 +307,70 @@ def _parse_json_output(raw: str) -> ConductorOutput:
     return ConductorOutput.model_validate(data)
 
 
+def conductor_failure_domain(call: ConductorCall) -> FailureDomain:
+    """The failure domain one conductor gateway call depends on (#1203).
+
+    Scoped to what can fail independently: the sanitized gateway endpoint x
+    the upstream routing target the model string names — never one global
+    process flag.
+    """
+    return resolve_failure_domain(model=call.model, base_url=call.base_url)
+
+
+async def _admitted_fallback_call(
+    call: ConductorCall,
+    circuits: DomainCircuitBank,
+    router: LLMRouter,
+) -> ConductorCall | None:
+    """First fallback-chain candidate whose failure domain admits traffic.
+
+    The chain comes from the router's registry-declared ``fallback_to`` edges
+    (ADR-079), so fallback stays inside canonical routing configuration — it
+    never widens what the call may touch, and quota recording continues on
+    the same ``on_response`` seam. ``None`` when no candidate is admitting.
+    """
+    try:
+        chain = await router.fallback_chain(call.model)
+    except ModelNotFoundError:
+        return None
+    for candidate in chain:
+        if candidate.name == call.model:
+            continue
+        candidate_domain = resolve_failure_domain(
+            model=candidate.name, base_url=call.base_url, provider=candidate.provider
+        )
+        if circuits.admit(candidate_domain):
+            return replace(call, model=candidate.name)
+    return None
+
+
+async def _admit_call(
+    call: ConductorCall,
+    bank: DomainCircuitBank,
+    router: LLMRouter | None,
+) -> tuple[ConductorCall, FailureDomain]:
+    """Resolve the (call, domain) pair allowed to proceed to the gateway.
+
+    Returns the original call when its failure domain admits traffic, or the
+    first router-declared fallback candidate whose own domain admits it.
+    Raises :class:`CircuitOpenError` when still blocked; the re-check also
+    absorbs the race where the domain recovered while the fallback chain was
+    resolving — in that case the original call simply proceeds. The raised
+    error names the blocking breaker (gateway first) and fails fast.
+    """
+    domain = conductor_failure_domain(call)
+    if bank.admit(domain):
+        return call, domain
+    fallback_call: ConductorCall | None = None
+    if router is not None:
+        fallback_call = await _admitted_fallback_call(call, bank, router)
+    if fallback_call is not None:
+        return fallback_call, conductor_failure_domain(fallback_call)
+    if not bank.admit(domain):
+        raise CircuitOpenError(bank.blocking_breaker(domain) or bank.breaker(domain))
+    return call, domain
+
+
 async def _run_with_retry(
     call: ConductorCall,
     prompt: str,
@@ -307,12 +381,27 @@ async def _run_with_retry(
     invocation_identity: tuple[str, str, str] | None = None,
     workspace_id: str = "default",
     project_id: str = "agent-runtime",
+    circuits: DomainCircuitBank | None = None,
+    router: LLMRouter | None = None,
 ) -> ConductorOutput:
-    """Call the gateway with timeout and retry logic for transient failures."""
-    if not llm_circuit.allow_request():
-        raise CircuitOpenError(llm_circuit)
+    """Call the gateway with timeout and retry logic for transient failures.
+
+    Circuit scope (#1203, ADR-038): breaker state is keyed to the call's
+    failure domain — gateway endpoint x upstream provider — so one flaky
+    provider cannot open a breaker that blocks unrelated healthy providers.
+    A gateway-level breaker intentionally represents failure of the shared
+    endpoint itself (connection refused → every provider behind it blocked).
+
+    When the current model's domain is blocked and a ``router`` is supplied,
+    admission falls forward through the router's declared fallback chain to
+    the first candidate whose own domain admits traffic. Without a router the
+    blocked call fails with :class:`CircuitOpenError`, as before.
+    """
+    bank = circuits if circuits is not None else llm_circuits
+    call, domain = await _admit_call(call, bank, router)
 
     last_exc: Exception | None = None
+    shared_failure = False
 
     for attempt in range(tier_config.max_llm_retries):
         try:
@@ -333,10 +422,13 @@ async def _run_with_retry(
                 timeout=tier_config.timeout,
             )
             result = _parse_json_output(raw)
-            llm_circuit.record_success()
+            bank.record_success(domain)
             return result
         except TimeoutError as exc:
+            # A slow response is routed-upstream evidence, not proof the shared
+            # endpoint died — a dead gateway refuses connections instead.
             last_exc = exc
+            shared_failure = False
             await logger.awarning(
                 "llm_timeout",
                 attempt=attempt + 1,
@@ -346,6 +438,7 @@ async def _run_with_retry(
         except Exception as exc:
             if _is_retryable(exc):
                 last_exc = exc
+                shared_failure = isinstance(exc, httpx.ConnectError)
                 await logger.awarning(
                     "llm_transient_error",
                     attempt=attempt + 1,
@@ -353,11 +446,13 @@ async def _run_with_retry(
                     error=str(exc),
                 )
             else:
-                llm_circuit.record_failure()
+                # A non-retryable response came from the routed upstream, not
+                # from the shared endpoint — scope it to this provider only.
+                bank.record_failure(domain)
                 llm_errors_total.inc(error_type="non_retryable")
                 raise
 
-        llm_circuit.record_failure()
+        bank.record_failure(domain, shared=shared_failure)
         llm_errors_total.inc(error_type="retryable")
 
         # Exponential backoff with jitter before retry
@@ -379,6 +474,7 @@ async def run_task(
     invocation_identity: tuple[str, str, str] | None = None,
     workspace_id: str = "default",
     project_id: str = "agent-runtime",
+    router: LLMRouter | None = None,
 ) -> ConductorOutput:
     """Execute a full engineering task through the conductor pipeline.
 
@@ -391,6 +487,11 @@ async def run_task(
     ``governed_egress`` is forwarded on every physical retry, and each retry
     gets its own canonical Invocation effect key. ``on_response`` remains a
     compatibility hook for legacy callers only.
+
+    `router`, if given, lets a provider-scoped circuit block (#1203) fall
+    forward through the router's declared fallback chain to a healthy
+    candidate instead of failing; without one a blocked domain raises
+    `CircuitOpenError`.
 
     If maistro_dry_run is set in settings, returns a mock result without calling any LLM.
     """
@@ -447,6 +548,7 @@ async def run_task(
         invocation_identity=invocation_identity,
         workspace_id=workspace_id,
         project_id=project_id,
+        router=router,
     )
     await logger.ainfo("conductor_complete", success=result.success)
     return result

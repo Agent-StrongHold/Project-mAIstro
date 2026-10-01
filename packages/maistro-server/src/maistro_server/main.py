@@ -279,6 +279,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
             CONDUCTOR_AGENT_NAME: ConductorAgent(
                 governed_egress=governed_egress,
                 workspace_id=settings.workspace_id,
+                router=container.llm_router,
             )
         },
     )

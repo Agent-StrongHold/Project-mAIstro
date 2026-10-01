@@ -241,6 +241,83 @@
       "notes": "Deleted only on an explicit DELETE /workspaces/{id}; lives as long as the tenant wants it. Needs an explicit indefinite_by_decision."
     },
     {
+      "table": "campaign_audit",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "audit",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "Campaign decisions (invariant 3, SPEC-092626-1831); purged with their campaign by SqliteCampaignStore.delete_campaign."
+    },
+    {
+      "table": "campaign_controls",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "pin-next / pause / exclude / human-only operator controls (AC-5); cleared controls are records, and every row is purged with its campaign."
+    },
+    {
+      "table": "campaign_item_records",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "Per-item mode override and explicit human priority, keyed by (campaign_id, item_id); never written onto the BacklogItem."
+    },
+    {
+      "table": "campaign_parks",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "user_content",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "Park records with evidence (AC-6); purged with their campaign."
+    },
+    {
+      "table": "campaign_usage",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "runtime_state",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "Observed budget consumption per campaign; purged with its campaign."
+    },
+    {
+      "table": "campaigns",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "notes": "Versioned operator policy rows (SPEC-092626-1831). Deleted only by explicit operator action via SqliteCampaignStore.delete_campaign, which purges the bounded rows with it; lives as long as the tenant wants it. Needs an explicit indefinite_by_decision."
+    },
+    {
       "table": "canvas_blobs",
       "backends": [
         "postgres"
