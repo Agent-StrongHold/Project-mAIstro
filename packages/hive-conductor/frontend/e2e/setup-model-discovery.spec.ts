@@ -93,16 +93,23 @@ test.describe("Setup wizard — gateway model discovery", () => {
   });
 
   test("retry re-attempts discovery and can clear the failure", async ({ page }) => {
-    let calls = 0;
-    await mockModels(page, () => {
-      calls += 1;
-      // StrictMode double-invokes the mount effect, so the first two calls
-      // are the paired initial fetches; only the explicit retry is call 3.
-      return calls <= 2 ? null : { status: 200, body: JSON.stringify({ models: ["gw-recovered"], discovered: true, source: "gateway", error: null }) };
-    });
+    // Abort every attempt until the operator retries. Do NOT count calls to
+    // distinguish the mount fetch from the retry: React StrictMode pairs the
+    // mount effect only in development builds, so a production bundle under
+    // any served deployment issues exactly one initial request.
+    await mockModels(page, () => null);
     await gotoHiveStep(page);
 
     await expect(page.getByTestId("model-error-network")).toBeVisible();
+    // Playwright matches routes most-recent-first, so this handler serves
+    // every request from here on — the retry alone, in production and dev.
+    await page.route("**/v1/settings/models", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ models: ["gw-recovered"], discovered: true, source: "gateway", error: null }),
+      }),
+    );
     await page.getByTestId("model-retry").click();
     const status = page.getByTestId("model-discovery-status");
     await expect(status).toContainText("1 models discovered from the gateway");
