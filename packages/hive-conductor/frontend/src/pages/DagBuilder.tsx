@@ -430,6 +430,11 @@ export default function DagBuilder() {
           if (settle()) return;
           setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Completed in ${data.cycles} cycles`] }));
           toast("DAG execution completed");
+        } else if (status === "heartbeat") {
+          // Alive-idle marker (#1183): the Run is still executing with nothing
+          // new to report. No state change — the point of the frame is that
+          // silence with a live socket is distinguishable from a dead one.
+          return;
         } else if (status in RUN_FAILURE_LABELS) {
           if (settle()) return;
           const label = RUN_FAILURE_LABELS[status];
