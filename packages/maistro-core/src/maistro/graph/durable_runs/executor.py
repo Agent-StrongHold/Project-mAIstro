@@ -31,6 +31,7 @@ from maistro.graph.nodes.base import (
     NodeResult,
     ReplaySemantics,
 )
+from maistro.graph.verification.escalation import ESCALATED_MODEL_CONTEXT_KEY
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
     settle_open_node_run,
@@ -1101,6 +1102,13 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         "hitl_answers": dict(record.hitl_answers),
         "synth_depth": synth_depth,
     }
+    # Verification-aware escalation (epic M4-I): when supervision withheld a
+    # prior visit for missing its quality floor, the re-visit must run the
+    # ladder rung the executor chose — the node honors it or ignores it, but
+    # it must be able to see the decision.
+    escalation = record.graph_state.metadata.get("escalations", {}).get(node_id)
+    if isinstance(escalation, Mapping) and escalation.get("model"):
+        metadata[ESCALATED_MODEL_CONTEXT_KEY] = str(escalation["model"])
     answered = record.hitl_answers.get(node_id)
     if isinstance(answered, Mapping):
         pause = answered.get("_pause")

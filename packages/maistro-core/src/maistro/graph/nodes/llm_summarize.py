@@ -30,6 +30,7 @@ from maistro.capabilities.providers.llm_gateway import (
     GatewayEndpoint,
     ModelChatRequest,
 )
+from maistro.graph.verification.escalation import ESCALATED_MODEL_CONTEXT_KEY
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 
@@ -163,8 +164,17 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         if inputs.system_prompt_extra:
             sys_prompt = sys_prompt + "\n\n" + inputs.system_prompt_extra
 
+        # Verification-aware escalation (epic M4-I): when the executor's
+        # supervision withheld a prior visit for missing its quality floor,
+        # the re-visit is told which ladder rung to run. The node's own
+        # ``model`` input stays the default for every first visit.
+        escalated = ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY)
+        model_alias = str(escalated).strip() if escalated else ""
+        if not model_alias:
+            model_alias = inputs.model
+
         request = ModelChatRequest(
-            model=inputs.model,
+            model=model_alias,
             messages=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": inputs.text},
@@ -185,7 +195,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             run_id=ctx.run_id,
             node_run_id=ctx.node_run_id,
             attempt_id=ctx.attempt_id,
-            effect_key=f"llm.summarize.complete:{inputs.model}",
+            effect_key=f"llm.summarize.complete:{model_alias}",
             request=request,
         )
 
@@ -194,7 +204,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         usage = data.get("usage", {}) or {}
         return LlmSummarizeOut(
             summary=text.strip(),
-            model_used=str(data.get("model") or inputs.model),
+            model_used=str(data.get("model") or model_alias),
             tokens_in=int(usage.get("prompt_tokens") or 0),
             tokens_out=int(usage.get("completion_tokens") or 0),
         )

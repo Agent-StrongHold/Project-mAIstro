@@ -8,6 +8,9 @@ TraversalCommit in the same optimistic durable checkpoint.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphEdgeDecision, GraphExecutionState
 from maistro.graph.traversal_commit import (
@@ -15,6 +18,8 @@ from maistro.graph.traversal_commit import (
     TraversalCommit,
     graph_state_hash,
 )
+from maistro.graph.verification.expectations import PlanExpectationQueue
+from maistro.graph.verification.taxonomy import classify_result_state
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import (
     AcceptedNodeOutcome,
@@ -27,6 +32,122 @@ from maistro.runs.model import (
 from . import executor as traversal
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
+
+
+def _plan_mismatch_error(
+    graph: Graph,
+    completed: tuple[traversal._FrontierItem, ...],
+) -> str | None:
+    """Supervise completed nodes against the plan queue's predicted post-states.
+
+    A plan is a claim about the future (epic M4-I). When a completed node's
+    actual post-state contradicts its declared
+    ``policies[\"expect_post_state\"]`` prediction, the Run halts here with
+    ``PlanPostStateMismatch`` instead of routing the contradicted state
+    onward — the same visible-stop contract the blackboard halt uses, and
+    deliberately a failure rather than a pause: nothing external is owed an
+    answer, and resuming without new work would only re-read the same world.
+    """
+    if not completed:
+        return None
+    queue = PlanExpectationQueue.from_graph(graph)
+    if not queue.expectations:
+        return None
+    for item in completed:
+        verdict = queue.supervise(
+            item.node_id,
+            output=traversal._result_output(item.result),
+            result_state=classify_result_state(item.result),
+        )
+        if verdict is not None and not verdict.matched:
+            suffix = (
+                f" [{item.spec.policies['expect_post_state'].get('description')}]"
+                if isinstance(item.spec.policies.get("expect_post_state"), Mapping)
+                and item.spec.policies["expect_post_state"].get("description")
+                else ""
+            )
+            return f"{verdict.describe()}{suffix}"
+    return None
+
+
+def _escalate_quality_shortfalls(
+    record: DurableRunRecord,
+    completed: tuple[traversal._FrontierItem, ...],
+) -> tuple[DurableRunRecord, tuple[traversal._FrontierItem, ...], tuple[str, ...]]:
+    """Withhold quality-short visits and re-queue them at the next ladder rung.
+
+    Cheap-first escalation (epic M4-I): a completed visit whose self-reported
+    ``quality`` metadata misses the node's declared floor is *not accepted as
+    final* while a stronger rung and visit budget remain. Its edges do not
+    route this cycle; it re-enters the frontier as a fresh NodeRun/Attempt —
+    never a rewritten one — whose ``NodeContext.metadata["escalated_model"]``
+    names the rung to run. Exhausted budgets and exhausted ladders accept the
+    shortfall as final: supervision may not become an unbounded loop, and the
+    accepted visit's own metadata still records the shortfall for anyone
+    reading the evidence.
+    """
+    from maistro.graph.verification.escalation import (
+        ESCALATION_STATE_METADATA_KEY,
+        QUALITY_METADATA_KEY,
+        decide_escalation,
+        escalation_from_policy,
+    )
+
+    if not completed:
+        return record, completed, ()
+    escalations: dict[str, Any] = {
+        str(node_id): dict(entry)
+        for node_id, entry in (
+            record.graph_state.metadata.get(ESCALATION_STATE_METADATA_KEY) or {}
+        ).items()
+        if isinstance(entry, Mapping)
+    }
+    advanced: list[traversal._FrontierItem] = []
+    requeued: list[str] = []
+    changed = False
+    for item in completed:
+        declared = escalation_from_policy(item.spec.policies)
+        raw_quality = (item.result.metadata or {}).get(QUALITY_METADATA_KEY)
+        quality = (
+            raw_quality
+            if isinstance(raw_quality, (int, float)) and not isinstance(raw_quality, bool)
+            else None
+        )
+        if declared is None or quality is None:
+            escalations.pop(item.node_id, None)
+            advanced.append(item)
+            continue
+        ladder, gate = declared
+        current = escalations.get(item.node_id, {}).get("model")
+        decision = decide_escalation(ladder, current, float(quality), gate)
+        may_retry = traversal._may_revisit_after(record.graph_state, item)
+        if decision.escalate and may_retry and decision.to_model is not None:
+            escalations[item.node_id] = {
+                "model": decision.to_model,
+                "rung": ladder.index_of(decision.to_model),
+                "from_model": decision.from_model,
+                "quality": decision.quality,
+            }
+            requeued.append(item.node_id)
+            changed = True
+            continue
+        escalations.pop(item.node_id, None)
+        advanced.append(item)
+    if not changed:
+        return record, completed, ()
+    metadata = dict(record.graph_state.metadata)
+    if escalations:
+        metadata[ESCALATION_STATE_METADATA_KEY] = escalations
+    else:
+        metadata.pop(ESCALATION_STATE_METADATA_KEY, None)
+    return (
+        traversal._replace_record(
+            record,
+            graph_state=traversal._replace_state(record.graph_state, metadata=metadata),
+        ),
+        tuple(advanced),
+        tuple(requeued),
+    )
 
 
 def _completed_attempt_result(record: DurableRunRecord, node_run_id: str) -> AttemptResult:
@@ -300,7 +421,19 @@ async def fold_authoritative_frontier(
             store=store,
         )
 
+    mismatch = _plan_mismatch_error(graph, completed)
+    if mismatch is not None:
+        return await traversal._mark_failed(
+            record,
+            error_code="PlanPostStateMismatch",
+            error_message=mismatch,
+            store=store,
+        )
+
+    record, completed, escalated_ids = _escalate_quality_shortfalls(record, completed)
+
     next_ids, decisions = traversal._route_completed_items(record, graph, completed)
+    next_ids = traversal._dedupe((*next_ids, *escalated_ids))
     next_ids, blocked_fanins = traversal._partition_ready_targets(
         record,
         graph,
