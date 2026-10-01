@@ -3341,3 +3341,68 @@ canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
 this round: the develop-sync merge commit `0cd4f091a` (develop's own code,
 zero conflicts) + this note. No production or test code authored by this
 lane; inventory deltas all +0. No closure keywords used.
+
+## Round 51 — head `11202e74a` (develop unchanged; full battery re-run fresh)
+
+**Branch state:** worktree clean at the exact expected head
+`11202e74a9445556a7f0759f9fa4c8aaeb043c85` (round-50 note commit). Prior
+round-50 result artifact re-read: clean dependency-block BLOCKED (success
+true, agent_exit 0, tree clean at `11202e74a`) — nothing to salvage.
+`git fetch origin develop` -> `origin/develop` = `FETCH_HEAD` = `234a06c51`
+= the lane base already merged in `0cd4f091a`. **Develop did NOT advance
+this round; no sync/merge needed, zero conflicts possible.**
+
+**Dependency audit (fresh at `11202e74a`, independently re-run — prior
+claims not trusted):**
+- `grep -ci "goal|reconcil"
+  packages/hive-conductor/backend/services/workspace_agent.py` -> **0
+  matches** — #804/#805/#806 reconciliation APIs still absent.
+- `grep -rli "GoalRevision|GoalReconcil" packages --include="*.py"` -> **0
+  files**. No `maistro-goals` package. #458 Goal remains ontology-declared
+  only.
+- CreativeBrief grep hits re-inspected rather than trusted: `brief_store.py:5-8`
+  still disclaims ("The interview is chat state, not a Goal: nothing here is
+  a Goal or CreativeBrief record"); the `test_cross_domain_substrate.py:44`
+  hit is a test-local `_CreativeBriefNode` stub, not a #774 record — #774
+  absent.
+- `grep -rli ladybug packages/*/src` -> **0 files** — #776 absent.
+- `grep -rli "creative.graph|CreativeGraph" packages` -> **0 files** — #775
+  absent. `grep -rli "control_mode|mixed.control" packages/*/src` -> **0
+  files** — no mixed-control implementation. `maistro-design/src` has 0
+  goal/brief/control_mode surfaces (checked since it is the closest
+  Design-Studio package).
+- e2e: 37 files in `packages/hive-conductor/tests/e2e/`, none matching
+  mixed/777/control — **no #777 mixed-control browser E2E exists**. Salvage
+  archive unchanged (`docs/research/777-design-studio-salvage/`, 9 files).
+
+**Driver checks:** this job's directory contains **no `check-*.log` files** —
+all validation below executed directly by this worker.
+
+**Gates executed at `11202e74a` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2716 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, 1374/1374
+  identities banked, 0 unbanked (baseline base `234a06c51` -> candidate
+  `11202e74a`; no ledger amendment needed or performed).
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_program_brief_routes.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py
+  packages/maistro-core/tests/graph/test_cross_domain_substrate.py
+  packages/maistro-design/tests -q` — **391 passed** in 20.86s (widest
+  #777-adjacent selection so far: full maistro-design suite + Workspace
+  Agent identity + brief surfaces + cross-domain substrate).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites.
+- `uv run python scripts/check-doc-links.py` — PASS.
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**All 13 acceptance criteria: still UNMET at this head** (unchanged from
+rounds 46-50).
+
+**Conclusion (51st inspected head):** the lane remains **BLOCKED on unlanded
+canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Ladybug retrieval). Changes
+this round: this note only (develop did not advance; no merge commit). No
+production or test code authored by this lane; inventory deltas all +0. No
+closure keywords used.
