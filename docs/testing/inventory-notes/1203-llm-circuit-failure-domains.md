@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +28
-  packages/maistro-server/tests: +2
+  packages/maistro-core/tests: +38
+  packages/maistro-server/tests: +3
 ---
 # 1203-llm-circuit-failure-domains
 
@@ -49,3 +49,26 @@ seam, and one pinning the explicit default (`ConductorAgent()` passes
 switched from patching the removed global breaker to patching
 `llm_circuits.snapshot()` with one open domain — same node ID, same 503
 contract, now asserting per-domain identification rather than a global flag.
+
+## Diff-coverage repair (same change, follow-up commit)
+
+The coverage gate failed on three half-tested paths in this same change;
+ten maistro-core node IDs and one maistro-server node ID close them without
+widening production code:
+
+- `test_conductor.py` (+3): a router whose registry raises
+  `ModelNotFoundError` degrades to the same fail-fast `CircuitOpenError` as
+  having no router; a fallback chain whose every candidate domain is itself
+  blocked fails closed naming the requested domain; and the admission
+  re-check absorbs the recovery race — a domain that recovers (HALF_OPEN)
+  while the fallback chain resolves proceeds on the original call with the
+  probe lease held by that caller.
+- `test_circuit_max_domains.py` (+7): the `Settings.circuit_breaker_max_domains`
+  bound is asserted on the field `domain_bank_from_settings` reads (zero,
+  negative, one-past-ceiling refused; both bounds and the shipped default
+  accepted; the bool that Python would coerce is refused by the shared
+  validator, matching the bank's own guard).
+- `test_health.py` (+1): the admin-scoped readiness detail names each
+  unhealthy failure domain and truncates the list at eight with a `+N more`
+  count, so operator diagnostics stay bounded as providers are dynamically
+  discovered.
