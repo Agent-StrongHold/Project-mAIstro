@@ -309,11 +309,6 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#338",
       "reason": "A declared field on `WaitForSubtasksOut`, read through pydantic validation and serialization rather than by a Python attribute access -- exactly the case `pydantic-declarative-field` records. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
-    },
-    "packages/maistro-core/tests/quota/test_usage_log.py::unused function '_reset_default_usage_log'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#338",
-      "reason": "A pytest fixture. The runner discovers and calls it; no test names it directly, which is what `pytest-discovered-test-surface` is for. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
     }
   },
   "model-egress": {
