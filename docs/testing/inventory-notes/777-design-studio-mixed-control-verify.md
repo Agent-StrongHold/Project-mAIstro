@@ -3406,3 +3406,67 @@ canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
 this round: this note only (develop did not advance; no merge commit). No
 production or test code authored by this lane; inventory deltas all +0. No
 closure keywords used.
+
+## Round 52 (head `2ccc58ba5`) — re-verify after develop advanced
+
+**State:** round-51 result artifact re-read — clean dependency-block BLOCKED
+(success true, agent_exit 0, tree clean at expected head); nothing to
+salvage. This round started at the exact lane head `2ccc58ba5`.
+
+**Develop sync (resolved, not a conflict):** `git fetch origin develop` →
+`origin/develop` advanced `234a06c51` → `430139cb` (1 commit: principal
+identity + route-permissions tests, new CI gates
+`scripts/check-principal-identity.py` / `check-route-permissions.py`,
+quality baselines). Not a #777 dependency (#804/#805/#806/#458-behavior/
+#774/#775/#776 all untouched). The driver already merged it as `2ccc58ba5`
+(exact lane expected head); `git merge-base HEAD origin/develop` ==
+`430139cb` == `origin/develop`, zero conflicts, nothing to resolve.
+
+**Fresh dependency audit at `2ccc58ba5` (re-run, prior claims not trusted):**
+- #804/#805/#806: `workspace_agent.py` → 0 goal/reconcil matches;
+  0 `GoalRevision|GoalReconcil` files in `packages/**/*.py`; no
+  `maistro-goals` pkg — reconciliation APIs absent to consume.
+- #774: `brief_store.py:5-8` disclaim intact ("nothing here is a Goal or
+  CreativeBrief record"); `brief_interview.py` is the pre-commit interview
+  state machine ("before a Goal or CreativeBrief is committed"), not a
+  CreativeBrief record.
+- #775: 0 `CreativeGraph|creative.graph` hits in `packages/*/src`.
+- #776: 0 `ladybug` hits in `packages/*/src`.
+- Mixed-control: 0 `control_mode|mixed.control` hits in `packages/*/src`.
+- e2e: 37 specs, none mixed-control/#777.
+- Salvage archive unchanged: `docs/research/777-design-studio-salvage/`
+  (README + `src/`, 10 files; last touched `7c5dfcdc4`).
+
+**Gates executed at `2ccc58ba5` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2723 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, 0 unbanked
+  (no ledger amendment needed or performed; CI-repair exception not invoked).
+- NEW develop gates: `check-principal-identity.py` — ok, exit 0;
+  `check-route-permissions.py` — ok, exit 0.
+- `uv run pytest packages/maistro-design/tests
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_program_brief_routes.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py
+  packages/maistro-core/tests/graph/test_cross_domain_substrate.py
+  packages/maistro-core/tests/fitness/test_principal_identity.py
+  packages/maistro-core/tests/identity/test_extra_guard.py
+  tests/test_check_principal_identity.py
+  tests/test_check_route_permissions.py -q` — **406 passed** in 56.39s
+  (now includes the 15 develop-added identity/permission-gate tests).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites.
+- `uv run python scripts/check-doc-links.py` — PASS.
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**All 13 acceptance criteria: still UNMET at this head** (unchanged from
+rounds 46-51). No production or test code authored by this lane;
+inventory deltas all +0. No closure keywords used.
+
+**Conclusion (52nd inspected head):** the lane remains **BLOCKED on
+unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806
+reconciliation, #774 CreativeBrief, #775 creative Graph, #776 Ladybug
+retrieval). The develop advance this round was unrelated identity/CI-gate
+work; the stop condition forbids Design-Studio-private substitutes, so no
+truthful implementation exists at this head. Changes this round: this note
+only.
