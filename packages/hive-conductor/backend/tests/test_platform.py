@@ -398,13 +398,18 @@ class TestSchedules:
 
 
 class TestQuotas:
+    # #389: an unavailable gateway (unconfigured or unreachable) is 503, not
+    # an empty 200 — which of the two 503 details applies depends on the
+    # environment's LiteLLM configuration, so only the status is pinned here.
     def test_providers(self, admin_client):
         r = admin_client.get("/v1/quotas/providers")
-        assert r.status_code == 200
+        assert r.status_code == 503
+        assert r.json()["detail"]
 
     def test_models(self, admin_client):
         r = admin_client.get("/v1/quotas/models")
-        assert r.status_code == 200
+        assert r.status_code == 503
+        assert r.json()["detail"]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

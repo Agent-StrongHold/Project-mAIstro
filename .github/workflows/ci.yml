@@ -121,6 +121,14 @@ jobs:
       # own route table, not a list of prefixes someone maintains by hand.
       - name: Frontend calls reach registered backend routes
         run: uv run python3 scripts/check-frontend-api-routes.py
+      # One lie further: a route that answers 200 without doing the operation
+      # it names. `/v1/settings/reload` said "reloaded" for years without
+      # reloading anything, and `fetch` never rejects on a canned payload
+      # (#389). This refuses any handler whose every return is a pure literal
+      # with no operation behind it, and holds the audited inventory
+      # (quality/api-route-contracts.json) against the live route table.
+      - name: No canned no-op route handlers ship
+        run: python3 scripts/check-api-route-contracts.py
       # The same failure mode one layer out: a document naming a component that
       # does not exist. DEPLOYMENT-STANCE.md listed a `maistro-sandbox-worker`
       # in all four supported profiles and offered Kata and gVisor as backends;
