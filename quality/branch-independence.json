@@ -33,100 +33,20 @@
       "reason": "Each branch writes an independent note and the trusted bound is a monotonic fold, so concurrent branches do not rewrite one aggregate."
     },
     {
+      "id": "adr-status-language-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/adr-status-language-baseline.json"
+      ],
+      "reason": "Shrink-only body-status contradiction ratchet (#387): check-adr-status-language-provenance.py compares the candidate measurement against the ledger resolved from the trusted base, so the worktree copy is the landing state rather than an authoritative comparison; concurrent prunes that miss a merge are caught by the stale-entry rule."
+    },
+    {
       "id": "branch-independence-contract",
       "kind": "specification",
       "paths": [
         "quality/branch-independence.json"
       ],
       "reason": "This registry is the explicit policy that classifies collaboration-state representations."
-    },
-    {
-      "id": "compliance-registry",
-      "kind": "specification",
-      "paths": [
-        "quality/compliance-registry.json"
-      ],
-      "reason": "The compliance registry is the reviewed status and evidence specification; changing a claim or evidence record is the substantive compliance change."
-    },
-    {
-      "id": "credential-authority",
-      "kind": "specification",
-      "paths": [
-        "quality/credential-authority.json"
-      ],
-      "reason": "Reviewed credential-authority classification: which credential implementation is canonical, reachable, or retired is policy whose change is the substantive change, not a repository-wide measurement that unrelated branches must rewrite."
-    },
-    {
-      "id": "compatibility-contracts",
-      "kind": "specification",
-      "paths": [
-        "quality/compatibility-contracts.json"
-      ],
-      "reason": "Reviewed compatibility-window specification: canonical-surface pins and alias dispositions are policy whose change is the substantive change; the fitness suite reads its trusted base through ratchet_provenance, so the candidate copy is not its own oracle."
-    },
-    {
-      "id": "direct-dependency-exceptions",
-      "kind": "specification",
-      "paths": [
-        "quality/direct-dependency-exceptions.json"
-      ],
-      "reason": "Reviewed dependency exception specification; changing the exception is the intentional policy change."
-    },
-    {
-      "id": "m1-convergence-freeze",
-      "kind": "specification",
-      "paths": [
-        "quality/m1-convergence-freeze.json"
-      ],
-      "reason": "Reviewed M1 convergence freeze specification, not a generated measurement."
-    },
-    {
-      "id": "ratchet-authorizations",
-      "kind": "specification",
-      "paths": [
-        "quality/ratchet-authorizations.json"
-      ],
-      "reason": "Explicit governance grants read from the trusted base; authorization is intentionally policy state."
-    },
-    {
-      "id": "retired-guidance",
-      "kind": "specification",
-      "paths": [
-        "quality/retired-guidance.json"
-      ],
-      "reason": "Reviewed retirement specification; changing retirement intent is the substantive change."
-    },
-    {
-      "id": "security-resource-floors",
-      "kind": "specification",
-      "paths": [
-        "quality/security-resource-floors.json"
-      ],
-      "reason": "Security resource floors are explicit policy values, not repository measurements."
-    },
-    {
-      "id": "shared-interop-ontology",
-      "kind": "specification",
-      "paths": [
-        "quality/shared-interop-ontology-v1.json"
-      ],
-      "reason": "Versioned interoperability ontology is a reviewed specification."
-    },
-    {
-      "id": "durable-table-retention",
-      "kind": "specification",
-      "paths": [
-        "quality/durable-table-retention.json"
-      ],
-      "reason": "Reviewed per-table retention specification; changing a table's retention claim is the substantive change."
-    },
-    {
-      "id": "shipped-surface-truth",
-      "kind": "specification",
-      "paths": [
-        "quality/shipped-surface-truth.json"
-      ],
-      "reason": "Reviewed per-surface disposition specification; changing a shipped surface's truth classification is the substantive change."
     },
     {
       "id": "citation-baseline",
@@ -138,6 +58,22 @@
       "reason": "One tracked aggregate records repository-wide citation measurement and can require unrelated branches to rewrite it."
     },
     {
+      "id": "compatibility-contracts",
+      "kind": "specification",
+      "paths": [
+        "quality/compatibility-contracts.json"
+      ],
+      "reason": "Reviewed compatibility-window specification: canonical-surface pins and alias dispositions are policy whose change is the substantive change; the fitness suite reads its trusted base through ratchet_provenance, so the candidate copy is not its own oracle."
+    },
+    {
+      "id": "compliance-registry",
+      "kind": "specification",
+      "paths": [
+        "quality/compliance-registry.json"
+      ],
+      "reason": "The compliance registry is the reviewed status and evidence specification; changing a claim or evidence record is the substantive compliance change."
+    },
+    {
       "id": "contract-markers-baseline",
       "kind": "legacy_shared_aggregate",
       "paths": [
@@ -147,6 +83,22 @@
       "reason": "One tracked aggregate records repository-wide contract-marker measurement."
     },
     {
+      "id": "credential-authority",
+      "kind": "specification",
+      "paths": [
+        "quality/credential-authority.json"
+      ],
+      "reason": "Reviewed credential-authority classification: which credential implementation is canonical, reachable, or retired is policy whose change is the substantive change, not a repository-wide measurement that unrelated branches must rewrite."
+    },
+    {
+      "id": "direct-dependency-exceptions",
+      "kind": "specification",
+      "paths": [
+        "quality/direct-dependency-exceptions.json"
+      ],
+      "reason": "Reviewed dependency exception specification; changing the exception is the intentional policy change."
+    },
+    {
       "id": "direct-effect-call-sites",
       "kind": "legacy_shared_aggregate",
       "paths": [
@@ -154,6 +106,14 @@
       ],
       "target_kind": "per_identity_policy",
       "reason": "One tracked aggregate mixes discovered call-site metadata with durable per-site disposition, owner, and rationale policy."
+    },
+    {
+      "id": "durable-table-retention",
+      "kind": "specification",
+      "paths": [
+        "quality/durable-table-retention.json"
+      ],
+      "reason": "Reviewed per-table retention specification; changing a table's retention claim is the substantive change."
     },
     {
       "id": "enumeration-baseline",
@@ -192,6 +152,14 @@
       "reason": "One tracked aggregate records lifecycle measurement state."
     },
     {
+      "id": "m1-convergence-freeze",
+      "kind": "specification",
+      "paths": [
+        "quality/m1-convergence-freeze.json"
+      ],
+      "reason": "Reviewed M1 convergence freeze specification, not a generated measurement."
+    },
+    {
       "id": "model-egress",
       "kind": "legacy_shared_aggregate",
       "paths": [
@@ -217,6 +185,14 @@
       ],
       "target_kind": "generated",
       "reason": "Operational mutation history is generated evidence stored in source control."
+    },
+    {
+      "id": "principal-identity-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/principal-identity-baseline.json"
+      ],
+      "reason": "Shrink-only parallel-principal ratchet (#53 P0.1), on the same contract as the route-permission ledger beside it: check-principal-identity.py resolves it from the trusted base, so the worktree copy is the landing state and a candidate cannot tolerate its own new violation."
     },
     {
       "id": "promotion-surface-baseline",
@@ -246,6 +222,14 @@
       "reason": "One tracked aggregate stores repository complexity observations and ceilings."
     },
     {
+      "id": "ratchet-authorizations",
+      "kind": "specification",
+      "paths": [
+        "quality/ratchet-authorizations.json"
+      ],
+      "reason": "Explicit governance grants read from the trusted base; authorization is intentionally policy state."
+    },
+    {
       "id": "reachability-baseline",
       "kind": "legacy_shared_aggregate",
       "paths": [
@@ -264,6 +248,46 @@
       "reason": "Independent module dispositions are grouped into one shared array, creating a convergence-work synchronization point."
     },
     {
+      "id": "retired-guidance",
+      "kind": "specification",
+      "paths": [
+        "quality/retired-guidance.json"
+      ],
+      "reason": "Reviewed retirement specification; changing retirement intent is the substantive change."
+    },
+    {
+      "id": "route-permissions-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/route-permissions-baseline.json"
+      ],
+      "reason": "Shrink-only undeclared-prefix ratchet (#53 AC-P2): check-route-permissions.py resolves this ledger from the trusted base and compares the candidate measurement against it, so the worktree copy is the landing state rather than an authoritative comparison. Reading it from the candidate would let one commit add a gap and tolerate it in the same change."
+    },
+    {
+      "id": "route-permissions-registry",
+      "kind": "specification",
+      "paths": [
+        "quality/route-permissions.json"
+      ],
+      "reason": "The route-permission registry is the reviewed declaration being changed: adding an authenticated /v1 prefix with a permission or an exempt_reason IS the substantive review, exactly as the compliance registry above is. The tolerated-gap ledger it is checked against is a separate file, resolved from the trusted base."
+    },
+    {
+      "id": "security-resource-floors",
+      "kind": "specification",
+      "paths": [
+        "quality/security-resource-floors.json"
+      ],
+      "reason": "Security resource floors are explicit policy values, not repository measurements."
+    },
+    {
+      "id": "shared-interop-ontology",
+      "kind": "specification",
+      "paths": [
+        "quality/shared-interop-ontology-v1.json"
+      ],
+      "reason": "Versioned interoperability ontology is a reviewed specification."
+    },
+    {
       "id": "shell-execution",
       "kind": "legacy_shared_aggregate",
       "paths": [
@@ -273,6 +297,14 @@
       "reason": "Security-sensitive shell-execution policy entries share one aggregate file."
     },
     {
+      "id": "shipped-surface-truth",
+      "kind": "specification",
+      "paths": [
+        "quality/shipped-surface-truth.json"
+      ],
+      "reason": "Reviewed per-surface disposition specification; changing a shipped surface's truth classification is the substantive change."
+    },
+    {
       "id": "vulture-baseline",
       "kind": "legacy_shared_aggregate",
       "paths": [
@@ -280,14 +312,6 @@
       ],
       "target_kind": "base_derived",
       "reason": "One large tracked aggregate mixes generated findings with durable classification policy."
-    },
-    {
-      "id": "adr-status-language-baseline",
-      "kind": "base_derived",
-      "paths": [
-        "quality/adr-status-language-baseline.json"
-      ],
-      "reason": "Shrink-only body-status contradiction ratchet (#387): check-adr-status-language-provenance.py compares the candidate measurement against the ledger resolved from the trusted base, so the worktree copy is the landing state rather than an authoritative comparison; concurrent prunes that miss a merge are caught by the stale-entry rule."
     },
     {
       "id": "wiring-reads-baseline",
