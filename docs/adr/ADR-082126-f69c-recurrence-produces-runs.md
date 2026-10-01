@@ -25,8 +25,12 @@ contracts:
 tests:
   - packages/maistro-core/tests/scheduling/test_cron.py
   - packages/maistro-core/tests/scheduling/test_engine.py
+  - packages/maistro-core/tests/scheduling/test_enumeration_limits.py
+  - packages/maistro-core/tests/scheduling/test_admission.py
   - packages/maistro-core/tests/scheduling/test_store.py
   - packages/hive-conductor/backend/tests/test_scheduler.py
+  - packages/hive-conductor/backend/tests/test_schedule_frequency_floor.py
+  - packages/hive-conductor/backend/tests/test_scheduler_bounded_tick.py
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -192,6 +196,49 @@ so list, range and step forms are measured correctly, where the previous guard
 estimated from the minute and hour fields alone and let `0,5,10 * * * *`
 through. The 15-minute floor is applied by the product that wants it.
 
+### 8. Catch-up work is bounded, and a stopped walk says so (#1200)
+
+The audit behind #1200 measured one evaluation of a stale per-minute schedule
+taking ~0.64s of synchronous event-loop time — 50,000 cron reparses in a
+single catch-up walk — long enough to stall unrelated work sharing the loop.
+Three bounds close that, all host-selected via
+`engine.EnumerationLimits`, and the shipped host (the core Container wiring
+the live scheduler) uses their safe defaults:
+
+- **Window.** A definition may not file a `catchup_window_seconds` above
+  `model.MAX_CATCHUP_WINDOW_SECONDS` (seven days) — before the cap, the walk
+  grew with whatever window the definition asked for. A host may clamp
+  further at evaluation time; the clamp is reported as `window_clamped` on
+  the evaluation and admission, and the live tick logs it.
+- **Occurrences.** The walk stops at a derived step bound (window ÷ 60 + a
+  tick's slack — cron's finest cadence is one fire per minute, so the window
+  implies the step count; no unexplained constant). Occurrences beyond the
+  per-evaluation fire cap keep the existing `TRUNCATED` semantics: reported,
+  and the cursor stays on them.
+- **Time.** The walk reads the monotonic clock on a fixed stride and stops at
+  its budget (default 0.1s), so an evaluation's event-loop cost is a stated
+  property, not an accident of backlog size. `evaluate` is a pure function
+  of its arguments, so a latency-critical host may also offload it to a
+  worker thread.
+
+A walk stopped by the budget or step bound is never silent and never
+dishonest: the evaluation carries `enumeration_incomplete` and where it
+stopped, the unexamined range is *not* reported as skipped occurrences (they
+were never enumerated), and admission treats an incomplete walk like a
+buffered occurrence — the due cursor stays put, so the next tick re-examines
+exactly the range this one did not. The live tick logs an incomplete walk as
+backlog owed.
+
+On top of the substrate's measurement, the shipped Hive product enforces the
+frequency floor this ADR anticipated: `/v1/schedules` create and every
+recurrence-touching update refuse a cron whose `minimum_gap` is below the
+operator's `schedule_min_frequency_gap_s` (default 900s). The floor and the
+product's own catch-up window cap (`schedule_max_catchup_window_s`, default
+one day) are configurable only within safe startup bounds (floor 300s–7d,
+cap 1h–7d); out-of-range configuration fails at startup rather than clamping,
+and ordinary clients cannot request an effectively busy-loop schedule at any
+setting.
+
 ## Consequences
 
 - Scheduled work becomes visible to every tool that understands Runs, and
@@ -221,6 +268,8 @@ missing; it was overtaken on *how* to provide them.
 | POSIX cron with tz + verified next-fire | Shipped (`maistro/scheduling/cron.py`) |
 | Schedule definition pointing at a GraphTemplate | Shipped (`model.py`) |
 | Overlap / catchup / bounded recurrence | Shipped (`engine.py`) |
+| Bounded catch-up work + truthful incompleteness (#1200) | Shipped (`engine.py` `EnumerationLimits`, `admission.py`) — window ≤ 7d at definition time, host-selected window/step/budget bounds, an incomplete walk holds the due cursor and is logged by the live tick |
+| Product frequency floor + catch-up window cap (#1200) | Shipped (`routes/schedules.py`, `config.py`) — `schedule_min_frequency_gap_s` (default 900s) refused below at create/update, `schedule_max_catchup_window_s` (default 1d), both bounded 300s–7d / 1h–7d at startup |
 | Store protocol + in-memory + SQLite | Shipped (`store.py`) |
 | Hive `/v1/schedules` rows on the durable store | **Not yet** — the routes still write `stores.schedules`, which is in memory, so schedules created through the live API still do not survive a restart. The durable store exists and is tested; migrating the CRUD path behind the unchanged HTTP contract is the next step |
 | Hive runner evaluating through the engine | Shipped (`services/scheduler.py`) |

@@ -8,11 +8,16 @@ Two sibling-prefix-confusion bugs were found and fixed here:
    ``"/v1/auth/login-history"``) would silently bypass authentication
    entirely. Fixed via ``_matches_public_prefix`` (mirrors the analogous
    fix already applied to ``tools/sandbox/workspace.py``).
-2. ``_required_permission`` used ``"/invoke" in path`` (substring anywhere)
-   to exempt the autonomous agent-invoke action from permission gating.
-   Any future route merely containing "/invoke" as a substring — not just
-   the real trailing ``/{id}/invoke`` segment — would also lose its
-   permission gate. Fixed to ``path.endswith("/invoke")``.
+2. ``_required_permission`` exempted agent invoke from permission gating
+   via a URL-name check — first ``"/invoke" in path`` (substring anywhere),
+   then ``path.endswith("/invoke")``. Any future route choosing that suffix
+   would have inherited a silent privilege bypass, and the route the
+   exemption was written for (POST /v1/agents/{id}/invoke) no longer
+   exists. The carve-out is now gone entirely (#403): elevation binds only
+   to the capability identifiers in ``_PROTECTED_OPS``, never to URL
+   naming, and the enumeration ratchet (scripts/check_enumerations.py)
+   fails on any new mutating route that is neither scoped nor explicitly
+   exempt.
 
 These tests drive the real ``main:app`` + ``AuthMiddleware`` stack via
 ``TestClient``, matching this file's established convention (see
@@ -42,22 +47,49 @@ def _login(username: str = "testuser", password: str = "testpass") -> TestClient
     return c
 
 
+def _user_client(tag: str, perms: list[str]) -> TestClient:
+    """A logged-in TestClient for a fresh role="user" account holding exactly
+    ``perms`` — no elevation. Module-level so both the permission matrix and
+    the invoke-suffix regression locks share one seeding path."""
+    from datetime import UTC, datetime
+
+    import stores
+
+    from maistro.security.passwords import hash_password
+
+    uid = f"opsmatrix-{tag}"
+    stores.users[uid] = stores.users._model_class(
+        id=uid,
+        username=uid,
+        password_hash=hash_password("pw"),
+        role="user",
+        is_active=True,
+        permissions=perms,
+        created_at=datetime.now(UTC),
+    )
+    c = TestClient(app)
+    r = c.post("/v1/auth/login", json={"username": uid, "password": "pw"})
+    assert r.status_code == 200, r.text
+    return c
+
+
 @pytest.fixture
 def temp_route() -> Iterator[object]:
-    """Register a synthetic GET route on the live app, removed after the test.
+    """Register a synthetic route on the live app, removed after the test.
 
     Lets tests exercise AuthMiddleware.dispatch's real routing decision for
     sibling paths that don't correspond to any real handler, without
     permanently polluting the shared `app` singleton other test modules
-    also import.
+    also import. ``methods`` opts into non-GET registrations, e.g. to prove
+    a hypothetical mutating route's suffix earns no middleware carve-out.
     """
     added: list[str] = []
 
-    def _add(path: str) -> None:
+    def _add(path: str, methods: tuple[str, ...] = ("GET",)) -> None:
         async def _handler() -> dict[str, bool]:
             return {"reached": True}
 
-        app.add_api_route(path, _handler, methods=["GET"])
+        app.add_api_route(path, _handler, methods=list(methods))
         added.append(path)
 
     yield _add
@@ -182,35 +214,72 @@ class TestUnauthenticatedProtectedPaths:
         assert r.status_code == 200
 
 
-class TestInvokeSubstringCarveOutBoundary:
-    """Regression lock for the "/invoke" substring -> endswith fix."""
+class TestInvokeSuffixExemptionRemoved:
+    """#403 regression lock: no "/invoke" carve-out remains to guard.
 
-    def test_real_agent_invoke_path_still_exempted_from_permission(self) -> None:
-        c = _login()
-        # No agents.write permission, no elevation — would 403 under
-        # _PROTECTED_OPS POST "/v1/agents" if not exempted; the route itself
-        # may 404 (PM POC mode) or 200, but it must not be a 403 from the
-        # permission gate.
+    The original bug was a substring-anywhere exemption; the intermediate
+    fix narrowed it to ``endswith("/invoke")``; both shapes granted any
+    future route with that suffix a silent privilege bypass. The exemption
+    is now deleted outright — a route's authority comes only from the
+    capability identifiers its prefix resolves to in ``_PROTECTED_OPS``.
+    """
+
+    def test_invoke_path_gated_through_capability_table_not_name(self) -> None:
+        """POST /v1/agents/{id}/invoke resolves through the same prefix table
+        as every other path: 403 from the gate without the agents.write
+        capability, where the old suffix exemption let it through silently
+        (the old lock asserted != 403 here)."""
+        c = _user_client("invoke-gate-1", perms=[])
         r = c.post("/v1/agents/some-agent/invoke", json={})
+        assert r.status_code == 403
+        assert "agents.write" in r.json()["detail"]
+
+    def test_invoke_path_cleared_by_capability_plus_elevation_not_name(self) -> None:
+        """What clears the gate is the registered capability with elevation,
+        never the path's spelling."""
+        c = _user_client("invoke-gate-2", perms=["agents.write"])
+        e = c.post(
+            "/v1/auth/elevate",
+            json={"password": "pw", "permissions": ["agents.write"], "task_id": "t-invoke"},
+        )
+        assert e.status_code == 200, e.text
+        r = c.post("/v1/agents/some-agent/invoke", json={})
+        # Past the permission gate (so != 403); the route itself may 404 —
+        # the live POST /{id}/invoke handler went with the PM POC mode that
+        # pinned it (see test_agents_routes.py).
         assert r.status_code != 403
 
-    def test_hypothetical_invoke_substring_sibling_is_not_exempted(self, temp_route) -> None:
-        """A path that merely *contains* "/invoke" but doesn't end with it
-        must still be permission-gated (proves endswith, not `in`)."""
+    def test_future_invoke_route_gets_no_implicit_authority_or_exemption(self, temp_route) -> None:
+        """A hypothetical future .../invoke route under an unscoped prefix
+        gets nothing from the middleware: no implicit exemption (the old
+        endswith carve-out would have skipped gating) and no implicit gate —
+        the suffix is simply never consulted. Classification is the
+        enumeration ratchet's job: such a route is a build-failing gap in
+        scripts/check_enumerations.py until it is scoped or explicitly
+        exempt (pinned in tests/test_check_enumerations.py)."""
+        temp_route("/v1/dashboard/invoke", methods=("POST",))
+        c = _user_client("invoke-gate-3", perms=[])
+        r = c.post("/v1/dashboard/invoke", json={})
+        assert r.status_code == 200
+
+    def test_invoke_containing_sibling_still_capability_gated(self, temp_route) -> None:
+        """A path that merely *contains* "/invoke" resolves through the
+        capability table like everything else (/v1/agents prefix ->
+        agents.write), with no special invoke handling in either direction."""
         temp_route("/v1/agents/invoke-history")
-        c = _login()
+        c = _user_client("invoke-gate-4", perms=[])
         r = c.post("/v1/agents/invoke-history")
         assert r.status_code == 403
 
-    def test_path_ending_in_invoke_suffix_without_separator_not_exempted(self, temp_route) -> None:
-        """ "/v1/agentsinvoke" ends with "invoke" but not "/invoke" — must
-        remain gated (and in fact doesn't match the "/v1/agents" prefix
-        either, but this locks the endswith("/invoke") boundary itself)."""
+    def test_invoke_suffix_without_separator_not_special(self, temp_route) -> None:
+        """ "/v1/agentsinvoke" ends with "invoke" but not "/invoke" — no
+        invoke-shaped matching of any width may return: it resolves through
+        the raw /v1/agents prefix (the posture the enumeration checker
+        models) and is 403 for a capability-less user."""
         temp_route("/v1/agentsinvoke")
-        c = _login()
+        c = _user_client("invoke-gate-5", perms=[])
         r = c.post("/v1/agentsinvoke")
-        assert r.status_code in (401, 403, 404)
-        assert r.status_code != 200
+        assert r.status_code == 403
 
 
 class TestProtectedOpsPermissionMatrix:
@@ -218,26 +287,7 @@ class TestProtectedOpsPermissionMatrix:
     admin bypass) grid against a representative slice of _PROTECTED_OPS."""
 
     def _writer(self, task_id: str, perms: list[str]) -> TestClient:
-        from datetime import UTC, datetime
-
-        import stores
-
-        from maistro.security.passwords import hash_password
-
-        uid = f"opsmatrix-{task_id}"
-        stores.users[uid] = stores.users._model_class(
-            id=uid,
-            username=uid,
-            password_hash=hash_password("pw"),
-            role="user",
-            is_active=True,
-            permissions=perms,
-            created_at=datetime.now(UTC),
-        )
-        c = TestClient(app)
-        r = c.post("/v1/auth/login", json={"username": uid, "password": "pw"})
-        assert r.status_code == 200, r.text
-        return c
+        return _user_client(task_id, perms)
 
     def test_delete_agents_without_permission_is_403(self) -> None:
         c = self._writer("del-agents-1", perms=[])

@@ -23,16 +23,6 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_compositor.py::resolve_occlusion_order",
-      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_compositor.py",
-      "line": 217,
-      "name": "resolve_occlusion_order",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
       "key": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_compositor.py::compose_prompt",
       "path": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_compositor.py",
       "line": 397,
@@ -43,23 +33,13 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py::CanvasCanonicalExecution.admit",
-      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py",
-      "line": 104,
-      "name": "admit",
-      "classname": "CanvasCanonicalExecution",
+      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_compositor.py::resolve_occlusion_order",
+      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_compositor.py",
+      "line": 217,
+      "name": "resolve_occlusion_order",
+      "classname": null,
       "rank": "C",
-      "complexity": 12,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py::CanvasCanonicalExecution._reconcile_admission",
-      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py",
-      "line": 291,
-      "name": "_reconcile_admission",
-      "classname": "CanvasCanonicalExecution",
-      "rank": "C",
-      "complexity": 12,
+      "complexity": 11,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
@@ -73,6 +53,26 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
+      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py::CanvasCanonicalExecution._reconcile_admission",
+      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py",
+      "line": 291,
+      "name": "_reconcile_admission",
+      "classname": "CanvasCanonicalExecution",
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py::CanvasCanonicalExecution.admit",
+      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py",
+      "line": 104,
+      "name": "admit",
+      "classname": "CanvasCanonicalExecution",
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
       "key": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py::CanvasCanonicalExecution.execute_stage",
       "path": "packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py",
       "line": 463,
@@ -83,24 +83,34 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/executor.py::_sanitise_error",
-      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/executor.py",
-      "line": 138,
-      "name": "_sanitise_error",
-      "classname": null,
-      "rank": "C",
-      "complexity": 15,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
       "key": "packages/maistro-canvas/src/maistro_canvas/canvas/executor.py::CanvasExecutor._start_job_locked",
       "path": "packages/maistro-canvas/src/maistro_canvas/canvas/executor.py",
-      "line": 242,
+      "line": 248,
       "name": "_start_job_locked",
       "classname": "CanvasExecutor",
       "rank": "D",
       "complexity": 23,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/retry_policy.py::classify_failure",
+      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/retry_policy.py",
+      "line": 57,
+      "name": "classify_failure",
+      "classname": null,
+      "rank": "C",
+      "complexity": 14,
+      "rationale": "Measured on develop when #1684 widened the radon scan to all nine shipped packages. Banked at the complexity it already has -- the ratchet pins it there and the Boy Scout rule takes it down from here."
+    },
+    {
+      "key": "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::CanvasJobRunner.tick_once",
+      "path": "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py",
+      "line": 141,
+      "name": "tick_once",
+      "classname": "CanvasJobRunner",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Measured on develop when #1684 widened the radon scan to all nine shipped packages. Banked at the complexity it already has -- the ratchet pins it there and the Boy Scout rule takes it down from here."
     },
     {
       "key": "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::_generate_image",
@@ -203,16 +213,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/agents/work_items.py::suggest_work_item",
-      "path": "packages/maistro-core/src/maistro/agents/work_items.py",
-      "line": 127,
-      "name": "suggest_work_item",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/agents/work_items.py::apply_clarifying_answers",
       "path": "packages/maistro-core/src/maistro/agents/work_items.py",
       "line": 173,
@@ -223,14 +223,14 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/auth/oauth.py::_validate_oidc_claims",
-      "path": "packages/maistro-core/src/maistro/auth/oauth.py",
-      "line": 196,
-      "name": "_validate_oidc_claims",
+      "key": "packages/maistro-core/src/maistro/agents/work_items.py::suggest_work_item",
+      "path": "packages/maistro-core/src/maistro/agents/work_items.py",
+      "line": 127,
+      "name": "suggest_work_item",
       "classname": null,
       "rank": "C",
-      "complexity": 11,
-      "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
       "key": "packages/maistro-core/src/maistro/auth/oauth.py::OAuth2Client.exchange_code",
@@ -243,24 +243,24 @@
       "rationale": "SPEC-183 Authorization Code + PKCE exchange seam; state validation, token POST, id_token verify, and userinfo merge are sequential security checks. Tracked under SPEC-264 pending split of audit/error branches."
     },
     {
+      "key": "packages/maistro-core/src/maistro/auth/oauth.py::_validate_oidc_claims",
+      "path": "packages/maistro-core/src/maistro/auth/oauth.py",
+      "line": 196,
+      "name": "_validate_oidc_claims",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService.invoke",
       "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
-      "line": 467,
+      "line": 544,
       "name": "invoke",
       "classname": "InvocationExecutionService",
       "rank": "C",
       "complexity": 13,
       "rationale": "Landed with #1310's rework that makes ambiguous Invocation outcomes recoverable instead of permanently blocking; the recovered/failed-outcome branching concentrates in this single execute path. Post-merge ledger reconciliation records trunk reality under SPEC-264 - the ratchet is set at 13."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService._reconcile_values_locked",
-      "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
-      "line": 757,
-      "name": "_reconcile_values_locked",
-      "classname": "InvocationExecutionService",
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Value reconciliation for #1310's recoverable invocations: locked re-entry guards each caller-supplied value against drift before re-dispatch. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 12."
     },
     {
       "key": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::_norm_docker",
@@ -383,13 +383,13 @@
       "note": "graph resilience wrapper; landed via #262 merge before the checker was wired into CI"
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/node.py::_blackboard_prefix",
+      "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_beam",
       "path": "packages/maistro-core/src/maistro/graph/node.py",
-      "line": 144,
-      "name": "_blackboard_prefix",
-      "classname": null,
+      "line": 549,
+      "name": "_execute_beam",
+      "classname": "NodeRun",
       "rank": "C",
-      "complexity": 13,
+      "complexity": 16,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
@@ -403,13 +403,13 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_beam",
+      "key": "packages/maistro-core/src/maistro/graph/node.py::_blackboard_prefix",
       "path": "packages/maistro-core/src/maistro/graph/node.py",
-      "line": 549,
-      "name": "_execute_beam",
-      "classname": "NodeRun",
+      "line": 144,
+      "name": "_blackboard_prefix",
+      "classname": null,
       "rank": "C",
-      "complexity": 16,
+      "complexity": 13,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
@@ -553,16 +553,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_task_completion_rate",
-      "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
-      "line": 90,
-      "name": "get_task_completion_rate",
-      "classname": "InMemoryOutcomeStore",
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_experience_context",
       "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
       "line": 140,
@@ -570,6 +560,16 @@
       "classname": "InMemoryOutcomeStore",
       "rank": "C",
       "complexity": 12,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_task_completion_rate",
+      "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
+      "line": 90,
+      "name": "get_task_completion_rate",
+      "classname": "InMemoryOutcomeStore",
+      "rank": "C",
+      "complexity": 13,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
@@ -885,7 +885,7 @@
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/benchmarks/scoring.py::function_call_match",
       "path": "packages/maistro-evolve/src/maistro_evolve/benchmarks/scoring.py",
-      "line": 107,
+      "line": 124,
       "name": "function_call_match",
       "classname": null,
       "rank": "C",
@@ -895,7 +895,7 @@
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/benchmarks/tau_bench.py::_extract_tool_calls_from_response",
       "path": "packages/maistro-evolve/src/maistro_evolve/benchmarks/tau_bench.py",
-      "line": 14,
+      "line": 13,
       "name": "_extract_tool_calls_from_response",
       "classname": null,
       "rank": "C",
@@ -929,23 +929,13 @@
       "name": "crossover",
       "classname": null,
       "rank": "C",
-      "complexity": 15,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle",
-      "path": "packages/maistro-evolve/src/maistro_evolve/cycle.py",
-      "line": 87,
-      "name": "EvolutionCycle",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
+      "complexity": 14,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle._breed_island",
       "path": "packages/maistro-evolve/src/maistro_evolve/cycle.py",
-      "line": 196,
+      "line": 365,
       "name": "_breed_island",
       "classname": "EvolutionCycle",
       "rank": "D",
@@ -955,7 +945,7 @@
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle._hyper_mutate_one",
       "path": "packages/maistro-evolve/src/maistro_evolve/cycle.py",
-      "line": 256,
+      "line": 425,
       "name": "_hyper_mutate_one",
       "classname": "EvolutionCycle",
       "rank": "C",
@@ -965,7 +955,7 @@
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle._self_improve_top",
       "path": "packages/maistro-evolve/src/maistro_evolve/cycle.py",
-      "line": 300,
+      "line": 482,
       "name": "_self_improve_top",
       "classname": "EvolutionCycle",
       "rank": "D",
@@ -983,16 +973,6 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-evolve/src/maistro_evolve/hyper_mutator.py::parse_fixer_proposal",
-      "path": "packages/maistro-evolve/src/maistro_evolve/hyper_mutator.py",
-      "line": 174,
-      "name": "parse_fixer_proposal",
-      "classname": null,
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
       "key": "packages/maistro-evolve/src/maistro_evolve/hyper_mutator.py::hyper_mutate",
       "path": "packages/maistro-evolve/src/maistro_evolve/hyper_mutator.py",
       "line": 276,
@@ -1003,19 +983,19 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-evolve/src/maistro_evolve/mutate.py::mutate_topology",
-      "path": "packages/maistro-evolve/src/maistro_evolve/mutate.py",
-      "line": 57,
-      "name": "mutate_topology",
+      "key": "packages/maistro-evolve/src/maistro_evolve/hyper_mutator.py::parse_fixer_proposal",
+      "path": "packages/maistro-evolve/src/maistro_evolve/hyper_mutator.py",
+      "line": 174,
+      "name": "parse_fixer_proposal",
       "classname": null,
-      "rank": "D",
-      "complexity": 21,
+      "rank": "C",
+      "complexity": 12,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/mutate.py::_mutate_one_fixer",
       "path": "packages/maistro-evolve/src/maistro_evolve/mutate.py",
-      "line": 232,
+      "line": 195,
       "name": "_mutate_one_fixer",
       "classname": null,
       "rank": "C",
@@ -1023,9 +1003,19 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
+      "key": "packages/maistro-evolve/src/maistro_evolve/mutate.py::mutate_topology",
+      "path": "packages/maistro-evolve/src/maistro_evolve/mutate.py",
+      "line": 56,
+      "name": "mutate_topology",
+      "classname": null,
+      "rank": "D",
+      "complexity": 21,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
       "key": "packages/maistro-evolve/src/maistro_evolve/population.py::migrate_islands",
       "path": "packages/maistro-evolve/src/maistro_evolve/population.py",
-      "line": 338,
+      "line": 475,
       "name": "migrate_islands",
       "classname": null,
       "rank": "C",
@@ -1093,16 +1083,6 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-rsi/src/maistro_rsi/__main__.py::_run",
-      "path": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
-      "line": 810,
-      "name": "_run",
-      "classname": null,
-      "rank": "C",
-      "complexity": 15,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
       "key": "packages/maistro-rsi/src/maistro_rsi/__main__.py::_review",
       "path": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
       "line": 894,
@@ -1110,6 +1090,16 @@
       "classname": null,
       "rank": "C",
       "complexity": 13,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-rsi/src/maistro_rsi/__main__.py::_run",
+      "path": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "line": 810,
+      "name": "_run",
+      "classname": null,
+      "rank": "C",
+      "complexity": 15,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
@@ -1123,6 +1113,16 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
+      "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::_lint_gates",
+      "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
+      "line": 613,
+      "name": "_lint_gates",
+      "classname": null,
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::_uncollectable_tests",
       "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
       "line": 128,
@@ -1130,16 +1130,6 @@
       "classname": null,
       "rank": "C",
       "complexity": 14,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::protected_inventory_gate",
-      "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 316,
-      "name": "protected_inventory_gate",
-      "classname": null,
-      "rank": "C",
-      "complexity": 15,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
@@ -1153,16 +1143,6 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::_lint_gates",
-      "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 613,
-      "name": "_lint_gates",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::evaluate_candidate",
       "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
       "line": 759,
@@ -1170,6 +1150,16 @@
       "classname": null,
       "rank": "D",
       "complexity": 25,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::protected_inventory_gate",
+      "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
+      "line": 316,
+      "name": "protected_inventory_gate",
+      "classname": null,
+      "rank": "C",
+      "complexity": 15,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
@@ -1193,36 +1183,6 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::_compact_unit",
-      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 524,
-      "name": "_compact_unit",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::build_checkpoint_report",
-      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 1023,
-      "name": "build_checkpoint_report",
-      "classname": null,
-      "rank": "D",
-      "complexity": 21,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::_evolution_report_lines",
-      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 1109,
-      "name": "_evolution_report_lines",
-      "classname": null,
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
       "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._cycle_slots",
       "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
       "line": 1339,
@@ -1230,6 +1190,16 @@
       "classname": "LocalRsiLoop",
       "rank": "C",
       "complexity": 14,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._fitness_decision",
+      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
+      "line": 2367,
+      "name": "_fitness_decision",
+      "classname": "LocalRsiLoop",
+      "rank": "C",
+      "complexity": 16,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
@@ -1243,13 +1213,13 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._run_cycle",
+      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._population_summary",
       "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 1846,
-      "name": "_run_cycle",
+      "line": 2174,
+      "name": "_population_summary",
       "classname": "LocalRsiLoop",
-      "rank": "D",
-      "complexity": 22,
+      "rank": "C",
+      "complexity": 17,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
@@ -1265,38 +1235,8 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._refit_cull_breed",
       "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 2070,
+      "line": 2079,
       "name": "_refit_cull_breed",
-      "classname": "LocalRsiLoop",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._population_summary",
-      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 2165,
-      "name": "_population_summary",
-      "classname": "LocalRsiLoop",
-      "rank": "C",
-      "complexity": 17,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._fitness_decision",
-      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 2358,
-      "name": "_fitness_decision",
-      "classname": "LocalRsiLoop",
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop.run",
-      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 2566,
-      "name": "run",
       "classname": "LocalRsiLoop",
       "rank": "C",
       "complexity": 11,
@@ -1305,7 +1245,7 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._review_promotions",
       "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 2653,
+      "line": 2662,
       "name": "_review_promotions",
       "classname": "LocalRsiLoop",
       "rank": "C",
@@ -1313,9 +1253,19 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
+      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._run_cycle",
+      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
+      "line": 1846,
+      "name": "_run_cycle",
+      "classname": "LocalRsiLoop",
+      "rank": "D",
+      "complexity": 22,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
       "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop.export_promotions",
       "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 2844,
+      "line": 2853,
       "name": "export_promotions",
       "classname": "LocalRsiLoop",
       "rank": "C",
@@ -1323,13 +1273,43 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-rsi/src/maistro_rsi/rate_pacer.py::_parse_clock_duration",
-      "path": "packages/maistro-rsi/src/maistro_rsi/rate_pacer.py",
-      "line": 115,
-      "name": "_parse_clock_duration",
+      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop.run",
+      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
+      "line": 2575,
+      "name": "run",
+      "classname": "LocalRsiLoop",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::_compact_unit",
+      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
+      "line": 524,
+      "name": "_compact_unit",
       "classname": null,
       "rank": "C",
-      "complexity": 12,
+      "complexity": 11,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::_evolution_report_lines",
+      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
+      "line": 1109,
+      "name": "_evolution_report_lines",
+      "classname": null,
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::build_checkpoint_report",
+      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
+      "line": 1023,
+      "name": "build_checkpoint_report",
+      "classname": null,
+      "rank": "D",
+      "complexity": 21,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
@@ -1353,6 +1333,16 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
+      "key": "packages/maistro-rsi/src/maistro_rsi/rate_pacer.py::_parse_clock_duration",
+      "path": "packages/maistro-rsi/src/maistro_rsi/rate_pacer.py",
+      "line": 115,
+      "name": "_parse_clock_duration",
+      "classname": null,
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
       "key": "packages/maistro-rsi/src/maistro_rsi/runner.py::RsiCycle.run",
       "path": "packages/maistro-rsi/src/maistro_rsi/runner.py",
       "line": 183,
@@ -1371,6 +1361,16 @@
       "rank": "C",
       "complexity": 13,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+    },
+    {
+      "key": "packages/maistro-server/src/maistro_server/api/health.py::readiness",
+      "path": "packages/maistro-server/src/maistro_server/api/health.py",
+      "line": 206,
+      "name": "readiness",
+      "classname": null,
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Measured on develop when #1684 widened the radon scan to all nine shipped packages. Banked at the complexity it already has -- the ratchet pins it there and the Boy Scout rule takes it down from here."
     },
     {
       "key": "packages/maistro-server/src/maistro_server/api/webhooks.py::github_webhook",

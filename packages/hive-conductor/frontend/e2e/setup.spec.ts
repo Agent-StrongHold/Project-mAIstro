@@ -90,8 +90,18 @@ test.describe("Setup Wizard", () => {
     await page.locator("button", { hasText: "next" }).click();
     await expect(page.getByText("Confirm configuration")).toBeVisible();
     await page.locator("button", { hasText: "launch the hive" }).click();
-    // Without crypto identity selected there is no mnemonic screen: the app
-    // auto-logs the daily user in and lands on the authenticated dashboard.
+    // The wizard seeds the declared module default (crypto identity), so when
+    // the deployment can serve an identity root, completing setup shows the
+    // once-only recovery phrase first (#443). With identity unavailable the
+    // seeded set is empty and the app auto-logs the daily user straight in.
+    const seed = page.getByText("Recovery Seed Phrase");
+    try {
+      await expect(seed).toBeVisible({ timeout: 5000 });
+      await page.getByLabel("I have written these words down and stored them safely").check();
+      await page.locator("button", { hasText: "enter the hive" }).click();
+    } catch {
+      // No identity root on this deployment — no mnemonic screen.
+    }
     await expect(page.getByText("Live Operations")).toBeVisible({ timeout: 20000 });
   });
 });
