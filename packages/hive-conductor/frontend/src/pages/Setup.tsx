@@ -49,9 +49,10 @@ export default function Setup() {
   const [mnemonic, setMnemonic] = useState<string[] | null>(null);
   const [didKey, setDidKey] = useState<string | null>(null);
   const [mnemonicConfirmed, setMnemonicConfirmed] = useState(false);
-  // Once the operator toggles any module, the declared seed must not
-  // override that explicit choice.
-  const modulesTouched = useRef(false);
+  // Modules the operator explicitly toggled. A toggle is an explicit choice
+  // for that module only — untouched modules still take the declared default,
+  // even if the seed arrives after a toggle.
+  const touchedModules = useRef<Set<string>>(new Set());
 
   const steps = ["Hive", "Hardware", "Accounts", "Modules", "Confirm"];
 
@@ -233,11 +234,20 @@ export default function Setup() {
   // Apply the declared module seed once the deployment confirms it can serve
   // it (#443 AC-6): the terminal path derives the same set from its
   // crypto-profile question, so both paths provision the same modules when
-  // the operator accepts defaults. Skipped once the operator toggled
-  // anything — an explicit choice outranks the seed.
+  // the operator accepts defaults. Merged per-module: toggling one module
+  // while the declaration request is still in flight must not skip the whole
+  // seed, or the other declared defaults (e.g. crypto_identity) would be
+  // silently dropped from the completion payload. An explicit toggle
+  // outranks the seed only for the module that was toggled.
   useEffect(() => {
-    if (!identityUsable || declaredModules === null || modulesTouched.current) return;
-    setModules(declaredModules);
+    if (!identityUsable || declaredModules === null) return;
+    setModules((prev) => {
+      const merged = new Set(prev);
+      for (const id of declaredModules) {
+        if (!touchedModules.current.has(id)) merged.add(id);
+      }
+      return [...merged];
+    });
   }, [identityUsable, declaredModules]);
 
   async function finish() {
@@ -484,7 +494,7 @@ export default function Setup() {
                       aria-label={`Toggle ${m.name}`}
                       disabled={identityUnavailable || !(depsMet || enabled)}
                       onClick={() => {
-                        modulesTouched.current = true;
+                        touchedModules.current.add(m.id);
                         setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id]);
                       }}
                     />
