@@ -236,6 +236,30 @@ class TestTheAttestation:
         with pytest.raises(policy.RsiPolicyError, match="probe itself failed"):
             policy.require_isolation()
 
+    def test_a_backend_probe_that_raises_is_folded_into_the_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe is a subprocess conversation, and subprocesses fail in
+        two registers: an answer that says no, and an answer that never comes
+        (`OSError` when the CLI vanishes between `which` and `run`). Both must
+        land in the SAME operator-facing refusal — `_unavailability_reason_safe`
+        folds the raising probe into text, so the route's 400 keeps its
+        meaning instead of becoming a 500 that says nothing about what to
+        fix."""
+        from services import rsi_container_dispatch as dispatch
+        from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(policy, "IN_PROCESS_ISOLATION_AVAILABLE", None)
+        monkeypatch.setattr(dispatch, "backend_available", lambda: False)
+
+        def exploding() -> str:
+            raise OSError("the docker CLI vanished between which and run")
+
+        monkeypatch.setattr(dispatch, "unavailability_reason", exploding)
+
+        with pytest.raises(policy.RsiPolicyError, match="probe itself failed"):
+            policy.require_isolation()
+
 
 # ─── the dispatch itself ─────────────────────────────────────────────────
 
@@ -837,6 +861,176 @@ class TestTheDispatchedLifecycle:
         assert run.container_id is None
         assert "docker refused the run request" in (run.last_error or "")
 
+    def test_stop_run_survives_a_failed_container_stop(
+        self,
+        report_root: Path,
+        authorized_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`docker stop` itself can fail — daemon gone mid-request — and that
+        must not stop the RUN from stopping: the record still settles and the
+        task is still cancelled."""
+        from services import rsi_container_dispatch as dispatch
+
+        def failing_stop(container_id: str) -> bool:
+            raise OSError("the docker daemon went away mid-stop")
+
+        monkeypatch.setattr(dispatch, "stop_container", failing_stop)
+
+        svc = self._service()
+        run = _cleanup_run("abc123", authorized_repo)
+        run.container_id = "container-id-1"
+        svc._runs[run.run_id] = run
+
+        async def scenario() -> None:
+            async def hang() -> None:
+                await asyncio.Event().wait()
+
+            run.task = asyncio.ensure_future(hang())
+            assert svc.stop_run(run.run_id) is True
+            await asyncio.gather(run.task, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+        assert run.status == "stopped"
+        assert run.container_id == "container-id-1"
+
+    def test_stop_run_treats_an_already_gone_container_as_stopped(
+        self,
+        report_root: Path,
+        authorized_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """False from the stop means "it was already gone" — success by
+        another name for cancellation, so the run still settles stopped."""
+        from services import rsi_container_dispatch as dispatch
+
+        monkeypatch.setattr(dispatch, "stop_container", lambda _cid: False)
+
+        svc = self._service()
+        run = _cleanup_run("abc123", authorized_repo)
+        run.container_id = "container-id-1"
+        svc._runs[run.run_id] = run
+
+        async def scenario() -> None:
+            async def hang() -> None:
+                await asyncio.Event().wait()
+
+            run.task = asyncio.ensure_future(hang())
+            assert svc.stop_run(run.run_id) is True
+            await asyncio.gather(run.task, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+        assert run.status == "stopped"
+
+    def test_a_cancelled_launch_that_fails_stops_nothing(
+        self,
+        fake_docker: FakeDocker,
+        report_root: Path,
+        authorized_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The mid-launch cleanup waits out the bounded launch — and when the
+        launch that finally lands FAILED, there is no container to stop, and
+        the cleanup must not pretend there was one."""
+        from services import rsi_container_dispatch as dispatch
+
+        launched = threading.Event()
+        release = threading.Event()
+        stops: list[str] = []
+
+        def fake_launch(spec: object) -> str:
+            launched.set()
+            release.wait(10)
+            raise dispatch.DispatchError("docker refused the run request (exit 125): gone")
+
+        monkeypatch.setattr(dispatch, "launch", fake_launch)
+
+        def record_stop(container_id: str) -> bool:
+            stops.append(container_id)
+            return True
+
+        monkeypatch.setattr(dispatch, "stop_container", record_stop)
+
+        svc = self._service()
+        run = _cleanup_run("abc123", authorized_repo)
+        svc._runs[run.run_id] = run
+
+        async def scenario() -> None:
+            run.task = asyncio.ensure_future(svc._drive(run))
+            await asyncio.to_thread(launched.wait, 10)
+            run.task.cancel()
+            release.set()
+            await asyncio.gather(run.task, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+        assert stops == []
+        assert run.container_id is None
+        assert run.status == "stopped"
+        assert fake_docker.calls == []  # no wait, no inspect, no stop
+
+    def test_a_cancellation_the_container_survives_is_logged_not_masked(
+        self,
+        fake_docker: FakeDocker,
+        report_root: Path,
+        authorized_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cancellation that did NOT go through stop_run (a task cancel on
+        a run whose container is already known) stops its container too — and
+        when that stop fails, the cancellation still propagates instead of
+        being masked by the cleanup's own failure."""
+        from services import rsi_container_dispatch as dispatch
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_wait(container_id: str) -> int:
+            started.set()
+            release.wait(10)
+            return 0
+
+        def failing_stop(container_id: str) -> bool:
+            raise OSError("the docker daemon went away mid-stop")
+
+        monkeypatch.setattr(dispatch, "wait", fake_wait)
+        monkeypatch.setattr(dispatch, "stop_container", failing_stop)
+
+        svc = self._service()
+        run = _cleanup_run("abc123", authorized_repo)
+        svc._runs[run.run_id] = run
+
+        async def scenario() -> None:
+            run.task = asyncio.ensure_future(svc._drive(run))
+            await asyncio.to_thread(started.wait, 10)
+            run.task.cancel()  # direct cancel: no stop_run has run yet
+            release.set()
+            await asyncio.gather(run.task, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+        assert run.status == "stopped"
+        assert run.container_id == "container-id-1"
+
+    def test_a_greenfield_run_is_refused_when_the_package_is_absent(
+        self, admin_client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The 503 the UI reads when maistro-rsi is not importable in this
+        process. Only cleanup is dispatched (#509); the greenfield tournament
+        still needs the package here, so its gate stays."""
+        from services import rsi as rsi_service
+
+        monkeypatch.setattr(rsi_service, "_rsi_available", lambda: False)
+
+        response = admin_client.post(
+            "/v1/rsi/runs", json={"mode": "greenfield", "repo_path": "/srv/repos/checkout"}
+        )
+
+        assert response.status_code == 503
+        assert "maistro-rsi is not installed" in response.json()["detail"]
+
     def test_the_spec_derives_outputs_from_the_run_id(
         self, report_root: Path, authorized_repo: Path
     ) -> None:
@@ -863,3 +1057,301 @@ class TestTheDispatchedLifecycle:
 
         assert spec.report_dir == report_root / "rsi-abc123" / "reports"
         assert str(authorized_repo) not in str(spec.report_dir)
+
+
+# ─── the docker seam, the gateway plumbing, and the CLI failure modes ────
+
+
+class TestTheDockerSeamAndGatewayPlumbing:
+    """The pieces the lifecycle tests drive through fakes, held to their own
+    contracts: the one place a docker process is born, the env entries that
+    cross the container boundary, and the network the container joins."""
+
+    def _spec(self, report_root: Path) -> Any:
+        from services import rsi_container_dispatch as dispatch
+
+        return dispatch.build_spec(
+            run_id="abc123",
+            repo=Path("/srv/repos/checkout"),
+            test_argv=("python", "-m", "pytest", "-q"),
+            cycles=1,
+            agent_turns=1,
+            model=None,
+            objective="",
+            targets=[],
+            use_fitness=False,
+            coverage_source=".",
+            coverage_pytest_args="",
+            scout=False,
+            genome_models=[],
+            roster_size=4,
+        )
+
+    def test_run_docker_executes_the_docker_cli_as_an_argv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`_run_docker` is the seam every other test fakes. It must speak to
+        the CLI as an argument vector — there is no shell on this side of the
+        boundary to interpret one — and return the CLI's answer verbatim."""
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "docker"
+        shim.write_text('#!/bin/sh\necho "argv=$*"\n', encoding="utf-8")
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+        from services import rsi_container_dispatch as dispatch
+
+        probe = dispatch._run_docker(["info", "--format", "ok"], timeout_s=15)
+
+        assert probe.returncode == 0
+        assert probe.stdout == "argv=info --format ok\n"
+
+    def test_the_user_pin_degrades_gracefully_without_a_uid_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No uid model (Windows), no `--user` flag — the mount-writability
+        fix is POSIX-only by construction, and its absence must be quiet."""
+        from services import rsi_container_dispatch as dispatch
+
+        monkeypatch.delattr(os, "getuid", raising=False)
+
+        assert dispatch._container_user() == []
+
+    def test_only_the_named_gateway_credentials_cross_the_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-api")
+        monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
+
+        assert dispatch._gateway_credentials() == [
+            "LITELLM_MASTER_KEY=sk-master",
+            "LITELLM_API_KEY=sk-api",
+        ]
+
+    def test_the_gateway_credentials_reach_the_container_as_env_entries(
+        self,
+        fake_docker: FakeDocker,
+        report_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master")
+        monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+
+        argv = dispatch.container_argv(self._spec(report_root))
+
+        key_at = argv.index("LITELLM_MASTER_KEY=sk-master")
+        assert argv[key_at - 1] == "-e"
+
+    def test_the_gateway_network_falls_back_to_the_default_bridge(
+        self, fake_docker: FakeDocker
+    ) -> None:
+        """A gateway container that answers nothing to `inspect` still leaves
+        the run launchable: it joins the default bridge and reaches the
+        gateway through the published host-loopback route instead."""
+        from services import rsi_container_dispatch as dispatch
+
+        fake_docker.inspect_result = _completed(stdout="")
+
+        assert dispatch._detect_gateway_network() == "bridge"
+
+
+class TestTheLaunchFailureModes:
+    """`launch` raises DispatchError, never a bare subprocess exception —
+    the run record shows an operator-facing summary, not a traceback."""
+
+    def _spec(self, report_root: Path) -> Any:
+        from services import rsi_container_dispatch as dispatch
+
+        return dispatch.build_spec(
+            run_id="abc123",
+            repo=Path("/srv/repos/checkout"),
+            test_argv=("python", "-m", "pytest", "-q"),
+            cycles=1,
+            agent_turns=1,
+            model=None,
+            objective="",
+            targets=[],
+            use_fitness=False,
+            coverage_source=".",
+            coverage_pytest_args="",
+            scout=False,
+            genome_models=[],
+            roster_size=4,
+        )
+
+    def test_a_timed_out_run_request_is_a_dispatch_error(
+        self, report_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        def hung(args: list[str], *, timeout_s: float | None = 60) -> Any:
+            if args[0] != "run":
+                # The network probe inside container_argv still answers; only
+                # the run request itself hangs.
+                return _completed(stdout="bridge\n")
+            raise subprocess.TimeoutExpired(cmd=["docker", *args], timeout=timeout_s or 120)
+
+        monkeypatch.setattr(dispatch, "_run_docker", hung)
+
+        with pytest.raises(dispatch.DispatchError, match="did not answer the run request"):
+            dispatch.launch(self._spec(report_root))
+
+    def test_a_refused_run_request_carries_the_cli_stderr(
+        self, fake_docker: FakeDocker, report_root: Path
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        fake_docker.run_result = _completed(returncode=125)
+
+        with pytest.raises(
+            dispatch.DispatchError, match=r"docker refused the run request \(exit 125\)"
+        ):
+            dispatch.launch(self._spec(report_root))
+
+    def test_a_run_without_a_container_id_is_a_dispatch_error(
+        self, fake_docker: FakeDocker, report_root: Path
+    ) -> None:
+        """Docker exiting 0 while printing no id would otherwise hand the
+        service an empty container_id and a run nothing could ever stop."""
+        from services import rsi_container_dispatch as dispatch
+
+        fake_docker.run_result = _completed(stdout="")
+
+        with pytest.raises(dispatch.DispatchError, match="started no container"):
+            dispatch.launch(self._spec(report_root))
+
+
+class TestStopWaitAndInspect:
+    """The verbs cancellation and the wait loop are built on, driven against
+    the same `_run_docker` seam, so their contract holds without a daemon."""
+
+    def test_stop_runs_one_bounded_stop(self, fake_docker: FakeDocker) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        assert dispatch.stop_container("cid-7") is True
+        assert fake_docker.calls[-1] == [
+            "stop",
+            "--time",
+            str(dispatch.STOP_TIMEOUT_S),
+            "cid-7",
+        ]
+
+    def test_an_already_gone_container_stops_as_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        monkeypatch.setattr(
+            dispatch, "_run_docker", lambda a, *, timeout_s=60: _completed(returncode=1)
+        )
+
+        assert dispatch.stop_container("cid-7") is False
+
+    def test_a_wedged_stop_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A stop that times out means the container is wedged, not
+        unkillable — the caller treats a timeout as stop-issued and the
+        wait still reaps the exit code when the container eventually dies."""
+        from services import rsi_container_dispatch as dispatch
+
+        def hung(args: list[str], *, timeout_s: float | None = 60) -> Any:
+            raise subprocess.TimeoutExpired(cmd=["docker", *args], timeout=timeout_s or 50)
+
+        monkeypatch.setattr(dispatch, "_run_docker", hung)
+
+        assert dispatch.stop_container("cid-7") is True
+
+    def test_wait_returns_the_exit_code_the_cli_prints(self, fake_docker: FakeDocker) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        fake_docker.wait_result = _completed(stdout="7\n")
+
+        assert dispatch.wait("cid-7") == 7
+
+    def test_wait_falls_back_to_inspect_when_the_cli_prints_no_code(
+        self, fake_docker: FakeDocker
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        fake_docker.wait_result = _completed(stdout="")
+        fake_docker.inspect_result = _completed(stdout="3\n")
+
+        assert dispatch.wait("cid-7") == 3
+
+    def test_a_container_the_backend_cannot_see_anywhere_is_a_dispatch_error(
+        self, fake_docker: FakeDocker
+    ) -> None:
+        """Neither `wait` nor `inspect` can answer: the run must surface
+        DispatchError — the service reports it errored rather than leaving
+        it running forever against a container that no longer exists."""
+        from services import rsi_container_dispatch as dispatch
+
+        fake_docker.wait_result = _completed(returncode=1)
+        fake_docker.inspect_result = _completed(returncode=1)
+
+        with pytest.raises(dispatch.DispatchError, match="lost contact"):
+            dispatch.wait("cid-7")
+
+    def test_inspect_answers_none_when_the_state_is_not_an_exit_code(
+        self, fake_docker: FakeDocker
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        fake_docker.inspect_result = _completed(stdout="running\n")
+
+        assert dispatch._inspect_exit_code("cid-7") is None
+
+
+class TestTheReportChannel:
+    """Checkpoints in the mounted report dir are the only channel run
+    progress crosses back through. The poller must survive everything a
+    container can write — or fail to write — into that directory."""
+
+    def test_a_missing_report_dir_is_no_progress(self, tmp_path: Path) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        assert dispatch.poll_reports(tmp_path / "absent") == {}
+
+    def test_a_corrupt_or_non_object_checkpoint_falls_back_to_the_newest_readable(
+        self, tmp_path: Path
+    ) -> None:
+        """A half-written newest checkpoint (the container died mid-write) or
+        a JSON array where an object belongs is skipped, not reported as
+        zeros and not fatal."""
+        import json as _json
+
+        (tmp_path / "checkpoint-9.json").write_text("{not json", encoding="utf-8")
+        (tmp_path / "checkpoint-8.json").write_text(_json.dumps(["nope"]), encoding="utf-8")
+        (tmp_path / "checkpoint-4.json").write_text(
+            _json.dumps({"cycles_run": 4, "promotions": 1}), encoding="utf-8"
+        )
+
+        from services import rsi_container_dispatch as dispatch
+
+        assert dispatch.poll_reports(tmp_path) == {"cycles_run": 4, "promotions": 1}
+
+    def test_an_older_or_shapeless_checkpoint_never_rolls_progress_back(
+        self, tmp_path: Path
+    ) -> None:
+        import json as _json
+
+        (tmp_path / "checkpoint-1.json").write_text(
+            _json.dumps({"cycles_run": 5, "promotions": 2}), encoding="utf-8"
+        )
+        (tmp_path / "checkpoint-2.json").write_text(
+            _json.dumps({"cycles_run": 2, "promotions": 9}), encoding="utf-8"
+        )
+        (tmp_path / "checkpoint-3.json").write_text(
+            _json.dumps({"promotions": 3}),
+            encoding="utf-8",  # no cycles_run
+        )
+
+        from services import rsi_container_dispatch as dispatch
+
+        assert dispatch.poll_reports(tmp_path) == {"cycles_run": 5, "promotions": 2}

@@ -378,13 +378,17 @@ class Settings(BaseSettings):
     # report directories (empty = the system temp dir). Nothing here is taken
     # from a request: output directories are always derived from the run id.
     rsi_runner_image: str = "maistro-rsi-runner:latest"
-    # devskim: ignore DS137138 -- in-compose default: maistro-litellm is the
-    # gateway's service name on the stack's private bridge network, so this
-    # is container-to-container and never off-host; there is no CA to sign
-    # it (same disposition as DEFAULT_GATEWAY_URL in
-    # services/rsi_container_dispatch.py). Deployments override this via
-    # rsi_gateway_url, whose scheme is whatever the operator gives it.
-    rsi_gateway_url: str = "http://maistro-litellm:4000"
+    # In-compose default: maistro-litellm is the gateway's service name on
+    # the stack's private bridge network, so this is container-to-container
+    # and never off-host; there is no CA to sign it (same disposition as
+    # DEFAULT_GATEWAY_URL in services/rsi_container_dispatch.py). The marker
+    # sits on the line itself because DevSkim only honors a suppression
+    # comment on the flagged line — one in the preceding comment block left
+    # the finding live in CI. Deployments override this via rsi_gateway_url,
+    # whose scheme is whatever the operator gives it.
+    rsi_gateway_url: str = (
+        "http://maistro-litellm:4000"  # devskim: ignore DS137138 until 2027-12-31
+    )
     rsi_container_network: str = ""
     rsi_work_root: str = ""
     # Resource ceilings for a dispatched runner container, mirroring
