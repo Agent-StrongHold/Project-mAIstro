@@ -1207,6 +1207,10 @@ bootstrap_first_run() {
 
     ensure_python
 
+    # Not a second opinion about first-run state: this probes the same
+    # authority the SPA AuthGuard polls (routes/setup.py::_is_setup_complete
+    # via GET /v1/setup/status), so the terminal path and the browser path
+    # cannot disagree about whether setup still needs doing (#443).
     if curl -sf "$base/v1/setup/status" 2>/dev/null | grep -q '"setup_complete"[[:space:]]*:[[:space:]]*true'; then
         info "Setup already complete — removing staged credentials (consumed)."
         purge_file "$creds"

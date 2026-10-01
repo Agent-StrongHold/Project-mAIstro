@@ -1,8 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiGet, fallbackMessage } from "../lib/api";
 import { SecretField, TextField } from "../components/shared";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
+
+// One entry of the first-run question declaration served by
+// GET /v1/setup/questions — the same declaration the terminal wizard reads
+// directly (#443). The wizard seeds its state from these instead of
+// restating defaults, so identical answers produce an identical
+// /v1/setup/complete payload whichever path collected them.
+type FirstRunQuestionMeta = { key: string; label: string; default: unknown; required: boolean; description: string };
 
 type IdentityStatus = "checking" | "operational" | "disabled" | "misconfigured" | "unavailable";
 
@@ -19,8 +26,11 @@ const MODULES = [
 
 export default function Setup() {
   const [step, setStep] = useState(0);
-  const [conductorName, setConductorName] = useState("Hive Conductor");
-  const [routerModel, setRouterModel] = useState("gemini-3.1-flash-lite");
+  // Question declaration + seeded defaults. Every initial state is empty:
+  // values arrive from the declaration, never from literals here (#443).
+  const [questions, setQuestions] = useState<Record<string, FirstRunQuestionMeta>>({});
+  const [conductorName, setConductorName] = useState("");
+  const [routerModel, setRouterModel] = useState("");
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [preset, setPreset] = useState<string | null>(null);
@@ -29,7 +39,8 @@ export default function Setup() {
   const [identityStatus, setIdentityStatus] = useState<IdentityStatus>("checking");
   const [identityReason, setIdentityReason] = useState<string | null>(null);
   const [modules, setModules] = useState<string[]>([]);
-  const [adminUsername, setAdminUsername] = useState("admin");
+  const [declaredModules, setDeclaredModules] = useState<string[] | null>(null);
+  const [adminUsername, setAdminUsername] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
   const [userUsername, setUserUsername] = useState("");
   const [userPassword, setUserPassword] = useState("");
@@ -38,8 +49,29 @@ export default function Setup() {
   const [mnemonic, setMnemonic] = useState<string[] | null>(null);
   const [didKey, setDidKey] = useState<string | null>(null);
   const [mnemonicConfirmed, setMnemonicConfirmed] = useState(false);
+  // Once the operator toggles any module, the declared seed must not
+  // override that explicit choice.
+  const modulesTouched = useRef(false);
 
   const steps = ["Hive", "Hardware", "Accounts", "Modules", "Confirm"];
+
+  // The hardware preset the wizard states when the operator made no explicit
+  // pick: the declared default (the same "auto" the terminal path states).
+  // Without a declaration there is nothing to state — the key is omitted and
+  // the server names the missing field.
+  const hardwareDefault =
+    typeof questions["hardware_preset"]?.default === "string"
+      ? (questions["hardware_preset"].default as string)
+      : null;
+  const resolvedHardware = preset ?? hardwareDefault;
+  // The crypto-identity toggle is only actionable when the deployment can
+  // serve an identity root; the declared module seed is applied under the
+  // same condition (see the seeding effect below).
+  const identityUsable = !(
+    identityStatus === "checking" ||
+    identityStatus === "unavailable" ||
+    (identityStatus === "misconfigured" && identityReason !== "setup_incomplete")
+  );
 
   // Load available models from the LLM gateway via Hive's
   // /v1/settings/models proxy. The user's LITELLM key stays server-side.
@@ -81,9 +113,6 @@ export default function Setup() {
       "text-embedding-3",
     ];
     setAvailableModels(FALLBACK_MODELS);
-    setRouterModel((cur) =>
-      FALLBACK_MODELS.includes(cur) ? cur : "gemini-3.1-flash-lite",
-    );
 
     // Best-effort: ask the live gateway for the latest list; replace if we
     // get a non-empty response. If we're pre-login the 401 just keeps the
@@ -96,7 +125,11 @@ export default function Setup() {
         const models = (data.models ?? []).filter(Boolean);
         if (models.length > 0) {
           setAvailableModels(models);
-          if (!models.includes(routerModel)) {
+          // Re-point an explicit choice the gateway does not know. An empty
+          // selection means "server default" and stays empty — picking a
+          // model here for the operator would restate a default the
+          // declaration owns (#443).
+          if (routerModel && !models.includes(routerModel)) {
             const preferred =
               models.find((m) => m === "gemini-3.1-flash-lite") ??
               models.find((m) => m.startsWith("gemini-") && m.includes("flash")) ??
@@ -168,6 +201,45 @@ export default function Setup() {
     };
   }, []);
 
+  // Seed wizard state from the first-run question declaration (#443 AC-1).
+  // Read, not restate: the terminal wizard asks the same questions with the
+  // same defaults, so accepting defaults provisions identically either way.
+  // Fields the operator already edited are left alone; if the endpoint never
+  // answers, the operator simply types the values (the step gates below
+  // refuse blanks) — the SPA never invents a default the declaration owns.
+  useEffect(() => {
+    let active = true;
+    apiGet<{ questions?: Record<string, FirstRunQuestionMeta> }>("/v1/setup/questions")
+      .then((data) => {
+        if (!active || !data.questions) return;
+        const q = data.questions;
+        setQuestions(q);
+        const declared = (key: string): unknown => q[key]?.default;
+        setConductorName((cur) => (cur.trim() ? cur : String(declared("conductor_name") ?? "")));
+        setAdminUsername((cur) => (cur.trim() ? cur : String(declared("admin_username") ?? "")));
+        setUserUsername((cur) => (cur.trim() ? cur : String(declared("user_username") ?? "")));
+        setRouterModel((cur) => (cur.trim() ? cur : String(declared("default_model") ?? "")));
+        const mods = declared("optional_modules");
+        setDeclaredModules(Array.isArray(mods) ? mods.map(String) : null);
+      })
+      .catch(() => {
+        /* No declaration, no seed — gates below force explicit answers. */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Apply the declared module seed once the deployment confirms it can serve
+  // it (#443 AC-6): the terminal path derives the same set from its
+  // crypto-profile question, so both paths provision the same modules when
+  // the operator accepts defaults. Skipped once the operator toggled
+  // anything — an explicit choice outranks the seed.
+  useEffect(() => {
+    if (!identityUsable || declaredModules === null || modulesTouched.current) return;
+    setModules(declaredModules);
+  }, [identityUsable, declaredModules]);
+
   async function finish() {
     setLoading(true);
     setError(null);
@@ -177,8 +249,11 @@ export default function Setup() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conductor_name: conductorName,
-          default_model: routerModel,
-          hardware_preset: preset,
+          default_model: routerModel.trim() || null,
+          // An explicit pick wins; otherwise state the declared default. No
+          // declaration and no pick means the key is omitted and the server
+          // names the missing field rather than the SPA guessing.
+          hardware_preset: resolvedHardware ?? undefined,
           optional_modules: modules,
           admin_username: adminUsername,
           admin_password: adminPassword,
@@ -297,6 +372,9 @@ export default function Setup() {
                     onChange={(e) => setRouterModel(e.target.value)}
                     style={{ width: "100%" }}
                   >
+                    {/* Empty = server default: the same state the terminal
+                        path sends when it does not ask (#443). */}
+                    <option value="">Server default (recommended)</option>
                     {availableModels.map((m) => (
                       <option key={m} value={m}>
                         {m}
@@ -307,7 +385,7 @@ export default function Setup() {
                   <input
                     id="setup-router-model"
                     className="input-field"
-                    placeholder={modelsLoading ? "Loading models from gateway…" : "gemini-3.1-flash-lite"}
+                    placeholder={modelsLoading ? "Loading models from gateway…" : "server default"}
                     value={routerModel}
                     onChange={(e) => setRouterModel(e.target.value)}
                     disabled={modelsLoading}
@@ -391,11 +469,7 @@ export default function Setup() {
               {MODULES.map((m) => {
                 const enabled = modules.includes(m.id);
                 const depsMet = m.requires.every((r) => modules.includes(r));
-                const identityUnavailable =
-                  m.id === "crypto_identity" &&
-                  (identityStatus === "checking" ||
-                    identityStatus === "unavailable" ||
-                    (identityStatus === "misconfigured" && identityReason !== "setup_incomplete"));
+                const identityUnavailable = m.id === "crypto_identity" && !identityUsable;
                 return (
                   <div key={m.id} className="card" style={{ display: "grid", gridTemplateColumns: "1fr 36px", gap: 8, alignItems: "center", opacity: identityUnavailable ? 0.5 : depsMet || enabled ? 1 : 0.5 }}>
                     <div>
@@ -409,7 +483,10 @@ export default function Setup() {
                       className={`toggle${enabled ? " on" : ""}`}
                       aria-label={`Toggle ${m.name}`}
                       disabled={identityUnavailable || !(depsMet || enabled)}
-                      onClick={() => setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id])}
+                      onClick={() => {
+                        modulesTouched.current = true;
+                        setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id]);
+                      }}
                     />
                   </div>
                 );
@@ -423,11 +500,11 @@ export default function Setup() {
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HIVE</div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{conductorName}</div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>router: {routerModel}</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>router: {routerModel || "server default"}</div>
               </div>
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HARDWARE</div>
-                <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{preset ?? "none selected"}</div>
+                <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{resolvedHardware ?? "server default (auto)"}</div>
               </div>
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>ACCOUNTS</div>
@@ -464,7 +541,7 @@ export default function Setup() {
               // presets means no cards, and requiring a selection then blocks
               // first-run provisioning with no error and no retry (#129).
               (step === 1 && !preset && Object.keys(presets).length > 0) ||
-              (step === 2 && (!adminPassword || !userUsername || !userPassword))
+              (step === 2 && (!adminUsername.trim() || !adminPassword || !userUsername.trim() || !userPassword))
             }>
               next {"\u2192"}
             </button>
