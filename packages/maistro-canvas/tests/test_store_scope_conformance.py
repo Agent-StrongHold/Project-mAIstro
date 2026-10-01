@@ -38,6 +38,8 @@ from typing import Any, ClassVar
 
 import pytest
 import pytest_asyncio
+from canvas_testing.canvas_schema import CANVAS_SCHEMA_DDL as _CANVAS_DDL
+from canvas_testing.job_store_contract import ZERO_BACKOFF
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -54,8 +56,6 @@ from maistro_canvas.layers import (
     StyleVolume,
     WorldStyle,
 )
-from maistro_canvas.testing.canvas_schema import CANVAS_SCHEMA_DDL as _CANVAS_DDL
-from maistro_canvas.testing.job_store_contract import ZERO_BACKOFF
 from maistro_canvas.types import (
     AssetDefinitionNotFoundError,
     CanvasNotFoundError,

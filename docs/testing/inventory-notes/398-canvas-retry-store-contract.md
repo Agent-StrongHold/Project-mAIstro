@@ -12,7 +12,8 @@ and fakes, and queue health exposing stuck/retry/exhausted jobs.
 New evidence:
 
 - `test_job_store_contract.py` runs the shared contract bodies
-  (`maistro_canvas/testing/job_store_contract.py`) against two legs: the
+  (`canvas_testing/job_store_contract.py`, shared test scaffolding under
+  `packages/maistro-canvas/tests/`) against two legs: the
   in-memory fake (always) and the production `PgCanvasStore` against a real
   PostgreSQL server in a throwaway schema (skips without
   `MAISTRO_TEST_PG_DSN`; `MAISTRO_REQUIRE_PG_LEGS` fails instead of skipping,
@@ -34,7 +35,7 @@ New evidence:
 - `test_store_scope_conformance.py` keeps pinning scope/fencing with the zero
   schedule (fencing tests requeue-then-reclaim immediately) and shares the
   canvas DDL with the contract suite via
-  `maistro_canvas/testing/canvas_schema.py`, so the two cannot describe
+  `canvas_testing/canvas_schema.py`, so the two cannot describe
   different schemas.
 - `test_canvas_store_migration.py` extends the adopted-schema leg: the
   alembic chain must leave `next_retry_at` on `generation_jobs` (migration

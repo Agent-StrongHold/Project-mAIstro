@@ -34,6 +34,6 @@ npm run test     # vitest
 
 - **org_id is optional here** (`protocols.py` defaults `org_id=""`) — canvas is single-tenant, unlike maistro-core.
 - **Pillow ≥11** required (compositor RGBA assembly).
-- **PostgreSQL store** (`canvas/store.py`) is async; runner/lifecycle tests use the shared in-memory fake (`maistro_canvas/testing/job_store_contract.py`), and the store-contract + scope-conformance suites run `PgCanvasStore` against a real server when `MAISTRO_TEST_PG_DSN` is set (skipped otherwise; `MAISTRO_REQUIRE_PG_LEGS` turns the skip into a failure).
+- **PostgreSQL store** (`canvas/store.py`) is async; runner/lifecycle tests use the shared in-memory fake (`tests/canvas_testing/job_store_contract.py`, test scaffolding kept under the suite tree), and the store-contract + scope-conformance suites run `PgCanvasStore` against a real server when `MAISTRO_TEST_PG_DSN` is set (skipped otherwise; `MAISTRO_REQUIRE_PG_LEGS` turns the skip into a failure).
 - **Production needs a P40 image-gen server** alongside the app for real image generation.
 - The frontend `server.js` reads its Postgres connection from **`CANVAS_DB_*` env vars** (`HOST`, `PORT`, `USER`, `PASSWORD`, `NAME`), defaulting to a local-dev setup — set these before running.

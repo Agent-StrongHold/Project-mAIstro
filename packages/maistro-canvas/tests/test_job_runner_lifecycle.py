@@ -22,9 +22,9 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from canvas_testing.job_store_contract import ZERO_BACKOFF, InMemoryJobStore
 
 from maistro_canvas.canvas.runner import LEASE_EXPIRED_MESSAGE, CanvasJobRunner
-from maistro_canvas.testing.job_store_contract import ZERO_BACKOFF, InMemoryJobStore
 from maistro_canvas.types import (
     GenerationJobRecord,
     JobAction,

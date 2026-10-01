@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from maistro_canvas.testing.job_store_contract import (
+from canvas_testing.job_store_contract import (
     CONTRACT_BODIES,
     ZERO_BACKOFF,
     InMemoryJobStore,

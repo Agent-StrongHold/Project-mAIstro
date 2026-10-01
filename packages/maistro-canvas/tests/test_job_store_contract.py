@@ -3,7 +3,7 @@
 Two suites share this module:
 
 1. **Store contract legs** — the behavioral bodies from
-   ``maistro_canvas.testing.job_store_contract`` run against the in-memory
+   ``canvas_testing/job_store_contract.py`` run against the in-memory
    fake and, when a server is available, the production ``PgCanvasStore``:
    claim gates on ``next_retry_at``, the reaper writes the shared backoff,
    over-budget rows are unclaimable but surfaced, queue stats mirror the
@@ -26,15 +26,15 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from maistro_canvas.testing.job_store_contract import (
+from canvas_testing.job_store_contract import (
     InMemoryJobStore,
     require_pg,
     run_job_store_contract,
     seed_job,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from maistro_canvas.types import GenerationJobRecord, JobQueueStats
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -78,11 +78,11 @@ async def test_missing_pg_dsn_is_a_skip_but_requirement_mode_fails() -> None:
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def pg_store() -> Iterator[Any]:
+    from canvas_testing.canvas_schema import CANVAS_SCHEMA_DDL
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from maistro_canvas.canvas.store import PgCanvasStore
-    from maistro_canvas.testing.canvas_schema import CANVAS_SCHEMA_DDL
 
     dsn = require_pg()
     schema = f"canvas_job_contract_{uuid.uuid4().hex[:12]}"
