@@ -384,6 +384,48 @@ class SqliteLearningStore:
         )
         await self._conn.commit()
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        cursor = await self._conn.execute(
+            """SELECT * FROM learnings
+               WHERE success_after_use + failure_after_use >= ?
+                 AND failure_after_use > success_after_use
+               ORDER BY id DESC""",
+            (min_uses,),
+        )
+        columns = [d[0] for d in cursor.description]
+        rows = await cursor.fetchall()
+        return [_row_to_learning(dict(zip(columns, row, strict=True))) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        cursor = await self._conn.execute(
+            """UPDATE learnings
+               SET epistemic_type = 'anti_pattern',
+                   confidence = MAX(confidence, ?)
+               WHERE id = ? AND org_id = ?""",
+            (confidence_floor, learning_id, org_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
     async def check_auto_promotions(
         self,
         threshold: int = 5,

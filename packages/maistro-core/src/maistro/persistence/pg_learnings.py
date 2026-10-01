@@ -468,6 +468,50 @@ class PgLearningStore:
                 org_id,
             )
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM learnings
+                   WHERE success_after_use + failure_after_use >= $1
+                     AND failure_after_use > success_after_use
+                   ORDER BY id DESC""",
+                min_uses,
+            )
+        return [_row_to_learning(row) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE learnings
+                   SET epistemic_type = 'anti_pattern',
+                       confidence = GREATEST(confidence, $2)
+                   WHERE id = $1 AND org_id = $3
+                   RETURNING id""",
+                learning_id,
+                confidence_floor,
+                org_id,
+            )
+            return row is not None
+
     async def check_auto_promotions(
         self,
         threshold: int = 5,

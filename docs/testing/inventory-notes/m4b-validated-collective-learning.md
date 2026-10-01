@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +67
+  packages/maistro-core/tests: +74
 ---
 # M4-B — validated collective learning (ADR-092, epic #22; children #117–#121)
 
@@ -39,11 +39,29 @@ New test nodes (+67):
   consolidation of drifted rows (write-time dedup already folds fresh
   duplicates, so the drifted state is built through the public API).
 - `packages/maistro-core/tests/persistence/test_sqlite_learning_lifecycle.py`
-  (+2) — durability of the pipeline state on the SQLite twin: a validated
+  (+3) — durability of the pipeline state on the SQLite twin: a validated
   anti-pattern round-trips a real file (stage, epistemic type, confidence,
   applicability, counters, instants, Gauntlet provenance, supersession links),
-  and a pre-M4B database upgrades in place with rows reading back as the local
-  empirical learnings they implicitly were — never with invented validation.
+  a pre-M4B database upgrades in place with rows reading back as the local
+  empirical learnings they implicitly were — never with invented validation,
+  and the #121 capture path runs against the durable twin itself: the twin
+  answers the `IneffectiveLearningSource` read with the in-memory predicate,
+  the promoter's reclassification is written back through `mark_anti_pattern`
+  (org binds exactly), and a cold read sees the anti-pattern, not the
+  empirical row first stored.
+- `packages/maistro-core/tests/memory/learnings/test_gauntlet.py` reuse half
+  (+3, `TestAntiPatternKnowledgeReuse`) — a captured anti-pattern is surfaced
+  by retrieval into the bounded advisory corrections block, org-bound in both
+  directions, and through `get_promoted` after the repertoire commit;
+  contrary evidence supersedes a captured anti-pattern with the lineage kept
+  and the retired row no longer retrieved; repeated failures are measured
+  before adoption (`list_ineffective`, `effectiveness == -1.0`) and after it
+  through the same public outcome path (effectiveness flips positive, the
+  Gauntlet accepts the evidence).
+- `packages/maistro-core/tests/agents/test_base.py` (+3) — the turn-path
+  wiring: a failed turn with injected learnings records the outcome and then
+  runs the capture sweep on the same turn; a successful turn and a failed
+  turn with no injected learnings do not.
 
 Contract updates (existing nodes, strengthened not weakened):
 

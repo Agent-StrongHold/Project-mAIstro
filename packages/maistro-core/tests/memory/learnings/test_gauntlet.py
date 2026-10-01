@@ -11,11 +11,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+from maistro.agents.context_builder import _render_learnings_block
 from maistro.memory.learnings.gauntlet import (
     ChainedGauntlet,
     OutcomeEvidenceGauntlet,
     evidence_of,
 )
+from maistro.memory.learnings.lifecycle import effectiveness
 from maistro.memory.learnings.promoter import LearningPromoter
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import Learning
@@ -24,6 +28,8 @@ from maistro.types.memory import (
     EpistemicType,
     LearningStage,
 )
+
+pytestmark = [pytest.mark.contract("behavioral")]
 
 
 class _StubForge:
@@ -329,3 +335,140 @@ class TestCaptureAntiPatterns:
         promoted = await promoter.check_and_promote()
         assert [p.id for p in promoted] == [lr.id]
         assert lr.stage is LearningStage.REPERTOIRE
+
+
+class TestAntiPatternKnowledgeReuse:
+    """#121's reuse half: retrieval, contrary evidence, and the measured win.
+
+    Capture alone would just be a rename. The acceptance this class pins:
+    the retained knowledge is *surfaced* to later Runs as scoped advisory
+    guidance (never unconditional policy), a later Run that disproves it can
+    supersede it with the lineage kept, and the reason to bother is
+    measurable -- the repeated-failure count before adoption versus the
+    outcome evidence after it.
+    """
+
+    async def test_captured_anti_pattern_is_surfaced_as_scoped_advisory_guidance(
+        self,
+    ) -> None:
+        store = InMemoryLearningStore()
+        anti = _used_learning(
+            trigger_keys=["force-push"],
+            learning="never force-push to main",
+            success_after_use=0,
+            failure_after_use=4,
+        )
+        await store.store(anti)
+        other_org = _used_learning(
+            org_id="org-2",
+            trigger_keys=["force-push"],
+            learning="the other org's avoid rule",
+            success_after_use=0,
+            failure_after_use=4,
+        )
+        await store.store(other_org)
+        await LearningPromoter(store).capture_anti_patterns(min_uses=3)
+        assert anti.epistemic_type is EpistemicType.ANTI_PATTERN
+
+        # Retrieval surfaces the anti-pattern for its own scope only: `org_id`
+        # is the security boundary and binds exactly, so the other org's row
+        # never crosses and this org's avoid rule is not visible without one.
+        surfaced = await store.find_relevant("should I force-push to main?", org_id="")
+        assert [s.id for s in surfaced] == [anti.id]
+        # ...and org-2's read surfaces only org-2's own row: the boundary is
+        # exact in both directions, so neither avoid rule crosses it.
+        theirs = await store.find_relevant("should I force-push to main?", org_id="org-2")
+        assert [s.id for s in theirs] == [other_org.id]
+
+        # Rendered as one bounded advisory correction inside the closed
+        # corrections block -- guidance for the Run to weigh, not a policy
+        # statement appended to the system prompt unconditionally. The budget
+        # can still drop it, and the block framing is what makes that a
+        # demotion instead of a lie.
+        block, kept_ids, added = _render_learnings_block(
+            surfaced,
+            block_type="matched",
+            budget_chars=2000,
+            use_rca_prefix=False,
+        )
+        assert added == 1
+        assert kept_ids == [anti.id]
+        assert block is not None
+        assert block.startswith('<maistro:corrections type="matched">')
+        assert block.rstrip().endswith("</maistro:corrections>")
+        assert "never force-push to main" in block
+
+        # After the Gauntlet commits it to the repertoire, the promoted read
+        # surfaces it too -- still through the same advisory block.
+        anti.hit_count = 10
+        anti.success_after_use, anti.failure_after_use = 4, 0
+        promoter = LearningPromoter(store, gauntlet=OutcomeEvidenceGauntlet())
+        assert [p.id for p in await promoter.check_and_promote()] == [anti.id]
+        promoted_block, _, promoted_added = _render_learnings_block(
+            await store.get_promoted(org_id=""),
+            block_type="promoted",
+            budget_chars=2000,
+            use_rca_prefix=True,
+        )
+        assert promoted_added == 1
+        assert promoted_block is not None
+        assert promoted_block.startswith('<maistro:corrections type="promoted">')
+
+    async def test_contrary_evidence_supersedes_a_captured_anti_pattern(self) -> None:
+        store = InMemoryLearningStore()
+        anti = _used_learning(
+            learning="never deploy on Fridays",
+            success_after_use=0,
+            failure_after_use=4,
+        )
+        await store.store(anti)
+        await LearningPromoter(store).capture_anti_patterns(min_uses=3)
+        assert anti.epistemic_type is EpistemicType.ANTI_PATTERN
+
+        # A later Run disproves the rule. The replacement is stored first and
+        # the old row retired second (so dedup cannot fold one into the
+        # other), and the lineage is kept in both directions: institutional
+        # knowledge is retained, not deleted.
+        replacement = _used_learning(
+            learning="Friday deploys are fine behind the release gate",
+            run_id="run-9",
+        )
+        new_id = await store.supersede(anti.id or 0, replacement)
+
+        assert anti.status == "superseded"
+        assert anti.superseded_by == new_id
+        survivor = await store.get(new_id)
+        assert survivor is not None
+        assert survivor.supersedes == anti.id
+        # The retired row is no longer retrieved; the contrary knowledge is.
+        surfaced = await store.find_relevant("deploy", org_id="")
+        assert [s.id for s in surfaced] == [new_id]
+        # And the superseded anti-pattern remains readable for the Runs that
+        # ask what used to be believed.
+        assert await store.get(anti.id or 0) is anti
+
+    async def test_repeated_failures_measured_before_and_after_adoption(self) -> None:
+        store = InMemoryLearningStore()
+        lr = _used_learning(success_after_use=0, failure_after_use=4)
+        await store.store(lr)
+
+        # Before adoption: the redundant repeated failures are measurable --
+        # four recorded outcomes, every one a failure -- and they are exactly
+        # what the capture threshold reads.
+        ineffective = await store.list_ineffective(min_uses=3)
+        assert [i.id for i in ineffective] == [lr.id]
+        assert effectiveness(lr) == -1.0
+        await LearningPromoter(store).capture_anti_patterns(min_uses=3)
+        assert lr.epistemic_type is EpistemicType.ANTI_PATTERN
+
+        # After adoption, through the same public outcome path later Runs
+        # drive: six recorded outcomes, all successes. The same counters that
+        # measured the problem now measure the win -- the signed effectiveness
+        # flips positive and the independent Gauntlet accepts the evidence.
+        for _ in range(6):
+            await store.mark_outcome([lr.id or 0], True)
+        assert (lr.success_after_use, lr.failure_after_use) == (6, 4)
+        assert effectiveness(lr) == 0.2
+        verdict = await OutcomeEvidenceGauntlet().evaluate(lr, evidence=evidence_of(lr))
+        assert verdict.ok
+        assert verdict.failed_checks == ()

@@ -33,6 +33,8 @@ from maistro.types.memory import (
     LearningStage,
 )
 
+pytestmark = [pytest.mark.contract("behavioral")]
+
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 

@@ -14,8 +14,12 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from maistro.memory.learnings.promoter import LearningPromoter
 from maistro.persistence.sqlite_learnings import SqliteLearningStore
+from maistro.protocols.memory import IneffectiveLearningSource
 from maistro.types.memory import EpistemicType, Learning, LearningStage
+
+pytestmark = [pytest.mark.contract("behavioral")]
 
 _VALIDATED_AT = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 _CONFIRMED_AT = datetime(2026, 1, 2, 8, 30, 0, tzinfo=UTC)
@@ -68,6 +72,68 @@ async def test_lifecycle_state_survives_a_round_trip(tmp_path: Path) -> None:
     assert revived.supersedes == 3
     assert revived.superseded_by is None
     assert revived.run_id == "run-77"
+
+
+@pytest.mark.asyncio
+async def test_repeated_failures_are_captured_as_anti_patterns_on_the_durable_twin(
+    tmp_path: Path,
+) -> None:
+    """#121 reaches production through the durable store, not only in memory.
+
+    The in-memory store is the dev/test default; the capture sweep runs in
+    production against the SQL twins, whose reads return detached copies.
+    This pins the full durable path: the twin answers the
+    ``IneffectiveLearningSource`` read with the same predicate the in-memory
+    store applies, the promoter's reclassification is written back through
+    ``mark_anti_pattern``, and a cold read sees the anti-pattern -- not the
+    empirical learning that was first stored.
+    """
+    db = tmp_path / "learnings.db"
+
+    async with aiosqlite.connect(db) as conn:
+        store = SqliteLearningStore(conn)
+        await store.ensure_schema()
+        chronic = Learning(
+            trigger_keys=["force-push"],
+            learning="force-pushing over the protected branch",
+            run_id="run-1",
+            org_id="org-1",
+            success_after_use=1,
+            failure_after_use=4,
+        )
+        healthy = Learning(
+            trigger_keys=["snapshot"],
+            learning="snapshot before deploying",
+            run_id="run-2",
+            org_id="org-1",
+            success_after_use=4,
+            failure_after_use=1,
+        )
+        chronic_id = await store.store(chronic)
+        healthy_id = await store.store(healthy)
+        assert isinstance(store, IneffectiveLearningSource)
+
+        ineffective = await store.list_ineffective(min_uses=3)
+        assert [lr.id for lr in ineffective] == [chronic_id]
+
+        # The org boundary binds the write too: a row from another scope is
+        # not reclassified by a guessed id under a blank org.
+        assert await store.mark_anti_pattern(healthy_id, 0.6, org_id="") is False
+
+        captured = await LearningPromoter(store).capture_anti_patterns("org-1", min_uses=3)
+        assert [lr.id for lr in captured] == [chronic_id]
+        assert captured[0].epistemic_type is EpistemicType.ANTI_PATTERN
+        assert captured[0].confidence >= 0.6
+
+    # The reclassification is durable: a cold read sees the anti-pattern,
+    # not the empirical learning that was first stored.
+    async with aiosqlite.connect(db) as conn:
+        revived = await SqliteLearningStore(conn).produced_by("run-1", org_id="org-1")
+    assert len(revived) == 1
+    assert revived[0].id == chronic_id
+    assert revived[0].epistemic_type is EpistemicType.ANTI_PATTERN
+    assert revived[0].confidence >= 0.6
+    assert revived[0].failure_after_use == 4
 
 
 @pytest.mark.asyncio

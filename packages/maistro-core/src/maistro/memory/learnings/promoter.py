@@ -22,7 +22,7 @@ from maistro.memory.learnings.lifecycle import (
     commit_to_repertoire,
 )
 from maistro.persistence.learning_scope import matches_learning_scope
-from maistro.protocols.memory import IneffectiveLearningSource
+from maistro.protocols.memory import AntiPatternSink, IneffectiveLearningSource
 from maistro.types.memory import (
     ANTI_PATTERN_CONFIDENCE_FLOOR,
     EpistemicType,
@@ -147,11 +147,16 @@ class LearningPromoter:
         requires the Gauntlet like any other learning.
 
         Requires a store that can name its ineffective learnings; one that
-        cannot simply yields nothing to capture.
+        cannot simply yields nothing to capture. A store that also implements
+        :class:`AntiPatternSink` has the reclassification written back: the
+        SQL twins return detached row copies, so without the write the
+        decision would evaporate with the copy and the next process would
+        re-learn the anti-pattern by re-buying the failure.
         """
         source = self._store if isinstance(self._store, IneffectiveLearningSource) else None
         if source is None:
             return []
+        sink = self._store if isinstance(self._store, AntiPatternSink) else None
         captured: list[Learning] = []
         for lr in await source.list_ineffective(min_uses):
             if not matches_learning_scope(lr, org_id=org_id):
@@ -160,6 +165,8 @@ class LearningPromoter:
                 continue
             lr.epistemic_type = EpistemicType.ANTI_PATTERN
             lr.confidence = max(lr.confidence, ANTI_PATTERN_CONFIDENCE_FLOOR)
+            if sink is not None and lr.id is not None:
+                await sink.mark_anti_pattern(lr.id, ANTI_PATTERN_CONFIDENCE_FLOOR, org_id=lr.org_id)
             captured.append(lr)
         return captured
 

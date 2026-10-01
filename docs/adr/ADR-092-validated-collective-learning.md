@@ -123,7 +123,12 @@ provenance names *which independent judge* accepted.
   reclassifies repeatedly-followed-into-failure learnings as `ANTI_PATTERN`
   and lifts them to the floor. Reclassification is *not* validation — joining
   the repertoire still requires the Gauntlet, and anti-patterns whose
-  avoidance still fails often fail it like any other learning.
+  avoidance still fails often fail it like any other learning. The sweep runs
+  on the turn path after a failed turn records its outcome, and the SQL twins
+  persist the decision through `mark_anti_pattern` (the
+  `AntiPatternSink` write half), because their reads return detached copies:
+  without the write, the reclassification would evaporate and the next
+  process would re-learn the anti-pattern by re-buying the failure.
 
 All twelve new fields are durable in both SQL twins; migration 048 adds the
 columns, and #1156's disposition contract enforces that a future Learning
