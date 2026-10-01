@@ -131,12 +131,14 @@ class SqliteBacklogStore:
     # item mutation before its provenance event is appended.
 
     async def get_item(self, item_id: str) -> BacklogItem | None:
-        async with self._write_lock:
-            async with self._conn.execute(
+        async with (
+            self._write_lock,
+            self._conn.execute(
                 "SELECT payload FROM backlog_items WHERE item_id = ?",
                 (item_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
+            ) as cursor,
+        ):
+            row = await cursor.fetchone()
         return BacklogItem.model_validate_json(row[0]) if row is not None else None
 
     async def list_items(
@@ -166,9 +168,8 @@ class SqliteBacklogStore:
             + " AND ".join(clauses)
             + " ORDER BY created_at, item_id"
         )
-        async with self._write_lock:
-            async with self._conn.execute(query, tuple(params)) as cursor:
-                rows = await cursor.fetchall()
+        async with self._write_lock, self._conn.execute(query, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
         return [BacklogItem.model_validate_json(row[0]) for row in rows]
 
     async def active_claim(
