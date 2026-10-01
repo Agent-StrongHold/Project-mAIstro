@@ -247,24 +247,138 @@ def effective_mode(
     return campaign.policy.default_autonomy_mode
 
 
-def _constraint_reasons(item: BacklogItemView, campaign: CampaignDefinition) -> list[str]:
-    """Reasons the item fails one campaign's declared constraint axes."""
-    reasons: list[str] = []
+def _scope_reasons(item: BacklogItemView, campaign: CampaignDefinition) -> list[str]:
+    """The tag / milestone / package / Workspace / Project axes (AC-1).
+
+    A declared axis narrows; an empty axis constrains nothing, so each check
+    is ``declared and item misses it``."""
     constraints = campaign.policy.constraints
     prefix = f"campaign:{campaign.campaign_id}"
-    if [tag for tag in constraints.tags if tag not in item.tags]:
-        reasons.append(f"{prefix}:tag-mismatch")
-    if constraints.milestones and item.milestone not in constraints.milestones:
-        reasons.append(f"{prefix}:milestone-mismatch")
-    if constraints.packages and item.package not in constraints.packages:
-        reasons.append(f"{prefix}:package-mismatch")
-    if constraints.workspace_ids and item.workspace_id not in constraints.workspace_ids:
-        reasons.append(f"{prefix}:workspace-scope-mismatch")
-    if constraints.project_ids and item.project_id not in constraints.project_ids:
-        reasons.append(f"{prefix}:project-scope-mismatch")
+    missing_tags = [tag for tag in constraints.tags if tag not in item.tags]
+    mismatches: list[tuple[bool, str]] = [
+        (bool(missing_tags), "tag-mismatch"),
+        (
+            bool(constraints.milestones) and item.milestone not in constraints.milestones,
+            "milestone-mismatch",
+        ),
+        (
+            bool(constraints.packages) and item.package not in constraints.packages,
+            "package-mismatch",
+        ),
+        (
+            bool(constraints.workspace_ids) and item.workspace_id not in constraints.workspace_ids,
+            "workspace-scope-mismatch",
+        ),
+        (
+            bool(constraints.project_ids) and item.project_id not in constraints.project_ids,
+            "project-scope-mismatch",
+        ),
+    ]
+    return [f"{prefix}:{reason}" for failed, reason in mismatches if failed]
+
+
+def _constraint_reasons(item: BacklogItemView, campaign: CampaignDefinition) -> list[str]:
+    """Reasons the item fails one campaign's declared constraint axes."""
+    reasons = _scope_reasons(item, campaign)
     if any(_area_in(area, item.declared_areas) for area in campaign.policy.protected_areas):
-        reasons.append(f"{prefix}:protected-area")
+        reasons.append(f"campaign:{campaign.campaign_id}:protected-area")
     return reasons
+
+
+def _applicable_mode(
+    item: BacklogItemView,
+    item_records: Mapping[str, ItemPolicyRecord],
+    scoped_controls: Sequence[ControlRecord],
+    reached: Sequence[CampaignDefinition],
+) -> AutonomyMode | None:
+    """The item's effective mode under the primary reaching campaign.
+
+    ``None`` when no campaign covers the item. An active human-only control
+    *is* the durable mode: it is folded in here so the absolute gate below
+    (and the selection-time re-check) applies even without a separate
+    item-policy override."""
+    primary = reached[0] if reached else None
+    mode = effective_mode(item_records.get(item.item_id), primary) if primary else None
+    if any(
+        control.kind is ControlKind.HUMAN_ONLY
+        and control.active
+        and control.item_id == item.item_id
+        for control in scoped_controls
+    ):
+        mode = AutonomyMode.HUMAN_ONLY
+    return mode
+
+
+def _active_controls(controls: Sequence[ControlRecord]) -> list[ControlRecord]:
+    """Controls not yet cleared; a cleared control steers nothing."""
+    return [control for control in controls if control.active]
+
+
+def _pause_reasons(item: BacklogItemView, active: Sequence[ControlRecord]) -> list[str]:
+    """Campaign-wide pause first, then this-item pause (AC-5)."""
+    campaign_wide = any(
+        control.kind is ControlKind.PAUSE and control.item_id is None for control in active
+    )
+    item_scoped = any(
+        control.kind is ControlKind.PAUSE and control.item_id == item.item_id for control in active
+    )
+    return [
+        reason
+        for paused, reason in (
+            (campaign_wide, "campaign:paused"),
+            (item_scoped, "item:paused"),
+        )
+        if paused
+    ]
+
+
+def _control_reasons(item: BacklogItemView, scoped_controls: Sequence[ControlRecord]) -> list[str]:
+    """Reasons an active operator control removes the item, in the canonical
+    order the audit trail records them: campaign pause, item pause, exclude."""
+    active = _active_controls(scoped_controls)
+    reasons = _pause_reasons(item, active)
+    if any(
+        control.kind is ControlKind.EXCLUDE and control.item_id == item.item_id
+        for control in active
+    ):
+        reasons.append("item:excluded")
+    return reasons
+
+
+def _item_park_reason(item: BacklogItemView, scoped_parks: Sequence[ParkRecord]) -> list[str]:
+    """``item:parked`` when an active park names this item (Q5)."""
+    if any(park.active and park.item_id == item.item_id for park in scoped_parks):
+        return ["item:parked"]
+    return []
+
+
+def _decision(
+    item: BacklogItemView,
+    *,
+    eligible: bool,
+    reasons: list[str],
+    mode: AutonomyMode | None,
+    versions: list[tuple[str, int]],
+) -> EligibilityDecision:
+    """One eligibility decision with the campaign versions it was made under."""
+    return EligibilityDecision(
+        item_id=item.item_id,
+        eligible=eligible,
+        reasons=reasons,
+        effective_mode=mode,
+        campaign_versions=versions,
+    )
+
+
+def _scoped_records(
+    controls: Sequence[ControlRecord], parks: Sequence[ParkRecord], reached_ids: set[str]
+) -> tuple[list[ControlRecord], list[ParkRecord]]:
+    """Only records written on a campaign that reaches this item may narrow
+    it. The default selector loads every campaign, so without this filter a
+    campaign-wide pause in one campaign would read as a global pause."""
+    scoped_controls = [control for control in controls if control.campaign_id in reached_ids]
+    scoped_parks = [park for park in parks if park.campaign_id in reached_ids]
+    return scoped_controls, scoped_parks
 
 
 def evaluate_item(
@@ -289,95 +403,127 @@ def evaluate_item(
     """
     reached = applicable_campaigns(item, campaigns)
     versions = [(c.campaign_id, c.policy_version) for c in reached]
-    # Controls and parks are campaign-scoped records; only those written on a
-    # campaign that reaches this item may narrow it. The default selector
-    # loads every campaign, so without this filter a campaign-wide pause in
-    # one campaign would read as a global pause.
-    reached_ids = {campaign.campaign_id for campaign in reached}
-    scoped_controls = [control for control in controls if control.campaign_id in reached_ids]
-    scoped_parks = [park for park in parks if park.campaign_id in reached_ids]
-    reasons: list[str] = []
-    primary = reached[0] if reached else None
-    mode = effective_mode(item_records.get(item.item_id), primary) if primary else None
-    if any(
-        control.kind is ControlKind.HUMAN_ONLY
-        and control.active
-        and control.item_id == item.item_id
-        for control in scoped_controls
-    ):
-        # An active human-only control *is* the durable mode: fold it in so
-        # the absolute gate below (and the selection-time re-check) applies
-        # even without a separate item-policy override.
-        mode = AutonomyMode.HUMAN_ONLY
+    scoped_controls, scoped_parks = _scoped_records(
+        controls, parks, {campaign.campaign_id for campaign in reached}
+    )
+    mode = _applicable_mode(item, item_records, scoped_controls, reached)
 
     if not can_actor_access(item):
         # Invariant 1: never widen. A campaign cannot make an inaccessible
         # item accessible, so the decision short-circuits as ineligible.
-        return EligibilityDecision(
-            item_id=item.item_id,
+        return _decision(
+            item,
             eligible=False,
             reasons=["authorization:actor-cannot-access"],
-            effective_mode=mode,
-            campaign_versions=versions,
+            mode=mode,
+            versions=versions,
         )
 
     if not reached:
         # No campaign covers the item: eligibility is simply the actor's own
         # authorization, with no campaign attribution or mode to record.
-        return EligibilityDecision(
-            item_id=item.item_id,
-            eligible=True,
-            reasons=[],
-            effective_mode=None,
-            campaign_versions=versions,
-        )
+        return _decision(item, eligible=True, reasons=[], mode=None, versions=versions)
 
     if actor.kind == "agent" and mode is AutonomyMode.HUMAN_ONLY:
         # Invariant 4: absolute. Not even pin-next reaches past this.
-        return EligibilityDecision(
-            item_id=item.item_id,
+        return _decision(
+            item,
             eligible=False,
             reasons=["mode:human-only"],
-            effective_mode=mode,
-            campaign_versions=versions,
+            mode=mode,
+            versions=versions,
         )
 
-    active_controls = [control for control in scoped_controls if control.active]
-    if any(
-        control.kind is ControlKind.PAUSE and control.item_id is None for control in active_controls
-    ):
-        reasons.append("campaign:paused")
-    if any(
-        control.kind is ControlKind.PAUSE and control.item_id == item.item_id
-        for control in active_controls
-    ):
-        reasons.append("item:paused")
-    if any(
-        control.kind is ControlKind.EXCLUDE and control.item_id == item.item_id
-        for control in active_controls
-    ):
-        reasons.append("item:excluded")
-    if any(park.active and park.item_id == item.item_id for park in scoped_parks):
-        reasons.append("item:parked")
-
+    reasons = _control_reasons(item, scoped_controls)
+    reasons.extend(_item_park_reason(item, scoped_parks))
     for campaign in reached:
         reasons.extend(_constraint_reasons(item, campaign))
-
     reasons.extend(_budget_reached_reasons(usage, reached))
 
-    return EligibilityDecision(
-        item_id=item.item_id,
-        eligible=not reasons,
-        reasons=reasons,
-        effective_mode=mode,
-        campaign_versions=versions,
-    )
+    return _decision(item, eligible=not reasons, reasons=reasons, mode=mode, versions=versions)
 
 
 async def _read_goal_state(reader: GoalReader, item: BacklogItemView) -> str | None:
     if item.goal_id is None:
         return None
     return await reader.read_goal_state(item.goal_id, item.goal_revision)
+
+
+def _required_states(item: BacklogItemView, campaigns: Sequence[CampaignDefinition]) -> set[str]:
+    """Goal states a reaching campaign demands, for the AC-4 read."""
+    return {
+        campaign.policy.required_goal_state
+        for campaign in applicable_campaigns(item, campaigns)
+        if campaign.policy.required_goal_state is not None
+    }
+
+
+def _unreadable_goal_reasons(
+    item: BacklogItemView, campaigns: Sequence[CampaignDefinition]
+) -> list[str]:
+    """Fail-closed reasons: a required Goal state that cannot be observed."""
+    return sorted(
+        f"campaign:{campaign.campaign_id}:goal-state-unreadable"
+        for campaign in applicable_campaigns(item, campaigns)
+        if campaign.policy.required_goal_state is not None
+    )
+
+
+def _fail_closed(
+    items: Sequence[BacklogItemView],
+    base_decisions: Sequence[EligibilityDecision],
+    campaigns: Sequence[CampaignDefinition],
+) -> list[EligibilityDecision]:
+    """Without a reader the required Goal state cannot be observed, so items
+    under a narrowing campaign stay ineligible instead of silently bypassing
+    the check."""
+    return [
+        _decision(
+            item,
+            eligible=False
+            if (unreadable := _unreadable_goal_reasons(item, campaigns))
+            else base.eligible,
+            reasons=base.reasons + unreadable,
+            mode=base.effective_mode,
+            versions=base.campaign_versions,
+        )
+        for item, base in zip(items, base_decisions, strict=True)
+    ]
+
+
+async def _goal_state_decision(
+    reader: GoalReader,
+    item: BacklogItemView,
+    base: EligibilityDecision,
+    campaigns: Sequence[CampaignDefinition],
+) -> EligibilityDecision:
+    """Re-check one base decision against the linked Goal's observed state.
+
+    The Goal is read by ``goal_id``/``goal_revision``; the observed state is
+    returned in the decision's reasons as audit evidence and is never copied
+    into campaign or item state (AC-4)."""
+    if not base.eligible:
+        return base
+    required = _required_states(item, campaigns)
+    if not required:
+        return base
+    reached = applicable_campaigns(item, campaigns)
+    observed = await _read_goal_state(reader, item)
+    mismatches = sorted(
+        f"campaign:{campaign.campaign_id}:goal-state-mismatch"
+        for campaign in reached
+        if campaign.policy.required_goal_state is not None
+        and observed != campaign.policy.required_goal_state
+    )
+    return _decision(
+        item,
+        eligible=not mismatches,
+        reasons=base.reasons
+        + mismatches
+        + ([f"goal-state-observed:{observed}"] if observed is not None else []),
+        mode=base.effective_mode,
+        versions=base.campaign_versions,
+    )
 
 
 async def evaluate_items(
@@ -393,11 +539,7 @@ async def evaluate_items(
     goal_reader: GoalReader | None = None,
 ) -> list[EligibilityDecision]:
     """Decide every item's eligibility, reading linked Goal state through the
-    read-only reader when a campaign requires it (AC-4).
-
-    The Goal is read by ``goal_id``/``goal_revision``; the observed state is
-    returned in the decision's reasons as audit evidence and is never copied
-    into campaign or item state."""
+    read-only reader when a campaign requires it (AC-4)."""
     base_decisions = [
         evaluate_item(
             item=item,
@@ -413,58 +555,35 @@ async def evaluate_items(
     ]
 
     if goal_reader is None:
-        # Fail closed: without a reader the required Goal state cannot be
-        # observed, so items under a narrowing campaign stay ineligible
-        # instead of silently bypassing the check.
-        return [
-            EligibilityDecision(
-                item_id=base.item_id,
-                eligible=False
-                if (
-                    unreadable := sorted(
-                        f"campaign:{campaign.campaign_id}:goal-state-unreadable"
-                        for campaign in applicable_campaigns(item, campaigns)
-                        if campaign.policy.required_goal_state is not None
-                    )
-                )
-                else base.eligible,
-                reasons=base.reasons + unreadable,
-                effective_mode=base.effective_mode,
-                campaign_versions=base.campaign_versions,
-            )
-            for item, base in zip(items, base_decisions, strict=True)
-        ]
+        return _fail_closed(items, base_decisions, campaigns)
 
-    decisions: list[EligibilityDecision] = []
-    for item, base in zip(items, base_decisions, strict=True):
-        reached = applicable_campaigns(item, campaigns)
-        required = {
-            campaign.policy.required_goal_state
-            for campaign in reached
-            if campaign.policy.required_goal_state is not None
-        }
-        if base.eligible and required:
-            observed = await _read_goal_state(goal_reader, item)
-            mismatches = sorted(
-                f"campaign:{campaign.campaign_id}:goal-state-mismatch"
-                for campaign in reached
-                if campaign.policy.required_goal_state is not None
-                and observed != campaign.policy.required_goal_state
-            )
-            decisions.append(
-                EligibilityDecision(
-                    item_id=item.item_id,
-                    eligible=not mismatches,
-                    reasons=base.reasons
-                    + mismatches
-                    + ([f"goal-state-observed:{observed}"] if observed is not None else []),
-                    effective_mode=base.effective_mode,
-                    campaign_versions=base.campaign_versions,
-                )
-            )
-        else:
-            decisions.append(base)
-    return decisions
+    return [
+        await _goal_state_decision(goal_reader, item, base, campaigns)
+        for item, base in zip(items, base_decisions, strict=True)
+    ]
+
+
+def _selection_key(candidate: RankedCandidate) -> tuple[float, float, float, float, str]:
+    """``campaign-selection-rule-v1`` order: pin-next first, then explicit
+    human priority, then system score, then item id (AC-3)."""
+    priority = candidate.human_priority
+    return (
+        -float(candidate.pinned),
+        # An explicit human instruction outranks silence.
+        0.0 if priority is not None else 1.0,
+        -(priority if priority is not None else 0.0),
+        -candidate.score,
+        candidate.item_id,
+    )
+
+
+def _pinned_ids(controls: Sequence[ControlRecord]) -> set[str]:
+    """Items an active pin-next names; a pin outranks the score (AC-3, AC-5)."""
+    return {
+        control.item_id
+        for control in controls
+        if control.active and control.kind is ControlKind.PIN_NEXT and control.item_id is not None
+    }
 
 
 def order_candidates(
@@ -485,21 +604,16 @@ def order_candidates(
     re-checking the mode makes the invariant hold even if a caller builds the
     eligible list by hand (invariant 4).
     """
-    pinned_ids = {
-        control.item_id
-        for control in controls
-        if control.active and control.kind is ControlKind.PIN_NEXT and control.item_id is not None
-    }
+    pinned_ids = _pinned_ids(controls)
     candidates: list[RankedCandidate] = []
     for decision in eligible:
         if not decision.eligible:
             continue
+        if actor.kind == ActorKind.AGENT and decision.effective_mode is AutonomyMode.HUMAN_ONLY:
+            continue
         item_record = item_records.get(decision.item_id)
         priority = item_record.human_priority if item_record is not None else None
         score, measured = score_item(signals.get(decision.item_id))
-        pinned = decision.item_id in pinned_ids
-        if actor.kind == ActorKind.AGENT and decision.effective_mode is AutonomyMode.HUMAN_ONLY:
-            continue
         candidates.append(
             RankedCandidate(
                 item_id=decision.item_id,
@@ -508,19 +622,10 @@ def order_candidates(
                 score=score,
                 score_inputs=measured,
                 effective_mode=decision.effective_mode,
-                pinned=pinned,
+                pinned=decision.item_id in pinned_ids,
             )
         )
-    candidates.sort(
-        key=lambda candidate: (
-            -float(candidate.pinned),
-            # An explicit human instruction outranks silence.
-            0.0 if candidate.human_priority is not None else 1.0,
-            -(candidate.human_priority if candidate.human_priority is not None else 0.0),
-            -candidate.score,
-            candidate.item_id,
-        )
-    )
+    candidates.sort(key=_selection_key)
     for rank, candidate in enumerate(candidates, start=1):
         candidate.rank = rank
     return candidates

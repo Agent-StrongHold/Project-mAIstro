@@ -18,7 +18,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
-from maistro.workspaces.campaigns import AuditKind, InMemoryCampaignStore
+from maistro.workspaces.campaigns import (
+    Actor,
+    ActorKind,
+    AuditKind,
+    ControlKind,
+    InMemoryCampaignStore,
+    ParkEvidence,
+)
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -262,3 +269,133 @@ async def test_routes_are_absent_without_a_campaign_store(api) -> None:
         assert response.status_code == 503
     finally:
         app.state.container = SimpleNamespace(campaign_store=campaigns)
+
+
+async def test_routes_are_absent_without_a_container_at_all(api) -> None:
+    """The 503 is the deployment's answer, not a leak: no container wired
+    means no campaign surface, whatever the routes' paths suggest."""
+    app, client, _store, campaigns = api
+    _as_user(app, "alice")
+    workspace_id = _workspace(client)
+    del app.state.container
+    try:
+        response = client.get(f"/workspaces/{workspace_id}/campaigns")
+        assert response.status_code == 503
+    finally:
+        app.state.container = SimpleNamespace(campaign_store=campaigns)
+
+
+async def test_routes_are_absent_when_the_container_has_no_campaign_store(api) -> None:
+    """A container without the attribute is as good as no store: the route
+    refuses rather than guessing what the deployment meant."""
+    app, client, _store, campaigns = api
+    _as_user(app, "alice")
+    workspace_id = _workspace(client)
+    app.state.container = SimpleNamespace()
+    try:
+        response = client.get(f"/workspaces/{workspace_id}/campaigns")
+        assert response.status_code == 503
+    finally:
+        app.state.container = SimpleNamespace(campaign_store=campaigns)
+
+
+async def test_clearing_an_unknown_control_is_a_404(api) -> None:
+    app, client, _store, _campaigns = api
+    _as_user(app, "alice")
+    workspace_id = _workspace(client)
+    campaign = _campaign(client, workspace_id)
+    base = f"/workspaces/{workspace_id}/campaigns/{campaign['campaign_id']}"
+    response = client.post(f"{base}/controls/does-not-exist/clear")
+    assert response.status_code == 404
+
+
+async def test_a_control_of_another_campaign_cannot_be_cleared_through_this_one(
+    api,
+) -> None:
+    """The campaign id in the path scopes the decision: a control record that
+    belongs to a different campaign answers 404, not its body."""
+    app, client, _store, campaigns = api
+    _as_user(app, "alice")
+    workspace_id = _workspace(client)
+    first = _campaign(client, workspace_id, name="first")
+    second = _campaign(client, workspace_id, name="second")
+    control = await campaigns.set_control(
+        second["campaign_id"],
+        ControlKind.PIN_NEXT,
+        actor=Actor(kind=ActorKind.USER, id="alice"),
+        item_id="item-1",
+    )
+    base = f"/workspaces/{workspace_id}/campaigns/{first['campaign_id']}"
+    response = client.post(f"{base}/controls/{control.control_id}/clear")
+    assert response.status_code == 404
+    assert control.active
+
+
+async def test_unparking_an_unknown_park_is_a_404(api) -> None:
+    app, client, _store, _campaigns = api
+    _as_user(app, "alice")
+    workspace_id = _workspace(client)
+    campaign = _campaign(client, workspace_id)
+    base = f"/workspaces/{workspace_id}/campaigns/{campaign['campaign_id']}"
+    assert client.post(f"{base}/parks/does-not-exist/unpark").status_code == 404
+
+
+async def test_a_park_of_another_campaign_cannot_be_unparked_through_this_one(api) -> None:
+    app, client, _store, campaigns = api
+    _as_user(app, "alice")
+    workspace_id = _workspace(client)
+    first = _campaign(client, workspace_id, name="first")
+    second = _campaign(client, workspace_id, name="second")
+    park = await campaigns.park_item(
+        second["campaign_id"],
+        "item-1",
+        ParkEvidence(reason="waiting on upstream"),
+        actor=Actor(kind=ActorKind.USER, id="alice"),
+    )
+    base = f"/workspaces/{workspace_id}/campaigns/{first['campaign_id']}"
+    assert client.post(f"{base}/parks/{park.park_id}/unpark").status_code == 404
+    assert park.active
+
+
+async def test_item_records_list_what_the_route_wrote(api) -> None:
+    app, client, _store, campaigns = api
+    _as_user(app, "alice")
+    workspace_id = _workspace(client)
+    campaign = _campaign(client, workspace_id)
+    base = f"/workspaces/{workspace_id}/campaigns/{campaign['campaign_id']}"
+    client.put(f"{base}/items/item-1", json={"human_priority": 3.0})
+    client.put(f"{base}/items/item-2", json={"mode_override": "human-only"})
+
+    listed = client.get(f"{base}/items")
+    assert listed.status_code == 200
+    assert [(record["item_id"], record["human_priority"]) for record in listed.json()] == [
+        ("item-1", 3.0),
+        ("item-2", None),
+    ]
+    assert listed.json()[1]["mode_override"] == "human-only"
+    assert len(await campaigns.list_item_records(campaign["campaign_id"])) == 2
+
+
+async def test_usage_is_recorded_with_an_actor_and_accumulates(api) -> None:
+    """The persistent Workspace Agent's consumption (#804) is attributed like
+    every other decision, and the campaign's budget counters accumulate."""
+    app, client, _store, campaigns = api
+    _as_user(app, "alice")
+    workspace_id = _workspace(client)
+    campaign = _campaign(client, workspace_id)
+    base = f"/workspaces/{workspace_id}/campaigns/{campaign['campaign_id']}"
+
+    first = client.post(f"{base}/usage", json={"cost_usd": 1.25, "minutes": 10.0})
+    assert first.status_code == 200
+    second = client.post(f"{base}/usage", json={"cost_usd": 0.75, "completions": 1})
+    assert second.status_code == 200
+    assert second.json() == {"cost_usd": 2.0, "minutes": 10.0, "completions": 1}
+
+    usage = await campaigns.get_usage(campaign["campaign_id"])
+    assert usage.cost_usd == pytest.approx(2.0)
+    decision = [
+        record
+        for record in await campaigns.audit_trail(campaign["campaign_id"])
+        if record.kind is AuditKind.USAGE_RECORDED
+    ][-1]
+    assert decision.actor == Actor(kind=ActorKind.USER, id="alice")

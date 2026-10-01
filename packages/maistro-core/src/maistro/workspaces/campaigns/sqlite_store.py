@@ -45,6 +45,7 @@ from maistro.workspaces.campaigns.store import (
     CampaignNotFound,
     ControlNotFound,
     ParkNotFound,
+    restored_mode,
 )
 
 if TYPE_CHECKING:
@@ -347,11 +348,7 @@ class SqliteCampaignStore:
         payload: dict[str, object] = {"kind": control.kind.value, "control_id": control_id}
         record = await self._get_item_record(control.campaign_id, control.item_id or "")
         if control.kind is ControlKind.HUMAN_ONLY and campaign is not None:
-            payload["restored_mode"] = (
-                campaign.policy.default_autonomy_mode.value
-                if record is None or record.mode_override is AutonomyMode.HUMAN_ONLY
-                else (record.mode_override.value if record.mode_override else None)
-            )
+            payload["restored_mode"] = restored_mode(record, campaign)
         await self.append_audit(
             CampaignAuditRecord(
                 actor=actor,

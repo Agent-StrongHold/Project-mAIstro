@@ -13,6 +13,8 @@ why the wiring refuses to ship it to real deployments silently.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import aiosqlite
 import pytest
 
@@ -27,6 +29,7 @@ from maistro.workspaces.campaigns import (
     InMemoryCampaignStore,
     ParkEvidence,
 )
+from maistro.workspaces.campaigns.sqlite_store import SqliteCampaignStore
 from maistro.workspaces.campaigns.store import (
     CampaignNotFound,
     CampaignStore,
@@ -140,6 +143,112 @@ async def test_controls_round_trip_with_actor_and_policy_version(
 async def test_unknown_control_raises(store: CampaignStore) -> None:
     with pytest.raises(ControlNotFound):
         await store.clear_control("missing", actor=OPERATOR)
+
+
+async def test_create_campaign_accepts_an_explicit_id_and_timestamp(
+    store: CampaignStore,
+) -> None:
+    """A caller that already owns the identity (a migration, a restore) can
+    supply it; the record comes back exactly as given, not re-stamped."""
+    created = await store.create_campaign(
+        workspace_id="w1",
+        name="imported",
+        actor=OPERATOR,
+        campaign_id="fixed-id",
+        created_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    assert created.campaign_id == "fixed-id"
+    assert created.created_at == datetime(2026, 9, 1, tzinfo=UTC)
+    fetched = await store.get_campaign("fixed-id")
+    assert fetched is not None
+    assert fetched.created_at == created.created_at
+
+
+async def test_list_campaigns_without_a_workspace_lists_across_workspaces(
+    store: CampaignStore,
+) -> None:
+    await store.create_campaign(workspace_id="w1", name="one", actor=OPERATOR, campaign_id="a-one")
+    await store.create_campaign(workspace_id="w2", name="two", actor=OPERATOR, campaign_id="b-two")
+    listed = await store.list_campaigns()
+    assert [(campaign.workspace_id, campaign.name) for campaign in listed] == [
+        ("w1", "one"),
+        ("w2", "two"),
+    ]
+
+
+async def test_set_control_accepts_an_explicit_timestamp(store: CampaignStore) -> None:
+    """Replayed decisions keep the moment they were made, not the replay's."""
+    campaign = await store.create_campaign(workspace_id="w1", name="c", actor=OPERATOR)
+    control = await store.set_control(
+        campaign.campaign_id,
+        ControlKind.PIN_NEXT,
+        actor=OPERATOR,
+        item_id="item-1",
+        set_at=datetime(2026, 9, 2, tzinfo=UTC),
+    )
+    assert control.set_at == datetime(2026, 9, 2, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_restored"),
+    [
+        (None, "autonomous"),
+        (AutonomyMode.HUMAN_REVIEW_REQUIRED, "human-review-required"),
+        # A human-only override clears back to the campaign default, not to
+        # itself: the control and the override are two records, and the clear
+        # returns the item to where the campaign would have put it.
+        (AutonomyMode.HUMAN_ONLY, "autonomous"),
+    ],
+)
+async def test_clearing_human_only_records_the_restored_mode(
+    store: CampaignStore, override: AutonomyMode | None, expected_restored: str
+) -> None:
+    campaign = await store.create_campaign(workspace_id="w1", name="c", actor=OPERATOR)
+    if override is not None:
+        await store.set_item_record(
+            campaign.campaign_id, "item-1", actor=OPERATOR, mode_override=override
+        )
+    control = await store.set_control(
+        campaign.campaign_id,
+        ControlKind.HUMAN_ONLY,
+        actor=OPERATOR,
+        item_id="item-1",
+    )
+    await store.clear_control(control.control_id, actor=OTHER)
+    (decision,) = [
+        record
+        for record in await store.audit_trail(campaign.campaign_id)
+        if record.kind is AuditKind.CONTROL_CLEARED
+    ]
+    assert decision.payload["restored_mode"] == expected_restored
+    assert decision.actor == OTHER
+
+
+async def test_unparking_twice_is_read_idempotent(store: CampaignStore) -> None:
+    campaign = await store.create_campaign(workspace_id="w1", name="c", actor=OPERATOR)
+    park = await store.park_item(
+        campaign.campaign_id,
+        "item-1",
+        ParkEvidence(reason="blocked upstream"),
+        actor=OPERATOR,
+    )
+    first = await store.unpark_item(park.park_id, actor=OTHER)
+    assert not first.active
+    again = await store.unpark_item(park.park_id, actor=OTHER)
+    assert again.unparked is not None
+    assert again.unparked == first.unparked
+    unpark_decisions = sum(
+        1
+        for record in await store.audit_trail(campaign.campaign_id)
+        if record.kind is AuditKind.ITEM_UNPARKED
+    )
+    assert unpark_decisions == 1
+
+
+async def test_append_audit_with_no_records_appends_nothing(store: CampaignStore) -> None:
+    before = await store.audit_trail()
+    await store.append_audit()
+    assert await store.audit_trail() == before
 
 
 async def test_item_records_store_mode_and_priority_as_given(
@@ -287,3 +396,119 @@ async def test_operator_controls_survive_a_restart(tmp_path) -> None:
         assert await reopened.list_controls(campaign_id) == []
         assert await reopened.list_parks(campaign_id) == []
         assert await reopened.audit_trail(campaign_id) == []
+
+
+# -- concurrency: the database, not the process, is the authority --------
+#
+# Two connections share one database file: the second plays the concurrent
+# writer that clears/unparks between the first's read and its write. The
+# conditional UPDATE matches zero rows, and the first writer must return what
+# the database actually holds instead of its own stale copy.
+
+
+async def _two_writers(
+    tmp_path,
+) -> tuple[SqliteCampaignStore, SqliteCampaignStore, str]:
+    first_conn = await aiosqlite.connect(tmp_path / "shared.db")
+    second_conn = await aiosqlite.connect(tmp_path / "shared.db")
+    first = SqliteCampaignStore(first_conn)
+    second = SqliteCampaignStore(second_conn)
+    await first.ensure_schema()
+    await second.ensure_schema()
+    campaign = await first.create_campaign(workspace_id="w1", name="shared", actor=OPERATOR)
+    return first, second, campaign.campaign_id
+
+
+async def test_a_control_cleared_concurrently_returns_the_databases_record(
+    tmp_path,
+) -> None:
+    first, second, campaign_id = await _two_writers(tmp_path)
+    try:
+        control = await first.set_control(
+            campaign_id, ControlKind.EXCLUDE, actor=OPERATOR, item_id="item-1"
+        )
+        # The concurrent writer wins the race.
+        await second.clear_control(control.control_id, actor=OTHER)
+        # The first writer's read is stale; its conditional UPDATE matches
+        # nothing, and the decision reads what the database holds.
+        cleared = await first.clear_control(control.control_id, actor=OPERATOR)
+        assert not cleared.active
+        assert cleared.cleared_by == OTHER
+        decisions = sum(
+            1
+            for record in await first.audit_trail(campaign_id)
+            if record.kind is AuditKind.CONTROL_CLEARED
+        )
+        assert decisions == 1
+    finally:
+        await first._conn.close()
+        await second._conn.close()
+
+
+async def test_a_control_cleared_concurrently_for_a_missing_row_is_refused(
+    tmp_path,
+) -> None:
+    first, second, campaign_id = await _two_writers(tmp_path)
+    try:
+        control = await first.set_control(
+            campaign_id, ControlKind.PIN_NEXT, actor=OPERATOR, item_id="item-1"
+        )
+        # The row disappears between the read and the write: the database is
+        # the authority, and it no longer holds the control.
+        async with first._conn.execute(
+            "DELETE FROM campaign_controls WHERE control_id = ?", (control.control_id,)
+        ):
+            pass
+        await first._conn.commit()
+        with pytest.raises(ControlNotFound):
+            await first.clear_control(control.control_id, actor=OPERATOR)
+    finally:
+        await first._conn.close()
+        await second._conn.close()
+
+
+async def test_require_control_raises_for_an_unknown_control(tmp_path) -> None:
+    first, second, _campaign_id = await _two_writers(tmp_path)
+    try:
+        with pytest.raises(ControlNotFound):
+            await first.require_control("missing")
+    finally:
+        await first._conn.close()
+        await second._conn.close()
+
+
+async def test_a_park_unparked_concurrently_returns_the_databases_record(
+    tmp_path,
+) -> None:
+    first, second, campaign_id = await _two_writers(tmp_path)
+    try:
+        park = await first.park_item(
+            campaign_id,
+            "item-1",
+            ParkEvidence(reason="blocked upstream"),
+            actor=OPERATOR,
+        )
+        await second.unpark_item(park.park_id, actor=OTHER)
+        unparked = await first.unpark_item(park.park_id, actor=OPERATOR)
+        assert not unparked.active
+        assert unparked.unparked is not None
+        assert unparked.unparked.unparked_by == OTHER
+        unpark_decisions = sum(
+            1
+            for record in await first.audit_trail(campaign_id)
+            if record.kind is AuditKind.ITEM_UNPARKED
+        )
+        assert unpark_decisions == 1
+    finally:
+        await first._conn.close()
+        await second._conn.close()
+
+
+async def test_require_park_raises_for_an_unknown_park(tmp_path) -> None:
+    first, second, _campaign_id = await _two_writers(tmp_path)
+    try:
+        with pytest.raises(ParkNotFound):
+            await first.require_park("missing")
+    finally:
+        await first._conn.close()
+        await second._conn.close()

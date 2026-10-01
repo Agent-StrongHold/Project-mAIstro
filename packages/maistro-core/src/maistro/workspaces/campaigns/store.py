@@ -84,6 +84,18 @@ class ItemNotEligible(Exception):
         super().__init__(f"{item_id}: {', '.join(reasons) or 'policy decision was ineligible'}")
 
 
+def restored_mode(record: ItemPolicyRecord | None, campaign: CampaignDefinition) -> str:
+    """The mode clearing a human-only control returns the item to.
+
+    Recorded on the clear decision itself: the item's explicit override if it
+    set a different mode, otherwise the campaign default — a human-only
+    override clears back to the default, not to itself."""
+    override = record.mode_override if record is not None else None
+    if override is None or override is AutonomyMode.HUMAN_ONLY:
+        return campaign.policy.default_autonomy_mode.value
+    return override.value
+
+
 @runtime_checkable
 class CampaignStore(Protocol):
     """Durable, attributed campaign records (Q4: beside the campaign, never
@@ -329,14 +341,7 @@ class InMemoryCampaignStore:
             # Clearing returns the item to the mode it had before, recorded
             # on the clear decision itself.
             record = self._item_records.get((control.campaign_id, control.item_id or ""))
-            override = record.mode_override if record is not None else None
-            if record is None or override is AutonomyMode.HUMAN_ONLY:
-                restored: str | None = campaign.policy.default_autonomy_mode.value
-            elif override is not None:
-                restored = override.value
-            else:
-                restored = campaign.policy.default_autonomy_mode.value
-            payload["restored_mode"] = restored
+            payload["restored_mode"] = restored_mode(record, campaign)
         await self.append_audit(
             CampaignAuditRecord(
                 actor=actor,
