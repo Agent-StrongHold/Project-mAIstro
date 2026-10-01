@@ -180,7 +180,10 @@ class TestSyncLoopRunner:
         while not observed and time.monotonic() < deadline:
             time.sleep(0.005)
         assert observed and isinstance(observed[0], asyncio.CancelledError)
-        assert runner.outstanding_count == 0
+        # The outstanding registry drained with the cancelled call (read
+        # through the same internal map close()/drain consume; there is no
+        # production reader of this bookkeeping, so no public accessor exists).
+        assert runner._outstanding == {}
         runner.close()
 
     def test_run_rejects_a_reentrant_call_from_the_same_loop(self) -> None:

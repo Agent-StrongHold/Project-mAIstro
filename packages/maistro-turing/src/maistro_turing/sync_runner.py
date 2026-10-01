@@ -175,11 +175,6 @@ class SyncLoopRunner:
         if not loop.is_closed():
             loop.close()
 
-    @property
-    def outstanding_count(self) -> int:
-        """Number of tasks currently submitted to the dedicated loop."""
-        return len(self._outstanding)
-
     # --------------------------------------------------------- internal --
 
     def _is_own_loop_thread(self) -> bool:
