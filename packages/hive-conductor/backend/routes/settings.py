@@ -225,21 +225,18 @@ def settings_audit(limit: int = 100) -> list[dict[str, Any]]:
 
 
 @router.get("/quotas")
-def settings_quotas() -> list[dict[str, Any]]:
+def settings_quotas() -> dict[str, Any]:
     """The provider usage panel, from the one canonical owner (#389).
 
     This used to return `{"providers": []}` — a hard-coded empty collection.
     The provider panel's canonical owner is the LiteLLM proxy aggregation
-    behind `GET /v1/quotas/providers`; this route delegates to it (same shape,
-    same 503-on-unavailable behavior) rather than maintaining a second source
-    that would drift.
+    behind `GET /v1/quotas/providers`; this route delegates to it (same
+    envelope — `state` distinguishes ok / no_data / unavailable / error)
+    rather than maintaining a second source that would drift.
     """
-    from routes.quotas import QuotaSourceUnavailable, provider_panel
+    from routes.quotas import provider_panel
 
-    try:
-        return provider_panel()
-    except QuotaSourceUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return provider_panel()
 
 
 @router.get("/models")

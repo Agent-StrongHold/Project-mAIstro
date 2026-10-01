@@ -28,7 +28,7 @@ the owner actually answered.
 | ------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /reload`     | `{"status": "reloaded"}` — nothing reloaded | Drops the settings cache and re-reads `services.settings_store`; returns the fresh record (revision included). Store read failure → `503`. Owner: `services.settings_store`. |
 | `GET /audit`       | `return []` forever                    | The settings-change trail (`settings_update` / `settings_patch` / `settings_reload` actions), newest first, from the one durable audit log `GET /v1/audit` serves. Empty = no settings write recorded. Owner: `stores.audit_log`. |
-| `GET /quotas`      | `{"providers": []}` forever            | Delegates to the LiteLLM-backed provider aggregation behind `GET /v1/quotas/providers` — same payload, same `503` on unavailable gateway. Owner: `routes.quotas.provider_panel`. |
+| `GET /quotas`      | `{"providers": []}` forever            | Delegates to the LiteLLM-backed provider aggregation behind `GET /v1/quotas/providers` — same envelope, one owner. Owner: `routes.quotas.provider_panel`. |
 | `GET/PUT/DELETE /volatile` | real, but unlabelled           | Marked **Preview** in the OpenAPI summary + description: deliberately non-durable overlay values, never written to the record. |
 
 ## Schedules (`routes/schedules.py`, prefix `/v1/schedules`)
@@ -48,9 +48,9 @@ the owner actually answered.
 
 | Route             | Before                                                             | Now                                                                                                                                                                                                        |
 | ----------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /providers`  | `request_count` initialized to 0 and never incremented; any LiteLLM error → `200 []` | `request_count` aggregates each model's `usage.api_requests` from `/global/spend/report`; unconfigured or unreachable gateway → `503` naming it; `200 []` only when the report is genuinely empty. Owner: LiteLLM proxy. |
-| `GET /outcomes`   | Hard-coded zeroed structure no event could change                  | Reads the canonical outcome store (`services.feedback_service`-bound; the engine bridge points it at the durable container store) for the last 7 days. Zeros = genuinely no recorded outcomes; store failure → `503`. Owner: maistro outcome store. |
-| `GET /models`     | Any LiteLLM error → `200 []`                                       | Unconfigured or unreachable gateway → `503`; `200 []` only for a gateway reporting zero models. Owner: LiteLLM proxy `/model/info`.                                                                        |
+| `GET /providers`  | `request_count` initialized to 0 and never incremented; any LiteLLM error → `200 []` | Envelope answer: `ok` / `no_data` / `unavailable` (unconfigured) / `error` (unreachable) are distinct. `request_count` aggregates each model's reported counts (`num_requests`, or `usage.api_requests`); `None` when no source reports one. Owner: LiteLLM proxy. |
+| `GET /outcomes`   | Hard-coded zeroed structure no event could change                  | Envelope answer from the canonical outcome store (`services.feedback_service`-bound; the engine bridge points it at the durable container store) for the last 7 days: `ok` measured, `no_data` genuinely empty, `error` on store failure. Owner: maistro outcome store. |
+| `GET /models`     | Any LiteLLM error → `200 []`                                       | Envelope answer: `ok` / `no_data` / `unavailable` / `error` distinct; invented neutral tier/quality/speed defaults are `None`. Owner: LiteLLM proxy `/model/info`.                                                                        |
 
 ## Explicitly unsupported (`501`)
 

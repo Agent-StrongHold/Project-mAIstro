@@ -219,17 +219,28 @@ def test_settings_quotas_serves_the_provider_panel(
     assert direct.status_code == 200
     via_settings = config_admin.get("/v1/settings/quotas")
     assert via_settings.status_code == 200
-    assert via_settings.json() == direct.json()
-    assert via_settings.json()[0]["request_count"] == 2
+    direct_body = direct.json()
+    via_body = via_settings.json()
+    # `computed_at` stamps each envelope as it is built; the delegation claim
+    # is about the panel content, so compare it without the timestamp.
+    assert "computed_at" in via_body
+    direct_body.pop("computed_at")
+    via_body.pop("computed_at")
+    assert via_body == direct_body
+    assert via_body["state"] == "ok"
+    assert via_body["providers"][0]["request_count"] == 2
 
 
-def test_settings_quotas_unavailable_is_503(config_admin: Any, monkeypatch) -> None:
+def test_settings_quotas_unavailable_is_distinct(config_admin: Any, monkeypatch) -> None:
+    """An unconfigured gateway is `state: unavailable`, not an empty panel (#389)."""
     monkeypatch.delenv("LITELLM_API_BASE", raising=False)
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
     monkeypatch.delenv("CONDUCTOR_ROUTER_URL", raising=False)
     r = config_admin.get("/v1/settings/quotas")
-    assert r.status_code == 503
-    assert "not configured" in r.json()["detail"]
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "unavailable"
+    assert "not configured" in body["reason"]
 
 
 # --------------------------------------------------------------------------- #

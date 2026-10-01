@@ -28,7 +28,7 @@
       "file": "settings.py",
       "handler": "settings_quotas",
       "disposition": "implemented",
-      "contract": "The provider usage panel, served by the same LiteLLM-backed aggregation as GET /v1/quotas/providers; 503 when the gateway is unavailable.",
+      "contract": "The provider usage panel, served by the same LiteLLM-backed aggregation as GET /v1/quotas/providers (same envelope; state distinguishes ok / no_data / unavailable / error).",
       "owner": "LiteLLM proxy via routes.quotas.provider_panel"
     },
     {
@@ -77,7 +77,7 @@
       "file": "quotas.py",
       "handler": "list_providers",
       "disposition": "implemented",
-      "contract": "Per-provider token usage and request counts aggregated from the LiteLLM spend report; 503 when the gateway is unavailable, 200 [] only when it reports nothing.",
+      "contract": "Per-provider token usage and request counts aggregated from the LiteLLM spend report, in an envelope whose state distinguishes ok / no_data / unavailable / error; request_count is None when no source reports one.",
       "owner": "LiteLLM proxy /global/spend/report"
     },
     {
@@ -87,7 +87,7 @@
       "file": "quotas.py",
       "handler": "list_outcomes",
       "disposition": "implemented",
-      "contract": "Success/failure outcome stats for the last 7 days from the canonical outcome store (the same store thumbs feedback writes); 503 on store failure, zeros only when genuinely empty.",
+      "contract": "Success/failure outcome stats for the last 7 days from the canonical outcome store (the same store thumbs feedback writes), in an envelope: ok measured, no_data genuinely empty, error on store failure.",
       "owner": "services.feedback_service outcome store"
     },
     {
@@ -97,7 +97,7 @@
       "file": "quotas.py",
       "handler": "list_models",
       "disposition": "implemented",
-      "contract": "Registered models + metadata from LiteLLM /model/info; 503 when the gateway is unavailable.",
+      "contract": "Registered models + metadata from LiteLLM /model/info, in an envelope whose state distinguishes ok / no_data / unavailable / error; unprovided tier/quality/speed stay None.",
       "owner": "LiteLLM proxy /model/info"
     },
     {

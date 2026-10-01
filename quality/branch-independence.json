@@ -129,6 +129,14 @@
       "reason": "Reviewed per-surface disposition specification; changing a shipped surface's truth classification is the substantive change."
     },
     {
+      "id": "api-route-contracts",
+      "kind": "specification",
+      "paths": [
+        "quality/api-route-contracts.json"
+      ],
+      "reason": "Reviewed per-route contract specification; changing a shipped route's no-op disposition or contract is the substantive change."
+    },
+    {
       "id": "citation-baseline",
       "kind": "legacy_shared_aggregate",
       "paths": [
