@@ -20,13 +20,16 @@ roster, `agents_dir` populates `Container.agents` and this stops being reached.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from maistro.agents.conductor import run_task
 from maistro.tasks.models import TaskCreate
 from maistro.types.agent import AgentResponse
+
+if TYPE_CHECKING:
+    from maistro.providers.protocols import LLMRouter
 
 logger = structlog.get_logger()
 
@@ -54,6 +57,13 @@ class ConductorAgent:
     honouring the classification is the point.
     """
 
+    def __init__(self, router: LLMRouter | None = None) -> None:
+        # The container's cost-aware router (#1203): when a provider-scoped
+        # circuit is open, `run_task` falls forward through its declared
+        # fallback chain instead of failing the turn. `None` (no router wired)
+        # keeps the previous fail-fast behavior.
+        self._router = router
+
     async def handle(
         self,
         messages: list[dict[str, Any]],
@@ -77,7 +87,7 @@ class ConductorAgent:
 
         task = TaskCreate(description=description, **_tier_kwargs(intent))
         try:
-            result = await run_task(task)
+            result = await run_task(task, router=self._router)
         except Exception as exc:
             # Raised rather than swallowed. `Conduit.route_request` catches
             # around this dispatch, and the endpoint above maps the exception
