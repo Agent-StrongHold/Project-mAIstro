@@ -2334,3 +2334,72 @@ repair code written — none possible without violating the issue stop
 condition (no Design-Studio-private Agent runtime, Goal owner,
 reconciliation loop, memory system, or artifact authority). No closure
 keywords used (`Refs #777` only).
+
+## Round 36 — re-verification at `6e1d18ba01a1` (36th head; job
+53790ba3a450456784de2cf5ba7a8d21)
+
+**Prior block resolution:** round 35's BLOCKED was **dependency-
+unlanded, not a develop sync conflict**, so the sync-conflict merge
+instruction did not apply. Verified: `git fetch origin` -> `origin/
+develop` unmoved at `69827fc62` (== merge-base with HEAD, 0 behind) —
+no merge needed. Driver again ran **no checks** (manifest `checks: []`;
+job directory contains only `events.jsonl`, `manifest.json`,
+`prompt.txt`, `state.json` — no `check-*.log`); no uncommitted work
+left behind (`git status` clean at `6e1d18ba01a1` = round 35's exact
+end head). All validation below executed directly this round.
+
+**Dependency re-audit (fresh greps, head unchanged):**
+- `GoalRevision|GoalReconcil|owning_agent` across `packages/*/src`:
+  still **0 files**; no `maistro-goals` package (#804/#805/#806 and
+  #458 Goal behavior absent).
+- `workspace_agent.py`
+  (`packages/hive-conductor/backend/services/workspace_agent.py`):
+  **0** `goal|reconcil` matches — front door only (#53).
+- `agent_goal_ownership` remains an ontology `RelationshipSpec`
+  declaration only (`packages/maistro-core/src/maistro/interop/
+  contract.py:354`), not ownership-transfer behavior.
+- `brief_store.py:5` still disclaims "nothing here is a Goal or
+  CreativeBrief record" (#774 absent); `brief_interview.py` is the
+  pre-commit interview, not a creative graph (#775 absent).
+- `ladybug`: **0** hits in `packages/*/src` (#776 absent).
+- #103 campaigns `GoalReader` (`workspaces/campaigns/policy.py:54`)
+  remains a read-only eligibility Protocol — not Goal reconciliation.
+
+**Gates executed at head `6e1d18ba01a1` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2669 files already formatted (exit
+  0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; base
+  `69827fc62e05` -> candidate `6e1d18ba01a1`, 1390 reviewed identities
+  -> 1390 findings, **0 unbanked** (no ledger amendment required).
+- `uv run pytest packages/maistro-core/tests packages/maistro-server/
+  tests -q` — **11408 passed, 1 failed, 736 skipped, 1 xfailed**
+  (475.49s). The single failure,
+  `test_sigterm_shutdown.py::TestStopRestartLeavesNoOrphanedSandboxes::
+  test_stop_destroys_seeded_sandbox_and_restart_is_clean`, is a
+  **load-dependent flake, not a regression**: no production code changed
+  since round 35's fully green run (the only commit since was the
+  docs-only note commit `6e1d18ba01a1`); the test **passes in
+  isolation** (22.97s) and the **whole file passes 3/3** on rerun
+  (33.76s). SIGTERM/sandbox process-timing sensitivity under full-suite
+  load; first occurrence in this lane's runs, recorded here for the
+  next verifier.
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **2997
+  passed, 6 skipped** (238.24s).
+- `uv run pytest packages/maistro-canvas/tests -q` — **426 passed, 73
+  skipped** (22.00s).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites
+  match the recorded inventory.
+- `uv run python scripts/check-doc-links.py` — 0 broken relative links.
+- `uv run python scripts/check-adr-index.py` — OK: every ADR-INDEX row
+  agrees with its ADR front matter.
+
+**Conclusion (36th inspected head):** unchanged block — same head as
+round 35's end, `origin/develop` unmoved, all canonical dependencies
+still absent. All 13 #777 acceptance criteria remain UNMET; lane stays
+**BLOCKED on unlanded canonical dependencies** (#458 Goal behavior,
+#804/#805/#806, #774, #775, #776). No repair code written — none
+possible without violating the issue stop condition (no Design-Studio-
+private Agent runtime, Goal owner, reconciliation loop, memory system,
+or artifact authority). No closure keywords used (`Refs #777` only).
