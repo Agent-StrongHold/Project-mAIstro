@@ -100,8 +100,8 @@
 
 ## Superseded duplicate specs
 
-- **SPEC-070126-a3f1** → SPEC-062126-757a.  
-- **SPEC-070126-b2e4** → SPEC-062126-971d.  
-- **SPEC-070126-c5d7** → SPEC-062126-7853.  
+- **[SPEC-070126-a3f1](../../../specs/SPEC-070126-a3f1-canvas-tool-action-contracts.md)** → SPEC-062126-757a.  
+- **[SPEC-070126-b2e4](../../../specs/SPEC-070126-b2e4-shared-tool-call-cache.md)** → SPEC-062126-971d.  
+- **[SPEC-070126-c5d7](../../../specs/SPEC-070126-c5d7-skill-fixer-rule-pipeline.md)** → SPEC-062126-7853.  
 
 These are stale copies accidentally reintroduced after date-based renaming and should remain historical only.
