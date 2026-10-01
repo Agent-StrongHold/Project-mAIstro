@@ -125,13 +125,18 @@ class SqliteBacklogStore:
                 await self._conn.commit()
 
     # -- reads ----------------------------------------------------------
+    # Reads take `_write_lock` too: the store uses one shared connection, so
+    # an unguarded read would run *inside* another task's open write
+    # transaction (aiosqlite interleaves per statement) and could observe an
+    # item mutation before its provenance event is appended.
 
     async def get_item(self, item_id: str) -> BacklogItem | None:
-        async with self._conn.execute(
-            "SELECT payload FROM backlog_items WHERE item_id = ?",
-            (item_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
+        async with self._write_lock:
+            async with self._conn.execute(
+                "SELECT payload FROM backlog_items WHERE item_id = ?",
+                (item_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
         return BacklogItem.model_validate_json(row[0]) if row is not None else None
 
     async def list_items(
@@ -161,28 +166,31 @@ class SqliteBacklogStore:
             + " AND ".join(clauses)
             + " ORDER BY created_at, item_id"
         )
-        async with self._conn.execute(query, tuple(params)) as cursor:
-            rows = await cursor.fetchall()
+        async with self._write_lock:
+            async with self._conn.execute(query, tuple(params)) as cursor:
+                rows = await cursor.fetchall()
         return [BacklogItem.model_validate_json(row[0]) for row in rows]
 
     async def active_claim(
         self, item_id: str, *, at: datetime | None = None
     ) -> BacklogClaim | None:
-        await self._require_item(item_id)
-        now = _now(at)
-        claim = await self._claim_row(item_id)
-        if claim is not None and claim.is_active(at=now):
-            return claim
+        async with self._write_lock:
+            await self._require_item(item_id)
+            now = _now(at)
+            claim = await self._claim_row(item_id)
+            if claim is not None and claim.is_active(at=now):
+                return claim
         return None
 
     async def events(self, item_id: str) -> list[BacklogEvent]:
-        await self._require_item(item_id)
-        async with self._conn.execute(
-            """SELECT event_id, item_id, at, actor, kind, item_version, payload
-                 FROM backlog_events WHERE item_id = ? ORDER BY seq""",
-            (item_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
+        async with self._write_lock:
+            await self._require_item(item_id)
+            async with self._conn.execute(
+                """SELECT event_id, item_id, at, actor, kind, item_version, payload
+                     FROM backlog_events WHERE item_id = ? ORDER BY seq""",
+                (item_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
         return [
             BacklogEvent(
                 event_id=row[0],
