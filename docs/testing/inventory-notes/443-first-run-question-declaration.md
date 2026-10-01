@@ -79,3 +79,33 @@ missing-required-fields parametrize: the field now carries the declared
 default, so omitting it is a valid statement of "auto", not a contract
 violation. admin/user passwords stay required. Net backend count: +8 new,
 −1 parametrize case.
+
+## CI-repair round evidence (gate-repair job 513d25b1)
+
+The merge-queue evaluation at 10f12dcb reported `integration-scope: failure`
+with `docker-build: cancelled`. Diagnosis from the tree, not the scanner:
+
+- The scope classifier is unaffected by this diff: `scripts/ci_merge_group_scope.py`
+  over the branch's changed paths returns `{docker_build, hive_e2e,
+  strike_ladder, wheel_imports} = true`, and `scripts/check-integration-scope.py`
+  resolves that to exactly `docker-build, hive-conductor-e2e,
+  hive-conductor-e2e-ui, strike-ladder, wheel-imports` — no fail-closed
+  widening, no classification error.
+- A `cancelled` conclusion on `docker-build` is a queue-supersession artifact
+  (the ci.yml concurrency group cancels in-progress merge-group runs), not a
+  build defect. The leg's substance was proven locally on this head:
+  `docker build -f packages/hive-conductor/Dockerfile` (frontend + backend of
+  this diff) and `docker build -f Dockerfile` (engine; copies
+  `packages/maistro-core`, including `config/first_run.py`) both exited 0.
+- The vulture per-identity ledger repair command
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) reports 1390 findings / 1390 reviewed
+  identities, `unclassified: 0`, ratchet `base fa3391e5e -> candidate
+  10f12dcb` — nothing unbanked, nothing to amend: the test-only
+  `hardware_preset` parameter was deleted rather than suppressed, so the
+  ledger sees its removal.
+- Local battery at this head: `ruff check .` clean, `ruff format --check .`
+  clean (2673 files), 35 bootstrap/core tests pass, 64 backend
+  registration/setup tests pass, all three suite inventories match,
+  `npm run build` (vite + tsc) succeeds, eslint on the changed frontend files:
+  0 errors.
