@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +24
-  packages/maistro-rsi/tests: +0
+  packages/hive-conductor/backend/tests: +25
+  packages/maistro-rsi/tests: +1
 ---
 # issue-509-rsi-container-dispatch
 
-## packages/hive-conductor/backend/tests: +24
+## packages/hive-conductor/backend/tests: +25
 
 `test_rsi_container_dispatch.py` (+24, new) is the suite for the container
 dispatch backend that #509 adds (`services/rsi_container_dispatch.py`) and the
@@ -26,11 +26,15 @@ the docker CLI.)
   backend; a hung docker probe lands in the same operator-facing refusal
   instead of an unhandled exception (the route's intended 400, not a 500); and
   the refusal still names `run_rsi_isolated.sh`.
-- The launch argv (8): the loop runs inside the image's own venv python, no
+- The launch argv (9): the loop runs inside the image's own venv python, no
   shell token anywhere in the argv (a metacharacter payload in the objective
   stays an argv token), the source repo is mounted read-only, the report dir is
   mounted outside the edited tree, the policy vector crosses as `--test-argv`
-  JSON, the runtime is hardened like the wrapper (`--cap-drop=ALL`,
+  JSON, a bare leading `python` in the policy vector is resolved to the image's
+  virtualenv interpreter before forwarding (the base env's pinned PATH would
+  otherwise pick the base-image python, which cannot import pytest — while an
+  argument that merely *says* `python` is candidate data and passes through
+  untouched), the runtime is hardened like the wrapper (`--cap-drop=ALL`,
   `no-new-privileges`, `--pids-limit`, `--memory`, `--rm`, plus `--user`
   pinning the loop to this process's uid:gid — with every capability stripped,
   container-root could not write the host-owned report mount), the container is
@@ -66,7 +70,7 @@ delta; the assertions moved with the execution model. The two refusal tests
 now pin the backend's probe off the host's real docker — they assert policy
 plumbing, not daemon state.
 
-## packages/maistro-rsi/tests: +0
+## packages/maistro-rsi/tests: +1
 
 `test_non_production_reachability.py` (5 → 5, net 0): the activation pin
 `test_the_http_run_gate_stays_disabled_until_containment_exists` is renamed to
@@ -76,4 +80,16 @@ nobody verified, a literal `False` is #305's refuse-everything constant that
 #509 replaced with a working path — while still pinning the route's
 `require_isolation()` call. The scanner-sensitivity cases gain the `False` and
 `None` spellings. `__main__`'s `--test-argv` flag itself is exercised from the
-conductor suite above (the parse test), so no new RSI-side nodes.
+conductor suite above (the parse test), so no new RSI-side nodes there.
+
+`test_local_loop.py` (net +1) restores the proof of
+SPEC-082926-a6ab/AC-7 — the #509 rework of the conductor containment suite
+had deleted the old marker-bearing test along with the host-side construction
+it pinned. The criterion's substance survives #509 unchanged: the loop builds
+the builders apply function from its own config, so a run resolved to
+`container` isolation reaches `make_builders_apply_patch` as
+`isolation="container"` plus its image, never a silently-defaulted host
+sandbox. The proof now lives against `maistro_rsi.local_loop` directly — in
+the dispatched model that construction runs inside the runner container, and
+the guarantee is the loop's, wherever it executes. This +1 is what restores
+the design-coverage floor the Quality gate folded at the base.

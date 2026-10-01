@@ -398,7 +398,49 @@ class TestTheLaunchArgv:
         loop_cmd = dispatch.container_argv(spec)
         argv_at = loop_cmd.index("--test-argv")
 
-        assert json.loads(loop_cmd[argv_at + 1]) == ["python", "-m", "pytest", "-q"]
+        # A bare `python` is resolved to the image's virtualenv interpreter
+        # before forwarding: the base env's pinned PATH would otherwise pick
+        # the base-image interpreter, which cannot import pytest (Codex, #509).
+        assert json.loads(loop_cmd[argv_at + 1]) == [
+            "/workspace/.venv/bin/python",
+            "-m",
+            "pytest",
+            "-q",
+        ]
+
+    def test_an_argument_that_merely_says_python_is_not_rewritten(
+        self, fake_docker: FakeDocker, report_root: Path
+    ) -> None:
+        """Only the leading token is the executable; candidate data that says
+        `python` must pass through untouched."""
+        from services import rsi_container_dispatch as dispatch
+
+        spec = dispatch.build_spec(
+            run_id="abc123",
+            repo=Path("/srv/repos/checkout"),
+            test_argv=("/opt/interpreter/python3", "-m", "pytest", "-q"),
+            cycles=1,
+            agent_turns=1,
+            model=None,
+            objective="",
+            targets=[],
+            use_fitness=False,
+            coverage_source=".",
+            coverage_pytest_args="",
+            scout=False,
+            genome_models=[],
+            roster_size=4,
+        )
+
+        loop_cmd = dispatch.container_argv(spec)
+        argv_at = loop_cmd.index("--test-argv")
+
+        assert json.loads(loop_cmd[argv_at + 1]) == [
+            "/opt/interpreter/python3",
+            "-m",
+            "pytest",
+            "-q",
+        ]
 
     def test_the_container_side_command_parses_with_the_real_cli(
         self, fake_docker: FakeDocker, report_root: Path
@@ -444,9 +486,15 @@ class TestTheLaunchArgv:
         assert args.command == "run"
         assert args.repo == "/target"
         assert args.report_dir == "/run/reports"
-        assert args.work_root == "/tmp/rsi-work"
-        assert json.loads(args.test_argv) == ["python", "-m", "pytest", "-q"]
-        assert args.test_cmd == "python -m pytest -q"  # display form; never executed
+        assert args.work_root == "/tmp/rsi-work"  # nosec B108 — asserts the pinned container-internal constant, not a host path
+        assert json.loads(args.test_argv) == [
+            "/workspace/.venv/bin/python",
+            "-m",
+            "pytest",
+            "-q",
+        ]
+        # Display form mirrors the resolved vector; still never executed.
+        assert args.test_cmd == "/workspace/.venv/bin/python -m pytest -q"
         assert args.fitness is True
         assert args.cycles == 3
         assert args.agent_turns == 6

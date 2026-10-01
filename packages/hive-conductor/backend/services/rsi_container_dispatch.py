@@ -92,7 +92,13 @@ DEFAULT_RUNNER_IMAGE = "maistro-rsi-runner:latest"
 #: the gateway's compose network and uses the container name for the same
 #: reason: the published port is host-loopback only, and the builders agent
 #: rewrites a bare ``litellm`` host to 127.0.0.1.
-DEFAULT_GATEWAY_URL = "http://maistro-litellm:4000"
+#
+#: http:// is intentional: ``maistro-litellm`` is the gateway's service name
+#: on the stack's private compose bridge network -- container to container,
+#: never off the host, with no CA that could sign it (same rationale as the
+#: LITELLM_* suppressions in docker-compose.yml). Deployments override this
+#: via ``rsi_gateway_url``, whose scheme is whatever the operator gives it.
+DEFAULT_GATEWAY_URL = "http://maistro-litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
 
 #: Resource + capability guardrails, mirroring ``tools/run_rsi_isolated.sh``:
 #: caps stripped, no privilege escalation, fork storms bounded. Generous vs
@@ -107,10 +113,12 @@ DEFAULT_PIDS = "1024"
 STOP_TIMEOUT_S = 20
 
 #: Where the container expects its inputs. Container-side paths, fixed: the
-#: host paths that feed them are derived server-side.
+#: host paths that feed them are derived server-side. The /tmp literal is a
+#: path INSIDE the ephemeral runner container (its own writable layer, gone
+#: with the ``--rm`` container) — no host temp file is ever addressed here.
 REPO_MOUNT_TARGET = "/target"
 REPORT_MOUNT_TARGET = "/run/reports"
-WORK_ROOT_IN_CONTAINER = "/tmp/rsi-work"
+WORK_ROOT_IN_CONTAINER = "/tmp/rsi-work"  # nosec B108 — container-internal work root, never a host path
 
 #: Label put on every dispatched container, so an operator (or a future
 #: durable run store) can find the containers this backend started.
@@ -129,6 +137,16 @@ PYTHONPATH_IN_CONTAINER = (
     "packages/maistro-core/src:packages/maistro-evolve/src:"
     "packages/maistro-rsi/src:packages/maistro-bootstrap/src"
 )
+
+#: The runner image's virtualenv interpreter. Candidate execution runs under
+#: the credential-boundary base env (`candidate_env()`), whose PATH is the
+#: literal ``/usr/local/bin:/usr/bin:/bin`` — so a bare ``python`` in a
+#: forwarded profile resolves to the python:3.12-slim BASE interpreter, which
+#: has neither pytest nor the workspace install: `Dockerfile.rsi-runner` bakes
+#: both into ``/workspace/.venv`` only. Dispatch resolves the profile's
+#: interpreter to the venv before forwarding, so the vector policy approved is
+#: the vector that can actually run (Codex review, #509).
+RUNNER_VENV_PYTHON = "/workspace/.venv/bin/python"
 
 #: The git config file `launch()` writes into the report dir (which is mounted
 #: at REPORT_MOUNT_TARGET) and advertises via GIT_CONFIG_GLOBAL. It marks the
@@ -314,6 +332,23 @@ def _container_user() -> list[str]:
     return ["--user", f"{os.getuid()}:{gid}"]
 
 
+def _resolve_runner_interpreter(test_argv: tuple[str, ...]) -> list[str]:
+    """Point a bare leading interpreter token at the image's virtualenv.
+
+    The built-in profiles (and any operator overlay) start with ``python``;
+    under the base env's pinned PATH that name resolves to the base-image
+    interpreter, which cannot import pytest. Only argv[0] is rewritten: it is
+    the token exec actually resolves, and an argument that merely says
+    ``python`` is candidate data, not an executable.
+    """
+    argv = list(test_argv)
+    # Bare names only: an absolute interpreter path in a profile is an
+    # explicit choice, not an ambiguity to second-guess.
+    if argv and argv[0] in {"python", "python3"}:
+        argv[0] = RUNNER_VENV_PYTHON
+    return argv
+
+
 def container_argv(spec: DispatchSpec) -> list[str]:
     """The full ``docker run`` argument vector for one contained run.
 
@@ -330,6 +365,7 @@ def container_argv(spec: DispatchSpec) -> list[str]:
     if not network:
         network = _detect_gateway_network()
     image = runner_image()
+    resolved_argv = _resolve_runner_interpreter(spec.test_argv)
 
     loop_cmd: list[str] = [
         "/workspace/.venv/bin/python",
@@ -344,9 +380,9 @@ def container_argv(spec: DispatchSpec) -> list[str]:
         # below WINS in LocalRsiLoop._run_tests, and it is what runs — with no
         # shell on either side of the boundary.
         "--test-cmd",
-        " ".join(spec.test_argv),
+        " ".join(resolved_argv),
         "--test-argv",
-        json.dumps(list(spec.test_argv)),
+        json.dumps(resolved_argv),
         "--cycles",
         str(spec.cycles),
         "--report-every",
@@ -617,6 +653,6 @@ def describe(spec: DispatchSpec) -> str:
     """Human-readable echo of what would run, for logs — never a command line."""
     return (
         f"run={spec.run_id} image={runner_image()} repo={spec.repo} "
-        f"test_argv={shlex.join(spec.test_argv)} cycles={spec.cycles} "
-        f"report_dir={spec.report_dir}"
+        f"test_argv={shlex.join(_resolve_runner_interpreter(spec.test_argv))} "
+        f"cycles={spec.cycles} report_dir={spec.report_dir}"
     )

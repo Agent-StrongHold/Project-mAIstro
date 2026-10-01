@@ -448,10 +448,13 @@ class TestTheServiceRefusesWhatTheRouteWouldNotSend:
         assert spec.test_argv == ("python", "-m", "pytest", "-q")
         # The policy-resolved vector crosses as a vector: the container-side
         # command carries it as --test-argv JSON, and no shell string is
-        # composed on either side of the boundary.
+        # composed on either side of the boundary. The bare interpreter is
+        # resolved to the image's virtualenv python in the same step: the base
+        # env's pinned PATH would otherwise pick the base-image interpreter,
+        # which cannot import pytest (Codex, #509).
         argv = dispatch.container_argv(spec)
         assert json.loads(argv[argv.index("--test-argv") + 1]) == [
-            "python",
+            "/workspace/.venv/bin/python",
             "-m",
             "pytest",
             "-q",
