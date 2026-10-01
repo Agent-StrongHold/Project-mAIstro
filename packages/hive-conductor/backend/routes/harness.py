@@ -10,6 +10,7 @@ returns 400 when Warden refuses an inbound payload.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from typing import Any
@@ -22,6 +23,7 @@ from services.engine import get_engine
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities import HarnessSessionManager, Unavailable
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked
 from maistro.policy import BudgetRule, SequencePolicyEngine
@@ -30,6 +32,12 @@ from maistro.security.warden.detector import Warden
 router = APIRouter(tags=["harness"])
 
 _manager: HarnessSessionManager | None = None
+#: Serializes the lazy build below. Registering the route's Binding is I/O on a
+#: durable store, so the `is None` check and the assignment are no longer
+#: adjacent: two concurrent first requests could each pass the guard, build
+#: their own manager with its own `_sessions`, and the loser's session id would
+#: then be unknown to every later send/stream/stop (Codex, #1760).
+_manager_lock = asyncio.Lock()
 
 
 def _configured_harness_policy() -> SequencePolicyEngine:
@@ -45,43 +53,51 @@ def _configured_harness_policy() -> SequencePolicyEngine:
 async def _get_manager() -> HarnessSessionManager:
     """Lazily build a process-wide manager over the engine registry + Warden."""
     global _manager
-    if _manager is None:
-        engine = get_engine()
-        container = getattr(engine.agent_port, "container", None)
-        effects = getattr(container, "capability_effects", None)
-        if effects is None:
-            # Stub/degraded engine mode has no policy authority. Keep the route
-            # explicitly available only through a configured effect context;
-            # the context default denies rather than granting the provider call.
-            effects = new_effect_context()
-        binding = Binding(
-            binding_id="builtin:harness-route",
-            workspace_id="default",
-            project_id="default",
-            capability="harness_runner",
-        )
-        # This is composition-time registration, not an effect-time grant. Once
-        # revoked, the manager only resolves the existing identity and never
-        # recreates it -- `put` raises `BindingNotFound` over the tombstone,
-        # and on a durable store that tombstone outlives the process that
-        # wrote it. Suppressed because the manager below already exposes the
-        # route as unavailable when the Binding is absent; the route must not
-        # fail to construct over it.
-        #
-        # `put`, not the in-memory store's synchronous `register`: every
-        # backend implements `put`, and narrowing to the concrete in-memory
-        # class here is what took this route offline on exactly the
-        # deployments that persist anything (#1133).
-        with contextlib.suppress(Exception):
-            await effects.bindings.put(binding)
-        _manager = HarnessSessionManager(
-            engine.capabilities,
-            warden=Warden(),
-            policy=_configured_harness_policy(),
-            invocation_service=effects.invocations,
-            invocation_binding=binding,
-            binding_store=effects.bindings,
-        )
+    if _manager is not None:
+        return _manager
+    async with _manager_lock:
+        # Re-checked inside the lock: the waiter that arrives second must see
+        # the manager the first one built, not build a second.
+        if _manager is None:
+            engine = get_engine()
+            container = getattr(engine.agent_port, "container", None)
+            effects = getattr(container, "capability_effects", None)
+            if effects is None:
+                # Stub/degraded engine mode has no policy authority. Keep the route
+                # explicitly available only through a configured effect context;
+                # the context default denies rather than granting the provider call.
+                effects = new_effect_context()
+            binding = Binding(
+                binding_id="builtin:harness-route",
+                workspace_id="default",
+                project_id="default",
+                capability="harness_runner",
+            )
+            # This is composition-time registration, not an effect-time grant. Once
+            # revoked, the manager only resolves the existing identity and never
+            # recreates it -- `put` raises `BindingNotFound` over the tombstone,
+            # and on a durable store that tombstone outlives the process that
+            # wrote it. Suppressed because the manager below already exposes the
+            # route as unavailable when the Binding is absent; the route must not
+            # fail to construct over it.
+            #
+            # `register_boot_binding`, not the in-memory store's synchronous
+            # `register`: every backend supports it, and narrowing to the
+            # concrete in-memory class here is what took this route offline on
+            # exactly the deployments that persist anything (#1133). It also
+            # returns the *stored* record on a restart, so the manager holds
+            # the identity the store actually has rather than a fresh one whose
+            # `created_at` no longer matches (#1760).
+            with contextlib.suppress(Exception):
+                binding = await register_boot_binding(effects.bindings, binding)
+            _manager = HarnessSessionManager(
+                engine.capabilities,
+                warden=Warden(),
+                policy=_configured_harness_policy(),
+                invocation_service=effects.invocations,
+                invocation_binding=binding,
+                binding_store=effects.bindings,
+            )
     return _manager
 
 

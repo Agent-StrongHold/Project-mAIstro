@@ -115,6 +115,41 @@ class RevocableBindingStore(BindingStore, Protocol):
     async def revoke(self, binding_id: str) -> None: ...
 
 
+async def register_boot_binding(bindings: BindingStore, binding: Binding) -> Binding:
+    """Register a composition-time Binding once, and again on every restart.
+
+    Returns the registered record, which after the first boot is the one
+    already stored. A durable store compares the *whole* Binding, and a
+    freshly constructed one differs from the stored copy by ``created_at``
+    alone -- so a composition root that simply re-``put`` its boot Binding
+    succeeded on the first boot and raised ``ValueError`` on every one after,
+    taking the capability offline exactly when the deployment persisted
+    anything (Codex, #1760).
+
+    Reusing the stored record rather than stamping a fixed ``created_at``
+    keeps the real first-registration time, which is the only thing that
+    timestamp is for.
+
+    A *changed* definition is still refused. Equality is checked with the
+    candidate's own ``created_at`` substituted in, so the comparison asks the
+    question that matters -- has this identity been redefined -- rather than
+    the one that is answered differently on every process start.
+
+    Revocation survives this: a revoked identity is absent from ``get`` and
+    refused by ``put``, so a restart cannot re-grant what an operator withdrew.
+    """
+
+    existing = await bindings.get(binding.binding_id)
+    if existing is None:
+        return await bindings.put(binding)
+    if existing.model_copy(update={"created_at": binding.created_at}) != binding:
+        raise ValueError(
+            f"Binding {binding.binding_id!r} is registered with a different definition; "
+            "a boot Binding is immutable and cannot be redefined in place"
+        )
+    return existing
+
+
 def _scope_checked(
     binding: Binding,
     *,
@@ -459,4 +494,5 @@ __all__ = [
     "PgBindingStore",
     "RevocableBindingStore",
     "SqliteBindingStore",
+    "register_boot_binding",
 ]

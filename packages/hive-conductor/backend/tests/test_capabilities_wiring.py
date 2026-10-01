@@ -367,6 +367,40 @@ async def test_self_repair_registers_against_a_durable_binding_store() -> None:
         assert await durable.get("builtin:self-repair:infra-action") is not None
 
 
+async def test_self_repair_survives_a_restart_against_the_same_database() -> None:
+    """The second boot must behave like the first, or persistence breaks it.
+
+    A durable store compares the whole Binding, and each process builds its
+    boot Binding with a fresh `created_at`. Registering with a plain `put`
+    therefore worked once and raised `ValueError` on every restart after,
+    which left `self_repair` disabled on exactly the deployments that keep
+    anything -- the opposite of what #1759 set out to fix (Codex, #1760).
+    """
+
+    import dataclasses
+
+    import aiosqlite
+
+    from maistro.capabilities.binding_store import SqliteBindingStore
+
+    async with aiosqlite.connect(":memory:") as conn:
+        durable = SqliteBindingStore(conn)
+        await durable.ensure_schema()
+
+        for boot in (1, 2):
+            # A fresh registry each time: a new process, same database.
+            reg = default_capability_registry(entry_points=[])
+            reg.register(_WiringMonitor())
+            effects = new_effect_context(policy_evaluator=binding_scope_policy)
+            persisted = dataclasses.replace(effects, bindings=durable)
+
+            await _register_self_repair(reg, _cfg(), persisted)
+
+            assert reg.provider("self_repair", "rule_based_repair") is not None, (
+                f"self_repair did not register on boot {boot}"
+            )
+
+
 async def test_a_revocation_that_outlived_a_restart_still_disables_self_repair() -> None:
     """Revocation is durable, so boot must not re-grant across a restart.
 

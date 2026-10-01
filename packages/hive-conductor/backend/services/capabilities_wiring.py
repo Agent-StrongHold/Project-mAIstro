@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.http_client import HttpxAsyncHttp
 from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
@@ -168,8 +169,8 @@ async def _register_self_repair(
 ) -> None:
     """Register self_repair with decision-time infra_action admission (SPEC-188/#846).
 
-    Boot registration goes through ``BindingStore.put``, which every backend
-    implements -- in-memory, SQLite and PostgreSQL alike. It previously went
+    Boot registration goes through ``register_boot_binding``, which every
+    backend supports -- in-memory, SQLite and PostgreSQL alike. It previously went
     through the in-memory store's synchronous ``register``, so this narrowed to
     that concrete class first and self_repair turned itself off on exactly the
     deployments that persist anything (#1133). ``put`` has the semantics boot
@@ -181,9 +182,8 @@ async def _register_self_repair(
     monitor = registry.provider("infra_monitor", "host_health")
     if monitor is None:
         return
-    binding = _self_repair_binding()
     try:
-        await effect_context.bindings.put(binding)
+        binding = await register_boot_binding(effect_context.bindings, _self_repair_binding())
     except Exception:
         logger.exception("self_repair disabled: failed to register its Binding")
         return
