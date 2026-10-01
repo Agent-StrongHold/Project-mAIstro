@@ -196,6 +196,13 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         None,
         None,
         None,
+        # Gauntlet validation provenance (M4-B2): a fresh row has never been
+        # validated, so the defaults are the honest values.
+        "",
+        "",
+        0.0,
+        "[]",
+        "",
     )
 
 

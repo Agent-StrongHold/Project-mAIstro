@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
@@ -51,6 +52,11 @@ _PG_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "validated_by",
+    "validated_evaluator_version",
+    "validated_at",
+    "validation_run_ids",
+    "validation_content_hash",
 )
 
 
@@ -116,11 +122,32 @@ class PgLearningStore:
         before `org_id` existed: idempotent, cheap, and safe to run at startup.
         Failing loudly on a missing scope column is the right direction for a
         filter whose absence is a cross-scope read — but the migration is what
-        should be relied on, not this.
+        should be relied on, not this. The Gauntlet provenance columns (M4-B2,
+        migration 048) ride along on the same idempotent pattern.
         """
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validated_by TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validated_evaluator_version TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validated_at DOUBLE PRECISION NOT NULL DEFAULT 0"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validation_run_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validation_content_hash TEXT NOT NULL DEFAULT ''"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope "
@@ -160,9 +187,11 @@ class PgLearningStore:
                     agent_id, user_id, org_id, team_id, scope, hit_count, status,
                     rca_category, rca_prevention,
                     success_after_use, failure_after_use,
-                    run_id, node_run_id, attempt_id)
+                    run_id, node_run_id, attempt_id,
+                    validated_by, validated_evaluator_version, validated_at,
+                    validation_run_ids, validation_content_hash)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                           $13, $14, $15, $16, $17, $18, $19)
+                           $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -183,6 +212,11 @@ class PgLearningStore:
                 # `as_columns` owns the "blank means absent" rule for every
                 # store that writes it (#709).
                 *provenance.as_columns(),
+                learning.validated_by,
+                learning.validated_evaluator_version,
+                learning.validated_at,
+                _dump_keys(learning.validation_run_ids),
+                learning.validation_content_hash,
             )
             return int(row["id"]) if row else 0
 
@@ -445,6 +479,46 @@ class PgLearningStore:
             )
             return [_row_to_learning(r) for r in rows]
 
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: float = 0.0,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Flip one active learning to promoted, writing its validation provenance.
+
+        The per-candidate promotion seam the Gauntlet path needs: `check_auto_promotions`
+        promotes every threshold-crossing row in scope, but an independent validator
+        decides per candidate, so the store must be able to promote exactly one. Only
+        an `active`, in-scope row flips — an already-promoted, already-rejected or
+        out-of-scope row returns None rather than being touched, and a rejected
+        candidate's row (its evidence, its anti-learning) is never modified here.
+        Scoped like `mark_outcome`: an unscoped caller must not promote another
+        org's id.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE learnings
+                   SET status = 'promoted', validated_by = $2,
+                       validated_evaluator_version = $3, validated_at = $4,
+                       validation_run_ids = $5, validation_content_hash = $6
+                   WHERE id = $1 AND org_id = $7 AND status = 'active'
+                   RETURNING *""",
+                learning_id,
+                validated_by,
+                evaluator_version,
+                validated_at,
+                _dump_keys(list(validation_run_ids)),
+                validation_content_hash,
+                org_id,
+            )
+        return _row_to_learning(row) if row else None
+
     async def get_promoted(
         self,
         task_type: str | None = None,
@@ -548,4 +622,9 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         run_id=row.get("run_id") or "",
         node_run_id=row.get("node_run_id") or "",
         attempt_id=row.get("attempt_id") or "",
+        validated_by=row.get("validated_by") or "",
+        validated_evaluator_version=row.get("validated_evaluator_version") or "",
+        validated_at=row.get("validated_at") or 0.0,
+        validation_run_ids=_load_keys(row.get("validation_run_ids")),
+        validation_content_hash=row.get("validation_content_hash") or "",
     )

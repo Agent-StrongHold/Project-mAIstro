@@ -7,6 +7,7 @@ FIFO eviction, org-scoped isolation, and outcome tracking.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 from maistro.memory.types import Learning
 from maistro.observability.correlation import observed_provenance
@@ -213,6 +214,38 @@ class InMemoryLearningStore:
                 agent_id=agent_id,
             )
         ]
+
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: float = 0.0,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Promote exactly one active learning, recording validation provenance.
+
+        The per-candidate seam the Gauntlet path needs (see the SQL twins for
+        the full contract). Only an `active`, in-scope row flips; a rejected
+        candidate's row — its evidence, its anti-learning — is never touched
+        here. Like `produced_by`, an out-of-scope id is a None, not a write.
+        """
+        for learning in self._learnings:
+            if learning.id != learning_id:
+                continue
+            if learning.status != "active" or learning.org_id != org_id:
+                return None
+            learning.status = "promoted"
+            learning.validated_by = validated_by
+            learning.validated_evaluator_version = evaluator_version
+            learning.validated_at = validated_at
+            learning.validation_run_ids = list(validation_run_ids)
+            learning.validation_content_hash = validation_content_hash
+            return learning
+        return None
 
     async def list_ineffective(self, min_uses: int) -> list[Learning]:
         """Return learnings whose failure count strictly exceeds successes.
