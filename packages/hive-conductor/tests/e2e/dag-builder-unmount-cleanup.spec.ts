@@ -6,17 +6,28 @@
  * navigating during a Run left the connection — and its live
  * `setExecState`/`toast` handlers — pointed at an unmounted tree.
  *
- * This spec repeatedly mounts and unmounts the page while a Run stream is
- * active (connected, no terminal frame yet), settled-failed (terminal `failed`
- * frame delivered, backend closed), and unsettled-then-resumed, and asserts:
- *   - unmount CLOSES the socket from the page and NULLS its handlers — no
- *     leaked connection or listener survives navigation;
+ * The socket's one safe close point is the backend's `started` frame:
+ * `execute_dag_streaming` is an async generator that yields `started` BEFORE
+ * awaiting `execute_dag`, so the durable Run (and its projection) only exists
+ * once the consumer resumes past that frame. Closing a CONNECTING socket or
+ * racing the ack would cancel a Run the user explicitly requested. Unmount
+ * therefore detaches immediately once the Run is acknowledged or settled, and
+ * before that only arms a `detach` flag the frame handlers act on at the safe
+ * point. This spec repeatedly mounts and unmounts the page while a Run stream
+ * is pre-acknowledgement (connected, `started` not yet delivered),
+ * acknowledged-and-running (past `started`, no terminal frame),
+ * settled-failed (terminal `failed` frame delivered, backend closed), and
+ * unsettled-then-resumed, and asserts:
+ *   - an unmount before the ack does NOT close yet (that would cancel the
+ *     Run); the moment the backend's `started` frame arrives, the page CLOSES
+ *     the socket and has NULLED its handlers — no leaked connection or
+ *     listener survives navigation;
+ *   - an unmount after the ack closes the socket from the page immediately,
+ *     handlers stripped; a Run that already settled server-side leaves nothing
+ *     to close and no re-subscription;
  *   - the page SENDS nothing over the socket on the way out. The protocol has
- *     no client-side cancel message, and navigation must not cancel the
- *     durable backend Run (`services/graph_runner.execute_dag_streaming`
- *     records the projection before any frame is sent;
- *     `routes/ws._stream_dag_run` treats the disconnect as end-of-stream), so
- *     a remount resumes from canonical state (DAG Runs), not a dead socket;
+ *     no client-side cancel message, so a remount resumes from canonical state
+ *     (DAG Runs), not a dead socket;
  *   - no uncaught page errors fire around the unmount;
  *   - a remount refetches canonical state and a fresh Run opens exactly one
  *     new socket — subscriptions never stack.
@@ -104,6 +115,11 @@ async function socketSnapshots(): Promise<SocketSnapshot[]> {
       sent: s.sent as string[],
     })),
   );
+}
+
+/** The fix nulls all three handlers before closing; a leaked one stays live. */
+function expectHandlersStripped(s: SocketSnapshot): void {
+  expect(s.handlersAtClose, "handlers at close time").toEqual({ onmessage: null, onerror: null, onclose: null });
 }
 
 /** Drive frames into the page as if the backend had sent them. */
@@ -271,20 +287,46 @@ test.afterAll(async () => {
   await context.close();
 });
 
-test("unmounting during an active Run closes the socket from the page and sends no cancel", async () => {
+test("unmounting before the Run is acknowledged defers the close to the `started` safe point", async () => {
   await resetRunSockets();
   await mountAndRun();
-  // Still live: connected, no terminal frame, the page treats the Run as
-  // in flight.
+  // Still live and NOT yet acknowledged: no frame has been delivered, so the
+  // backend generator has not resumed past `started` and `execute_dag` has not
+  // run. Closing now could cancel a Run the user explicitly requested.
   await expect(page.getByRole("button", { name: /Running/ })).toBeDisabled();
 
-  // SPA navigation mid-Run unmounts the page.
+  // SPA navigation mid-Run unmounts the page. Cleanup arms `detach` instead of
+  // closing: the socket must still be open here.
   await page.getByRole("link", { name: "DAG Runs", exact: true }).click();
   await expect(page).toHaveURL(/\/dag-runs$/);
+  expect((await socketSnapshots())[0].closeCalled, "no close before the ack — it would cancel the requested Run").toBe(false);
 
-  await expect.poll(async () => (await socketSnapshots())[0].closeCalled, "the page closed the run socket on unmount").toBe(true);
+  // The backend's `started` frame is the safe point: the Run now exists
+  // server-side regardless of this socket, so the armed cleanup detaches —
+  // handlers stripped, socket closed, nothing sent, nothing state-updated.
+  await serverSend(0, started);
+  await expect.poll(async () => (await socketSnapshots())[0].closeCalled, "the page closed the run socket at the safe point").toBe(true);
   const sockets = await socketSnapshots();
+  expectHandlersStripped(sockets[0]);
   expect(sockets[0].sent, "navigation must not send anything — no client-cancel exists in the protocol").toEqual([]);
+  await expectNoErrors();
+});
+
+test("unmounting during an acknowledged, still-running Run closes the socket from the page immediately", async () => {
+  await resetRunSockets();
+  const log = await mountAndRun();
+  // Acknowledge the Run while mounted: past `started`, `execute_dag` is
+  // running server-side and this socket is dispensable.
+  await serverSend(0, started);
+  await serverSend(0, nodeComplete(true));
+  await expect(log).toContainText("Started (1 nodes)");
+
+  await page.getByRole("link", { name: "DAG Runs", exact: true }).click();
+  await expect(page).toHaveURL(/\/dag-runs$/);
+  await expect.poll(async () => (await socketSnapshots())[0].closeCalled, "the page closed the acknowledged run socket on unmount").toBe(true);
+  const sockets = await socketSnapshots();
+  expectHandlersStripped(sockets[0]);
+  expect(sockets[0].sent).toEqual([]);
   await expectNoErrors();
 });
 
@@ -312,7 +354,13 @@ test("a remount after leaving mid-Run resumes from canonical state with exactly 
 
   await page.getByRole("link", { name: "DAG Runs", exact: true }).click();
   await expect(page).toHaveURL(/\/dag-runs$/);
+  // The unmount armed `detach` (the Run was never acknowledged); the backend
+  // keeps executing and sends `started` to the still-open socket, where the
+  // armed cleanup finally closes it.
+  expect((await socketSnapshots())[0].closeCalled, "still open before the ack").toBe(false);
+  await serverSend(0, started);
   await expect.poll(async () => (await socketSnapshots())[0].closeCalled).toBe(true);
+  expectHandlersStripped((await socketSnapshots())[0]);
 
   // Remount: canonical state is refetched, not resumed from dead component
   // state — the run button is idle, not stuck "Running...".
