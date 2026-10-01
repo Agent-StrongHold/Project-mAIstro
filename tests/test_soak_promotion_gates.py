@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import select
+import signal
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -183,6 +189,104 @@ async def test_task_admission_probe_requires_observed_canonical_identity(
     assert soak.failed_promotion_checks(evidence) == (
         [] if expected else ["exactly_once_task_admission"]
     )
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="soak sampler requires Linux /proc")
+@pytest.mark.asyncio
+async def test_sampler_observes_uv_child_memory_and_descriptors(soak: ModuleType) -> None:
+    """Real uv wrapper: resource growth in its child must reach the metrics row."""
+    code = """
+import json, os, sys
+print(json.dumps({'pid': os.getpid()}), flush=True)
+sys.stdin.read(1)
+heap = bytearray(32 * 1024 * 1024)
+files = [open('/dev/null') for _ in range(16)]
+print('grown', flush=True)
+sys.stdin.read(1)
+"""
+    proc = subprocess.Popen(
+        ["uv", "run", "--no-sync", "python", "-u", "-c", code],
+        cwd=SCRIPT.parents[2],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        assert proc.stdout is not None and proc.stdin is not None
+        assert select.select([proc.stdout], [], [], 30)[0], "child startup timed out"
+        child_pid = json.loads(proc.stdout.readline())["pid"]
+        assert child_pid != proc.pid  # reproduce the actual wrapper topology
+        pool = SimpleNamespace(fetchval=AsyncMock(return_value=0))
+        before = (await soak.sample_once({"replica_1": proc}, pool))["replica_1"]
+        proc.stdin.write("g")
+        proc.stdin.flush()
+        assert select.select([proc.stdout], [], [], 30)[0], "child allocation timed out"
+        assert proc.stdout.readline().strip() == "grown"
+        after = (await soak.sample_once({"replica_1": proc}, pool))["replica_1"]
+        assert after["rss_kb"] - before["rss_kb"] >= 30 * 1024
+        assert after["fds"] - before["fds"] >= 16
+        assert after["process_count"] == 2
+        assert {p["pid"] for p in after["processes"]} == {proc.pid, child_pid}
+        assert after["complete"] is True
+    finally:
+        try:
+            proc.communicate(input="q", timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("failure", [None, "unreadable", "missing-rss", "empty"])
+def test_process_group_samples_do_not_hide_missing_measurements(
+    soak: ModuleType, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    monkeypatch.setattr(soak.os, "listdir", lambda path: ["10", "11", "99", "self"])
+    monkeypatch.setattr(
+        soak.os, "getpgid", lambda pid: 99 if pid == 99 or failure == "empty" else 10
+    )
+
+    def stats(pid: int) -> dict[str, object] | None:
+        assert pid != 99, "must not sample another replica's group"
+        if pid == 11 and failure == "unreadable":
+            return None
+        return {"pid": pid, "rss_kb": None if failure == "missing-rss" else 100, "fds": 3}
+
+    monkeypatch.setattr(soak, "proc_stats", stats)
+    result = soak.process_group_stats(10)
+    assert result["pgid"] == 10
+    assert result["complete"] is (failure is None)
+    if failure is None:
+        assert result["process_count"] == 2
+        assert result["rss_kb"] == 200
+        assert result["fds"] == 6
+    else:
+        assert result["rss_kb"] is None
+        assert result["fds"] is None
+    if failure == "empty":
+        assert result["process_count"] == 0
+    if failure == "unreadable":
+        assert result["unmeasured_pids"] == [11]
+
+
+@pytest.mark.asyncio
+async def test_sampler_keeps_observing_group_after_wrapper_exit(
+    soak: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = {"pgid": 10, "process_count": 1, "rss_kb": 100, "fds": 5}
+
+    def group(pgid: int) -> dict[str, object]:
+        assert pgid == 10
+        return row
+
+    monkeypatch.setattr(soak, "process_group_stats", group)
+    proc = SimpleNamespace(pid=10, poll=lambda: 0)
+    pool = SimpleNamespace(fetchval=AsyncMock(return_value=0))
+    result = await soak.sample_once({"replica_1": proc}, pool)
+    assert result["replica_1"]["process_count"] == 1
+    assert result["replica_1"]["rss_kb"] == 100
+    assert result["replica_1"]["wrapper_alive"] is False
 
 
 LB = "http://127.0.0.1:18080"

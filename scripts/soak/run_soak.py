@@ -405,11 +405,58 @@ def proc_stats(pid: int) -> dict[str, Any] | None:
         return None
 
 
+def process_group_stats(pgid: int) -> dict[str, Any]:
+    """Sample the wrapper AND its application/worker processes on Linux.
+
+    start_replica creates a new session, so its PID is also the process-group
+    identity, including after the wrapper exits. This is a non-atomic /proc
+    snapshot, not a container/cgroup census: workers that detach are out of
+    scope. Sum RSS (shared pages may be counted twice) and descriptor counts,
+    retaining per-process observations so the aggregate can be audited.
+    """
+    processes = []
+    unmeasured = []
+    unclassified = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            if os.getpgid(pid) != pgid:
+                continue
+        except ProcessLookupError:
+            continue  # exited while enumerating; not a measured zero
+        except PermissionError:
+            unclassified.append(pid)
+            continue
+        stats = proc_stats(pid)
+        if stats is None:
+            unmeasured.append(pid)
+        else:
+            processes.append(stats)
+    complete = (
+        bool(processes)
+        and not (unmeasured or unclassified)
+        and all(p["rss_kb"] is not None for p in processes)
+    )
+    return {
+        "scope": "process-group",
+        "pgid": pgid,
+        "process_count": len(processes) + len(unmeasured),
+        "processes": sorted(processes, key=lambda p: p["pid"]),
+        "unmeasured_pids": sorted(unmeasured),
+        "unclassified_pids": sorted(unclassified),
+        "complete": complete,
+        "rss_kb": sum(p["rss_kb"] for p in processes) if complete else None,
+        "fds": sum(p["fds"] for p in processes) if complete else None,
+    }
+
+
 async def sample_once(procs: dict[str, subprocess.Popen[Any]], pg_pool: Any) -> dict[str, Any]:
     s: dict[str, Any] = {"ts": datetime.now(UTC).isoformat()}
     for name, proc in procs.items():
-        stats = proc_stats(proc.pid) if proc.poll() is None else None
-        s[name] = stats if stats else {"alive": False}
+        s[name] = process_group_stats(proc.pid)
+        s[name]["wrapper_alive"] = proc.poll() is None
     # Query latency is measured on a dedicated asyncpg connection: the real
     # wire round-trip under load, not psql-process spawn wall time. The
     # docker-exec channel stays as fallback so a probe failure degrades the

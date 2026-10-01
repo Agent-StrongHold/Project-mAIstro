@@ -71,7 +71,9 @@ attempt terminalization) — recorded as such, not hidden.
 ## Concurrency/falsification phases
 
 1. **Sustained mixed load** (`--sustain-seconds`, default 420) with 2 s metric
-   sampling: per-replica RSS + open descriptors (`/proc`), PostgreSQL session
+   sampling: per-replica process-group RSS + open descriptors + process counts
+   (`/proc`, wrapper and application children, with per-PID observations and
+   null aggregates when measurements are incomplete), PostgreSQL session
    count + waiting locks (`pg_stat_activity`/`pg_locks`), canonical spine
    depth by status (`canonical_runs`), status-code and per-class latency
    histograms.
@@ -154,6 +156,10 @@ Workspaces. It does not exercise Graph/node fan-out, successful tool/model calls
 Design/Canvas operations or Goal/background-worker reconciliation. Inclusion or
 exclusion of those surfaces must be justified against the selected RC deployment
 configuration before a representative promotion profile is considered complete.
+Historical RSS/descriptor series measured only the `uv` wrapper and cannot prove
+application health. The repaired sampler measures the process group, not detached
+workers or container cgroups; summed RSS may double-count shared pages. Snapshot
+membership can change during sampling. No new soak has validated this repair.
 Driver loop lag is not application event-loop lag. Process-exit/rejoin and terminal
 Run counts alone do not prove physical-work fencing/recovery. Required worker
 counts, pool saturation, lease reclaim and long-window leak/error observations

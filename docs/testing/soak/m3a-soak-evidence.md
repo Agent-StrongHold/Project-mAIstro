@@ -22,7 +22,7 @@ correctness claim in this pack is promotion evidence yet.
 | H2 exactly-once schedule occurrence | **PASS** — two OS processes raced `ScheduleRunAdmitter.admit_due` on the canonical PostgreSQL store: one created Run `3adbdca2…`, the loser reported the occurrence `2026-09-29 05:00:00+00:00` as `already_fired`. **One admitted Run across claimants** (#220/#850 claim tier); physical execution was not probed | `exactly_once_schedule_claim` |
 | Boot under the RC entrypoint | both replicas + full alembic chain migrate and serve; first-boot took **87 s** (root compose `start_period: 300s` exists for exactly this) | `replica_boot_seconds`, replica logs |
 | S4 latency | p95 6.5–8.0 ms across all classes through the LB (of what got through — see F3) | `p95_latency_ms` |
-| S1/S2 memory & descriptors | replica_1 RSS −16.9%, replica_2 +3.0% over the window; fds flat at 11 — no growth signal | `rss_growth`, `fd_growth` |
+| S1/S2 memory & descriptors | **INVALID as application evidence** — the old sampler observed the `uv` wrapper, not its application child (F12 below) | Historical `rss_growth`, `fd_growth` retained unchanged |
 | S5 security surfaces | unauthenticated `/metrics` stayed gated (401s in `status_counts`); `REQUIRE_AUTH` enforced under load | `status_counts` |
 
 ## Findings (falsified or defective — must be repaired before promotion soak)
@@ -177,7 +177,7 @@ for a sub-minimum run.
 | Replica rejoin | **PASS** — replica_2 restarted and rejoined | `replica_2_rejoined` |
 | H5 nonterminal runs after settle | **PASS** — 0 (`--fresh-db` schema reset; the run measures only itself) | `nonterminal_runs_after_settle` |
 | H6 admission availability | **PASS** — ratio 1.0 (63/63 task submissions outside the kill window accepted 202; kill-window submissions accounted separately) | `task_admission_availability` |
-| S1/S2 RSS/FD growth | flat — RSS ±0.3%, fds constant at 11 per replica | `rss_growth`, `fd_growth` |
+| S1/S2 RSS/FD growth | **INVALID as application evidence** — wrapper-only measurements; no application leak conclusion (F12 below) | Historical `rss_growth`, `fd_growth` retained unchanged |
 | Sustain duration | **FAIL (by design)** — 90.43 s observed vs 14400 s minimum; recorded as requested + observed so a stalled driver can never sign a longer run | `sustain_duration` |
 
 Teardown was fully bounded: the slow Docker Desktop CLI hit the new 60 s
@@ -232,6 +232,24 @@ canonical identity, validates every successful receipt, and includes HTTP 200
 replay IDs in the comparison. Twelve HTTP-probe regression cases exercise this
 oracle. Historical raw evidence is unchanged; this is not fresh load evidence.
 No external issue filing was performed (prohibited in this lane).
+
+## Process sampling repair — not a new soak
+
+**F12 (harness, reproduced and repaired): S1/S2 sampled the uv wrapper only.**
+A live `uv run` child allocated 32 MiB and opened 16 descriptors, yet the old
+`sample_once` reported identical wrapper RSS (25952 KiB before and after).
+Earliest broken invariant: M3-A evidence validity (#89/#860), not a demonstrated
+application leak. Historical S1/S2 conclusions above are invalid as application
+measurements; raw evidence is preserved, not recomputed or relabelled as fresh.
+
+The sampler now records every observed member of the replica's process group,
+per-PID RSS/descriptors and process count, with aggregate RSS/descriptors only
+when all observed members were measured. It keeps observing the group when the
+wrapper exits. This is a non-atomic Linux snapshot, not a cgroup/container census;
+detached workers, application-loop latency, and long-window leak/recovery proof
+remain unverified. Summed RSS can double-count shared pages. The live subprocess
+regression detects child growth, but does not substitute for a new RC soak.
+No external finding was filed (GitHub mutations are prohibited in this lane).
 
 See [m3a-salvage-validation.md](m3a-salvage-validation.md) for this recovery's
 validation and [m3a-repair-handoff.md](m3a-repair-handoff.md) for earlier
