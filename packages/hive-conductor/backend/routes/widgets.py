@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from services.airtable_cache import (
     get_airtable_base_tables_json,
     get_airtable_bases_json,
@@ -291,26 +291,71 @@ async def widget_airtable(  # noqa: C901  branchy per-display-mode rendering
 @router.get("/metrics")
 async def widget_metrics(
     request: Request,
-    metric: str = Query(..., description="latency|ttft|cost|tokens|invocations|errors"),
+    metric: str = Query(..., description="latency|ttft|cost|tokens|invocations"),
     period: str = "1h",
 ) -> dict[str, Any]:
-    """Return a specific metric value."""
-    from services.chat_completion import get_chat_metrics_summary
+    """One named metric as a KPI envelope, scoped to this principal.
 
-    summary = get_chat_metrics_summary()
-    # Map metric names to values
-    mapping: dict[str, Any] = {
-        "latency": {"value": summary.get("avg_latency_ms", 0), "unit": "ms"},
-        "ttft": {"value": summary.get("avg_ttft_ms", 0), "unit": "ms"},
-        "cost": {"value": summary.get("total_cost", 0), "unit": "$"},
-        "tokens": {"value": summary.get("total_tokens", 0), "unit": "tokens"},
-        "invocations": {"value": summary.get("total_requests", 0), "unit": "requests"},
-        "errors": {"value": summary.get("error_count", 0), "unit": "errors"},
+    The old mapping invented summary keys that did not exist
+    (`avg_latency_ms`, `avg_ttft_ms`, `error_count`) and read a hard 0 out of
+    them, so latency widgets rendered 0 ms on every deployment (#380). It now
+    serves the same envelopes the dashboard KPIs use: a measured value with
+    its provenance, or the state that says why there is no number. Asking for
+    a metric with no source is a 400, not a plausible-looking zero.
+    """
+    from services.dashboard_metrics import build_dashboard_metrics
+
+    uid = _user_id(request)
+    envelopes = build_dashboard_metrics(uid)
+
+    if metric == "tokens":
+        inv = envelopes["invocations"]
+        value = None
+        if inv["state"] in ("ok", "stale"):
+            value = inv["tokens_in_total"] + inv["tokens_out_total"]
+        return {
+            "metric": metric,
+            "period": period,
+            "state": inv["state"],
+            "value": value,
+            "unit": "tokens" if value is not None else inv["unit"],
+            "query": inv["query"],
+            "scope": inv["scope"],
+            "window": inv["window"],
+            "computed_at": inv["computed_at"],
+            "last_update": inv["last_update"],
+            "reason": inv["reason"],
+        }
+
+    field = {
+        "latency": "avg_latency",
+        "ttft": "ttft",
+        "cost": "total_cost",
+        "invocations": "invocations",
     }
-    result = mapping.get(metric, {"value": 0, "unit": "?"})
-    result["metric"] = metric
-    result["period"] = period
-    return result
+    if metric not in field:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unsupported metric {metric!r}; supported: latency, ttft, "
+                "cost, tokens, invocations. There is no errors metric — "
+                "nothing in this deployment counts per-request errors."
+            ),
+        )
+    env = envelopes[field[metric]]
+    return {
+        "metric": metric,
+        "period": period,
+        "state": env["state"],
+        "value": env["value"],
+        "unit": env["unit"],
+        "query": env["query"],
+        "scope": env["scope"],
+        "window": env["window"],
+        "computed_at": env["computed_at"],
+        "last_update": env["last_update"],
+        "reason": env["reason"],
+    }
 
 
 @router.get("/airtable/fields")
