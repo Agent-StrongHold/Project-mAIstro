@@ -822,6 +822,17 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Turing's synchronous bridge no longer blocks the event loop (#397).**
+  The provider bridge used to answer event-loop callers by blocking on an
+  unbounded `Future.result()`, so one stuck LLM call froze every coroutine on
+  that loop. Sync callers now run through a dedicated thread/loop boundary
+  (`SyncLoopRunner`) with a bounded timeout (default 120s, configurable via
+  `TuringProviderBridge(sync_timeout_seconds=...)`), cancellation propagation
+  on timeout/shutdown, and rejection of reentrant calls from the boundary's
+  own loop; `TuringProviderBridge.close()` cancels outstanding work. The
+  production async paths (chat session, producers) now await the
+  `acomplete` seam, so the owning loop keeps progressing during model calls.
+
 - **The Run purge's dependent-reference inventory names every `run_id` table
   (#1175, partial).** `maistro.runs.retention_scope` now records a policy for
   `capability_invocations`, `capability_approvals` and `task_idempotency`
@@ -866,7 +877,9 @@ or placeholder-only section.
   maistro-server response stalled every coroutine in the worker. The
   `TaskBackend` port gains `async get_async`, which the stream now awaits over
   the pooled async client, so a stalled probe no longer pins the loop and
-  cancelling the stream takes effect immediately. The remaining synchronous
+  cancelling the stream takes effect immediately. The async
+  `DELETE /v1/missions/{id}` cancel path probes ownership through `get_async`
+  too — it ran the same sync `get` on the loop. The remaining synchronous
   `get`/`list_tasks` (threadpool routes only) reuse one owned,
   outbound-guarded client closed by `stop()` instead of building one per call.
 
