@@ -2901,3 +2901,81 @@ on unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806
 reconciliation, #774 CreativeBrief, #775 creative Graph, #776 Ladybug
 retrieval). No repair code written — none possible without violating the
 issue stop condition. No closure keywords used.
+
+---
+
+## Round 45 — head `6109e4972` (2026-10-01, repair job `b4a729eb45a44d81b8a2f838469cf26e`)
+
+**Trigger:** prior repair job `6c8c2bc477a345e0a5fc104c2b515c3b` (same head)
+died on a provider error (`Provider finish_reason: error`, `checks: []`)
+mid-write, leaving **9 untracked files** at
+`packages/maistro-design/src/maistro_design/studio/` — a partial draft of the
+#777 Design Studio projection (`__init__`, `types`, `core`, `brief`,
+`workspace`, `projects`, `tools`, `execution`, `design_engine`; ~1,900 LOC).
+This round preserved the salvage instead of discarding it, audited it against
+the issue, and recorded an evidence-based disposition.
+
+**Salvage disposition (evidence-based, no fabrication adopted):**
+- Verbatim backups (outside the repo):
+  `~/Git/wt/incoming-777-salvage/studio-src-verbatim/` +
+  `~/Git/wt/incoming-777-salvage.patch` (74,242 bytes, intent-to-add diff).
+- In-tree archive: `docs/research/777-design-studio-salvage/src/` (outside
+  `packages/*/src` → invisible to vulture/pytest/mypy/ship paths) with
+  mechanical lint repairs only (ruff --fix, ruff format, missing
+  `from datetime import datetime` for the F821 the truncated stream cut off,
+  two B007 loop-variable renames). Provenance + rejection evidence:
+  `docs/research/777-design-studio-salvage/README.md`.
+- Rejection evidence for adopting it into production `src`: (1) it did not
+  import — `studio/core.py:28` imported nonexistent
+  `maistro_design.types.Persona` (canonical Persona is
+  `maistro/personas/model.py:26`) → `ImportError` on package import, plus
+  `design_engine.py:127` F821 `datetime` and 36 ruff errors; (2) it fabricated
+  canonical state the #777 stop condition forbids — placeholder Goal state
+  via a fake `GoalReader` subclass (`campaigns/policy.py:54` protocol),
+  a fabricated Goal revision in `brief.py:commit_to_goal`, fabricated
+  `"original_owner"` reclaim history, project-wide cancel instead of
+  per-branch; (3) all control state was in-memory dicts (no durable
+  refresh/reconnect semantics); (4) it duplicated canonical `DesignSystem`
+  (`maistro_design/types.py`) and `Persona` types.
+
+**Develop sync:** `git fetch origin` — `origin/develop` still `9fe61e216`
+(no new commits; the `f8cc3597b->9fe61e216` advance was already merged as
+`1d48098bd` in round 43). No conflicts; no merge needed this round.
+
+**Dependency audit (fresh at `6109e4972`, unchanged):**
+- `grep -rln "GoalRevision|GoalReconcil|owning_agent" packages/*/src` → **0
+  files**. `find packages -name workspace_agent*.py -path "*/src/*"` → 0
+  (front door lives at `packages/hive-conductor/backend/services/workspace_agent.py`
+  with **0** `goal|reconcil` matches) — #804/#805/#806 reconciliation absent.
+- `brief_store.py:5` still disclaims Goal/CreativeBrief semantics (#774
+  absent); `brief_interview.py` is pre-Goal chat state (SPEC-091726-7c2a).
+- `ladybug` matches under `packages/*/src` → **only the salvage files now
+  relocated to `docs/research/777-design-studio-salvage/`** (#776 absent).
+- `control_mode|mixed.control|MixedControl` matches → same (salvage only).
+- #458 Goal remains ontology-declared only (`interop/contract.py`, owner
+  `maistro.goals`, revision `goal_revision`); #775 creative Graph absent.
+
+**All 13 acceptance criteria: still UNMET at this head** (none provable
+against reachable behavior; the salvage draft satisfies none of them — see
+rejection evidence above).
+
+**Gates executed at `6109e4972` + salvage archive (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — clean (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, 0 unbanked; no
+  ledger amendment (archive lives outside the scan scope).
+- `uv run pytest packages/maistro-design/tests -x -q` — passed.
+- `uv run pytest test_workspace_agent_identity.py test_workspace_mode.py
+  test_cross_domain_substrate.py test_brief_interview.py -q` — 43 passed
+  (#777-adjacent surfaces, re-confirmed post-relocation).
+- `uv run python scripts/verify-monorepo-layout.sh` — PASS.
+- `uv run python scripts/check-doc-links.py` — PASS.
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**Conclusion (45th inspected head):** the lane remains **BLOCKED on unlanded
+canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Ladybug retrieval). The only
+changes this round are the salvage preservation archive + this note; no
+production or test code changed; inventory deltas all +0. No closure keywords
+used.
