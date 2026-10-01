@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -2191,6 +2192,7 @@ async def create_container(
         database_url=config.database_url,
         quota_tracker=quota_tracker,
         usage_log=usage_log,
+        provider_registry=provider_registry,
     )
     configure_default_effect_context(capability_effects)
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
@@ -2870,6 +2872,87 @@ async def _wire_sqlite_backend(
     )
 
 
+#: Framing a chat message carries beyond its text: the role marker, the
+#: turn separators, and whatever the provider's template adds. Eight tokens
+#: a message is generous for every format in use here.
+_MESSAGE_FRAMING_TOKENS = 8
+
+
+def _input_token_ceiling(messages: Any) -> int:
+    """An upper bound on the input tokens a request can consume.
+
+    `QuotaEstimate.maximum` is what admission *holds* against a budget, so it
+    has to be a bound and not a guess. The previous `len(text) // 4` is the
+    average English characters-per-token, which is neither: Unicode-dense,
+    CJK or punctuation-heavy input tokenizes to far more than a quarter of its
+    character count, and the estimate excluded chat framing entirely. A
+    request could therefore be admitted whose real input plus output exceeded
+    the remaining budget, and the later observation only recorded the overage
+    after the provider had already been paid (Codex, #1362).
+
+    One token per character is the true ceiling for a byte-pair tokenizer --
+    no token spans fewer than one character -- so that is what this returns,
+    plus per-message framing. It over-holds against typical text by roughly
+    four times, and that asymmetry is deliberate: an over-hold is released at
+    settlement, when `spent` becomes the measured usage and `held` returns to
+    zero, while an under-hold is a budget already breached by the time anyone
+    can see it.
+    """
+
+    if isinstance(messages, str):
+        return max(1, len(messages) + _MESSAGE_FRAMING_TOKENS)
+    if isinstance(messages, list | tuple):
+        total = 0
+        for message in messages:
+            content = (
+                message.get("content", "")
+                if isinstance(message, dict)
+                else getattr(message, "content", "")
+            )
+            total += len(str(content)) + _MESSAGE_FRAMING_TOKENS
+        return max(1, total)
+    return max(1, len(str(messages)) + _MESSAGE_FRAMING_TOKENS)
+
+
+async def _cost_ceiling_micro_usd(
+    registry: Any, *, model: str, input_tokens: int, output_tokens: int
+) -> int | None:
+    """The worst-case spend for one call, or ``None`` when the price is unknown.
+
+    Without this the container's only production estimator never populated
+    `micro_usd`, so the moment an operator registered any applicable
+    `micro_usd` budget every governed invocation was refused with "missing
+    upper bound" -- the advertised cost unit could not be used at all through
+    the canonical wiring (Codex, #1362).
+
+    `None` stays the honest answer when the registry has no metadata for the
+    model: a budget denominated in money cannot admit a call whose price
+    nobody knows, and inventing a number would be worse than refusing.
+
+    Rounded up, in the same direction and the same unit as `observe`'s
+    settlement arithmetic, so the hold is never smaller than the spend it is
+    holding against.
+    """
+
+    if registry is None or not model:
+        return None
+    try:
+        metadata = await registry.get_model(model)
+    except Exception:
+        return None
+    cost_cents = getattr(metadata, "cost_per_1k_input", None)
+    output_rate = getattr(metadata, "cost_per_1k_output", None)
+    if cost_cents is None or output_rate is None:
+        return None
+    cents = (
+        Decimal(str(cost_cents)) * Decimal(input_tokens) / 1000
+        + Decimal(str(output_rate)) * Decimal(output_tokens) / 1000
+    )
+    if not cents.is_finite() or cents < 0:
+        return None
+    return int((cents * 10_000).to_integral_value(rounding=ROUND_CEILING))
+
+
 async def _wire_capability_effects(
     *,
     pg_pool: Any,
@@ -2877,6 +2960,7 @@ async def _wire_capability_effects(
     database_url: str,
     quota_tracker: QuotaTracker | None = None,
     usage_log: InMemoryUsageLog | None = None,
+    provider_registry: Any = None,
 ) -> CapabilityEffectContext:
     """Compose the sole governed effect context from the selected backend.
 
@@ -2917,12 +3001,18 @@ async def _wire_capability_effects(
             max_tokens = getattr(request, "max_tokens", None)
             messages = getattr(request, "messages", "")
         if isinstance(max_tokens, int) and max_tokens > 0:
-            tokens = max_tokens + max(1, len(str(messages)) // 4)
+            tokens = max_tokens + _input_token_ceiling(messages)
         else:
             tokens = None
         return QuotaEstimate(
             principal_id=invocation.actor_id or "system",
             tokens=tokens,
+            micro_usd=await _cost_ceiling_micro_usd(
+                provider_registry,
+                model=invocation.binding.provider_name,
+                input_tokens=_input_token_ceiling(messages),
+                output_tokens=max_tokens if isinstance(max_tokens, int) and max_tokens > 0 else 0,
+            ),
         )
 
     # Named by contract, not by the first branch taken: each backend assigns
