@@ -617,7 +617,8 @@ class TestRouteFailureContract:
         assert resp.json()["detail"] == "Export version not found"
 
 
-# ── Content negotiation (ADR-076) ─────────────────────────────────────
+# ── Content negotiation (canvas-local media type; ADR-076's general scheme
+# ── lives in maistro.api_versioning and is tested separately) ──────────
 
 
 class TestContentNegotiation:
