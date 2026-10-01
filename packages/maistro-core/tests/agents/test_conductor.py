@@ -34,6 +34,8 @@ from maistro.config.models import DEFAULT_TIERS, Tier
 from maistro.http import set_test_transport
 from maistro.providers.errors import ModelNotFoundError
 from maistro.providers.types import ModelMetadata
+from maistro.quota.tracker import InMemoryQuotaTracker
+from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.tasks.models import TaskCreate
 
 
@@ -127,6 +129,32 @@ class TestCallGateway:
             await _call_gateway(call, "hi", max_tokens=100, timeout=10)
 
     @pytest.mark.asyncio
+    async def test_governed_egress_returns_content_without_legacy_http(
+        self,
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        class _Egress:
+            async def complete(self, **kwargs: Any) -> Any:
+                captured.update(kwargs)
+                return type("Result", (), {"body": {"choices": [{"message": {"content": "{}"}}]}})()
+
+        call = ConductorCall(model="m", base_url=None, api_key="", system_prompt="sys")
+        result = await _call_gateway(
+            call,
+            "do thing",
+            max_tokens=512,
+            timeout=10,
+            governed_egress=_Egress(),  # type: ignore[arg-type]
+            invocation_identity=("run", "node", "attempt"),
+            invocation_number=2,
+        )
+
+        assert result == "{}"
+        assert captured["run_id"] == "run"
+        assert captured["effect_key"] == "conductor-llm-2"
+
+    @pytest.mark.asyncio
     async def test_posts_and_returns_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
@@ -207,6 +235,226 @@ class TestCallGateway:
             call, "do thing", max_tokens=512, timeout=10, on_response=broken_hook
         )
         assert result == '{"success": true}'
+
+
+@pytest.fixture
+def fallback_usage_log(monkeypatch: pytest.MonkeyPatch) -> InMemoryUsageLog:
+    """Isolate the conductor's ungoverned-fallback recording from the
+    process-wide default usage log singleton — and from the process default
+    quota ledger, which container-creating tests elsewhere in the same
+    process register via the composition root."""
+    log = InMemoryUsageLog()
+    monkeypatch.setattr("maistro.agents.conductor.get_default_usage_log", lambda: log)
+    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: None)
+    return log
+
+
+@pytest.fixture
+def fallback_quota_tracker(monkeypatch: pytest.MonkeyPatch) -> InMemoryQuotaTracker:
+    """Register an isolated quota ledger as the conductor module's process
+    default, for tests of the fallback's ledger evidence (#718)."""
+    tracker = InMemoryQuotaTracker()
+    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: tracker)
+    return tracker
+
+
+class TestUngovernedFallbackUsageEvidence:
+    """#718: the raw-gateway fallback crosses no canonical Invocation, so it
+    must leave its own usage evidence — reported tokens when the gateway said
+    them, an explicit unreported marker when it did not. Never invisible, and
+    never a fabricated Invocation identity."""
+
+    @pytest.mark.asyncio
+    async def test_reported_usage_is_recorded_with_provenance(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 5
+        assert event.output_tokens == 7
+        assert event.provider == "m"
+        assert event.usage_reported is True
+        assert event.invocation_id is None  # identity is never invented here
+
+    @pytest.mark.asyncio
+    async def test_missing_usage_is_an_unreported_marker_not_a_zero(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 0
+        assert event.output_tokens == 0
+        assert event.usage_reported is False
+
+    @pytest.mark.asyncio
+    async def test_governed_egress_leaves_no_fallback_evidence(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        """The canonical path owns recording; the fallback must stay silent
+        when an egress crossed the Invocation authority."""
+
+        class _Egress:
+            async def complete(self, **kwargs: Any) -> Any:
+                return type("Result", (), {"body": {"choices": [{"message": {"content": "{}"}}]}})()
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(
+            call,
+            "do thing",
+            max_tokens=512,
+            timeout=10,
+            governed_egress=_Egress(),  # type: ignore[arg-type]
+        )
+
+        assert fallback_usage_log.events_for("m") == ()
+
+    @pytest.mark.asyncio
+    async def test_run_task_raw_path_records_usage_evidence(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        """The ordinary entry point (``run_task`` without an egress) is the
+        call class the fallback evidence exists for."""
+        monkeypatch.setenv("MAISTRO_DRY_RUN", "0")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": '{"success": true, "final_answer": "ok"}'}}
+                    ],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        with patch(
+            "maistro.agents.conductor.resolve_model",
+            return_value=("m", "http://gw", False),
+        ):
+            task = TaskCreate(description="Implement feature")
+            result = await run_task(task)
+
+        assert result.success is True
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 3
+        assert event.output_tokens == 4
+        assert event.usage_reported is True
+
+    @pytest.mark.asyncio
+    async def test_registered_ledger_receives_reported_fallback_usage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+        fallback_quota_tracker: InMemoryQuotaTracker,
+    ) -> None:
+        """#718: when the process registered a quota ledger (the Container
+        composition root does), the raw fallback's reported tokens reach it
+        too — the call class can no longer be absent from the ledger a
+        process actually carries."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (row,) = await fallback_quota_tracker.get_all_usage()
+        assert row["provider"] == "m"
+        assert row["input_tokens"] == 5
+        assert row["output_tokens"] == 7
+        assert row["total_tokens"] == 12
+        assert row["request_count"] == 1
+        assert "usage_complete" not in row  # reported evidence, complete
+
+    @pytest.mark.asyncio
+    async def test_registered_ledger_gets_unreported_marker_not_zero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+        fallback_quota_tracker: InMemoryQuotaTracker,
+    ) -> None:
+        """A fallback call whose gateway reported no usage marks the ledger
+        incomplete — never a measured zero — so the provider's percentage
+        presents as unknown (#718)."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (row,) = await fallback_quota_tracker.get_all_usage()
+        assert row["provider"] == "m"
+        assert row["total_tokens"] == 0
+        assert row["unreported_count"] == 1
+        assert row["usage_complete"] is False
+        assert await fallback_quota_tracker.get_usage_pct("m", "monthly", 100) is None
+
+    @pytest.mark.asyncio
+    async def test_failing_ledger_does_not_take_down_the_fallback_call(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+    ) -> None:
+        """The ledger write is isolated: a ledger that blows up must not
+        crash a provider call that already succeeded — evidence stays on the
+        usage log and the failure is surfaced, not raised."""
+
+        class ExplodingTracker:
+            async def record_usage(self, *args: object, **kwargs: object) -> dict[str, object]:
+                raise RuntimeError("ledger unavailable")
+
+        monkeypatch.setattr(
+            "maistro.agents.conductor.get_default_quota_tracker", lambda: ExplodingTracker()
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        result = await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        assert result == '{"success": true}'
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.usage_reported is True
 
 
 class TestIsRetryable:
@@ -669,3 +917,60 @@ class TestRunTaskLive:
             result = await run_task(task, on_response=on_response)
         assert result.success is True
         assert captured["data"]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}  # type: ignore[index]
+
+
+class TestGovernedCompletionGuards:
+    """The governed gateway path must fail loudly on unusable bodies (#718).
+
+    A governed completion is the canonical Invocation's physical call; a
+    200 whose body carries no choices (or no message content) is provider
+    breakage, not an empty answer -- returning "" would terminalize the
+    Invocation as a successful zero-content call and record usage evidence
+    for a response the conductor never received.
+    """
+
+    async def test_no_choices_is_a_provider_error(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                return SimpleNamespace(body={"model": "m", "choices": []})
+
+        with pytest.raises(LLMProviderError, match="no choices"):
+            await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                ("run-1", "node-1", "attempt-1"),
+                1,
+                "ws-1",
+                "project-1",
+            )
+
+    async def test_no_content_is_a_provider_error(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                return SimpleNamespace(body={"model": "m", "choices": [{"message": {}}]})
+
+        with pytest.raises(LLMProviderError, match="no content"):
+            await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                ("run-1", "node-1", "attempt-1"),
+                1,
+                "ws-1",
+                "project-1",
+            )
