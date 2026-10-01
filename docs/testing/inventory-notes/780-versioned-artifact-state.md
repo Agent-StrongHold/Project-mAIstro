@@ -23,6 +23,32 @@ branch's migration is renumbered to `048` (`down_revision = "047"`). The
 `through 047` mentions below are historical evidence records gathered while
 the migration carried that number; the schema itself is unchanged.
 
+## CI-repair round: integration-scope sync (job dc11871447764a0cab62209a2625503d,
+final head a5ef4560c)
+
+The merge-queue `integration-scope` gate failed with an orphan-rebuild
+"corrupt patch at line 527031": the branch's diff was computed against a
+develop base that had moved 31 commits ahead. Repair: salvaged the four
+uncommitted files left by the provider-timeout job (SPEC front-matter refs,
+AC markers, migration-chain tests), then merged `origin/develop` twice
+(77b2dd94c, a5ef4560c), renumbering this branch's migration to `048` in the
+resolution. Executed evidence at the final head:
+
+- `ci_base_revision.py` / `ci_merge_group_scope.py` /
+  `check-integration-scope.py` merge-group sequence → exit 0, scope
+  `{docker_build, postgres, wheel_imports}` required.
+- Orphan rebuild simulation: `git diff origin/develop...HEAD` (3429-line
+  patch) applied cleanly onto a fresh `origin/develop` checkout
+  (`git apply --check` and apply both succeeded).
+- `alembic` ScriptDirectory heads → `['048']` (single linear head).
+- `pytest packages/maistro-design/tests` → 373 passed; `pytest tests/migrations`
+  → 19 passed, 81 skipped; design suite inventory → ok.
+- `ruff check .` / `ruff format --check .` → clean; `uv sync --locked` → ok.
+- `check-vulture-baseline` → exit 0; `tools/lint_lifecycle.py` → pass;
+  `maistro_registry.cli lint . --strict` → 416 files clean;
+  `check-execution-lifecycles` → 19/19; `check-doc-links` → ok;
+  `check-durable-table-inventory` → 81 tables declared.
+
 ## Independent verification record (job e1159b024b074099b9264c209f586f98, head d3f3aa468419)
 
 Executed by the verifier (not trusted from the implement phase):
