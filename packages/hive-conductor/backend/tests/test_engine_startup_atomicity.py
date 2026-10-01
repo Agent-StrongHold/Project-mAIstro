@@ -417,6 +417,44 @@ def test_sanitize_cause_is_bounded() -> None:
     assert len(cause) < 400
 
 
+def test_sanitize_cause_redacts_credentials_before_truncation() -> None:
+    """Startup dependency errors hit the unauthenticated /health as `cause`
+    or inside `degradations`, so the message body is passed through the
+    ADR-064 redactor — truncation alone would publish whatever credential
+    the dependency interpolated into its exception text (review on #1181)."""
+    from services.engine import _sanitize_cause
+
+    dsn = RuntimeError(
+        "could not connect to postgresql://ops:s3cr3t-Pa1nt@db.internal:5432/hive"
+    )
+    cause = _sanitize_cause(dsn)
+    assert "s3cr3t-Pa1nt" not in cause
+    assert "REDACTED" in cause  # marker proves the redactor ran, not truncation
+
+    token = RuntimeError("auth rejected: Bearer sk-abcdef0123456789abcdef")
+    assert "sk-abcdef0123456789abcdef" not in _sanitize_cause(token)
+
+
+def test_sanitize_cause_fails_closed_without_the_redactor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the redactor cannot be imported, only the exception type is
+    published — never an unvetted message body."""
+    import builtins
+
+    from services.engine import _sanitize_cause
+
+    real_import = builtins.__import__
+
+    def _no_redactor(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "maistro.security.redact":
+            raise ImportError("simulated redactor unavailability")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_redactor)
+    assert _sanitize_cause(RuntimeError("jdbc:postgres://u:p@h/x")) == "RuntimeError"
+
+
 # --- /health and /health/ready surfaces ---------------------------------------
 
 

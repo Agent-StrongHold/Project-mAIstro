@@ -45,12 +45,22 @@ EngineState = Literal["not_started", "starting", "ready", "degraded", "startup_f
 
 #: Health/JSON surfaces carry a bounded, type-qualified failure cause — never
 #: a raw traceback, and no settings value is ever interpolated into one (#1181).
+#: Text is also passed through the ADR-064 redactor before retention: startup
+#: dependency errors (DSNs, tokens, connection strings) reach the unauthenticated
+#: /health as `cause`/`degradations`, so truncation alone is not enough.
 _CAUSE_MAX_CHARS = 300
 
 
 def _sanitize_cause(exc: BaseException) -> str:
-    """One bounded, type-qualified line for /health and structured logs."""
-    text = f"{type(exc).__name__}: {exc}"
+    """One bounded, redacted, type-qualified line for /health and structured logs."""
+    try:
+        from maistro.security.redact import redact
+
+        text = redact(f"{type(exc).__name__}: {exc}")
+    except Exception:
+        # Fail closed: if the redactor itself is unavailable we cannot vouch
+        # for the message body, so publish the exception type only.
+        text = type(exc).__name__
     if len(text) > _CAUSE_MAX_CHARS:
         text = text[:_CAUSE_MAX_CHARS] + "…"
     return text
