@@ -419,6 +419,17 @@
       "owner": "#55",
       "rationale": "Canonical capabilities-layer Invocation plumbing; this is the governed seam, not a bypass."
     },
+    "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py::execute_image_generation::MODEL_EFFECT:openai-compatible-image-http#1": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py",
+      "qualname": "execute_image_generation",
+      "line": 151,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-image-http",
+      "callee": "client.post",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#286",
+      "rationale": "The approved image.generate Provider implementation itself. The call executes beneath a resolved image.generate Binding, Binding-scoped credential routing and a governed Invocation (ImageGenerationEgress), so this site IS the governed image egress, not a bypass."
+    },
     "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
       "qualname": "execute_model_chat",
