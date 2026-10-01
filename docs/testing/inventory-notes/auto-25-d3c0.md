@@ -7,7 +7,8 @@ inventory-delta:
 Delta recorded for branch `auto-25` (EPIC M4-E, issue #25 — "Harness
 components as evolvable targets"). All +30 node IDs come from the new
 `packages/maistro-core/tests/graph/test_harness_targets.py` suite (21 test
-functions; 13 of them run against all three template-store backends, hence
-30 net new collected IDs over the recorded baseline). Rationale and per-test
+functions; 15 of them run against all three template-store backends — 45
+collected IDs — plus 6 single-backend tests, hence 51 collected / 30 net new
+over the recorded baseline). Rationale and per-test
 breakdown are in [m4e-harness-targets.md](m4e-harness-targets.md), written in
 the same round; nothing was removed and no other suite moved.

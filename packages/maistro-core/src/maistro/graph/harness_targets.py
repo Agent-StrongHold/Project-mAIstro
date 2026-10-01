@@ -182,29 +182,14 @@ class HarnessProposalInconsistent(ValueError):
     """The proposal's declared targets contradict its candidate content."""
 
 
-async def materialize_candidate(
+async def _resolve_base(
     store: GraphTemplateStore, proposal: HarnessEvolutionProposal
 ) -> GraphTemplate:
-    """Register the proposal's content as the template's next candidate version.
+    """Fetch the proposal's base version, refusing anything but an active one.
 
-    The active base is never mutated: a new version number is allocated, the
-    candidate is stored with ``lifecycle="candidate"`` (overriding
-    `GraphTemplate`'s `"active"` field default — this is the self-activation
-    the epic forbids), and the evolution provenance is stamped into the
-    version's metadata so every future inspection of the version can see which
-    proposal, run, and targets produced it.
-
-    Raises:
-        GraphTemplateNotFound: no such template, or no active version to
-            improve.
-        HarnessTargetScopeMismatch: the template belongs to another workspace.
-        HarnessTargetBaseNotActive: the explicitly named base version is not
-            active.
-        HarnessProposalInconsistent: the proposal declares a ``graph_topology``
-            target but its candidate topology is identical to the base's — a
-            no-op diff may not claim to have rewired the graph.
-        GraphTemplateConflict: surfaced from the store; unreachable in normal
-            flow because a fresh version number is always allocated.
+    A named base version must exist and be active; the unnamed form resolves
+    whatever version the store currently serves as active. Both refusals name
+    the registered versions so an optimizer operator can see what *is* there.
     """
     if proposal.base_version is not None:
         base = await store.get(proposal.template_id, version=proposal.base_version)
@@ -225,19 +210,45 @@ async def materialize_candidate(
                 f"{proposal.base_version} is {base.lifecycle}, not active; a "
                 "proposal improves the active version"
             )
-    else:
-        base = await store.get(proposal.template_id)
-        if base is None:
-            known = await store.versions(proposal.template_id)
-            if not known:
-                raise GraphTemplateNotFound(
-                    f"no GraphTemplate {proposal.template_id!r} is registered"
-                )
-            raise GraphTemplateNotFound(
-                f"GraphTemplate {proposal.template_id!r} has no active version "
-                f"to improve; registered versions: "
-                f"{', '.join(str(item) for item in known)}"
-            )
+        return base
+    base = await store.get(proposal.template_id)
+    if base is None:
+        known = await store.versions(proposal.template_id)
+        if not known:
+            raise GraphTemplateNotFound(f"no GraphTemplate {proposal.template_id!r} is registered")
+        raise GraphTemplateNotFound(
+            f"GraphTemplate {proposal.template_id!r} has no active version "
+            f"to improve; registered versions: "
+            f"{', '.join(str(item) for item in known)}"
+        )
+    return base
+
+
+async def materialize_candidate(
+    store: GraphTemplateStore, proposal: HarnessEvolutionProposal
+) -> GraphTemplate:
+    """Register the proposal's content as the template's next candidate version.
+
+    The active base is never mutated: a new version number is allocated, the
+    candidate is stored with ``lifecycle="candidate"`` (overriding
+    `GraphTemplate`'s `"active"` field default — this is the self-activation
+    the epic forbids), and the evolution provenance is stamped into the
+    version's metadata so every future inspection of the version can see which
+    proposal, run, and targets produced it.
+
+    Raises:
+        GraphTemplateNotFound: no such template, or no active version to
+            improve (from :func:`_resolve_base`).
+        HarnessTargetScopeMismatch: the template belongs to another workspace.
+        HarnessTargetBaseNotActive: the explicitly named base version is not
+            active (from :func:`_resolve_base`).
+        HarnessProposalInconsistent: the proposal declares a ``graph_topology``
+            target but its candidate topology is identical to the base's — a
+            no-op diff may not claim to have rewired the graph.
+        GraphTemplateConflict: surfaced from the store; unreachable in normal
+            flow because a fresh version number is always allocated.
+    """
+    base = await _resolve_base(store, proposal)
 
     if base.workspace_id != proposal.workspace_id:
         raise HarnessTargetScopeMismatch(
