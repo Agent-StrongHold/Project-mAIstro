@@ -42,6 +42,7 @@ from maistro.backlog.markdown_io import (
     FURNITURE,
     ITEM,
     ParsedDocument,
+    effective_status_word,
     is_terminal_word,
     parse_dependencies,
     parse_markdown,
@@ -595,8 +596,13 @@ async def current_authority(ledger: AuthorityLedger) -> BacklogAuthority:
 
 
 def is_written_terminal(item: BacklogItem) -> bool:
-    """Whether the item's written Markdown status is a closed status."""
-    return item.origin is not None and is_terminal_word(item.origin.status_word)
+    """Whether the item's written Markdown status is a closed status.
+
+    Uses the same effective-word rule as rendering: an imported item whose
+    structured status has moved since import reads as its current state, not
+    its pre-import word.
+    """
+    return item.origin is not None and is_terminal_word(effective_status_word(item))
 
 
 __all__ = [

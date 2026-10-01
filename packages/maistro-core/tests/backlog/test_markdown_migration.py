@@ -26,7 +26,13 @@ from maistro.backlog.markdown_io import (
     status_to_structured,
     validate_document,
 )
-from maistro.backlog.model import BacklogItem, BacklogItemStatus, BacklogOrigin, status_is_terminal
+from maistro.backlog.model import (
+    BacklogClosure,
+    BacklogItem,
+    BacklogItemStatus,
+    BacklogOrigin,
+    status_is_terminal,
+)
 from maistro.backlog.store import InMemoryBacklogStore
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -48,13 +54,27 @@ def _origin(item, order: int) -> BacklogOrigin:
 
 
 def _items_from(document):
+    # Mirror the real import: the structured status comes from the written
+    # word, and a terminal written status carries the import's closure
+    # evidence, so the origin word matches the structured state at import.
     return {
         item.item_id: BacklogItem(
             workspace_id="w",
             title=item.title,
             created_by="test",
             item_id=item.item_id,
+            status=status_to_structured(item.status_word),
             origin=_origin(item, order),
+            **(
+                {
+                    "closure": BacklogClosure(
+                        summary=f"Imported from a written item in {ROOT_DOCUMENT_ID}",
+                        evidence_refs=(f"{ROOT_DOCUMENT_ID}#{item.item_id}",),
+                    )
+                }
+                if status_is_terminal(status_to_structured(item.status_word))
+                else {}
+            ),
         )
         for order, item in enumerate(document.items)
     }
@@ -270,6 +290,53 @@ async def test_imported_item_exports_byte_identically() -> None:
     text = "# B\n\n**[eng-001] Base — Proposed — M1**\n- work\n"
     document = await import_document(store, text)
     assert await export_document(store, document) == text
+
+
+async def test_status_change_after_import_renders_the_current_state() -> None:
+    """The origin word is historical only; a moved item renders its new state.
+
+    A stale pre-import word in the export would also pass the digest gate
+    (the digest is taken over the rendered document), so the header word must
+    track the structured status the moment it diverges from the origin word.
+    """
+    from maistro.backlog.cutover import export_document
+
+    store = InMemoryBacklogStore()
+    text = "# B\n\n**[eng-001] Base — Proposed; `gap-x` — M1**\n- work\n"
+    document = await import_document(store, text)
+
+    # Unchanged: the authored word (and gap marker) round-trips verbatim.
+    assert await export_document(store, document) == text
+
+    item = await store.get_item("eng-001")
+    await store.close_item(
+        "eng-001",
+        expected_version=item.version,
+        actor="human:a",
+        outcome=BacklogItemStatus.DONE,
+        closure_summary="shipped",
+        evidence_refs=("run-1",),
+    )
+    exported = await export_document(store, document)
+    assert "**[eng-001] Base — Implemented; `gap-x` — M1**" in exported
+    # The body still replays verbatim; only the header word tracks state.
+    assert "- work" in exported
+    assert "Evidence" not in exported
+
+    # And back: reopen restores the open rendering (the canonical word).
+    await store.reopen_item("eng-001", expected_version=item.version + 1, actor="human:a")
+    assert await export_document(store, document) == (
+        "# B\n\n**[eng-001] Base — Proposed; `gap-x` — M1**\n- work\n"
+    )
+
+
+def test_noncanonical_origin_word_survives_while_status_is_unchanged() -> None:
+    document = parse_markdown("# B\n\n**[eng-001] Held — In Review — M1**\n- work\n")
+    item = _items_from(document)["eng-001"]
+    assert item.status is BacklogItemStatus.OPEN
+    assert render_item(item).splitlines()[0] == "**[eng-001] Held — In Review — M1**"
+    item = item.model_copy(update={"status": BacklogItemStatus.IN_PROGRESS})
+    assert render_item(item).splitlines()[0] == "**[eng-001] Held — Accepted — M1**"
 
 
 async def test_export_refuses_items_missing_from_the_store() -> None:

@@ -311,18 +311,35 @@ def render_item(item: BacklogItem) -> str:
     """Render one item's full written block (header + body), deterministically.
 
     Imported items replay their stored origin verbatim — the round-trip
-    contract; natively-created database items are rendered in the same
-    grammar from their structured fields.
+    contract — except that the header's status word tracks the item's current
+    structured status (see :func:`effective_status_word`); natively-created
+    database items are rendered in the same grammar from their structured
+    fields.
     """
     lines = [_render_header(item)]
     lines.extend(item.origin.body if item.origin is not None else _prose_body(item))
     return "\n".join(lines)
 
 
+def effective_status_word(item: BacklogItem) -> str:
+    """The status word an imported item renders with, as of current state.
+
+    An imported item keeps the legend word it was written with only while
+    that word still maps onto its current structured status. Once the status
+    moves through the store or the agent surface, the header renders the
+    current structured status's word instead, so an export taken after, say,
+    ``close_item`` never reproduces a stale pre-import status.
+    """
+    origin = item.origin
+    if origin is not None and status_to_structured(origin.status_word) == item.status:
+        return origin.status_word
+    return _STATUS_WORD_BY_STATUS[item.status]
+
+
 def _render_header(item: BacklogItem) -> str:
     origin = item.origin
     if origin is not None:
-        status = origin.status_word
+        status = effective_status_word(item)
         if origin.gap_marker:
             status += f"; `{origin.gap_marker}`"
         header = f"**[{item.item_id}] {item.title} — {status}"
@@ -414,6 +431,7 @@ __all__ = [
     "parse_markdown",
     "render_document",
     "render_item",
+    "effective_status_word",
     "status_to_structured",
     "validate_document",
 ]
