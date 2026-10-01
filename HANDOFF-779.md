@@ -142,3 +142,68 @@ browser E2E.
 - Deterministic pattern checks are honest but shallow (no model call).
 - Branch is 2 commits of develop-sync behind on the vulture/ratchet
   provenance; gates were validated against merge-base b268f0535.
+
+---
+
+# Round 4 record (verification of e0a4e7de3, job 51cc5cd9adf14c30a57daf2ade079f0b)
+
+Head unchanged: `e0a4e7de3` (clean tree, no code edits this round; docs-only
+corrections below).
+
+## The named CI failure, reproduced then proven fixed
+
+`quality.yml`'s failing step is **"acceptance-state ratchet + mandate"**
+(`scripts/check-ac-state.py --run-tests --ratchet --mandate $BASE`). Run
+locally at this head with merge-group base `430139cb7` (current origin/develop
+tip), it **failed** with `design_coverage: 33.5058 falls below the floor of
+38.4867/38.4934` — deterministically (twice). Root cause of the low reading:
+the measuring environment lacked CI's postgres env. The gate runs the
+~180 `@pytest.mark.ac` tests per root; without `MAISTRO_TEST_PG_DSN` (set in
+`quality.yml:660-661` together with `DATABASE_URL`) **110 AC-marked
+tests skip** (persistence/runs conformance suites in maistro-core, 5 durable
+workspace-authority tests in hive-conductor). Skipped ≠ passing, so their
+criteria lose the `passing`/`reachable` rung and coverage sinks ~5 points.
+Every one of those tests **passes** with the DSN set (verified per root:
+911+2+32+6+85+90+327+353 AC-marked passed, 0 failed).
+
+With CI's env reproduced — `auto-779-pg` container (127.0.0.1:25779,
+maistro/maistro/maistro_test), `uv run alembic upgrade head` (RC 0),
+`DATABASE_URL`/`MAISTRO_TEST_PG_DSN` set exactly as `quality.yml:660-661` —
+the exact failing gate **passes**:
+
+- `MANDATE_BASE_SHA=430139cb7… uv run python scripts/check-ac-state.py
+  --run-tests --ratchet --mandate 430139cb7…` → **RC 0**: 10 counters on their
+  ceilings, `design_coverage 38.4934%` exactly on its floor, acceptance
+  mandate OK (8 newly claimed, 0 unproven), chain mandate OK.
+- The prior round's residual-risk claim is confirmed and sharpened: this is
+  not only a load flake — any gate measurement without the DSN+alembic env
+  reads ~33.5 and fails, at base and on this branch alike.
+
+## Other gates re-verified at this head (all RC 0)
+
+- vulture per-identity ledger: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → 1378 ↔ 1378, 0
+  unclassified/never-allowlist. No amendment needed.
+- `check-doc-links.py`, `check-contract-markers.py`,
+  `check-ratchet-provenance.py` → OK.
+- `uv run pytest packages/maistro-design/tests -q` → 370 passed;
+  `uv run python -m pytest
+  packages/hive-conductor/backend/tests/test_design_consistency_route.py -q`
+  → 8 passed (AC-1..AC-7 mapping unchanged).
+
+## AC-8 status after re-inspection
+
+The prior spec text said the browser-E2E harness is "a separate tracked
+slice" — **inaccurate**: the harness exists
+(`packages/hive-conductor/tests/e2e`, Playwright, run by ci.yml's
+`hive-conductor-e2e-ui`) and already carries two design-studio specs. What is
+actually missing is product surface, not harness: a Design Studio
+consistency/refinement panel whose `CreativeProjectSnapshot` the browser
+can truthfully obtain (the inspection route evaluates a client-submitted
+snapshot by contract; `GET /v1/design/projects/{id}` does not serve one), plus
+the `*.spec.ts` demonstrating one inconsistent sibling corrected while
+accepted siblings stay unchanged. Spec Scope and the AC-8 unproven reason were
+corrected this round to say exactly that. Building that surface (frontend
+panel + truthful snapshot source + E2E spec) is the remaining feature slice
+for this issue; it is not reachable by patching the evaluator, whose
+issue-level behavior is fully proven.

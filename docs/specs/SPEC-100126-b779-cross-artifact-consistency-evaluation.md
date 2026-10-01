@@ -72,7 +72,12 @@ Studio inspection route, and their tests.
 Out of bounds (the issue's stop condition): no second promotion/evolution
 system — historical evaluations may later become evidence for M4 governed
 improvement, but this slice only evaluates and refines the current creative
-project. The browser E2E harness is tracked separately (see AC-8).
+project. The browser E2E harness itself already exists
+(`packages/hive-conductor/tests/e2e`, run by ci.yml's `hive-conductor-e2e-ui`
+job); what AC-8 still needs is the Design Studio product surface for it — a
+consistency/refinement panel whose snapshot the browser truthfully obtains
+(the inspection route evaluates a client-submitted snapshot by contract) —
+plus the `*.spec.ts` demonstrating the flow (see AC-8).
 
 ## Acceptance criteria
 
@@ -85,7 +90,7 @@ project. The browser E2E harness is tracked separately (see AC-8).
 - [x] **AC-7** Retrying/refining creates normal Run/NodeRun/Attempt evidence and preserves the failed evaluation record.
 - [ ] **AC-8** Browser E2E demonstrates one inconsistent sibling being corrected while unrelated accepted siblings remain unchanged.
 
-  <!-- ac-state: unproven AC-8 - needs the workspace UI browser-E2E harness, which is a separate tracked slice; the evaluator-level and route-level behavior it will demonstrate is proven by AC-1..AC-7 above -->
+  <!-- ac-state: unproven AC-8 - needs the Design Studio consistency/refinement product surface (a panel whose snapshot the browser truthfully obtains) and its spec in packages/hive-conductor/tests/e2e; the evaluator-level and route-level behavior it will demonstrate is proven by AC-1..AC-7 above -->
 
 ## Evaluation dimensions
 
