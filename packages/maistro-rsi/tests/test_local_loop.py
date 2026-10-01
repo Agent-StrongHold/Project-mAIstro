@@ -597,16 +597,26 @@ def test_fitness_pipeline_fails_closed_on_unavailable_judge(tmp_path: Path, monk
     (repo / "x.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "add x.py")
-    (repo / "x.py").write_text("x = 2\n", encoding="utf-8")  # uncommitted diff vs HEAD
+    (repo / "x.py").write_text("x = 2\n", encoding="utf-8")
+    # The fail-first contract (#392): a source change needs a changed test that
+    # is red on the base revision, else the candidate is rejected before the
+    # judge ever runs — so this test's candidate carries one.
+    (repo / "test_x.py").write_text(
+        "import x\n\ndef test_x():\n    assert x.x == 2\n", encoding="utf-8"
+    )
+    # The loop commits every candidate before scoring it (the probe restores
+    # source from HEAD), so mirror that invariant here.
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "candidate")
 
     monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
     monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
 
     scorecard = candidate_fitness.evaluate_candidate(
         str(repo),
-        ["x.py"],
+        ["x.py", "test_x.py"],
         test_command="exit 0",
-        baseline_ref="HEAD",
+        baseline_ref="HEAD~1",
         baseline_coverage=80.0,
         regression_judge_fn=lambda diff, target: JudgeVerdict(
             status="unavailable",
