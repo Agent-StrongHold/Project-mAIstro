@@ -27,11 +27,13 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.sources import canonical_occurrence_instant
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 from maistro.scheduling.admission import ScheduleRunAdmitter
+from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEZONE = "UTC"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_DEFAULT_CATCHUP_WINDOW_SECONDS = DEFAULT_CATCHUP_WINDOW_SECONDS
 
 _runner: _ScheduleRunner | None = None
 
@@ -315,6 +317,9 @@ def _definition_drifted(existing: Schedule, definition: Schedule) -> bool:
         or existing.timezone != definition.timezone
         or existing.graph_template_id != definition.graph_template_id
         or existing.max_runs != definition.max_runs
+        # The window is a definition field the routes set (#1200); a PUT that
+        # changed it must reconcile the canonical row, not just the Hive one.
+        or existing.catchup_window_seconds != definition.catchup_window_seconds
         or existing.enabled != definition.enabled
         or existing.workspace_id != definition.workspace_id
         or existing.project_id != definition.project_id
@@ -400,9 +405,20 @@ class _ScheduleRunner:
         container = self._canonical_container()
         if container is not None:
             try:
-                executed = await container.execute_admitted_runs()
-                if executed:
-                    logger.info("Consumed %d admitted canonical Run(s)", executed)
+                accounting = await container.execute_admitted_runs_accounting()
+                if accounting.attempted or accounting.skipped:
+                    # The attempted count alone could present an all-failing
+                    # batch as a fully executed one (#849), so the tick's own
+                    # breakdown is what gets logged.
+                    logger.info(
+                        "Consumed %d admitted canonical Run(s) (succeeded=%d failed=%d "
+                        "parked=%d skipped=%d)",
+                        accounting.attempted,
+                        accounting.succeeded,
+                        accounting.failed,
+                        accounting.parked,
+                        accounting.skipped,
+                    )
             except Exception as exc:
                 logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
@@ -428,6 +444,17 @@ class _ScheduleRunner:
             timezone=str(getattr(schedule, "timezone", None) or _DEFAULT_TIMEZONE),
             graph_template_id=template_id,
             max_runs=getattr(schedule, "max_runs", None),
+            # The row's own window, bounded at the routes (#1200); rows that
+            # predate the column fall back to the substrate default, exactly
+            # as they do for timezone. ``is not None``, not ``or``: zero is a
+            # legal window ("never backfill", which the routes admit) and a
+            # falsy-value fallback would silently turn it into an hour of
+            # backfill the client refused.
+            catchup_window_seconds=float(
+                row_window
+                if (row_window := getattr(schedule, "catchup_window_seconds", None)) is not None
+                else _DEFAULT_CATCHUP_WINDOW_SECONDS
+            ),
             enabled=bool(getattr(schedule, "enabled", True)),
             overlap_policy=OverlapPolicy.SKIP,
             last_fired_at=getattr(schedule, "last_run", None),
@@ -652,6 +679,30 @@ class _ScheduleRunner:
             now=now,
             active_run=await self._canonical_active_run(definition, container),
         )
+
+        # Operator visibility for the bounded-work contract (#1200): a walk
+        # that hit its budget or step bound ended the tick with backlog it
+        # never looked at — the due cursor was left alone, so the next tick
+        # re-examines it, but an operator watching backlog should see the
+        # tick say so rather than read a clean "nothing due". Same for a
+        # window the host clamped under the schedule's own. Read through
+        # getattr: `ScheduleAdmission` always carries these fields, but a
+        # host may surface a narrower admission object.
+        if getattr(admission, "enumeration_incomplete", False):
+            stopped_at = getattr(admission, "enumeration_stopped_at", None)
+            logger.warning(
+                "Schedule %s catch-up walk stopped at %s, before now=%s; the backlog past "
+                "that point was not examined this tick and is re-examined on the next one",
+                sid,
+                stopped_at.isoformat() if stopped_at is not None else "its budget",
+                now.isoformat(),
+            )
+        if getattr(admission, "window_clamped", False):
+            logger.info(
+                "Schedule %s catch-up window %ss is capped at the host bound this tick",
+                sid,
+                definition.catchup_window_seconds,
+            )
 
         for skipped in admission.skipped:
             logger.info(

@@ -68,7 +68,7 @@ exactly one canonical owner (`maistro.interop` / #458, ADR-092326-7ed7,
 
 `packages/maistro-design/src/maistro_design/brief.py` owns one frozen
 `CreativeBrief` model; `brief_store.py` owns its persistence contract
-(`PgCreativeBriefStore`, table `design_creative_briefs`, migration 047).
+(`PgCreativeBriefStore`, table `design_creative_briefs`, migration 048).
 
 ### Boundary contracts
 
