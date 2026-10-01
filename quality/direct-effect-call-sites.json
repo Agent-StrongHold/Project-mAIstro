@@ -100,16 +100,16 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/services/evolution.py::_EvolutionService._build_llm_call._llm_call::MODEL_EFFECT:openai-compatible-http#1": {
+    "packages/hive-conductor/backend/services/evolution.py::_EvolutionService._build_raw_llm_call._llm_call::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/evolution.py",
-      "qualname": "_EvolutionService._build_llm_call._llm_call",
-      "line": 155,
+      "qualname": "_EvolutionService._build_raw_llm_call._llm_call",
+      "line": 474,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Renamed from _EvolutionService._build_llm_call._llm_call when #718 split the builder: governed Evolve production cycles now cross the canonical Invocation authority, and this raw call survives only as the no-canonical-authority fallback (ungoverned fallback evidence recorded); #56 owns final governed egress retirement."
     },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_build_llm_call._httpx_llm::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
@@ -418,6 +418,17 @@
       "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#55",
       "rationale": "Canonical capabilities-layer Invocation plumbing; this is the governed seam, not a bypass."
+    },
+    "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py::execute_image_generation::MODEL_EFFECT:openai-compatible-image-http#1": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py",
+      "qualname": "execute_image_generation",
+      "line": 151,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-image-http",
+      "callee": "client.post",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#286",
+      "rationale": "The approved image.generate Provider implementation itself. The call executes beneath a resolved image.generate Binding, Binding-scoped credential routing and a governed Invocation (ImageGenerationEgress), so this site IS the governed image egress, not a bypass."
     },
     "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",

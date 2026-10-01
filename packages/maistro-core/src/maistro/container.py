@@ -48,6 +48,7 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -1819,8 +1820,16 @@ async def _wire_capability_effects(
     pg_pool: Any,
     capability_bindings: Iterable[Binding],
     capability_credentials: CredentialRouter | None,
+    usage_log: Any = None,
+    quota_tracker: Any = None,
 ) -> CapabilityEffectContext:
-    """Select the durable canonical effect stores for this container."""
+    """Select the durable canonical effect stores for this container.
+
+    The usage ledger and quota tracker (#718) are passed into whichever
+    backend is selected rather than attached to a second context built beside
+    this one: two contexts would mean two Invocation authorities, and the one
+    the container handed out would be the one recording nothing.
+    """
     if effect_context is not None:
         return effect_context
     # The Container is an explicit composition root, so it names its policy on
@@ -1832,17 +1841,23 @@ async def _wire_capability_effects(
             db_pool,
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
+            usage_log=usage_log,
+            quota_tracker=quota_tracker,
         )
     elif pg_pool is not None:
         context = await new_postgres_effect_context(
             pg_pool,
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
+            usage_log=usage_log,
+            quota_tracker=quota_tracker,
         )
     else:
         context = new_in_memory_effect_context(
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
+            usage_log=usage_log,
+            quota_tracker=quota_tracker,
         )
     for binding in capability_bindings:
         await context.bindings.put(binding)
@@ -2009,6 +2024,16 @@ async def create_container(
         outcome_store = InMemoryOutcomeStore()
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
+
+    # The Container is the process's one composition root, so its ledger is
+    # the process default (#718): the conductor's raw-gateway fallback — the
+    # single call class that crosses no canonical Invocation authority —
+    # marks its ungoverned evidence there instead of leaving a
+    # ledger-carrying process presenting complete quota percentages while
+    # omitting that call. Authoritative recording stays on the canonical
+    # effect path above; this default only receives the fallback's
+    # non-Invocation evidence.
+    set_default_quota_tracker(quota_tracker)
 
     usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
 
@@ -2243,6 +2268,8 @@ async def create_container(
         pg_pool=pg_pool,
         capability_bindings=capability_bindings,
         capability_credentials=capability_credentials,
+        usage_log=get_default_usage_log(),
+        quota_tracker=quota_tracker,
     )
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
@@ -2567,6 +2594,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_invocation_evidence",
     "quota_usage_events",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
