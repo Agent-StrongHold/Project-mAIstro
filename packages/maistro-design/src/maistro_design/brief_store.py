@@ -42,26 +42,32 @@ _INSERT_SQL = text("""
             :created_by, :created_at)
 """)
 
-_SELECT_COLUMNS = """
-    brief_id, lineage_id, version, supersedes_brief_id, workspace_id, project_id,
-    goal_id, goal_revision, payload, created_by, created_at
-"""
-
 # Read statements are module-level constants: the table and column list are
 # literals, the caller-supplied values are bound parameters (:name), and no
-# user input ever reaches the SQL text. Keeping the statements here (instead of
-# formatting them per call) is also what keeps them plain strings for the
-# security scanner's no-dynamic-SQL rule, matching ``stores.py``.
-_SELECT_FROM = "SELECT " + _SELECT_COLUMNS + " FROM design_creative_briefs "
-_GET_SQL = text(_SELECT_FROM + "WHERE brief_id = :brief_id AND workspace_id = :workspace_id")
-_LATEST_SQL = text(
-    _SELECT_FROM + "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
-    "ORDER BY version DESC LIMIT 1"
-)
-_VERSIONS_SQL = text(
-    _SELECT_FROM + "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
-    "ORDER BY version ASC"
-)
+# user input ever reaches the SQL text. Each statement is written out in full
+# as one plain string literal — building them by concatenating fragments makes
+# the ``text()`` argument non-literal again for the security scanner's
+# no-dynamic-SQL rule (avoid-sqlalchemy-text), which accepts literals only.
+_GET_SQL = text("""
+    SELECT brief_id, lineage_id, version, supersedes_brief_id, workspace_id, project_id,
+           goal_id, goal_revision, payload, created_by, created_at
+    FROM design_creative_briefs
+    WHERE brief_id = :brief_id AND workspace_id = :workspace_id
+""")
+_LATEST_SQL = text("""
+    SELECT brief_id, lineage_id, version, supersedes_brief_id, workspace_id, project_id,
+           goal_id, goal_revision, payload, created_by, created_at
+    FROM design_creative_briefs
+    WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id
+    ORDER BY version DESC LIMIT 1
+""")
+_VERSIONS_SQL = text("""
+    SELECT brief_id, lineage_id, version, supersedes_brief_id, workspace_id, project_id,
+           goal_id, goal_revision, payload, created_by, created_at
+    FROM design_creative_briefs
+    WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id
+    ORDER BY version ASC
+""")
 
 
 def _coerce_brief(row: Any) -> CreativeBrief:

@@ -172,16 +172,53 @@ Re-executed on the merged head:
 - The diff-coverage failure stays fixed: `maistro_design/__init__.py` measures 100%
   (29 stmts / 0 miss) under `coverage run --branch`.
 
-**Residual (inherited, not #774 debt):** the acceptance-state ratchet's
-`design_coverage` floor is unsatisfiable at this base for *any* candidate. The fold at
-develop `9fe61e216` takes `auto-374`/`auto-1096`'s banked **38.4867**, but develop's own
-tree now measures **33.9609** (measured at develop tip `b9bcdd255`: 157 decisions, 92
-at zero — the M3-C6/M7-A doc merges added Accepted ADRs without proportional proof).
-The merged #774 tree measures **34.5978 — strictly above develop**, and the single
-per-decision delta is this lane's own contribution (ADR-036: 0.0 → 100.0 from
-SPEC-092826's 14 reachable criteria). Closing the remaining ~3.9 points would mean
-proving ~6 other epics' Accepted ADRs (out of lane scope), and the sanctioned
-corrections (`--bank` writes only this branch's note; grants are read at the base, and
-no `ac-state` grant exists there) cannot lower a `max`-folded floor from a candidate
-commit by design. This needs a trunk-side correction (prove decisions up or a
-develop-landed grant) — recorded here as the handoff, not gamed in this lane.
+**Residual — CORRECTED in round 3 (was: "unsatisfiable floor").** The round-2
+residual below described `design_coverage` as unsatisfiable trunk drift (floor 38.4867,
+develop measuring 33.9609). That measurement was an environment artifact, not trunk
+state: it was taken **without a PostgreSQL server**, and the AC-outcome plugin counts a
+*skip* as not-passing — exactly the trap `quality.yml`'s quality-gate job documents
+(#328: "without a server, every criterion whose evidence needs one is unprovable
+here"). Re-measured at CI parity (live `pgvector/pg18`, `MAISTRO_TEST_PG_DSN` +
+`DATABASE_URL`, `--all-extras`, age + maistro-evolve installed), the merged #774 tree
+measures **39.1237** — above the 38.4867 fold — deterministically across repeated
+runs. The gate's only remaining complaint was the *unbanked improvement*, resolved by
+banking `quality/ac-state-notes/auto-774.json` (`design_coverage: 39.1237`, measured
+with tests). The full `--run-tests --ratchet --mandate origin/develop` invocation now
+exits 0. No trunk-side correction is needed; the round-2 claim is retained below as
+the provenance of the correction.
+
+> Round-2 claim (superseded): the fold at develop `9fe61e216` takes `auto-374`/
+> `auto-1096`'s banked 38.4867, but develop's own tree was measured at 33.9609
+> (at tip `b9bcdd255`) and the merged #774 tree at 34.5978; both numbers are the
+> no-database undercount, as established above.
+
+## Round 3 (CI repair at merge `a58815784`, develop sync to `088cc1ef0`)
+
+- **Develop sync**: `origin/develop` advanced to `088cc1ef0` mid-round (second
+  collision in a row). #398's `048_canvas_job_retry_backoff` claimed the head the
+  round-2 renumber had taken, so the briefs migration is renumbered again to
+  `049_design_creative_briefs` (`down_revision = "048"`); `SPEC-092826` follows.
+  No test node IDs moved; `tests/migrations` re-run 100/100 against live
+  PostgreSQL with `alembic upgrade head` applying `…047 → 048 → 049`.
+- **SAST repair (real, not cosmetic)**: round 2's semgrep fix rewrote
+  `text(f"…")` as `text(_SELECT_FROM + "…")` — still a non-literal argument, still
+  matching `python.sqlalchemy.security.audit.avoid-sqlalchemy-text` (verified by
+  running the registry configs locally: 3 blocking findings at brief_store.py).
+  The three read statements are now each one full plain string literal
+  (`_GET_SQL`/`_LATEST_SQL`/`_VERSIONS_SQL`); behavior is unchanged (whitespace
+  only — Postgres semantics identical) and the whole suite re-proves it:
+  `p/security-audit + p/owasp-top-ten + p/secrets` over `packages/ tests/` =
+  **0 findings**; bandit Medium+ = **0**; gitleaks over `origin/develop..HEAD` =
+  **no leaks** (gitleaks 8.30.1, same pin as CI).
+- **Acceptance-state ratchet**: the round-2 blocker is resolved as described in
+  the correction above — measured **39.1237** at CI parity, banked to
+  `quality/ac-state-notes/auto-774.json`; `--run-tests --ratchet --mandate
+  origin/develop` exits 0 (10 debt counters on their ceilings, the progress
+  counter exactly on its floor, mandate 14/14, chain clean).
+- **Diff coverage** re-proven at this round's tree *and* at CI parity (the
+  coverage-gate job has no Postgres): every measured changed file ≥ 90% lines /
+  80% branch arcs (`__init__.py` 100%, `brief_store.py` 98.4% lines without PG,
+  `brief.py` 98.3%, `protocols.py` 100%).
+- Vulture per-identity ledger (the named CI-repair gate) exits 0
+  (1374 reviewed identities → 1372 findings); no baseline amendment required —
+  the two eliminated findings were not banked identities.
