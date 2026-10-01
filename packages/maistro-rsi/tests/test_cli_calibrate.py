@@ -18,6 +18,12 @@ from typing import Any
 
 import pytest
 
+from maistro_evolve.promotion import (
+    EVIDENCE_CYCLE_KEY,
+    HISTORY_KEY,
+    OBJECTIVE_VERSION_KEY,
+    SAMPLES_KEY,
+)
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 from maistro_rsi.__main__ import _build_parser, _calibrate, _print_champion_provenance
 from maistro_rsi.evolve_bridge import open_population
@@ -58,6 +64,23 @@ def make_genome(
         created_at=datetime.now(UTC).isoformat(),
         updated_at=datetime.now(UTC).isoformat(),
     )
+
+
+def _eligible(genome: PipelineGenome, samples: int = 2, cycle: int = 1) -> PipelineGenome:
+    """Stamp a genome with selection-eligible evidence (#854): repeated
+    independent samples with a stable spread, objective-stamped and current.
+    Champion APIs (``get_champion``/``champion_provenance``) run the shared
+    ``selection_eligibility`` contract, so fixtures that need a champion to
+    exist must carry evidence that clears it — same helper shape as the
+    evolve suite's ``test_champion_provenance.py::_evidence``."""
+    samples_param: dict[str, int] = genome.harness_params.setdefault(SAMPLES_KEY, {})
+    history_param: dict[str, list[float]] = genome.harness_params.setdefault(HISTORY_KEY, {})
+    for bench, score in genome.eval_scores.items():
+        samples_param[bench] = samples
+        history_param[bench] = [score - 0.01] * (samples - 1) + [score + 0.01]
+    genome.harness_params[OBJECTIVE_VERSION_KEY] = "objective-test"
+    genome.harness_params[EVIDENCE_CYCLE_KEY] = cycle
+    return genome
 
 
 def _report(fpr: float) -> dict[str, Any]:
@@ -146,13 +169,15 @@ class TestCalibrateHandler:
     ) -> None:
         db = str(tmp_path / "pop.db")
         store = open_population(db)
-        store.add(make_genome(genome_id="weak", fitness=0.1))
+        store.add(make_genome(genome_id="weak", fitness=0.1))  # never evaluated: ineligible
         store.add(
-            make_genome(
-                genome_id="champ",
-                fitness=0.9,
-                scores={"proxy_bfcl": 1.0},
-                evidence={"proxy_bfcl": "structured_call"},
+            _eligible(
+                make_genome(
+                    genome_id="champ",
+                    fitness=0.9,
+                    scores={"proxy_bfcl": 1.0},
+                    evidence={"proxy_bfcl": "structured_call"},
+                )
             )
         )
         stub_harness["report"] = _report(0.0)
@@ -177,7 +202,9 @@ class TestCalibrateHandler:
         stub_harness: dict[str, Any],
     ) -> None:
         db = str(tmp_path / "pop.db")
-        open_population(db).add(make_genome(genome_id="g", fitness=0.5))
+        open_population(db).add(
+            _eligible(make_genome(genome_id="g", fitness=0.5, scores={"proxy_bfcl": 0.5}))
+        )
         stub_harness["report"] = _report(0.2)
 
         args = _build_parser().parse_args(["calibrate", "--db", db])
@@ -194,7 +221,9 @@ class TestCalibrateHandler:
         stub_harness: dict[str, Any],
     ) -> None:
         db = str(tmp_path / "pop.db")
-        open_population(db).add(make_genome(genome_id="g", fitness=0.5))
+        open_population(db).add(
+            _eligible(make_genome(genome_id="g", fitness=0.5, scores={"proxy_bfcl": 0.5}))
+        )
         stub_harness["report"] = _report(0.0)
 
         args = _build_parser().parse_args(["calibrate", "--db", db, "--json"])
@@ -225,11 +254,13 @@ class TestChampionProvenancePrinting:
     ) -> None:
         store = open_population(None)
         store.add(
-            make_genome(
-                genome_id="champ",
-                fitness=0.9,
-                scores={"proxy_bfcl": 1.0, "proxy_gaia": 0.5},
-                evidence={"proxy_bfcl": "structured_call"},
+            _eligible(
+                make_genome(
+                    genome_id="champ",
+                    fitness=0.9,
+                    scores={"proxy_bfcl": 1.0, "proxy_gaia": 0.5},
+                    evidence={"proxy_bfcl": "structured_call"},
+                )
             )
         )
         _print_champion_provenance(store)
