@@ -77,6 +77,7 @@ async def test_the_run_names_chat_as_what_admitted_it(spine) -> None:
     assert run.provenance[REQUEST_ID_KEY] == "req-1"
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-1")
 async def test_two_turns_in_one_session_are_two_runs(spine) -> None:
     """The decision, held directly: a Run is a turn, not a conversation."""
     _projects, runs, root = spine
@@ -119,6 +120,7 @@ def test_the_last_user_message_is_the_last_one() -> None:
 # --- the bound ------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-2")
 async def test_terminal_chat_runs_are_swept_behind_the_window(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=3)
