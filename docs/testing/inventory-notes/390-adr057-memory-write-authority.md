@@ -65,3 +65,46 @@ maistro-turing recipe declares `exposure_mode` explicitly; the store-boundary
 gate still refuses undeclared stores, so no production write bypasses the
 decision. `memory.write.denied` events and read-path gating remain KNOWN-GAPS
 residuals as documented.
+
+## CI-repair round (head 8b56789d66b8, gates re-run locally)
+
+The first merge-queue evaluation at 8b56789d failed six gates. Root causes, all
+reproduced locally from the CI job logs and all fixed in this round:
+
+1. The repo-root mirror suite `tests/memory/` and `tests/migrations/` construct
+   the same production stores the maistro-core suites do, but the prior battery
+   only ran `packages/maistro-core/tests`, so 26 bare-construction mutation
+   tests and 2 PG migrations tests reached CI unguarded and failed with
+   `MemoryUndeclaredModeError`. Fixed by declaring
+   `exposure_mode=AGENT_MANAGED` on those constructions (same declaration the
+   container makes); non-mutating `test_protocols.py` isinstance checks stay
+   bare deliberately.
+2. `maistro.memory` / `maistro.memory.exposure` entered the promotion-path
+   import closure (types/config.py now imports the exposure-mode enum), and the
+   write-authority gate is an authorization decision, so both modules are now
+   PROTECTED in `maistro_rsi/sensitive_paths.py` (the capabilities/authority.py
+   precedent) rather than tolerated in
+   `quality/promotion-surface-baseline.json`. This clears
+   `check-promotion-surface.py` (lint-and-type-check) and the
+   promotion-surface trusted-base gate inside `check-ratchet-provenance.py`
+   (Vulture Ratchet / exact-debt-ledger job), and with them
+   `tests/test_check_promotion_surface.py`.
+3. `docs/architecture/CONVERGENCE-MATRIX.md` still described the pre-#390
+   reachability: Memory unreachable share moved `some` -> `few` (5/28) and the
+   `(unreachable)` annotation on the `memory.exposure` authorization owner is
+   dropped (the checker recomputes both from the same import graph).
+
+Gates re-executed green locally after the fixes: `check-promotion-surface.py`,
+`check-ratchet-provenance.py` (all 12 ratchets incl. promotion-surface
+trusted-base and the provenance inventory), `check-vulture-baseline.py`
+(1390 reviewed identities -> 1390 findings, nothing eliminated, no ledger
+amendment needed), `check-shipped-surface-truth.py`,
+`check-convergence-matrix.py`, `check-doc-links.py`,
+`check-agent-store-writes.py`, `check-suite-inventory.py` (14 suites match);
+`ruff check`/`format --check` clean on all touched files;
+`tests/memory` 64 passed; `tests/migrations/test_memory_embeddings.py` +
+`test_pg_store_wiring.py` 44 passed against the live migrated pgvector pg18
+database; `test_check_promotion_surface.py` + `test_check_convergence_matrix.py`
++ maistro-rsi suites 889 passed; maistro-core memory/persistence 502 passed
+(103 sqlite/PG skips without DSN) and `test_write_authority_conformance.py`
+again 42 passed with live PG legs (alembic head 047).
