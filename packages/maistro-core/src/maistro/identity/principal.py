@@ -12,6 +12,39 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+#: What a legacy dict may have put in a collection field. A caller that
+#: produced a bare string gets an empty set rather than a set of characters.
+_COLLECTION_TYPES = (list, tuple, set, frozenset)
+
+
+def _string_set(value: Any) -> frozenset[str]:
+    """Coerce one legacy collection field, however it was serialized.
+
+    Four fields -- roles, scopes, workspace_ids, team_ids -- arrive from
+    `request.state.user` in whatever shape the producing code happened to use,
+    and each repeated this same isinstance-or-empty dance inline. One named
+    rule is shorter and is the only place to change if the accepted shapes
+    ever do.
+    """
+
+    if isinstance(value, _COLLECTION_TYPES):
+        return frozenset(str(item) for item in value)
+    return frozenset()
+
+
+def _legacy_roles(user: Mapping[str, Any]) -> frozenset[str]:
+    """The roles a legacy principal claims, from either spelling.
+
+    Singular ``role`` wins when both are present: a dict carrying both was
+    narrowed to a single role somewhere in older code, and reading the plural
+    there would widen it back.
+    """
+
+    role = user.get("role")
+    if role is not None:
+        return frozenset({str(role)})
+    return _string_set(user.get("roles"))
+
 
 @dataclass(frozen=True, slots=True)
 class Principal:
@@ -33,43 +66,14 @@ class Principal:
     @classmethod
     def from_legacy_dict(cls, user: Mapping[str, Any]) -> Principal:
         """Bridge hive ``request.state.user`` dicts during cutover migration."""
-        user_id = str(user.get("id") or user.get("user_id") or "")
-        role = user.get("role")
-        roles: frozenset[str]
-        if role is not None:
-            roles = frozenset({str(role)})
-        else:
-            raw_roles = user.get("roles")
-            if isinstance(raw_roles, (list, tuple, set, frozenset)):
-                roles = frozenset(str(item) for item in raw_roles)
-            else:
-                roles = frozenset()
-        raw_scopes = user.get("scopes")
-        scopes = (
-            frozenset(str(item) for item in raw_scopes)
-            if isinstance(raw_scopes, (list, tuple, set, frozenset))
-            else frozenset()
-        )
-        raw_workspaces = user.get("workspace_ids") or user.get("workspaces")
-        workspace_ids = (
-            frozenset(str(item) for item in raw_workspaces)
-            if isinstance(raw_workspaces, (list, tuple, set, frozenset))
-            else frozenset()
-        )
         org_id = user.get("org_id")
-        raw_teams = user.get("team_ids")
-        team_ids = (
-            frozenset(str(item) for item in raw_teams)
-            if isinstance(raw_teams, (list, tuple, set, frozenset))
-            else frozenset()
-        )
         return cls(
-            user_id=user_id,
-            roles=roles,
-            scopes=scopes,
-            workspace_ids=workspace_ids,
+            user_id=str(user.get("id") or user.get("user_id") or ""),
+            roles=_legacy_roles(user),
+            scopes=_string_set(user.get("scopes")),
+            workspace_ids=_string_set(user.get("workspace_ids") or user.get("workspaces")),
             org_id=str(org_id) if org_id is not None else None,
-            team_ids=team_ids,
+            team_ids=_string_set(user.get("team_ids")),
         )
 
     def to_legacy_dict(self) -> dict[str, Any]:
