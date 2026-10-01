@@ -216,9 +216,26 @@ class TestPromotionGate:
         with pytest.raises(ValueError):
             asyncio.run(store.promote_audited("does-not-exist", _trail()))
 
+    def test_promote_approved_genome_without_evidence_is_refused(self, tmp_path):
+        """Approval alone does not activate: the governed promotion contract
+        (#854) also requires sufficient independent evaluation evidence."""
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome("g1", fitness_score=99.0, approved_for_promotion=True)
+        store.add(g)
+        with pytest.raises(PermissionError, match="governed promotion policy"):
+            asyncio.run(store.promote_audited("g1", _trail()))
+        assert store.get_active() is None
+
     def test_promote_approved_genome_succeeds(self, tmp_path):
         store = PopulationStore(tmp_path / "pop.db")
         g = _genome("g1", fitness_score=99.0, approved_for_promotion=True)
+        # Repeated, objective-stamped, current evidence — approval is
+        # necessary but not sufficient (#854).
+        g.eval_scores = {"proxy_ifeval": 0.8}
+        g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+        g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
+        g.harness_params["objective_version"] = "objective-test"
+        g.harness_params["evidence_cycle"] = 1
         store.add(g)
         promoted = asyncio.run(store.promote_audited("g1", _trail()))
         assert promoted.is_active is True
@@ -249,7 +266,12 @@ class TestPromotionGate:
 class TestRollback:
     def test_rollback_with_no_prior_promotion_returns_none(self, tmp_path):
         store = PopulationStore(tmp_path / "pop.db")
-        g = _genome("g1", approved_for_promotion=True)
+        g = _genome("g1", fitness_score=0.8, approved_for_promotion=True)
+        g.eval_scores = {"proxy_ifeval": 0.8}
+        g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+        g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
+        g.harness_params["objective_version"] = "objective-test"
+        g.harness_params["evidence_cycle"] = 1
         store.add(g)
         asyncio.run(store.promote_audited("g1", _trail()))
         assert asyncio.run(store.rollback_audited(_trail())) is None
@@ -260,6 +282,13 @@ class TestRollback:
         store = PopulationStore(tmp_path / "pop.db")
         old = _genome("old", approved_for_promotion=True)
         new = _genome("new", approved_for_promotion=True)
+        for g, score, fit in ((old, 0.3, 0.5), (new, 0.8, 0.9)):
+            g.eval_scores = {"proxy_ifeval": score}
+            g.fitness_score = fit
+            g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+            g.harness_params["eval_history"] = {"proxy_ifeval": [score - 0.01, score + 0.01]}
+            g.harness_params["objective_version"] = "objective-test"
+            g.harness_params["evidence_cycle"] = 1
         store.add(old)
         store.add(new)
 
