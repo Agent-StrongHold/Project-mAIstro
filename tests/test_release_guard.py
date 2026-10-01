@@ -95,9 +95,8 @@ def test_rc_tag_passes_against_the_final_version(release_tree, guard_mod):
     assert out["version"] == "1.0.0"
     assert out["prerelease"] == "true"
     assert out["rc"] == "1"
-    # ADR §2 (as amended for ADR-095): an rc may point at develop, the
-    # canonical integration branch, so it can soak.
-    assert out["target_branch"] == "develop"
+    # ADR §2's sole exception: an rc may point at integration so it can soak.
+    assert out["target_branch"] == "integration"
 
 
 def test_version_disagreeing_with_VERSION_is_rejected(release_tree, guard_mod):

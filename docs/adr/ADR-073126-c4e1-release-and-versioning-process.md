@@ -32,13 +32,6 @@ history:
 **Status:** Accepted
 **Date:** 2026-07-31
 
-> **Amended 2026-09-30 (#19): the rc release tier is cut from `develop`, not
-> `integration`.** [ADR-095](ADR-095-four-tier-branch-model.md) and
-> [docs/ci/BRANCH-PROTECTION.md](../../docs/ci/BRANCH-PROTECTION.md) retire
-> `integration`; `develop` is the canonical integration branch. §2 (tag
-> placement), §3 (the publish guard), §6 (rc conventions), the references, and
-> `scripts/release_guard.py` now name `develop`.
-
 Extends [ADR-095](ADR-095-four-tier-branch-model.md) past `main`. ADR-095 defines
 how code *reaches* `main`; it says nothing about how a release is cut from it,
 versioned, tagged, or published. This fills that gap.
@@ -73,9 +66,7 @@ version-bump tooling, not by hand.
 
 - A **final** release tag `vX.Y.Z` may only point at a commit on `main`.
 - A **release candidate** tag `vX.Y.Z-rcN` is the sole exception: it may point
-  at a commit on `develop` — the canonical integration branch named by
-  [ADR-095](ADR-095-four-tier-branch-model.md), which retired `integration` —
-  so a candidate can be soaked before promotion.
+  at a commit on `integration`, so a candidate can be soaked before promotion.
 - Tags are **annotated** (`git tag -a`), never lightweight — the tag object
   carries the tagger and date that release provenance depends on.
 - Tags are immutable. A bad release is superseded by a higher version, never by
@@ -92,7 +83,7 @@ tag-triggered `release.yml` workflow. No local `twine upload`, no manual
 `docker push`, no `deploy.sh` publishing to a release tag.
 
 The workflow guards before it builds: the tag's commit must be an ancestor of
-`main` (or `develop` for an rc), and the tag version must equal the root
+`main` (or `integration` for an rc), and the tag version must equal the root
 `VERSION` and every package version exactly — with the rc suffix stripped for
 comparison.
 
@@ -126,10 +117,9 @@ bug in the next minor. It is part of the hotfix, not follow-up work.
 ### 6. Release-candidate conventions
 
 - `rcN` starts at `rc1` and increments; no `rc0`.
-- An rc is cut from `develop` and soaked there. Any fix lands on `develop`
-  (topic branch → `develop`) and gets a **new** rc number; an rc tag is never
-  moved.
-- Promotion to final is the `develop` → `main` merge plus a `vX.Y.Z`
+- An rc is cut from `integration` and soaked. Any fix goes to `develop` →
+  `integration` and gets a **new** rc number; an rc tag is never moved.
+- Promotion to final is a merge of `integration` into `main` plus a `vX.Y.Z`
   tag. The final release ships the artifacts the last rc already validated.
 
 ## Consequences
@@ -179,4 +169,4 @@ be evaluated on those terms.
 - [ADR-076: HTTP API versioning](ADR-076-http-api-versioning.md) — the API
   version axis is independent of the package version axis defined here
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) — the topic-branch → `develop` →
-  `develop` → `main` flow in operational terms
+  `integration` → `main` flow in operational terms

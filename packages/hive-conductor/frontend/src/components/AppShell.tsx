@@ -14,7 +14,6 @@ import {
   Brain,
   Plug,
   KeyRound,
-  Palette,
   Settings,
   Workflow,
   PlayCircle,
@@ -22,17 +21,11 @@ import {
   Network,
   Zap,
   Repeat,
-  ListTodo,
 } from "lucide-react";
 
 const fullNav = [
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  // #95: Design Studio is the parent creative-production surface, so it is a
-  // first-class nav destination at its canonical route. Canvas is a tool it
-  // consumes, not a sibling studio; the implementation-era /cli/canvas path is
-  // only a compatibility redirect (App.tsx).
-  { to: "/design-studio", icon: Palette, label: "Design Studio" },
   { to: "/dags", icon: Workflow, label: "DAG Builder" },
   { to: "/dag-runs", icon: PlayCircle, label: "DAG Runs" },
   // Missions was reachable only from `pocNav`, so retiring POC mode left a
@@ -40,8 +33,6 @@ const fullNav = [
   // renders, `App.tsx` still registers it, and a repo-wide search finds no
   // other Link or NavLink to it (#129).
   { to: "/missions", icon: Target, label: "Missions" },
-  // #99: editable backlog (board/list/detail) over the canonical service.
-  { to: "/backlog", icon: ListTodo, label: "Backlog" },
   { to: "/agents", icon: Bot, label: "Agents" },
   { to: "/topology", icon: Network, label: "Topology" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },

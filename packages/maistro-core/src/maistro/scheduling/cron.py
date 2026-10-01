@@ -37,7 +37,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 from typing import Final
 from zoneinfo import ZoneInfo
 
@@ -47,16 +46,6 @@ __all__ = [
     "minimum_gap",
     "parse_cron",
 ]
-
-#: Bound on the parse cache. An expression is immutable input, so its parse is
-#: pure and shareable; the cache exists so catch-up walking does not reparse
-#: the same expression once per occurrence (#1200 — the audit measured 50,000
-#: reparses at ~0.64s of synchronous event-loop work in one evaluation).
-#: Bounded, because expressions are caller-supplied strings: without a bound a
-#: client probing distinct invalid expressions would grow the cache forever.
-#: 1024 entries comfortably covers every schedule a real deployment files;
-#: a miss merely reparses.
-_PARSE_CACHE_SIZE: Final = 1024
 
 _FIELD_COUNT: Final = 5
 # Defensive bound on the next-fire search. The walk advances a whole month,
@@ -214,16 +203,7 @@ class CronExpression:
         raise CronParseError(f"{self.source!r}: no fire time found within the search bound")
 
 
-@lru_cache(maxsize=256)
 def _zone(timezone: str) -> ZoneInfo:
-    """Memoized zone lookup.
-
-    ``next_fire`` resolves the zone on every call, and catch-up enumeration
-    calls it once per occurrence; ``ZoneInfo`` caches internally but the name
-    lookup and the exception path still ran per step. Names that fail stay
-    uncached (``lru_cache`` does not cache exceptions), which keeps the
-    "unknown timezone" error raised from the same place as before.
-    """
     try:
         return ZoneInfo(timezone)
     except Exception as exc:  # any zoneinfo failure means the name is unusable
@@ -252,25 +232,7 @@ def _start_of_next_day(moment: datetime) -> datetime:
 
 
 def parse_cron(expression: str) -> CronExpression:
-    """Parse a 5-field POSIX cron expression, or raise ``CronParseError``.
-
-    Results are memoized per expression string (#1200): ``Schedule.expression``
-    is read once per occurrence during catch-up enumeration, so an uncached
-    parse made every step of a backlog walk re-derive the same compiled
-    fields. ``CronExpression`` is an immutable value (frozen dataclasses over
-    frozensets), so sharing one parse across callers is safe. Parse *errors*
-    are deliberately not memoized — ``lru_cache`` cannot cache exceptions, so
-    probing invalid expressions costs a reparse but no memory.
-    """
-    return _parse_cached(expression)
-
-
-@lru_cache(maxsize=_PARSE_CACHE_SIZE)
-def _parse_cached(expression: str) -> CronExpression:
-    return _parse_uncached(expression)
-
-
-def _parse_uncached(expression: str) -> CronExpression:
+    """Parse a 5-field POSIX cron expression, or raise ``CronParseError``."""
     parts = expression.strip().split()
     if len(parts) != _FIELD_COUNT:
         raise CronParseError(

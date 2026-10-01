@@ -167,24 +167,6 @@ _FALLBACK = (
 )
 
 
-def _defaults_only_to_references(value: str) -> bool:
-    """Whether every fallback in a `${A:-${B:-...}}` chain is another reference.
-
-    Walks the chain and accepts it only if it ends in a required, plain or
-    empty reference. Any literal anywhere -- `${A:-${B:-hunter2}}` -- is still
-    a committed default, so this returns False and the caller flags it.
-    """
-    for _ in range(8):
-        match = re.fullmatch(r"\$\{[A-Z0-9_]+:?-(.+)\}", value)
-        if match is None:
-            return False
-        fallback = match.group(1).strip()
-        if _REQUIRED.match(fallback) or _PLAIN.match(fallback) or _EMPTY_DEFAULT.match(fallback):
-            return True
-        value = fallback
-    return False
-
-
 def classify(value: str, *, name: str = "") -> str:
     """Return why `value` is unacceptable, or "" when it is fine."""
     stripped = value.strip().strip('"').strip("'")
@@ -203,13 +185,6 @@ def classify(value: str, *, name: str = "") -> str:
             else ""
         )
     if _REQUIRED.match(stripped) or _EMPTY_DEFAULT.match(stripped) or _PLAIN.match(stripped):
-        return ""
-    if _defaults_only_to_references(stripped):
-        # `${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?msg}}`: a caller who sets
-        # nothing gets a *refusal*, not a value, because the fallback is itself
-        # a required reference. The reason this rule exists -- "a caller who
-        # sets nothing still gets this value" -- does not hold, so flagging it
-        # would push a correct layered default towards a worse spelling.
         return ""
     if re.match(r"^\$\{[A-Z0-9_]+:?-.+\}$", stripped):
         return _FALLBACK

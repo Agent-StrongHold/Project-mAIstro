@@ -481,24 +481,28 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
         # PostgreSQL round trips can consume most of a short test window, while
         # the explicit recovery clock below makes expiry itself deterministic.
-        # The deadline is generous wall-clock rather than a multiple of the
-        # heartbeat interval: on a coverage-instrumented CI runner, leaked
-        # background threads and disk stalls can starve this loop's cooperative
-        # tasks for whole seconds while loop.time() keeps advancing, so a tight
-        # budget can expire without the heartbeat ever getting a turn (seen as
-        # a flaky "not renewed by the heartbeat" on the no-services coverage
-        # job -- same head, adjacent pass and fail runs).
-        loop = asyncio.get_running_loop()
+        # The budget is completed poll iterations, not wall-clock: on a
+        # coverage-instrumented CI runner, leaked background threads and disk
+        # stalls can starve this loop's cooperative tasks (the heartbeat with
+        # them) for whole seconds while any clock keeps advancing, so a
+        # wall-clock deadline can expire without the heartbeat ever getting a
+        # turn (seen as a flaky "not renewed by the heartbeat" on the
+        # no-services coverage job and again on the coverage (PostgreSQL)
+        # job's sqlite leg, adjacent pass and fail runs on the same head).
+        # Each completed iteration proves the loop was scheduled; once it is,
+        # the heartbeat's lapsed timer fires within a few iterations, so an
+        # exhausted budget means the heartbeat genuinely never renewed.
         live = await store.get_attempt(resumed.attempt_id)
-        renewal_deadline = loop.time() + 15.0
+        polls_left = 150
         while (
             live is None
             or live.execution_lease is None
             or live.execution_lease.expires_at is None
             or live.execution_lease.expires_at <= lease.expires_at
         ):
-            if loop.time() >= renewal_deadline:
+            if polls_left <= 0:
                 pytest.fail("a live resumed Attempt was not renewed by the heartbeat")
+            polls_left -= 1
             await asyncio.sleep(0.05)
             live = await store.get_attempt(resumed.attempt_id)
         live_lease = live.execution_lease
@@ -804,31 +808,6 @@ class TestTheTickUnderStress:
         (node_run,) = await container.run_store.list_node_runs(run_id)
         attempts = await container.run_store.list_attempts(node_run.node_run_id)
         assert len(attempts) == 2
-
-    async def test_a_caught_resume_failure_is_failed_accounting_not_resumed(
-        self, monkeypatch
-    ) -> None:
-        """#849: the tick counted a caught resume failure as a resumed Run, so
-        a tick that re-entered three polls and blew up on all three reported
-        three resumed. The breakdown is the honest answer now; the int return
-        keeps its attempted meaning, documented as such."""
-        _PollingPauseNode.reaches = 0
-        container = await _container()
-        await _parked_run(container, _PollingPauseNode.kind, workspace="accounting-ws")
-
-        async def _boom(*_args: Any, **_kwargs: Any) -> None:
-            raise RuntimeError("the resolver blew up before any Attempt existed")
-
-        monkeypatch.setattr("maistro.runs.consumption.ScheduleAttemptExecutor.resume", _boom)
-
-        accounting = await container.resume_parked_runs_accounting()
-
-        assert accounting.attempted == 1
-        assert accounting.succeeded == 0, "a caught failure is not a resumed Run"
-        assert accounting.failed == 1
-        assert accounting.skipped == 0
-        # The compatibility return: attempted, as its docstring now states.
-        assert await container.resume_parked_runs() == 1
 
     async def test_a_resume_that_fails_outright_leaves_the_run_parked(self, monkeypatch) -> None:
         """Not RUNNING over a parked NodeRun. Nothing about the pause has

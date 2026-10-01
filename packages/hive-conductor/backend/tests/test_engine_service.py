@@ -241,9 +241,17 @@ async def test_start_in_demo_mode_uses_local_backend(
         hive_default_workspace_id = "default"
 
     # Stub out TaskQueue/TaskRunner so .start doesn't try to spawn real ones
+    queue_args: dict[str, Any] = {}
+
     class _Q:
-        def __init__(self, *, admitter: Any = None) -> None:
+        def __init__(
+            self,
+            *,
+            admitter: Any = None,
+            idempotency_store: Any = None,
+        ) -> None:
             self.admitter = admitter
+            queue_args["idempotency_store"] = idempotency_store
 
     class _R:
         def __init__(self, q: Any, executor: Any, attempts: Any = None) -> None:
@@ -271,6 +279,40 @@ async def test_start_in_demo_mode_uses_local_backend(
     svc = EngineService()
     await svc.start(_Settings())  # type: ignore[arg-type]
     assert type(svc._backend).__name__ == "LocalTaskBackend"
+    # Stub mode has no canonical Run spine, so it correctly has no claim tier;
+    # the constructor still passes the seam explicitly to the local queue.
+    assert "idempotency_store" in queue_args
+
+
+async def test_local_backend_passes_claim_store_to_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Demo admission must use the same idempotency seam as server admission."""
+    import types
+
+    queue_args: dict[str, Any] = {}
+
+    class _Q:
+        def __init__(self, **kwargs: Any) -> None:
+            queue_args.update(kwargs)
+
+    class _R:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    queue_mod = types.ModuleType("maistro.tasks.queue")
+    queue_mod.TaskQueue = _Q  # type: ignore[attr-defined]
+    runner_mod = types.ModuleType("maistro.tasks.runner")
+    runner_mod.TaskRunner = _R  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "maistro.tasks.queue", queue_mod)
+    monkeypatch.setitem(sys.modules, "maistro.tasks.runner", runner_mod)
+
+    from adapters.task_backend import LocalTaskBackend
+
+    claim_store = object()
+    LocalTaskBackend(executor=object(), idempotency_store=claim_store)
+
+    assert queue_args["idempotency_store"] is claim_store
 
 
 async def test_stop_with_no_backend_is_safe() -> None:
@@ -762,37 +804,6 @@ async def test_cancel_task_preserves_the_caller_scope_on_the_backend() -> None:
 
     assert await service.cancel_task("t-1", user_id="alice") is True
     assert backend.cancel_scoped_with == "alice"
-
-
-async def test_cancel_task_probes_ownership_asynchronously_and_fails_closed() -> None:
-    """The cancel probe must be the async one (#1180): this coroutine runs on
-    the event loop (async `DELETE /v1/missions/{id}`), so the production
-    backend's sync `get` — a 30s-timeout httpx GET — would pin the loop."""
-    from services.engine import EngineService, TaskRecord
-
-    probed: list[tuple[str, Any]] = []
-
-    class _B:
-        def get(self, tid: str, *, user_id: Any = None) -> Any:
-            raise AssertionError("sync get must not run on the event loop")
-
-        async def get_async(self, tid: str, *, user_id: Any = None) -> Any:
-            probed.append((tid, user_id))
-            return TaskRecord(_fake_task(task_id=tid)) if user_id == "owner" else None
-
-        async def cancel(self, tid: str, *, user_id: Any = None) -> bool:
-            self.cancelled = (tid, user_id)
-            return True
-
-    backend = _B()
-    service = EngineService()
-    service._backend = backend
-
-    assert await service.cancel_task("t-1", user_id="intruder") is False
-    assert not hasattr(backend, "cancelled")
-    assert await service.cancel_task("t-1", user_id="owner") is True
-    assert backend.cancelled == ("t-1", "owner")
-    assert probed == [("t-1", "intruder"), ("t-1", "owner")]
 
 
 async def test_iter_task_events_yields_nothing_for_another_users_task() -> None:

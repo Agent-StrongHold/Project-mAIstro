@@ -25,11 +25,7 @@ dependencies = [
     "regex>=2024.5.15,<2027",
     # OIDC production verification must never depend on mcp/llm extras
     # happening to install PyJWT transitively.
-    # Floor is 2.14, the first release fixing CVE-2026-102274. The lockfile
-    # alone was not enough: a downstream project installing the published
-    # wheel never reads uv.lock, so a floor of 2.13.0 left the vulnerable
-    # release resolvable for every consumer of this package.
-    "pyjwt[crypto]>=2.14,<3",
+    "pyjwt[crypto]>=2.13.0,<3",
 ]
 
 [project.scripts]

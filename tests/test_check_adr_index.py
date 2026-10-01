@@ -175,10 +175,7 @@ def test_fix_leaves_the_reviewed_columns_alone(sandbox) -> None:
         if (m := row.match(line))
     }
     assert before == after
-    # Row preservation, not a pinned corpus size: the corpus grows with every
-    # new ADR, and `before == after` already proves the reviewed columns
-    # survived; the count asserts no row vanished in the rewrite.
-    assert len(after) == len(before)
+    assert len(after) == 90
 
 
 def test_fix_is_idempotent(sandbox) -> None:

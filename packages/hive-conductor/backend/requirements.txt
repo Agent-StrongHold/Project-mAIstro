@@ -25,9 +25,7 @@ bcrypt>=4.0.0,<6
 cryptography>=50.0.0,<51
 # maistro-core's OAuth module imports PyJWT at import time; hive-conductor
 # consumes core via sys.path, so core's deps must be restated here (#839).
-# Kept in step with core's floor: 2.14 is the first release fixing
-# CVE-2026-102274, and this file is installed without the workspace lockfile.
-pyjwt[crypto]>=2.14,<3
+pyjwt[crypto]>=2.13.0,<3
 # The backend imports maistro.identity through its auth wiring. The CI backend
 # suite uses the system interpreter after installing this file, so the core
 # identity extra must be restated here rather than relying on the uv workspace

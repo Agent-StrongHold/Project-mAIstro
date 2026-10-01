@@ -2721,9 +2721,8 @@ async def _tool_profile_set(
     if not field or not value:
         return {"error": "field and value required"}
     try:
-        # Off the loop: a profile write waits inside the acknowledged `put_raw`
-        # (a `State.submit_sync`) for the writer thread to commit, and this
-        # runs inside the chat request's own task.
+        # Off the loop: a profile write waits in `State.flush()` for the writer
+        # thread, and this runs inside the chat request's own task.
         await asyncio.to_thread(profile_store.set_field, user_id, field, value)
     except profile_store.ProfilePersistenceError as exc:
         # Reported, not swallowed. The old path suppressed the write failure

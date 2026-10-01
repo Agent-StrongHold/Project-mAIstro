@@ -124,14 +124,6 @@ class TaskRunner:
                 await self._settle_cancelled(pending)
                 await logger.awarning("tasks_cancelled_on_shutdown", count=len(pending))
 
-        # Receipt writes are fire-and-forget while serving (ADR-018) and must
-        # not be at shutdown (#849): the completions, failures and results the
-        # settled workers just scheduled are scheduled writes until they land,
-        # and a stop that returns before them abandons exactly the writes that
-        # make the durable receipt tell the truth. This drain is the lifecycle
-        # ownership the fire-and-forget model needs.
-        await self._queue.drain_persistence()
-
         if self._progress_webhook:
             await self._progress_webhook.aclose()
 
@@ -152,11 +144,6 @@ class TaskRunner:
             if pending:
                 await self._settle_cancelled(pending)
                 await logger.awarning("task_runner_drain_timeout", cancelled=len(pending))
-
-        # Same receipt-write ownership as `stop()` (#849): the signal-handler
-        # drain path must not complete ahead of the writes its settled tasks
-        # scheduled.
-        await self._queue.drain_persistence()
 
         if self._worker_task:
             self._worker_task.cancel()

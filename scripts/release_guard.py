@@ -2,9 +2,8 @@
 """Release-tag guard (E3, #296) — the check `release.yml` runs before it builds.
 
 Implements the version half of ADR-073126-c4e1 §2/§3. The *branch* half (the
-tag commit must be an ancestor of `main`, or of `develop` for a release
-candidate — ADR-095 retires `integration` and names `develop` the canonical
-integration branch) needs git and stays in the workflow; this script tells the workflow
+tag commit must be an ancestor of `main`, or of `integration` for a release
+candidate) needs git and stays in the workflow; this script tells the workflow
 which branch to check against via its `target_branch` output.
 
 What it enforces
@@ -39,7 +38,7 @@ needs:
     prerelease=true       'true' | 'false'
     rc=1                  rc number, empty for a final tag
     minor=1.0             the `X.Y` moving image tag (final releases only)
-    target_branch=develop   branch the tag commit must descend from
+    target_branch=integration   branch the tag commit must descend from
 
 Usage
 -----
@@ -159,10 +158,9 @@ def guard(tag: str, changelog: Path) -> tuple[int, dict[str, str]]:
         "prerelease": "true" if is_prerelease else "false",
         "rc": rc or "",
         "minor": f"{match.group('major')}.{match.group('minor')}",
-        # ADR §2 as amended for ADR-095: a final tag may only point at main;
-        # an rc is the sole exception and may point at develop (the canonical
-        # integration branch) so it can soak there.
-        "target_branch": "develop" if is_prerelease else "main",
+        # ADR §2: a final tag may only point at main; an rc is the sole
+        # exception and may point at integration so it can soak there.
+        "target_branch": "integration" if is_prerelease else "main",
     }
     kind = f"release candidate rc{rc}" if is_prerelease else "final release"
     print(f"release guard passed: {tag} is a {kind} of {base}")

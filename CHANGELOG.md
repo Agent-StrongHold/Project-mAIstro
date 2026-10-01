@@ -837,9 +837,7 @@ or placeholder-only section.
   maistro-server response stalled every coroutine in the worker. The
   `TaskBackend` port gains `async get_async`, which the stream now awaits over
   the pooled async client, so a stalled probe no longer pins the loop and
-  cancelling the stream takes effect immediately. The async
-  `DELETE /v1/missions/{id}` cancel path probes ownership through `get_async`
-  too — it ran the same sync `get` on the loop. The remaining synchronous
+  cancelling the stream takes effect immediately. The remaining synchronous
   `get`/`list_tasks` (threadpool routes only) reuse one owned,
   outbound-guarded client closed by `stop()` instead of building one per call.
 

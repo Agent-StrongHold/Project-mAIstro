@@ -6,15 +6,7 @@ from maistro.tasks.models import TaskStatus
 
 # Valid state transitions
 TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    # QUEUED -> FAILED is legal (#849): a dispatch can fail before the receipt
-    # ever reaches PLANNING — the claim refused, the Run refused, the worker
-    # died between dequeue and its first phase write. When FAILED was reachable
-    # only from PLANNING onward, such a failure left the receipt QUEUED
-    # forever: the gauge never decremented and terminal pruning never saw it.
-    # The transition is task-driven and still goes through `update_status`, so
-    # the Run behind it (when there is one) is advanced or the refusal is
-    # honoured — this row only makes the receipt's own failure legal.
-    TaskStatus.QUEUED: {TaskStatus.PLANNING, TaskStatus.FAILED, TaskStatus.CANCELLED},
+    TaskStatus.QUEUED: {TaskStatus.PLANNING, TaskStatus.CANCELLED},
     TaskStatus.PLANNING: {TaskStatus.CODING, TaskStatus.FAILED, TaskStatus.CANCELLED},
     TaskStatus.CODING: {
         TaskStatus.REVIEWING,

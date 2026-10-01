@@ -85,6 +85,17 @@ class EngineService:
         return getattr(container, "task_admitter", None)
 
     @property
+    def task_idempotency(self) -> Any:
+        """The claim store paired with the canonical Run spine, or None.
+
+        Demo mode uses the same admission claim tier as maistro-server. Without
+        this bridge there is no durable Run to reconcile, so there is no claim
+        store to pass to the local queue.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "task_idempotency", None)
+
+    @property
     def run_store(self) -> Any:
         """The core Container's canonical Run store, or None.
 
@@ -231,6 +242,7 @@ class EngineService:
                     executor=run_task,
                     admitter=self.task_admitter,
                     run_store=self.run_store,
+                    idempotency_store=self.task_idempotency,
                 )
                 await backend.start()
                 self._backend = backend
@@ -441,15 +453,8 @@ class EngineService:
         return bool(remove(task_id))
 
     async def cancel_task(self, task_id: str, *, user_id: str | None = None) -> bool:
-        """Cancel through the one backend, preserving its ownership check.
-
-        The probe is `get_async`, not the sync `get`: this coroutine runs on
-        the event loop (async `DELETE /v1/missions/{id}`), and the production
-        backend's sync probe is a 30s-timeout httpx GET that would pin every
-        coroutine in the worker behind one slow maistro-server response —
-        the same blocking boundary #1180 moved out of the stream.
-        """
-        if self._backend is None or await self._backend.get_async(task_id, user_id=user_id) is None:
+        """Cancel through the one backend, preserving its ownership check."""
+        if self._backend is None or self._backend.get(task_id, user_id=user_id) is None:
             return False
         return await self._backend.cancel(task_id, user_id=user_id)
 

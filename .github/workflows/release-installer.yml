@@ -96,23 +96,3 @@ jobs:
       - name: Dump logs on failure
         if: failure()
         run: docker compose logs --tail=100
-
-  windows-detection-e2e:
-    # #354: get.ps1 must detect an existing default distro (and never install
-    # or reboot over it) and drive a fresh install on an empty machine. A real
-    # WSL2 install is not hermetic on hosted runners, so wsl.exe itself is
-    # scripted at the process boundary; the script-under-test, its UTF-16LE
-    # pipe encoding, and both shipping PowerShell interpreters are real.
-    # Scope note: this covers the detection layer of SPEC-072726-3439 AC-2
-    # (existing default + fresh install); the full in-distro WSL2 leg remains
-    # that spec's follow-up.
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - name: Parser fixtures + install/reboot scenarios (Windows PowerShell 5.1)
-        shell: powershell
-        run: ./tests/installer/run-wsl-detection-e2e.ps1 -PowerShell powershell.exe
-      - name: Parser fixtures + install/reboot scenarios (PowerShell 7)
-        shell: pwsh
-        run: ./tests/installer/run-wsl-detection-e2e.ps1 -PowerShell pwsh

@@ -12,19 +12,6 @@ from maistro.capabilities.invocation import Invocation, InvocationExecutionServi
 from maistro.container import Container
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.state import PersistedStore
-from maistro.workspaces.campaigns.model import (
-    Actor,
-    AreaRef,
-    BacklogItemView,
-    CampaignDefinition,
-    ControlRecord,
-    ItemPolicyRecord,
-    ParkEvidence,
-    ParkRecord,
-    ParkUnpark,
-)
-from maistro.workspaces.campaigns.sqlite_store import SqliteCampaignStore
-from maistro.workspaces.campaigns.store import CampaignSelector
 
 # OpenTelemetry API keywords mirrored by the Protocol signature in
 # maistro.observability.telemetry_safety.TelemetryTracer. The keywords are
@@ -55,29 +42,4 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
-    # Workspace work campaigns (#103, SPEC-092626-1831). Pydantic invokes the
-    # validators; the Actor-valued fields are serialization surface written
-    # through model_dump_json and read by consumers outside this scan (the
-    # HTTP API responses and the importing product's UI).
-    Actor._require_identity,
-    AreaRef._require_value,
-    BacklogItemView._require_identity,
-    CampaignDefinition._require_campaign_text,
-    ControlRecord._scope_matches_kind,
-    ParkEvidence._require_reason,
-    CampaignDefinition.created_by,
-    ControlRecord.set_by,
-    ControlRecord.cleared_by,
-    ItemPolicyRecord.updated_by,
-    ParkRecord.parked_by,
-    ParkUnpark.unparked_by,
-    # The retention deletion path is resolved dynamically by
-    # scripts/check-durable-table-inventory.py from
-    # quality/durable-table-retention.json; no scanned call site names it.
-    SqliteCampaignStore.delete_campaign,
-    # The selection entrypoint is the contract's public face (#804 persistent
-    # Workspace Agent now, #50 RSI later). Consumers live outside this scan
-    # until those issues land; the contract ships first by design.
-    CampaignSelector.eligible_items,
-    CampaignSelector.select_next,
 )

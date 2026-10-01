@@ -123,57 +123,8 @@ async def get_run(run_id: str, request: Request) -> dict[str, Any]:
     return detail
 
 
-def _resync_frame(run_id: str, last_seq: int, current_seq: int) -> str:
-    """The explicit discontinuity marker (#1183).
-
-    A full bounded subscriber queue drops events; a trimmed run buffer loses
-    the oldest history. Neither may reach the client as silence: the next
-    delivered event is preceded by a resync that says how many events were
-    lost and where durable truth lives, so a consumer can converge on the
-    canonical Run instead of believing a contiguous stream that isn't.
-    """
-    payload = {
-        "run_id": run_id,
-        "last_seq": last_seq,
-        "resumed_at": current_seq,
-        "missed": max(0, current_seq - last_seq - 1),
-        "recover": f"GET /v1/dag-runs/{run_id}",
-    }
-    return f"event: pm_resync\ndata: {json.dumps(payload)}\n\n"
-
-
-async def _next_authorized_event(uid: str, run_id: str, q: asyncio.Queue[Any]) -> tuple[bool, Any]:
-    """One wait cycle: (stream_alive, event_or_none).
-
-    `alive=False` ends the stream. `event=None` with `alive=True` is an idle
-    tick: poll the canonical Workspace boundary even when the run is idle
-    (otherwise revocation leaves an open stream authorized until the next
-    event arrives) and let the caller emit its keepalive comment.
-    """
-    # Membership can be revoked while q.get() is waiting. Check before
-    # waiting so a queued event is not exposed after the last successful
-    # authorization check.
-    if not await can_inspect_run(uid, run_id):
-        return False, None
-    try:
-        ev = await asyncio.wait_for(q.get(), timeout=15.0)
-    except TimeoutError:
-        if not await can_inspect_run(uid, run_id):
-            return False, None
-        return True, None
-    # Do not yield an event that was queued before membership was revoked
-    # while this connection was waiting for it.
-    if not await can_inspect_run(uid, run_id):
-        return False, None
-    return True, ev
-
-
 async def _event_generator(*, uid: str, run_id: str, request: Request, store: Any):
     q: asyncio.Queue[Any] | None = None
-    # Highest event seq delivered on this stream. Events carry their per-run
-    # sequence number (#1183); a delivered seq that jumps past `last_seq + 1`
-    # means the bounded queue dropped events, and the consumer is told.
-    last_seq = 0
     try:
         # Authorization is intentionally checked again when the stream starts.
         # The response may have been created after the route's admission check
@@ -191,27 +142,31 @@ async def _event_generator(*, uid: str, run_id: str, request: Request, store: An
         while True:
             if await request.is_disconnected():
                 break
-            alive, ev = await _next_authorized_event(uid, run_id, q)
-            if not alive:
+            # Membership can be revoked while q.get() is waiting. Check before
+            # waiting so a queued event is not exposed after the last
+            # successful authorization check.
+            if not await can_inspect_run(uid, run_id):
                 break
-            if ev is None:
+            try:
+                ev = await asyncio.wait_for(q.get(), timeout=15.0)
+            except TimeoutError:
+                # Poll the canonical Workspace boundary even when the run is
+                # idle; otherwise revocation leaves an open stream authorized
+                # until the next event arrives.
+                if not await can_inspect_run(uid, run_id):
+                    break
                 yield ": keepalive\n\n"  # SSE comment line; ignored by clients
                 continue
-            if ev.seq > last_seq + 1:
-                # Covers both discontinuity sources: the subscriber queue
-                # overflowed while this consumer was slow, or the replayed
-                # buffer begins past seq 1 because the run's bounded history
-                # was trimmed before we subscribed (#1183).
-                yield _resync_frame(run_id, last_seq, ev.seq)
-            if ev.seq > last_seq:
-                last_seq = ev.seq
+            # Do not yield an event that was queued before membership was
+            # revoked while this connection was waiting for it.
+            if not await can_inspect_run(uid, run_id):
+                break
             payload = {
                 "event_type": ev.event_type,
                 "role": ev.role,
                 "capability": ev.capability,
                 "payload": ev.payload,
                 "timestamp": ev.timestamp,
-                "seq": ev.seq,
             }
             yield f"event: {ev.event_type}\ndata: {json.dumps(payload)}\n\n"
     finally:

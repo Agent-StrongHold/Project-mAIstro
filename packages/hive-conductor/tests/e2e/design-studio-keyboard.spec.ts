@@ -47,7 +47,7 @@ test("current Design Studio parent surface is operable by keyboard without enabl
     if (request.url().includes("/v1/canvas/")) canvasRequests.push(request.url());
   });
 
-  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
 
   const modes = page.getByRole("group", { name: "Design artifact types" });
   const poster = modes.getByRole("button").filter({ hasText: "Poster" });
@@ -107,7 +107,7 @@ test("current Design Studio parent surface is operable by keyboard without enabl
 });
 
 test("every supported artifact mode is selectable in tab order and announced", async () => {
-  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
 
   const modes = page.getByRole("group", { name: "Design artifact types" });
   const buttons = modes.getByRole("button");
@@ -152,7 +152,7 @@ test("every supported artifact mode is selectable in tab order and announced", a
 });
 
 test("fixed-page and Deck editors expose keyboard workflows and deterministic transitions", async () => {
-  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
   await page.getByLabel("Describe the artifact").fill("A keyboard-first poster about reliable execution");
   await page.getByRole("button", { name: "Open editor" }).press("Enter");
   await expect(page.getByRole("heading", { name: "Poster editor" })).toBeFocused();

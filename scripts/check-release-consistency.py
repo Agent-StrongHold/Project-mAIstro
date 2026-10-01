@@ -36,18 +36,11 @@ happen to agree today:
 6. `VERSION <= target`. Shipping a version *above* the release you are still
    writing notes for means the notes are for a release that already happened
    under a different number.
-7. Every **dated** heading on `VERSION`'s own `X.Y` line is `<= VERSION`, and
-   every dated heading carries the `vX.Y.Z` tag that published it. A dated
-   heading on a *newer* line than VERSION is not drift: it is the supported
-   older-line-hotfix posture (`VERSION=0.9.1` while `v1.0.0` is already
-   published — the state `release.yml`'s moving-tag logic exists for).
-8. The highest `vX.Y.Z` tag **on `VERSION`'s own line** is `<= VERSION`, and
-   every final tag (except the one whose own run is asking — its commit
-   precedes the tag) has a dated heading of its own. Tags are the only record
-   of what was actually published; without reading them the other seven checks
-   describe intent, not fact. Lines run in parallel, so the globally highest
-   tag may legitimately sit above VERSION on a newer line; what may never
-   happen is a publication on VERSION's own line above the tree.
+7. Every **dated** heading is `<= VERSION`. You cannot have released a version
+   higher than the one the packages carry.
+8. The highest `vX.Y.Z` tag in the repository is `<= VERSION` and has a dated
+   heading of its own. Tags are the only record of what was actually published;
+   without reading them the other seven checks describe intent, not fact.
 9. `README.md` carries a release-status block naming all three numbers as
    **labelled fields**, and each matches its source: `Released` the tags,
    `Version in the tree` the `VERSION` file, `Next release target` the pending
@@ -493,11 +486,9 @@ def check(*, releasing: str | None = None) -> list[str]:
         return problems
     target_raw, dated = resolved
 
-    tags = list_release_tags()
-    problems.extend(_tag_problems(raw_version, version, dated, tags, releasing=releasing))
-    problems.extend(
-        _readme_problems(raw_version, target_raw, latest_release(tags, releasing=releasing))
-    )
+    released = latest_release(list_release_tags(), releasing=releasing)
+    problems.extend(_tag_problems(raw_version, version, dated, released))
+    problems.extend(_readme_problems(raw_version, target_raw, released))
     if releasing is not None:
         problems.extend(_release_readiness_problems(CHANGELOG.read_text(), releasing))
     return problems
@@ -562,16 +553,11 @@ def _changelog_problems(
 
     for released, when in dated:
         released_version = parse_version(released)
-        if (
-            released_version is not None
-            and released_version > version
-            and released_version[:2] == version[:2]
-        ):
+        if released_version is not None and released_version > version:
             problems.append(
                 f"CHANGELOG.md records [{released}] as released ({when}), which is above "
-                f"VERSION ({raw_version}) on the same release line. A released version "
-                "cannot exceed the one the packages carry; a newer published line "
-                "alongside an older-line hotfix is fine."
+                f"VERSION ({raw_version}). A released version cannot exceed the one the "
+                "packages carry."
             )
 
     return problems, (target_raw, dated)
@@ -581,62 +567,28 @@ def _tag_problems(
     raw_version: str,
     version: tuple[int, int, int],
     dated: list[tuple[str, str]],
-    tags: list[str],
-    *,
-    releasing: str | None = None,
+    released: str | None,
 ) -> list[str]:
     """What the repository's tags contradict.
 
     Tags are the only record of what was actually *published*; the checks above
     describe intent. Without this, `## [1.0.0] - TBD` and a pushed `v1.0.0` are
     indistinguishable from the files alone.
-
-    Release lines run in parallel — the supported older-line hotfix cuts
-    `v0.9.1` after `v1.0.0` exists, so the globally highest tag may sit above
-    VERSION on a newer line. What is checked is per-line: on VERSION's own
-    `X.Y` line nothing published is above the tree, dated headings and final
-    tags describe the same set, and the tag whose own run is asking is exempt
-    from the dated-heading demand (its commit necessarily precedes the tag).
     """
+    if released is None:
+        return []
     problems: list[str] = []
-    dated_versions = {v for v, _ in dated}
-    final: list[tuple[tuple[int, int, int], str]] = []
-    for tag in tags:
-        match = _RELEASE_TAG_RE.match(tag)
-        if match is None:
-            continue
-        parsed = parse_version(match["version"])
-        if parsed is not None:
-            final.append((parsed, match["version"]))
-    tagged = {name for _, name in final}
-
-    for released, when in dated:
-        if released in tagged:
-            continue
+    released_version = parse_version(released)
+    if released_version is not None and released_version > version:
         problems.append(
-            f"CHANGELOG.md records [{released}] as released ({when}), but no "
-            f"v{released} tag exists. A dated heading claims a publication the "
-            "repository cannot show."
+            f"tag v{released} exists but VERSION is {raw_version}. A published release "
+            "cannot be above the version the packages carry."
         )
-
-    own_line = [parsed for parsed, _ in final if parsed[:2] == version[:2]]
-    if own_line and max(own_line) > version:
-        highest = ".".join(str(part) for part in max(own_line))
+    if released not in {v for v, _ in dated}:
         problems.append(
-            f"tag v{highest} exists on VERSION's own release line but VERSION is "
-            f"{raw_version}. A published release cannot be above the version the "
-            "packages carry."
+            f"tag v{released} exists but CHANGELOG.md has no dated '## [{released}]' "
+            "heading. A published release has to have notes, and they have to be dated."
         )
-
-    for _, name in final:
-        if f"v{name}" == releasing:
-            continue
-        if name not in dated_versions:
-            problems.append(
-                f"tag v{name} exists but CHANGELOG.md has no dated '## [{name}]' "
-                "heading. A published release has to have notes, and they have to "
-                "be dated."
-            )
     return problems
 
 

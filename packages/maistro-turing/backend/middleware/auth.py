@@ -42,7 +42,6 @@ _PUBLIC_EXACT = frozenset(
     {
         "/",
         "/health",
-        "/health/ready",
         "/v1/auth/login",
         "/v1/auth/whoami",
         "/favicon.ico",

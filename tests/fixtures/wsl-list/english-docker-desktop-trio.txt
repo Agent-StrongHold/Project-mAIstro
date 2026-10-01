@@ -1,4 +1,0 @@
-  NAME                   STATE           VERSION
-* Ubuntu                 Running         2
-  docker-desktop         Running         2
-  docker-desktop-data    Running         2

@@ -16,7 +16,6 @@ import Setup from "./pages/Setup";
 // trip with nothing to show meanwhile.
 const Agents = lazy(() => import("./pages/Agents"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
-const Backlog = lazy(() => import("./pages/Backlog"));
 const Chat = lazy(() => import("./pages/Chat"));
 const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
@@ -183,7 +182,6 @@ function AppRoutes() {
                   <Route path="dashboard" element={<Dashboard />} />
                   <Route path="chat" element={<Chat />} />
                   <Route path="missions" element={<Missions />} />
-                  <Route path="backlog" element={<Backlog />} />
                   <Route path="dags" element={<DagBuilder />} />
                   <Route path="dag-runs" element={<DagRuns />} />
                   <Route path="schedules" element={<Schedules />} />
@@ -204,15 +202,7 @@ function AppRoutes() {
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />
                   <Route path="cli" element={<CLI />} />
-                  {/* #95: Design Studio is the product, so its deep link is the
-                      product's name. Capability APIs keep their /v1/canvas and
-                      /v1/design namespaces; the UI route namespace is product
-                      identity and does not borrow the Canvas tool's name. The
-                      implementation-era /cli/canvas path survives only as a
-                      compatibility redirect, asserted by
-                      design-studio-truthfulness.spec.ts. */}
-                  <Route path="design-studio" element={<DesignStudio />} />
-                  <Route path="cli/canvas" element={<Navigate to="/design-studio" replace />} />
+                  <Route path="cli/canvas" element={<DesignStudio />} />
                   <Route path="containers" element={<Containers />} />
                   <Route path="docs" element={<Docs />} />
                   <Route path="evolution" element={<Evolution />} />

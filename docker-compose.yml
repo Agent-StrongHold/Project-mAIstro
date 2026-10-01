@@ -14,30 +14,13 @@ services:
       - DB_USER=maistro
       - DB_PASSWORD=${DB_PASSWORD:?Set DB_PASSWORD in .env}
       - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/maistro
-      # One gateway, set once (#808). LITELLM_BASE_URL is the canonical input
-      # -- the gateway's root, no /v1 -- and every alias below is *derived*
-      # from it, so the four names the code reads cannot disagree. They used
-      # to be four hardcoded copies of http://litellm:4000: setting them in
-      # .env changed nothing, and pointing the stack at a hosted or corporate
-      # gateway needed a hand-written override. LITELLM_URL is still accepted
-      # because the engine's own error message told people to set it.
-      # LITELLM_API_BASE may be set explicitly for a gateway whose
-      # OpenAI-compatible path is not <root>/v1.
-      #
-      # The http:// defaults are the bundled proxy's service name on this
-      # stack's private bridge network -- container to container, never off
-      # the host, with no CA that could sign `litellm` -- the same footing as
-      # the langfuse and maistro-engine URLs below. A hosted gateway set in
-      # .env is whatever scheme its operator gives it, https included.
-      - LITELLM_BASE_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
-      - LITELLM_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
-      - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
-      - LITELLM_API_BASE=${LITELLM_API_BASE:-${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}/v1}  # DevSkim: ignore DS137138 until 2027-12-31
-      # LITELLM_API_KEY is the external gateway's key. Unset, it is the
-      # bundled proxy's master key, which is what this stack starts.
+      - LITELLM_URL=http://litellm:4000
+      - LITELLM_BASE_URL=http://litellm:4000
+      - LITELLM_PROXY_URL=http://litellm:4000
+      - LITELLM_API_BASE=http://litellm:4000/v1
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
-      - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
-      - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      - LITELLM_PROXY_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
       # Langfuse coordinates for the Langfuse service's own UI/API. Trace
       # export from this stack is not driven by these: spans leave only over
       # OTLP, and nothing here sets OTEL_EXPORTER_OTLP_ENDPOINT (see the
@@ -209,13 +192,11 @@ services:
       - DB_USER=maistro
       - DB_PASSWORD=${DB_PASSWORD:?Set DB_PASSWORD in .env}
       - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/maistro
-      # The same gateway the engine uses, derived the same way (#808) -- two
-      # services that disagree about which gateway they talk to would bill,
-      # rate-limit and log against different backends.
-      - LITELLM_API_BASE=${LITELLM_API_BASE:-${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}/v1}  # DevSkim: ignore DS137138 until 2027-12-31
-      - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
-      - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
-      - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
+      # OpenAI-compatible gateway (must end in /v1).
+      - LITELLM_API_BASE=http://litellm:4000/v1
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      - LITELLM_PROXY_URL=http://litellm:4000
+      - LITELLM_PROXY_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
       - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       # Engine router for DAG execution (REQUIRE_AUTH=true expects the access token).
       # Settings.maistro_base_url / maistro_router_api_key (config.py) read these

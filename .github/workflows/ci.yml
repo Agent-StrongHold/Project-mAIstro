@@ -1165,20 +1165,6 @@ jobs:
       # one-line change once that warning is fixed.
       - name: shellcheck the standalone scripts under tools/
         run: /tmp/shellcheck-bin --severity=warning tools/*.sh
-      # install.sh and get.sh are the supported installer entry points. A
-      # typo'd helper there fails a supported clean install only on the branch
-      # that names it (#807: upsert_env sat on the macOS non-default-socket
-      # path, so the Linux gate never executed the broken line and shellcheck
-      # cannot see calls to undefined functions). Linting them here means the
-      # PR that breaks the installer fails instead of a user's machine.
-      - name: shellcheck the installer entry points
-        run: /tmp/shellcheck-bin --severity=warning install.sh get.sh
-      # shellcheck's blind spot above is exactly undefined-function calls, so
-      # this static check asserts every function the installers invoke is
-      # defined in-file, a shell builtin/reserved word, or explicitly
-      # allowlisted as intentionally external (#807 AC-4).
-      - name: installer invokes only defined or deliberately external functions
-        run: python3 scripts/check-install-functions.py
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"

@@ -42,7 +42,6 @@ def test_schedule_points_at_a_definition_not_a_task() -> None:
         {"project_id": ""},
         {"graph_template_id": ""},
         {"catchup_window_seconds": -1.0},
-        {"catchup_window_seconds": 604_801.0},
         {"max_runs": 0},
         {"runs_so_far": -1},
         {"cron": "not a cron"},
@@ -67,12 +66,3 @@ def test_next_fire_after_honours_the_schedule_timezone() -> None:
     fire = schedule.next_fire_after(datetime(2026, 8, 21, 0, 0, tzinfo=UTC))
     assert fire.hour == 9
     assert fire.utcoffset() is not None and fire.utcoffset().total_seconds() == -4 * 3600
-
-
-def test_the_catchup_window_ceiling_is_seven_days() -> None:
-    """An arbitrary window made the catch-up walk grow with it (#1200); the
-    definition model refuses anything past the substrate's own ceiling, so an
-    over-large window is rejected when filed rather than discovered mid-walk."""
-    _schedule(catchup_window_seconds=604_800.0)  # exactly the ceiling is legal
-    with pytest.raises(ValueError, match="seven days"):
-        _schedule(catchup_window_seconds=604_800.5)

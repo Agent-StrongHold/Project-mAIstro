@@ -95,10 +95,9 @@ def _now() -> datetime:
 #
 # The same arrangement as services/settings_store.py: a Protocol with an
 # in-process implementation and a persisted one, `configure()` called once at
-# startup, `reset()` for tests and re-initialisation. The persisted write is
-# acknowledged (#1179): `PersistedStore.put_raw`/`delete` return only after
-# the State writer commits and raise its failure (#1238), so there is no
-# per-store flush — an acknowledgement that outruns the write is the exact
+# startup, `reset()` for tests and re-initialisation. The persisted write
+# drains the writer queue before returning, because `PersistedStore.put_raw`
+# only enqueues — an acknowledgement that outruns the write is the exact
 # defect #334 documented.
 
 
@@ -137,15 +136,12 @@ class EphemeralRegistrationRecordStore:
 
 
 class PersistedRegistrationRecordStore:
-    """Record store over `PersistedStore`'s acknowledged writes (#333, #1179).
+    """Record store over `PersistedStore`, draining the writer queue on write."""
 
-    ``put_raw`` does not return until the State writer thread has committed
-    and raises the writer's failure instead of queueing silently (#1238), so
-    a completed ``write`` is durable without a per-store flush to remember.
-    """
-
-    def __init__(self, persisted: Any) -> None:
+    def __init__(self, persisted: Any, flush: Any, timeout: float = 10.0) -> None:
         self._persisted = persisted
+        self._flush = flush
+        self._timeout = timeout
 
     @property
     def durable(self) -> bool:
@@ -156,10 +152,8 @@ class PersistedRegistrationRecordStore:
         return str(document) if document is not None else None
 
     def write(self, document: str) -> None:
-        # Acknowledged write (#1179): returns only after the commit; a failed
-        # commit raises here and an admin's mode change is never acknowledged
-        # on a write the database refused.
         self._persisted.put_raw(STORE_NAME, RECORD_KEY, document)
+        self._flush(timeout=self._timeout)
 
 
 _store: RegistrationRecordStore = EphemeralRegistrationRecordStore()

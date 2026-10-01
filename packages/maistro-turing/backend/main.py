@@ -11,21 +11,17 @@ Turing's own producers to publish artifacts.
 
 from __future__ import annotations
 
-import logging
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from maistro.security.composition import build_canonical_security_dependencies
 
-from .config import TURING_SERVICE_NAME, build_registry, cors_origins
+from .config import build_registry, cors_origins
 from .execution import reset_execution_plane
 from .middleware.auth import TuringAuthMiddleware
 from .routes import admin, auth, chat, feed, health, state
 from .security import TuringInboundSecurity, TuringInboundSecurityMiddleware
 from .state import reset_state
-
-logger = logging.getLogger("turing.backend")
 
 
 def create_app(*, inbound_security: TuringInboundSecurity | None = None) -> FastAPI:
@@ -41,19 +37,8 @@ def create_app(*, inbound_security: TuringInboundSecurity | None = None) -> Fast
     # The execution plane is part of the same composition root as the HTTP
     # boundary; direct service callers cannot obtain an unguarded plane.
     reset_execution_plane(inbound_security=inbound_security)
-    # The service identity is part of the same composition root: with no
-    # explicitly configured key, build_registry() raises and the backend
-    # never starts (#858). The registry rides on app.state so readiness can
-    # report identity status without a second authority.
-    registry = build_registry()
     app = FastAPI(title="Turing Backend", version="0.9.0")
     app.state.turing_security = inbound_security
-    app.state.turing_service_registry = registry
-    logger.info(
-        "turing service identity configured: %s (scopes bounded by the "
-        "TURING_INTERNAL_SCOPES route allowlist)",
-        TURING_SERVICE_NAME,
-    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -65,7 +50,7 @@ def create_app(*, inbound_security: TuringInboundSecurity | None = None) -> Fast
     # Add the boundary first so auth is the outer middleware: identity is
     # established before protected content is scanned.
     app.add_middleware(TuringInboundSecurityMiddleware, security=inbound_security)
-    app.add_middleware(TuringAuthMiddleware, registry=registry)
+    app.add_middleware(TuringAuthMiddleware, registry=build_registry())
 
     app.include_router(health.router)
     app.include_router(auth.router, prefix="/v1/auth")

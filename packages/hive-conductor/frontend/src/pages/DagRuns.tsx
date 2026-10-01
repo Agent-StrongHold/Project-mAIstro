@@ -158,20 +158,6 @@ export default function DagRuns() {
       es.addEventListener("pm_node_started", handler as EventListener);
       es.addEventListener("pm_node_completed", handler as EventListener);
       es.addEventListener("pm_node_failed", handler as EventListener);
-      // The stream told us it dropped events (full queue or trimmed history):
-      // converge on durable truth by re-reading the run (#1183) instead of
-      // stitching a contiguous-looking timeline out of what survived.
-      const resync = () => {
-        if (!active) return;
-        void apiGet<RunDetail>(`/v1/dag-runs/${selectedRunId}`)
-          .then((d) => {
-            if (active) setDetail(d);
-          })
-          .catch(() => {
-            /* keep the current view; the stream keeps delivering */
-          });
-      };
-      es.addEventListener("pm_resync", resync as EventListener);
     })();
     return () => {
       active = false;

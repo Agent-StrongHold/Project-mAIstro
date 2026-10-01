@@ -1,2 +1,0 @@
-  NAME            状態            VERSION
-* Ubuntu          実行中          2

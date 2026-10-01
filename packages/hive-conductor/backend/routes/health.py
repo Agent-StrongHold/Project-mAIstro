@@ -96,37 +96,6 @@ def _workspace_authority_available() -> bool:
         return False
 
 
-def _persistence_status() -> dict:
-    """Per-family durability/ack mode (#333, #1179).
-
-    Every Conductor mutation path acknowledges at the State writer's commit —
-    the write APIs raise instead of accepting a command into the queue — so
-    the mode a family reports is `durable-ack` (survives restart; 2xx means
-    committed) or `ephemeral`/`memory` (process-lifetime, labelled as such).
-    Same defensive contract as the probes above: /health must never fail
-    because of this, so an unreadable state reports as `unknown`, never as
-    durable.
-    """
-    try:
-        from services import profile_store, settings_store
-        from services.registration_policy import durable as registration_durable
-        from stores import persistence_backend
-
-        configured = persistence_backend() is not None
-        return {
-            "ack": "state-commit" if configured else "process-memory",
-            "families": {
-                "model_json_stores": "durable-ack" if configured else "memory",
-                "settings": "durable-ack" if settings_store.durable() else "ephemeral",
-                "profiles": "durable-ack" if profile_store.durable() else "ephemeral",
-                "registration_policy": "durable-ack" if registration_durable() else "ephemeral",
-            },
-        }
-    except Exception:
-        # A persistence map that cannot be read must not claim durability.
-        return {"ack": "unknown", "families": {}}
-
-
 @router.get("/health")
 def health() -> dict:
     settings = get_settings()
@@ -187,9 +156,6 @@ def health() -> dict:
         # selected identity module must never disappear into a generic 200.
         "identity": identity,
         "identity_required": identity_required,
-        # #333/#1179: the durability/ack mode per store family — whether a
-        # 2xx from a mutation route means the State writer committed it.
-        "persistence": _persistence_status(),
         "degraded": (not llm_configured)
         or (not memory_decay_enabled)
         or (not log_redaction)

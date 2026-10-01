@@ -28,17 +28,6 @@ from maistro.http import shared_client
 
 logger = logging.getLogger(__name__)
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
-#: Live per-node progress sink (#1183): awaited with one event dict per node
-#: transition. The canonical identity fields (`run_id`, `node_run_id`,
-#: `attempt_id`) come from the executing `NodeContext`, so a stream consumer
-#: can correlate live frames to durable Run/NodeRun/Attempt truth.
-RunProgressHook = Callable[[dict[str, Any]], Any]
-#: Longest node response carried verbatim in a live progress event (#1183).
-#: Mirrors the projection store's per-event cap: a live frame is a progress
-#: signal, not the record, and an uncapped copy of every response in the
-#: bounded progress channel would let one chatty node own server memory.
-#: The full text stays in the canonical NodeRun and the run record.
-_PROGRESS_RESPONSE_MAX_CHARS = 2000
 _CONTEXT_PREFIX = "__hive_context__::"
 
 
@@ -601,7 +590,6 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         on_response: OnResponseHook | None,
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
         effect_context: CapabilityEffectContext | None = None,
-        progress: RunProgressHook | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
         self._task_desc = task_desc
@@ -610,88 +598,14 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._on_response = on_response
         self._llm_builder = llm_builder
         self._effect_context = effect_context
-        self._progress = progress
-
-    async def _emit_progress(self, event: dict[str, Any]) -> None:
-        """Publish one live node transition; never fail the node for it.
-
-        Progress fan-out is presentation, not execution truth: a slow or
-        broken subscriber must not flip a NodeRun's outcome. Failures are
-        logged and dropped, exactly like the `on_response` hook failures.
-        """
-        if self._progress is None:
-            return
-        try:
-            await self._progress(event)
-        except Exception:
-            logger.warning(
-                "graph_runner_progress_hook_failed node=%s", event.get("node_id"), exc_info=True
-            )
 
     async def _execute(self, inputs: _LegacyInputs, ctx: NodeContext) -> _LegacyOutput:
         node_id = ctx.node_id
+        parent_outputs = _context_from_inputs(inputs)
         tier = _classify_node_execution(self._raw_node, node_id)
         if tier == "blocked":
             raise PermissionError("Execution blocked: untrusted node requires admin approval")
 
-        role = str(self._raw_node.get("role", "worker"))
-        await self._emit_progress(
-            {
-                "kind": "node_started",
-                "run_id": ctx.run_id,
-                "node_run_id": ctx.node_run_id,
-                "attempt_id": ctx.attempt_id,
-                "node_id": node_id,
-                "role": role,
-            }
-        )
-        try:
-            output = await self._run_node_tier(inputs, ctx, node_id=node_id, tier=tier)
-        except Exception:
-            # One failure signal per started node, whatever the failure was,
-            # so a live consumer never waits on a node that will never answer
-            # (#1183). CancelledError is BaseException: a cancelled node is
-            # not a node that failed, and its Run's cancellation is reported
-            # by the Run itself.
-            await self._emit_progress(
-                {
-                    "kind": "node_failed",
-                    "run_id": ctx.run_id,
-                    "node_run_id": ctx.node_run_id,
-                    "attempt_id": ctx.attempt_id,
-                    "node_id": node_id,
-                    "role": role,
-                }
-            )
-            raise
-        await self._emit_progress(
-            {
-                "kind": "node_completed",
-                "run_id": ctx.run_id,
-                "node_run_id": ctx.node_run_id,
-                "attempt_id": ctx.attempt_id,
-                "node_id": node_id,
-                "role": role,
-                "response": output.response[:_PROGRESS_RESPONSE_MAX_CHARS],
-                **(
-                    {"response_truncated": True}
-                    if len(output.response) > _PROGRESS_RESPONSE_MAX_CHARS
-                    else {}
-                ),
-            }
-        )
-        return output
-
-    async def _run_node_tier(
-        self,
-        inputs: _LegacyInputs,
-        ctx: NodeContext,
-        *,
-        node_id: str,
-        tier: str,
-    ) -> _LegacyOutput:
-        """Execute one classified node tier; raises on failure."""
-        parent_outputs = _context_from_inputs(inputs)
         if tier == "sandbox":
             context = "\n---\n".join(parent_outputs.values())
             result = await asyncio.to_thread(

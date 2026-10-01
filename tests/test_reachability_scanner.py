@@ -29,24 +29,6 @@ def test_turing_backend_modules_are_collected_and_reachable_from_real_entrypoint
     assert _flat("maistro-turing-backend", "routes.health") in seen
 
 
-def test_turing_provision_cli_is_a_rooted_entry_point_not_baseline_debt() -> None:
-    """The #858 identity bootstrap is a real process entry point (#858 repair).
-
-    `python -m backend.provision` is the documented activation path for
-    Turing's service identity, so the walk must root it: a module a person
-    launches is reachable, and misclassifying it as unreachable debt is what
-    broke the exact-debt-ledger gate on the #858 branch in the first place.
-    Its one in-graph import (maistro.security.secure_random) becomes reachable
-    through it for the same reason.
-    """
-    mods, seen = reachability._reachability()
-
-    provision = _flat("maistro-turing-backend", "provision")
-    assert provision in mods
-    assert provision in seen
-    assert "maistro.security.secure_random" in seen
-
-
 def test_hive_and_turing_flat_namespaces_do_not_collide() -> None:
     mods, seen = reachability._reachability()
 

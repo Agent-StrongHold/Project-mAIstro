@@ -148,8 +148,7 @@ cosign verify \\
 
 **Provenance.** The tag is annotated and, per
 [ADR-073126-c4e1]({REPO_URL}/blob/{tag}/docs/adr/ADR-073126-c4e1-release-and-versioning-process.md),
-points at a commit on `main` (or `develop` for a release candidate, per
-ADR-095).
+points at a commit on `main` (or `integration` for a release candidate).
 `release.yml` is the only path that publishes these artifacts."""
 
 

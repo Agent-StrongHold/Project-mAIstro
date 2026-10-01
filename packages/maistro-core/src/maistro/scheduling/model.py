@@ -25,7 +25,6 @@ from maistro.scheduling.cron import CronExpression, minimum_gap, parse_cron
 
 __all__ = [
     "DEFAULT_CATCHUP_WINDOW_SECONDS",
-    "MAX_CATCHUP_WINDOW_SECONDS",
     "OverlapPolicy",
     "PendingFire",
     "Schedule",
@@ -35,20 +34,6 @@ __all__ = [
 # or crash from silently dropping the morning briefing, while refusing to
 # stampede a year of missed fires after a long outage.
 DEFAULT_CATCHUP_WINDOW_SECONDS: float = 3600.0
-
-#: The largest catch-up window any schedule may hold (#1200).
-#
-# This is a work bound, not a product policy: cron's finest cadence is one
-# fire per minute, so the window is what caps how many occurrences one
-# evaluation's catch-up walk can produce — seven days of window is at most
-# 10,080 occurrences for even a per-minute schedule, which the engine's
-# enumeration bounds (``engine.EnumerationLimits``) then carry without
-# materially blocking the event loop. Before this cap a definition could ask
-# for an arbitrary window and the walk grew with it. The product layer may
-# (and the shipped Hive surface does) enforce a tighter, operator-configured
-# bound; this is the substrate's own ceiling, enforced at definition time so
-# an over-large window is refused when filed, not discovered mid-walk.
-MAX_CATCHUP_WINDOW_SECONDS: float = 604_800.0  # seven days
 
 
 class OverlapPolicy(StrEnum):
@@ -216,12 +201,6 @@ class Schedule(BaseModel):
             raise ValueError("graph_template_id must be a non-empty string")
         if self.catchup_window_seconds < 0:
             raise ValueError("catchup_window_seconds cannot be negative")
-        if self.catchup_window_seconds > MAX_CATCHUP_WINDOW_SECONDS:
-            raise ValueError(
-                f"catchup_window_seconds must be at most "
-                f"{MAX_CATCHUP_WINDOW_SECONDS:g} (seven days), got "
-                f"{self.catchup_window_seconds:g}"
-            )
         if self.max_runs is not None and self.max_runs < 1:
             raise ValueError("max_runs must be at least 1 when set")
         if self.runs_so_far < 0:

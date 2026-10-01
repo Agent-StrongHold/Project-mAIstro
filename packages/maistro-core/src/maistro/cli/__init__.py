@@ -7,7 +7,6 @@ Subcommands:
     maistro launch tui       Start the dashboard TUI
     maistro builders         Interactive coding sessions in isolated containers
     maistro approvals        Manage the HITL approval inbox
-    maistro fixtures         Seed the M7-A13 book/game pack fixtures
     maistro security         Rotate the credential master key, revoke sessions
     maistro archive          Read durable graph runs from before the convergence
     maistro sandbox          Report the isolation this host can provide
@@ -30,7 +29,6 @@ app = Typer(
 from maistro.cli._approvals import app as _approvals_app  # noqa: E402
 from maistro.cli._archive import app as _archive_app  # noqa: E402
 from maistro.cli._builders import app as _builders_app  # noqa: E402
-from maistro.cli._fixtures import app as _fixtures_app  # noqa: E402
 from maistro.cli._install import app as _install_app  # noqa: E402
 from maistro.cli._launch import app as _launch_app  # noqa: E402
 from maistro.cli._repair import app as _repair_app  # noqa: E402
@@ -43,7 +41,6 @@ app.add_typer(_upgrade_app, name="upgrade")
 app.add_typer(_launch_app, name="launch")
 app.add_typer(_builders_app, name="builders")
 app.add_typer(_approvals_app, name="approvals")
-app.add_typer(_fixtures_app, name="fixtures")
 app.add_typer(_security_app, name="security")
 app.add_typer(_archive_app, name="archive")
 app.add_typer(_sandbox_app, name="sandbox")
