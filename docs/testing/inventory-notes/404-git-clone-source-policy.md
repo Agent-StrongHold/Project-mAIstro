@@ -47,3 +47,30 @@ transport hardening argv, `head_commit` reporting, pin-when-branch-moved
 non-digest pins (3 cases), uppercase digest normalization, signature policy
 fail-closed and pass, policy-compliant / non-policy (4 cases) / malformed
 submodule URLs, and the three local-source gating cases.
+
+## Independent validation record (verification round at 0f2214162668)
+
+Deterministic checks re-run fresh against the fix commit (prior claims not
+trusted): `ruff check` / `ruff format --check` clean; 116 passed in
+`packages/maistro-core/tests/tools/git`; 28 passed in
+`packages/maistro-rsi/tests/test_cli.py` + `test_selfbranch.py`;
+`check-vulture-baseline.py` exit 0; `check-suite-inventory.py` matches for
+`packages/maistro-core/tests` (11715) and `packages/maistro-rsi/tests` (786);
+`check-security-inventory.py` OK. Live behavioral probes with real git (not
+mocks):
+
+- `git://` (and case/encoded spellings, scp-like, `http://`) rejected with
+  `blocked_url_scheme` before any subprocess spawns; with the same pinned
+  config, git itself refuses the transport (`fatal: transport 'git' not
+  allowed`) — defense in depth.
+- True TOCTOU: main force-amended to an attacker commit between pin
+  resolution and clone; the pinned clone fetched the trusted digest
+  (`head_commit == pin`) and the tree held trusted content, not the attacker
+  content.
+- `require_signed` on an unsigned pin → `commit_signature_unverified`.
+- Fetched `.gitmodules` declaring a `git://` submodule URL →
+  `blocked_submodule_url` post-clone.
+- Agent-reachable clone paths audited: `maistro_rsi.selfbranch` imports the
+  hardened `git_clone`; the only raw-clone sites left are operator CLI args
+  (`rsi harvest --clone-url`, `--repo` local path) — human trust domain,
+  outside the candidate-source policy surface.
