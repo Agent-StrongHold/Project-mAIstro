@@ -11,12 +11,17 @@ bytes, so a gateway error status or a response carrying no decodable image
 means the effect was not applied: :class:`ImageGenerationError` is an
 :class:`EffectNotApplied`, which terminalizes the Invocation as ``FAILED``
 (retryable under a later Attempt) instead of recording an empty success.
+
+This module returns decoded bytes and never persists them. Where the bytes
+live is the egress's decision (:mod:`maistro.capabilities.image_generation`),
+because the Invocation row is the wrong place for them.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+from dataclasses import dataclass
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,13 +39,32 @@ IMAGE_GENERATE_CAPABILITY = "image.generate"
 
 _GATEWAY_TRUST_TIER = "t1"
 
-_IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a")
+_IMAGE_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
 
 
-def _is_image(data: bytes) -> bool:
-    if data.startswith(_IMAGE_SIGNATURES):
-        return True
-    return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+def _media_type(data: bytes) -> str | None:
+    """The image format the bytes actually are, or ``None`` for non-images."""
+
+    for signature, media_type in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return media_type
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+@dataclass(frozen=True)
+class GeneratedImage:
+    """One decoded image as the gateway returned it; never persisted as-is."""
+
+    data: bytes
+    media_type: str
+    revised_prompt: str = ""
 
 
 class ImageGenerationError(EffectNotApplied):
@@ -126,7 +150,7 @@ def _response_data(response: httpx.Response) -> list[object]:
     return data
 
 
-def _checked_image(item: object) -> dict[str, str]:
+def _checked_image(item: object) -> GeneratedImage:
     if not isinstance(item, dict):
         raise ImageGenerationError("image gateway returned a non-object image entry")
     encoded = item.get("b64_json")
@@ -136,16 +160,21 @@ def _checked_image(item: object) -> dict[str, str]:
         decoded = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ImageGenerationError("image gateway returned invalid base64") from exc
-    if not _is_image(decoded):
+    media_type = _media_type(decoded)
+    if media_type is None:
         raise ImageGenerationError("image gateway returned bytes that are not a PNG/JPEG/GIF/WebP")
     revised = item.get("revised_prompt")
-    return {"b64_json": encoded, "revised_prompt": revised if isinstance(revised, str) else ""}
+    return GeneratedImage(
+        data=decoded,
+        media_type=media_type,
+        revised_prompt=revised if isinstance(revised, str) else "",
+    )
 
 
-def _checked_images(response: httpx.Response) -> dict[str, object]:
-    """Return the persisted result shape, or refuse an image-less response."""
+def _checked_images(response: httpx.Response) -> list[GeneratedImage]:
+    """Return every decoded image, or refuse an image-less response."""
 
-    return {"images": [_checked_image(item) for item in _response_data(response)]}
+    return [_checked_image(item) for item in _response_data(response)]
 
 
 async def execute_image_generation(
@@ -153,8 +182,8 @@ async def execute_image_generation(
     request: object,
     *,
     endpoint: GatewayEndpoint,
-) -> dict[str, object]:
-    """Perform the one governed image HTTP call and return the persisted result."""
+) -> list[GeneratedImage]:
+    """Perform the one governed image HTTP call and return the decoded images."""
 
     if not isinstance(provider, LlmGatewayImageProvider):
         raise TypeError(f"image Invocation resolved a non-gateway provider: {provider!r}")
@@ -175,6 +204,7 @@ async def execute_image_generation(
 
 __all__ = [
     "IMAGE_GENERATE_CAPABILITY",
+    "GeneratedImage",
     "ImageGenerationError",
     "ImageGenerationRequest",
     "LlmGatewayImageProvider",

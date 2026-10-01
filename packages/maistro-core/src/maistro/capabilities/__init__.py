@@ -29,9 +29,13 @@ from maistro.capabilities.http import AsyncHttp
 from maistro.capabilities.http_client import HttpxAsyncHttp
 from maistro.capabilities.image_generation import (
     IMAGE_GENERATE_CAPABILITY,
+    ImageBlobStore,
+    ImageBlobUnavailable,
     ImageGenerationEgress,
     ImageGenerationRequest,
     ImageGenerationResult,
+    ImageStorageError,
+    InMemoryImageBlobStore,
 )
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
@@ -102,10 +106,14 @@ __all__ = [
     "HarnessRunner",
     "HarnessSessionManager",
     "HttpxAsyncHttp",
+    "ImageBlobStore",
+    "ImageBlobUnavailable",
     "ImageGenerationEgress",
     "ImageGenerationRequest",
     "ImageGenerationResult",
+    "ImageStorageError",
     "InMemoryApprovalStore",
+    "InMemoryImageBlobStore",
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationApprovalPending",

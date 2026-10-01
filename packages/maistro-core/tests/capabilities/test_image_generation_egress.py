@@ -2,12 +2,14 @@
 
 The Container's own canonical effect context carries the Binding, the
 Binding-scoped gateway credential, and the Invocation ledger; only the httpx
-transport is faked.
+transport is faked. Image bytes go to an :class:`ImageBlobStore`, never into
+the Invocation row that the durable stores keep for the deployment's lifetime.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from collections.abc import Iterator
 from typing import Any
@@ -21,12 +23,16 @@ from maistro.capabilities.binding_store import (
     BindingNotFound,
     BindingScopeDenied,
 )
-from maistro.capabilities.effect_context import new_effect_context
+from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.governed_invocation import InvocationDenied
 from maistro.capabilities.image_generation import (
     IMAGE_GENERATE_CAPABILITY,
+    ImageBlobStore,
+    ImageBlobUnavailable,
     ImageGenerationEgress,
     ImageGenerationRequest,
+    ImageStorageError,
+    InMemoryImageBlobStore,
 )
 from maistro.capabilities.invocation import CapabilityUnavailable, InvocationStatus
 from maistro.capabilities.providers.image_gateway import (
@@ -68,6 +74,24 @@ class _Gateway:
         if isinstance(self.body, bytes):
             return httpx.Response(self.status, content=self.body)
         return httpx.Response(self.status, json=self.body)
+
+
+class _BrokenBlobStore:
+    """A store that cannot keep anything -- a full disk, a dropped connection."""
+
+    async def put(self, data: bytes, *, media_type: str) -> str:
+        raise OSError("no space left on device")
+
+    async def get(self, ref: str) -> bytes | None:
+        return None
+
+
+def _egress(
+    effects: CapabilityEffectContext, blobs: ImageBlobStore | None = None
+) -> ImageGenerationEgress:
+    return ImageGenerationEgress(
+        effects, endpoint=_ENDPOINT, blobs=blobs if blobs is not None else InMemoryImageBlobStore()
+    )
 
 
 @pytest.fixture
@@ -129,7 +153,7 @@ async def test_authorized_call_persists_correlated_invocation_and_returns_bytes(
     gateway: _Gateway,
 ) -> None:
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
     binding = await _image_binding(container)
 
     result = await _generate(egress, binding)
@@ -170,7 +194,7 @@ async def test_replay_of_same_effect_returns_prior_result_without_second_post(
     gateway: _Gateway,
 ) -> None:
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
     binding = await _image_binding(container)
 
     first = await _generate(egress, binding)
@@ -179,11 +203,12 @@ async def test_replay_of_same_effect_returns_prior_result_without_second_post(
     assert len(gateway.requests) == 1
     assert second.invocation_id == first.invocation_id
     assert second.images == [_PNG]
+    assert second.refs == first.refs
 
 
 async def test_request_model_is_used_when_binding_does_not_pin(gateway: _Gateway) -> None:
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
     binding = await _image_binding(container, provider_name="")
 
     result = await egress.generate(
@@ -202,7 +227,7 @@ async def test_request_model_is_used_when_binding_does_not_pin(gateway: _Gateway
 
 async def test_unselected_model_is_unavailable_before_http(gateway: _Gateway) -> None:
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
     binding = await _image_binding(container, provider_name="")
 
     with pytest.raises(CapabilityUnavailable):
@@ -214,7 +239,7 @@ async def test_out_of_scope_binding_without_authorized_credential_makes_no_http(
     gateway: _Gateway,
 ) -> None:
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
     other_project = await _image_binding(container, binding_id="img-p2", project_id="p2")
 
     with pytest.raises(CredentialScopeError):
@@ -224,7 +249,7 @@ async def test_out_of_scope_binding_without_authorized_credential_makes_no_http(
 
 async def test_disabled_or_foreign_capability_binding_makes_no_http(gateway: _Gateway) -> None:
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
     chat_binding = await container.capability_effects.bindings.get("chat-p1")
     assert chat_binding is not None
     disabled = await container.capability_effects.bindings.put(
@@ -254,7 +279,7 @@ async def test_policy_denial_makes_no_http(gateway: _Gateway) -> None:
         return PolicyVerdict(Decision.DENY, reason="images off", rule="test.deny")
 
     effects = new_effect_context(policy_evaluator=deny)
-    egress = ImageGenerationEgress(effects, endpoint=_ENDPOINT)
+    egress = _egress(effects)
     binding = await effects.bindings.put(
         Binding(
             binding_id="img-p1",
@@ -298,7 +323,7 @@ async def test_failed_physical_call_is_failed_invocation_not_empty_success(
 ) -> None:
     gateway.status, gateway.body = status, body
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
     binding = await _image_binding(container)
 
     with pytest.raises(ImageGenerationError):
@@ -339,7 +364,7 @@ async def test_physical_seam_refuses_foreign_provider_or_request(gateway: _Gatew
 
 async def test_unregistered_or_tampered_binding_makes_no_http(gateway: _Gateway) -> None:
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
     registered = await _image_binding(container)
     forged = registered.model_copy(update={"binding_id": "never-registered"})
     widened = registered.model_copy(update={"project_id": "p2"})
@@ -352,15 +377,137 @@ async def test_unregistered_or_tampered_binding_makes_no_http(gateway: _Gateway)
 
 
 @pytest.mark.parametrize(
-    "image",
-    [b"\xff\xd8\xff\xe0jpeg", b"GIF89a-gif", b"RIFF\x00\x00\x00\x00WEBPVP8 "],
+    ("image", "media_type"),
+    [
+        (b"\xff\xd8\xff\xe0jpeg", "image/jpeg"),
+        (b"GIF89a-gif", "image/gif"),
+        (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp"),
+    ],
     ids=["jpeg", "gif", "webp"],
 )
-async def test_other_image_formats_are_accepted(gateway: _Gateway, image: bytes) -> None:
+async def test_other_image_formats_are_accepted(
+    gateway: _Gateway, image: bytes, media_type: str
+) -> None:
     gateway.body = {"created": 1, "data": [{"b64_json": base64.b64encode(image).decode()}]}
     container = await _container()
-    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    egress = _egress(container.capability_effects)
 
     result = await _generate(egress, await _image_binding(container))
 
     assert result.images == [image]
+    stored = await container.capability_effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    assert stored.result["images"][0]["media_type"] == media_type
+
+
+# --- where the bytes live ----------------------------------------------------
+
+
+async def test_the_invocation_row_records_references_not_image_bytes(gateway: _Gateway) -> None:
+    """The review finding on this PR, pinned.
+
+    ``capability_invocations`` has no deletion path, so every byte a result
+    carries is kept for the deployment's lifetime, in the WAL and in every
+    backup. The row keeps a reference, a digest and a size; the bytes live in
+    the blob store.
+    """
+    container = await _container()
+    blobs = InMemoryImageBlobStore()
+    egress = _egress(container.capability_effects, blobs)
+
+    result = await _generate(egress, await _image_binding(container))
+
+    stored = await container.capability_effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    row = stored.model_dump_json()
+    assert base64.b64encode(_PNG).decode() not in row
+    assert "b64_json" not in row
+    (entry,) = stored.result["images"]
+    assert entry == {
+        "ref": result.refs[0],
+        "sha256": hashlib.sha256(_PNG).hexdigest(),
+        "bytes": len(_PNG),
+        "media_type": "image/png",
+        "revised_prompt": "a fox",
+    }
+    assert await blobs.get(result.refs[0]) == _PNG
+
+
+async def test_replay_refuses_rather_than_regenerates_when_the_blob_is_gone(
+    gateway: _Gateway,
+) -> None:
+    """A COMPLETED effect is never silently re-run to paper over lost bytes.
+
+    A second generation would hand the Run different images under an
+    ``effect_key`` whose result it already accepted.
+    """
+    container = await _container()
+    egress = _egress(container.capability_effects)
+    binding = await _image_binding(container)
+    await _generate(egress, binding)
+
+    forgetful = _egress(container.capability_effects, InMemoryImageBlobStore())
+    with pytest.raises(ImageBlobUnavailable, match="does not hold"):
+        await _generate(forgetful, binding)
+
+    assert len(gateway.requests) == 1
+
+
+async def test_replay_refuses_bytes_that_no_longer_match_the_recorded_digest(
+    gateway: _Gateway,
+) -> None:
+    container = await _container()
+    blobs = InMemoryImageBlobStore()
+    egress = _egress(container.capability_effects, blobs)
+    binding = await _image_binding(container)
+    first = await _generate(egress, binding)
+
+    blobs._blobs[first.refs[0]] = b"\x89PNG\r\n\x1a\nsomething-else"
+
+    with pytest.raises(ImageBlobUnavailable, match="no longer match"):
+        await _generate(egress, binding)
+    assert len(gateway.requests) == 1
+
+
+async def test_a_store_that_cannot_keep_the_image_fails_retryably(gateway: _Gateway) -> None:
+    """Bytes that never reached this system are an effect not applied.
+
+    Image generation changes nothing outside the bytes it returns, so the
+    Invocation terminalizes FAILED -- retryable -- rather than UNKNOWN, which
+    would demand manual reconciliation for an image nobody holds.
+    """
+    container = await _container()
+    binding = await _image_binding(container)
+
+    with pytest.raises(ImageStorageError, match="no space left"):
+        await _generate(_egress(container.capability_effects, _BrokenBlobStore()), binding)
+
+    (failed,) = await container.capability_effects.invocation_store.list_effect(
+        run_id="run-1", node_run_id="nr-1", binding_id="img-p1", effect_key="page-1"
+    )
+    assert failed.status is InvocationStatus.FAILED
+    assert failed.result is None
+
+    healthy = _egress(container.capability_effects)
+    retried = await healthy.generate(
+        binding=binding,
+        run_id="run-1",
+        node_run_id="nr-1",
+        attempt_id="att-2",
+        effect_key="page-1",
+        request=ImageGenerationRequest(prompt="a fox in the snow", size="512x512"),
+    )
+    assert retried.images == [_PNG]
+    assert len(gateway.requests) == 2
+
+
+async def test_the_in_memory_store_is_content_addressed_and_satisfies_the_port() -> None:
+    blobs = InMemoryImageBlobStore()
+
+    first = await blobs.put(_PNG, media_type="image/png")
+    again = await blobs.put(_PNG, media_type="image/png")
+
+    assert isinstance(blobs, ImageBlobStore)
+    assert first == again == f"sha256:{hashlib.sha256(_PNG).hexdigest()}"
+    assert await blobs.get(first) == _PNG
+    assert await blobs.get("sha256:unknown") is None
