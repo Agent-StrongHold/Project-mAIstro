@@ -109,3 +109,38 @@ with `docker-build: cancelled`. Diagnosis from the tree, not the scanner:
   registration/setup tests pass, all three suite inventories match,
   `npm run build` (vite + tsc) succeeds, eslint on the changed frontend files:
   0 errors.
+
+## CI-repair round evidence (repair job b7c938ab, same head bb8a8337)
+
+Re-proved from the tree at the identical head (no code changed this round;
+the gate failure has no tree-level fix, only a superseded queue run):
+
+- Failure reproduced deterministically:
+  `check-integration-scope.py --event-name merge_group --scope-json
+  <resolved> --result docker-build=cancelled ...` exits 1 with exactly
+  `docker-build: required but result was cancelled` — the sole implicated
+  check; the scope resolution for this diff (both the prior queue base
+  fa3391e5 and the new develop base fa2deb0a) is unchanged:
+  `{docker_build, hive_e2e, strike_ladder, wheel_imports} = true` →
+  required `[docker-build, hive-conductor-e2e, hive-conductor-e2e-ui,
+  strike-ladder, wheel-imports]`.
+- The cancelled leg's substance proven on this head: `docker build -f
+  Dockerfile -t maistro-engine:test .` exit 0, `docker build -f
+  packages/hive-conductor/Dockerfile -t hive-conductor:test .` exit 0, and
+  the engine image ships the declaration
+  (`site-packages/maistro/config/first_run.py` present in the built image).
+  With `--result docker-build=success` the same aggregator invocation exits
+  0: `ok: integration scope satisfied for merge_group`.
+- Vulture per-identity ledger repair command re-run verbatim
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`): 1390 findings / 1390 reviewed identities,
+  `unclassified: 0`, ratchet `base fa3391e5e -> candidate bb8a8337`, exit 0
+  — nothing unbanked, so no ledger amendment exists to make.
+- Acceptance re-executed, not trusted: 35 bootstrap/core declaration tests
+  and 64 backend registration/setup tests pass (including the wholesale
+  terminal==SPA parity assertion and the over-HTTP provisioning test),
+  `ruff check .` + `ruff format --check .` clean.
+
+Residual: the red integration-scope check at bb8a8337 clears only by a fresh
+merge-queue evaluation (a superseded run's cancelled child is never retried
+in place); every producer it waits on passes on this tree.
