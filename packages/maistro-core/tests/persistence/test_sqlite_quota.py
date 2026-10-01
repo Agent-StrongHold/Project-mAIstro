@@ -159,3 +159,41 @@ async def test_get_all_usage_ordered_by_provider_then_cycle_key(
     await tracker.record_usage("anthropic", "monthly", 2, 2)
     rows = await tracker.get_all_usage()
     assert [r["provider"] for r in rows] == ["anthropic", "openai"]
+
+
+@pytest.mark.asyncio
+async def test_evidence_and_its_aggregate_commit_together(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """A crash between the two must not lose the projection permanently.
+
+    The evidence row is the idempotency key: a retry's `ON CONFLICT DO
+    NOTHING` reports nothing inserted and therefore skips the projection. So
+    committing the evidence *before* projecting left a window in which an
+    interruption understated `quota_usage` forever, with no later call able to
+    repair it — the retry sees the conflict and does nothing (Codex, #1362).
+
+    Interrupting the projection must therefore roll the evidence back too,
+    leaving the invocation genuinely unrecorded and the retry able to redo
+    both.
+    """
+
+    original = tracker._project_usage_locked
+
+    async def fail_once(*args: object, **kwargs: object) -> None:
+        tracker._project_usage_locked = original  # type: ignore[method-assign]
+        raise RuntimeError("process died between the evidence row and its aggregate")
+
+    tracker._project_usage_locked = fail_once  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="process died"):
+        await tracker.record_invocation("inv-1", "openai", "monthly", 100, 50, True)
+
+    # Nothing was committed: no evidence, no aggregate.
+    assert (await tracker.get_all_usage()) == []
+
+    # And the retry records both, because the evidence row is not there to
+    # suppress it.
+    result = await tracker.record_invocation("inv-1", "openai", "monthly", 100, 50, True)
+
+    assert result["total_tokens"] == 150
+    assert result["request_count"] == 1
