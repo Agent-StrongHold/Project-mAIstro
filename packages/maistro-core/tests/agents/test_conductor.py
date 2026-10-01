@@ -216,6 +216,11 @@ class TestIsRetryable:
     def test_connect_error_is_retryable(self) -> None:
         assert _is_retryable(httpx.ConnectError("boom")) is True
 
+    def test_connect_timeout_is_retryable(self) -> None:
+        # ConnectTimeout is not a TimeoutError subclass in httpx 0.28.x;
+        # mirror llm_gateway.py, which treats both as an unreachable gateway.
+        assert _is_retryable(httpx.ConnectTimeout("timed out")) is True
+
     def test_retryable_status_code_is_retryable(self) -> None:
         request = httpx.Request("GET", "http://x")
         response = httpx.Response(503, request=request)
