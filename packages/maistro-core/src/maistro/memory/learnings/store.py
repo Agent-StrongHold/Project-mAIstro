@@ -8,9 +8,16 @@ from __future__ import annotations
 
 import logging
 
+from maistro.memory.learnings.evidence import (
+    DEFAULT_MIN_PROMOTION_CONFIDENCE,
+    merge_applicability,
+    outcome_confidence,
+    promotion_blockers,
+)
 from maistro.memory.types import Learning
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_scope import matches_learning_scope
+from maistro.types.memory import EPISTEMIC_BONUS
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +69,23 @@ class InMemoryLearningStore:
             # would attribute the surviving text to the Run that no longer
             # wrote it, and `produced_by` would return nothing for the Run
             # that did (Codex, #709).
+            # The outgoing producer is not lost with the move: it taught a
+            # version of this claim, so it joins `evidence_run_ids` and stays
+            # answerable from `produced_by` of the evidence, not just of the
+            # text (M4-B3: provenance survives consolidation/rewording).
+            if existing.run_id and existing.run_id != learning.run_id:
+                learning.evidence_run_ids = list(
+                    dict.fromkeys([*learning.evidence_run_ids, existing.run_id])
+                )
             existing.run_id = learning.run_id
             existing.node_run_id = learning.node_run_id
             existing.attempt_id = learning.attempt_id
+            # What the row *rests on* does not move: applicability and evidence
+            # union across the consolidation, so a reworded claim stays
+            # accountable to every Run that taught any of its versions and
+            # keeps every context any version named (M4-B3). The old producer
+            # survives in `evidence_run_ids` even though `run_id` moved.
+            merge_applicability(existing, learning)
             return existing.id or 0
 
         if len(self._learnings) >= self._max:
@@ -128,8 +149,13 @@ class InMemoryLearningStore:
             ):
                 continue
 
-            score = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
+            score: float = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
             if score > 0:
+                # Epistemic type is a tie-break, not a second gate (M4-B3):
+                # every bonus is < 1.0, so it reorders keyword ties — a tested
+                # claim ahead of a counterfactual one — without ever letting a
+                # less relevant learning outrank a more relevant one.
+                score += EPISTEMIC_BONUS.get(learning.epistemic_type, 0.0)
                 scored.append((score, learning))
 
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -160,7 +186,14 @@ class InMemoryLearningStore:
     async def mark_outcome(
         self, learning_ids: list[int], success: bool, *, org_id: str = ""
     ) -> None:
-        """Increment success_after_use or failure_after_use per injected learning."""
+        """Increment success_after_use or failure_after_use per injected learning.
+
+        Recomputes `confidence` from the outcome counters (`evidence.`
+        `outcome_confidence` is the normative rule the SQL twins restate in
+        their UPDATE): a recorded outcome is a measurement, and a measurement
+        replaces whatever prior an imported claim arrived with. Promotion reads
+        that field, so this is where hits become evidence (M4-B3).
+        """
         if not learning_ids:
             return
         id_set = set(learning_ids)
@@ -173,18 +206,31 @@ class InMemoryLearningStore:
                 learning.success_after_use += 1
             else:
                 learning.failure_after_use += 1
+            learning.confidence = outcome_confidence(
+                learning.success_after_use, learning.failure_after_use
+            )
 
     async def check_auto_promotions(
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
     ) -> list[Learning]:
-        """Promote learnings that hit threshold, scoped by org."""
+        """Promote learnings that hit threshold *and* carry validation evidence.
+
+        Hit_count alone stopped being enough in M4-B3: a learning promoted on
+        retrieval frequency is a claim promoted on popularity. `promotion_blockers`
+        is the one verdict — source Run/evaluation IDs plus measured confidence
+        — and a learning failing it stays `active` however often it is hit.
+        """
         promoted: list[Learning] = []
         for learning in self._learnings:
             if learning.status != "active" or learning.hit_count < threshold:
                 continue
             if not matches_learning_scope(learning, org_id=org_id):
+                continue
+            if promotion_blockers(learning, min_confidence=min_confidence):
                 continue
             learning.status = "promoted"
             promoted.append(learning)

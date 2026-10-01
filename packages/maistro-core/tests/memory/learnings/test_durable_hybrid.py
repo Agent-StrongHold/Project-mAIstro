@@ -67,9 +67,15 @@ class _Store:
         self._record("mark_outcome", learning_ids, success, org_id=org_id)
 
     async def check_auto_promotions(
-        self, threshold: int = 5, *, org_id: str = ""
+        self,
+        threshold: int = 5,
+        *,
+        org_id: str = "",
+        min_confidence: float = 0.5,
     ) -> list[Learning]:
-        self._record("check_auto_promotions", threshold, org_id=org_id)
+        self._record(
+            "check_auto_promotions", threshold, org_id=org_id, min_confidence=min_confidence
+        )
         return [_learning(11)]
 
     async def get_promoted(
@@ -136,9 +142,11 @@ async def test_mark_outcome_forwards_the_org_it_was_scoped_to(wrapped) -> None:
 async def test_check_auto_promotions_forwards_and_returns(wrapped) -> None:
     hybrid, store = wrapped
 
-    promoted = await hybrid.check_auto_promotions(3, org_id="org-1")
+    promoted = await hybrid.check_auto_promotions(3, org_id="org-1", min_confidence=0.9)
 
-    assert store.calls == [("check_auto_promotions", (3,), {"org_id": "org-1"})]
+    assert store.calls == [
+        ("check_auto_promotions", (3,), {"org_id": "org-1", "min_confidence": 0.9})
+    ]
     assert [item.id for item in promoted] == [11]
 
 

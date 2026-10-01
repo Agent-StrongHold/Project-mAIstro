@@ -32,5 +32,11 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "run_id",
         "node_run_id",
         "attempt_id",
+        "epistemic_type",
+        "works_when",
+        "avoid_in",
+        "confidence",
+        "evidence_run_ids",
+        "evaluation_ids",
     }
 )

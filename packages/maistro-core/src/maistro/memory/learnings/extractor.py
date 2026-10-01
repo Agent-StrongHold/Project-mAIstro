@@ -13,6 +13,7 @@ import logging
 import re
 
 from maistro.memory.types import Learning, MemoryScope
+from maistro.types.memory import EpistemicType
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,11 @@ class RCAExtractor:
             scope=MemoryScope.AGENT,
             rca_category=category,
             rca_prevention=prevention,
+            # An LLM wrote this diagnosis (M4-B3): it is a distilled claim, so
+            # it lands INFERRED — plausible wording, no validation evidence of
+            # its own. Distillation may shape the text; only a source Run or
+            # evaluation can ever qualify it for promotion.
+            epistemic_type=EpistemicType.INFERRED,
         )
 
     async def _call_llm(self, prompt: str) -> str | None:

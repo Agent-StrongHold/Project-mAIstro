@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from maistro.memory.learnings.evidence import DEFAULT_MIN_PROMOTION_CONFIDENCE, promotion_blockers
+
 if TYPE_CHECKING:
     from maistro.memory.learnings.approval import LearningApprovalGate
     from maistro.memory.mutations import InMemorySkillMutationStore
@@ -34,12 +36,14 @@ class LearningPromoter:
         learning_store: LearningStore,
         *,
         threshold: int = 5,
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
         skill_forge: SkillForge | None = None,
         mutation_store: InMemorySkillMutationStore | None = None,
         approval_gate: LearningApprovalGate | None = None,
     ) -> None:
         self._store = learning_store
         self._threshold = threshold
+        self._min_confidence = min_confidence
         self._forge = skill_forge
         self._mutation_store = mutation_store
         self._approval_gate = approval_gate
@@ -58,7 +62,9 @@ class LearningPromoter:
 
     async def _check_auto(self, org_id: str = "") -> list[Learning]:
         """Legacy auto-promotion (no gate)."""
-        promoted = await self._store.check_auto_promotions(self._threshold, org_id=org_id)
+        promoted = await self._store.check_auto_promotions(
+            self._threshold, org_id=org_id, min_confidence=self._min_confidence
+        )
         for learning in promoted:
             logger.info(
                 "Auto-promoted learning #%s (hits=%d): %s",
@@ -83,7 +89,10 @@ class LearningPromoter:
         all_candidates = await self._store.list_all(org_id=org_id, limit=10_000)
         candidates = [lr for lr in all_candidates if org_id or not lr.org_id]
         for lr in candidates:
-            if lr.hit_count >= self._threshold and lr.status == "active":
+            # The threshold is this promoter's knob; the evidence half is the
+            # shared verdict (M4-B3): a learning without validation evidence
+            # never reaches the queue, however often it was hit.
+            if lr.hit_count >= self._threshold and self._promotable_candidate(lr):
                 self._approval_gate.request_approval(
                     learning_id=lr.id or 0,
                     org_id=lr.org_id,
@@ -107,6 +116,17 @@ class LearningPromoter:
                     promoted.append(lr)
 
         return promoted
+
+    def _promotable_candidate(self, lr: Learning) -> bool:
+        """Whether the learning may reach the approval queue at all.
+
+        Status first, then the shared evidence verdict: the gate queues
+        candidates for a human, but the human is the second check, not the
+        only one (M4-B3).
+        """
+        return lr.status == "active" and not promotion_blockers(
+            lr, min_confidence=self._min_confidence
+        )
 
     async def _try_mutate_skill(self, learning: Learning) -> None:
         """Attempt to mutate a skill based on a promoted learning."""

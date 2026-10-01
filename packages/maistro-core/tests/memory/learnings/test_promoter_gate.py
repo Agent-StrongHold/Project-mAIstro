@@ -30,6 +30,8 @@ async def test_gate_queues_eligible_learning_for_approval() -> None:
         learning="Always snapshot before deploy",
         hit_count=7,
         status="active",
+        run_id="run-1",
+        confidence=1.0,
     )
     await store.store(learning)
 
@@ -71,6 +73,8 @@ async def test_approved_learning_gets_promoted_on_next_pass() -> None:
         learning="snapshot first",
         hit_count=10,
         status="active",
+        run_id="run-1",
+        confidence=1.0,
     )
     lid = await store.store(learning)
 
@@ -94,8 +98,26 @@ async def test_approved_learning_gets_promoted_on_next_pass() -> None:
 async def test_org_scoped_candidates_only() -> None:
     """Gate enumeration respects org scoping when an org_id is supplied."""
     store = InMemoryLearningStore()
-    await store.store(Learning(trigger_keys=["a"], learning="org-a", hit_count=9, org_id="org-a"))
-    await store.store(Learning(trigger_keys=["b"], learning="org-b", hit_count=9, org_id="org-b"))
+    await store.store(
+        Learning(
+            trigger_keys=["a"],
+            learning="org-a",
+            hit_count=9,
+            org_id="org-a",
+            run_id="run-a",
+            confidence=1.0,
+        )
+    )
+    await store.store(
+        Learning(
+            trigger_keys=["b"],
+            learning="org-b",
+            hit_count=9,
+            org_id="org-b",
+            run_id="run-b",
+            confidence=1.0,
+        )
+    )
 
     gate = LearningApprovalGate()
     promoter = LearningPromoter(store, threshold=5, approval_gate=gate)
