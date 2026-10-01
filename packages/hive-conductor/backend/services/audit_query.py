@@ -47,7 +47,7 @@ import json
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Iterator
 
 #: Default page size for `GET /v1/audit`.
 DEFAULT_AUDIT_PAGE_SIZE = 50
@@ -207,31 +207,33 @@ def iter_export_entries(
     actor: str | None = None,
     actor_scope: frozenset[str] | None = None,
     backend: Any | None = None,
-) -> list[dict[str, Any]]:
-    """Bounded export walk: at most `EXPORT_MAX_ENTRIES`, `._EXPORT_PAGE_SIZE`
+) -> Iterator[dict[str, Any]]:
+    """Bounded export walk: at most `EXPORT_MAX_ENTRIES`, `_EXPORT_PAGE_SIZE`
     rows of server-side memory at a time, same scope and filter contract as
-    `page_entries`. Returns the (capped) entry list for the route to stream.
+    `page_entries`. Yields entries lazily — a page is fetched only after the
+    previous page has been consumed — so the route's `StreamingResponse`
+    emits bytes from the first page instead of buffering the full cap.
     """
-    collected: list[dict[str, Any]] = []
     cursor: str | None = None
-    while len(collected) < EXPORT_MAX_ENTRIES:
+    emitted = 0
+    while emitted < EXPORT_MAX_ENTRIES:
         page = page_entries(
             store,
             action=action,
             severity=severity,
             actor=actor,
-            limit=min(_EXPORT_PAGE_SIZE, EXPORT_MAX_ENTRIES - len(collected)),
+            limit=min(_EXPORT_PAGE_SIZE, EXPORT_MAX_ENTRIES - emitted),
             cursor=cursor,
             actor_scope=actor_scope,
             backend=backend,
         )
         if not page.entries:
-            return collected
-        collected.extend(page.entries)
+            return
+        yield from page.entries
+        emitted += len(page.entries)
         if page.next_cursor is None:
-            return collected
+            return
         cursor = page.next_cursor
-    return collected
 
 
 # --------------------------------------------------------------------------- #

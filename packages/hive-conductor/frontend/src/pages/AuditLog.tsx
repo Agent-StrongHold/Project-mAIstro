@@ -268,9 +268,11 @@ export default function AuditLog() {
   // state through refs. When the sentinel scrolls into view and a next page
   // exists, fetch it — the user never clicks "load more" unless observation
   // fails (fallback button below).
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // The sentinel mounts only after the first page renders (loading=false),
+  // so it is held in state: setting it re-runs this effect and attaches the
+  // observer at that point (a plain ref would stay null here forever).
+  const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
-    const sentinel = sentinelRef.current;
     if (!sentinel) return;
     const observer = new IntersectionObserver(
       (observed) => {
@@ -404,7 +406,7 @@ export default function AuditLog() {
               <div style={{ height: Math.max(0, (totalCount - end) * ROW_HEIGHT) }} aria-hidden="true" />
               {/* Load-more sentinel + fallback: observation usually fires
                   first; the button covers keyboard/AT and observer-less paths. */}
-              <div ref={sentinelRef} style={{ height: 1 }} />
+              <div ref={setSentinel} style={{ height: 1 }} />
               {hasMore && (
                 <div style={{ display: "flex", justifyContent: "center", padding: "12px 0" }}>
                   <button onClick={() => { void loadMore(); }} disabled={loadingMore} style={ghostButtonStyle}>
