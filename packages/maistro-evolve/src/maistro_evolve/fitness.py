@@ -56,6 +56,18 @@ _HARD_GATE_THRESHOLDS: dict[str, float] = {
 # the alternative is the fail-open behaviour this replaces.
 _DEFAULT_GATE_FLOOR = 0.01
 
+
+def hard_gate_thresholds() -> dict[str, float]:
+    """Public, read-only view of the tuned per-benchmark gate thresholds.
+
+    ``promotion.objective_version`` folds these into the objective digest, so
+    the thresholds participate in the objective's immutable identity: changing
+    a gate changes the objective version, which (per the #854 governed-promotion
+    contract) invalidates evidence produced under the old one.
+    """
+    return dict(_HARD_GATE_THRESHOLDS)
+
+
 # Semantic role of every fitness component (#853). The two `*_context` roles
 # are population-level terms: they may reorder candidates within a bounded
 # share of fitness, but they are *not* measured task quality and can never

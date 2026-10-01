@@ -24,6 +24,7 @@ from routes import (
     attention,
     audit,
     auth,
+    backlog,
     capabilities,
     chat,
     cli,
@@ -325,6 +326,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/v1/agents")
     app.include_router(program.router, prefix="/v1/program")
     app.include_router(work_items.router, prefix="/v1/work-items")
+    app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
     app.include_router(attention.router, prefix="/v1/workspaces")
     app.include_router(mcp.router, prefix="/v1/mcp")

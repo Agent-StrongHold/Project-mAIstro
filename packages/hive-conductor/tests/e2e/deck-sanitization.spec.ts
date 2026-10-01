@@ -11,7 +11,7 @@
  * DesignStudio.tsx really renders for poster/infographic/flyer, proving its
  * hostile-prompt inertness (#817). The keyboard journeys
  * (design-studio-keyboard.spec.ts) cover
- * the routed /decks and /cli/canvas surfaces on top of this boundary proof.
+ * the routed /decks and /design-studio surfaces on top of this boundary proof.
  */
 
 import { build } from "esbuild";

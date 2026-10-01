@@ -38,6 +38,7 @@ from maistro_evolve.cycle import (
     EvolutionConfig,
 )
 from maistro_evolve.population import PopulationStore
+from maistro_evolve.promotion import objective_version
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 
 
@@ -223,9 +224,26 @@ class TestPromotionGate:
         with pytest.raises(ValueError):
             asyncio.run(store.promote_audited("does-not-exist", _trail()))
 
+    def test_promote_approved_genome_without_evidence_is_refused(self, tmp_path):
+        """Approval alone does not activate: the governed promotion contract
+        (#854) also requires sufficient independent evaluation evidence."""
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome("g1", fitness_score=99.0, approved_for_promotion=True)
+        store.add(g)
+        with pytest.raises(PermissionError, match="governed promotion policy"):
+            asyncio.run(store.promote_audited("g1", _trail()))
+        assert store.get_active() is None
+
     def test_promote_approved_genome_succeeds(self, tmp_path):
         store = PopulationStore(tmp_path / "pop.db")
         g = _genome("g1", fitness_score=99.0, approved_for_promotion=True)
+        # Repeated, objective-stamped, current evidence — approval is
+        # necessary but not sufficient (#854).
+        g.eval_scores = {"proxy_ifeval": 0.8}
+        g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+        g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
+        g.harness_params["objective_version"] = "objective-test"
+        g.harness_params["evidence_cycle"] = 1
         store.add(g)
         promoted = asyncio.run(store.promote_audited("g1", _trail()))
         assert promoted.is_active is True
@@ -256,15 +274,23 @@ class TestPromotionGate:
 class TestCapabilityPromotionGate:
     """A deliberately do-nothing candidate cannot buy promotion with missing
     metrics or an objective reweighting: the gate reads recorded eval scores
-    against fixed thresholds and consults no weight vector (#853)."""
+    against fixed thresholds and consults no weight vector (#853).
+
+    Since #854 the capability gate fires inside the governed promotion
+    refusal (``promotion_eligibility`` runs the same ``_check_hard_gate``)
+    and remains defense-in-depth in ``_promote`` — either way the refusal is
+    recorded and nothing activates.
+    """
 
     def test_promote_never_evaluated_genome_raises(self, tmp_path):
         # The NotImplementedError flavour: a benchmark that cannot run
-        # (run_osworld raises) records no score at all.
+        # (run_osworld raises) records no score at all — and the promotion
+        # contract refuses a candidate with no recorded scores, whatever its
+        # padded fitness claims.
         store = PopulationStore(tmp_path / "pop.db")
         g = _genome("donothing", fitness_score=85.262, approved_for_promotion=True, eval_scores={})
         store.add(g)
-        with pytest.raises(PermissionError, match="capability"):
+        with pytest.raises(PermissionError, match="not evaluated"):
             asyncio.run(store.promote_audited("donothing", _trail()))
         assert store.get("donothing").is_active is False
 
@@ -284,8 +310,11 @@ class TestCapabilityPromotionGate:
             "avg_elo": 1200.0,
         }
         store.add(g)
-        with pytest.raises(PermissionError, match="capability"):
+        # The #853 hard gate fires inside the governed refusal (#854 envelope):
+        # the below-threshold score is named, padded context is ignored.
+        with pytest.raises(PermissionError, match=r"hard gate: proxy_ifeval score 0\.100"):
             asyncio.run(store.promote_audited("weak", _trail()))
+        assert store.get("weak").is_active is False
 
     def test_reweighted_objective_cannot_rescue_a_gated_candidate(self, tmp_path):
         # The gate is a constraint, not a tradeable weight: recomputing the
@@ -306,8 +335,22 @@ class TestCapabilityPromotionGate:
                 elo_bonus=0.0,
             ),
         )
-        g = _genome("weak2", approved_for_promotion=True, eval_scores={"proxy_ifeval": 0.1})
-        g.harness_params = {"avg_elo": 1400.0, "elo_battles": 30}
+        g = _genome(
+            "weak2",
+            fitness_score=85.262,
+            approved_for_promotion=True,
+            eval_scores={"proxy_ifeval": 0.1},
+        )
+        g.harness_params = {
+            "avg_elo": 1400.0,
+            "elo_battles": 30,
+            # Complete, current, repeated evidence — every #854 leg passes, so
+            # the ONLY thing that can refuse is the weight-blind gate.
+            "eval_samples": {"proxy_ifeval": 2},
+            "eval_history": {"proxy_ifeval": [0.1, 0.1]},
+            "objective_version": objective_version(["proxy_ifeval"]),
+            "evidence_cycle": 1,
+        }
         other = _genome("peer", eval_scores={"proxy_ifeval": 0.9})
         other.id = "peer"
         components = compute_fitness(g, [g, other], alt)
@@ -315,8 +358,12 @@ class TestCapabilityPromotionGate:
         assert not components.passed_hard_gate
         store = PopulationStore(tmp_path / "pop.db")
         store.add(g)
-        with pytest.raises(PermissionError, match="capability"):
+        # All evidence legs satisfied, yet the threshold gate still refuses —
+        # no objective reweighting, Elo padding, or fitness inflation (85.262)
+        # can clear it.
+        with pytest.raises(PermissionError, match=r"hard gate: proxy_ifeval score 0\.100"):
             asyncio.run(store.promote_audited("weak2", _trail()))
+        assert store.get("weak2").is_active is False
 
 
 # --------------------------------------------------------------------------
@@ -327,7 +374,12 @@ class TestCapabilityPromotionGate:
 class TestRollback:
     def test_rollback_with_no_prior_promotion_returns_none(self, tmp_path):
         store = PopulationStore(tmp_path / "pop.db")
-        g = _genome("g1", approved_for_promotion=True)
+        g = _genome("g1", fitness_score=0.8, approved_for_promotion=True)
+        g.eval_scores = {"proxy_ifeval": 0.8}
+        g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+        g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
+        g.harness_params["objective_version"] = "objective-test"
+        g.harness_params["evidence_cycle"] = 1
         store.add(g)
         asyncio.run(store.promote_audited("g1", _trail()))
         assert asyncio.run(store.rollback_audited(_trail())) is None
@@ -338,6 +390,13 @@ class TestRollback:
         store = PopulationStore(tmp_path / "pop.db")
         old = _genome("old", approved_for_promotion=True)
         new = _genome("new", approved_for_promotion=True)
+        for g, score, fit in ((old, 0.3, 0.5), (new, 0.8, 0.9)):
+            g.eval_scores = {"proxy_ifeval": score}
+            g.fitness_score = fit
+            g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+            g.harness_params["eval_history"] = {"proxy_ifeval": [score - 0.01, score + 0.01]}
+            g.harness_params["objective_version"] = "objective-test"
+            g.harness_params["evidence_cycle"] = 1
         store.add(old)
         store.add(new)
 
