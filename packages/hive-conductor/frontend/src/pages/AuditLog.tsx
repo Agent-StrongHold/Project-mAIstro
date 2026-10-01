@@ -208,8 +208,8 @@ export default function AuditLog() {
   const [scrollTop, setScrollTop] = useState(0);
   const scrollRaf = useRef<number | null>(null);
 
-  // Latest-writer refs so the IntersectionObserver callback (created once)
-  // reads current load state without re-observing on every render.
+  // Latest-writer refs let the IntersectionObserver read current load state
+  // without re-observing on every render.
   const nextCursorRef = useRef<string | null>(null);
   const loadingMoreRef = useRef(false);
   // Every filter change/refresh starts a new cursor walk. Responses from an
@@ -299,10 +299,11 @@ export default function AuditLog() {
       .catch(() => setRetention(null));
   }, []);
 
-  // Incremental loading on scroll: one observer, created once, reading load
-  // state through refs. When the sentinel scrolls into view and a next page
-  // exists, fetch it — the user never clicks "load more" unless observation
-  // fails (fallback button below).
+  // Incremental loading on scroll: re-arm for each new cursor. A short page
+  // (or a fast scroll after appending) can keep the sentinel intersecting,
+  // so waiting for a leave/re-enter edge would stall the walk. A fresh
+  // observer samples visibility again; the ref lock still prevents overlap.
+  // The button below covers keyboard/AT and observer-less paths.
   // The sentinel mounts only after the first page renders (loading=false),
   // so it is held in state: setting it re-runs this effect and attaches the
   // observer at that point (a plain ref would stay null here forever).
@@ -319,7 +320,7 @@ export default function AuditLog() {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [loadMore, sentinel]);
+  }, [loadMore, sentinel, nextCursor]);
 
   const onScroll = useCallback(() => {
     if (scrollRaf.current !== null) return;
@@ -438,7 +439,10 @@ export default function AuditLog() {
               ref={scrollRef}
               onScroll={onScroll}
               role="rowgroup"
-              style={{ height: VIEWPORT_HEIGHT, overflowY: "auto" }}
+              // The spacer already preserves scroll coordinates when rows
+              // are evicted. Native anchoring would adjust them again and can
+              // pull the sentinel back into view, draining unsolicited pages.
+              style={{ height: VIEWPORT_HEIGHT, overflowY: "auto", overflowAnchor: "none" }}
             >
               <div style={{ height: (discardedRows + start) * ROW_HEIGHT }} aria-hidden="true" />
               {windowRows.map((entry) => (

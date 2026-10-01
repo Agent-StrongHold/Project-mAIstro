@@ -238,6 +238,31 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     });
   }
 
+  test("10b — audit loading continues while the sentinel stays visible", async ({ page }) => {
+    await loginAsPM(page);
+    await page.addInitScript(() => localStorage.setItem("hive_onboarded", "1"));
+    const cursors: number[] = [];
+    await page.route("**/v1/audit?*", async (route) => {
+      const start = Number(new URL(route.request().url()).searchParams.get("cursor") || "0");
+      cursors.push(start);
+      // A valid short page keeps the sentinel inside the viewport throughout
+      // the continuation. There is no leave/re-enter edge to trigger loading.
+      await route.fulfill({ json: {
+        entries: [{
+          id: `short-${start}`, action: "login", actor: "pmuser", target: null,
+          detail: { marker: `short-page-${start}` }, severity: "info",
+          created_at: "2026-01-01T00:00:00Z",
+        }],
+        next_cursor: start < 3 ? String(start + 1) : null,
+      } });
+    });
+    await page.goto("/audit");
+    await expect(page.getByRole("row")).toHaveCount(4);
+    expect(cursors).toEqual([0, 1, 2, 3]);
+    await expect(page.getByRole("row").last()).toContainText("short-page-3");
+    await expect(page.getByRole("button", { name: "Load older entries" })).toHaveCount(0);
+  });
+
   test("10c — audit cursor loading bounds retained entries and mounted rows", async ({ page }) => {
     await loginAsPM(page);
     await page.addInitScript(() => localStorage.setItem("hive_onboarded", "1"));
@@ -264,6 +289,11 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     for (let pageNumber = 1; pageNumber < 8; pageNumber += 1) {
       await viewport.evaluate((el) => { el.scrollTop = el.scrollHeight; });
       await expect.poll(() => cursors.length).toBe(pageNumber + 1);
+      // A request is not a committed page. After the 500-entry cap the
+      // subtitle no longer changes, so wait for its spacer/rows to grow
+      // before initiating the next scroll.
+      await expect.poll(() => viewport.evaluate((el) => el.scrollHeight))
+        .toBeGreaterThanOrEqual((pageNumber + 1) * 100 * 44);
       await expect(page.getByText(`${Math.min((pageNumber + 1) * 100, 500)} retained locally`, { exact: false }))
         .toBeVisible();
       await expect.poll(() => rows.count()).toBeGreaterThan(0);
