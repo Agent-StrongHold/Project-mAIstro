@@ -750,3 +750,56 @@ async def test_execute_dag_streaming_yields_failed_on_exception(
     assert events[0]["status"] == "started"
     assert events[-1]["status"] == "failed"
     assert events[-1]["error"] == "RuntimeError: execution failed; see server logs"
+
+
+async def test_execute_dag_streaming_defers_run_until_past_started_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `started` frame precedes execution (#355).
+
+    `execute_dag_streaming` is an async generator: `run_durable_graph` (and the
+    `on_result` projection) only run once the consumer resumes past the first
+    frame. A websocket client that disconnects before acknowledging `started`
+    therefore starts no Run at all — which is why the DAG Builder's unmount
+    cleanup defers its socket close to that acknowledged frame instead of
+    closing a CONNECTING socket (navigation must not cancel a requested Run).
+    """
+
+    import services.graph_runner as gr
+    from services import canonical_dag_runner as runner
+
+    calls: list[str] = []
+
+    async def _run_durable_graph(graph: Any, **kw: Any) -> Any:
+        calls.append("run")
+        return _CompletedRecord()
+
+    async def _project(result: dict[str, Any]) -> None:
+        calls.append("project")
+
+    monkeypatch.setattr(runner, "_container", lambda: None)
+    monkeypatch.setattr(runner, "get_run_store", lambda: object())
+    monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)
+    monkeypatch.setattr(runner, "run_durable_graph", _run_durable_graph)
+
+    stream = gr.execute_dag_streaming(
+        {
+            "name": "x",
+            "nodes": [{"id": "n1", "role": "worker", "name": "W"}],
+            "edges": [],
+            "entry_node": "n1",
+        },
+        scope=_execution_scope(),
+        on_result=_project,
+    )
+    first = await anext(stream)
+    assert first["status"] == "started"
+    # First frame produced, Run not yet started: this is exactly the window a
+    # pre-acknowledgement client disconnect falls in.
+    assert calls == []
+    second = await anext(stream)
+    assert second["status"] == "node_complete"
+    # Resuming past `started` is what actually starts the Run and, after it
+    # settles, records the projection.
+    assert calls == ["run", "project"]
+    await stream.aclose()
