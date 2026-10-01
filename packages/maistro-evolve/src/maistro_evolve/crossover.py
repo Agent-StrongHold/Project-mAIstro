@@ -4,6 +4,7 @@ import uuid
 from copy import deepcopy
 from datetime import UTC, datetime
 
+from .archive import OperatorKind, stamp_provenance
 from .mutate import mutate_all
 from .types import (
     DAGEdgeGenome,
@@ -78,7 +79,7 @@ def crossover(parent_a: PipelineGenome, parent_b: PipelineGenome) -> PipelineGen
         use_scout=parent_a.topology.use_scout or parent_b.topology.use_scout,
     )
 
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=f"cross-{parent_a.id[:6]}-{parent_b.id[:6]}",
         topology=child_topo,
@@ -92,6 +93,12 @@ def crossover(parent_a: PipelineGenome, parent_b: PipelineGenome) -> PipelineGen
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    return stamp_provenance(
+        child,
+        parents=[parent_a.id, parent_b.id],
+        operator=OperatorKind.CROSSOVER,
+        base=parent_a,
+    )
 
 
 def crossover_and_mutate(
@@ -102,6 +109,22 @@ def crossover_and_mutate(
 ) -> PipelineGenome:
     """``models`` constrains the child's model mutation to the run's routable
     roster (see ``mutate_all``) — without it, breeding can drift a lineage onto
-    models the gateway can't serve."""
-    child = crossover(parent_a, parent_b)
-    return mutate_all(child, mutation_rate, models)
+    models the gateway can't serve.
+
+    M4-A6 lineage: the returned child records BOTH crossover parents. The
+    intermediate crossover child is a construction detail — ``mutate_all``
+    re-parents to its immediate input, which would otherwise replace this
+    child's recorded second parent with a genome that never joined the
+    population, making the two-parent record unraversable.
+    """
+    crossed = crossover(parent_a, parent_b)
+    child = mutate_all(crossed, mutation_rate, models)
+    child.parent_a_id = parent_a.id
+    child.parent_b_id = parent_b.id
+    return stamp_provenance(
+        child,
+        parents=[parent_a.id, parent_b.id],
+        operator=OperatorKind.CROSSOVER,
+        base=parent_a,
+        detail="crossover+mutate_all",
+    )

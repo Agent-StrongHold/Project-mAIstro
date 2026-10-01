@@ -252,7 +252,15 @@ class PopulationStore:
             current = self.get(parent_id)
         return chain
 
-    def cull_bottom(self, pct: float) -> int:
+    def cull_bottom(self, pct: float, archive: Any | None = None) -> int:
+        """Remove the weakest ``pct`` of the scored population.
+
+        With ``archive`` (a ``CandidateArchive``, typed as Any to avoid an
+        import cycle — population.py is imported BY archive.py), every removed
+        genome is snapshotted as ``retired`` first: culling stops being
+        destruction and becomes archival (M4-A6 — retired candidates remain
+        inspectable and branchable for provenance/analysis).
+        """
         all_genomes = self.list_all()
         scored = [g for g in all_genomes if g.fitness_score is not None]
         if not scored:
@@ -261,6 +269,8 @@ class PopulationStore:
         cutoff = max(1, int(len(scored) * pct))
         to_remove = scored[:cutoff]
         for g in to_remove:
+            if archive is not None:
+                archive.record(g, event="retired")
             self.remove(g.id)
         return len(to_remove)
 

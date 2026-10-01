@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .archive import CandidateArchive, apply_objective
 from .crossover import crossover_and_mutate
 from .fitness import compute_fitness
 from .harness import EvalHarness
@@ -89,11 +90,33 @@ class EvolutionCycle:
         self,
         harness: EvalHarness | None = None,
         tournament: EloTournament | None = None,
+        archive: CandidateArchive | None = None,
     ) -> None:
         self.harness = harness or EvalHarness()
         self.tournament = tournament or EloTournament()
+        # M4-A6 candidate archive. Optional: ``None`` preserves the exact
+        # pre-archive library behavior; when supplied, culled genomes are
+        # archived (inspectable/branchable) and every created child is
+        # snapshotted so lineage survives population turnover.
+        self.archive = archive
         self._island_pop: IslandPopulation | None = None
         self._cycle_count: int = 0
+
+    def _register_child(
+        self,
+        population: PopulationStore,
+        child: PipelineGenome,
+        objective: str = "",
+    ) -> PipelineGenome:
+        """Admit one newly-created candidate: stamp the run's source objective,
+        add it to the population, and snapshot it into the archive (M4-A6) so
+        its record — parents, operator, objective, prompt version — outlives
+        whatever the cull later does to it."""
+        apply_objective(child, objective)
+        population.add(child)
+        if self.archive is not None:
+            self.archive.record(child, event="created")
+        return child
 
     @staticmethod
     def _fold_score(
@@ -224,7 +247,7 @@ class EvolutionCycle:
                     child = crossover_and_mutate(
                         a, b, config.mutation_rate, models=config.allowed_models or None
                     )
-                    population.add(child)
+                    self._register_child(population, child, objective=config.goal)
                     # Use force_assign: mutation chains rewrite parent_a_id, so
                     # assign() would fall back to round-robin and place the child
                     # on the wrong island.
@@ -250,7 +273,7 @@ class EvolutionCycle:
                     child = crossover_and_mutate(
                         pa, pb, config.mutation_rate, models=config.allowed_models or None
                     )
-                    population.add(child)
+                    self._register_child(population, child, objective=config.goal)
                     island_pop.force_assign(child.id, island_id)
 
     async def _hyper_mutate_one(
@@ -281,7 +304,7 @@ class EvolutionCycle:
         if outcome is None:
             return
         if outcome.accepted and outcome.challenger is not None:
-            population.add(outcome.challenger)
+            self._register_child(population, outcome.challenger, objective=config.goal)
         if window > 0 and outcome.best_candidate_slots and outcome.best_candidate_score is not None:
             import json as _json
 
@@ -359,7 +382,7 @@ class EvolutionCycle:
                 node_attribution=config.node_attribution,
             )
             if outcome is not None and outcome.accepted and outcome.challenger is not None:
-                population.add(outcome.challenger)
+                self._register_child(population, outcome.challenger, objective=config.goal)
 
             # Persist new (benchmark, excerpt, score) entry so future cycles have a
             # coherent per-benchmark trajectory (window=0 disables persistence entirely).
@@ -413,7 +436,7 @@ class EvolutionCycle:
 
         self._compute_all_fitness(population)
 
-        population.cull_bottom(cfg.cull_pct)
+        population.cull_bottom(cfg.cull_pct, archive=self.archive)
 
         # Initialize or reset island population when island_count changes.
         if self._island_pop is None or self._island_pop.island_count != cfg.island_count:

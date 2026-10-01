@@ -205,6 +205,8 @@ def spawn_fixer_challenger(genome: PipelineGenome, new_fixer: FixerGenome) -> Pi
     The entry node's ``system_prompt`` is re-rendered from the new slots so the
     visible prompt and the typed genome can never drift apart.
     """
+    from .archive import OperatorKind, stamp_provenance
+
     child = genome.model_copy(deep=True)
     now = datetime.now(UTC).isoformat()
     child.id = uuid.uuid4().hex[:12]
@@ -222,7 +224,9 @@ def spawn_fixer_challenger(genome: PipelineGenome, new_fixer: FixerGenome) -> Pi
             node.fixer = new_fixer
             node.system_prompt = render_system_prompt(new_fixer)
             break
-    return child
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.HYPER_MUTATION, base=genome
+    )
 
 
 def _weakest(genome: PipelineGenome, benchmarks: list[str] | None) -> str | None:

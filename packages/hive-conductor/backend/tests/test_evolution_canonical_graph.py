@@ -63,7 +63,7 @@ class _Population:
     def list_all(self) -> list[_Genome]:
         return list(self._items.values())
 
-    def cull_bottom(self, pct: float) -> int:
+    def cull_bottom(self, pct: float, archive: Any = None) -> int:
         return 0
 
     def record_cycle_marker(self, marker_id: str, payload: dict[str, Any]) -> None:
@@ -122,9 +122,15 @@ class _Tournament:
 class _Cycle:
     """Small domain double; the test is about the execution mapping, not Evolve math."""
 
-    def __init__(self, harness: Any = None, tournament: Any = None) -> None:
+    def __init__(self, harness: Any = None, tournament: Any = None, archive: Any = None) -> None:
         self.harness = harness
         self.tournament = tournament
+        # M4-A6: the production cycle now carries the candidate archive; the
+        # double mirrors the attribute so finalize's archival cull path is
+        # exercised against a real CandidateArchive, not stubbed out.
+        from maistro_evolve.archive import CandidateArchive
+
+        self.archive = archive if archive is not None else CandidateArchive()
         self._island_pop: Any = None
         self._cycle_count = 0
         self._child_added = False

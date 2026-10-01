@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from maistro_evolve.archive import OperatorKind
 from maistro_evolve.crossover import crossover, crossover_and_mutate
 from maistro_evolve.types import DAGEdgeGenome, DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 
@@ -190,10 +191,19 @@ def test_crossover_and_mutate_returns_a_mutated_child() -> None:
     crossed = crossover(parent_a, parent_b)
     child = crossover_and_mutate(parent_a, parent_b, mutation_rate=1.0)
 
-    # mutate_all wraps the crossover child in a fresh mutation lineage: it
-    # becomes the sole parent, the crossover's parent_b lineage is dropped.
-    assert child.parent_b_id is None
-    assert child.parent_a_id != crossed.parent_a_id
+    # M4-A6: the bred child records BOTH crossover parents. mutate_all's
+    # intermediate re-parenting is a construction detail — the second parent's
+    # lineage is no longer dropped (it used to be, which made the two-parent
+    # record unraversable); the composite operator is still on the record.
+    assert child.parent_a_id == "a"
+    assert child.parent_b_id == "b"
+    assert child.provenance is not None
+    assert child.provenance.parents == ["a", "b"]
+    assert child.provenance.operator == OperatorKind.CROSSOVER.value
+    assert child.provenance.detail == "crossover+mutate_all"
+    # the mutation did run (name reflects the full chain, not the bare crossover)
+    assert child.name.endswith("-all-mut")
+    assert child.id != crossed.id
 
 
 def test_crossover_preserves_edge_condition_from_parent() -> None:
