@@ -144,3 +144,55 @@ round; node counts and the `inventory-delta` block above are unchanged.
   candidate-side change can clear this half. Driver step unchanged: land the
   staged grants from this branch's `quality/ratchet-authorizations.json` onto
   develop in a grants-only merge, then re-queue.
+
+## CI-repair round at 8073de381 (pip-audit fix proof + develop sync d4ccd452e)
+
+Driver-named gate failure for this round: **Supply chain (pip-audit)**.
+Carryover: the NEEDS-DEEP-REVIEW trusted-base half from 54830db28.
+
+- **Supply chain (pip-audit) PROVEN GREEN with the exact CI job sequence** —
+  including the `uv sync --locked --all-extras` step prior rounds had not
+  reproduced (CI audits strictly more than a dev-only sync):
+  `uv sync --locked --all-extras` → `uv pip install pip pip-audit` →
+  `uv pip freeze --exclude-editable` (217 distributions) →
+  `pip-audit --strict --format=json -r` → `pip_audit_gate.py`. Gate exit 0:
+  2 advisories found, both ecdsa==0.19.2 PYSEC-2026-1325, both pre-triaged in
+  ALLOWED; urllib3 locked at 2.8.0 with zero advisories; direct-dependency
+  usage ratchet OK (10 packages / 60 runtime deps / 4 reviewed dispositions).
+  Re-run after the merge: same green (develop touched no lockfile).
+- **Develop sync:** `origin/develop` advanced 742e4e8fd → d4ccd452e (M3-C2
+  Conductor backlog UI #1705, M3-A5 #1701, M7-A #1698). Merged with **zero
+  conflicts** (verified `comm` of both sides' changed-file sets: zero
+  overlap). Note: #1705 implemented a *hive-conductor-local* backlog
+  service/models/routes because this branch's canonical `maistro.backlog`
+  #98 substrate had not landed on develop; the two are file-disjoint and
+  their convergence is #102-cutover scope, not a repair item for this branch.
+- **Durable leg proven against a live database (first time, not skipped):**
+  pgvector/pgvector:pg18 container on :5434, `alembic upgrade head` ran the
+  full 000→048 chain cleanly (048 = backlog work-source tables), then the
+  conformance suite with `MAISTRO_TEST_PG_DSN` set: **53 passed / 1 skipped**
+  (vs 38/16 without a DSN). The remaining skip is the structural
+  memory-reference reopen test ("the reference has no substrate to reopen").
+  The PostgreSQL leg therefore executes the same contract — including the
+  concurrent-claim atomicity test whose pool (`min_size=2`) is sized so it
+  cannot pass on pool serialization alone.
+- **exact-debt-ledger at the merged head:** full `packages/*/src` scan
+  (exact CI args) → 1454 findings, 0 unclassified, 0 never-allowlist;
+  trusted-added delta vs base 742e4e8fd still exactly 52 findings /
+  **41 distinct identities** — develop's ~3600 new lines add zero unbanked
+  debt. Simulated authorization with this branch's staged grants treated as
+  landed: **0 unauthorized** — grant coverage is complete and exact.
+- **Remaining red is unchanged, driver-side, and by design:**
+  `check-vulture-baseline.py` (exact CI args), `check-reachability-provenance.py`,
+  `check-reachability-dispositions-provenance.py`, and
+  `check-ratchet-provenance.py` each exit 1 solely on the
+  "NEW … not previously authorized" half: `load_authorizations` reads the
+  trusted base revision (#534 two-merge design), `origin/develop` d4ccd452e
+  still carries zero backlog grants (verified: 0 backlog entries in its
+  `quality/ratchet-authorizations.json`). No candidate-side change can clear
+  this half; scanner-dodging rewrites of correct pydantic/library code are
+  not a permitted repair. Driver step (unchanged): land the staged grants
+  from this branch's `quality/ratchet-authorizations.json` (+41 vulture,
+  +5 reachability) onto develop in a grants-only merge, then re-queue —
+  at that base the exact-debt-ledger and reachability provenance gates pass
+  with the candidate exactly as committed here.
