@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-evolve/tests: +39
+  packages/maistro-evolve/tests: +41
 ---
 
 # Evolve fitness is population-owned, missing-data-pessimistic, capability-grounded (#853)
@@ -49,9 +49,9 @@ weights before ownership/missing-data semantics are corrected). Concretely:
   reweighting (the audited compensation path restores with
   `require_capability=False`; the approval gate always applies).
 
-## Test delta (+39)
+## Test delta (+41)
 
-- `tests/test_fitness_ownership.py` (new, 29): objective ownership (genome
+- `tests/test_fitness_ownership.py` (new, 30): objective ownership (genome
   reweighting attack is dead; frozen objective; mutation/crossover cannot move
   the ruler; cycle scores one campaign objective), missing-data pessimism
   arithmetic, degenerate/malformed evidence boundaries (zero avg_elo with
@@ -60,7 +60,10 @@ weights before ownership/missing-data semantics are corrected). Concretely:
   generous objective, role separation, deterministic recomputation/order-independence/hash
   sensitivity, literal calibration pins that kill swapped weights, restored
   missing→1.0 freebies, reinstated default-Elo awards, and removed gates, and
-  the re-battle-without-improvement tenure probe.
+  the re-battle-without-improvement tenure probe. One late review addition:
+  `test_objective_weight_mapping_is_read_only` pins that the objective's
+  benchmark-weight mapping cannot be mutated in place (including on the
+  shared `DEFAULT_OBJECTIVE`).
 - `tests/test_fitness.py` (+3): missing/zero cost and latency are unknown
   (`None`), Elo requires battle evidence, capability immunity to context
   terms; weight-sum pin moved to the objective.
@@ -77,6 +80,37 @@ weights before ownership/missing-data semantics are corrected). Concretely:
   never-touches-weights test.
 - `tests/test_crossover.py` (net 0): weight-averaging test replaced by a
   does-not-mix (inherits parent_a verbatim) test.
+- `tests/test_cycle_gaps.py` (+1):
+  `test_run_tournament_battles_clears_inherited_elo_without_battles` — review
+  fix: crossover/mutation deepcopy the parent's harness evidence, so a child
+  that sat out the tournament inherited its Elo evidence; the cycle now pops
+  the inherited Elo keys when the child fought zero battles.
+
+## develop-merge reconciliation (this branch)
+
+Merged `origin/develop` (c0582c4ae, carrying #852 anchored-judge/benchmark
+integrity and #854 governed promotion) into the branch. The two features
+compose rather than compete:
+
+- The #853 capability gate (`fitness._check_hard_gate`) now also runs inside
+  #854's `promotion_eligibility`/`selection_eligibility` (which import it
+  directly) and remains defense-in-depth in `PopulationStore._promote`
+  (`require_capability=True`; the audited compensation path restores with
+  `require_capability=False`). `TestCapabilityPromotionGate` in
+  `tests/test_rsi_safety.py` was updated to pin the merged refusal shape:
+  the governed promotion policy refuses first and names the hard-gate reason
+  (e.g. `hard gate: proxy_ifeval score 0.100 below gate 0.25`); the
+  reweighting-rescue test now carries complete #854 evidence so the ONLY
+  remaining refusal is the weight-blind threshold gate.
+- `fitness.py` keeps the #853 `COMPONENT_ROLES`/objective-owned weights and
+  gains #854's `hard_gate_thresholds()` accessor (the pre-#853
+  `_FITNESS_WEIGHTS` dict is retired — its values live verbatim in
+  `objective.FitnessTermWeights`).
+- The two objective-version notions remain distinct and both recorded: #854's
+  `promotion.objective_version` digest (benchmarks + gate thresholds +
+  weights) stamps evidence identity for promotion comparison; #853's
+  `objective.EvaluationObjective.version` (`pop-owned-v2`) is recorded on
+  every `FitnessComponents` with the evidence hash.
 
 ## CI-repair pass (this branch)
 
