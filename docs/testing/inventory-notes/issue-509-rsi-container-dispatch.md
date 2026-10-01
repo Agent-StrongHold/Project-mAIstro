@@ -2,6 +2,7 @@
 inventory-delta:
   packages/hive-conductor/backend/tests: +26
   packages/maistro-rsi/tests: +1
+  packages/maistro-core/tests: +1
 ---
 # issue-509-rsi-container-dispatch
 
@@ -98,3 +99,14 @@ sandbox. The proof now lives against `maistro_rsi.local_loop` directly — in
 the dispatched model that construction runs inside the runner container, and
 the guarantee is the loop's, wherever it executes. This +1 is what restores
 the design-coverage floor the Quality gate folded at the base.
+
+## packages/maistro-core/tests: +1
+
+`test_conductor.py` (net +1) parametrizes
+`test_shared_gateway_failure_blocks_every_provider_behind_it` over a second
+shared-dependency exception: the dispatch path now retries through
+`httpx.ConnectTimeout` alongside the existing `httpx.ConnectError`, because a
+timing-out gateway and a refusing gateway must both trip the gateway-level
+circuit breaker that run-scoped circuits read — a dispatched RSI run whose
+agent loop outlives the request must not keep dialing a dead gateway. Same
+body, one more parametrized node ID, hence +1.
