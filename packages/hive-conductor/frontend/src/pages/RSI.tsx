@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Play, Square, RefreshCw, Check, X, GitPullRequest, FileCode } from "lucide-react";
 
 import { PageHeader } from "../components/shared";
@@ -48,6 +48,211 @@ const STATUS_TONE: Record<string, string> = {
   stopped: "text-slate-400",
 };
 
+// ─── resilient polling (#359) ───────────────────────────────────────────────
+// This page used to run two bare `setInterval` + `Promise.all` loops with no
+// catch: one backend outage produced an unhandled rejection every tick,
+// forever, at a fixed cadence, with in-flight requests outliving the page and
+// no notion of tab visibility. Everything below gives both loops one
+// contract:
+//   - failures are caught into a visible health state (unreachable /
+//     server-error / unauthorized, each rendered distinctly) and NEVER clear
+//     the last known data;
+//   - failure delays grow exponentially (interval * 2^failures), are capped,
+//     and carry jitter; any success resets the cadence;
+//   - the loop pauses while the tab is hidden or the browser is offline and
+//     re-kicks on visibilitychange / online;
+//   - at most one poll is in flight, and the next is scheduled only after it
+//     settles — overlap is impossible by construction;
+//   - an unmount (or subject switch) aborts the in-flight request.
+
+const PAGE_POLL_MS = 5_000;
+const REVIEWS_POLL_MS = 4_000;
+const MAX_BACKOFF_MS = 60_000;
+/** Poll requests get a tighter ceiling than the shared client's 30s (#1423):
+ * a stalled endpoint must delay the loop, not hang it. Fires the same abort
+ * path as an unmount, so a hung request classifies as unreachable and the
+ * loop keeps going under backoff. */
+const POLL_TIMEOUT_MS = 15_000;
+
+/** Why a poll cycle failed, ranked by how the UI presents it. */
+type FailureKind = "unauthorized" | "server-error" | "unreachable";
+type PollHealth = "loading" | "ok" | FailureKind;
+
+const FAILURE_RANK: Record<FailureKind, number> = {
+  unauthorized: 3,
+  "server-error": 2,
+  unreachable: 1,
+};
+
+/** An HTTP status a poll can name. Transport failures carry no status, so
+ * they stay unclassified and classify as "unreachable". */
+class PollHttpError extends Error {
+  constructor(
+    readonly kind: FailureKind,
+    readonly status: number,
+    readonly path: string,
+  ) {
+    super(`${path} answered ${status}`);
+    this.name = "PollHttpError";
+  }
+}
+
+function classifyFailure(err: unknown): FailureKind {
+  if (err instanceof PollHttpError) return err.kind;
+  // fetch()'s TypeError (offline, refused, CORS) and an abort (unmount or
+  // the timeout above) carry no HTTP answer: the service is unreachable,
+  // which is its own state — never "server error", never "not installed".
+  return "unreachable";
+}
+
+function worstFailure(a: FailureKind | null, b: FailureKind | null): FailureKind | null {
+  if (!a || !b) return a ?? b;
+  return FAILURE_RANK[a] >= FAILURE_RANK[b] ? a : b;
+}
+
+/** One GET for JSON, with the caller's lifecycle signal composed with the
+ * poll timeout: whichever aborts first wins, and the composition is wired by
+ * hand (no AbortSignal.any) to stay inside the build's browser baseline. */
+async function fetchJson<T>(path: string, signal: AbortSignal): Promise<T> {
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  const timeout = window.setTimeout(stop, POLL_TIMEOUT_MS);
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    const res = await fetch(path, { credentials: "same-origin", signal: controller.signal });
+    // 401/403 mean the SESSION cannot see RSI — a different problem, and a
+    // different message, than the service being down or broken (#359).
+    if (res.status === 401 || res.status === 403) throw new PollHttpError("unauthorized", res.status, path);
+    if (!res.ok) throw new PollHttpError("server-error", res.status, path);
+    return (await res.json()) as T;
+  } finally {
+    window.clearTimeout(timeout);
+    signal.removeEventListener("abort", stop);
+  }
+}
+
+/** Apply a settled endpoint result to its setter, or surface its failure.
+ * Callers aggregate endpoints with Promise.allSettled so one dead endpoint
+ * degrades the page instead of erasing it (the Topology lesson, per-endpoint). */
+function outcome<T>(settled: PromiseSettledResult<T>, apply: (value: T) => void): FailureKind | null {
+  if (settled.status === "fulfilled") {
+    apply(settled.value);
+    return null;
+  }
+  return classifyFailure(settled.reason);
+}
+
+/** One self-rescheduling poll loop. `poll` applies fresh data and returns the
+ * worst failure kind it hit (null = healthy); the hook tracks health and
+ * exposes a manual `refresh` that shares the loop's guards and accounting. */
+function useResilientPoll(
+  poll: (signal: AbortSignal) => Promise<FailureKind | null>,
+  options: { intervalMs: number; key?: string | null; enabled?: boolean },
+): { health: PollHealth; refresh: () => void } {
+  const { intervalMs, key, enabled = true } = options;
+  // Re-arming on a new subject resets health during render (React's
+  // recommended key-reset pattern): the previous subject's failure banner
+  // must never show while the new subject's first poll is unanswered.
+  const [armedKey, setArmedKey] = useState(key);
+  const [health, setHealth] = useState<PollHealth>("loading");
+  if (armedKey !== key) {
+    setArmedKey(key);
+    setHealth("loading");
+  }
+  const pollRef = useRef(poll);
+  useEffect(() => {
+    pollRef.current = poll;
+  });
+  const runRef = useRef<((manual: boolean) => void) | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    let inFlight = false;
+    let failures = 0;
+    let timer: number | null = null;
+    let controller: AbortController | null = null;
+
+    // Bounded exponential backoff: interval * 2^failures capped at
+    // MAX_BACKOFF_MS, taken with 50–100% jitter so a fleet of clients never
+    // re-syncs against a recovering backend. `failures` resets to 0 on any
+    // success, restoring the base cadence.
+    const backoffDelayMs = () => {
+      const base = Math.min(intervalMs * 2 ** failures, MAX_BACKOFF_MS);
+      return base / 2 + Math.random() * (base / 2);
+    };
+
+    const run = async (manual: boolean) => {
+      if (cancelled || inFlight) return;
+      // Hidden or offline pauses the loop: return WITHOUT rescheduling. The
+      // resume listener re-kicks it when the tab comes back or the network
+      // does. A manual refresh is an explicit act, so it runs regardless.
+      if (!manual && (document.hidden || !navigator.onLine)) return;
+      // A manual refresh supersedes any armed backoff timer: this run's own
+      // finally rearms the loop from the fresh result, and a leftover timer
+      // would fire an extra poll at the stale (possibly backoff-inflated)
+      // delay on top of that schedule.
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      inFlight = true;
+      controller = new AbortController();
+      try {
+        const failure = await pollRef.current(controller.signal);
+        if (!cancelled) {
+          failures = failure ? failures + 1 : 0;
+          setHealth(failure ?? "ok");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          failures += 1;
+          setHealth(classifyFailure(err));
+        }
+      } finally {
+        inFlight = false;
+        controller = null;
+        // The next poll exists only after this one settled — overlap is
+        // impossible by construction — and its delay carries the backoff.
+        if (!cancelled) timer = window.setTimeout(() => void run(false), backoffDelayMs());
+      }
+    };
+    runRef.current = (manual: boolean) => void run(manual);
+
+    const resume = () => {
+      if (cancelled || document.hidden || !navigator.onLine) return;
+      // Poll now instead of waiting out a possibly backoff-inflated timer.
+      // If a poll is in flight run() no-ops and its finally re-arms the loop.
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      void run(false);
+    };
+    const onVisibilityChange = () => {
+      if (!document.hidden) resume();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("online", resume);
+
+    void run(false);
+
+    return () => {
+      cancelled = true;
+      runRef.current = null;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("online", resume);
+      if (timer !== null) window.clearTimeout(timer);
+      // No request outlives the page: an in-flight poll dies here.
+      controller?.abort();
+    };
+  }, [enabled, intervalMs, key]);
+
+  const refresh = useCallback(() => {
+    runRef.current?.(true);
+  }, []);
+
+  return { health, refresh };
+}
+
 export default function RSI() {
   const [status, setStatus] = useState<RsiStatus | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -74,59 +279,74 @@ export default function RSI() {
   const [rosterSize, setRosterSize] = useState(1);
   const [scout, setScout] = useState(true);
 
-  const refresh = useCallback(async () => {
+  // Page dashboard poll: status, runs, models, test profiles — under the
+  // resilient contract (#359). allSettled per endpoint: a successful response
+  // still lands during a partial outage, and the worst failure across the
+  // four endpoints becomes the page's health state.
+  const loadDashboard = useCallback(async (signal: AbortSignal): Promise<FailureKind | null> => {
     setLoading(true);
     try {
-      const [s, r, m, p] = await Promise.all([
-        fetch(`${API}/status`),
-        fetch(`${API}/runs`),
-        fetch(`${API}/models`),
-        fetch(`${API}/test-profiles`),
+      const [s, r, m, p] = await Promise.allSettled([
+        fetchJson<RsiStatus>(`${API}/status`, signal),
+        fetchJson<Run[]>(`${API}/runs`, signal),
+        fetchJson<{ models: ModelOption[] }>(`${API}/models`, signal),
+        fetchJson<{ profiles: TestProfile[] }>(`${API}/test-profiles`, signal),
       ]);
-      if (s.ok) setStatus(await s.json());
-      if (r.ok) {
-        const list = (await r.json()) as Run[];
-        setRuns(list.sort((a, b) => (a.started_at < b.started_at ? 1 : -1)));
-      }
-      if (m.ok) {
-        const data = await m.json();
-        setModels(data.models || []);
-      }
-      if (p.ok) {
-        const data = await p.json();
-        const list = (data.profiles || []) as TestProfile[];
-        setProfiles(list);
-        // Only default to a profile that exists. Pre-selecting a name the
-        // deployment does not offer would make the form look ready and the
-        // request fail.
-        setTestProfile((current) => (list.some((x) => x.name === current) ? current : list[0]?.name ?? ""));
-      }
+      let worst = worstFailure(null, outcome(s, (value) => setStatus(value)));
+      worst = worstFailure(
+        worst,
+        outcome(r, (list) => setRuns([...list].sort((a, b) => (a.started_at < b.started_at ? 1 : -1)))),
+      );
+      worst = worstFailure(worst, outcome(m, (data) => setModels(data.models || [])));
+      worst = worstFailure(
+        worst,
+        outcome(p, (data) => {
+          const list = (data.profiles || []) as TestProfile[];
+          setProfiles(list);
+          // Only default to a profile that exists. Pre-selecting a name the
+          // deployment does not offer would make the form look ready and the
+          // request fail.
+          setTestProfile((current) => (list.some((x) => x.name === current) ? current : list[0]?.name ?? ""));
+        }),
+      );
+      return worst;
     } finally {
       setLoading(false);
     }
   }, []);
+  const { health: pageHealth, refresh } = useResilientPoll(loadDashboard, { intervalMs: PAGE_POLL_MS });
 
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 5000);
-    return () => clearInterval(id);
-  }, [refresh]);
-
-  // poll reviews for selected run
-  useEffect(() => {
-    if (!selectedRun) return;
-    const poll = async () => {
-      const [rev, rlp] = await Promise.all([
-        fetch(`${API}/runs/${selectedRun}/reviews`),
-        fetch(`${API}/runs/${selectedRun}/rlphd`),
+  // Selected run's patch feed, same contract (#359). `key` re-arms the loop
+  // per run; the effect below drops the previous run's patches so a slow feed
+  // can never present stale rows as this run's.
+  const loadReviews = useCallback(
+    async (signal: AbortSignal): Promise<FailureKind | null> => {
+      if (!selectedRun) return null;
+      const [rev, rlp] = await Promise.allSettled([
+        fetchJson<{ kept: Review[]; flagged: Review[] }>(`${API}/runs/${selectedRun}/reviews`, signal),
+        fetchJson<Record<string, unknown>>(`${API}/runs/${selectedRun}/rlphd`, signal),
       ]);
-      if (rev.ok) setReviews(await rev.json());
-      if (rlp.ok) setRlphd(await rlp.json());
-    };
-    poll();
-    const id = setInterval(poll, 4000);
-    return () => clearInterval(id);
-  }, [selectedRun]);
+      let worst = worstFailure(null, outcome(rev, (data) => setReviews(data)));
+      worst = worstFailure(worst, outcome(rlp, (data) => setRlphd(data)));
+      return worst;
+    },
+    [selectedRun],
+  );
+  const { health: reviewsHealth } = useResilientPoll(loadReviews, {
+    intervalMs: REVIEWS_POLL_MS,
+    key: selectedRun,
+    enabled: selectedRun !== null,
+  });
+
+  // A newly selected run starts with a clean feed (render-phase reset, keyed
+  // on the selection): a slow patch feed must never present the previous
+  // run's rows as this run's.
+  const [feedsRun, setFeedsRun] = useState(selectedRun);
+  if (feedsRun !== selectedRun) {
+    setFeedsRun(selectedRun);
+    setReviews({ kept: [], flagged: [] });
+    setRlphd(null);
+  }
 
   const startRun = async () => {
     if (!repoPath || !testProfile) return;
@@ -152,7 +372,7 @@ export default function RSI() {
       if (resp.ok) {
         const run = await resp.json();
         setSelectedRun(run.run_id);
-        await refresh();
+        refresh();
       } else {
         // The backend refuses a run it cannot contain (#305). Showing the
         // refusal beats a button that appears to do nothing: the operator
@@ -207,8 +427,10 @@ export default function RSI() {
 
       {/* status + Ralph */}
       <div className="flex flex-wrap items-center gap-4 rounded-lg border border-white/10 bg-slate-900/60 px-4 py-3 text-sm">
-        <span className={`h-2 w-2 rounded-full ${status?.available ? "bg-emerald-400" : "bg-red-400"}`} />
-        <span>{status?.available ? "maistro-rsi available" : "maistro-rsi not installed"}</span>
+        <span className={`h-2 w-2 rounded-full ${status ? (status.available ? "bg-emerald-400" : "bg-red-400") : "bg-slate-500"}`} />
+        {/* "Not installed" is a fact only a real status may state (#359): a
+            poll that cannot answer renders as unknown, never as unavailable. */}
+        <span>{status ? (status.available ? "maistro-rsi available" : "maistro-rsi not installed") : "RSI status unknown"}</span>
         <span className="text-slate-500">·</span>
         <span>{status?.active_runs ?? 0} active</span>
         {rlphd && (
@@ -224,6 +446,25 @@ export default function RSI() {
           Refresh
         </button>
       </div>
+
+      {/* Poll health (#359): the failure states are rendered distinctly from
+          each other and from empty, and none of them clears the last known
+          data rendered above. */}
+      {pageHealth !== "ok" && pageHealth !== "loading" && (
+        <p
+          role="alert"
+          data-testid="rsi-poll-health"
+          data-health={pageHealth}
+          className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+        >
+          {pageHealth === "unreachable" &&
+            "Can't reach the RSI service — showing last known values and retrying with backoff."}
+          {pageHealth === "server-error" &&
+            "The RSI service is returning server errors — showing last known values and retrying with backoff."}
+          {pageHealth === "unauthorized" &&
+            "Your session can't access RSI (unauthorized) — sign in again to resume live updates. Last known values are kept."}
+        </p>
+      )}
 
       {/* start-run form */}
       <section className="space-y-3 rounded-lg border border-white/10 bg-slate-900/60 p-4">
@@ -284,7 +525,17 @@ export default function RSI() {
       {/* runs list */}
       <section className="space-y-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Runs</h2>
-        {runs.length === 0 && <p className="text-sm text-slate-500">No runs yet.</p>}
+        {/* Empty (healthy, zero runs) is distinct from loading and from a
+            poll that cannot answer (#359). */}
+        {runs.length === 0 && (
+          <p className="text-sm text-slate-500">
+            {pageHealth === "ok"
+              ? "No runs yet."
+              : pageHealth === "loading"
+                ? "Loading runs…"
+                : "No runs loaded yet — see the poll status above."}
+          </p>
+        )}
         {runs.map((r) => (
           <div key={r.run_id} className="flex items-stretch gap-2">
             <button
@@ -329,6 +580,22 @@ export default function RSI() {
             <span className="text-xs text-red-400">{allReviews.filter((r) => r.decision === "deny").length} denied</span>
             <span className="text-xs text-amber-400">{allReviews.filter((r) => !r.resolved).length} pending</span>
           </div>
+
+          {reviewsHealth !== "ok" && reviewsHealth !== "loading" && (
+            <p
+              role="alert"
+              data-testid="rsi-reviews-health"
+              data-health={reviewsHealth}
+              className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+            >
+              {reviewsHealth === "unreachable" &&
+                "Can't reach the patch feed for this run — retrying with backoff; the patches shown are the last known ones."}
+              {reviewsHealth === "server-error" &&
+                "The patch feed is returning server errors — retrying with backoff; the patches shown are the last known ones."}
+              {reviewsHealth === "unauthorized" &&
+                "Your session can't read this run's patch feed (unauthorized) — sign in again to resume."}
+            </p>
+          )}
 
           {allReviews.length === 0 && (
             <p className="text-sm text-slate-500">
