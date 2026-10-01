@@ -41,15 +41,19 @@ Note the naming: the real tier registers under the bare names `ifeval`/`bfcl`, t
 **None of `proxy_ifeval`, `proxy_bfcl`, `proxy_swebench`, `proxy_tau_bench`, `proxy_gaia`, `proxy_ragas`,
 `proxy_terminalbench` do.** All seven score real model output at a lite/handcrafted scale
 (`benchmarks/datasets.py`), not the official harness — but "how real is the *check itself*" varies more than
-a blanket "structural, not keyword overlap" claim can honestly cover. Only `proxy_swebench`/
+a blanket "structural, not keyword overlap" claim can honestly cover. `proxy_swebench`/
 `proxy_terminalbench` (real sandboxed execution) and `proxy_ifeval` (real per-instruction rule checks) are
-cleanly structural. **`proxy_bfcl`, `proxy_gaia`, and `proxy_tau_bench` each carry a real text-mention or
-fuzzy-substring fallback that materially weakens their fidelity — not just an edge case** — and `proxy_ragas`
-is primarily a keyword-overlap heuristic outright. See the per-benchmark breakdown below for exactly what
-each one does; do not trust a summary sentence over that. The `proxy_` identifiers name the industry-standard
-evals they approximate; the *scale*, and for four of the seven the *methodology*, does not match the official
-thing. This exists to save time/money and produce Pareto (cost vs. quality) signal cheaply, and is shipped,
-supported v1 behavior. `proxy_osworld` is not implemented at all — see below.
+cleanly structural. The historical text-mention / fuzzy-substring fallbacks are gone: `proxy_bfcl` and
+`proxy_tau_bench` were reduced to structured-call matching (#852), and `proxy_gaia` and `proxy_ragas` lost
+their fuzzy tiers to #384 — exact-match-or-verified-judge only, with no heuristic credit path left. Every
+runner now records what its score was verified BY in `EvalResult.metadata["evidence"]`, and
+`benchmarks/calibration.py` measures each scorer's narration false-positive rate against held-out
+adversarial fixtures. See the per-benchmark breakdown below for exactly what each one does; do not trust a
+summary sentence over that. The `proxy_` identifiers name the industry-standard evals they approximate; the
+*scale* does not match the official thing, and for several the *methodology* differs too (small handcrafted
+samples rather than the official corpora). This exists to save time/money and produce Pareto (cost vs.
+quality) signal cheaply, and is shipped, supported v1 behavior. `proxy_osworld` is not implemented at all —
+see below.
 
 **There is no `stub` tier.** A benchmark either evaluates a real model response against real criteria
 (`proxy`), or it does not run at all — every proxy runner raises `ValueError` if called with `llm_call=None`
@@ -79,24 +83,42 @@ Per-benchmark methodology at the `proxy` tier, ordered most→least reliable:
 - **`proxy_ifeval`**: real per-instruction rule verification (`contains`, `exact_match`, `sentence_count`,
   `word_count`, `valid_json`, ...) against handcrafted samples. `contains`-style rules doing a substring
   check is the *correct* way to verify that instruction type — not a heuristic fallback dressed up as
-  structural, unlike the three below.
-- **`proxy_bfcl`**: the primary path extracts the response's function call and compares name/parameters
-  field-by-field against the expected call — structural. But two real, non-edge-case fallbacks are not:
-  if no call parses at all, the expected function name merely appearing in prose still scores 0.25; and
-  a parsed call's missing parameter value appearing anywhere in the raw response text scores 0.5. The
-  fitness hard-gate here is 0.20 — a response that never produces a real function call can clear it.
-- **`proxy_gaia`**: despite the name, `_exact_match_score` is not exact-match — it awards 0.9 for the expected
-  answer appearing as a raw substring anywhere in the response, 0.85 for matching digit-sets, and up to
-  0.7 for plain word-overlap, any of which can hit the 0.7 threshold that skips the real LLM-as-judge
-  fallback entirely. A short expected answer can be trivially satisfied this way.
-- **`proxy_tau_bench`**: `mentioned_tools` treats ANY available tool name occurring anywhere in the response
-  text as "called," including inside a negation ("I cannot invoke X" scores identically to invoking it).
-  The final score blends that unreliable recall with a precision term over the same mention set — not
-  verified tool invocation.
-- **`proxy_ragas`**: **the most heuristic scorer in this package.** Its primary score is word-set overlap
-  between the response and the expected answer/context; it escalates to a real LLM-as-judge call only
-  when that static score falls below 0.6, and even then takes the max of the two — so a response can
-  score highly on word overlap alone. Treat it as the least reliable proxy-tier signal here.
+  structural.
+### Evidence provenance and calibration (#384)
+
+Every runner attaches `metadata["evidence"]` naming the verified method its score came from
+(`structured-call-match`, `exact-match+llm-judge`, `llm-judge`, rule-checks, real-sandbox execution).
+`harness.evidence_method()` folds that into `PipelineGenome.eval_evidence` next to the score it describes,
+and `PopulationStore.champion_provenance()` exposes the champion's score→evidence map — a benchmark with no
+evidence record reads "unverified" instead of being silently trusted. Candidates cannot edit any of this:
+`maistro_rsi/sensitive_paths.py` escalates any diff touching `maistro_evolve/` (scorers, calibration,
+evidence folding) or `maistro-evolve/tests/` to adversarial review.
+
+`benchmarks/calibration.py` holds the adversarial suite out of `datasets.py` on purpose: narration-only
+fixtures (tool names in prose, expected answers quoted, keyword-dense filler) with ground truth "no work
+done", plus verified fixtures with ground truth "the action/answer was produced". `calibrate_proxy_scorers()
+drives the real runners over both and reports `narration_false_positive_rate` and `verified_positive_rate`
+per scorer. It reports; it does not gate — a leaking calibration is evidence for a human, and the fitness
+hard gates stay non-tradeable regardless of any other component.
+- **`proxy_bfcl`**: structural — the runner extracts the response's function call and compares
+  name/parameters field-by-field against the expected call (#852 removed both prose fallbacks: a bare name
+  mention in prose scores nothing, and a missing parameter's value appearing in the response text earns
+  nothing). The fitness hard-gate here is 0.20; a response with no structured call scores 0.0 and cannot
+  clear it.
+- **`proxy_gaia`**: exact-match-or-verified-judge (#384). `_exact_match_score` is now actually exact match —
+  punctuation/whitespace-normalized equality, or numeric equality, nothing fuzzy. The 0.9 raw-substring,
+  0.85 digit-set and 0.7 word-overlap tiers are gone, along with the `max(exact, judged)` merge: any
+  non-exact response is scored solely by the LLM judge (fail-closed 0.0 on judge failure), and
+  `judge_llm_call` lets the caller verify with a different model than the candidate answered with.
+- **`proxy_tau_bench`**: structured observed calls only (#852) — a tool name occurring anywhere in prose
+  (including inside a negation) is not a call and scores nothing; recall/precision are computed over the
+  JSON-extracted call objects the system prompt requests. Multi-turn tool *outcomes* are still
+  harness-simulated (proxy fidelity) — the evidence metadata says `outcomes: "simulated"` rather than
+  implying a real execution trace.
+- **`proxy_ragas`**: verified-judge-only (#384). The judge now runs for every sample and its verdict is the
+  only credit path; the historical word-overlap primary score, its `>= 0.6` judge-skip and the
+  `max(static, judged)` merge are gone. The static overlap is still computed and reported in metadata as
+  `static_overlap_diagnostic_mean` for calibration visibility, explicitly `diagnostic_credited: False`.
 - **`proxy_osworld`**: **not registered.** `run_osworld` raises `NotImplementedError` — no desktop-VM/GUI-automation
   infrastructure exists in this repo. Reference task definitions remain in `datasets.py` for when that lands.
 
