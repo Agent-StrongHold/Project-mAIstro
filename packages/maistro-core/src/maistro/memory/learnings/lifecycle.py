@@ -141,14 +141,15 @@ class LearningRevision:
     Confidence and status updates amend the live row in place (the in-memory
     store hands back the same instance), so the only place the prior version
     survives is here. Every mutation records the snapshot *before* it mutates;
-    revision 1 is the state the learning was first observed in.
+    revision 1 is the state the learning was first observed in. Within one
+    learning the revisions are ordered, and the causing evidence event is the
+    last one recorded for that learning at ``at``.
     """
 
     learning_id: int
     revision: int
     at: datetime
     cause: LearningEvidenceKind
-    evidence_sequence: int
     snapshot: Learning
 
     def __post_init__(self) -> None:
@@ -832,7 +833,6 @@ class InMemoryLearningLifecycle:
                 revision=len(revisions) + 1,
                 at=at,
                 cause=cause,
-                evidence_sequence=self._sequence,
                 snapshot=snapshot,
             )
         )

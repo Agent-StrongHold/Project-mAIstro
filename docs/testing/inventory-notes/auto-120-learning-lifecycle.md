@@ -1,14 +1,13 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +543
-  packages/maistro-core/src: +850
+  packages/maistro-core/tests: +33
 ---
 
 Issue #120 (M4-B4, SPEC-282) adds the learning lifecycle: contradiction,
 reinforcement, decay, supersession and consolidation for institutional knowledge,
 preserving every prior version and evidence event.
 
-`packages/maistro-core/src/maistro/memory/learnings/lifecycle.py` (+846) ships
+`packages/maistro-core/src/maistro/memory/learnings/lifecycle.py` ships
 `InMemoryLearningLifecycle` beside `InMemoryLearningStore` (the `SkillMutation`/
 `LearningApproval` side-record pattern): an evidence ledger whose reinforcement,
 contradiction, weakening, supersession and consolidation events must name the exact
@@ -18,11 +17,11 @@ state before every mutation so confidence/status updates never erase history (AC
 producing a new derived record whose `ConsolidationRecord` names the exact source ids
 with sources preserved (AC-4), and conflict detection/surfacing — `find_conflicts`
 over active pairs and `LearningRetrieval.conflicts` carrying both sides alongside
-retrieval (AC-5). `InMemoryLearningStore.get` (+17) is the id lookup the lifecycle
+retrieval (AC-5). `InMemoryLearningStore.get` is the id lookup the lifecycle
 uses to track the store's canonical instance after a dedup hit; the store's dedup
 probe, statuses and contracts are otherwise untouched.
 
-`packages/maistro-core/tests/memory/learnings/test_lifecycle.py` (+543) pins each
+`packages/maistro-core/tests/memory/learnings/test_lifecycle.py` (33 tests) pins each
 acceptance axis behaviorally with a deterministic clock: exact Run/eval ids on
 evidence and refusal of unattributed updates, revision chains and append-only
 evidence ordering, silence-proportional decay with floor/retire-below and no
