@@ -1,8 +1,8 @@
 # Workspace Cutover Plan
 
-**Status:** draft for review — planning surface, not a decision record (no registry front matter on purpose)
+**Status:** active cutover plan — v1.0 amendments ratified 2026-10-01 (see §9); release contract in [ROADMAP.md](../../ROADMAP.md)
 **Owners:** #1046 (Adaptive Workspace), #804 (Persistent Workspace Agent), #53 (Conductor onto Conduit + canonical Runs), #65 (Workspace-centric inspection), #82 (Workspace backlog)
-**Companion policy:** [M1-CONVERGENCE-FREEZE.md](M1-CONVERGENCE-FREEZE.md) · [CONVERGENCE-MATRIX.md](CONVERGENCE-MATRIX.md) · [KNOWN-GAPS.md](../../KNOWN-GAPS.md)
+**Companion policy:** [M1-CONVERGENCE-FREEZE.md](M1-CONVERGENCE-FREEZE.md) · [CONVERGENCE-MATRIX.md](CONVERGENCE-MATRIX.md) · [KNOWN-GAPS.md](../../KNOWN-GAPS.md) · [BACKLOG.md](../../BACKLOG.md) `[conductor-402]`–`[conductor-413]`
 
 ## Why this document exists
 
@@ -365,5 +365,76 @@ fails startup (#122 fixed this for the memory stores; P0.5 extends it to the eff
 ## 8. Order of operations, one line
 
 Open §7 issues → land P0 checks red with baselines → P0.1–P0.4 green → A green → P0.5
-green → Phase 1 steps 1–7, each PR retiring its ledger row → Phase 2 deletes → epics close
-by ac-state, never by keyword.
+green → **M1 RunStore unification (#251)** → Phase 1 steps 1–6 (step 7 deferred v1.1), each PR
+retiring its ledger row → Phase 2 deletes → epics close by ac-state, never by keyword.
+
+## 9. v1.0 stakeholder amendments (2026-10-01)
+
+Ratified decisions that tighten this plan for the v1.0 tag. Item IDs: [BACKLOG.md](../../BACKLOG.md).
+
+**Verdict:** directionally aligned; v1.0 is **stricter** — delete legacy pages (not PROJECT-to-M3), unify run store before step 2, Canvas/Design Studio are blockers, Evolution hidden until v1.2.
+
+### Critical path
+
+```text
+Phase 0 (contract)  →  M1 RunStore (#251)  →  Phase 1 steps 1–6  →  M2 security on Workspace Agent (#1037)  →  v1.0 tag
+```
+
+M2 security (#66) runs **after** Workspace Agent exists — not on legacy `Chat.tsx`.
+
+### Phase 1 step mapping (v1.0 blockers)
+
+| Step | Issue | v1.0? |
+|------|-------|-------|
+| 1 Workspace Home | #1048 | Yes |
+| 2 Goal/Run inspection | #65, #1036 | Yes — requires RunStore unification first |
+| 3 Workspace Agent chat | #1037 | Yes |
+| 4 Backlog / work items | #82 | Yes |
+| 5 Attention + settings | #1049, #1050 | Yes (Attention); settings partial OK |
+| 6 Memory / user model | #776, #1047 | Yes — workspace + user + global; team deferred v1.1 |
+| 7 Proactive curation | #1051 | **Deferred v1.1** |
+
+### Explicit v1.0 wiring
+
+| Module | v1.0 |
+|--------|------|
+| `tool_binding.py` dispatch | Yes |
+| `repo_scanner`, `pipeline_orchestrator`, `chatbot_integration` | Yes |
+| repertoire → Capabilities (#59) | Yes |
+| builders → Backlog (#49) | Yes |
+| delivery gateway (#57) | Yes |
+
+### Retirement ledger amendments
+
+| Page | Prior disposition | v1.0 amendment |
+|------|-------------------|----------------|
+| Dashboard.tsx | PROJECT, delete M3-E | **DELETE v1.0** (Home replaces) |
+| Chat.tsx | PROJECT, delete M3-D | **DELETE v1.0** |
+| Agents/Skills/MCP/Topology | PROJECT, delete M3 | **DELETE v1.0** (Capabilities) |
+| Memory/KnowledgeBase | PROJECT, delete M3-E | **DELETE v1.0** |
+| Missions/WorkItems | MERGE backlog M3-C | **DELETE v1.0** (Backlog) |
+| Evolution.tsx | PROJECT M4/M5 | **DELETE/HIDE v1.0** (restore v1.2) |
+| CLI.tsx | RETIRE unless contract | **PROJECT v1.0** (#292 implement) |
+| Containers.tsx | RETIRE unless contract | **PROJECT v1.0** (#382 implement) |
+| DesignStudio.tsx | KEEP | **PROJECT v1.0** (blocker scope) |
+| Login/Setup | KEEP | KEEP |
+
+### Run store
+
+Step 2 AC requires a **single run browser** — no new callers of `DurableRunStore` / `dag_run_store`. Aligns with #251 and P0.7 crash-window work.
+
+### Memory scopes
+
+Workspace + user + **global** for v1.0. Team axis returns `NotImplemented` or hidden in UI until v1.1.
+
+### Issue cross-reference
+
+| Workstream | Issues |
+|------------|--------|
+| Cutover epic | #1046, #804, #53, #65, #82 |
+| Phase 0 | #53, #373, #325, #364, #1082 |
+| Workspace UI | #1048, #1037, #1049, #776 |
+| Run unification | #251, #736, #1036 |
+| Canvas | #735, #851, #93 |
+| Capabilities | #59, #848 |
+| Security on Agent | #66, #1171, #1202 |

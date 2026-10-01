@@ -21,15 +21,19 @@ file.
 
 Run: python scripts/check-adr-index.py
 Fix: python scripts/check-adr-index.py --fix
+Add missing rows: python scripts/check-adr-index.py --add-missing
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "packages" / "maistro-registry" / "src"))
@@ -55,6 +59,8 @@ ABSENT = "—"
 #: accepted date even if only by proxy.
 RATIFIED = {"Accepted", "Implemented", "Superseded", "Deprecated"}
 
+_CENTRAL = ZoneInfo("America/Chicago")
+
 
 @dataclass(frozen=True)
 class IndexProblem:
@@ -73,13 +79,69 @@ class IndexProblem:
 def _front_matter() -> dict[str, object]:
     found: dict[str, object] = {}
     for path in sorted(ADR_DIR.glob("*.md")):
-        if path.name == INDEX.name:
+        if path.name in {INDEX.name, "OUT-OF-SCOPE.md", "DECISION-BACKLOG.md"}:
             continue
         result = validate_file(path)
         front_matter = getattr(result, "front_matter", None)
         if front_matter is not None:
             found[front_matter.id] = front_matter
     return found
+
+
+def _adr_path(adr_id: str) -> Path | None:
+    matches = sorted(ADR_DIR.glob(f"{adr_id}-*.md"))
+    if matches:
+        return matches[0]
+    exact = ADR_DIR / f"{adr_id}.md"
+    return exact if exact.exists() else None
+
+
+def _git_meta(path: Path) -> tuple[str, str]:
+    """Revision count and last-commit timestamp for index columns."""
+    count = subprocess.run(
+        ["git", "log", "--follow", "--format=%H", str(path)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    revisions = [line for line in count.stdout.splitlines() if line.strip()]
+    ver = f"v{max(1, len(revisions))}"
+    when = subprocess.run(
+        ["git", "log", "-1", "--format=%cI", str(path)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    stamp = when.stdout.strip()
+    if not stamp:
+        return ver, "—"
+
+    parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(_CENTRAL)
+    tz = parsed.tzname() or "CDT"
+    return ver, f"{parsed:%Y-%m-%d %H:%M} {tz}"
+
+
+def _adr_sort_key(adr_id: str) -> tuple[int, str]:
+    """Sequential ADR-NNN before date-based ADR-YYMMDD-…."""
+    body = adr_id.removeprefix("ADR-")
+    if body.isdigit():
+        return (0, f"{int(body):06d}")
+    return (1, body)
+
+
+def _build_row(front_matter: object) -> str:
+    adr_id = front_matter.id
+    path = _adr_path(adr_id)
+    ver, modified = _git_meta(path) if path is not None else ("v1", "—")
+    status = front_matter.status.value
+    created = str(front_matter.created)
+    accepted = _expected_accepted(front_matter)
+    summary = str(getattr(front_matter, "title", adr_id)).rstrip(".") + "."
+    return (
+        f"| {adr_id} | {ver} | {status} | {created} | {accepted} | {modified} | {summary} |"
+    )
 
 
 def _expected_accepted(front_matter: object) -> str:
@@ -129,7 +191,41 @@ def audit() -> tuple[list[IndexProblem], list[str]]:
         if accepted != expected_accepted:
             problems.append(IndexProblem(adr_id, "accepted", accepted, expected_accepted))
 
+    for adr_id in sorted(set(corpus) - seen, key=_adr_sort_key):
+        structural.append(f"{adr_id}: ADR exists but is missing from the index")
+
     return problems, structural
+
+
+def add_missing() -> int:
+    """Append index rows for ADRs that have front matter but no table row."""
+    corpus = _front_matter()
+    seen: set[str] = set()
+    before: list[str] = []
+    rows: list[str] = []
+    after: list[str] = []
+    in_rows = False
+
+    for line in INDEX.read_text().splitlines():
+        match = ROW.match(line)
+        if match:
+            in_rows = True
+            seen.add(match["id"])
+            rows.append(line)
+            continue
+        if not in_rows:
+            before.append(line)
+        else:
+            after.append(line)
+
+    before_count = len(rows)
+    for adr_id in sorted(set(corpus) - seen, key=_adr_sort_key):
+        rows.append(_build_row(corpus[adr_id]))
+
+    rows.sort(key=lambda line: _adr_sort_key(ROW.match(line)["id"]))  # type: ignore[index]
+
+    INDEX.write_text("\n".join([*before, *rows, *after]) + "\n")
+    return len(rows) - before_count
 
 
 def rewrite() -> int:
@@ -163,7 +259,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fix", action="store_true", help="rewrite derived cells from front matter"
     )
+    parser.add_argument(
+        "--add-missing",
+        action="store_true",
+        help="append index rows for ADRs missing from the table",
+    )
     args = parser.parse_args(argv)
+
+    if args.add_missing:
+        added = add_missing()
+        print(f"added {added} row(s) to {INDEX.relative_to(ROOT)}")
+        return 0
 
     if args.fix:
         changed = rewrite()

@@ -2,6 +2,7 @@
 
 **Status:** living document — structurally checked by `scripts/check-convergence-matrix.py` on every PR; ownership/prose truth last re-audited from current `develop` during the 2026-08-24 M0 closeout.
 **Scope:** every production module in this repository (`packages/*/src` plus the flat `packages/*/backend` applications), partitioned into subsystems.
+**Naming:** rows may still say "Agent Conductor" or "Conductor" — that is the `packages/hive-conductor` BFF layer. The v1.0 product surface is **Workspaces** ([WORKSPACE-CUTOVER-PLAN.md](WORKSPACE-CUTOVER-PLAN.md)).
 **Answers:** [#28](https://github.com/Agent-StrongHold/Project-mAIstro/issues/28) (M0-A1).
 
 The convergence program has one execution identity — `Workspace/Project → Graph → Run → NodeRun → Attempt → ExecutionRuntime` — and one effect path — `Capability → Provider → Binding → Invocation`. Every competing owner below is either legitimate domain state, a compatibility/projection surface, or explicit convergence debt.
