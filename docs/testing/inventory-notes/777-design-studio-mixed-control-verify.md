@@ -2031,3 +2031,47 @@ unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
 the issue stop condition (no Design-Studio-private Agent runtime/Goal owner/
 reconciler/memory/permissions/Persona/Graph/artifact authority). No closure
 keywords used (`Refs #777` only).
+
+## Round 31 (head `490ac831f`, job 354653f27a7d48ada9506bb3d3c13fb2)
+
+Documentation-only re-verification. No production or test code changed.
+
+**Driver checks:** the job manifest has `checks: []` and no `check-*.log`
+files exist in the job directory — no deterministic verifier output to
+inspect; all validation below was executed directly.
+
+**Develop sync:** `git fetch origin` then `git merge-base HEAD origin/develop`
+== `d4ccd452e6a3` and `git rev-list --count origin/develop ^HEAD` == 0 —
+origin/develop is already an ancestor of HEAD (merged last round as
+`374f95b5f`); **no sync conflict this round**, no merge needed.
+
+**Dependency audit re-run fresh (all still absent):** `grep -ril GoalRevision
+--include="*.py" packages/` -> 0 files; `GoalReconcil|goal_reconcil` -> 0
+files; `owning_agent|subgoal_delegat` -> 0 files; no `maistro-goals` package;
+`services/brief_store.py:5` still disclaims ("nothing here is a Goal or
+CreativeBrief record") and `services/brief_chat.py` still forward-references
+"the Goal and CreativeBrief writers (#458, #774)"; `routes/design.py` 0
+matches for workspace_agent/control_mode/delegat; only `ladybug` hit remains
+`dags/author_examples.py` (#776 absent); `services/workspace_agent.py` is
+still the #53/#1037 identity front door; e2e/ contains no mixed-control,
+branch-cancel, reclaim/reassign, or persistent-reconciliation spec.
+
+**Gates executed at head `490ac831f` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2647 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; base
+  `d4ccd452e6a3` -> candidate `490ac831fdfe`, 1402 reviewed identities ->
+  1402 findings, **0 unbanked**; ledger round again a no-op (nothing
+  genuinely dead, no amendment required or performed).
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **2994 passed,
+  6 skipped** (87.45s), matching the prior round's baseline.
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites match.
+- `uv run python scripts/check-doc-links.py` — 0 broken relative links.
+- `uv run pytest tests/test_check_adr_index.py -q` — 14 passed.
+
+**Conclusion (31st inspected head):** unchanged block. All 13 #777
+acceptance criteria remain UNMET at this head; lane stays **BLOCKED on
+unlanded canonical dependencies** (#458 Goal behavior, #804/#805/#806,
+#774, #775, #776). No repair code written — none possible without violating
+the issue stop condition. No closure keywords used (`Refs #777` only).
