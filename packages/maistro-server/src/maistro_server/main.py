@@ -28,7 +28,7 @@ from maistro.observability.middleware import RequestIDMiddleware
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
-from maistro.tasks.queue import configure_task_queue, reset_task_queue
+from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.api import (
@@ -255,6 +255,23 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
     return container
 
 
+async def _drain_queue_singleton() -> None:
+    """Drain the task queue's in-flight receipt writes before teardown (#849).
+
+    The runner drains its own workers' writes in `stop()`; this covers a
+    straggler request that terminalized a task after the runner stopped, whose
+    scheduled write would otherwise be abandoned when the singleton is dropped.
+    Idempotent after the runner's drain — a queue with nothing scheduled returns
+    immediately — and best-effort, because shutdown must proceed even if the
+    drain itself fails (the canonical Run still holds the truth, and recovery
+    reconciles from it).
+    """
+    try:
+        await get_task_queue().drain_persistence()
+    except Exception:
+        await logger.awarning("task_receipt_drain_on_shutdown_failed", exc_info=True)
+
+
 @asynccontextmanager
 async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start/stop the background task runner with the app lifecycle."""
@@ -396,6 +413,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # interpreter can install a fresh one. Startup refuses to replace a queue
         # that has accepted tasks — correctly, since a queued task cannot be given a
         # Run afterwards — and without this that guard latched permanently.
+        await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
         a2a.configure_a2a_admission(None, None)
