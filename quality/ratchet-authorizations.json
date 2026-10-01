@@ -464,11 +464,6 @@
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
     },
-    "packages/maistro-evolve/src/maistro_evolve/crossover.py::crossover@15": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
-    },
     "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle@11": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
@@ -698,6 +693,26 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
+    },
+    "packages/maistro-canvas/src/maistro_canvas/canvas/retry_policy.py::classify_failure@14": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
+    },
+    "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::CanvasJobRunner.tick_once@11": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
+    },
+    "packages/maistro-server/src/maistro_server/api/health.py::readiness@16": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
+    },
+    "packages/maistro-evolve/src/maistro_evolve/crossover.py::crossover@14": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. Re-keyed from @15, which this change deletes: develop has taken this block down to 14, and a grant names the complexity it authorizes. Keeping @15 would not be inert -- the checker consults grants exactly when a regression makes that value reachable again, so the stale key would pre-authorize raising this function back to 15 (Codex, #1761)."
     }
   },
   "contract-markers": {
