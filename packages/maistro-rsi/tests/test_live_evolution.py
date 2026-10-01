@@ -8,15 +8,20 @@ from __future__ import annotations
 import random
 import subprocess
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from maistro_evolve.population import PopulationStore
+from maistro_evolve.tournament import EloTournament
+from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 from maistro_rsi.local_loop import (
     LocalRsiConfig,
     LocalRsiLoop,
     _is_transient_provider_error,
     _parse_retry_after_seconds,
+    _VariantResult,
 )
 from maistro_rsi.protocols import MicroVmSandbox
 
@@ -331,3 +336,107 @@ def test_local_fallback_unset_keeps_probe_behaviour(tmp_path: Path) -> None:
     loop._bench["down-x"] = time.monotonic() + 999
 
     assert loop._emergency_model(index=1) == "down-x"
+
+
+# --------------------------------------------------------------------------
+# Battle-evidence gate (#853): harness Elo evidence exists only for genomes
+# that actually fought. _record_cycle_battles is narrow enough to unit-test
+# over a bare loop object (precedent: test_no_host_shell_execution.py).
+# --------------------------------------------------------------------------
+
+
+def _battle_genome(genome_id: str) -> PipelineGenome:
+    return PipelineGenome(
+        id=genome_id,
+        name=genome_id,
+        topology=DAGTopology(
+            nodes=[
+                NodeGenome(
+                    id="q1",
+                    role="queen",
+                    strategy="react",
+                    model="gpt-4",
+                    temperature=0.3,
+                    max_tokens=4096,
+                    system_prompt="test",
+                    max_tool_rounds=5,
+                )
+            ],
+            edges=[],
+            entry_node="q1",
+            max_cycles=3,
+            beam_width=1,
+            use_scout=False,
+        ),
+        eval_weights=EvalWeights(),
+        created_at=datetime.now(UTC).isoformat(),
+        updated_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def _battle_loop(tmp_path: Path) -> LocalRsiLoop:
+    loop = object.__new__(LocalRsiLoop)
+    loop._population = PopulationStore(tmp_path / "pop.db")
+    loop._elo = EloTournament()
+    return loop
+
+
+def _variant(genome_id: str, slot: int, tmp_path: Path, composite: float) -> _VariantResult:
+    return _VariantResult(
+        branch=f"b-{genome_id}",
+        cycle_dir=tmp_path,
+        genome_id=genome_id,
+        slot=slot,
+        composite=composite,
+    )
+
+
+def test_zero_battle_variant_writes_no_elo_evidence(tmp_path: Path) -> None:
+    # A fought variant with no same-slot opponent enters zero battles. The
+    # gate must write NEITHER avg_elo NOR elo_battles for it: with no
+    # battle evidence the genome's get_avg_elo is the 1200 default, and
+    # recording it would hand fitness's Elo term head-to-head credit for
+    # mere roster membership — the freebie #853 removes. Fitness's
+    # missing-evidence path (elo_battles absent ⇒ Elo term is None ⇒
+    # pessimistic credit) is the only honest outcome.
+    loop = _battle_loop(tmp_path)
+    store = loop._population
+    store.add(_battle_genome("solo"))
+
+    loop._record_cycle_battles([_variant("solo", slot=0, tmp_path=tmp_path, composite=0.6)])
+
+    fresh = store.get("solo")
+    assert fresh is not None
+    assert "avg_elo" not in fresh.harness_params
+    assert "elo_battles" not in fresh.harness_params
+    assert loop._elo.get_total_battles("solo") == 0
+
+
+def test_same_slot_battle_writes_elo_evidence_for_both_fighters(tmp_path: Path) -> None:
+    # The positive half of the gate: two same-slot fought variants DO settle
+    # a battle, and both then carry real evidence — avg_elo from the
+    # tournament and the battle count that qualifies it. This pins the exact
+    # harness_params keys fitness's Elo term reads.
+    loop = _battle_loop(tmp_path)
+    store = loop._population
+    store.add(_battle_genome("ga"))
+    store.add(_battle_genome("gb"))
+
+    loop._record_cycle_battles(
+        [
+            _variant("ga", slot=2, tmp_path=tmp_path, composite=0.9),
+            _variant("gb", slot=2, tmp_path=tmp_path, composite=0.4),
+        ]
+    )
+
+    assert loop._elo.get_total_battles("ga") == 1
+    assert loop._elo.get_total_battles("gb") == 1
+    for gid in ("ga", "gb"):
+        genome = store.get(gid)
+        assert genome is not None
+        assert genome.harness_params["elo_battles"] == 1
+        assert isinstance(genome.harness_params["avg_elo"], float)
+    # The winner's Elo moved off the default in the winning direction; the
+    # battle count, not the raw rating, is what qualifies the term.
+    assert store.get("ga").harness_params["avg_elo"] > 1200.0
+    assert store.get("gb").harness_params["avg_elo"] < 1200.0
