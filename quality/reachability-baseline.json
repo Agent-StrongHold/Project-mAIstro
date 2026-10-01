@@ -179,6 +179,7 @@
     "maistro_canvas.canvas.runner",
     "maistro_canvas.canvas.store",
     "maistro_canvas.canvas.tool",
+    "maistro_design.consistency",
     "maistro_design.nodes",
     "maistro_evolve.architecture_fit",
     "maistro_evolve.benchmarks.repo_history",

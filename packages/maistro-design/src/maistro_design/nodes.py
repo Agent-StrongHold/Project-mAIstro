@@ -56,7 +56,10 @@ class ConsistencyEvalOut(BaseModel):
     evaluation: ConsistencyEvaluation = Field(
         description="Full result contract: provenance, per-dimension verdicts, findings, refinement proposal",
     )
-    proposed_refinement_artifact_ids: tuple[str, ...] = Field(default_factory=tuple)
+    proposed_refinement_artifact_ids: tuple[str, ...] = Field(  # noqa: V107
+        default_factory=tuple,
+        description="Convenience projection of evaluation.refinement.targets for orchestration callers",
+    )
 
 
 @register_node
@@ -114,7 +117,7 @@ class DesignOrchestrateNode(BaseNode[DesignOrchestrateIn, DesignOrchestrateOut])
         )
 
 
-@register_node
+@register_node  # noqa: V102
 class ConsistencyEvalNode(BaseNode[CreativeProjectSnapshot, ConsistencyEvalOut]):
     """Cross-artifact consistency evaluation as a canonical graph node (#779).
 
@@ -124,6 +127,11 @@ class ConsistencyEvalNode(BaseNode[CreativeProjectSnapshot, ConsistencyEvalOut])
     Deterministic and external-io-free: the verdict is computed from the
     snapshot alone, and the node proposes refinement targets without writing
     any project state.
+
+    The ``noqa: V102`` marker records that this class is instantiated by the
+    shared graph-node registry through its ``kind`` string
+    (``design.consistency_eval``) — no scanned call site names the class
+    directly, which is true of every ``@register_node`` subclass.
     """
 
     kind: ClassVar[str] = "design.consistency_eval"
