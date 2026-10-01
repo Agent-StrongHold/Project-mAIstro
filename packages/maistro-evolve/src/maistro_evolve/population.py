@@ -162,7 +162,8 @@ class PopulationStore:
         produced it (``eval_evidence``, folded from the runners'
         ``metadata["evidence"]``). A benchmark with no evidence record reads
         "unverified" — visible as such, never silently trusted. Returns
-        ``None`` when there is no scored champion.
+        ``None`` when no genome is eligible to be champion (the shared
+        ``selection_eligibility`` contract, #854).
         """
         champion = self.get_champion()
         if champion is None:
