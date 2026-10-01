@@ -82,10 +82,21 @@ param(
     [switch]$SkipWizard,
     [switch]$NoStart,
     [switch]$NoCli,
-    [switch]$NoOpen
+    [switch]$NoOpen,
+    # Production code never passes this; tests shrink it so the reboot
+    # decision in Wait-DistroUsable can be exercised quickly.
+    [ValidateRange(1, [int]::MaxValue)]
+    [int]$DistroWaitTimeoutSeconds = 180
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Set when -Distro was passed explicitly. An explicitly requested distro is
+# the user's choice: it is never silently substituted (Invoke-Main), and it
+# survives the elevation relaunch and the post-reboot resume (see
+# Get-PassthroughArgs). The default name, in contrast, is only a fallback for
+# machines that have no distro yet.
+$script:DistroWasExplicit = $PSBoundParameters.ContainsKey('Distro')
 
 # Branch installed when the stable channel has no release to resolve — the same
 # choice get.sh makes, for the same reason (ADR-073126-c4e1 §2 makes `main` the
@@ -223,7 +234,11 @@ function Get-PassthroughArgs {
     }
     if ($RequireRelease) { $argList += '-RequireRelease' }
     if ($Repo -ne 'Agent-StrongHold/Project-mAIstro') { $argList += @('-Repo', $Repo) }
-    if ($Distro -ne 'Ubuntu') { $argList += @('-Distro', $Distro) }
+    # -Distro must survive the elevation relaunch and the post-reboot resume
+    # whenever it was explicit (or already substituted): otherwise a relaunch
+    # back into default-parameter land could adopt a different distro than
+    # the one this run committed to.
+    if ($script:DistroWasExplicit -or $Distro -ne 'Ubuntu') { $argList += @('-Distro', $Distro) }
     if ($AutoInstallDeps) { $argList += '-AutoInstallDeps' }
     if ($SkipWizard) { $argList += '-SkipWizard' }
     if ($NoStart) { $argList += '-NoStart' }
@@ -292,17 +307,148 @@ function Test-WslInstalled {
     return [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue)
 }
 
-# `wsl -l -v` rows are UTF-16 and sometimes carry embedded NUL bytes when
-# captured through the pipeline; strip them before matching.
+# --- WSL distro table -------------------------------------------------------
+#
+# The default distribution's row in `wsl -l -v` begins with "* " (e.g.
+# `* Ubuntu    Running    2`). Ignoring that marker makes an existing, usable
+# default distro look absent, which used to push get.ps1 into the install and
+# reboot path on machines that were already set up. The column headers and
+# the "no installed distributions" banner are localized, so rows are
+# recognized structurally — a data row ends in the WSL version (1 or 2), a
+# header does not — instead of by matching header text.
+
+# First property whose name matches $Pattern, or $null. Used for the JSON
+# listing below, whose member names have shifted across WSL builds.
+function Get-JsonObjectMember {
+    param([psobject]$Object, [string]$Pattern)
+    if ($null -eq $Object) { return $null }
+    $member = $Object.PSObject.Properties | Where-Object { $_.Name -match $Pattern } | Select-Object -First 1
+    if ($member) { return $member.Value }
+    return $null
+}
+
+# Machine-readable `wsl --list --json` output, where the installed WSL
+# provides it. The JSON schema has moved across builds (bare distribution
+# arrays vs. wrapper objects, name/default member spellings), so any shape we
+# cannot confidently map returns $null — meaning "no machine-readable
+# answer", never "no distributions" — and the caller falls back to the text
+# table. A half-trusted table must not win over the parseable fallback.
+function ConvertFrom-WslListJson {
+    param([AllowNull()][string]$JsonText)
+    if (-not $JsonText) { return $null }
+    try {
+        $parsed = ConvertFrom-Json -InputObject $JsonText
+    } catch {
+        return $null
+    }
+    if (-not $parsed) { return $null }
+
+    $distributions = $parsed
+    $defaultName = $null
+    if ($parsed -isnot [array]) {
+        # Wrapper form: { "Distributions": [...], "Default...": "Ubuntu" }.
+        $wrapped = Get-JsonObjectMember -Object $parsed -Pattern '(?i)distributions'
+        if (-not $wrapped -or $wrapped -is [string]) { return $null }
+        $distributions = $wrapped
+        $defaultName = Get-JsonObjectMember -Object $parsed -Pattern '(?i)^default'
+    }
+
+    $rows = @()
+    foreach ($item in @($distributions)) {
+        if ($item -isnot [pscustomobject]) { return $null }
+        $name = Get-JsonObjectMember -Object $item -Pattern '(?i)^(distribution)?name$'
+        if (-not $name) { return $null }
+        $state = Get-JsonObjectMember -Object $item -Pattern '(?i)(state|status)'
+        $versionValue = Get-JsonObjectMember -Object $item -Pattern '(?i)version'
+        $version = 0
+        if (-not [int]::TryParse("$versionValue", [ref]$version)) { $version = 0 }
+        $isDefault = $false
+        if ($defaultName -and "$defaultName" -ieq "$name") { $isDefault = $true }
+        $flag = Get-JsonObjectMember -Object $item -Pattern '(?i)default'
+        if ($flag -is [bool] -and $flag) { $isDefault = $true }
+        $rows += [pscustomobject]@{
+            Name = [string]$name
+            State = [string]$state
+            Version = $version
+            Default = [bool]$isDefault
+        }
+    }
+    if (-not $rows) { return $null }
+    return ,$rows
+}
+
+# Normalize the text table into the same rows: NUL bytes stripped, default
+# marker (`* `) recognized, whitespace collapsed, localized headers and
+# banners skipped, and the name preserved verbatim (including non-ASCII
+# names, which `wsl --import` allows). Accepts one string per console line,
+# the way PowerShell hands over native output, and also a single multi-line
+# string, the way captured/mocked input arrives.
+function ConvertTo-WslDistroRows {
+    param([AllowNull()][object[]]$Lines)
+    $rows = [System.Collections.Generic.List[object]]::new()
+    if (-not $Lines) { return $rows.ToArray() }
+
+    # wsl.exe writes UTF-16LE to a redirected pipe. A host decoding those
+    # bytes with a single-byte codepage (Windows PowerShell's OEM default)
+    # shows ASCII padded with NUL bytes; strip the NULs and any stray BOM and
+    # the original table text survives regardless of which decoder ran.
+    $text = [string]::Join("`n", @($Lines))
+    foreach ($line in ($text -split "\r?\n")) {
+        $line = ($line -replace "`0", '') -replace "^\uFEFF", ''
+        $trimmed = $line.Trim()
+        if (-not $trimmed) { continue }
+        $isDefault = $trimmed.StartsWith('*')
+        if ($isDefault) { $trimmed = $trimmed.Substring(1).TrimStart() }
+        $tokens = [regex]::Split($trimmed, '\s+')
+        # <name> [more name words] <state> <version>
+        if ($tokens.Count -lt 3) { continue }
+        $version = $tokens[$tokens.Count - 1]
+        # The trailing version digit is what separates a data row from a
+        # localized header or banner line; both end in words.
+        if ($version -ne '1' -and $version -ne '2') { continue }
+        if ($tokens.Count -eq 3) {
+            $name = $tokens[0]
+        } else {
+            $name = [string]::Join(' ', $tokens[0..($tokens.Count - 3)])
+        }
+        if (-not $name) { continue }
+        $rows.Add([pscustomobject]@{
+            # State text is locale-dependent and informational only; usability
+            # is decided by the `wsl -d <name> -- true` probe, never by it.
+            Name = $name
+            State = $tokens[$tokens.Count - 2]
+            Version = [int]$version
+            Default = [bool]$isDefault
+        })
+    }
+    return $rows.ToArray()
+}
+
+function Get-WslDistroTable {
+    # Prefer the machine-readable listing where the installed WSL has one;
+    # the text table is the universal fallback.
+    if (-not (Test-WslInstalled)) { return @() }
+    $jsonText = [string]::Join("`n", @(& wsl.exe --list --json 2>$null))
+    if ($jsonText) {
+        $rows = ConvertFrom-WslListJson -JsonText ($jsonText -replace "`0", '')
+        if ($rows) { return $rows }
+    }
+    return ConvertTo-WslDistroRows -Lines @(& wsl.exe -l -v 2>$null)
+}
+
 function Get-WslDistroState {
     param([string]$Name)
-    if (-not (Test-WslInstalled)) { return $null }
-    $raw = & wsl.exe -l -v 2>$null
-    if (-not $raw) { return $null }
-    foreach ($line in $raw) {
-        $clean = ($line -replace "`0", '').Trim()
-        if ($clean -like "$Name*") { return $clean }
+    foreach ($row in @(Get-WslDistroTable)) {
+        # Exact, case-insensitive: a prefix match would answer a request for
+        # "Ubuntu" with the unrelated "Ubuntu-24.04" distro.
+        if ($row.Name -ieq $Name) { return $row }
     }
+    return $null
+}
+
+function Get-WslDefaultDistroName {
+    $default = @(Get-WslDistroTable) | Where-Object { $_.Default } | Select-Object -First 1
+    if ($default) { return [string]$default.Name }
     return $null
 }
 
@@ -395,6 +541,23 @@ function Invoke-Main {
         return
     }
 
+    # A machine that already has a usable WSL2 default distro must never be
+    # pushed through `wsl --install` (and the reboot that can follow) just
+    # because its name differs from our default. Without this, a box set up
+    # with e.g. Debian first sat through an unnecessary install and the
+    # feature-enable reboot loop. An explicitly requested -Distro is exempt:
+    # the user asked for that name specifically.
+    if (-not $script:DistroWasExplicit) {
+        $existingDefault = Get-WslDefaultDistroName
+        if ($existingDefault -and $existingDefault -ine $Distro -and (Test-DistroUsable -Name $existingDefault)) {
+            Write-WarnMsg "No '$Distro' distro found, but existing default '$existingDefault' is usable."
+            Write-WarnMsg "Installing into '$existingDefault' instead of creating a new distro (pass -Distro <name> to override)."
+            $script:Distro = $existingDefault
+            Invoke-LinuxInstall
+            return
+        }
+    }
+
     if (-not (Test-Admin)) {
         Invoke-Elevated
         return
@@ -416,7 +579,7 @@ function Invoke-Main {
     Write-InfoMsg "Running: wsl --install -d $Distro (this can take a few minutes)..."
     & wsl.exe --install -d $Distro
 
-    if (Wait-DistroUsable -Name $Distro) {
+    if (Wait-DistroUsable -Name $Distro -TimeoutSeconds $DistroWaitTimeoutSeconds) {
         Write-OkMsg "$Distro is ready (no reboot needed)."
         Invoke-LinuxInstall
         return

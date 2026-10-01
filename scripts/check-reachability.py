@@ -76,6 +76,7 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         "packages/maistro-canvas/frontend/alembic/env.py",
         "packages/maistro-canvas/frontend/alembic/versions/001_initial_schema.py",
         "packages/maistro-canvas/frontend/alembic/versions/003_canvas_job_lease_203.py",
+        "packages/maistro-canvas/frontend/alembic/versions/004_canvas_retry_backoff_398.py",
         # Book-maker POC backend surfaces with no runtime path
         # (packages/maistro-canvas/frontend/server/).
         "packages/maistro-canvas/frontend/server/config.py",
@@ -174,7 +175,15 @@ FLAT_APPS = (
     FlatApp(
         name="maistro-turing-backend",
         path="packages/maistro-turing/backend",
-        roots=("main",),
+        # `provision` is the operator-invoked service-identity bootstrap CLI
+        # (#858): `python -m backend.provision` from packages/maistro-turing is
+        # the documented activation path (README, module docstring). Like the
+        # canvas server's `export_book`, a script a person launches is an
+        # entry point the import graph can root — not unreachable debt to
+        # baseline. Rooting it is also what keeps the #858 guarantee checkable:
+        # the no-default-credential ratchet and the key generation it proves
+        # both live on this path.
+        roots=("main", "provision"),
         report_prefix="maistro-turing-backend",
     ),
     FlatApp(
