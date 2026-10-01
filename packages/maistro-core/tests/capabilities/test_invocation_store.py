@@ -7,6 +7,7 @@ import aiosqlite
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.invocation import (
     InMemoryInvocationStore,
     Invocation,
@@ -124,6 +125,54 @@ async def test_container_wires_capability_store_to_sqlite_connection() -> None:
         )
         assert isinstance(effects.invocation_store, SqliteInvocationStore)
         await effects.invocation_store.ensure_schema()
+
+
+async def test_a_supplied_effect_context_is_returned_rather_than_a_second_one_built() -> None:
+    """A caller that already owns the effect authority keeps owning it.
+
+    The Container is the composition root, and `effect_context` is how an
+    embedder hands it one it built. Selecting a backend anyway would leave two
+    Invocation ledgers in the same process, each believing it is canonical --
+    and the one the caller holds would be the one nothing wrote to.
+    """
+
+    supplied = new_in_memory_effect_context()
+    async with aiosqlite.connect(":memory:") as conn:
+        effects = await _wire_capability_effects(
+            effect_context=supplied,
+            # A pool is offered and must be ignored: the supplied context wins.
+            db_pool=conn,
+            pg_pool=None,
+            capability_bindings=(),
+            capability_credentials=None,
+        )
+    assert effects is supplied
+
+
+async def test_configured_bindings_are_registered_in_the_selected_store() -> None:
+    """The Bindings a deployment configures reach the store it selected.
+
+    `_require_*_binding` in every egress reads the *registered* record, not
+    the Binding object a caller passes, so a configured Binding that never
+    reached the store authorizes nothing at all -- the deployment would come
+    up looking configured and refuse every effect.
+    """
+
+    binding = Binding(
+        binding_id="configured-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+    async with aiosqlite.connect(":memory:") as conn:
+        effects = await _wire_capability_effects(
+            effect_context=None,
+            db_pool=conn,
+            pg_pool=None,
+            capability_bindings=(binding,),
+            capability_credentials=None,
+        )
+        assert await effects.bindings.get("configured-1") == binding
 
 
 async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen(tmp_path) -> None:
