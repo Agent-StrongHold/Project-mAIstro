@@ -1,9 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +6
----
-inventory-delta:
-  packages/hive-conductor/backend/tests: +6
+  packages/hive-conductor/backend/tests: +7
 ---
 
 # #97 Degraded mode as a user-facing operating state (M3-B7)
@@ -17,7 +14,7 @@ trail as a warning, the app shell renders a degraded-capabilities banner, and
 `/v1/capabilities/discover`, and optional routers recover by the restart
 re-running the mount.
 
-Six tests added in `packages/hive-conductor/backend/tests/test_degraded_mode_surface.py`:
+Seven tests added in `packages/hive-conductor/backend/tests/test_degraded_mode_surface.py`:
 
 - `test_health_names_degraded_optional_router_with_cause` — a failed router
   mount appears in `degraded_services` with its cause and flips `degraded`;
@@ -28,6 +25,9 @@ Six tests added in `packages/hive-conductor/backend/tests/test_degraded_mode_sur
   routers excluded;
 - `test_degraded_router_entry_is_auditable` — `optional_router_degraded`
   warning in the audit trail with module target and error detail;
+- `test_audit_failure_never_breaks_startup` — with `log_audit` raising, the
+  mount failure is still recorded on `app.state` and warned about; startup
+  proceeds exactly as without the audit hook;
 - `test_unmounted_capability_is_a_404_not_fake_success` — an unmounted route
   family answers 404, never a fabricated 200;
 - `test_recovery_when_optional_service_returns` — per-request recompute

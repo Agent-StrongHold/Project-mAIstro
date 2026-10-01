@@ -153,6 +153,34 @@ def test_degraded_router_entry_is_auditable() -> None:
     assert entries[-1]["detail"]["error"]
 
 
+def test_audit_failure_never_breaks_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The audit trail is defense-in-depth, so its own failure is survivable.
+
+    The mount failure's observability must not depend on the audit store
+    staying up: with log_audit broken, the degradation is still recorded on
+    `app.state` and still warned about, and startup proceeds exactly as it
+    would without the audit hook.
+    """
+    import logging
+
+    import routes.audit as audit_module
+
+    def _broken_audit(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("audit store down")
+
+    monkeypatch.setattr(audit_module, "log_audit", _broken_audit)
+
+    probe = FastAPI()
+    with caplog.at_level(logging.WARNING, logger="hive.lifespan"):
+        _include_optional_router(probe, _BROKEN_MODULE)  # must not raise
+
+    assert probe.state.optional_routers[_BROKEN_MODULE]
+    assert any("optional_router_audit_failed" in record.getMessage() for record in caplog.records)
+
+
 def test_unmounted_capability_is_a_404_not_fake_success() -> None:
     """A route family whose router did not mount answers 404, never a 200.
 
