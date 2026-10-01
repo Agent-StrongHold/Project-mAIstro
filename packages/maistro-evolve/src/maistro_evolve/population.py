@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from .audit import GenomeAuditTrail
+from .promotion import (
+    PromotionPolicy,
+    PromotionRecord,
+    build_promotion_record,
+    promotion_eligibility,
+    selection_eligibility,
+)
 from .types import PipelineGenome
+
+logger = logging.getLogger("maistro_evolve.population")
 
 
 def _fitness_key(genome: PipelineGenome) -> float:
@@ -31,6 +42,10 @@ class PopulationStore:
             self._init_db()
         else:
             self._db_path = None
+        # Decision record of the most recent committed promotion (programmatic
+        # access alongside the audit-trail copy written as the committed
+        # entry's detail). None until the first governed promotion commits.
+        self.last_promotion_record: PromotionRecord | None = None
         # Idempotency ledger for effectful cycle-level operations (currently
         # only Evolve's canonical finalize node, #1064) keyed by a caller's
         # own logical identity (e.g. ``f"finalize:{node_run_id}"``). This is
@@ -113,12 +128,31 @@ class PopulationStore:
         self._store.pop(genome_id, None)
         self._delete(genome_id)
 
-    def get_champion(self) -> PipelineGenome | None:
-        all_genomes = self.list_all()
-        scored = [g for g in all_genomes if g.fitness_score is not None]
-        if not scored:
+    def get_champion(
+        self, policy: PromotionPolicy | None = None, current_cycle: int | None = None
+    ) -> PipelineGenome | None:
+        """The best genome that is actually ELIGIBLE to be champion (#854).
+
+        This used to be an unfiltered ``max`` over any genome carrying a score,
+        which could return failed, unevaluated-once, stale-evidenced, or
+        best-of-N-unconfirmed genomes. Selection now runs the same shared
+        eligibility contract (``promotion.selection_eligibility``) that the
+        promotion gate enforces — evaluated, sufficient independent samples,
+        hard gate passed, objective-stamped and current evidence, uncertainty
+        bounded, and fresh confirmation for best-of-N winners — so the champion
+        API can never surface a candidate that the promotion gate would refuse
+        on evidence grounds. (Human approval is a *promotion* gate, not a
+        selection gate: dashboards may display the best evaluatable candidate,
+        but only ``promote_audited`` can activate one.) When no genome is
+        eligible, there is no champion — ``None``, not the least-bad genome.
+        """
+        pol = policy or PromotionPolicy()
+        eligible = [
+            g for g in self.list_all() if selection_eligibility(g, pol, current_cycle).eligible
+        ]
+        if not eligible:
             return None
-        return max(scored, key=_fitness_key)
+        return max(eligible, key=_fitness_key)
 
     def champion_provenance(self) -> dict[str, Any] | None:
         """The verified-evidence trail behind champion selection (#384).
@@ -209,9 +243,25 @@ class PopulationStore:
         self.add(target)
         return target
 
-    async def promote_audited(self, genome_id: str, audit: GenomeAuditTrail) -> PipelineGenome:
-        """Promote, with a mandatory audit record preceding and confirming
-        the state change.
+    async def promote_audited(
+        self,
+        genome_id: str,
+        audit: GenomeAuditTrail,
+        policy: PromotionPolicy | None = None,
+        current_cycle: int | None = None,
+    ) -> PipelineGenome:
+        """Promote, under the governed promotion contract (#21, #854), with a
+        mandatory audit record preceding and confirming the state change.
+
+        The governed gate (``promotion.promotion_eligibility``) runs BEFORE any
+        state change: the candidate must carry sufficient independent evidence
+        under a stamped objective, pass the correctness/security hard gate, be
+        human-approved, and — when an incumbent is active — beat that
+        incumbent's fitness by the policy's declared margin under the SAME
+        objective version. A worse, unevaluated, unapproved, or
+        insufficiently-supported candidate can never replace a stronger
+        incumbent merely because ``promote()`` was called later; the rejection
+        is recorded (``promotion_rejected`` with the reasons) and raised.
 
         The "attempt" entry is recorded before the raw transition runs, so a
         failing sink there blocks the mutation entirely (fail-closed,
@@ -220,24 +270,70 @@ class PopulationStore:
         — if logging *that* fails, the promotion is compensated (reverted
         to whichever genome was active before) and the exception re-raised,
         so the active genome can never observably change without a matching
-        committed audit entry. There is no other entrypoint that can flip
-        ``is_active``/promote a genome with an audit guarantee — there is no
-        other entrypoint: the raw ``promote()``/``rollback()`` transitions
-        this wraps are private (#342), so an unaudited promotion cannot be
+        committed audit entry. The committed entry's detail is the full
+        ``PromotionRecord`` JSON: exact candidate/incumbent ids, objective
+        version, evaluation evidence (per-benchmark sample counts), decision
+        rule, approval, and the resulting active version. There is no other
+        entrypoint that can flip ``is_active``/promote a genome with an audit
+        guarantee — the raw ``promote()``/``rollback()`` transitions this
+        wraps are private (#342), so an unaudited promotion cannot be
         constructed, only forgotten.
         """
+        pol = policy or PromotionPolicy()
         await audit.record("promotion_attempt", genome_id)
-        previous = self.get_active()
+        candidate = self.get(genome_id)
+        incumbent = self.get_active()
+        if candidate is None:
+            detail = json.dumps(
+                {
+                    "candidate_id": genome_id,
+                    "incumbent_id": incumbent.id if incumbent is not None else None,
+                    "reasons": [f"unknown genome_id: {genome_id}"],
+                },
+                sort_keys=True,
+            )
+            await audit.record("promotion_rejected", genome_id, detail)
+            raise ValueError(f"unknown genome_id: {genome_id}")
+        report = promotion_eligibility(candidate, incumbent, pol, current_cycle)
+        if not report.eligible:
+            detail = json.dumps(
+                {
+                    "candidate_id": genome_id,
+                    "incumbent_id": incumbent.id if incumbent is not None else None,
+                    "reasons": report.reasons
+                    if report is not None
+                    else [f"unknown genome_id: {genome_id}"],
+                    "decision_rule": {
+                        "min_promotion_margin": pol.min_promotion_margin,
+                        "min_samples_per_benchmark": pol.min_samples_per_benchmark,
+                    },
+                },
+                sort_keys=True,
+            )
+            await audit.record("promotion_rejected", genome_id, detail)
+            raise PermissionError(
+                f"promotion of {genome_id} refused by the governed promotion "
+                f"policy: {'; '.join(report.reasons)}"
+            )
         genome = self._promote(genome_id)
+        record = build_promotion_record(
+            candidate=genome,
+            incumbent=incumbent,
+            resulting_active=genome,
+            policy=pol,
+            comparison=report.evidence.get("comparison", {}),
+        )
+        self.last_promotion_record = record
         try:
-            await audit.record("promotion_committed", genome_id)
+            await audit.record("promotion_committed", genome_id, record.to_json())
         except Exception:
-            if previous is not None:
-                self._promote(previous.id)
+            if incumbent is not None:
+                self._promote(incumbent.id)
             else:
                 genome.is_active = False
                 self.add(genome)
             raise
+        logger.info("governed promotion committed: %s", record.summary())
         return genome
 
     async def rollback_audited(self, audit: GenomeAuditTrail) -> PipelineGenome | None:
@@ -264,6 +360,15 @@ class PopulationStore:
                 before.is_active = True
                 self.add(before)
             raise
+        if target is not None and self.last_promotion_record is not None:
+            # Operator context for the revert: name the governed promotion on
+            # record, so an incident response can see what was last activated
+            # and under which objective/decision rule.
+            logger.info(
+                "rollback to %s; last governed promotion on record: %s",
+                target.id,
+                self.last_promotion_record.summary(),
+            )
         return target
 
     def get_lineage(self, genome_id: str) -> list[PipelineGenome]:

@@ -32,8 +32,12 @@ class _NoopSink:
         return None
 
 
-def _genome(genome_id: str, approved: bool = True) -> PipelineGenome:
-    return PipelineGenome(
+def _genome(genome_id: str, approved: bool = True, fitness: float = 0.9) -> PipelineGenome:
+    """A genome carrying governed-promotion-eligible evidence (#854): repeated
+    independent samples, stable spread, objective-stamped and current. Pass
+    strictly increasing ``fitness`` for successive promotions — each new
+    promotion must beat the incumbent by the declared margin to land."""
+    g = PipelineGenome(
         id=genome_id,
         name=genome_id,
         topology=DAGTopology(
@@ -60,6 +64,13 @@ def _genome(genome_id: str, approved: bool = True) -> PipelineGenome:
         updated_at=datetime.now(UTC).isoformat(),
         approved_for_promotion=approved,
     )
+    g.fitness_score = fitness
+    g.eval_scores = {"proxy_ifeval": 0.8}
+    g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+    g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
+    g.harness_params["objective_version"] = "objective-test"
+    g.harness_params["evidence_cycle"] = 1
+    return g
 
 
 class RollbackConformanceMachine(RuleBasedStateMachine):
@@ -89,7 +100,10 @@ class RollbackConformanceMachine(RuleBasedStateMachine):
     @rule()
     def promote_new_genome(self):
         genome_id = self._new_genome_id()
-        self.store.add(_genome(genome_id, approved=True))
+        # Strictly increasing fitness: under the #854 governed contract each
+        # new promotion must beat the incumbent by the declared margin, so the
+        # rollback properties keep exercising real transitions.
+        self.store.add(_genome(genome_id, approved=True, fitness=0.5 + 0.1 * self.next_id))
         self._run(self.store.promote_audited(genome_id, self.trail))
         self.promotion_history.append(genome_id)
 
@@ -168,7 +182,7 @@ def test_rollback_always_restores_the_immediately_prior_promotion(promotion_coun
 
     for i in range(promotion_count):
         genome_id = f"g-{i}"
-        store.add(_genome(genome_id))
+        store.add(_genome(genome_id, fitness=0.5 + 0.1 * i))
         asyncio.run(store.promote_audited(genome_id, trail))
         history.append(genome_id)
 
@@ -195,8 +209,8 @@ def test_rollback_always_restores_the_immediately_prior_promotion(promotion_coun
 def test_rollback_on_a_genome_with_a_deleted_target_returns_none_not_garbage():
     store = PopulationStore()
     trail = GenomeAuditTrail(_NoopSink())
-    store.add(_genome("g-0"))
-    store.add(_genome("g-1"))
+    store.add(_genome("g-0", fitness=0.5))
+    store.add(_genome("g-1", fitness=0.9))
     asyncio.run(store.promote_audited("g-0", trail))
     asyncio.run(store.promote_audited("g-1", trail))
 
@@ -220,8 +234,8 @@ def test_rollback_with_nothing_promoted_yet_is_a_safe_noop():
 def test_an_unapproved_genome_can_never_become_the_rollback_target():
     store = PopulationStore()
     trail = GenomeAuditTrail(_NoopSink())
-    store.add(_genome("g-0", approved=True))
-    store.add(_genome("g-1", approved=False))
+    store.add(_genome("g-0", approved=True, fitness=0.5))
+    store.add(_genome("g-1", approved=False, fitness=0.9))  # otherwise eligible
     asyncio.run(store.promote_audited("g-0", trail))
 
     # g-1 was never promoted (unapproved), so it can never end up as the
