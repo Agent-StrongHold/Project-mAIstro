@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +28
+  packages/maistro-core/tests: +34
 ---
 <!-- Measured by scripts/check-suite-inventory.py --update; see README.md. -->
 # 792-eval-on-run
@@ -38,6 +38,18 @@ not bypassed: `test_retention_reference_inventory` required
 the purge must account for), so `retention_scope` gained the table and its
 policy row — eval evidence is execution state, deleted with the Run, not
 attribution history to preserve.
+
+Repair round (CI gates): the M7-A14 product-boundary tripwire
+(`test_no_competing_execution_lifecycle_name`) scans production source for
+competing lifecycle names, and this module's own docstring named the forbidden
+token — reworded to describe the prohibition instead of uttering it. The
+radon CC ratchet flagged `eval_summary` at grade C, so the projections were
+extracted (`_validate_dimensions`, `_row_matches`, `_latest_by_dimension`),
+leaving every block in the module at grade B or better. Two refusal behaviors
+the extraction surfaced as uncovered branch arcs gained their negative tests:
+a summary over zero dimensions, and a summary asking twice for one dimension,
+each refused with `ValueError` — completeness over a vacuous dimension set
+would otherwise read `complete` without any evidence existing.
 
 Repair round (develop sync): develop's `047_capability_binding_revocations`
 claimed the same revision number while this branch was open, so the eval

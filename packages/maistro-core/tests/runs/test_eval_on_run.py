@@ -473,3 +473,31 @@ def test_the_judge_names_whatever_scored_when_it_is_not_deterministic() -> None:
     )
     assert human.judge is not None
     assert human.judge.identity == "reviewer-7"
+
+
+async def test_a_summary_over_no_dimensions_is_a_question_that_means_nothing(
+    spine: Any,
+) -> None:
+    """Completeness over an empty dimension set would vacuously read complete."""
+    store, run, _node_run, _attempt = await _produce(spine)
+    with pytest.raises(ValueError, match="must not be empty"):
+        await eval_summary(
+            store,
+            run.run_id,
+            rubric_id=RUBRIC_ID,
+            rubric_revision=RUBRIC_REVISION,
+            dimension_ids=(),
+        )
+
+
+async def test_a_summary_cannot_ask_twice_for_the_same_dimension(spine: Any) -> None:
+    """A duplicated dimension would silently answer one record for two asks."""
+    store, run, _node_run, _attempt = await _produce(spine)
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        await eval_summary(
+            store,
+            run.run_id,
+            rubric_id=RUBRIC_ID,
+            rubric_revision=RUBRIC_REVISION,
+            dimension_ids=("contrast", "contrast"),
+        )
