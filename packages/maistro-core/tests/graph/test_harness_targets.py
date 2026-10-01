@@ -228,6 +228,22 @@ def test_an_unclassifiable_target_kind_cannot_be_constructed() -> None:
         )
 
 
+def test_a_target_with_a_blank_locator_or_summary_is_refused() -> None:
+    with pytest.raises(ValidationError, match="targets\\[0\\]"):
+        HarnessEvolutionProposal(
+            proposal_id="p",
+            workspace_id=WORKSPACE,
+            template_id="tpl",
+            targets=[
+                HarnessComponentTarget(
+                    kind=HarnessTargetKind.PROMPT, locator="   ", change_summary="c"
+                )
+            ],
+            rationale="r",
+            produced_by_run_id="run-1",
+        )
+
+
 # ── materialization ───────────────────────────────────────────────
 
 
@@ -287,6 +303,38 @@ async def test_materialization_without_an_active_base_is_refused(
 
     with pytest.raises(GraphTemplateNotFound, match="no active version"):
         await materialize_candidate(store, _proposal(template_id))
+
+
+async def test_materialization_refuses_an_unknown_named_base_version(
+    store: Any, request: pytest.FixtureRequest
+) -> None:
+    """A proposal pinning a version that was never registered — or pinning
+    any version of an unregistered template — is refused with the version
+    list, not a bare not-found."""
+    template_id = f"tpl-{request.node.name}"
+    await store.put(_base(template_id))
+
+    with pytest.raises(GraphTemplateNotFound, match="has no version 9"):
+        await materialize_candidate(store, _proposal(template_id, base_version=9))
+
+    with pytest.raises(GraphTemplateNotFound, match="no GraphTemplate"):
+        await materialize_candidate(
+            store, _proposal(f"tpl-{request.node.name}-other", base_version=1)
+        )
+
+
+async def test_a_named_active_base_version_is_a_valid_base(
+    store: Any, request: pytest.FixtureRequest
+) -> None:
+    """Pinning the active version explicitly is the reproducibility door."""
+    template_id = f"tpl-{request.node.name}"
+    await store.put(_base(template_id))
+
+    candidate = await materialize_candidate(store, _proposal(template_id, base_version=1))
+
+    assert candidate.version == 2
+    record = candidate.metadata[PROVENANCE_METADATA_KEY]
+    assert record["base_version"] == 1
 
 
 async def test_materialization_refuses_a_candidate_base_named_explicitly(

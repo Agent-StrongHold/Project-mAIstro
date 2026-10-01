@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +18
+  packages/maistro-core/tests: +21
 ---
 
 # m4e-harness-targets
@@ -38,17 +38,19 @@ no second promotion authority is introduced.
 
 ## Tests (`packages/maistro-core/tests/graph/test_harness_targets.py`)
 
-18 tests across the same three-backend store fixture used by
+21 tests across the same three-backend store fixture used by
 `test_template_store.py` (memory/sqlite/postgres; postgres skipped without
 `MAISTRO_TEST_PG_DSN`):
 
 - the target enum equals exactly the epic's component set; unclassifiable
-  kinds are refused; proposals without targets/producing-run are refused;
-  candidate edges outside the candidate topology fail at proposal time
+  kinds are refused; proposals without targets/producing-run, with blank
+  target fields, are refused; candidate edges outside the candidate topology
+  fail at proposal time
 - materialization: creates a candidate (never active) version, leaves the
   active base as what unversioned lookups resolve, stamps provenance, refuses
-  unknown template / no-active-base / explicitly-named candidate base /
-  foreign-workspace proposals / topology claims without topology changes, and
+  unknown template / unknown named base version / no-active-base /
+  explicitly-named candidate base / foreign-workspace proposals / topology
+  claims without topology changes, honors a named *active* base version, and
   allocates fresh version numbers per application
 - application: promotes only through the governed path with recorded audit
   entries, `approval` is a required argument (no default to forget), an audit
@@ -58,6 +60,6 @@ no second promotion authority is introduced.
 ## Coverage classification
 
 Per ADR-082526-cb51 (diff coverage measured scope is declared): measured scope
-is `packages/maistro-core/src/maistro/graph/harness_targets.py`, fully covered
-by this suite except the defensive `pragma: no cover` post-promotion
-re-read guard.
+is `packages/maistro-core/src/maistro/graph/harness_targets.py` — 100% lines
+and 100% branch arcs under the suite (85 statements, 26 branches, 0 missing;
+the only exclusion is the `pragma: no cover` post-promotion re-read guard).
