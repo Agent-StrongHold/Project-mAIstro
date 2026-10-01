@@ -691,9 +691,10 @@ async def _apply_changes(
     # would answer from a status the payload no longer holds.
     await conn.execute(
         """UPDATE backlog_items
-              SET status = ?, tags = ?, updated_at = ?, version = ?, payload = ?
+              SET parent_id = ?, status = ?, tags = ?, updated_at = ?, version = ?, payload = ?
             WHERE item_id = ?""",
         (
+            updated.parent_id,
             updated.status,
             json.dumps(list(updated.tags)),
             updated.updated_at.isoformat(),

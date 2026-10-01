@@ -18,9 +18,13 @@ The one operator entry point for the M3-C5 cutover:
                 history stays in the ledger.
 - `status`    — current authority, ledger history, marker contents.
 
-The database is the canonical backlog store's SQLite backend (`maistro.backlog`
-conformance family); PostgreSQL deployments run the same module API against
-`PgBacklogStore` + the Alembic-migrated control tables.
+The database is selected by `--db`: a SQLite file path, or a PostgreSQL DSN in
+any spelling the deployment's `database_url` accepts (`postgresql://`,
+`postgres://`, `postgresql+asyncpg://`, `postgresql+psycopg://`). The
+PostgreSQL path runs the same module API against `PgBacklogStore`,
+`PgAuthorityLedger`, and `PgDocumentState` over the Alembic-migrated control
+tables (`048`/`049`); a database they have not touched is refused with a
+pointer to `alembic upgrade head`.
 
 Run: `uv run python scripts/backlog_cutover.py --db .backlog.sqlite3 status`
 """
@@ -32,6 +36,7 @@ import asyncio
 import hashlib
 import json
 import sys
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -42,7 +47,9 @@ import aiosqlite  # noqa: E402
 
 from maistro.backlog.cutover import (  # noqa: E402
     ROOT_DOCUMENT_ID,
+    AuthorityLedger,
     BacklogAuthority,
+    DocumentState,
     SqliteAuthorityLedger,
     SqliteDocumentState,
     current_authority,
@@ -52,6 +59,7 @@ from maistro.backlog.cutover import (  # noqa: E402
     revert_to_markdown,
 )
 from maistro.backlog.sqlite_store import SqliteBacklogStore  # noqa: E402
+from maistro.backlog.store import BacklogStore  # noqa: E402
 
 BACKLOG = ROOT / "BACKLOG.md"
 MARKER = ROOT / "quality" / "backlog-authority.json"
@@ -61,6 +69,26 @@ GENERATED_BANNER = (
     "Direct edits are not authoritative; regenerate with "
     "`scripts/backlog_cutover.py generate` or revert with `revert`. -->"
 )
+
+
+class _Opened:
+    """The control-store triple plus the close for whatever connection opened
+    them — an aiosqlite connection or an asyncpg pool."""
+
+    def __init__(
+        self,
+        store: BacklogStore,
+        ledger: AuthorityLedger,
+        documents: DocumentState,
+        closer: Callable[[], Awaitable[None]],
+    ) -> None:
+        self.store = store
+        self.ledger = ledger
+        self.documents = documents
+        self._closer = closer
+
+    async def close(self) -> None:
+        await self._closer()
 
 
 def _read_marker() -> dict[str, object]:
@@ -83,9 +111,7 @@ def _write_generated(text: str, revision: int) -> str:
     return content
 
 
-async def _open(
-    db_path: str,
-) -> tuple[aiosqlite.Connection, SqliteBacklogStore, SqliteAuthorityLedger, SqliteDocumentState]:
+async def _open_sqlite(db_path: str) -> _Opened:
     conn = await aiosqlite.connect(db_path)
     store = SqliteBacklogStore(conn)
     ledger = SqliteAuthorityLedger(conn)
@@ -93,48 +119,99 @@ async def _open(
     await store.ensure_schema()
     await ledger.ensure_schema()
     await documents.ensure_schema()
-    return conn, store, ledger, documents
+    return _Opened(store, ledger, documents, conn.close)
+
+
+def _asyncpg_dsn(database_url: str) -> str:
+    """Normalize the SQLAlchemy-shaped spellings to one asyncpg accepts."""
+    scheme, _, rest = database_url.partition("://")
+    if scheme in ("postgresql", "postgres"):
+        return database_url
+    return f"postgresql://{rest}"
+
+
+async def _open_postgres(database_url: str) -> _Opened:
+    import asyncpg  # deferred: the SQLite default needs no driver
+
+    from maistro.backlog.pg_store import (
+        PgAuthorityLedger,
+        PgBacklogStore,
+        PgDocumentState,
+    )
+
+    pool = await asyncpg.create_pool(_asyncpg_dsn(database_url))
+    store = PgBacklogStore(pool)
+    ledger = PgAuthorityLedger(pool)
+    documents = PgDocumentState(pool)
+    try:
+        await ledger.ensure_schema()
+        await documents.ensure_schema()
+    except BaseException:
+        await pool.close()
+        raise
+    return _Opened(store, ledger, documents, pool.close)
+
+
+#: In step with `maistro.container.POSTGRES_SCHEMES`, which a script cannot
+#: import for free (it drags in the whole container). Any new scheme there
+#: must be mirrored here or that deployment's cutover lands on SQLite.
+_POSTGRES_SCHEMES = (
+    "postgresql://",
+    "postgres://",
+    "postgresql+asyncpg://",
+    "postgresql+psycopg://",
+)
+
+
+async def _open(database: str) -> _Opened:
+    if database.startswith(_POSTGRES_SCHEMES):
+        return await _open_postgres(database)
+    return await _open_sqlite(database)
 
 
 async def cmd_status(args: argparse.Namespace) -> int:
-    conn, _store, ledger, documents = await _open(args.db)
+    opened = await _open(args.db)
     try:
-        authority = await current_authority(ledger)
+        authority = await current_authority(opened.ledger)
         marker = _read_marker()
-        tokens = await documents.get_tokens(ROOT_DOCUMENT_ID)
+        tokens = await opened.documents.get_tokens(ROOT_DOCUMENT_ID)
         print(f"authority: {authority.value}")
         print(f"marker:    {json.dumps(marker)}")
         print(
             f"document:  {ROOT_DOCUMENT_ID} "
             f"({'imported' if tokens is not None else 'never imported'})"
         )
-        for record in await ledger.history():
+        for record in await opened.ledger.history():
             print(
                 f"  revision {record.revision}: {record.authority.value} "
                 f"by {record.actor} at {record.at.isoformat()} — {record.note}"
             )
     finally:
-        await conn.close()
+        await opened.close()
     return 0
 
 
 async def cmd_import(args: argparse.Namespace) -> int:
     text = BACKLOG.read_text()
-    conn, store, _ledger, documents = await _open(args.db)
+    opened = await _open(args.db)
     try:
         document = await import_document(
-            store, text, document_id=ROOT_DOCUMENT_ID, document_state=documents
+            opened.store,
+            text,
+            document_id=ROOT_DOCUMENT_ID,
+            document_state=opened.documents,
         )
         print(f"imported {len(document.items)} items from {ROOT_DOCUMENT_ID} into {args.db}")
         print("authority unchanged: BACKLOG.md stays canonical until `cutover`")
     finally:
-        await conn.close()
+        await opened.close()
     return 0
 
 
 async def cmd_cutover(args: argparse.Namespace) -> int:
     text = BACKLOG.read_text()
-    conn, store, ledger, documents = await _open(args.db)
+    opened = await _open(args.db)
+    store, ledger, documents = opened.store, opened.ledger, opened.documents
     try:
         record = await cutover_to_db(
             store,
@@ -145,23 +222,38 @@ async def cmd_cutover(args: argparse.Namespace) -> int:
             document_id=ROOT_DOCUMENT_ID,
             document_state=documents,
         )
-        generated = _write_generated(await export_authoritative(store, documents), record.revision)
-        _write_marker(
-            authority=BacklogAuthority.DB.value,
-            revision=record.revision,
-            updated_at=datetime.now(UTC).isoformat(),
-            export_sha256=hashlib.sha256(generated.encode()).hexdigest(),
-        )
+        try:
+            generated = _write_generated(
+                await export_authoritative(store, documents), record.revision
+            )
+            _write_marker(
+                authority=BacklogAuthority.DB.value,
+                revision=record.revision,
+                updated_at=datetime.now(UTC).isoformat(),
+                export_sha256=hashlib.sha256(generated.encode()).hexdigest(),
+            )
+        except OSError as exc:
+            # Compensating transaction: the durable ledger must not claim db
+            # authority while the generated projections were not written (e.g.
+            # read-only checkout, disk full). Append a `markdown` revision so
+            # the ledger and the files agree that BACKLOG.md stayed canonical.
+            await revert_to_markdown(
+                ledger,
+                actor=args.actor,
+                note=f"cutover rolled back: writing generated files failed ({exc})",
+            )
+            raise
         print(f"cutover recorded: revision {record.revision} — the database is authoritative")
         print(f"{BACKLOG.name} regenerated from the database and its digest recorded")
     finally:
-        await conn.close()
+        await opened.close()
     return 0
 
 
 async def cmd_generate(args: argparse.Namespace) -> int:
-    conn, store, ledger, documents = await _open(args.db)
+    opened = await _open(args.db)
     try:
+        ledger = opened.ledger
         authority = await current_authority(ledger)
         if authority is not BacklogAuthority.DB:
             print(
@@ -172,7 +264,9 @@ async def cmd_generate(args: argparse.Namespace) -> int:
             return 1
         record = await ledger.current()
         revision = record.revision if record is not None else 0
-        generated = _write_generated(await export_authoritative(store, documents), revision)
+        generated = _write_generated(
+            await export_authoritative(opened.store, opened.documents), revision
+        )
         _write_marker(
             authority=BacklogAuthority.DB.value,
             revision=revision,
@@ -181,14 +275,14 @@ async def cmd_generate(args: argparse.Namespace) -> int:
         )
         print(f"{BACKLOG.name} regenerated from the database (authority revision {revision})")
     finally:
-        await conn.close()
+        await opened.close()
     return 0
 
 
 async def cmd_revert(args: argparse.Namespace) -> int:
-    conn, _store, ledger, _documents = await _open(args.db)
+    opened = await _open(args.db)
     try:
-        record = await revert_to_markdown(ledger, actor=args.actor, note=args.note)
+        record = await revert_to_markdown(opened.ledger, actor=args.actor, note=args.note)
         text = BACKLOG.read_text()
         if text.startswith("<!-- GENERATED from the backlog database"):
             _, _, rest = text.partition("\n")
@@ -202,7 +296,7 @@ async def cmd_revert(args: argparse.Namespace) -> int:
         print(f"reverted: revision {record.revision} — {BACKLOG.name} is hand-maintained again")
         print("the cutover history remains in the ledger")
     finally:
-        await conn.close()
+        await opened.close()
     return 0
 
 
@@ -211,7 +305,7 @@ def main() -> int:
     parser.add_argument(
         "--db",
         default=str(ROOT / ".backlog-cutover.sqlite3"),
-        help="path to the backlog SQLite database",
+        help="backlog database: a SQLite file path or a PostgreSQL DSN",
     )
     # Actor/note are accepted on the root and on the mutating subcommands, so
     # both `--actor x cutover` and `cutover --actor x` work.

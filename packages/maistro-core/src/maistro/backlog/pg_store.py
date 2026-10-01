@@ -29,9 +29,11 @@ crash.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from maistro.backlog.cutover import AuthorityRecord, BacklogAuthority
 from maistro.backlog.model import (
     BacklogClaim,
     BacklogClaimError,
@@ -64,6 +66,14 @@ BACKLOG_PG_TABLES: tuple[str, ...] = (
     "backlog_items",
     "backlog_claims",
     "backlog_events",
+)
+
+#: Tables the cutover control stores (#102) need before they may be used.
+#: Migration `049_backlog_authority_cutover` owns them, with the same guarded
+#: DDL the SQLite twins create in `maistro.backlog.cutover`.
+PG_CUTOVER_TABLES: tuple[str, ...] = (
+    "backlog_authority",
+    "backlog_documents",
 )
 
 
@@ -628,7 +638,11 @@ class PgBacklogStore:
     async def _require_decomposable_parent(
         self, conn: Any, parent_id: str, *, child: BacklogItem
     ) -> None:
-        parent = await self._fetch_item(conn, parent_id)
+        # Lock the parent with FOR UPDATE so attaching a child serializes
+        # against close_item on the same row; otherwise a concurrent close
+        # could see no open child while this transaction still sees the
+        # parent open, committing a terminal parent with an open child.
+        parent = await self._fetch_item_for_update(conn, parent_id)
         if parent.workspace_id != child.workspace_id:
             raise ValueError("a child item must live in its parent's Workspace")
         if status_is_terminal(parent.status):
@@ -675,4 +689,120 @@ def _jsonable_changes(changes: dict[str, object]) -> dict[str, object]:
     return dict(changes)
 
 
-__all__ = ["BACKLOG_PG_TABLES", "PgBacklogStore"]
+async def _require_tables(pool: asyncpg.Pool, tables: tuple[str, ...], migration: str) -> None:
+    """Refuse to run against a database the owning migration has not touched.
+
+    The DDL belongs to Alembic alone (see the module docstring), so instead of
+    quietly creating anything the stores probe for their tables and name the
+    migration that must run — an operator mistake made explicit beats a second
+    schema owner.
+    """
+    missing = [
+        table
+        for table in tables
+        if not await pool.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
+    ]
+    if missing:
+        msg = (
+            f"PostgreSQL database is missing the backlog tables ({', '.join(missing)}); "
+            f"run `alembic upgrade {migration}` against it before using these stores"
+        )
+        raise RuntimeError(msg)
+
+
+class PgAuthorityLedger:
+    """The authority ledger on the Alembic-managed `backlog_authority` table.
+
+    The durable twin of `SqliteAuthorityLedger`, reading the same
+    `AuthorityRecord` rows. Appends are one `INSERT ... RETURNING`, so the
+    revision the BIGSERIAL assigned and the row it annotates come back from a
+    single statement — no lock and no read-after-write window to lose a race
+    in, which is what the SQLite twin's `BEGIN IMMEDIATE` buys there.
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        await _require_tables(self._pool, PG_CUTOVER_TABLES, "head")
+
+    async def current(self) -> AuthorityRecord | None:
+        row = await self._pool.fetchrow(
+            "SELECT revision, authority, actor, at, note FROM backlog_authority "
+            "ORDER BY revision DESC LIMIT 1"
+        )
+        return AuthorityRecord.from_row(row) if row is not None else None
+
+    async def append(
+        self,
+        *,
+        authority: BacklogAuthority,
+        actor: str,
+        note: str,
+        at: datetime | None = None,
+    ) -> AuthorityRecord:
+        row = await self._pool.fetchrow(
+            "INSERT INTO backlog_authority (authority, actor, at, note) "
+            "VALUES ($1, $2, $3, $4) "
+            "RETURNING revision, authority, actor, at, note",
+            authority.value,
+            actor,
+            _now(at),
+            note,
+        )
+        if row is None:  # pragma: no cover - RETURNING always yields the row
+            msg = "authority append did not persist"
+            raise RuntimeError(msg)
+        return AuthorityRecord.from_row(row)
+
+    async def history(self) -> list[AuthorityRecord]:
+        rows = await self._pool.fetch(
+            "SELECT revision, authority, actor, at, note FROM backlog_authority "
+            "ORDER BY revision ASC"
+        )
+        return [AuthorityRecord.from_row(row) for row in rows]
+
+
+class PgDocumentState:
+    """The token-stream store on the Alembic-managed `backlog_documents` table.
+
+    The durable twin of `SqliteDocumentState`; the JSONB column carries the
+    same `[[kind, value], ...]` shape, read back through the pool's JSON codec
+    (`maistro.persistence._register_json_codecs`).
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        await _require_tables(self._pool, PG_CUTOVER_TABLES, "head")
+
+    async def get_tokens(self, document_id: str) -> tuple[tuple[str, str], ...] | None:
+        row = await self._pool.fetchrow(
+            "SELECT tokens FROM backlog_documents WHERE document_id = $1",
+            document_id,
+        )
+        if row is None:
+            return None
+        return tuple((str(kind), str(value)) for kind, value in row[0])
+
+    async def put_tokens(self, document_id: str, tokens: Sequence[tuple[str, str]]) -> None:
+        payload = json.dumps([[kind, value] for kind, value in tokens])
+        await self._pool.execute(
+            "INSERT INTO backlog_documents (document_id, tokens, updated_at) "
+            "VALUES ($1, $2::text::jsonb, $3) "
+            "ON CONFLICT (document_id) DO UPDATE "
+            "SET tokens = excluded.tokens, updated_at = excluded.updated_at",
+            document_id,
+            payload,
+            _now(None),
+        )
+
+
+__all__ = [
+    "BACKLOG_PG_TABLES",
+    "PG_CUTOVER_TABLES",
+    "PgAuthorityLedger",
+    "PgBacklogStore",
+    "PgDocumentState",
+]

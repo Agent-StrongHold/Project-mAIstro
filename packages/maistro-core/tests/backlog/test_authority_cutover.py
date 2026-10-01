@@ -10,6 +10,9 @@ means new connections reading what a closed connection wrote.
 
 from __future__ import annotations
 
+import os
+import uuid
+
 import aiosqlite
 import pytest
 
@@ -29,6 +32,7 @@ from maistro.backlog.cutover import (
 )
 from maistro.backlog.markdown_io import parse_markdown
 from maistro.backlog.store import InMemoryBacklogStore
+from maistro.testing.postgres import postgres_dsn
 
 DOC = (
     "# Backlog\n\n"
@@ -100,6 +104,73 @@ async def test_sqlite_ledger_and_document_state_survive_a_restart(tmp_path) -> N
         assert await documents2.get_tokens("other.md") is None
     finally:
         await conn2.close()
+
+
+async def test_pg_ledger_and_document_state_survive_a_restart() -> None:
+    """The PostgreSQL control stores read the same durable answer across
+    pools, from the Alembic-managed tables (`049`) the SQLite twin mirrors."""
+    dsn = postgres_dsn()
+    if not dsn:
+        if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
+            msg = "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_PG_DSN is empty"
+            raise RuntimeError(msg)
+        pytest.skip("set MAISTRO_TEST_PG_DSN to a migrated PostgreSQL database")
+    asyncpg = pytest.importorskip("asyncpg")
+    from maistro.backlog.pg_store import PgAuthorityLedger, PgDocumentState
+
+    pool = await asyncpg.create_pool(dsn)
+    assert pool is not None
+    try:
+        ledger = PgAuthorityLedger(pool)
+        documents = PgDocumentState(pool)
+        await ledger.ensure_schema()
+        await documents.ensure_schema()
+
+        # The ledger table is installation-global, so this leg tags its rows
+        # and asserts only on them: the suite may share the database.
+        tag = f"pg-leg-{uuid.uuid4().hex[:12]}"
+        cut = await ledger.append(authority=BacklogAuthority.DB, actor=tag, note="cut")
+        back = await revert_to_markdown(ledger, actor=tag, note="revert")
+        assert back.revision == cut.revision + 1
+        await documents.put_tokens("BACKLOG.md", parse_markdown(DOC).tokens)
+
+        # A second pool: the durable answer, not a shared in-memory one.
+        pool2 = await asyncpg.create_pool(dsn)
+        assert pool2 is not None
+        try:
+            ledger2 = PgAuthorityLedger(pool2)
+            documents2 = PgDocumentState(pool2)
+            mine = [r for r in await ledger2.history() if r.actor == tag]
+            assert [r.authority for r in mine] == [
+                BacklogAuthority.DB,
+                BacklogAuthority.MARKDOWN,
+            ]
+            current = await ledger2.current()
+            assert current is not None and current.revision >= back.revision
+            tokens = await documents2.get_tokens("BACKLOG.md")
+            assert tokens is not None
+            assert tokens == parse_markdown(DOC).tokens
+            assert await documents2.get_tokens("other.md") is None
+        finally:
+            await pool2.close()
+    finally:
+        await pool.close()
+
+
+async def test_pg_control_stores_refuse_an_unmigrated_database() -> None:
+    """Alembic owns the control DDL, so a database migration `049` has not
+    touched is an explicit refusal naming the migration, never a quiet
+    self-created schema."""
+
+    class _EmptyPool:
+        async def fetchval(self, _sql: str, _table: str) -> None:
+            return None
+
+    from maistro.backlog.pg_store import PgAuthorityLedger
+
+    ledger = PgAuthorityLedger(_EmptyPool())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="alembic upgrade"):
+        await ledger.ensure_schema()
 
 
 # ---------------------------------------------------------------------------
