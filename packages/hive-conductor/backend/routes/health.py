@@ -210,7 +210,7 @@ def health() -> dict:
         or (not memory_decay_enabled)
         or (not log_redaction)
         or identity_required
-        or engine["state"] in {"degraded", "startup_failed"},
+        or engine["state"] in {"degraded", "startup_failed", "unknown"},
     }
 
 
