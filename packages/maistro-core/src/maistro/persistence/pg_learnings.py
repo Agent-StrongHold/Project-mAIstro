@@ -7,6 +7,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
@@ -97,10 +98,18 @@ def similarity_query(
 
 
 class PgLearningStore:
-    """PostgreSQL-backed learning store."""
+    """PostgreSQL-backed learning store.
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    Write authority (ADR-057): constructed without an ``exposure_mode`` the
+    store refuses every write and promotion with ``MemoryUndeclaredModeError``;
+    with ``SYSTEM_MANAGED``, agent-actor writes and promotions raise
+    ``MemoryWriteDenied``. The gate is the first statement of each mutating
+    method, so a refusal executes no SQL and leaves no partial state.
+    """
+
+    def __init__(self, pool: asyncpg.Pool, exposure_mode: MemoryExposureMode | None = None) -> None:
         self._pool = pool
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Add the `org_id` column and its index if they are missing.
@@ -131,13 +140,17 @@ class PgLearningStore:
                 "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         Resolved before the dedup read, not after: the deduplicating branch
         returns early, and a provenance read that only happens on the insert
         path would be a second place for the rule to live (#709).
+
+        The write-authority gate precedes even the provenance read (ADR-057): a
+        denied agent write executes no SQL.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
@@ -432,8 +445,16 @@ class PgLearningStore:
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
-        """Promote learnings with hit_count >= threshold."""
+        """Promote learnings with hit_count >= threshold.
+
+        A promotion is the ADR-057 ``promote`` authority: under
+        ``SYSTEM_MANAGED`` it is admin-only, so an agent-actor call is denied
+        before the UPDATE runs (SPEC-062126-6a31, open question 5).
+        """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """UPDATE learnings SET status = 'promoted'

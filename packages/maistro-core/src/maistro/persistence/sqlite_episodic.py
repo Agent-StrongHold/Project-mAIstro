@@ -17,6 +17,7 @@ from maistro.memory.episodic.ranking import rank
 from maistro.memory.episodic.tiers import clamp_weight
 from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.scopes import build_scope_filter, scope_predicate
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.episodic_rows import (
@@ -107,10 +108,18 @@ def _mapped(cursor: Any, row: Any) -> dict[str, Any]:
 
 
 class SqliteEpisodicStore:
-    """SQLite-backed episodic store: `EpisodicStore` + `DecayableEpisodicStore`."""
+    """SQLite-backed episodic store: `EpisodicStore` + `DecayableEpisodicStore`.
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    Same ADR-057 write-authority gate as the PostgreSQL twin: no declared mode
+    refuses every write; ``SYSTEM_MANAGED`` denies agent-actor writes before
+    any SQL runs.
+    """
+
+    def __init__(
+        self, conn: aiosqlite.Connection, exposure_mode: MemoryExposureMode | None = None
+    ) -> None:
         self._conn = conn
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Create the table, and upgrade one created before the record's fields.
@@ -148,13 +157,17 @@ class SqliteEpisodicStore:
                 "CREATE INDEX IF NOT EXISTS idx_episodic_memories_run_id ON episodic_memories (run_id)"
             )
 
-    async def store(self, memory: EpisodicMemory) -> str:
+    async def store(self, memory: EpisodicMemory, *, actor: Actor = Actor.AGENT) -> str:
         """Store a memory, naming the execution that produced it.
 
         Upsert, as in PostgreSQL. The producer is resolved before the write by
         the same rule every provenance-bearing store uses: caller first,
         ambient context second, none stored as NULL (#64).
+
+        The write-authority gate is the first statement (ADR-057): a denial
+        executes no SQL and commits nothing.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=memory.run_id,
             node_run_id=memory.node_run_id,

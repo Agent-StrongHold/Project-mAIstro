@@ -157,10 +157,13 @@ class EngineService:
         owns, or to a closed connection. `start()` decides the store for the
         engine it is starting; it does not inherit one.
         """
+        from maistro.memory.exposure import MemoryExposureMode
         from maistro.memory.outcomes import InMemoryOutcomeStore
         from services import feedback_service
 
-        store = self.outcome_store or InMemoryOutcomeStore()
+        store = self.outcome_store or InMemoryOutcomeStore(
+            exposure_mode=MemoryExposureMode.AGENT_MANAGED
+        )
         feedback_service.set_outcome_store(store)
         logger.info("feedback_outcome_store_bound store=%s", type(store).__name__)
 
