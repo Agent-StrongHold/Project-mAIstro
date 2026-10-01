@@ -41,6 +41,7 @@ from maistro_rsi.model_identifiers import (
 )
 
 if TYPE_CHECKING:
+    from maistro_evolve.population import PopulationStore
     from maistro_rsi.harvest import PromotedPatch
 
 
@@ -316,6 +317,50 @@ def _build_parser() -> argparse.ArgumentParser:
         "simply proposes nothing.",
     )
 
+    calibrate = sub.add_parser(
+        "calibrate",
+        help="Run the #384 adversarial narration calibration against a stored "
+        "genome and print each proxy scorer's narration false-positive rate "
+        "over the held-out fixtures. Reports; it does not gate — fitness.py's "
+        "hard gates stay the only scoring authority.",
+    )
+    calibrate.add_argument(
+        "--db",
+        default=None,
+        help="PopulationStore path holding the genome to calibrate (default: in-memory).",
+    )
+    calibrate.add_argument(
+        "--genome-id",
+        default=None,
+        help="Genome id to calibrate (default: the store's fitness champion).",
+    )
+    calibrate.add_argument(
+        "--model",
+        default=None,
+        help="Model the candidate responder calls (default: MAISTRO_OPENAI_MODEL/OPENAI_MODEL).",
+    )
+    calibrate.add_argument(
+        "--base-url",
+        default=None,
+        help="OpenAI-compatible base URL "
+        "(default: MAISTRO_OPENAI_BASE_URL/OPENAI_BASE_URL/LITELLM_BASE_URL).",
+    )
+    calibrate.add_argument(
+        "--api-key",
+        default=None,
+        help="API key (default: MAISTRO_OPENAI_API_KEY/OPENAI_API_KEY/LITELLM_* env).",
+    )
+    calibrate.add_argument(
+        "--allow-unauthenticated-provider",
+        action="store_true",
+        help="Allow a local gateway that needs no API key.",
+    )
+    calibrate.add_argument(
+        "--json",
+        action="store_true",
+        help="Print only the machine-readable calibration report.",
+    )
+
     review = sub.add_parser(
         "review",
         help="List/approve/deny promotions the checkpoint reviewer reverted "
@@ -463,6 +508,72 @@ def _evolve(args: argparse.Namespace) -> int:
     champ = store.get_champion()
     if champ is not None:
         print(f"champion: {champ.name} (fitness={champ.fitness_score})")
+        _print_champion_provenance(store)
+    return 0
+
+
+def _print_champion_provenance(store: PopulationStore) -> None:
+    """Print the verified-evidence trail behind champion selection (#384).
+
+    The champion's fitness is a weighted fold of benchmark scores; this names,
+    for every scored benchmark, the verified method that produced the score
+    (``exact_match``, ``llm_judge``, ... — or the explicit ``unverified``). A
+    champion that got there by narrating shows up here instead of being
+    silently trusted.
+    """
+    provenance = store.champion_provenance()
+    if provenance is None:
+        return
+    for bench, record in provenance["benchmarks"].items():
+        print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
+
+
+def _calibrate(args: argparse.Namespace) -> int:
+    """`calibrate` — the offline promotion-evidence surface for #384.
+
+    Drives the real `calibrate_proxy_scorers` harness (held-out narration
+    fixtures that do no work, plus verified fixtures that do) with an
+    OpenAI-compatible provider as the candidate responder, and prints each
+    scorer's `narration_false_positive_rate`. Per benchmarks/calibration.py's
+    contract this REPORTS — it never rewrites scores or gates; the fitness
+    hard gates remain non-tradeable and the candidate cannot touch the
+    scorer (sensitive_paths).
+    """
+    import asyncio
+
+    from maistro_evolve.benchmarks.calibration import calibrate_proxy_scorers
+    from maistro_evolve.providers.openai_compatible import OpenAICompatibleProvider
+    from maistro_rsi.evolve_bridge import open_population
+
+    store = open_population(args.db)
+    genome = store.get(args.genome_id) if args.genome_id else store.get_champion()
+    if genome is None:
+        where = f"id {args.genome_id!r}" if args.genome_id else "no scored champion"
+        print(
+            f"error: no genome to calibrate ({where}); pass --db/--genome-id",
+            file=sys.stderr,
+        )
+        return 2
+    llm_call = OpenAICompatibleProvider(
+        model=args.model,
+        base_url=args.base_url,
+        api_key=args.api_key,
+        allow_unauthenticated=args.allow_unauthenticated_provider,
+    )
+    report = asyncio.run(calibrate_proxy_scorers(genome, llm_call))
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    print(f"calibration {report['calibration']} against genome {genome.id} ({genome.name})")
+    for scorer, result in report["scorers"].items():
+        fpr = result["narration_false_positive_rate"]
+        vpr = result["verified_positive_rate"]
+        verdict = "LEAK" if fpr > 0 else "clean"
+        print(
+            f"  {scorer}: narration_fpr={fpr} ({result['narration_false_positives_implied']}"
+            f"/{result['narration_fixtures']}) verified_positive={vpr} [{verdict}]"
+        )
+    print("report only — scoring authority stays with fitness.py's non-tradeable gates")
     return 0
 
 
@@ -734,6 +845,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "evolve":
         return _evolve(args)
+
+    if args.command == "calibrate":
+        return _calibrate(args)
 
     if args.command == "review":
         return _review(args)
