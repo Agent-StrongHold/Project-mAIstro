@@ -541,6 +541,10 @@ def test_health_survives_engine_probe_failure(monkeypatch: pytest.MonkeyPatch) -
     assert live.status_code == 200
     assert live.json()["engine"]["state"] == "unknown"
     assert live.json()["engine"]["cause"] == "health_probe_failed"
+    # Liveness and readiness must agree that something is wrong: an unreadable
+    # engine probe degrades the liveness body instead of reading as healthy
+    # while /health/ready returns 503.
+    assert live.json()["degraded"] is True
     ready = client.get("/health/ready")
     assert ready.status_code == 503
     assert ready.json()["checks"]["engine"] is False
