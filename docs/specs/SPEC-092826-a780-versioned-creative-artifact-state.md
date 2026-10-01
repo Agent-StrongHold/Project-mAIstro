@@ -17,13 +17,9 @@ substrate:
   - maistro-engine#ADR-019
   - maistro-engine#ADR-083026-1cb1
 implements:
-  - maistro-engine#773
+  - maistro-engine#ADR-083026-e602
 related:
-  - maistro-engine#774
-  - maistro-engine#775
-  - maistro-engine#777
-  - maistro-engine#779
-  - maistro-engine#780
+  - maistro-engine#SPEC-083026-b2b5
 supersedes: []
 blocks: []
 blocked-by: []
@@ -41,7 +37,7 @@ ac-modules:
   AC-7: maistro_design.versions
   AC-8: maistro_design.versions
   AC-9: maistro_design.versions
-layer: Design
+layer: Ability
 owners:
   - '@BlakeMatthews-dev'
 ---
@@ -57,9 +53,16 @@ and autonomous work never erases human edits or accepted versions.
 
 The model is an **extension of the canonical artifact/provenance contract**, not
 a competing artifact store: a version embeds the `DesignOutput` content shape
-and the canonical Run/NodeRun/Attempt provenance (#709, SPEC-083026-b2b5), and
-branch control is product state **projected onto** canonical `RunStatus` —
-never a second lifecycle (`scripts/check-execution-lifecycles.py` guards this).
+and the canonical Run/NodeRun/Attempt provenance (#709, SPEC-083026-b2b5) —
+this spec implements ADR-083026-e602's decision (a record names its producing
+execution) for creative artifact versions, the contract SPEC-083026-b2b5
+records for learnings/outcomes/design outputs — and branch control is product
+state **projected onto** canonical `RunStatus` — never a second lifecycle
+(`scripts/check-execution-lifecycles.py` guards this).
+
+Front-matter note: the issue graph (#773 parent; #774/#775/#777/#779 related)
+cannot be expressed in registry references, which admit only ADR/SPEC ids; the
+issue linkage lives here in prose.
 
 Reconciliation with the issue's dependency line (#774 CreativeBrief, #775
 creative DAG, #777 mixed control): at this lane's base none of those stores are

@@ -210,6 +210,7 @@ async def _refine(
 class TestOneArtifactThreeVersionsWithProvenance:
     """AC-1: AI generates, a person edits, an agent resumes — all inspectable."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-1")
     @pytest.mark.contract("behavioral")
     async def test_the_three_versions_remain_inspectable_with_correct_provenance(
         self, tmp_path: Path
@@ -250,6 +251,7 @@ class TestOneArtifactThreeVersionsWithProvenance:
 class TestLockingAnAcceptedArtifact:
     """AC-2: a locked accepted version refuses autonomous replacement."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-2")
     @pytest.mark.contract("behavioral")
     async def test_locked_version_refuses_refinement_but_not_unrelated_branches(
         self, tmp_path: Path
@@ -294,6 +296,7 @@ class TestLockingAnAcceptedArtifact:
 
 
 class TestExplicitRelease:
+    @pytest.mark.ac("SPEC-092826-a780/AC-2")
     @pytest.mark.contract("behavioral")
     async def test_releasing_the_lock_allows_the_refinement(self, tmp_path: Path) -> None:
         service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
@@ -329,6 +332,7 @@ class TestExplicitRelease:
 class TestLockingASharedDecision:
     """AC-3: a locked decision constrains the descendants that reference it."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-3")
     @pytest.mark.contract("behavioral")
     async def test_same_digest_passes_and_contradiction_is_refused(self, tmp_path: Path) -> None:
         service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
@@ -425,6 +429,7 @@ class TestRegionLocks:
 class TestGuidanceIsDurableProjectInput:
     """AC-4: guidance survives restart and reaches newly eligible work."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-4")
     @pytest.mark.contract("behavioral")
     async def test_guidance_survives_reopen_and_reroutes_new_work(self, tmp_path: Path) -> None:
         db = tmp_path / "a.sqlite3"
@@ -487,6 +492,7 @@ class TestGuidanceIsDurableProjectInput:
 class TestForkWithoutErasing:
     """AC-5: forking a creative direction preserves the original branch."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-5")
     @pytest.mark.contract("behavioral")
     async def test_fork_copies_content_and_keeps_the_source_intact(self, tmp_path: Path) -> None:
         service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
@@ -538,6 +544,7 @@ class TestForkWithoutErasing:
 class TestControlAndLocksSurviveRestart:
     """AC-6: durable control/lock rows projected onto canonical execution."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-6")
     @pytest.mark.contract("behavioral")
     async def test_state_survives_reopen_and_projects_canonical_status(
         self, tmp_path: Path
@@ -638,6 +645,7 @@ class TestControlAndLocksSurviveRestart:
 class TestConflictsAreSurfacedNeverSilent:
     """AC-7: a locked branch names every lock it raises, and writes nothing."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-7")
     @pytest.mark.contract("behavioral")
     async def test_branch_lock_blocks_every_origin_and_names_itself(self, tmp_path: Path) -> None:
         service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
@@ -712,6 +720,7 @@ class TestConflictsAreSurfacedNeverSilent:
 class TestManualAndAgentShareOneRepresentation:
     """AC-8: one representation, one export path, correctly attributed."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-8")
     @pytest.mark.contract("behavioral")
     async def test_both_origins_export_the_same_key_set(self, tmp_path: Path) -> None:
         service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
@@ -863,6 +872,7 @@ class TestTheStoreKeepsItsPromises:
 class TestOneMixedControlProject:
     """AC-9: direct, autonomous and locked branches active at the same moment."""
 
+    @pytest.mark.ac("SPEC-092826-a780/AC-9")
     @pytest.mark.contract("behavioral")
     async def test_three_branches_with_three_control_states(self, tmp_path: Path) -> None:
         service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
