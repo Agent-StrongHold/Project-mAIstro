@@ -410,6 +410,7 @@ def _resolver(
     on_response: OnResponseHook | None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
     effect_context: Any = None,
+    progress: Any = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -424,6 +425,7 @@ def _resolver(
             on_response=on_response,
             llm_builder=llm_builder,
             effect_context=effect_context,
+            progress=progress,
         )
 
     return resolve
@@ -569,12 +571,22 @@ async def execute_dag(
     user_credentials: dict[str, str] | None = None,
     execution_mode: str = "autonomous",
     on_response: OnResponseHook | None = None,
+    on_event: Callable[[dict[str, Any]], Any] | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
     scope: DagExecutionScope | None = None,
 ) -> dict[str, Any]:
-    """Run a shipped Hive DAG as one canonical durable Graph Run."""
+    """Run a shipped Hive DAG as one canonical durable Graph Run.
+
+    ``on_event`` (#1183) is an optional live per-node progress sink: it is
+    awaited with one event dict per node transition (``node_started`` /
+    ``node_completed`` / ``node_failed``) carrying the executing NodeRun's
+    canonical identity (``run_id``/``node_run_id``/``attempt_id``). It is a
+    presentation seam only -- it can neither change traversal nor outcomes,
+    and a raising sink is suppressed by the node adapter. Durable recovery
+    never attaches one: there is no live stream to serve.
+    """
     if scope is None:
         # Keep the user parameter only as a consistency check for old callers;
         # it is never an authorization source.
@@ -631,6 +643,7 @@ async def execute_dag(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
+            progress=on_event,
             effect_context=(
                 getattr(_container(), "capability_effects", None) if _container() else None
             ),
