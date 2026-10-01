@@ -755,11 +755,6 @@
       "issue": "#55",
       "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
     },
-    "packages/maistro-core/src/maistro/capabilities/binding_store.py": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#55",
-      "reason": "The one module the #55 grant missed. `binding.py` (the Binding record) is already tolerated here for the same reason; `binding_store.py` is where those records are registered and resolved, and the effect door reaches it for exactly the same reason it reaches binding.py -- the door resolves a Binding before every physical effect. It decides whether a capability is authorized, never whether a candidate is promoted or what score it receives, so it belongs on the tolerated surface rather than the protected one. This grant lands first so #1362 cannot approve its own closure."
-    },
     "packages/maistro-core/src/maistro/capabilities/bootstrap.py": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#55",
