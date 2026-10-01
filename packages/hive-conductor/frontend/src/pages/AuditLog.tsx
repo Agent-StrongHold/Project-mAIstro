@@ -284,7 +284,7 @@ export default function AuditLog() {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [loadMore]);
+  }, [loadMore, sentinel]);
 
   const onScroll = useCallback(() => {
     if (scrollRaf.current !== null) return;
