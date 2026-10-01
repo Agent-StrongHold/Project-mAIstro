@@ -680,12 +680,13 @@ async def _apply_changes(
     # Revalidate: the model guards status/closure pairing and field shape.
     updated = BacklogItem.model_validate(updated.model_dump())
     # Keep the filter/order columns in step with the payload, or `list_items`
-    # would answer from a status the payload no longer holds.
+    # would answer from a status or hierarchy the payload no longer holds.
     await conn.execute(
         """UPDATE backlog_items
-              SET status = ?, tags = ?, updated_at = ?, version = ?, payload = ?
+              SET parent_id = ?, status = ?, tags = ?, updated_at = ?, version = ?, payload = ?
             WHERE item_id = ?""",
         (
+            updated.parent_id,
             updated.status.value,
             json.dumps(list(updated.tags)),
             updated.updated_at.isoformat(),
