@@ -387,8 +387,15 @@ def _sorted_ascending(store: Any) -> list[tuple[str, str]]:
     heuristic cheap enough to beat a re-sort is not honest about same-length
     corpus replacement. Re-sorting per request is O(n log n) with a small
     constant — bounded, correct, and off the production path.
+
+    The mapping is snapshotted with a C-level `list(store.items())` copy
+    before any per-entry work: the copy is a single GIL-atomic operation,
+    whereas deriving `_created_at_of` while walking the live dict would
+    race a concurrent insert into
+    `RuntimeError: dictionary changed size during iteration`.
     """
-    return sorted((_created_at_of(entry), key) for key, entry in store.items())
+    snapshot = list(store.items())
+    return sorted((_created_at_of(entry), key) for key, entry in snapshot)
 
 
 def _created_at_of(entry: object) -> str:
