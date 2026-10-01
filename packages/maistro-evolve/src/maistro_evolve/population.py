@@ -121,6 +121,31 @@ class PopulationStore:
             return None
         return max(scored, key=_fitness_key)
 
+    def champion_provenance(self) -> dict[str, Any] | None:
+        """The verified-evidence trail behind champion selection (#384).
+
+        ``get_champion`` picks the max-fitness genome; this method names, for
+        every benchmark score that fitness rests on, the verified method that
+        produced it (``eval_evidence``, folded from the runners'
+        ``metadata["evidence"]``). A benchmark with no evidence record reads
+        "unverified" — visible as such, never silently trusted. Returns
+        ``None`` when there is no scored champion.
+        """
+        champion = self.get_champion()
+        if champion is None:
+            return None
+        return {
+            "genome_id": champion.id,
+            "fitness_score": champion.fitness_score,
+            "benchmarks": {
+                bench: {
+                    "score": champion.eval_scores.get(bench),
+                    "evidence": champion.eval_evidence.get(bench, "unverified"),
+                }
+                for bench in sorted(champion.eval_scores)
+            },
+        }
+
     def _promote(self, genome_id: str, *, require_capability: bool = True) -> PipelineGenome:
         """The raw promotion transition: approval gate + capability gate +
         ``is_active`` flip.
