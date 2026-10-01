@@ -2117,9 +2117,18 @@ class LocalRsiLoop:
                         score_b=b.composite,
                     )
         for v in fought:
-            elo = self._elo.get_avg_elo(v.genome_id)
-            if elo > 0:
-                by_id[v.genome_id].harness_params["avg_elo"] = elo
+            # Battle-evidence gate (#853): fitness's Elo term needs elo_battles.
+            battles = self._elo.get_total_battles(v.genome_id)
+            if battles > 0:
+                genome = by_id[v.genome_id]
+                genome.harness_params["avg_elo"] = self._elo.get_avg_elo(v.genome_id)
+                genome.harness_params["elo_battles"] = battles
+                # Write-back is mandatory: a DB-backed store's list_all()
+                # deserializes fresh objects, so without add() the evidence
+                # above lands on a throwaway copy — invisible to every later
+                # get()/fitness reader and lost on restart. Same write-back
+                # _fold_cycle_scores performs for the same reason.
+                self._population.add(genome)
 
     def _refit_cull_breed(self) -> list[Any]:
         """Fitness (reliability-multiplied) → cull the weakest → breed one child.
