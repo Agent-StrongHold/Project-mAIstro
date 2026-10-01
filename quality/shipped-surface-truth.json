@@ -2152,6 +2152,86 @@
       "production_enabled": true,
       "reason": "adds the artifact to the vault",
       "effect_owner": "turing artifact vault"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_campaign",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a versioned campaign policy record (owner-only); grants no permission and touches no Goal",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/policy",
+      "handler": "update_policy",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a new campaign policy_version, keeping prior versions for audit (owner-only)",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/controls",
+      "handler": "set_control",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "writes a durable pin-next/pause/exclude/human-only operator control, attributed to the actor",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/controls/{control_id}/clear",
+      "handler": "clear_control",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears an operator control as its own recorded decision (clearing is a record, not a deletion)",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "PUT",
+      "route": "/{campaign_id}/items/{item_id}",
+      "handler": "set_item_record",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "replaces the item's per-campaign mode override and explicit human priority; never writes the BacklogItem or Goal",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/items/{item_id}/park",
+      "handler": "park_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "parks an item with evidence, removing it from the eligible set until an attributed unpark",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/parks/{park_id}/unpark",
+      "handler": "unpark_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "attributed un-park decision returning the item to the eligible set",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/usage",
+      "handler": "record_usage",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records observed budget consumption against the campaign's stop conditions",
+      "effect_owner": "campaign store + campaign audit"
     }
   ],
   "frontend_surfaces": [
