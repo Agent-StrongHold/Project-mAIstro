@@ -68,10 +68,23 @@ travels in the Run's provenance, so "every Run in this conversation" is a query
 against existing data rather than a second kind of Run with different rules.
 
 **A chat turn's Run is terminal when the turn is.** It is admitted `QUEUED`,
-moved to `RUNNING` before dispatch, and terminalized `COMPLETED` or `FAILED`
-when the turn ends, including when it ends by raising. A turn refused by the
-Gate still gets a `COMPLETED` Run whose answer records the refusal: the turn
-happened and was answered, and that is the audit trail worth having.
+moved to `RUNNING` before dispatch, and terminalized `COMPLETED`, `FAILED` or
+`CANCELLED` when the turn ends, including when it ends by raising. A turn
+refused by the Gate still gets a `COMPLETED` Run whose answer records the
+refusal: the turn happened and was answered, and that is the audit trail worth
+having.
+
+`CANCELLED` is a third outcome and not a kind of failure. A client that
+disconnects, or a task the server cancels, raises `asyncio.CancelledError`
+through the turn, and `Container._close_chat_run` closes that Run as
+`RunStatus.CANCELLED` rather than `FAILED` -- pinned by
+`test_cancelled_turn_observes_cancelled_run_without_false_terminalization_warning`.
+The distinction is what makes the spine readable: a `FAILED` chat Run means the
+turn was attempted and did not succeed, which is worth alerting on, while a
+`CANCELLED` one means nobody is waiting for the answer any more, which is not.
+Recording a disconnect as a failure would put every closed browser tab into the
+same bucket as a broken provider call. A cancelled closure carries neither a
+result nor an error, and `_close_chat_run` refuses one that tries to.
 
 **Retention is bounded by the admitter, not by the store.** `ChatRunAdmitter`
 keeps a window of the last `MAX_RETAINED_CHAT_RUNS` (500) Runs it admitted, and
@@ -198,9 +211,28 @@ parses is unchanged; `run_id` sits alongside `choices` on every answered turn.
   elsewhere, and today there is nowhere: binding it needs the Conduit to report
   its selection, which is #142. Recording nothing is the honest interim state,
   not a complete one.
-- 500 is a judgement, not a measurement. It is small enough that a busy process
-  holds well under a megabyte of chat Runs and large enough that a `run_id`
-  handed to a caller still resolves minutes later.
+- 500 is a judgement, not a measurement: it is large enough that a `run_id`
+  handed to a caller still resolves minutes later. What it is *not* is a bound
+  on memory, and an earlier draft of this ADR claimed it was -- that a busy
+  process would hold "well under a megabyte". That was wrong, and worth
+  recording as wrong rather than quietly deleting.
+
+  The window bounds the **count** of retained chat Runs, never their size. Each
+  Run holds the user's message twice -- once in the Graph description and once
+  in the node parameters -- plus the answer. So the byte ceiling is set by
+  whatever caps a single message, and that differs by entry point:
+
+  - Over HTTP, `max_request_body_bytes` (1,048,576, and operator-tunable via
+    `MAISTRO_MAX_REQUEST_BODY_BYTES`) caps the body. A full-size turn is
+    therefore on the order of two megabytes retained, and 500 of them is
+    **hundreds of megabytes, not a megabyte**.
+  - A direct in-process caller of `route_request` passes no HTTP body and has
+    **no equivalent cap**, so the retained size is unbounded in principle.
+
+  Neither is a reason to change 500, which is a resolution window and does its
+  job. It is a reason not to read it as a memory bound. Bounding the bytes
+  needs a message-length limit on the core path, or storing the message once
+  instead of twice; both are follow-ups this ADR does not claim.
 
 ### Neutral
 - Nothing about chat *routing* changes here. The turn still goes through
