@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import runpy
 import sys
 from pathlib import Path
 
@@ -431,3 +432,210 @@ def test_attestation_ignores_digest_outside_slsa_resolved_dependencies(gate, tmp
     unrelated = tree / "unrelated.json"
     unrelated.write_text(_unrelated_field_record(hex_of(DIGEST)), encoding="utf-8")
     assert gate.verify_attestation(str(unrelated), df) == 1
+
+
+# --- the parser's fail-closed surface ---------------------------------------
+# A Dockerfile the parser cannot fully resolve must produce a recorded error,
+# never a silently skipped reference: the silent-skip shape is exactly how an
+# unpinned base slips past every other rule tested above.
+
+
+def test_comments_and_blank_lines_are_skipped(gate, tmp_path, monkeypatch):
+    """Non-executable Dockerfile lines are neither refs nor errors."""
+    df = "# header comment\n\nFROM python:3.13.1-slim@sha256:" + hex_of(DIGEST) + "\n"
+    tree = _tree(tmp_path, {"Dockerfile": df}, [_pin()])
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_arg_defaults_resolve_from_and_copy_from_references(gate, tmp_path, monkeypatch):
+    """`ARG BASE=ref` + `FROM $BASE` is one pinned reference, not an escape."""
+    df = (
+        "ARG CACHEBUST\n"
+        "ARG BASE=python:3.13.1-slim@sha256:" + hex_of(DIGEST) + "\n"
+        "FROM $BASE AS builder\n"
+        "ARG SRC=builder\n"
+        "COPY --from=$SRC /out /out\n"
+    )
+    tree = _tree(tmp_path, {"Dockerfile": df}, [_pin()])
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_unresolvable_build_arg_reference_fails_closed(gate, tmp_path, monkeypatch, capsys):
+    """`FROM $UNDEFINED` is a recorded parse error, never a skipped line."""
+    tree = _tree(tmp_path, {"Dockerfile": "FROM $UNDEFINED_BASE\n"}, [])
+    assert _run(gate, tree, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "cannot resolve build-arg reference" in err
+    assert "unparseable reference" in err
+
+
+def test_copy_from_unresolvable_build_arg_fails_closed(gate, tmp_path, monkeypatch, capsys):
+    """The same fail-closed rule on the COPY --from side."""
+    df = (
+        "FROM python:3.13.1-slim@sha256:" + hex_of(DIGEST) + "\n"
+        "COPY --from=$UNDEFINED_SOURCE /out /out\n"
+    )
+    tree = _tree(tmp_path, {"Dockerfile": df}, [_pin()])
+    assert _run(gate, tree, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "cannot resolve build-arg reference" in err
+    assert "unparseable reference" in err
+
+
+def test_unreadable_registry_exits_with_the_path(gate, tmp_path):
+    """A registry the gate cannot read must stop the run, not pass it."""
+    with pytest.raises(SystemExit, match="cannot read"):
+        gate.load_json(tmp_path / "absent" / "image-pins.json")
+
+
+def test_duplicate_pin_rows_fail(gate, tmp_path, monkeypatch, capsys):
+    """Two rows for one image+digest is ambiguous authority — fail loudly."""
+    tree = _tree(
+        tmp_path,
+        {"Dockerfile": "FROM python:3.13.1-slim@sha256:" + hex_of(DIGEST) + "\n"},
+        [_pin(), _pin(recorded="2026-10-01")],
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "duplicate pin rows" in capsys.readouterr().err
+
+
+def test_registry_row_with_malformed_digest_fails(gate, tmp_path, monkeypatch, capsys):
+    """The registry holds its rows to the same digest shape as the tree."""
+    tree = _tree(
+        tmp_path,
+        {"Dockerfile": "FROM python:3.13.1-slim@sha256:" + hex_of(DIGEST) + "\n"},
+        [_pin(digest="sha256:short")],
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "has a malformed digest" in capsys.readouterr().err
+
+
+def test_base_digests_missing_dockerfile(gate, tmp_path, monkeypatch):
+    """release.yml feeding a typo'd path must stop the release, not emit nothing."""
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    with pytest.raises(SystemExit, match="no such Dockerfile"):
+        gate.base_digests(["missing/Dockerfile"])
+
+
+# --- the attestation reader's fail-closed surface ---------------------------
+
+
+def test_attestation_tolerates_blank_lines_and_non_mapping_dependencies(
+    gate, tmp_path, monkeypatch
+):
+    """cosign NDJSON with separator blank lines and dependency entries that are
+    not objects (future schema drift) still reads: skip, never crash, never
+    let the non-object entry stand in for a digest."""
+    df = "Dockerfile"
+    tree = _tree(
+        tmp_path,
+        {df: PINNED.format(d=hex_of(DIGEST), d2=hex_of(OTHER_DIGEST))},
+        [],
+    )
+    monkeypatch.setattr(gate, "ROOT", tree)
+    statement = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "resolvedDependencies": [
+                "not-a-mapping",
+                {"uri": f"pkg:docker/python@{DIGEST}", "digest": {"sha256": hex_of(DIGEST)}},
+                {
+                    "uri": f"pkg:docker/docker@{OTHER_DIGEST}",
+                    "digest": {"sha256": hex_of(OTHER_DIGEST)},
+                },
+            ]
+        },
+    }
+    record = {"payload": base64.b64encode(json.dumps(statement).encode()).decode()}
+    raw = "\n\n" + json.dumps(record) + "\n"
+    att = tree / "att.json"
+    att.write_text(raw, encoding="utf-8")
+    assert gate.verify_attestation(str(att), df) == 0
+
+
+def test_verify_attestation_without_pinned_bases(gate, tmp_path, monkeypatch):
+    """A Dockerfile with no external base has nothing to prove — say so."""
+    df = "Dockerfile"
+    tree = _tree(tmp_path, {df: "FROM scratch\nRUN true\n"}, [])
+    monkeypatch.setattr(gate, "ROOT", tree)
+    att = tree / "att.json"
+    att.write_text("\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="no pinned base references"):
+        gate.verify_attestation(str(att), df)
+
+
+def test_verify_attestation_unreadable_file(gate, tmp_path, monkeypatch):
+    """A missing attestation download fails with the path, never vacuously."""
+    df = "Dockerfile"
+    tree = _tree(tmp_path, {df: "FROM python:3.13.1-slim@sha256:" + hex_of(DIGEST) + "\n"}, [])
+    monkeypatch.setattr(gate, "ROOT", tree)
+    with pytest.raises(SystemExit, match="cannot read"):
+        gate.verify_attestation(str(tree / "absent.json"), df)
+
+
+# --- the CLI surface (release.yml invokes these flags verbatim) --------------
+
+
+def test_cli_base_digests_prints_pinned_refs(gate, tmp_path, monkeypatch, capsys):
+    tree = _tree(
+        tmp_path,
+        {"Dockerfile": PINNED.format(d=hex_of(DIGEST), d2=hex_of(OTHER_DIGEST))},
+        [],
+    )
+    monkeypatch.setattr(gate, "ROOT", tree)
+    assert gate.cli(["--base-digests", "Dockerfile"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        f"docker:29-cli@{OTHER_DIGEST}",
+        f"python:3.13.1-slim@{DIGEST}",
+    ]
+
+
+def test_cli_verify_attestation_dispatches(gate, tmp_path, monkeypatch):
+    df = "Dockerfile"
+    tree = _tree(
+        tmp_path,
+        {df: PINNED.format(d=hex_of(DIGEST), d2=hex_of(OTHER_DIGEST))},
+        [],
+    )
+    monkeypatch.setattr(gate, "ROOT", tree)
+    att = tree / "att.json"
+    att.write_text(_attestation_records([hex_of(DIGEST), hex_of(OTHER_DIGEST)]), encoding="utf-8")
+    assert gate.cli(["--verify-attestation", str(att), "--dockerfile", df]) == 0
+
+
+def test_cli_verify_attestation_requires_dockerfile(gate, tmp_path, monkeypatch, capsys):
+    """--verify-attestation without a target Dockerfile is a usage error (exit 2)."""
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    with pytest.raises(SystemExit) as excinfo:
+        gate.cli(["--verify-attestation", "att.json"])
+    assert excinfo.value.code == 2
+    assert "--verify-attestation requires --dockerfile" in capsys.readouterr().err
+
+
+def test_cli_with_no_flags_runs_the_gate(gate, tmp_path, monkeypatch, capsys):
+    tree = _tree(
+        tmp_path,
+        {"Dockerfile": PINNED.format(d=hex_of(DIGEST), d2=hex_of(DIGEST))},
+        [_pin(), _pin(image="docker", tag="29-cli", digest=DIGEST)],
+    )
+    monkeypatch.setattr(gate, "ROOT", tree)
+    monkeypatch.setattr(gate, "PINS", tree / "quality" / "image-pins.json")
+    monkeypatch.setattr(gate, "INVENTORY", tree / "quality" / "image-inventory.json")
+    assert gate.cli([]) == 0
+    assert "all registered in image-pins.json" in capsys.readouterr().out
+
+
+def test_dunder_main_entrypoint_runs_the_real_gate(monkeypatch, capsys):
+    """`python scripts/check-image-pins.py` — the release/CI invocation — must
+    dispatch through cli() to the gate and exit 0 on the shipped tree. In-process
+    under the coverage producer only runpy can execute the __main__ guard, so
+    this is also what keeps the entry point itself measured; and because it runs
+    the real tree, it is the end-to-end proof that every shipped Dockerfile is
+    pinned and registered in the same breath."""
+    exits: list[object] = []
+    monkeypatch.setattr(sys, "argv", ["check-image-pins.py"])
+    monkeypatch.setattr(sys, "exit", exits.append)
+    runpy.run_path(str(SCRIPT), run_name="__main__")
+    assert exits == [0]
+    assert "all registered in image-pins.json" in capsys.readouterr().out

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +22
+  tests/: +38
 ---
 # 349-image-digest-pins
 
@@ -35,7 +35,18 @@ holds `scripts/check-image-pins.py` to its contract:
 - an exemption must carry `owner`, `issue` and `reason`, and can only shield
   INTERNAL images — a PUBLISHED/DISTRIBUTED Dockerfile must pin, period;
 - `ARG` defaults resolve `$VAR` references, and an unresolvable one is a
-  recorded parse error, never a silent skip;
+  recorded parse error, never a silent skip (same fail-closed rule on the
+  `COPY --from` side, and for registry rows with malformed digests or
+  duplicate rows for one image+digest);
+- the attestation reader skips NDJSON separator blank lines and dependency
+  entries that are not objects (schema drift cannot crash the gate, and a
+  non-object entry cannot stand in for a digest), and fails with the path
+  when a Dockerfile has no pinned bases or the attestation file is missing;
+- the CLI surface release.yml drives (`--base-digests`,
+  `--verify-attestation` with and without `--dockerfile`, and the bare
+  invocation) dispatches correctly, and `python scripts/check-image-pins.py`
+  (run via `runpy` under `__main__`) ends-to-end passes on the shipped tree —
+  every shipped Dockerfile pinned and registered in the same breath;
 - Copier conditional filenames (`{% if %}Dockerfile{% endif %}.jinja`) are
   discovered by name containment, so shipped scaffolds cannot sit outside
   the gate (the single-tenant template is pinned in `quality/image-pins.json`).
