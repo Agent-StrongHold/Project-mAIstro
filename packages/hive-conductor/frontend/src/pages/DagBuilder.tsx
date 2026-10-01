@@ -159,34 +159,64 @@ export default function DagBuilder() {
   const [execState, setExecState] = useState<{ running: boolean; nodeId: string | null; runId: string | null; log: string[] }>({ running: false, nodeId: null, runId: null, log: [] });
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{ nodeId: string; offX: number; offY: number } | null>(null);
+  // The live Run socket, kept in a ref so the unmount cleanup below can close
+  // it (#355): navigating during a Run used to leave the connection — and its
+  // setExecState/toast handlers — alive against the unmounted tree.
+  const runSocketRef = useRef<WebSocket | null>(null);
 
-  const loadDags = useCallback(async () => {
-    try {
-      setLoading(true);
-      setDags(await apiGet<DAGFile[]>("/v1/dags"));
-    } catch {
-      toast("Failed to load DAGs", "error");
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
-  const loadAgents = useCallback(async () => {
-    try {
-      setAgents(await apiGet<Agent[]>("/v1/agents"));
-    } catch (e) {
-      // Swallowing this left the node-type picker empty with no explanation:
-      // the builder renders fine, offers no agents, and looks like the fleet
-      // is empty rather than unreachable.
-      toast(`Could not load agents: ${e instanceof Error ? e.message : String(e)}`, "error");
-    }
-  }, [toast]);
-
+  // Unmount closes the Run socket and strips its handlers, so nothing fires a
+  // state update after the tree is gone. This close does NOT cancel the
+  // durable backend Run: `services/graph_runner.execute_dag_streaming`
+  // records the Run projection before it sends any frame and
+  // `routes/ws._stream_dag_run` treats a client disconnect as end-of-stream,
+  // and the client protocol has no cancel message — a remount resumes from
+  // canonical state (DAG Runs) rather than duplicating the subscription.
   useEffect(() => {
-    loadDags();
-    loadAgents();
-    apiGet<{ models: string[] }>("/v1/settings/models").then((r) => setAvailableModels(r.models)).catch(() => {});
-  }, [loadDags, loadAgents]);
+    return () => {
+      const ws = runSocketRef.current;
+      if (!ws) return;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+      runSocketRef.current = null;
+    };
+  }, []);
+
+  // The mount-scoped loads each carry a cleanup closure (#355), so a response
+  // that lands after unmount updates nothing. addToast is a stable identity,
+  // so this still runs exactly once per mount.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        setLoading(true);
+        const list = await apiGet<DAGFile[]>("/v1/dags");
+        if (!cancelled) setDags(list);
+      } catch {
+        if (!cancelled) toast("Failed to load DAGs", "error");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    void (async () => {
+      try {
+        const list = await apiGet<Agent[]>("/v1/agents");
+        if (!cancelled) setAgents(list);
+      } catch (e) {
+        // Swallowing this left the node-type picker empty with no explanation:
+        // the builder renders fine, offers no agents, and looks like the fleet
+        // is empty rather than unreachable.
+        if (!cancelled) toast(`Could not load agents: ${e instanceof Error ? e.message : String(e)}`, "error");
+      }
+    })();
+    void apiGet<{ models: string[] }>("/v1/settings/models")
+      .then((r) => { if (!cancelled) setAvailableModels(r.models); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [toast]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -329,7 +359,19 @@ export default function DagBuilder() {
     }
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run?workspace_id=${encodeURIComponent(activeWorkspaceId)}`;
+    // One Run at a time: retire a socket a previous run could have left
+    // behind before opening a fresh one, so subscriptions never stack (#355).
+    const previous = runSocketRef.current;
+    if (previous) {
+      previous.onmessage = null;
+      previous.onerror = null;
+      previous.onclose = null;
+      if (previous.readyState === WebSocket.CONNECTING || previous.readyState === WebSocket.OPEN) {
+        previous.close();
+      }
+    }
     const ws = new WebSocket(wsUrl);
+    runSocketRef.current = ws;
     // Set once the socket reports a terminal or parked Run (or an error), so
     // the close that follows is expected rather than a dropped connection.
     let settled = false;
@@ -388,6 +430,7 @@ export default function DagBuilder() {
       toast("WebSocket error", "error");
     };
     ws.onclose = () => {
+      if (runSocketRef.current === ws) runSocketRef.current = null;
       if (settled) return;
       settled = true;
       setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, "Connection closed before the Run reported a final state"] }));
