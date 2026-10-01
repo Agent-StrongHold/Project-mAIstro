@@ -693,6 +693,58 @@ class TestTheDispatchedLifecycle:
         assert run.status == "stopped"
         assert run.container_id == "container-id-1"
 
+    def test_a_stop_that_races_the_launch_stops_what_launch_started(
+        self,
+        fake_docker: FakeDocker,
+        report_root: Path,
+        authorized_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`docker run` happens in a thread cancellation cannot interrupt: a
+        stop that arrives mid-launch sees no container_id, yet the container
+        still gets started a moment later. The cleanup must wait out the
+        bounded launch and stop whatever it actually started."""
+        from services import rsi_container_dispatch as dispatch
+
+        launched = threading.Event()
+        release = threading.Event()
+        stopped: list[str] = []
+
+        def fake_launch(spec: object) -> str:
+            launched.set()
+            release.wait(10)
+            return "container-id-1"
+
+        def fake_stop(container_id: str) -> bool:
+            stopped.append(container_id)
+            return True
+
+        monkeypatch.setattr(dispatch, "launch", fake_launch)
+        monkeypatch.setattr(dispatch, "stop_container", fake_stop)
+
+        def fail_if_waited(container_id: str) -> int:
+            raise AssertionError("a cancelled launch must not reach the wait")
+
+        monkeypatch.setattr(dispatch, "wait", fail_if_waited)
+
+        svc = self._service()
+        run = _cleanup_run("abc123", authorized_repo)
+        svc._runs[run.run_id] = run
+
+        async def scenario() -> None:
+            run.task = asyncio.ensure_future(svc._drive(run))
+            await asyncio.to_thread(launched.wait, 10)
+            assert run.container_id is None
+            assert svc.stop_run(run.run_id) is True
+            release.set()
+            await asyncio.gather(run.task, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+        assert stopped == ["container-id-1"]
+        assert run.status == "stopped"
+        assert run.container_id == "container-id-1"
+
     def test_a_container_that_exits_non_zero_is_reported_errored(
         self,
         fake_docker: FakeDocker,

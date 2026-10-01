@@ -233,32 +233,53 @@ class _RsiService:
         run.report_dir = str(spec.report_dir)
         run.export_dir = str(spec.report_dir / "export")
 
-        container_id = await asyncio.to_thread(_dispatch.launch, spec)
-        run.container_id = container_id
-        logger.info(
-            "rsi run %s dispatched into container %s (%s)",
-            run.run_id,
-            container_id,
-            _dispatch.describe(spec),
-        )
+        # The launch runs in a thread the event loop can only abandon, not
+        # interrupt, so a stop that races this window would see no
+        # container_id and leave whatever `docker run` starts unowned. Keep the
+        # future alive through cancellation (shield) so the cleanup below can
+        # wait out the bounded launch and stop the container it produced.
+        launch_task: asyncio.Task[str] | None = None
+        container_id: str | None = None
         try:
+            launch_task = asyncio.ensure_future(asyncio.to_thread(_dispatch.launch, spec))
+            container_id = await asyncio.shield(launch_task)
+            run.container_id = container_id
+            logger.info(
+                "rsi run %s dispatched into container %s (%s)",
+                run.run_id,
+                container_id,
+                _dispatch.describe(spec),
+            )
             exit_code = await self._await_container(run, spec.report_dir, container_id)
         except asyncio.CancelledError:
-            # The task was cancelled without stop_run's container stop (event-
-            # loop teardown, service shutdown): stop here too, so no dispatched
-            # run outlives its service record by accident. stop_run already
-            # stopped the container and marked the record before cancelling, so
-            # its path skips this — one bounded stop, not a second one racing
-            # the first. Best-effort — a failure to stop must not mask the
-            # cancellation itself.
-            if run.status != "stopped":
+            # The task was cancelled without stop_run having a container to
+            # stop: stop here too, so no dispatched run outlives its service
+            # record by accident. stop_run stops the container and marks the
+            # record before cancelling, so its path (cancel during the wait,
+            # container_id already set) skips the stop below — one bounded
+            # stop, not a second one racing the first. Best-effort — a failure
+            # to stop must not mask the cancellation itself.
+            stop_id = container_id if run.status != "stopped" else None
+            if container_id is None and launch_task is not None:
+                # Cancelled mid-launch: the worker thread outlives the cancel
+                # and may still start the container, and stop_run saw no
+                # container_id — nothing else will stop it. Wait out the
+                # bounded launch and stop what it actually started.
                 try:
-                    await asyncio.to_thread(_dispatch.stop_container, container_id)
+                    container_id = await asyncio.shield(launch_task)
+                except Exception:
+                    container_id = None
+                if container_id:
+                    run.container_id = container_id
+                    stop_id = container_id
+            if stop_id:
+                try:
+                    await asyncio.to_thread(_dispatch.stop_container, stop_id)
                 except Exception:
                     logger.warning(
                         "rsi run %s: container %s survived cancellation",
                         run.run_id,
-                        container_id,
+                        stop_id,
                         exc_info=True,
                     )
             raise

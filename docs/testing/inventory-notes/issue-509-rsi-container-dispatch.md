@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +25
+  packages/hive-conductor/backend/tests: +26
   packages/maistro-rsi/tests: +1
 ---
 # issue-509-rsi-container-dispatch
 
-## packages/hive-conductor/backend/tests: +25
+## packages/hive-conductor/backend/tests: +26
 
-`test_rsi_container_dispatch.py` (+24, new) is the suite for the container
+`test_rsi_container_dispatch.py` (+25, new) is the suite for the container
 dispatch backend that #509 adds (`services/rsi_container_dispatch.py`) and the
 service lifecycle that consumes it. Docker is never contacted: every test
 drives the same `_run_docker` seam the production paths use, so a green run is
@@ -43,7 +43,7 @@ the docker CLI.)
   forwards (added after the first run of this change omitted the required
   `--test-cmd`, which would have failed every dispatch at exit 2 inside the
   container, before a single cycle).
-- The dispatched lifecycle (8): a run starts and is contained (status
+- The dispatched lifecycle (9): a run starts and is contained (status
   `completed`, container id recorded, the in-process `LocalRsiLoop`
   demonstrably never constructed, every host subprocess a docker verb and none
   an `exec`, and `launch()` staged the container's global git config into the
@@ -53,7 +53,12 @@ the docker CLI.)
   naming the missing piece, no launch attempted); cancellation stops the
   container and settles the record `stopped` (one bounded stop — `stop_run`'s —
   with the cancellation path's stop reserved for cancellations that didn't go
-  through `stop_run`); a container exiting non-zero is `errored`; a container
+  through `stop_run`); a stop that races the launch — arriving while `docker
+  run` is still unrolling in its worker thread, so no container id exists yet
+  — waits out the bounded launch and stops the container it actually started,
+  and the cancelled run never reaches the wait (a container that must never
+  be waited on once its run was stopped); a container exiting non-zero is
+  `errored`; a container
   the backend loses (daemon restart) is `errored` rather than running forever;
   checkpoints the container wrote become run cycles/promotions/summary for the
   UI; and the spec derives output directories from the run id under the
