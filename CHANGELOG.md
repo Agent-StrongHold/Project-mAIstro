@@ -793,6 +793,17 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Turing's synchronous bridge no longer blocks the event loop (#397).**
+  The provider bridge used to answer event-loop callers by blocking on an
+  unbounded `Future.result()`, so one stuck LLM call froze every coroutine on
+  that loop. Sync callers now run through a dedicated thread/loop boundary
+  (`SyncLoopRunner`) with a bounded timeout (default 120s, configurable via
+  `TuringProviderBridge(sync_timeout_seconds=...)`), cancellation propagation
+  on timeout/shutdown, and rejection of reentrant calls from the boundary's
+  own loop; `TuringProviderBridge.close()` cancels outstanding work. The
+  production async paths (chat session, producers) now await the
+  `acomplete` seam, so the owning loop keeps progressing during model calls.
+
 - **The Run purge's dependent-reference inventory names every `run_id` table
   (#1175, partial).** `maistro.runs.retention_scope` now records a policy for
   `capability_invocations`, `capability_approvals` and `task_idempotency`
