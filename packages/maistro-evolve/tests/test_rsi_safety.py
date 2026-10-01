@@ -365,6 +365,40 @@ class TestCapabilityPromotionGate:
             asyncio.run(store.promote_audited("weak2", _trail()))
         assert store.get("weak2").is_active is False
 
+    def test_raw_transition_gates_capability_out_from_under_the_policy(self, tmp_path):
+        # Defense-in-depth, tested at its own layer: the governed policy
+        # refuses first via promote_audited, but the raw transition must keep
+        # the capability gate for any future caller that reaches _promote out
+        # from under the governed entrypoint (the exact regression this
+        # private transition exists to make constructible-proof, #342 +
+        # #853). An approved genome with a below-gate score cannot be flipped
+        # active by skipping the policy.
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome(
+            "rawgate",
+            fitness_score=99.0,
+            approved_for_promotion=True,
+            eval_scores={"proxy_ifeval": 0.1},
+        )
+        store.add(g)
+        with pytest.raises(PermissionError, match="cannot be promoted"):
+            store._promote("rawgate")
+        assert store.get("rawgate").is_active is False
+
+    def test_compensation_restore_skips_capability_never_approval(self, tmp_path):
+        # The audit-failure compensation path restores with
+        # require_capability=False (a revert of an already-made decision,
+        # not a new promotion) — but the human-approval gate applies
+        # unconditionally even there. A never-approved genome cannot be
+        # slipped active by riding a compensation restore.
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome("unapproved", fitness_score=99.0, eval_scores={"code_rsi": 0.9})
+        assert g.approved_for_promotion is False
+        store.add(g)
+        with pytest.raises(PermissionError, match="not been approved"):
+            store._promote("unapproved", require_capability=False)
+        assert store.get("unapproved").is_active is False
+
 
 # --------------------------------------------------------------------------
 # 4. Kill-switch / rollback

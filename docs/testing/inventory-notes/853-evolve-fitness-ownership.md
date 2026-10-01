@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-evolve/tests: +41
+  packages/maistro-evolve/tests: +43
+  packages/maistro-rsi/tests: +2
 ---
 
 # Evolve fitness is population-owned, missing-data-pessimistic, capability-grounded (#853)
@@ -49,7 +50,11 @@ weights before ownership/missing-data semantics are corrected). Concretely:
   reweighting (the audited compensation path restores with
   `require_capability=False`; the approval gate always applies).
 
-## Test delta (+41)
+## Test delta (+43 evolve, +2 rsi; diff-coverage CI-repair round)
+
+The original 41, plus the two suites the CI diff-coverage gate measured below
+its floor, both pinning the two promotion/battle-evidence refusal paths the
+diff introduced but no public path reaches:
 
 - `tests/test_fitness_ownership.py` (new, 30): objective ownership (genome
   reweighting attack is dead; frozen objective; mutation/crossover cannot move
@@ -67,7 +72,7 @@ weights before ownership/missing-data semantics are corrected). Concretely:
 - `tests/test_fitness.py` (+3): missing/zero cost and latency are unknown
   (`None`), Elo requires battle evidence, capability immunity to context
   terms; weight-sum pin moved to the objective.
-- `tests/test_rsi_safety.py` (+3): `TestCapabilityPromotionGate` — never-
+- `tests/test_rsi_safety.py` (+3 → +5): `TestCapabilityPromotionGate` — never-
   evaluated and gate-failing genomes refuse promotion even with padded
   harness evidence; a reweighted objective cannot rescue a gated candidate.
 - `tests/test_cycle.py` (+4): `TestFitnessEvidenceLedger` — identical
@@ -125,3 +130,42 @@ compose rather than compete:
   fields have production readers (the cycle evidence ledger) and the
   tombstone function was removed outright, so no new identity needed
   banking — net vulture debt shrank by 3.
+
+## CI-repair round 2: diff-coverage floor (this branch)
+
+CI's Coverage gate failed the per-file diff-coverage step at 172ecfbe on two
+files (`population.py` line 206 uncovered; `local_loop.py` 50% of 2 branch
+arcs at 2068) while the publish-set floor passed. Reproduced locally against
+the same base (4e7ef1ab1) with the same producer flags; both were genuine
+test-evidence gaps in this change's own guard rails, not measurement noise:
+
+- `population.py:206` is `_promote`'s capability-gate `PermissionError`.
+  Since #854 the governed policy (`promotion_eligibility`) refuses first via
+  the same `_check_hard_gate`, so no public path reached the defense-in-depth
+  raise. Two tests pin the guard at its own layer:
+  `test_raw_transition_gates_capability_out_from_under_the_policy` (a future
+  caller bypassing the governed entrypoint cannot flip a gate-failing genome
+  active) and `test_compensation_restore_skips_capability_never_approval`
+  (the `require_capability=False` restore path still enforces the
+  human-approval gate unconditionally).
+- `local_loop.py:2068` is `_record_cycle_battles`'s `if battles > 0:` — the
+  unmeasured arc was the FALSE branch: a fought variant with zero recorded
+  battles. `test_zero_battle_variant_writes_no_elo_evidence` pins that it
+  gains neither `avg_elo` nor `elo_battles` (the #853 freebie removal), and
+  `test_same_slot_battle_writes_elo_evidence_for_both_fighters` pins the
+  positive half.
+- Writing the positive-half test exposed a real defect in the battle-
+  evidence gate itself: with a DB-backed `PopulationStore`, `list_all()`
+  deserializes fresh objects, so the harness_params mutation landed on a
+  throwaway copy and the Elo evidence was never persisted — the gate could
+  not actually feed `compute_fitness` after a restart, and even in-process
+  `get()` returned the un-evidenced original. `_record_cycle_battles` now
+  writes the genome back via `store.add(genome)`, the same write-back the
+  adjacent `_fold_cycle_scores` performs for the same reason. No gate or
+  threshold changed; the evidence the gate records is now durable.
+
+Post-fix local gate evidence: `scripts/check-diff-coverage.py coverage.xml
+--base 4e7ef1ab1` → ok (evolve 776+6skipped, rsi 788, hive-conductor 3013+6,
+all under the CI producers' exact `--source` flags); suite-inventory
+re-recorded via `--update --note 853-evolve-fitness-ownership` (+43 evolve,
++2 rsi); vulture ratchet clean at 1380 banked findings; ruff clean.
