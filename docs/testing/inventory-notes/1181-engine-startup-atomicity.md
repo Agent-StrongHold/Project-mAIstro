@@ -1,14 +1,22 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +18
+  packages/hive-conductor/backend/tests: +19
 ---
 # 1181 — EngineService startup atomicity and health-visible failure
 
 What moved and why: `packages/hive-conductor/backend/tests/test_engine_startup_atomicity.py`
-is new (+18), covering the #1181 contract on `services/engine.py`. No existing
+is new (+19), covering the #1181 contract on `services/engine.py`. No existing
 test was removed or renamed; `test_engine_service.py` only gained two restored
 globals in its singleton-reset fixture (`_failed_startup` alongside
 `_singleton`), so its counts are untouched.
+
+CI-repair amendment (same branch): the readiness-surface tests now carry
+`@pytest.mark.ac("ADR-100126-f9d6/AC-N")` markers so the ADR's own acceptance
+criteria measure at the `reachable` rung, and one case was added —
+`test_health_ready_gates_on_stopped_engine` — because the ADR's decision lists
+`stopped` among the not-ready states and nothing pinned it: a still-published
+engine stopped in place must 503 `/health/ready` while liveness stays 200 `ok`
+with the state visible.
 
 The eighteen cases pin the parts of the boot contract that had no coverage
 because the old code could not express them:

@@ -20,6 +20,9 @@ contracts:
 tests:
   - packages/hive-conductor/backend/tests/test_engine_startup_atomicity.py
   - packages/hive-conductor/backend/tests/test_engine_service.py
+ac-modules:
+  AC-1: '@flat/hive-conductor/routes.health'
+  AC-2: '@flat/hive-conductor/routes.health'
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
@@ -77,8 +80,12 @@ decision per the repository's PR conventions.
 
 ## Acceptance criteria
 
-- Injecting a failure at every startup stage yields `startup_failed`, a 503 from
-  `/health/ready` with `checks["engine"] == false`, and no published singleton
-  (retryable) — asserted by `test_engine_startup_atomicity.py`.
-- `degraded` engines (bridge→stub fallback, capability wiring to SAFE_NOOP) stay ready
-  but raise `degraded` in `/health`.
+- [x] **AC-1** `/health/ready` gates on the engine lifecycle state: `ready`,
+  `degraded`, and `not_started` keep answering 200, while `startup_failed`,
+  `starting`, `stopped`, and an unreadable engine probe answer 503 with
+  `checks["engine"] == false` — so the image and Compose healthchecks, which
+  read only the status code, take the instance out of rotation.
+- [x] **AC-2** Liveness `/health` stays 200 `ok` while carrying the engine
+  `state`, its sanitized `cause`, and the aggregate `degraded` flag
+  informationally: a failed or degraded engine is visible to operators without
+  turning the liveness probe into a readiness gate.

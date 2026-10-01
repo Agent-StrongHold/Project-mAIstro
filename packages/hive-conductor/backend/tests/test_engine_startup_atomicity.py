@@ -640,6 +640,8 @@ def _client() -> Any:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("ADR-100126-f9d6/AC-1")
+@pytest.mark.ac("ADR-100126-f9d6/AC-2")
 def test_health_ready_gates_on_failed_engine_start() -> None:
     """A boot that failed takes the instance out of rotation (#1181): /health
     names the state and sanitized cause; /health/ready answers 503."""
@@ -667,6 +669,7 @@ def test_health_ready_gates_on_failed_engine_start() -> None:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("ADR-100126-f9d6/AC-1")
 def test_health_ready_ignores_never_attempted_engine() -> None:
     """Contexts that never run the app lifespan (tests, scripts) keep the
     historical readiness contract; a missing engine is not a failed one."""
@@ -688,6 +691,7 @@ def test_health_ready_ignores_never_attempted_engine() -> None:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("ADR-100126-f9d6/AC-1")
 def test_health_ready_gates_on_in_flight_boot() -> None:
     """ADR-100126-f9d6 lists `starting` among the not-ready states: a boot held
     mid-flight takes the instance out of rotation instead of answering the
@@ -718,6 +722,7 @@ def test_health_ready_gates_on_in_flight_boot() -> None:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("ADR-100126-f9d6/AC-2")
 def test_health_reports_degraded_engine_state() -> None:
     """A serving engine with an optional-component failure shows in liveness."""
     import services.engine as engine_mod
@@ -735,6 +740,8 @@ def test_health_reports_degraded_engine_state() -> None:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("ADR-100126-f9d6/AC-1")
+@pytest.mark.ac("ADR-100126-f9d6/AC-2")
 def test_health_survives_engine_probe_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """The defensive contract every /health probe holds: a broken probe is
     reported, never a 500 — and it never reads as ready."""
@@ -757,3 +764,33 @@ def test_health_survives_engine_probe_failure(monkeypatch: pytest.MonkeyPatch) -
     ready = client.get("/health/ready")
     assert ready.status_code == 503
     assert ready.json()["checks"]["engine"] is False
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("ADR-100126-f9d6/AC-1")
+def test_health_ready_gates_on_stopped_engine() -> None:
+    """ADR-100126-f9d6 lists `stopped` among the not-ready states: a serving
+    engine that has been stopped while still published must not keep answering
+    the 200 that says "in rotation"."""
+    import services.engine as engine_mod
+
+    stopped = engine_mod.EngineService()
+    stopped._state = "stopped"
+    engine_mod._singleton = stopped
+    engine_mod._failed_startup = None
+    engine_mod._booting = None
+
+    client = _client()
+    ready = client.get("/health/ready")
+    assert ready.status_code == 503
+    body = ready.json()
+    assert body["ready"] is False
+    assert body["checks"]["engine"] is False
+
+    live = client.get("/health").json()
+    assert live["engine"]["state"] == "stopped"
+    assert live["engine"]["cause"] is None
+    # Liveness stays liveness: a deliberate stop is not an outage signal, and
+    # `stopped` is deliberately absent from the state set that flips the
+    # aggregate `degraded` flag — readiness, not liveness, owns rotation.
+    assert live["status"] == "ok"
