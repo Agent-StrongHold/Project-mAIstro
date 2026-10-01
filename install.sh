@@ -42,6 +42,13 @@ MACOS_RUNTIME="${MAISTRO_MACOS_RUNTIME:-}"
 INSTALL_CLI="${MAISTRO_INSTALL_CLI:-1}"
 OPEN_BROWSER="${MAISTRO_OPEN_BROWSER:-1}"
 
+# How this install was launched — recorded so `maistro upgrade` can report it.
+# get.sh sets MAISTRO_INSTALL_SURFACE=curl; a direct `./install.sh` is a checkout.
+INSTALL_SURFACE="${MAISTRO_INSTALL_SURFACE:-checkout}"
+# Marker an archive install leaves at the install root (get.sh writes it;
+# install.sh reads it to classify archive vs. source-tree upgrades).
+ARCHIVE_MARKER="${MAISTRO_ARCHIVE_MARKER:-.maistro-archive-install}"
+
 # Docker API floor the embedded docker CLI can negotiate (Engine 25 exposes
 # API 1.44; Engine 24 tops out at 1.43). The engine images COPY the CLI from
 # docker:29-cli, whose floor rose with the go1.26.8 toolchain rebuild that
@@ -136,7 +143,9 @@ Environment:
   MAISTRO_INSTALL_CLI (0 = do not install the host 'maistro' CLI),
   MAISTRO_OPEN_BROWSER (0 = do not open the Conductor UI when ready),
   MAISTRO_IMAGE_TAG (container tag the image_pull compose pins to; defaults to
-    the release tag this checkout sits on, else 'latest').
+    the release tag this checkout sits on, else 'latest'),
+  MAISTRO_SOURCE_URL (upstream repo URL recorded in the install manifest for
+    archive checkouts; get.sh sets it, since archives carry no git metadata).
 
   Ports and the bind address resolve like Compose interpolation: the process
   environment wins, then the .env file, then the built-in defaults (engine
@@ -1255,23 +1264,35 @@ delivery_mode() {
     grep -o '"mode"[[:space:]]*:[[:space:]]*"[a-z_]*"' "$f" | head -1 | grep -o '[a-z_]*"$' | tr -d '"'
 }
 
+# Effective delivery mode the stack actually uses: image_pull only when the
+# wizard selected it AND the pinned images are published (standalone compose
+# file present); anything else — wizard skipped, images not ready — falls back
+# to a source build. Kept as a pure helper so write_install_manifest() can
+# record it before compose_files() runs in main() (and even when --no-start
+# skips it), so `maistro upgrade` replays the same delivery path (#353).
+effective_delivery_mode() {
+    if [[ "$(delivery_mode)" == "image_pull" \
+        && "${MAISTRO_IMAGE_PULL_READY:-0}" == "1" \
+        && -f "$PLAN_DIR/compose.install.yml" ]]; then
+        echo "image_pull"
+    else
+        echo "source_build"
+    fi
+}
+
 compose_files() {
     COMPOSE_FILES=(-f "$COMPOSE_FILE")
     COMPOSE_UP_ARGS=(up -d --build)
-    local mode
-    mode="$(delivery_mode)"
-    if [[ "$mode" == "image_pull" ]]; then
-        if [[ "${MAISTRO_IMAGE_PULL_READY:-0}" == "1" && -f "$PLAN_DIR/compose.install.yml" ]]; then
-            # Standalone file: no build: keys anywhere, and no --build — pinned
-            # images only. --project-directory keeps .env interpolation and
-            # relative bind mounts anchored at the repo root.
-            COMPOSE_FILES=(--project-directory "$PWD" -f "$PLAN_DIR/compose.install.yml")
-            COMPOSE_UP_ARGS=(up -d)
-            info "Delivery: image_pull — pinned images (tag ${MAISTRO_IMAGE_TAG}) from $PLAN_DIR/compose.install.yml (no local build)."
-        else
-            warn "delivery_mode=image_pull selected, but pinned images are not published yet."
-            warn "Falling back to source build (identical runtime behavior, longer install)."
-        fi
+    if [[ "$(effective_delivery_mode)" == "image_pull" ]]; then
+        # Standalone file: no build: keys anywhere, and no --build — pinned
+        # images only. --project-directory keeps .env interpolation and
+        # relative bind mounts anchored at the repo root.
+        COMPOSE_FILES=(--project-directory "$PWD" -f "$PLAN_DIR/compose.install.yml")
+        COMPOSE_UP_ARGS=(up -d)
+        info "Delivery: image_pull — pinned images (tag ${MAISTRO_IMAGE_TAG}) from $PLAN_DIR/compose.install.yml (no local build)."
+    elif [[ "$(delivery_mode)" == "image_pull" ]]; then
+        warn "delivery_mode=image_pull selected, but pinned images are not published yet."
+        warn "Falling back to source build (identical runtime behavior, longer install)."
     fi
     local override="$PLAN_DIR/compose.override.yml"
     if [[ -f "$override" ]]; then
@@ -1633,6 +1654,77 @@ note_residual_risk() {
     info "destruction rather than on this step."
 }
 
+# Durable install manifest consumed by `maistro upgrade`. Records the install
+# type (git/tag/archive), the authoritative root, the release ref and the
+# image tag so upgrade resolves its target from metadata — never from the
+# caller's current directory (#353). Written once install.sh has settled the
+# source tree and credentials; get.sh delegates here, so every supported curl
+# and direct-checkout install produces one.
+write_install_manifest() {
+    local manifest_dir="$PLAN_DIR"
+    local manifest="$manifest_dir/install-manifest.json"
+    mkdir -p "$manifest_dir" 2>/dev/null || true
+    local itype="" ref="" rev="" source_url="" ts version_json
+
+    if [[ -f "$ARCHIVE_MARKER" ]]; then
+        itype="archive"
+        ref="$MAISTRO_IMAGE_TAG"
+        version_json="null"
+        # An archive checkout has no git metadata to derive the upstream from,
+        # so get.sh hands the repo URL over explicitly (same delegation as
+        # MAISTRO_IMAGE_TAG). Without it, `maistro upgrade` preflight rejects
+        # every archive install before running any command.
+        source_url="$(sed 's#\.git$##' <<< "${MAISTRO_SOURCE_URL:-}")"
+    elif git rev-parse --git-dir >/dev/null 2>&1; then
+        rev="$(git rev-parse HEAD 2>/dev/null || true)"
+        source_url="$(git remote get-url origin 2>/dev/null | sed 's#\.git$##' || true)"
+        if git describe --tags --exact-match >/dev/null 2>&1; then
+            itype="tag"
+            ref="$(git describe --tags --exact-match 2>/dev/null || true)"
+            version_json="\"$ref\""
+        else
+            itype="git"
+            ref="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+            version_json="null"
+        fi
+    else
+        warn "Could not classify the install type (no git checkout or archive marker); \
+writing no install manifest. 'maistro upgrade' will fall back to detection."
+        return 0
+    fi
+
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    cat > "$manifest" <<MANIFEST_EOF
+{
+  "kind": "maistro_install_manifest",
+  "schema_version": 1,
+  "install_type": "$itype",
+  "install_root": "$PWD",
+  "install_surface": "$INSTALL_SURFACE",
+  "version": $version_json,
+  "ref": "$ref",
+  "revision": "$rev",
+  "image_tag": "$MAISTRO_IMAGE_TAG",
+  "delivery_mode": "$(effective_delivery_mode)",
+  "source_url": "$source_url",
+  "plan_dir": "$PLAN_DIR",
+  "installed_at": "$ts"
+}
+MANIFEST_EOF
+    ok "Wrote install manifest ($itype@$ref) to $manifest"
+
+    # Discovery pointer: `maistro upgrade` reads the manifest from the
+    # canonical <root>/.maistro-install regardless of where the plan
+    # artifacts were materialized, so a custom --plan-dir install leaves a
+    # copy there recording the selected plan_dir. Without it, upgrade would
+    # discard the manifest and regenerate guessed compose defaults.
+    if [[ "$PLAN_DIR" != ".maistro-install" && "$PLAN_DIR" != "$PWD/.maistro-install" ]]; then
+        mkdir -p "$PWD/.maistro-install" 2>/dev/null || true
+        cp "$manifest" "$PWD/.maistro-install/install-manifest.json" 2>/dev/null || true
+        ok "Recorded plan_dir pointer at $PWD/.maistro-install/install-manifest.json"
+    fi
+}
+
 # Write operator recovery commands next to the plan artifacts and echo the
 # path in print_success (SPEC-072726-3439 Phase 3).
 write_recovery_md() {
@@ -1803,6 +1895,7 @@ main() {
 
     [[ -f "$COMPOSE_FILE" ]] || fail "Missing $COMPOSE_FILE. Run this from the maistro-engine repo root."
     run_feature_wizard
+    write_install_manifest
     sync_env_file
     validate_env_contract
     resolve_effective_config
