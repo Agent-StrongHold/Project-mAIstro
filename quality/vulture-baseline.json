@@ -1287,7 +1287,9 @@
       "path_regex": ".*/tests?/.*\\.py|tests/.*\\.py",
       "message_regex": "unused (function|class|method|variable|attribute)",
       "rationale": "Pytest discovers test functions, fixtures, and helper classes by naming and fixture injection.",
-      "findings": []
+      "findings": [
+        "packages/maistro-core/tests/quota/test_usage_log.py::unused function '_reset_default_usage_log'"
+      ]
     },
     {
       "id": "protocol-and-adapter-port",

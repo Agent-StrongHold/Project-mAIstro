@@ -61,6 +61,35 @@ class FakeHarnessAdapter:
         pass
 
 
+def _legacy_resolver(adapter: FakeHarnessAdapter) -> Any:
+    """Resolve the same provider the node would, for the pre-#1319 dispatch."""
+
+    from maistro.graph.nodes.agent_spawn_harness import _HarnessDispatchProvider
+
+    async def resolve(_binding: Any) -> Any:
+        return _HarnessDispatchProvider(name="claude_code", adapter=adapter)
+
+    return resolve
+
+
+def _legacy_executor(adapter: FakeHarnessAdapter) -> Any:
+    """Dispatch through the adapter exactly as the node's executor does."""
+
+    async def execute(provider: Any, request: Any) -> Any:
+        payload = dict(request)
+        handle = await provider.adapter.dispatch(
+            HarnessRequest(
+                harness_type=str(payload["harness_type"]),
+                task=str(payload["task"]),
+                context={},
+                timeout_seconds=3600,
+            )
+        )
+        return {"handle_id": handle.handle_id, "harness_type": handle.harness_type}
+
+    return execute
+
+
 async def _effects_with_binding(
     *,
     binding_id: str = "b1",
@@ -231,6 +260,48 @@ async def test_completed_effect_replay_survives_a_new_node_run() -> None:
     )
     assert len(history) == 1
     assert history[0].node_run_id == "nr1"
+
+
+async def test_a_dispatch_recorded_under_the_pre_1319_key_is_not_repeated() -> None:
+    """An upgrade mid-flight must not dispatch the same harness task twice.
+
+    #1319 changed this node's effect key from
+    `agent.spawn_harness.dispatch:<harness type>` to one carrying the Run, the
+    graph node and a request digest. A deployment that upgraded after the
+    adapter dispatched but before the node persisted its pause would compute
+    the new key, find nothing under it, and send the external harness a second
+    task it is already working on (Codex, #1362).
+    """
+
+    adapter = FakeHarnessAdapter()
+    effects = await _effects_with_binding()
+    node = AgentSpawnHarnessNode(adapters={"claude_code": adapter}, effect_context=effects)
+    inputs = {"harness_type": "claude_code", "task": "once", "binding_id": "b1"}
+    binding = await effects.bindings.get("b1")
+    assert binding is not None
+
+    # The pre-upgrade dispatch: recorded under the old key, on this Run.
+    legacy = await effects.invocations.invoke(
+        binding=binding,
+        run_id="r1",
+        node_run_id="nr-old",
+        attempt_id="a-old",
+        effect_key="agent.spawn_harness.dispatch:claude_code",
+        request=dict(inputs),
+        resolver=_legacy_resolver(adapter),
+        executor=_legacy_executor(adapter),
+        logical_effect=True,
+    )
+    assert len(adapter.dispatched) == 1
+
+    # The post-upgrade visit computes the new key and finds nothing there.
+    result = await node.run(inputs, _ctx(node_run_id="nr-new", attempt_id="a-new"))
+
+    assert result.status == "paused"
+    # No second task reached the harness, and the pause carries the handle the
+    # harness actually issued rather than a newly minted one.
+    assert len(adapter.dispatched) == 1
+    assert result.metadata["invocation_id"] == legacy.invocation_id
 
 
 async def test_dispatch_passes_domain_context_to_provider_adapter() -> None:

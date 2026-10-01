@@ -115,14 +115,22 @@ class GovernedInvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        logical_effect: bool = False,
     ) -> Invocation | None:
-        """Expose canonical effect history without bypassing governed execution."""
+        """Expose canonical effect history without bypassing governed execution.
+
+        ``logical_effect`` widens the read across NodeRuns, exactly as it does
+        on the service beneath. A caller that dispatched under an EFFECT_KEY
+        contract has to be able to ask the same question it was admitted
+        under, or the lookup silently misses its own completed effect.
+        """
 
         return await self._invocations.latest_effect(
             binding=binding,
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key,
+            logical_effect=logical_effect,
         )
 
     async def discover_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
