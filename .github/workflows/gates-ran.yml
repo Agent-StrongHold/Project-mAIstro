@@ -193,26 +193,9 @@ jobs:
         env:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           EVALUATION_EXIT_CODE: ${{ steps.evaluate.outputs.exit_code }}
-          JOB_STATUS: ${{ job.status }}
         with:
           script: |
-            // A cancelled publisher is a superseded publisher: the
-            // concurrency group already started a newer evaluation for this
-            // exact head, and that successor owns the verdict. Publishing
-            // here (the historical behaviour, which read the cancelled
-            // evaluate step's blank exit code as failure) smeared a red
-            // gates-ran status onto heads whose evidence was merely still
-            // arriving. See run 36274594751.
-            if (process.env.JOB_STATUS === 'cancelled') {
-              core.info('publisher cancelled by successor; the successor owns the gates-ran verdict');
-              return;
-            }
-
-            // A blank exit code means the evaluate step never completed, so
-            // no verdict exists. The only honest status for missing evidence
-            // of the evaluation itself is pending, never failure.
-            const raw = process.env.EVALUATION_EXIT_CODE || '';
-            const code = raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : 2;
+            const code = Number(process.env.EVALUATION_EXIT_CODE || '1');
             const state = code === 0 ? 'success' : code === 2 ? 'pending' : 'failure';
             const description = code === 0
               ? 'All required checks executed on this exact head'

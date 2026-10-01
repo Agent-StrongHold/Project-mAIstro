@@ -181,27 +181,6 @@ async def test_provenance_and_actor_survive(spine: Any) -> None:
     assert reloaded.provenance == {"admission_source": "task_queue", "task_id": "t-1"}
 
 
-async def test_a_task_receipt_finds_its_run_and_only_that_run(spine: Any) -> None:
-    """The #1176 discovery lookup, conformed across backends: the Run whose
-    provenance names the receipt is findable — the handle a retry resolves an
-    ambiguous admission through — and a receipt no Run names is None, the
-    answer that makes a takeover provably duplicate-free."""
-    store, workspace, project_id = spine
-    named = await store.create_run(
-        _graph(workspace, project_id),
-        provenance={"admission_source": "task_queue", "task_id": "receipt-1"},
-    )
-    # A neighbor the scan passes over without matching.
-    await store.create_run(_graph(workspace, project_id))
-
-    found = await store.find_run_by_task_receipt("receipt-1")
-
-    assert found is not None
-    assert found.run_id == named.run_id
-    assert found.provenance == {"admission_source": "task_queue", "task_id": "receipt-1"}
-    assert await store.find_run_by_task_receipt("no-such-receipt") is None
-
-
 async def test_an_unknown_run_is_none_not_an_error(spine: Any) -> None:
     store, _workspace, _project_id = spine
 

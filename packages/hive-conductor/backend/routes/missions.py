@@ -40,7 +40,6 @@ def _task_to_mission(rec: object) -> Mission:
         metadata["error"] = err
     return Mission(
         id=rec.id,  # type: ignore[attr-defined]
-        run_id=getattr(rec, "run_id", None),  # type: ignore[attr-defined]
         name=rec.name,  # type: ignore[attr-defined]
         description=rec.description,  # type: ignore[attr-defined]
         status=rec.mission_status,  # type: ignore[attr-defined]

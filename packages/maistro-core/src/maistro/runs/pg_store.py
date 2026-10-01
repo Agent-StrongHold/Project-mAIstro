@@ -604,7 +604,6 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
-<<<<<<< HEAD
     async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
         # payload is JSONB (005), so the task admitter's provenance is a path
         # expression. Cold-archived Runs (payload moved to the archive) are
@@ -616,7 +615,9 @@ class PgRunStore:
             LIMIT 1
             """,
             task_id,
-=======
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
     async def _require_locked_parent_scope(
         self,
         # PoolConnectionProxy at the one call site; `Any` like every other
@@ -732,7 +733,6 @@ class PgRunStore:
             """SELECT run_id, payload, archive_key FROM canonical_runs
                WHERE payload -> 'provenance' ->> 'effect_key' = $1 LIMIT 1""",
             effect_key,
->>>>>>> bc1182f9cfe662bba6102e912d4f76c45d7b951e
         )
         return Run.model_validate(payload) if payload is not None else None
 

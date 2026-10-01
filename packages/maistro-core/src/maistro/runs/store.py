@@ -464,7 +464,6 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
-<<<<<<< HEAD
     async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
         """The Run whose provenance names one task receipt, or None.
 
@@ -477,7 +476,7 @@ class RunStore(Protocol):
         exactly the duplicate admission this lookup exists to prevent.
         """
         ...
-=======
+
     async def find_run_by_effect(self, effect_key: str) -> Run | None: ...
 
     async def claim_run_by_effect(
@@ -494,7 +493,6 @@ class RunStore(Protocol):
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> RunEffectClaim: ...
->>>>>>> bc1182f9cfe662bba6102e912d4f76c45d7b951e
 
     async def find_occurrence_run(
         self,
@@ -1145,7 +1143,6 @@ class InMemoryRunStore:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
 
-<<<<<<< HEAD
     async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
         # Insertion-order scan; a match is unique by construction (see the
         # protocol docstring). The provenance key is spelled by the task
@@ -1156,7 +1153,6 @@ class InMemoryRunStore:
                 return run.model_copy(deep=True)
         return None
 
-=======
     async def find_run_by_effect(self, effect_key: str) -> Run | None:
         for run in self._runs.values():
             if run.provenance.get("effect_key") == effect_key:
@@ -1240,7 +1236,6 @@ class InMemoryRunStore:
         self._prune_terminal_runs()
         return RunEffectClaim(run.model_copy(deep=True), True)
 
->>>>>>> bc1182f9cfe662bba6102e912d4f76c45d7b951e
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve an occurrence through its claim index, never by scanning Runs."""
         run_id = self._occurrences.get((schedule_id, scheduled_for))

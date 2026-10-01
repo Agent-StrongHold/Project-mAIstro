@@ -531,7 +531,6 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
-<<<<<<< HEAD
     async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
         # Same expression-index pattern as the schedule-occurrence claim above:
         # the task admitter's provenance lives inside the payload JSON, and
@@ -547,7 +546,7 @@ class SqliteRunStore:
         if row is None:
             return None
         return model_of_json(Run, row[0])
-=======
+
     async def _require_locked_parent_scope(
         self,
         graph: Graph,
@@ -661,7 +660,6 @@ class SqliteRunStore:
             (effect_key,),
         )
         return model_of_json(Run, row[0]) if row is not None else None
->>>>>>> bc1182f9cfe662bba6102e912d4f76c45d7b951e
 
     async def find_occurrence_run(
         self,

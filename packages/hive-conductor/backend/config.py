@@ -24,6 +24,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from maistro.config.settings import validate_cors_origins
 from maistro.types.config import ModelBindingConfig
 
+#: Hard bounds the schedule floor/cap settings cannot be configured outside of
+#: (#1200). See the field comments on the ``Settings`` fields for why these
+#: fail at startup instead of clamping. The maximum is the substrate's own
+#: definition-time ceiling (``maistro.scheduling.model.MAX_CATCHUP_WINDOW_SECONDS``):
+#: a product cap above it would let a create through the route and then always
+#: fail at the canonical write, an error the operator config caused and could
+#: not see.
+SCHEDULE_FLOOR_HARD_MINIMUM_S = 300
+SCHEDULE_WINDOW_HARD_MINIMUM_S = 3_600
+SCHEDULE_WINDOW_HARD_MAXIMUM_S = 604_800
+
 _BACKEND_DIR = Path(__file__).resolve().parent
 # Repo root `.env` (PM POC flags) — uvicorn cwd is usually `backend/`.
 _ENV_FILES: tuple[str, ...] = tuple(
@@ -362,6 +373,30 @@ class Settings(BaseSettings):
     # self_repair (SPEC-188) cadence; <=0 disables the periodic loop (API still works).
     self_repair_interval_s: int = 90
 
+    # Schedule frequency floor (#1200). The product refuses `/v1/schedules`
+    # create/update whose recurrence can fire more often than this — measured
+    # with `maistro.scheduling.cron.minimum_gap` from real consecutive fire
+    # times, so list/step/range forms are all honored. The ADR reference floor
+    # is 15 minutes; an operator may raise it (quieter product) or lower it,
+    # but never below SCHEDULE_FLOOR_HARD_MINIMUM_S: a recurrence finer than
+    # that is a busy-loop the scheduler must not accept regardless of config,
+    # which is what makes the floor "configurable only within safe operator
+    # bounds". Out-of-range values fail at startup rather than being silently
+    # clamped — a deployment that thinks it asked for a 60s floor must not
+    # quietly get 300s and start admitting schedules the operator believed
+    # forbidden.
+    schedule_min_frequency_gap_s: int = 900
+
+    # Largest catch-up window a client may request on `/v1/schedules` (#1200).
+    # The canonical substrate refuses windows above seven days outright
+    # (maistro.scheduling.model.MAX_CATCHUP_WINDOW_SECONDS); this is the
+    # product's own, tighter, operator-selected bound, defaulting to one day.
+    # After downtime the window is how much missed work one evaluation will
+    # consider, so it — not just the frequency floor — is what bounds backlog
+    # size. Same fail-loud rule: out-of-range startup config is an error, not
+    # a clamp.
+    schedule_max_catchup_window_s: int = 86_400
+
     # Episodic memory-decay cadence (SPEC-080126-9e42). This is what makes
     # README's "decays without reinforcement" and CLAUDE.md decision #5 true at
     # runtime — the decay primitives had no production caller before it (#344).
@@ -380,6 +415,20 @@ class Settings(BaseSettings):
             raise ValueError("at most 16 OAuth providers may be configured")
         if any(not is_valid_oauth_provider_name(name) for name in value):
             raise ValueError("OAuth provider names must be lowercase URL-safe slugs")
+        return value
+
+    @field_validator("schedule_min_frequency_gap_s", "schedule_max_catchup_window_s")
+    @classmethod
+    def validate_schedule_bounds(cls, value: int, info: ValidationInfo) -> int:
+        """Refuse floor/cap config outside the safe operator bounds (#1200)."""
+        if info.field_name == "schedule_min_frequency_gap_s":
+            low, high = SCHEDULE_FLOOR_HARD_MINIMUM_S, SCHEDULE_WINDOW_HARD_MAXIMUM_S
+            label = "schedule_min_frequency_gap_s"
+        else:
+            low, high = SCHEDULE_WINDOW_HARD_MINIMUM_S, SCHEDULE_WINDOW_HARD_MAXIMUM_S
+            label = "schedule_max_catchup_window_s"
+        if not low <= value <= high:
+            raise ValueError(f"{label} must be between {low} and {high} seconds, got {value}")
         return value
 
     @field_validator("oauth_public_origin", mode="before")
