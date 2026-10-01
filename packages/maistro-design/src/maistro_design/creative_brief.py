@@ -34,6 +34,14 @@ from maistro.interop import (
 )
 from maistro_design.types import DesignError
 
+# Vulture scans src trees only (packages/*/src, confidence >= 60), so it cannot
+# see the consumers of this contract: the tests live outside the scan and the
+# #774 persistence and #775 creative-Graph lanes have not landed yet. The
+# retained API below carries vulture's V105 (unused method) suppression marker
+# at the use site — declared external in ruff config, so debt is reviewed and
+# recorded here instead of growing quality/vulture-baseline.json; the
+# per-identity ledger only shrinks (same shape as the bare vulture noqa marker
+# on maistro_registry.schema._validate_lifecycle_evidence).
 __all__ = [
     "ArtifactProvenance",
     "ArtifactRequirement",
@@ -212,7 +220,9 @@ class CreativeBriefVersion:
         _require_non_blank("branch", branch)
         return next((req for req in self.artifact_requirements if req.branch == branch), None)
 
-    def shared_context(self, branch: str | None = None) -> SharedCreativeContext:
+    def shared_context(  # noqa: V105
+        self, branch: str | None = None
+    ) -> SharedCreativeContext:
         """The identical shared context every artifact branch of this brief receives.
 
         A website, coupon, deck, and video script produced from the same brief
@@ -338,7 +348,7 @@ class ArtifactProvenance:
     node_run_id: str
     attempt_id: str
 
-    @classmethod
+    @classmethod  # noqa: V105
     def bind(
         cls,
         version: CreativeBriefVersion,
@@ -361,7 +371,9 @@ class ArtifactProvenance:
             attempt_id=attempt_id,
         )
 
-    def assert_matches_goal(self, goal_id: str, goal_revision: str | int) -> None:
+    def assert_matches_goal(  # noqa: V105
+        self, goal_id: str, goal_revision: str | int
+    ) -> None:
         """Refuse provenance claimed against a different Goal identity/revision."""
         if self.goal_id != goal_id or self.goal_revision != goal_revision:
             msg = (
@@ -493,7 +505,7 @@ class CreativeBriefStore(Protocol):
         summary: str,
     ) -> CreativeBrief: ...
 
-    async def revise(
+    async def revise(  # noqa: V105
         self,
         brief_id: str,
         *,
@@ -510,7 +522,7 @@ class CreativeBriefStore(Protocol):
         self, brief_id: str, *, workspace_id: str, project_id: str
     ) -> tuple[CreativeBriefVersion, ...]: ...
 
-    async def list_by_goal(
+    async def list_by_goal(  # noqa: V105
         self, goal_id: str, goal_revision: str | int, *, workspace_id: str, project_id: str
     ) -> list[CreativeBrief]: ...
 
@@ -608,7 +620,7 @@ class InMemoryCreativeBriefStore:
         self._briefs[brief_id] = brief
         return brief
 
-    async def revise(
+    async def revise(  # noqa: V105
         self,
         brief_id: str,
         *,
@@ -684,7 +696,7 @@ class InMemoryCreativeBriefStore:
         """All versions of the brief, oldest first."""
         return self._require(brief_id, workspace_id, project_id).versions
 
-    async def list_by_goal(
+    async def list_by_goal(  # noqa: V105
         self, goal_id: str, goal_revision: str | int, *, workspace_id: str, project_id: str
     ) -> list[CreativeBrief]:
         """Brief lineages bound to this exact Goal revision inside the caller's scope."""
