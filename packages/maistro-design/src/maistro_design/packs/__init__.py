@@ -18,6 +18,7 @@ projection), with `registry` composing them.
 
 from __future__ import annotations
 
+from maistro.graph.definitions import Node
 from maistro_design.packs.graphs import pack_graph_template
 from maistro_design.packs.registry import (
     PackManifestError,
@@ -37,6 +38,36 @@ from maistro_design.packs.types import (
     PackPhaseName,
     PackSummary,
     RubricDimension,
+)
+
+# Vulture scan input, hosted in this reachable module rather than a loose
+# ``_vulture_whitelist.py`` sibling (the reachability baseline may only grow
+# behind a prior landed authorization, and a second loose file would collide
+# with maistro-core's). Mirrors packages/maistro-core/src/_vulture_whitelist.py:
+# the closed enums' members are the #793 pack contract — manifests name them by
+# YAML value and the registry iterates the enum dynamically, so no scanned call
+# site names a member literally — and the registry methods, pydantic validators,
+# the A2 Goal-instantiation seam, and the canonical binding_ids field are
+# framework- or route-consumed surfaces (packages/hive-conductor's Design
+# Studio route sits outside the ``packages/*/src`` scan).
+_VULTURE_PACK_IDS = (PackId.PRODUCT, PackId.GAME, PackId.BOOK)
+_VULTURE_EXECUTE_BACKENDS = (
+    ExecuteBackend.CANVAS,
+    ExecuteBackend.BUILDERS,
+    ExecuteBackend.FILE_ARTIFACT_WRITER,
+    ExecuteBackend.TEXT_ARTIFACT_TREE,
+    ExecuteBackend.MEDIA,
+)
+_VULTURE_WHITELIST = (
+    PackRegistry.builtin,
+    PackRegistry.summaries,
+    DomainPack._validate_pack,
+    PackGraphShape._validate_shape,
+    DomainPack.instantiate_rubric_catalog,
+    # A pydantic field has no class-level attribute (pydantic v2), so the
+    # reference goes through an unvalidated instance: the field is the
+    # canonical binding-reference surface pack_graph_template writes.
+    Node.model_construct().binding_ids,
 )
 
 __all__ = [
