@@ -44,6 +44,11 @@ from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
+from maistro.memory.working.projection import WorkingMemoryManager
+from maistro.memory.working.wiring import (
+    wire_in_memory_working_memory,
+    wire_working_memory,
+)
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
@@ -223,6 +228,12 @@ class Container:
     #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
     #: campaign tables are not part of the schema yet.
     campaign_store: CampaignStore | None = None
+    #: Durable log-as-context for repeated autonomous work (#301, M4-H): the
+    #: append-only per-Workspace observation log and the disposable working
+    #: graphs projected over it (ADR-082226-5104 §5-6). Rides the SQLite pool
+    #: like campaigns; in-memory with a loud warning otherwise, because a log
+    #: that dies with the process is not the durable context the epic asks for.
+    working_memory: WorkingMemoryManager | None = None
     run_store: RunStore = None  # type: ignore[assignment]
     #: The product read seam over `run_store` (#1152): Workspace membership
     #: decides who may read a Run tree, and foreign ids answer like missing ones.
@@ -1836,6 +1847,15 @@ async def _wire_campaign_backend(db_pool: Any) -> CampaignStore:
     return wire_in_memory_campaign_store()
 
 
+async def _wire_working_memory_backend(db_pool: Any) -> WorkingMemoryManager:
+    """Working memory follows the SQLite pool for the same reason campaigns
+    do (#301): the observation log is only lossless if it outlives the
+    process, and the in-memory fallback says so loudly when there is no pool."""
+    if db_pool is not None:
+        return await wire_working_memory(db_pool)
+    return wire_in_memory_working_memory()
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -2004,6 +2024,7 @@ async def create_container(
     # deployment gets the in-memory fallback plus a startup warning naming
     # the cost, rather than a silent durability lie (#103, AC-5).
     campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
+    working_memory = await _wire_working_memory_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
     # reconcile, or the tiers cannot answer a restart the same way.
@@ -2238,6 +2259,7 @@ async def create_container(
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         campaign_store=campaign_store,
+        working_memory=working_memory,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
         task_admitter=task_admitter,
