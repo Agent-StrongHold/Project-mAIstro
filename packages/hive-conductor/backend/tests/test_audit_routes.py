@@ -151,6 +151,33 @@ def test_get_entry_missing_404(admin_client: Any) -> None:
     assert r.json()["detail"] == "audit entry not found"
 
 
+def test_get_entry_scope_allows_own_entry(authed_client: Any) -> None:
+    eid = "audit-detail-own"
+    stores.audit_log[eid] = {"id": eid, "action": "login", "actor": "testuser"}
+    r = authed_client.get(f"/v1/audit/{eid}")
+    assert r.status_code == 200
+    assert r.json()["id"] == eid
+
+
+def test_get_entry_scope_404s_other_actors_entry(authed_client: Any) -> None:
+    """Same isolation as list/export, and 404 not 403: a 403 would confirm
+    that another actor's entry exists."""
+
+    eid = "audit-detail-other"
+    stores.audit_log[eid] = {"id": eid, "action": "login", "actor": "other-user"}
+    r = authed_client.get(f"/v1/audit/{eid}")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "audit entry not found"
+
+
+def test_get_entry_admin_reads_any_entry(admin_client: Any) -> None:
+    eid = "audit-detail-admin"
+    stores.audit_log[eid] = {"id": eid, "action": "login", "actor": "other-user"}
+    r = admin_client.get(f"/v1/audit/{eid}")
+    assert r.status_code == 200
+    assert r.json()["actor"] == "other-user"
+
+
 # --------------------------------------------------------------------------- #
 # POST "" — create
 # --------------------------------------------------------------------------- #

@@ -46,7 +46,7 @@ import binascii
 import json
 from bisect import bisect_left
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Iterator
 
 #: Default page size for `GET /v1/audit`.
@@ -116,10 +116,14 @@ def _encode_cursor(created_at: str, entry_id: str) -> str:
 def _decode_cursor(cursor: str) -> tuple[str, str]:
     """(created_at, id) from an opaque cursor, or ValueError if malformed.
 
-    The timestamp is normalised to the same UTC `+00:00` spelling every
-    writer (`AuditEntry.model_dump(mode="json")`) stores, so a client-echoed
-    cursor compares correctly against stored values regardless of the offset
-    spelling it was decoded from.
+    The timestamp is validated but deliberately not re-spelled. Cursors are
+    minted from the stored `created_at` string (`_cursor_of`), and both
+    backends compare that stored spelling byte-for-byte: Pydantic's JSON
+    serialization writes UTC as `...Z`, which `datetime.isoformat()` would
+    rewrite to `...+00:00` — a spelling that string-sorts *before* every
+    stored `...Z` key, so rows tied at the page boundary would fall outside
+    the keyset predicate and be skipped. Echoing the stored spelling keeps
+    the comparison exact; only well-formedness is checked here.
     """
     try:
         raw = base64.urlsafe_b64decode(cursor.encode())
@@ -130,10 +134,13 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
     except (binascii.Error, ValueError, KeyError, TypeError) as exc:
         raise ValueError("malformed audit cursor") from exc
     try:
-        normalised = datetime.fromisoformat(created_at).astimezone(UTC).isoformat()
+        # Validation only: `fromisoformat` accepts both the `Z` and
+        # `+00:00` spellings on the supported Pythons, and the parsed value
+        # is discarded — the persisted string is what both backends compare.
+        datetime.fromisoformat(created_at)
     except ValueError as exc:
         raise ValueError("malformed audit cursor timestamp") from exc
-    return normalised, entry_id
+    return created_at, entry_id
 
 
 def clamp_limit(limit: int | None) -> int:
@@ -403,7 +410,14 @@ def _matches(entry: Any, *, action: str | None, severity: str | None) -> bool:
     return not (severity is not None and field("severity") != severity)
 
 
-def _actor_of(entry: Any) -> str:
+def actor_of(entry: Any) -> str:
+    """The entry's actor name, tolerating non-dict rows.
+
+    Shared by the query seam and the detail route: the row-level scope check
+    in `GET /{entry_id}` must read the actor exactly the way the paginated
+    query does, or the two surfaces could disagree about who may see a row.
+    """
+
     if isinstance(entry, dict):
         value = entry.get("actor", "")
         return value if isinstance(value, str) else ""
@@ -421,7 +435,7 @@ def _entry_accepted(
     """Scope ∩ filter predicate for one in-memory entry."""
     if not _matches(entry, action=action, severity=severity):
         return False
-    entry_actor = _actor_of(entry)
+    entry_actor = actor_of(entry)
     if allowed_actors is not None and entry_actor not in allowed_actors:
         return False
     return not (actor_filter is not None and entry_actor != actor_filter)

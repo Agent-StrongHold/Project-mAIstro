@@ -194,6 +194,46 @@ def test_pages_are_newest_first_and_contiguous() -> None:
     assert page3.next_cursor is None
 
 
+def test_cursor_preserves_the_stored_z_spelling_through_ties() -> None:
+    """Production rows come from `AuditEntry.model_dump(mode="json")`, which
+    spells UTC with a `Z` suffix, not `+00:00`. Normalising a decoded cursor
+    to `+00:00` sorted it before every stored `...Z` key, so rows tied at a
+    page boundary were skipped instead of ordered by id. Regression: a full
+    walk over `Z`-spelled tied rows must yield every row, id DESC.
+    """
+    same = ts(1).replace("+00:00", "Z")
+    store = JsonStore("audit_ties_z")
+    seed(store, [entry(i, created_at=same) for i in range(5)])
+    walked = walk(store, limit=2)
+    assert [e["id"] for e in walked] == [
+        "e-000004",
+        "e-000003",
+        "e-000002",
+        "e-000001",
+        "e-000000",
+    ]
+
+
+def test_durable_cursor_preserves_the_stored_z_spelling_through_ties(
+    durable: DurableAudit,
+) -> None:
+    """Same regression against the SQL backend: the cursor value is compared
+    byte-for-byte against `json_extract(value, '$.created_at')`, so it must
+    carry the stored `Z` spelling.
+    """
+    same = ts(1).replace("+00:00", "Z")
+    durable.seed_rows([entry(i, created_at=same) for i in range(5)])
+    store = JsonStore("audit_ties_z_durable")
+    walked = walk(store, limit=2, backend=durable.backend)
+    assert [e["id"] for e in walked] == [
+        "e-000004",
+        "e-000003",
+        "e-000002",
+        "e-000001",
+        "e-000000",
+    ]
+
+
 def test_equal_timestamps_are_broken_by_id_stably() -> None:
     store = JsonStore("audit_ties")
     same = ts(1)

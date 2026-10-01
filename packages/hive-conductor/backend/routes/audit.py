@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from services.audit_query import (
     DEFAULT_AUDIT_PAGE_SIZE,
     AuditPage,
+    actor_of,
     iter_export_entries,
     page_entries,
     retention,
@@ -177,10 +178,22 @@ def retention_policy(request: Request) -> dict[str, Any]:
 
 
 @router.get("/{entry_id}")
-def get_entry(entry_id: str) -> dict:
-    if entry_id not in stores.audit_log:
+def get_entry(entry_id: str, request: Request) -> dict:
+    """One entry, under the same scope contract as list and export.
+
+    The detail route is a row-level read of the same corpus, so the same
+    `_actor_scope` decision gates it: an operator reads any row, a non-admin
+    only rows naming themselves. An out-of-scope row answers 404, not 403 —
+    a 403 would confirm to the caller that another actor's entry exists,
+    which is itself information the scope contract keeps from them.
+    """
+
+    scope = _actor_scope(request)
+    entry = stores.audit_log.get(entry_id)
+    if entry is None:
         raise HTTPException(status_code=404, detail="audit entry not found")
-    entry = stores.audit_log[entry_id]
+    if scope is not None and actor_of(entry) not in scope:
+        raise HTTPException(status_code=404, detail="audit entry not found")
     return entry.model_dump(mode="json") if hasattr(entry, "model_dump") else entry
 
 
