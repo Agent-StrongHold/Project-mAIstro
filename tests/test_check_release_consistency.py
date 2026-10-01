@@ -104,8 +104,63 @@ def test_a_version_above_the_pending_release_fails(gate, tmp_path) -> None:
     assert any("above the pending CHANGELOG release" in p for p in problems)
 
 
-def test_a_dated_release_above_version_fails(gate, tmp_path) -> None:
-    """You cannot have released a version the packages do not carry."""
+def test_a_dated_release_above_version_on_the_same_line_fails(gate, tmp_path) -> None:
+    """On VERSION's own line, a published release cannot exceed the tree."""
+    _write(
+        gate,
+        tmp_path,
+        version="1.5.0",
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n## [2.0.0] - TBD\n\n## [1.5.2] - 2026-01-01\n"
+        ),
+        readme=f"{gate.README_BEGIN}\n{_status(released='none', current='1.5.0', target='2.0.0')}\n{gate.README_END}",
+    )
+
+    problems = gate.check()
+
+    assert any("records [1.5.2] as released" in p for p in problems)
+
+
+def test_a_dated_release_on_a_newer_line_is_the_hotfix_posture(gate, tmp_path) -> None:
+    """The supported older-line hotfix: v0.9.1 cut after v1.0.0 was published.
+
+    The dated 1.0.0 entry and its tag sit above VERSION on a newer line; that
+    is parallel release lines, not drift, and must not be flagged.
+    """
+    _write(
+        gate,
+        tmp_path,
+        version="0.9.1",
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n## [0.9.1] - TBD\n\nCurated notes.\n\n"
+            "## [0.9.0] - 2026-01-01\n\n## [1.0.0] - 2026-02-01\n"
+        ),
+        readme=f"{gate.README_BEGIN}\n{_status(released='1.0.0', current='0.9.1', target='0.9.1')}\n{gate.README_END}",
+        tags=["v0.9.0", "v1.0.0"],
+    )
+
+    assert gate.check() == []
+
+
+def test_tag_time_hotfix_run_passes(gate, tmp_path) -> None:
+    """The v0.9.1 run itself: its own tag predates its dated heading."""
+    _write(
+        gate,
+        tmp_path,
+        version="0.9.1",
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n## [0.9.1] - TBD\n\nCurated notes.\n\n"
+            "## [0.9.0] - 2026-01-01\n\n## [1.0.0] - 2026-02-01\n"
+        ),
+        readme=f"{gate.README_BEGIN}\n{_status(released='1.0.0', current='0.9.1', target='0.9.1')}\n{gate.README_END}",
+        tags=["v0.9.0", "v0.9.1", "v1.0.0"],
+    )
+
+    assert gate.check(releasing="v0.9.1") == []
+
+
+def test_a_dated_release_without_a_tag_fails(gate, tmp_path) -> None:
+    """A dated heading claims a publication; the tag is the proof."""
     _write(
         gate,
         tmp_path,
@@ -117,7 +172,7 @@ def test_a_dated_release_above_version_fails(gate, tmp_path) -> None:
 
     problems = gate.check()
 
-    assert any("records [1.5.0] as released" in p for p in problems)
+    assert any("no v1.5.0 tag exists" in p for p in problems)
 
 
 def test_two_pending_releases_fail(gate, tmp_path) -> None:
@@ -524,7 +579,8 @@ def test_a_real_iso_date_is_accepted(gate, tmp_path) -> None:
         changelog=(
             "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - TBD\n\n## [1.0.0] - 2026-08-23\n"
         ),
-        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0', target='1.1.0')}\n{gate.README_END}",
+        readme=f"{gate.README_BEGIN}\n{_status(released='1.0.0', current='1.0.0', target='1.1.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
     )
 
     assert gate.check() == []
@@ -664,13 +720,16 @@ def test_the_tag_being_released_is_excluded(gate, tmp_path) -> None:
     assert gate.check() != []
 
 
-def test_a_tag_above_version_fails(gate, tmp_path) -> None:
+def test_a_tag_above_version_on_its_own_line_fails(gate, tmp_path) -> None:
     _write(
         gate,
         tmp_path,
         version="0.9.0",
-        readme=f"{gate.README_BEGIN}\n{_status(released='1.0.0')}\n{gate.README_END}",
-        tags=["v1.0.0"],
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\n## [0.9.1] - 2026-01-01\n"
+        ),
+        readme=f"{gate.README_BEGIN}\n{_status(released='0.9.1')}\n{gate.README_END}",
+        tags=["v0.9.1"],
     )
 
     problems = gate.check()
