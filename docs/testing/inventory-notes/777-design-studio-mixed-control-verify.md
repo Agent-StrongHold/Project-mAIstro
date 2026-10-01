@@ -3470,3 +3470,57 @@ retrieval). The develop advance this round was unrelated identity/CI-gate
 work; the stop condition forbids Design-Studio-private substitutes, so no
 truthful implementation exists at this head. Changes this round: this note
 only.
+
+## Round 53 (head dd3d20090, 53rd inspected head): dependency block holds; vulture CI-repair executed
+
+No develop advance this round: `origin/develop` is still `430139cb729e`, the
+merge-base of HEAD (0 new commits), so no sync was needed. The previous
+block was a dependency block, not a sync conflict. Fresh dependency audit
+re-confirmed at this head, not trusted from round 52: `workspace_agent.py`
+still has 0 goal/reconcil matches; 0 files match `GoalRevision|GoalReconcil`
+in `packages/**/*.py`; no `maistro-goals` package; `brief_store.py:5-8`
+still disclaims being a Goal or CreativeBrief record; 0 `ladybug` hits in
+`packages/*/src`; 0 `CreativeGraph`/`control_mode`/mixed-control hits;
+37 e2e specs, none exercising #777 mixed control. All 13 acceptance
+criteria remain UNMET.
+
+### CI-repair: vulture per-identity ledger (exact-debt-ledger)
+
+The vulture gate was found genuinely RED at this head (`exit 1`; round 52's
+"vulture exit 0" claim was a piped-exit-code artifact, corrected here).
+Root cause is inherited from develop, not authored by this lane: commit
+`430139cb7` ("feat: add principal identity and route permissions tests")
+introduced `packages/maistro-core/src/maistro/identity/_crypto.py` (the
+BIP39/BIP32 lazy-crypto split, ADR-021) and `identity/principal.py`
+without amending `quality/vulture-baseline.json` (its last develop-side
+update was `51c0e1188`, before the identity work). Result at the merge
+base: 9 new unbanked identities and 6 stale ledger keys whose code moved
+from `identity/__init__.py` to `_crypto.py`.
+
+All 9 new identities were verified retained (nothing genuinely dead):
+`ConductorSeed.from_mnemonic`/`did_key`/`mnemonic_words`/`zero` are used by
+`hive-conductor/backend/services/identity_health.py` and
+`routes/setup.py` plus identity tests; `derive_named` by
+`maistro-core/tests/identity/test_seed.py`; `DerivedKey.curve` is the
+dataclass declarative field set by `derive()`; `__getattr__` is the PEP 562
+lazy-export the module docstring documents; `Principal.from_legacy_dict`/
+`to_legacy_dict` are the reviewed dict-principal cutover bridge used by
+`test_principal_identity.py`/`test_extra_guard.py`.
+
+Per the lane brief, `quality/vulture-baseline.json` was amended
+(`--update` from a real scan): surgical diff of exactly 9 added / 6
+removed identity stable keys, no other rule touched. Post-repair, the
+"Candidate ledger bookkeeping" section is clean.
+
+Residual, unfixable from this lane: the gate still exits 1 on the
+TRUSTED-baseline half, because both the trusted ledger and
+`ratchet-authorizations.json` are read from the merge-base commit
+(`scripts/ratchet_provenance.py`: "a new grant does not take effect in the
+change that introduces it"), and grant-file edits are prohibited outside
+the baseline file. The same reviewed bank must land on develop (or a
+reviewed grant), after which a lane re-sync turns the gate green. All
+gates re-run green after the repair: ruff check, ruff format (2723
+files), pytest 477 passed (maistro-core identity + principal-identity
+fitness + maistro-design + conductor identity/workspace/brief suites),
+doc-links, adr-index, suite-inventory 14/14, principal-identity,
+route-permissions.
