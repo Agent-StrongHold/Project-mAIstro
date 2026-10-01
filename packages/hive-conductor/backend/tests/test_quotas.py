@@ -129,6 +129,25 @@ def test_models_fallback_on_error(authed_client, monkeypatch: pytest.MonkeyPatch
     assert "models" not in data
 
 
+def test_models_error_when_registry_body_is_malformed(
+    authed_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 200 `/model/info` body that is not a model list is `error`, not a 500.
+
+    `data` reaching the mapping phase as something non-iterable-of-dicts (here
+    a bare string) raises inside the row-mapping loop; the handler's second
+    guard converts that into the error envelope so a lying proxy cannot turn
+    into an unhandled 500 or, worse, a plausible empty panel.
+    """
+    monkeypatch.setattr(httpx, "get", _fake_get({"/model/info": {"data": "garbage"}}))
+    r = authed_client.get("/v1/quotas/models")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["state"] == "error"
+    assert "mapped" in data["reason"]
+    assert "models" not in data
+
+
 # --------------------------------------------------------------------------- #
 # /v1/quotas/providers -> LiteLLM /global/spend/report
 # --------------------------------------------------------------------------- #
@@ -266,6 +285,36 @@ def test_providers_fallback_on_error(authed_client, monkeypatch: pytest.MonkeyPa
     # An outage is `error`, distinguishable from empty and from unconfigured.
     assert data["state"] == "error"
     assert data["reason"]
+    assert "providers" not in data
+
+
+def test_providers_error_when_report_is_malformed(
+    authed_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 200 response whose body cannot be aggregated is `error`, not a 500.
+
+    The fetch-time except catches an unreachable proxy; a second guard wraps
+    the aggregation phase, because a malformed-but-HTTP-200 report (here: a
+    token count the proxy rendered as a non-numeric string) would otherwise
+    escape as an unhandled exception — which reads as a panel outage with no
+    provenance, exactly the silent failure #380 forbids.
+    """
+
+    spend: list[object] = [
+        {"model_details": [{"total_input_tokens": "not-a-number"}]},
+    ]
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _fake_get({"/global/spend/report": spend, "/model/info": {"data": []}}),
+    )
+    r = authed_client.get("/v1/quotas/providers")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["state"] == "error"
+    # The reason names the phase, not a fake zeroed page.
+    assert "aggregated" in data["reason"]
+    assert data["window_days"] == quotas.SPEND_WINDOW_DAYS
     assert "providers" not in data
 
 

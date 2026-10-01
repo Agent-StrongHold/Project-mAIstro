@@ -1,7 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +22
-  packages/hive-conductor/tests/e2e: +7
+  packages/hive-conductor/backend/tests: +24
 ---
 
 # issue-380-dashboard-kpi-metric-envelopes
@@ -9,8 +8,22 @@ inventory-delta:
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
 
+Inventory correction: this note originally claimed
+`packages/hive-conductor/tests/e2e: +7`, but the suite inventory counts pytest
+node IDs and the e2e recipe collects only the directory's Python tests — the
+7 Playwright tests added in `dashboard-metrics-states.spec.ts` never become
+collected nodes, so the gate read the claim as −7 drift. The same correction
+was made for the same reason in `design-studio-visual-artifact-768.md` and
+`issue-817-design-trust-active-markup.md`. The browser coverage itself is real
+and documented below; the delta line is removed, not the coverage.
+
 `packages/hive-conductor/backend/tests/test_dashboard_metrics.py` — 21 tests
-for the KPI envelope contract (#380), plus 1 in `test_quotas.py`, plus 7
+for the KPI envelope contract (#380), plus 3 in `test_quotas.py` (the envelope
+rewrite plus two malformed-response tests: a spend report whose body cannot
+be aggregated and a `/model/info` body that is not a model list must both
+answer the `error` envelope rather than an unhandled 500 — the aggregation-
+and mapping-phase guards the first repair round left uncovered, which the
+diff-coverage gate flagged), plus 7
 Playwright tests in `packages/hive-conductor/tests/e2e/
 dashboard-metrics-states.spec.ts`.
 
