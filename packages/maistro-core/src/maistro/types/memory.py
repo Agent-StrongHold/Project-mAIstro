@@ -59,6 +59,17 @@ FAST_DECAY: float = 2.0  # decay_rate multiplier on thumbs-down
 WISDOM_PROMOTE_THRESHOLD: int = 5  # reinforcement_count to promote -> WISDOM
 REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
 
+# Learning pipeline dynamics (ADR-092 / EPIC M4-B). A validated learning cannot
+# sit below the validation floor -- the Gauntlet accepted its evidence -- and
+# failure knowledge decays slowest: an anti-pattern cost a real failure to
+# learn, and forgetting it re-buys that failure (the Learning-side mirror of
+# REGRET's structural 0.6 floor).
+DEFAULT_LEARNING_CONFIDENCE: float = 0.5
+VALIDATED_CONFIDENCE_FLOOR: float = 0.6
+ANTI_PATTERN_CONFIDENCE_FLOOR: float = 0.6
+EMPIRICAL_HALF_LIFE_DAYS: float = 30.0
+ANTI_PATTERN_HALF_LIFE_DAYS: float = 120.0
+
 
 class MemoryScope(StrEnum):
     """Memory visibility scopes — hierarchical from broadest to narrowest."""
@@ -81,6 +92,39 @@ SCOPE_RANK: dict[MemoryScope, int] = {
     MemoryScope.AGENT: 1,
     MemoryScope.SESSION: 0,
 }
+
+
+class LearningStage(StrEnum):
+    """Stages of the learning pipeline (ADR-092, M4-B #117).
+
+    MEMORY -> LEARNING -> VALIDATED -> REPERTOIRE:
+
+    - ``MEMORY`` names the source tier: episodic records of what a Run
+      observed. A :class:`Learning` never carries this stage -- it marks where
+      the pipeline starts, so the stage ladder is total.
+    - ``LEARNING``: an extracted correction held locally by one scope. Local
+      belief, not yet reusable knowledge.
+    - ``VALIDATED``: an independent Gauntlet accepted the outcome evidence
+      later Runs recorded (#118). Still scoped, now believed.
+    - ``REPERTOIRE``: collective, reusable knowledge committed for injection
+      into later Runs. The only door in is through VALIDATED.
+    """
+
+    MEMORY = "memory"
+    LEARNING = "learning"
+    VALIDATED = "validated"
+    REPERTOIRE = "repertoire"
+
+
+class EpistemicType(StrEnum):
+    """How a learning claims to know what it knows (M4-B #119)."""
+
+    #: Observed fail->succeed (or first-try success) correction from tool history.
+    EMPIRICAL = "empirical"
+    #: RCA-derived diagnosis: inferred cause, not directly observed.
+    INFERENTIAL = "inferential"
+    #: Failure knowledge: what to stop doing. Retained near-permanently (#121).
+    ANTI_PATTERN = "anti_pattern"
 
 
 @dataclass(frozen=True)
@@ -126,6 +170,28 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
+    # Pipeline + epistemics (ADR-092, EPIC M4-B). `stage` is the knowledge
+    # pipeline position; `status` stays the store-level row state. They move
+    # together only where they must: committing a learning to the repertoire
+    # sets status="promoted" so existing promoted-only readers keep working.
+    stage: LearningStage = LearningStage.LEARNING
+    epistemic_type: EpistemicType = EpistemicType.EMPIRICAL
+    #: 0..1 belief strength, decayed toward the epistemic floor over time.
+    confidence: float = DEFAULT_LEARNING_CONFIDENCE
+    #: Where this learning applies, e.g. {"task_types": ["deploy"], "tools": ["bash"]}.
+    applicability: dict[str, list[str]] = field(default_factory=dict)
+    reinforcement_count: int = 0
+    contradiction_count: int = 0
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    #: Last reinforcement instant; the decay clock anchors here, not created_at.
+    last_confirmed_at: datetime | None = None
+    #: Gauntlet provenance (#118): which independent validator accepted, and when.
+    validated_by: str = ""
+    validated_at: datetime | None = None
+    #: Supersession links (#120). Both rows survive: institutional knowledge is
+    # retained, so later Runs can ask what used to be believed.
+    supersedes: int | None = None
+    superseded_by: int | None = None
 
 
 @dataclass

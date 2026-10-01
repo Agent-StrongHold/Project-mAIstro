@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
@@ -14,7 +15,13 @@ from maistro.persistence.learning_contract import (
     LEARNING_PERSISTED_FIELDS,
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
-from maistro.types.memory import Learning, MemoryScope
+from maistro.types.memory import (
+    DEFAULT_LEARNING_CONFIDENCE,
+    EpistemicType,
+    Learning,
+    LearningStage,
+    MemoryScope,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -51,6 +58,18 @@ _PG_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "stage",
+    "epistemic_type",
+    "confidence",
+    "applicability",
+    "reinforcement_count",
+    "contradiction_count",
+    "created_at",
+    "last_confirmed_at",
+    "validated_by",
+    "validated_at",
+    "supersedes",
+    "superseded_by",
 )
 
 
@@ -154,15 +173,24 @@ class PgLearningStore:
                 # column the writer skips is a column that always reads back as
                 # its default. `hit_count` is usually 0 on a new learning, but
                 # a caller that supplies one — a re-import, a merge — must get
-                # it back, and `find_relevant` orders by it.
+                # it back, and `find_relevant` orders by it. The lifecycle
+                # fields (ADR-092) are written for the same reason: a restart
+                # must not demote a validated learning back to a local belief.
                 """INSERT INTO learnings
                    (category, trigger_keys, learning, tool_name, source_query,
                     agent_id, user_id, org_id, team_id, scope, hit_count, status,
                     rca_category, rca_prevention,
                     success_after_use, failure_after_use,
-                    run_id, node_run_id, attempt_id)
+                    run_id, node_run_id, attempt_id,
+                    stage, epistemic_type, confidence, applicability,
+                    reinforcement_count, contradiction_count,
+                    created_at, last_confirmed_at,
+                    validated_by, validated_at,
+                    supersedes, superseded_by)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                           $13, $14, $15, $16, $17, $18, $19)
+                           $13, $14, $15, $16, $17, $18, $19,
+                           $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
+                           $30, $31)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -183,6 +211,18 @@ class PgLearningStore:
                 # `as_columns` owns the "blank means absent" rule for every
                 # store that writes it (#709).
                 *provenance.as_columns(),
+                learning.stage,
+                learning.epistemic_type,
+                learning.confidence,
+                json.dumps(learning.applicability),
+                learning.reinforcement_count,
+                learning.contradiction_count,
+                learning.created_at,
+                learning.last_confirmed_at,
+                learning.validated_by,
+                learning.validated_at,
+                learning.supersedes,
+                learning.superseded_by,
             )
             return int(row["id"]) if row else 0
 
@@ -548,4 +588,39 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         run_id=row.get("run_id") or "",
         node_run_id=row.get("node_run_id") or "",
         attempt_id=row.get("attempt_id") or "",
+        # Lifecycle + epistemics (ADR-092). Defaults mirror the dataclass so a
+        # row written before migration 048 reads back as the local empirical
+        # learning it was, not as something the system never claimed.
+        stage=LearningStage(row.get("stage") or "learning"),
+        epistemic_type=EpistemicType(row.get("epistemic_type") or "empirical"),
+        confidence=(
+            float(row["confidence"])
+            if row.get("confidence") is not None
+            else DEFAULT_LEARNING_CONFIDENCE
+        ),
+        applicability=_load_applicability(row.get("applicability")),
+        reinforcement_count=row.get("reinforcement_count") or 0,
+        contradiction_count=row.get("contradiction_count") or 0,
+        created_at=row.get("created_at") or datetime.now(UTC),
+        last_confirmed_at=row.get("last_confirmed_at"),
+        validated_by=row.get("validated_by") or "",
+        validated_at=row.get("validated_at"),
+        supersedes=row.get("supersedes"),
+        superseded_by=row.get("superseded_by"),
     )
+
+
+def _load_applicability(raw: object) -> dict[str, list[str]]:
+    """Decode `applicability`, tolerating NULL or malformed text like `_load_keys`."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): [str(v) for v in values] for k, values in raw.items()}
+    if isinstance(raw, str | bytes | bytearray):
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        if isinstance(decoded, dict):
+            return {str(k): [str(v) for v in values] for k, values in decoded.items()}
+    return {}

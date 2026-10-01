@@ -145,7 +145,8 @@ async def test_store_inserts_new_learning_when_no_existing_match(
     conn.queue_fetch([])  # no existing rows for dedup check
     conn.queue_fetchrow({"id": 42})
 
-    new_id = await store.store(make_learning())
+    learning = make_learning()
+    new_id = await store.store(learning)
 
     assert new_id == 42
     assert len(conn.calls) == 2
@@ -193,6 +194,23 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         # The producer, written as NULL rather than "" because this learning was
         # made with no execution in scope: an empty string would name a Run
         # whose id is empty, which is a claim (#709).
+        None,
+        None,
+        None,
+        # Lifecycle + epistemics (ADR-092): written like every other durable
+        # field so a restart cannot demote a validated learning back to a
+        # local belief. A fresh learning is a local empirical one at the
+        # default confidence, naming no validator, no confirmation instant,
+        # and no supersession lineage.
+        "learning",
+        "empirical",
+        0.5,
+        "{}",
+        0,
+        0,
+        learning.created_at,
+        None,
+        "",
         None,
         None,
         None,
