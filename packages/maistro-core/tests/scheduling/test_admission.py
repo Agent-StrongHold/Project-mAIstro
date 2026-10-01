@@ -2517,3 +2517,84 @@ class TestManualFire:
         assert [marker.fire_id for marker in recorded.pending_fires] == ["ghost-1"]
         assert recorded.runs_so_far == 1
         assert recorded.last_run_id == result.run_ids[0]
+
+
+# --- bounded catch-up work (#1200) -------------------------------------------
+
+
+class TestBoundedEnumeration:
+    """A walk stopped by its budget or step bound owes a re-examination.
+
+    `evaluate()` marks the decision incomplete; this is the admission half of
+    that contract: the due cursor stays where it is so the next tick
+    re-examines exactly the range this one did not, and the admission carries
+    the flag so a host can say the tick ended with backlog owed.
+    """
+
+    async def test_an_incomplete_walk_keeps_the_due_cursor(self, harness) -> None:
+        from maistro.scheduling.engine import EnumerationLimits
+
+        _admitter, runs, templates, schedules, project_id = harness
+        bounded = ScheduleRunAdmitter(
+            runs,
+            templates,
+            schedules,
+            enumeration_limits=EnumerationLimits(walk_budget_seconds=0.0),
+        )
+        schedule = await _schedule(schedules, project_id)
+        before = await schedules.get(schedule.schedule_id)
+
+        admission = await bounded.admit_due(schedule, now=NOON)
+
+        assert admission.enumeration_incomplete is True
+        assert admission.run_ids == ()
+        assert len(runs._runs) == 0  # type: ignore[attr-defined]
+        # Nothing was written at all: the occurrence was never examined, so
+        # neither a cursor advance nor a skip record may pretend it was.
+        assert await schedules.get(schedule.schedule_id) == before
+
+    async def test_an_incomplete_walk_reports_where_it_stopped(self, harness) -> None:
+        import math
+
+        from maistro.scheduling.engine import EnumerationLimits
+
+        _admitter, runs, templates, schedules, project_id = harness
+        bounded = ScheduleRunAdmitter(
+            runs,
+            templates,
+            schedules,
+            enumeration_limits=EnumerationLimits(walk_budget_seconds=math.inf, max_walk_steps=2),
+        )
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            cron="* * * * *",
+            last_fired_at=NOON - timedelta(hours=1),
+            catchup_window_seconds=3600.0,
+        )
+
+        admission = await bounded.admit_due(schedule, now=NOON)
+
+        assert admission.enumeration_incomplete is True
+        assert admission.enumeration_stopped_at == NOON - timedelta(minutes=58)
+        # The two examined occurrences were consumed (one fired, one skipped
+        # as overlap under the default SKIP policy); the unexamined range
+        # past the stop is what the next tick re-examines.
+        assert len(admission.run_ids) == 1
+
+    async def test_a_complete_walk_advances_the_due_cursor(self, harness) -> None:
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        admission = await admitter.admit_due(schedule, now=NOON)
+
+        assert admission.enumeration_incomplete is False
+        assert admission.enumeration_stopped_at is None
+        assert admission.window_clamped is False
+        assert len(admission.run_ids) == 1
+        after = await schedules.get(schedule.schedule_id)
+        assert after is not None
+        # The cursor names the occurrence that fired, and the due cursor
+        # the next one — the complete walk consumed the whole range.
+        assert after.last_fired_at == NOON
+        assert after.next_due_at == NOON + timedelta(hours=1)
