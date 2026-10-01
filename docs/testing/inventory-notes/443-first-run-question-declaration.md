@@ -144,3 +144,40 @@ the gate failure has no tree-level fix, only a superseded queue run):
 Residual: the red integration-scope check at bb8a8337 clears only by a fresh
 merge-queue evaluation (a superseded run's cancelled child is never retried
 in place); every producer it waits on passes on this tree.
+
+## CI-repair round evidence (repair job 2c7a65e2, head ca7c74109)
+
+The next merge-queue evaluation at this head resolved the integration-scope
+leg but was itself cancelled mid-run; the named residuals are SAST
+(bandit + semgrep + gitleaks) = cancelled and the vulture per-identity
+ledger repair. Both addressed from the tree, not the scanner:
+
+- A `cancelled` SAST conclusion is queue-supersession (ci.yml concurrency
+group), not a finding — and each leg was executed locally at this head:
+  - bandit (`uvx bandit -r packages/maistro-core/src
+    packages/hive-conductor/backend packages/maistro-server/src -ll
+    --confidence-level=medium -f json`): exit 0, **Medium+ findings: 0**
+    (strict zero-baseline gate satisfied).
+  - semgrep (`uvx semgrep --metrics off --config
+    tools/semgrep/maistro-rules.yaml --config p/security-audit --config
+    p/owasp-top-ten --config p/secrets --error` over all 14 changed files):
+    exit 0, 324 rules, **0 findings**.
+  - gitleaks (`gitleaks git --redact
+    --log-opts=fa2deb0a..ca7c741 .`): exit 0, **no leaks found** over the
+    branch's changed range.
+- Vulture per-identity ledger repair command re-run verbatim
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`): exit 0, 1390 findings / 1390 reviewed
+  identities, `unclassified: 0`, ratchet `base fa2deb0a4515 -> candidate
+  ca7c74109` — nothing unbanked, so no ledger amendment exists to make
+  (the test-only `hardware_preset` parameter is deleted, and the ledger
+  reflects the removal).
+- Acceptance re-executed, not trusted, at this head: 35 bootstrap/core
+  declaration tests and 64 backend registration/setup tests pass
+  (including the wholesale terminal==SPA payload parity assertion and the
+  over-HTTP provisioning test), `ruff check .` + `ruff format --check .`
+  clean (2674 files), all three suite inventories match, `npm run build`
+  (vite + tsc) succeeds, eslint on the changed frontend files: 0 errors
+  (1 warning on the gateway model-list effect — context-only in this
+  branch's diff, pre-existing code).
+- No code change this round; note update only.
