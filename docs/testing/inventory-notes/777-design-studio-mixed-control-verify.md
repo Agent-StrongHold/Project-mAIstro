@@ -3524,3 +3524,59 @@ files), pytest 477 passed (maistro-core identity + principal-identity
 fitness + maistro-design + conductor identity/workspace/brief suites),
 doc-links, adr-index, suite-inventory 14/14, principal-identity,
 route-permissions.
+
+## Round 54 (head `0d806d34a`, 54th inspected head): ledger re-repair after develop identity refactor; dependency block unchanged
+
+Branch state: HEAD `0d806d34a` = lane merge of develop `a74a2b939` into the
+round-53 head (`32f36aff4`); working tree clean; `origin/develop` still
+exactly `a74a2b939` (fetched fresh this round) — no develop advance, no sync
+needed. Round-53 result artifact re-read: dependency-block BLOCKED, agent
+exit 0, tree clean, nothing to salvage.
+
+### Vulture CI-repair round 2 (mandated by lane brief)
+
+The gate was red again at this head, with a **new failure mode**: develop's
+`a74a2b939` lineage (via `28e2a03a8` revert + the identity refactor) moved
+`ConductorSeed` methods back from `_crypto.py` into `identity/__init__.py`,
+deleted `_crypto.py`, and removed `identity/__init__.py::__getattr__` plus
+`principal.py::from_legacy_dict`/`to_legacy_dict`. That left the round-53
+ledger (which had renamed `__init__.py` -> `_crypto.py` keys) with 9 stale
+entries and 6 unbanked relocated identities:
+
+- dataclass-declarative-field: NEW `identity/__init__.py::curve`,
+  STALE `_crypto.py::curve` (same dataclass field, moved file).
+- core-public-api-surface: NEW `__init__.py::{from_mnemonic, derive_named,
+  did_key, mnemonic_words, zero}`, STALE `__getattr__` + 5 `_crypto.py`
+  methods + 2 `principal.py` methods.
+
+All 6 relocated identities re-verified retained with fresh call-site
+evidence (`identity_health.py`, `routes/setup.py`, `test_seed.py`,
+`test_identity_health.py`, `test_setup_guard.py`); the 9 pruned keys point
+at genuinely deleted code. Amended `quality/vulture-baseline.json` exactly
+per the brief: surgical diff of 6 added / 9 removed stable keys, no other
+rule touched. Post-repair gate exits 0 with 1373 reviewed identities ==
+1373 findings — including the trusted-baseline half, which now passes
+because the merge-base (`a74a2b939`) ledger matches develop's own tree
+(resolving round 53's "trusted half red by design" residual without any
+grant edit from this lane).
+
+### Dependency audit (fresh, all still missing)
+
+`workspace_agent.py` 0 goal/reconcil matches; 0 `GoalRevision|GoalReconcil`
+py files; no maistro-goals package; `brief_store.py:5-8` disclaim intact;
+0 ladybug hits in `packages/*/src`; the single `CreativeGraph` hit is the
+`maistro_design/creative_brief.py:39` comment stating #774/#775 lanes have
+not landed; 0 control_mode/mixed-control hits in `packages/*/src`; 26 e2e
+specs, none exercising #777 mixed-control under one Goal lineage. 13/13
+acceptance criteria unmet — the lane remains a clean dependency block on
+#458 behavior/#804/#805/#806/#774/#775/#776.
+
+### Gates green post-repair (all fresh at `0d806d34a`)
+
+ruff check pass; ruff format 2718 files; vulture baseline exit 0;
+pytest 98 passed (maistro-core identity + identity_health + setup_guard),
+394 passed (maistro-design), 49 passed (workspace_agent_identity,
+program_brief_routes, chat_brief_interview, workspace_mode,
+airtable_principal_scope); suite-inventory 14/14; doc-links PASS;
+adr-index OK. No production or test code changed this round; the only
+tree edits are the ledger amendment and this note.
