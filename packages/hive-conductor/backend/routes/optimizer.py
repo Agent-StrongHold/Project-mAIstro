@@ -70,6 +70,10 @@ async def trigger_optimizer(
             apply_auto=apply_auto,
             org_id=org_id,
             project_id=project_id,
+            # The Workspace this request was authorized against: proposals
+            # carry it so candidate registration lands in the authorizing
+            # tenant, not the configured default (#861 review).
+            workspace_id=str(getattr(scope, "workspace_id", "") or ""),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
@@ -133,10 +137,12 @@ def list_all_proposals(
 
 
 @router.post("/proposals/{proposal_id}/accept")
-def accept_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
+async def accept_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
     actor = _user_id(request)
     try:
-        return record_decision(proposal_id, DECISION_ACCEPTED, actor=actor)
+        # record_decision awaits the candidate/promotion commit; the response
+        # carries the truthful apply_outcome (#861).
+        return await record_decision(proposal_id, DECISION_ACCEPTED, actor=actor)
     except KeyError:
         raise HTTPException(status_code=404, detail="proposal not found") from None
     except ValueError as exc:
@@ -144,10 +150,10 @@ def accept_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/proposals/{proposal_id}/reject")
-def reject_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
+async def reject_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
     actor = _user_id(request)
     try:
-        return record_decision(proposal_id, DECISION_REJECTED, actor=actor)
+        return await record_decision(proposal_id, DECISION_REJECTED, actor=actor)
     except KeyError:
         raise HTTPException(status_code=404, detail="proposal not found") from None
     except ValueError as exc:
