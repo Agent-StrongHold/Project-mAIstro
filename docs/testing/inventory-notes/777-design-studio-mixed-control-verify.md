@@ -2702,3 +2702,76 @@ unlanded canonical dependencies**. No repair code written — none
 possible without violating the issue stop condition (creating a
 Design-Studio-private reconciler/Goal owner is expressly
 prohibited). No closure keywords used.
+
+## Round 41 (job 9d4836536a0a496ea270921e87a6237e) — re-verified at
+## c94935ac9 (develop sync + fresh gates)
+
+Prior job 4aeed1c50a0740d7b653daaa1c8c5c95 died on provider timeout
+(`failure_kind: provider_error`, `checks: []`, empty report). Recovery:
+worktree was clean at the exact expected head `f6a63838ead7`, so no
+uncommitted work existed to salvage. The driver ran no deterministic
+checks this round (no `check-*.log` in the job dir), so all evidence
+below is re-executed fresh, not inherited.
+
+**Develop sync performed this round:** `origin/develop` advanced
+`cd258510b` -> `e2b2dfa02` (1 commit: M4 eventual dashboard KPI
+metrics #1722). Merged cleanly as `c94935ac9` with zero conflicts
+(13 files: dashboard/quotas/widgets routes, dashboard_metrics
+service+tests, Dashboard/Quotas frontend, new dashboard e2e spec —
+all unrelated to #777's dependency surfaces).
+
+**Fresh dependency audit at `c94935ac9` (re-run, not inherited):**
+- `GoalRevision|GoalReconcil|owning_agent` across `packages/*/src`:
+  **0** files. No `maistro-goals` package. `^class Goal` grep has
+  exactly 1 hit: `GoalReader(Protocol)` at
+  `packages/maistro-core/src/maistro/workspaces/campaigns/policy.py:54`
+  — read-only, not a Goal store (#458 still declaration-only).
+- `workspace_agent.py` (hive-conductor backend service): **0**
+  goal/reconcil matches — front door only, consumes no #804 API.
+- `brief_store.py:5` still disclaims: "nothing here is a Goal or
+  CreativeBrief record" (#774 absent).
+- `ladybug`: **0** src hits (#776 absent); `creative.?brief|
+  creative.?graph` in src: only `brief_interview.py` (chat state,
+  not a CreativeBrief record).
+- `mixed.control|mixed_control`: **0** implementation hits — only
+  this note and `docs/product/DESIGN-STUDIO.md`; no mixed-control
+  tests or E2E.
+- `_CreativeBriefNode` remains a **test-local stub** at
+  `packages/maistro-core/tests/graph/test_cross_domain_substrate.py:44`.
+- `agent_goal_ownership` remains an ontology `RelationshipSpec` only
+  (`packages/maistro-core/src/maistro/interop/contract.py:354`).
+
+**Gates executed at `c94935ac9` (fresh runs on the merged tree):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2682 files already formatted
+  (exit 0; +2 vs round 40 = merge's new files).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **exit 0**,
+  base `e2b2dfa02822` -> candidate `c94935ac9b62`, **1383 reviewed
+  identities -> 1383 findings, 0 unbanked**. The #1722 merge
+  introduced no unbanked identities; ledger round is a no-op — no
+  amendment required, none made.
+- `uv run pytest …/test_dashboard_metrics.py
+  …/test_workspace_agent_identity.py …/test_workspace_mode.py
+  …/test_program_brief_routes.py maistro-core
+  …/interop/test_contract.py -q` — **66 passed** (15.39s) — covers
+  merged #1722 dashboard metrics + #777-adjacent surfaces.
+- `uv run pytest …/test_quotas.py …/test_dashboard_layout.py -q` —
+  **18 passed** (6.54s) — covers the rest of the merge footprint
+  (quotas routes reworked in #1722, dashboard layout).
+- `uv run python scripts/check-suite-inventory.py` — PASS (14/14,
+  e2e suite now 23 specs).
+- `uv run python scripts/check-doc-links.py` — PASS.
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**Conclusion (41st inspected head):** unchanged block after a clean
+develop sync. The one new develop commit is M4 dashboard-KPI work;
+every canonical owner #777 must consume (#458 GoalRevision/
+ownership behavior, #804/#805/#806 reconciliation, #774
+CreativeBrief, #775 creative Graph, #776 Ladybug retrieval) is
+still absent from the tree, and no mixed-control E2E exists. All 13
+acceptance criteria remain **UNMET**. Lane stays **BLOCKED on
+unlanded canonical dependencies**. No repair code written — none
+possible without violating the issue stop condition (creating a
+Design-Studio-private reconciler/Goal owner is expressly
+prohibited). No closure keywords used.
