@@ -13,6 +13,7 @@ Do not preload all linked guidance. Load only the domain index whose applicabili
 - [Repository standards](repository-standards/README.md): code/repository style, structure, naming, documentation, commits/PRs, migrations. This index initially routes to existing canonical material and will be normalized in this PR.
 - [Specifications](../specs/): normative system requirements. Use when the task implements, changes, or validates specified behavior.
 - [Architecture decisions](adrs/README.md): progressive-disclosure ADR map covering every decision file, with canonical-architecture shortcuts, current status interpretation, next steps, and exact links to the full records. Start here rather than loading `docs/adr/`.
+- [Implementation specifications](specs/README.md): progressive-disclosure SPEC map covering all 213 specs, with the canonical August implementation spine, M1-M4 priorities, stale-spec traps, and exact links to full acceptance criteria.
 
 ## Precedence
 
