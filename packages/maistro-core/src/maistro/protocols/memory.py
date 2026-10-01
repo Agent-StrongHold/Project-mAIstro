@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
-from maistro.types.memory import REINFORCE_DELTA
+from maistro.types.memory import CONTRADICT_DELTA, REINFORCE_DELTA
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -83,6 +83,95 @@ class LearningStore(Protocol):
 
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
         """List learnings for an org (candidate enumeration for promotion/admin)."""
+        ...
+
+
+@runtime_checkable
+class LearningLifecycleStore(LearningStore, Protocol):
+    """A learning store that runs the M4-B lifecycle on its rows (#117/#120).
+
+    Split from :class:`LearningStore` so a plain store stays a valid one: the
+    lifecycle methods are the validated/repertoire machinery, and a backend
+    that has not grown them is still a functioning learning store, not a
+    broken one.
+    """
+
+    async def get(self, learning_id: int, *, org_id: str = "") -> Learning | None:
+        """Point read by id, or None. Blank ``org_id`` means no org filter."""
+        ...
+
+    async def reinforce(
+        self, learning_id: int, delta: float = REINFORCE_DELTA, *, org_id: str = ""
+    ) -> Learning | None:
+        """A later Run confirmed the learning; confidence rises, never past 1."""
+        ...
+
+    async def contradict(
+        self, learning_id: int, delta: float = CONTRADICT_DELTA, *, org_id: str = ""
+    ) -> Learning | None:
+        """A later Run showed the learning wrong; confidence falls to its floor."""
+        ...
+
+    async def supersede(self, old_id: int, replacement: Learning, *, org_id: str = "") -> int:
+        """Retire the old row in favour of the stored replacement; both survive.
+
+        Raises ``KeyError`` when the old id is not in scope: a silent no-op
+        would leave both rows active and the lineage unrecorded.
+        """
+        ...
+
+    async def apply_decay(
+        self,
+        *,
+        now: datetime | None = None,
+        half_life_days: float | None = None,
+    ) -> int:
+        """One time-decay sweep over live rows; returns how many moved."""
+        ...
+
+    async def consolidate(
+        self,
+        *,
+        org_id: str = "",
+        tool_name: str | None = None,
+    ) -> list[Learning]:
+        """Merge near-duplicate active rows, folding their evidence; returns survivors."""
+        ...
+
+
+@runtime_checkable
+class IneffectiveLearningSource(Protocol):
+    """Names learnings whose failures outnumber successes (M4-B #121).
+
+    The read that turns losses into retained anti-pattern knowledge. Read-only
+    by contract: converting what it names into anti-patterns is the caller's
+    decision, so a store can never silently rewrite its rows' epistemics.
+    """
+
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings with at least ``min_uses`` recorded outcomes and more failures."""
+        ...
+
+
+@runtime_checkable
+class AntiPatternSink(Protocol):
+    """Durably records a caller-decided anti-pattern reclassification (#121).
+
+    The write half of :class:`IneffectiveLearningSource`. The decision stays
+    with the caller; what this adds is durability for backends whose reads
+    return detached row copies -- without it, a reclassification the promoter
+    made on a copy would evaporate with the copy and the next process would
+    re-learn the anti-pattern by re-buying the failure.
+    """
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor.
+
+        Org is an exact boundary, like every other scoped write. Returns
+        whether a row in scope was updated.
+        """
         ...
 
 

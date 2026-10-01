@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import observed_provenance
@@ -13,7 +14,13 @@ from maistro.persistence.learning_contract import (
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.sqlite_schema import serialized_schema_upgrade
-from maistro.types.memory import Learning, MemoryScope
+from maistro.types.memory import (
+    DEFAULT_LEARNING_CONFIDENCE,
+    EpistemicType,
+    Learning,
+    LearningStage,
+    MemoryScope,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -39,7 +46,19 @@ CREATE TABLE IF NOT EXISTS learnings (
     failure_after_use INTEGER NOT NULL DEFAULT 0,
     run_id TEXT,
     node_run_id TEXT,
-    attempt_id TEXT
+    attempt_id TEXT,
+    stage TEXT NOT NULL DEFAULT 'learning',
+    epistemic_type TEXT NOT NULL DEFAULT 'empirical',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    applicability TEXT NOT NULL DEFAULT '{}',
+    reinforcement_count INTEGER NOT NULL DEFAULT 0,
+    contradiction_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    last_confirmed_at TEXT,
+    validated_by TEXT NOT NULL DEFAULT '',
+    validated_at TEXT,
+    supersedes INTEGER,
+    superseded_by INTEGER
 )
 """
 
@@ -55,6 +74,25 @@ _LEGACY_UPGRADE_COLUMNS = {
 #: nullable in PostgreSQL: a row written with no execution in scope names none,
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
+
+#: The lifecycle + epistemics columns (ADR-092, EPIC M4-B). Scalar state gets
+#: NOT NULL DEFAULT so the ALTER is legal in SQLite; instants and supersession
+#: links stay nullable because an old row genuinely has none, and fabricating
+#: one would lie about when knowledge was confirmed or replaced.
+_LIFECYCLE_UPGRADE_COLUMNS = {
+    "stage": "TEXT NOT NULL DEFAULT 'learning'",
+    "epistemic_type": "TEXT NOT NULL DEFAULT 'empirical'",
+    "confidence": "REAL NOT NULL DEFAULT 0.5",
+    "applicability": "TEXT NOT NULL DEFAULT '{}'",
+    "reinforcement_count": "INTEGER NOT NULL DEFAULT 0",
+    "contradiction_count": "INTEGER NOT NULL DEFAULT 0",
+    "created_at": "TEXT",
+    "last_confirmed_at": "TEXT",
+    "validated_by": "TEXT NOT NULL DEFAULT ''",
+    "validated_at": "TEXT",
+    "supersedes": "INTEGER",
+    "superseded_by": "INTEGER",
+}
 
 # Kept next to the SQL so the conformance test can detect a new Learning field
 # that is not represented by both persistence twins.
@@ -80,6 +118,18 @@ _SQLITE_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "stage",
+    "epistemic_type",
+    "confidence",
+    "applicability",
+    "reinforcement_count",
+    "contradiction_count",
+    "created_at",
+    "last_confirmed_at",
+    "validated_by",
+    "validated_at",
+    "supersedes",
+    "superseded_by",
 )
 
 
@@ -118,6 +168,14 @@ class SqliteLearningStore:
             for column in _PROVENANCE_COLUMNS:
                 if column not in columns:
                     await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
+            # And for the lifecycle columns (ADR-092): a file created before
+            # M4-B holds rows whose pipeline state was implicit, so the ALTERs
+            # stamp the defaults that state always meant.
+            for column, column_type in _LIFECYCLE_UPGRADE_COLUMNS.items():
+                if column not in columns:
+                    await self._conn.execute(
+                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"  # nosec B608
+                    )
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
             )
@@ -150,8 +208,14 @@ class SqliteLearningStore:
                 agent_id, user_id, org_id, team_id, scope, hit_count, status,
                 rca_category, rca_prevention,
                 success_after_use, failure_after_use,
-                run_id, node_run_id, attempt_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                run_id, node_run_id, attempt_id,
+                stage, epistemic_type, confidence, applicability,
+                reinforcement_count, contradiction_count,
+                created_at, last_confirmed_at,
+                validated_by, validated_at,
+                supersedes, superseded_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -170,6 +234,20 @@ class SqliteLearningStore:
                 learning.success_after_use,
                 learning.failure_after_use,
                 *provenance.as_columns(),
+                learning.stage,
+                learning.epistemic_type,
+                learning.confidence,
+                json.dumps(learning.applicability),
+                learning.reinforcement_count,
+                learning.contradiction_count,
+                _utc_text(learning.created_at),
+                _utc_text(learning.last_confirmed_at)
+                if learning.last_confirmed_at is not None
+                else None,
+                learning.validated_by,
+                _utc_text(learning.validated_at) if learning.validated_at is not None else None,
+                learning.supersedes,
+                learning.superseded_by,
             ),
         )
         await self._conn.commit()
@@ -306,6 +384,48 @@ class SqliteLearningStore:
         )
         await self._conn.commit()
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        cursor = await self._conn.execute(
+            """SELECT * FROM learnings
+               WHERE success_after_use + failure_after_use >= ?
+                 AND failure_after_use > success_after_use
+               ORDER BY id DESC""",
+            (min_uses,),
+        )
+        columns = [d[0] for d in cursor.description]
+        rows = await cursor.fetchall()
+        return [_row_to_learning(dict(zip(columns, row, strict=True))) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        cursor = await self._conn.execute(
+            """UPDATE learnings
+               SET epistemic_type = 'anti_pattern',
+                   confidence = MAX(confidence, ?)
+               WHERE id = ? AND org_id = ?""",
+            (confidence_floor, learning_id, org_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
     async def check_auto_promotions(
         self,
         threshold: int = 5,
@@ -404,4 +524,55 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         attempt_id=_text(row, "attempt_id"),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
+        # Lifecycle + epistemics (ADR-092). Defaults mirror the dataclass so a
+        # pre-M4B row reads back as the local empirical learning it was.
+        stage=LearningStage(row.get("stage") or "learning"),
+        epistemic_type=EpistemicType(row.get("epistemic_type") or "empirical"),
+        confidence=(
+            float(row["confidence"])
+            if row.get("confidence") is not None
+            else DEFAULT_LEARNING_CONFIDENCE
+        ),
+        applicability=_load_applicability(row.get("applicability")),
+        reinforcement_count=row.get("reinforcement_count") or 0,
+        contradiction_count=row.get("contradiction_count") or 0,
+        created_at=_load_moment(row.get("created_at")) or datetime.now(UTC),
+        last_confirmed_at=_load_moment(row.get("last_confirmed_at")),
+        validated_by=_text(row, "validated_by"),
+        validated_at=_load_moment(row.get("validated_at")),
+        supersedes=row.get("supersedes"),
+        superseded_by=row.get("superseded_by"),
     )
+
+
+def _utc_text(moment: datetime) -> str:
+    """An instant as text that sorts in instant order (see sqlite_outcomes)."""
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC).isoformat()
+    return moment.astimezone(UTC).isoformat()
+
+
+def _load_moment(raw: object) -> datetime | None:
+    """Decode an instant column; NULL or unparseable text names no instant."""
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _load_applicability(raw: object) -> dict[str, list[str]]:
+    """Decode `applicability`, tolerating NULL or malformed text like `trigger_keys`."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): [str(v) for v in values] for k, values in raw.items()}
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            return {}
+        if isinstance(decoded, dict):
+            return {str(k): [str(v) for v in values] for k, values in decoded.items()}
+    return {}
