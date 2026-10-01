@@ -142,12 +142,20 @@ one-linear-head convention the briefs migration is renumbered to
 now walks to `048` and asserts `get_heads() == ["048"]`. `SPEC-092826`'s "migration
 047" mention follows the renumber. No test node IDs moved; the inventory holds.
 
+A second develop sync (round 3, develop tip `51c0e1188`) collided the same way
+once more: #398's `048_canvas_job_retry_backoff` claimed the head this branch's
+renumber had taken. Per the same one-linear-head convention the briefs migration
+is renumbered again to **`049_design_creative_briefs`** (`down_revision = "048"`);
+the effect-index chain test now walks to `049` and asserts `get_heads() == ["049"]`,
+and `SPEC-092826`'s "migration 048" mention follows. No test node IDs moved.
+
 Re-executed on the merged head:
 
 - `uv run ruff check .` / `ruff format --check .` clean (2693 files); `uv run pytest
   packages/maistro-design/tests` 409 passed + PG leg 1 passed (live server), 1 skipped
   without a server; `tests/migrations/` **100/100 pass against live PostgreSQL** —
-  `alembic upgrade head` applies `…046 → 047 (revocations) → 048 (briefs)`, and
+  `alembic upgrade head` applies `…046 → 047 (revocations) → 048 (canvas backoff) →
+  049 (briefs)`, and
   `test_migration_chain.py` asserts both new tables in the live catalog.
 - The whole deterministic Quality-gate step list re-run green: radon ratchet,
   version consistency, release consistency, doc links, enumerations, vendored IFEval

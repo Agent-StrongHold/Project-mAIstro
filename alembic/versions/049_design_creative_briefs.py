@@ -41,8 +41,8 @@ from alembic import op
 # Renumbered from `047` to `048` after a develop collision (#1133's durable
 # Binding revocations took 047 first) — the same renumbering every develop
 # collision performs so the chain keeps exactly one linear head.
-revision = "048"
-down_revision = "047"
+revision = "049"
+down_revision = "048"
 branch_labels = None
 depends_on = None
 
