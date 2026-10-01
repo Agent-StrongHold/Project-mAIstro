@@ -561,11 +561,6 @@ class DomainCircuitBank:
         with self._lock:
             self._domains.clear()
 
-    @property
-    def domain_count(self) -> int:
-        with self._lock:
-            return len(self._domains)
-
 
 def domain_bank_from_settings(settings: Settings | None = None) -> DomainCircuitBank:
     """Construct the process LLM circuit bank from validated deployment policy."""

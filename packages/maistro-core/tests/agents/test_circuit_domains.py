@@ -205,7 +205,7 @@ class TestBoundedCardinality:
         bank = _bank(max_domains=3)
         for i in range(10):
             bank.admit(resolve_failure_domain(f"p{i}", "http://gw"))
-        assert bank.domain_count == 3
+        assert len(bank.snapshot()) == 3
 
     def test_eviction_prefers_closed_domains(self) -> None:
         bank = _bank(max_domains=2, failure_threshold=1)
@@ -217,7 +217,7 @@ class TestBoundedCardinality:
         for name in ("filler1", "filler2", "third"):
             bank.admit(resolve_failure_domain(name, "http://gw"))
         assert bank.breaker(pinned).state is CircuitState.OPEN  # survived
-        assert bank.domain_count == 2
+        assert len(bank.snapshot()) == 2
 
     def test_evicting_all_open_domains_warns_but_stays_bounded(self) -> None:
         bank = _bank(max_domains=3, failure_threshold=1)
@@ -230,7 +230,7 @@ class TestBoundedCardinality:
             assert bank.admit(resolve_failure_domain("d", "http://gw"))
 
         assert any(entry.get("event") == "circuit_domain_evicted_active" for entry in logs), logs
-        assert bank.domain_count == 3
+        assert len(bank.snapshot()) == 3
 
     def test_evicted_domain_starts_fresh(self) -> None:
         bank = _bank(max_domains=1, failure_threshold=1)
@@ -240,7 +240,7 @@ class TestBoundedCardinality:
 
         b = resolve_failure_domain("b", "http://gw")
         assert bank.admit(b)  # evicts the open a rather than refusing b
-        assert bank.domain_count == 1
+        assert len(bank.snapshot()) == 1
 
         # Re-admitting a creates a fresh closed breaker — documented lifecycle.
         assert bank.admit(a)
@@ -298,4 +298,4 @@ class TestObservability:
         bank = _bank()
         bank.record_failure(resolve_failure_domain("a", "http://gw"))
         bank.reset()
-        assert bank.domain_count == 0
+        assert len(bank.snapshot()) == 0

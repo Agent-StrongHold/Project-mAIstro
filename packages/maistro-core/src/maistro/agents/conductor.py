@@ -200,6 +200,33 @@ async def _admitted_fallback_call(
     return None
 
 
+async def _admit_call(
+    call: ConductorCall,
+    bank: DomainCircuitBank,
+    router: LLMRouter | None,
+) -> tuple[ConductorCall, FailureDomain]:
+    """Resolve the (call, domain) pair allowed to proceed to the gateway.
+
+    Returns the original call when its failure domain admits traffic, or the
+    first router-declared fallback candidate whose own domain admits it.
+    Raises :class:`CircuitOpenError` when still blocked; the re-check also
+    absorbs the race where the domain recovered while the fallback chain was
+    resolving — in that case the original call simply proceeds. The raised
+    error names the blocking breaker (gateway first) and fails fast.
+    """
+    domain = conductor_failure_domain(call)
+    if bank.admit(domain):
+        return call, domain
+    fallback_call: ConductorCall | None = None
+    if router is not None:
+        fallback_call = await _admitted_fallback_call(call, bank, router)
+    if fallback_call is not None:
+        return fallback_call, conductor_failure_domain(fallback_call)
+    if not bank.admit(domain):
+        raise CircuitOpenError(bank.blocking_breaker(domain) or bank.breaker(domain))
+    return call, domain
+
+
 async def _run_with_retry(
     call: ConductorCall,
     prompt: str,
@@ -223,19 +250,7 @@ async def _run_with_retry(
     blocked call fails with :class:`CircuitOpenError`, as before.
     """
     bank = circuits if circuits is not None else llm_circuits
-    domain = conductor_failure_domain(call)
-    if not bank.admit(domain):
-        fallback_call: ConductorCall | None = None
-        if router is not None:
-            fallback_call = await _admitted_fallback_call(call, bank, router)
-        if fallback_call is not None:
-            call, domain = fallback_call, conductor_failure_domain(fallback_call)
-        elif not bank.admit(domain):
-            # Still blocked. The re-check also absorbs the race where the
-            # domain recovered while the fallback chain was resolving — in
-            # that case the original call simply proceeds below. Here it
-            # names the blocking breaker (gateway first) and fails fast.
-            raise CircuitOpenError(bank.blocking_breaker(domain) or bank.breaker(domain))
+    call, domain = await _admit_call(call, bank, router)
 
     last_exc: Exception | None = None
     shared_failure = False
