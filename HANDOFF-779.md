@@ -1,4 +1,68 @@
-# Handoff — issue #779, lane L779, repair round (job cdbc9c616b7249c1b2fbcbd09fb9dfb3)
+# Handoff — issue #779, lane L779, repair round 3 (job 94a91df251524bcf99d40fd5d75223e5)
+
+## Outcome (this round)
+
+Committed the prior worker's uncommitted salvage (preserved first as
+`incoming-779.patch` in the job directory): the issue's AC markers moved from
+the dangling `SPEC-0779/AC-N` to a new spec `docs/specs/
+SPEC-100126-b779-cross-artifact-consistency-evaluation.md` (AC-1..AC-7 claimed
+with tests, AC-8 browser-E2E declared unproven with a reason), one
+`@pytest.mark.contract("behavioral")` added to satisfy the spec's declared
+contract kind, and the branch's measured note `quality/ac-state-notes/
+auto-779.json` banked. This is what fixes the named CI failure: at 2af57ea42
+the 8+ `SPEC-0779` markers named no criterion, so `markers_without_criterion`
+measured ~10 against a ceiling of 2 → Quality gate (Pillars 1–4, 7, 8) failed.
+After the salvage the candidate measures exactly 2, on the ceiling.
+
+## Validation executed this round (all RC 0 unless stated)
+
+- Full merge-group simulation of the exact CI step that failed
+  (`GITHUB_EVENT_NAME=merge_group`, base_sha = develop tip 234a06c5):
+  `uv run python scripts/check-ac-state.py --run-tests --ratchet --mandate
+  234a06c5…` → ratchet OK (10 counters on ceilings, coverage on floor),
+  acceptance mandate OK (8 criteria added/newly claimed, 0 unproven), chain
+  mandate OK, actual-base guard OK ("candidate preserves the actual measured
+  AC-state of base 234a06c5").
+- vulture per-identity ledger (exact-debt-ledger): 1378 ↔ 1378, RC 0.
+- contract-marker ledger, reachability + provenance (reachability,
+  contract-markers, dispositions, ratchet-provenance), doc-links, radon,
+  enumerations, credential-authority, wiring-reads, agent-store-writes,
+  convergence-matrix, security/image/backlog inventories, release-consistency,
+  bump-version, vendor IFEval/BFCL, shipped-surface-truth: all OK.
+- `uv run pytest packages/maistro-design/tests -q` → 370 passed;
+  `pytest packages/hive-conductor/backend/tests/test_design_consistency_route.py`
+  → 8 passed; mypy 7 package srcs → Success (758 files); xenon 0 violations.
+- alembic upgrade head against pg18 (auto-779-pg, port 25779) → RC 0.
+- Develop gap: branch is 9 commits behind origin/develop (234a06c5);
+  `git merge-tree` shows the trial merge is CLEAN (only overlap is
+  `quality/shipped-surface-truth.json`, auto-mergeable). No sync performed:
+  the named failure was the quality gate, not a sync conflict.
+
+## Residual risk — pre-existing ac-test flake (not introduced here)
+
+Three identical candidate measurements returned 38.4934 / 38.4789 / 38.4138
+`design_coverage`. Root-caused to two maistro-core ac-marked tests that flake
+under this box's load (load avg 12–15, many concurrent lanes):
+
+- `packages/maistro-core/tests/security/test_redact.py` —
+  `TestRedactScaling::test_cost_grows_linearly_with_input` (ADR-064/AC-36):
+  timing-ratio assertion; observed 1 failure in 7 runs.
+- `packages/maistro-core/tests/persistence/test_prompt_store_conformance.py` —
+  `test_writers_to_different_names_do_not_contend`
+  (SPEC-083026-427c/AC-6): `asyncio.wait_for(..., timeout=1.0)` wall-clock
+  budget while another write holds a PG advisory lock for 2 s.
+
+Both files are untouched by this branch and by develop's 9 pending commits;
+the same flake breaks the gate at the base revision too (a 38.41 measurement
+is under the base fold floor 38.4867). Fixing them belongs to a dedicated
+maistro-core flake lane; doing it here would widen the diff outside the
+issue's surfaces.
+
+AC-8 (browser E2E) remains honestly declared unproven in the spec, as before.
+
+---
+
+# Prior round — repair round 2 (job cdbc9c616b7249c1b2fbcbd09fb9dfb3)
 
 ## Outcome
 

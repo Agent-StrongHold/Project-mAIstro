@@ -501,6 +501,7 @@ def test_historical_evaluation_stays_interpretable_after_later_edits() -> None:
 # ─── 5. Evidence vs model-generated assertions ───────────────────────────────
 
 
+@pytest.mark.ac("SPEC-100126-b779/AC-5")
 def test_provided_evidence_is_distinguished_from_model_assertions() -> None:
     evaluation = evaluate_project_snapshot(_snapshot())
 
@@ -859,6 +860,7 @@ async def test_foreign_project_snapshot_is_rejected_not_misfiled() -> None:
     assert attempt.result is None or not (attempt.result.get("output") or {})
 
 
+@pytest.mark.ac("SPEC-100126-b779/AC-7")
 async def test_retry_after_refinement_preserves_failed_evaluation_record() -> None:
     import maistro_design.nodes  # noqa: F401 — registers design.* node kinds
     from maistro.graph.durable_runs import (

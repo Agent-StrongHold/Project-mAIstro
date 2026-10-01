@@ -180,7 +180,8 @@ def _target_ids(result: dict[str, Any]) -> list[str]:
 # ─── A local defect routes only its own branch ───────────────────────────────
 
 
-@pytest.mark.ac("SPEC-0779/AC-1")
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-100126-b779/AC-1")
 async def test_persona_violation_proposes_only_the_affected_branch() -> None:
     """Clean shared decision, persona violation only in the poster: the
     refinement names exactly the poster branch — never the accepted hero or
@@ -199,7 +200,7 @@ async def test_persona_violation_proposes_only_the_affected_branch() -> None:
 # ─── A shared defect invalidates every consumer ──────────────────────────────
 
 
-@pytest.mark.ac("SPEC-0779/AC-2")
+@pytest.mark.ac("SPEC-100126-b779/AC-2")
 async def test_shared_factual_contradiction_names_all_consumers_of_the_decision() -> None:
     """The contradiction lives in D1, which all three artifacts consume, so
     the refinement is rooted in the shared decision and names every consumer
@@ -215,7 +216,7 @@ async def test_shared_factual_contradiction_names_all_consumers_of_the_decision(
 # ─── Locked accepted work is reported, never rewritten ───────────────────────
 
 
-@pytest.mark.ac("SPEC-0779/AC-3")
+@pytest.mark.ac("SPEC-100126-b779/AC-3")
 async def test_locked_accepted_artifact_is_reported_and_not_rewritten() -> None:
     """The locked hero conflicts with the persona, so it is reported with an
     explicit unlock requirement — and the response is a proposal only: no
@@ -247,7 +248,7 @@ async def test_locked_accepted_artifact_is_reported_and_not_rewritten() -> None:
 # ─── Results stay interpretable: exact versions are cited ────────────────────
 
 
-@pytest.mark.ac("SPEC-0779/AC-4")
+@pytest.mark.ac("SPEC-100126-b779/AC-4")
 async def test_result_cites_the_exact_versions_it_evaluated() -> None:
     result = await _evaluate(_snapshot())
 
@@ -264,7 +265,7 @@ async def test_result_cites_the_exact_versions_it_evaluated() -> None:
     assert provenance["evidence_ids"] == ["ev-turnaround"]
 
 
-@pytest.mark.ac("SPEC-0779/AC-4")
+@pytest.mark.ac("SPEC-100126-b779/AC-4")
 async def test_evaluation_is_inspectable_and_stable_across_calls() -> None:
     """Same snapshot in, same verdict out, so a later edit cannot silently
     reinterpret a stored result. The comparison projects away the two fields
@@ -307,7 +308,7 @@ async def test_evaluation_is_inspectable_and_stable_across_calls() -> None:
 # ─── A consistent family passes with no proposal ─────────────────────────────
 
 
-@pytest.mark.ac("SPEC-0779/AC-1")
+@pytest.mark.ac("SPEC-100126-b779/AC-1")
 async def test_consistent_family_passes_without_a_refinement_proposal() -> None:
     result = await _evaluate(
         _snapshot(
@@ -339,7 +340,7 @@ async def test_consistent_family_passes_without_a_refinement_proposal() -> None:
 # ─── The route's own guards ──────────────────────────────────────────────────
 
 
-@pytest.mark.ac("SPEC-0779/AC-6")
+@pytest.mark.ac("SPEC-100126-b779/AC-6")
 async def test_snapshot_for_another_project_is_refused_not_misfiled() -> None:
     """The graph node refuses a snapshot naming a different project than the
     Run's canonical project; the route applies the same guard against the
