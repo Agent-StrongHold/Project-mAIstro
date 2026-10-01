@@ -293,7 +293,7 @@ def _is_retryable(exc: Exception) -> bool:
     """Check if an exception represents a transient failure worth retrying."""
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return True
-    if isinstance(exc, httpx.ConnectError):
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _RETRYABLE_STATUS_CODES
