@@ -1,5 +1,9 @@
 """Route-level coverage for routes/audit.py.
 
+#358 made ``GET /v1/audit`` return a page envelope ``{entries, next_cursor}``
+(cursor keyset pagination, clamped limit, principal scope) instead of the
+whole corpus as a bare array; the tests below read ``body["entries"]``.
+
 Bug fixed alongside this test file: ``list_entries`` filtered on
 ``getattr(e, "action"/"severity"/"actor", "")``, but every entry in
 ``stores.audit_log`` (a ``JsonStore``) is stored as a plain ``dict`` via
@@ -76,14 +80,15 @@ def test_list_entries_no_filter_returns_all(admin_client: Any) -> None:
     log_audit("a2", "u2")
     r = admin_client.get("/v1/audit")
     assert r.status_code == 200
-    assert len(r.json()) == 2
+    assert r.json()["next_cursor"] is None
+    assert len(r.json()["entries"]) == 2
 
 
 def test_list_entries_filtered_by_action(admin_client: Any) -> None:
     log_audit("login", "u1")
     log_audit("logout", "u1")
     r = admin_client.get("/v1/audit", params={"action": "login"})
-    body = r.json()
+    body = r.json()["entries"]
     assert len(body) == 1
     assert body[0]["action"] == "login"
 
@@ -92,7 +97,7 @@ def test_list_entries_filtered_by_severity(admin_client: Any) -> None:
     log_audit("a1", "u1", severity="warning")
     log_audit("a2", "u1", severity="info")
     r = admin_client.get("/v1/audit", params={"severity": "warning"})
-    body = r.json()
+    body = r.json()["entries"]
     assert len(body) == 1
     assert body[0]["severity"] == "warning"
 
@@ -101,7 +106,7 @@ def test_list_entries_filtered_by_actor(admin_client: Any) -> None:
     log_audit("a1", "alice")
     log_audit("a2", "bob")
     r = admin_client.get("/v1/audit", params={"actor": "alice"})
-    body = r.json()
+    body = r.json()["entries"]
     assert len(body) == 1
     assert body[0]["actor"] == "alice"
 
@@ -113,7 +118,7 @@ def test_list_entries_combined_filters_intersect(admin_client: Any) -> None:
     r = admin_client.get(
         "/v1/audit", params={"action": "login", "actor": "alice", "severity": "warning"}
     )
-    body = r.json()
+    body = r.json()["entries"]
     assert len(body) == 1
     assert body[0]["severity"] == "warning"
     assert body[0]["actor"] == "alice"
@@ -122,7 +127,9 @@ def test_list_entries_combined_filters_intersect(admin_client: Any) -> None:
 def test_list_entries_filter_matching_nothing_returns_empty(admin_client: Any) -> None:
     log_audit("login", "alice")
     r = admin_client.get("/v1/audit", params={"action": "no-such-action"})
-    assert r.json() == []
+    body = r.json()
+    assert body["entries"] == []
+    assert body["next_cursor"] is None
 
 
 # --------------------------------------------------------------------------- #
@@ -181,7 +188,7 @@ def test_create_entry_with_all_fields(admin_client: Any) -> None:
 def test_create_entry_then_filterable_by_action(admin_client: Any) -> None:
     admin_client.post("/v1/audit", json={"action": "manual_create", "actor": "tester"})
     r = admin_client.get("/v1/audit", params={"action": "manual_create"})
-    assert len(r.json()) == 1
+    assert len(r.json()["entries"]) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -199,6 +206,6 @@ def test_list_entries_filter_tolerates_non_dict_entries(admin_client: Any) -> No
         id=eid, action="model_action", actor="model_actor", created_at=_now()
     )
     r = admin_client.get("/v1/audit", params={"action": "model_action"})
-    body = r.json()
+    body = r.json()["entries"]
     assert len(body) == 1
     assert body[0]["id"] == eid
