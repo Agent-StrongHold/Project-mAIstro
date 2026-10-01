@@ -23,7 +23,7 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError
 
 #: Filename of the durable install manifest, written into the install root's
 #: plan directory (the same ``.maistro-install/`` the wizard materializes).
@@ -105,11 +105,6 @@ class InstallManifest(BaseModel):
         default=None, description="ISO-8601 timestamp the install completed."
     )
 
-    @field_validator("install_root")
-    @classmethod
-    def _abs_root(cls, v: str) -> str:
-        return str(Path(v).expanduser().resolve())
-
 
 def _run_git(
     args: list[str], root: Path, timeout: float = 10.0
@@ -157,34 +152,6 @@ def git_exact_tag(root: Path) -> str | None:
     return tag or None
 
 
-def git_latest_tag(root: Path) -> str | None:
-    """The highest reachable tag in ``root`` (the upgrade target for a tag/branch install).
-
-    Uses ``git describe --tags --abbrev=0`` so the target is a real release
-    tag, never a branch name or an untagged commit.
-    """
-    cp = _run_git(["describe", "--tags", "--abbrev=0"], root=root)
-    if cp is None or cp.returncode != 0:
-        return None
-    tag = cp.stdout.strip()
-    return tag or None
-
-
-def git_remote_url(root: Path) -> str | None:
-    """The canonical source URL of ``root``'s origin, without a trailing ``.git``.
-
-    Recorded in the install manifest so an archive install can re-download a
-    later release without a git checkout.
-    """
-    cp = _run_git(["remote", "get-url", "origin"], root=root)
-    if cp is None or cp.returncode != 0:
-        return None
-    url = cp.stdout.strip()
-    if url:
-        url = url.removesuffix(".git")
-    return url or None
-
-
 def detect_install_type(root: Path) -> InstallType | None:
     """Infer the install type from the checkout itself.
 
@@ -229,7 +196,14 @@ def manifest_path_for_root(root: Path) -> Path:
 
 
 def _load_at(path: Path) -> InstallManifest | None:
-    """Parse a manifest from an arbitrary path, tolerating absence/corruption."""
+    """Parse a manifest from an arbitrary path, tolerating absence/corruption.
+
+    The root is normalized here — at the one boundary where on-disk data enters
+    the model — rather than in a field validator, and a manifest written by a
+    *newer* installer (higher ``schema_version``) is treated as absent so the
+    caller reports "no install found" and points the operator at the installer
+    instead of guessing at an unknown schema.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -237,9 +211,16 @@ def _load_at(path: Path) -> InstallManifest | None:
     if not isinstance(data, dict) or data.get("kind") != MANIFEST_KIND:
         return None
     try:
-        return InstallManifest.model_validate(data)
+        manifest = InstallManifest.model_validate(data)
     except ValidationError:
         return None
+    if manifest.schema_version > MANIFEST_SCHEMA_VERSION:
+        return None
+    # Operator-editable files must never leak a relative or ``~`` root into
+    # upgrade's target resolution: every consumer treats install_root as
+    # authoritative and absolute.
+    manifest.install_root = str(Path(manifest.install_root).expanduser().resolve())
+    return manifest
 
 
 def load_manifest(root: Path) -> InstallManifest | None:

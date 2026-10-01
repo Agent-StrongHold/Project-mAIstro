@@ -126,7 +126,9 @@ Environment:
   MAISTRO_INSTALL_CLI (0 = do not install the host 'maistro' CLI),
   MAISTRO_OPEN_BROWSER (0 = do not open the Conductor UI when ready),
   MAISTRO_IMAGE_TAG (container tag the image_pull compose pins to; defaults to
-    the release tag this checkout sits on, else 'latest').
+    the release tag this checkout sits on, else 'latest'),
+  MAISTRO_SOURCE_URL (upstream repo URL recorded in the install manifest for
+    archive checkouts; get.sh sets it, since archives carry no git metadata).
 
 macOS:
   When no container runtime is found, the installer asks whether to install
@@ -964,23 +966,35 @@ delivery_mode() {
     grep -o '"mode"[[:space:]]*:[[:space:]]*"[a-z_]*"' "$f" | head -1 | grep -o '[a-z_]*"$' | tr -d '"'
 }
 
+# Effective delivery mode the stack actually uses: image_pull only when the
+# wizard selected it AND the pinned images are published (standalone compose
+# file present); anything else — wizard skipped, images not ready — falls back
+# to a source build. Kept as a pure helper so write_install_manifest() can
+# record it before compose_files() runs in main() (and even when --no-start
+# skips it), so `maistro upgrade` replays the same delivery path (#353).
+effective_delivery_mode() {
+    if [[ "$(delivery_mode)" == "image_pull" \
+        && "${MAISTRO_IMAGE_PULL_READY:-0}" == "1" \
+        && -f "$PLAN_DIR/compose.install.yml" ]]; then
+        echo "image_pull"
+    else
+        echo "source_build"
+    fi
+}
+
 compose_files() {
     COMPOSE_FILES=(-f "$COMPOSE_FILE")
     COMPOSE_UP_ARGS=(up -d --build)
-    local mode
-    mode="$(delivery_mode)"
-    if [[ "$mode" == "image_pull" ]]; then
-        if [[ "${MAISTRO_IMAGE_PULL_READY:-0}" == "1" && -f "$PLAN_DIR/compose.install.yml" ]]; then
-            # Standalone file: no build: keys anywhere, and no --build — pinned
-            # images only. --project-directory keeps .env interpolation and
-            # relative bind mounts anchored at the repo root.
-            COMPOSE_FILES=(--project-directory "$PWD" -f "$PLAN_DIR/compose.install.yml")
-            COMPOSE_UP_ARGS=(up -d)
-            info "Delivery: image_pull — pinned images (tag ${MAISTRO_IMAGE_TAG}) from $PLAN_DIR/compose.install.yml (no local build)."
-        else
-            warn "delivery_mode=image_pull selected, but pinned images are not published yet."
-            warn "Falling back to source build (identical runtime behavior, longer install)."
-        fi
+    if [[ "$(effective_delivery_mode)" == "image_pull" ]]; then
+        # Standalone file: no build: keys anywhere, and no --build — pinned
+        # images only. --project-directory keeps .env interpolation and
+        # relative bind mounts anchored at the repo root.
+        COMPOSE_FILES=(--project-directory "$PWD" -f "$PLAN_DIR/compose.install.yml")
+        COMPOSE_UP_ARGS=(up -d)
+        info "Delivery: image_pull — pinned images (tag ${MAISTRO_IMAGE_TAG}) from $PLAN_DIR/compose.install.yml (no local build)."
+    elif [[ "$(delivery_mode)" == "image_pull" ]]; then
+        warn "delivery_mode=image_pull selected, but pinned images are not published yet."
+        warn "Falling back to source build (identical runtime behavior, longer install)."
     fi
     local override="$PLAN_DIR/compose.override.yml"
     if [[ -f "$override" ]]; then
@@ -1344,6 +1358,11 @@ write_install_manifest() {
         itype="archive"
         ref="$MAISTRO_IMAGE_TAG"
         version_json="null"
+        # An archive checkout has no git metadata to derive the upstream from,
+        # so get.sh hands the repo URL over explicitly (same delegation as
+        # MAISTRO_IMAGE_TAG). Without it, `maistro upgrade` preflight rejects
+        # every archive install before running any command.
+        source_url="$(sed 's#\.git$##' <<< "${MAISTRO_SOURCE_URL:-}")"
     elif git rev-parse --git-dir >/dev/null 2>&1; then
         rev="$(git rev-parse HEAD 2>/dev/null || true)"
         source_url="$(git remote get-url origin 2>/dev/null | sed 's#\.git$##' || true)"
@@ -1374,6 +1393,7 @@ writing no install manifest. 'maistro upgrade' will fall back to detection."
   "ref": "$ref",
   "revision": "$rev",
   "image_tag": "$MAISTRO_IMAGE_TAG",
+  "delivery_mode": "$(effective_delivery_mode)",
   "source_url": "$source_url",
   "installed_at": "$ts"
 }

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-import maistro.install_manifest as manifest_mod
-from maistro.install_manifest import (
+import maistro.cli._install_manifest as manifest_mod
+from maistro.cli._install_manifest import (
     ARCHIVE_MARKER,
     MANIFEST_FILENAME,
     PLAN_SUBDIR,
@@ -95,6 +95,88 @@ class TestEngineCheckout:
     def test_plain_directory_is_not_an_engine_checkout(self, tmp_path: Path) -> None:
         assert is_engine_checkout(tmp_path) is False
 
+    def test_unrelated_compose_file_is_not_an_engine_checkout(self, tmp_path: Path) -> None:
+        (tmp_path / "docker-compose.yml").write_text("services:\n  other: {}\n", encoding="utf-8")
+        assert is_engine_checkout(tmp_path) is False
+
+    def test_marker_without_pyproject_is_still_a_checkout(self, tmp_path: Path) -> None:
+        """compose with the marker and no pyproject: checkout shape, engine assumed."""
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  maistro-engine:\n    image: x\n", encoding="utf-8"
+        )
+        assert is_engine_checkout(tmp_path) is True
+
+    def test_unreadable_pyproject_still_assumes_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A compose that names the engine is enough when pyproject can't be read."""
+        compose = tmp_path / "docker-compose.yml"
+        pyproject = tmp_path / "pyproject.toml"
+        compose.write_text("services:\n  maistro-engine:\n    image: x\n", encoding="utf-8")
+        pyproject.write_text("[project]\n", encoding="utf-8")
+        real_read = Path.read_text
+
+        def raising_for_pyproject(self: Path, *a: object, **k: object) -> str:
+            if self.name == "pyproject.toml":
+                raise OSError("simulated unreadable file")
+            return real_read(self, *a, **k)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "read_text", raising_for_pyproject)
+        assert is_engine_checkout(tmp_path) is True
+
+    def test_unreadable_compose_is_not_an_engine_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the compose itself can't be read, no engine shape can be proven."""
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text("services:\n  maistro-engine:\n", encoding="utf-8")
+        real_read = Path.read_text
+
+        def raising_for_compose(self: Path, *a: object, **k: object) -> str:
+            if self.name == "docker-compose.yml":
+                raise OSError("simulated unreadable file")
+            return real_read(self, *a, **k)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "read_text", raising_for_compose)
+        assert is_engine_checkout(tmp_path) is False
+
+
+class TestGitProbeFailurePaths:
+    """git unavailable/stalled: probes degrade to None/False, never raise."""
+
+    def test_run_git_timeout_returns_none(
+        self, engine_checkout: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess as sp
+
+        def stalling(*a: object, **k: object) -> object:
+            raise sp.TimeoutExpired(cmd="git", timeout=0.1)
+
+        monkeypatch.setattr(manifest_mod.subprocess, "run", stalling)
+        assert manifest_mod.has_working_tree(engine_checkout) is False
+        assert manifest_mod.git_revision(engine_checkout) is None
+
+    def test_failing_git_revparse_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess as sp
+
+        cp = sp.CompletedProcess(args=[], returncode=128, stdout="", stderr="not a repo")
+        monkeypatch.setattr(manifest_mod, "_run_git", lambda *a, **k: cp)
+        assert manifest_mod.has_working_tree(tmp_path) is False
+        assert manifest_mod.git_revision(tmp_path) is None
+
+    def test_current_version_missing_package_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import importlib.metadata as im
+
+        def missing(name: str) -> str:
+            raise im.PackageNotFoundError(name)
+
+        monkeypatch.setattr(manifest_mod._metadata, "version", missing)
+        assert manifest_mod.current_version() is None
+
 
 class TestManifestRoundTrip:
     def test_write_then_load_preserves_fields(self, engine_checkout: Path) -> None:
@@ -108,9 +190,12 @@ class TestManifestRoundTrip:
             image_tag="v1.0.0",
             delivery_mode="image_pull",
             source_url="https://github.com/Agent-StrongHold/Project-mAIstro",
+            installed_at="2026-01-01T00:00:00Z",
         )
         path = write_manifest(engine_checkout, original)
         assert path.is_file()
+        # An already-recorded timestamp is authoritative; write must not bump it.
+        assert original.installed_at == "2026-01-01T00:00:00Z"
         loaded = load_manifest(engine_checkout)
         assert loaded is not None
         assert loaded.install_type == "tag"
@@ -138,6 +223,58 @@ class TestManifestRoundTrip:
             encoding="utf-8",
         )
         assert load_manifest(tmp_path) is None
+
+    def test_load_unknown_install_type_is_rejected(self, tmp_path: Path) -> None:
+        """A valid-kind manifest with an unsupported install_type fails validation."""
+        plan = tmp_path / PLAN_SUBDIR
+        plan.mkdir()
+        (plan / MANIFEST_FILENAME).write_text(
+            json.dumps({"kind": "maistro_install_manifest", "install_type": "floppy"}),
+            encoding="utf-8",
+        )
+        assert load_manifest(tmp_path) is None
+
+    def test_load_newer_schema_version_is_treated_as_absent(self, tmp_path: Path) -> None:
+        """A manifest from a NEWER installer must not be guessed at.
+
+        Forward compatibility: an older upgrader reading an unknown schema
+        treats the manifest as absent, so the caller reports "no install found"
+        and points the operator at the installer instead of misreading fields it
+        does not understand.
+        """
+        plan = tmp_path / PLAN_SUBDIR
+        plan.mkdir()
+        future = {
+            "kind": "maistro_install_manifest",
+            "schema_version": manifest_mod.MANIFEST_SCHEMA_VERSION + 1,
+            "install_type": "git",
+            "install_root": str(tmp_path),
+        }
+        (plan / MANIFEST_FILENAME).write_text(json.dumps(future), encoding="utf-8")
+        assert load_manifest(tmp_path) is None
+        # The current schema version still loads.
+        future["schema_version"] = manifest_mod.MANIFEST_SCHEMA_VERSION
+        (plan / MANIFEST_FILENAME).write_text(json.dumps(future), encoding="utf-8")
+        assert load_manifest(tmp_path) is not None
+
+    def test_load_normalizes_tilde_and_relative_roots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An operator-editable manifest must never leak a ``~``/relative root."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        plan = tmp_path / "checkout" / PLAN_SUBDIR
+        plan.mkdir(parents=True)
+        raw = {
+            "kind": "maistro_install_manifest",
+            "install_type": "git",
+            "install_root": "~/checkout",
+        }
+        (plan / MANIFEST_FILENAME).write_text(json.dumps(raw), encoding="utf-8")
+        loaded = load_manifest(tmp_path / "checkout")
+        assert loaded is not None
+        expected = (tmp_path / "home" / "checkout").resolve()
+        assert loaded.install_root == str(expected)
 
 
 class TestLocateInstallRoot:
@@ -196,6 +333,20 @@ class TestLocateInstallRoot:
         assert root == Path("/opt/maistro").resolve()
         assert manifest is not None
         assert manifest.install_type == "package"
+
+    def test_env_override_pointing_nowhere_falls_through_to_walk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale MAISTRO_REPO_ROOT must not win; the parent walk still resolves."""
+        monkeypatch.setenv("MAISTRO_REPO_ROOT", str(tmp_path / "vanished"))
+        checkout = tmp_path / "maistro-engine"
+        inner = checkout / "docs" / "notes"
+        inner.mkdir(parents=True)
+        write_manifest(checkout, _git_manifest(checkout))
+        monkeypatch.chdir(inner)
+        root, manifest = locate_install_root()
+        assert root == checkout.resolve()
+        assert manifest is not None
 
     def test_returns_none_when_no_install_found(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

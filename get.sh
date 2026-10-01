@@ -412,6 +412,10 @@ run_installer() {
     # the archive path has no git metadata to derive it from, so pass it
     # explicitly and let one decision cover both download paths.
     export MAISTRO_IMAGE_TAG="${MAISTRO_IMAGE_TAG:-$IMAGE_TAG}"
+    # Same delegation for the install manifest: an archive checkout has no
+    # `git remote` for install.sh to read, and `maistro upgrade` refuses an
+    # archive whose manifest has no source_url.
+    export MAISTRO_SOURCE_URL="${MAISTRO_SOURCE_URL:-${REPO_URL%.git}}"
 
     if [[ -t 0 ]]; then
         exec bash ./install.sh "$@"

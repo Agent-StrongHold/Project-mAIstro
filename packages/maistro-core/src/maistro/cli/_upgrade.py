@@ -31,13 +31,14 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
 from typer import Typer
 
-from maistro.install_manifest import (
+from maistro.cli._install_manifest import (
     MANIFEST_FILENAME,
     PLAN_SUBDIR,
     InstallManifest,
@@ -63,6 +64,15 @@ _RUN_SUBPROCESS = subprocess.run
 _PACKAGED_MANIFEST = Path("~/.maistro").expanduser() / MANIFEST_FILENAME
 
 
+# Readiness polling. Mirrors the installer (get.sh/install.sh): after
+# `compose up -d` the API needs a normal startup interval before /health/ready
+# answers, so the probe retries with a bounded budget instead of treating the
+# first failed request as an upgrade failure (which would roll back a healthy
+# cutover).
+_HEALTH_ATTEMPTS = 60
+_HEALTH_RETRY_DELAY_S = 2.0
+
+
 @dataclass
 class _Cmd:
     """A single external command the upgrade driver may execute."""
@@ -71,6 +81,9 @@ class _Cmd:
     cwd: str | None = None
     timeout: float = 180.0
     env: dict[str, str] | None = None
+    # Transient-failure retries (readiness probes). 1 means run once.
+    retries: int = 1
+    retry_delay: float = 0.0
 
 
 @dataclass
@@ -82,8 +95,8 @@ class _Outcome:
     missing: str | None = None
 
 
-def _run(cmd: _Cmd) -> _Outcome:
-    """Execute one command, translating OS-level failures into a uniform outcome."""
+def _run_once(cmd: _Cmd) -> _Outcome:
+    """Execute one command attempt, translating OS-level failures into an outcome."""
     try:
         cp = _RUN_SUBPROCESS(
             cmd.argv,
@@ -112,6 +125,21 @@ def _run(cmd: _Cmd) -> _Outcome:
             stderr=_coerce(exc.stderr),
             timed_out=True,
         )
+
+
+def _run(cmd: _Cmd) -> _Outcome:
+    """Run a command, retrying transient failures up to ``cmd.retries`` times.
+
+    Only successful outcomes are retried against; a missing executable is a
+    permanent error and is surfaced immediately without further attempts.
+    """
+    attempts = max(1, cmd.retries)
+    for attempt in range(1, attempts + 1):
+        outcome = _run_once(cmd)
+        if outcome.ok or outcome.missing is not None or attempt == attempts:
+            return outcome
+        time.sleep(cmd.retry_delay)
+    return outcome  # pragma: no cover - loop always returns
 
 
 def _coerce(value: bytes | str | None) -> str:
@@ -245,9 +273,16 @@ class _Upgrade:
         console.print(f"[dim]Preflight backup at {backup}[/dim]")
 
     def restore_config(self) -> None:
-        """Best-effort restoration of the backed-up config files."""
+        """Best-effort restoration of the backed-up config files.
+
+        The install root and plan dir are recreated if a failed archive swap
+        left them absent — a rollback must complete its config restore even
+        when the tree it is restoring into no longer exists.
+        """
         if self.backup_dir is None or not self.backup_dir.is_dir():
             return
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.plan_dir.mkdir(parents=True, exist_ok=True)
         env_src = self.backup_dir / ".env"
         if env_src.is_file():
             shutil.copy2(env_src, self.root / ".env")
@@ -355,8 +390,14 @@ class _Upgrade:
         )
 
     def _health_probe(self) -> _Cmd:
+        """Bounded readiness poll, matching the installer's post-up wait."""
         port = _read_env_port(self.root)
-        return _Cmd(["curl", "-fsSL", f"http://127.0.0.1:{port}/health/ready"], cwd=str(self.root))
+        return _Cmd(
+            ["curl", "-fsSL", f"http://127.0.0.1:{port}/health/ready"],
+            cwd=str(self.root),
+            retries=_HEALTH_ATTEMPTS,
+            retry_delay=_HEALTH_RETRY_DELAY_S,
+        )
 
     # -- phases, per install type ---------------------------------------------
 
@@ -368,16 +409,28 @@ class _Upgrade:
                 _Cmd(["git", "-C", str(self.root), "pull", "--ff-only"], cwd=str(self.root)),
             ]
         if t == "tag":
-            target = "git -C " + shlex.quote(str(self.root)) + " describe --tags --abbrev=0"
+            # Resolve the newest fetched release independent of HEAD: HEAD is
+            # detached at the previously installed tag, and `describe --tags`
+            # only sees tags reachable from it, so it would re-resolve the old
+            # release after the fetch and "upgrade" in place. for-each-ref
+            # scans the whole ref namespace, so the just-fetched tags win.
+            resolve = (
+                "git -C "
+                + shlex.quote(str(self.root))
+                + " for-each-ref refs/tags/ --sort=-creatordate --count=1"
+                + ' --format="%(refname:short)"'
+            )
             return [
                 _Cmd(
-                    ["git", "-C", str(self.root), "fetch", "--tags", "--force"], cwd=str(self.root)
+                    ["git", "-C", str(self.root), "fetch", "--tags", "--force"],
+                    cwd=str(self.root),
                 ),
                 _Cmd(
                     [
                         "bash",
                         "-c",
-                        f'git -C {shlex.quote(str(self.root))} checkout --force "$({target})"',
+                        f'tag="$({resolve})" && [ -n "$tag" ] '
+                        f'&& git -C {shlex.quote(str(self.root))} checkout --force "$tag"',
                     ],
                     cwd=str(self.root),
                 ),
@@ -682,49 +735,58 @@ def _unsupported_instructions(kind: str | None) -> str:
     )
 
 
-@app.callback(invoke_without_command=True)
-def upgrade_main() -> None:
-    """Pull the latest updates for this install, preserving operator config."""
-    console.print("[bold]maistro upgrade[/bold]")
+def _resolve_target() -> tuple[Path, InstallManifest, str] | None:
+    """Resolve the upgrade target from durable metadata, never the caller's CWD.
 
+    Returns ``(root, manifest, install_type)``, or ``None`` when no supported
+    install can be resolved — the caller turns that into the actionable
+    "could not find an install" error. Durable manifests win over tree
+    detection, which wins over the packaged/container fallback.
+    """
     root, manifest = locate_install_root()
-
-    install_type: str = ""
-    if manifest is not None:
-        # A manifest always lands with its root.
-        install_type = manifest.install_type
-    elif root is not None:
+    if manifest is not None and root is not None:
+        # A manifest always lands with its root; the pair is the authoritative
+        # identity of this install.
+        return root, manifest, manifest.install_type
+    if root is not None:
         # A checkout found by the parent walk that never recorded a manifest:
         # detect the install type from the tree itself and record what was
         # learned in an in-memory manifest. Writing durable metadata stays the
         # installer's job — upgrade must not mutate the tree before preflight.
         detected = detect_install_type(root)
         if detected is not None:
-            install_type = detected
-            manifest = InstallManifest(
-                install_type=detected,
-                install_root=str(root),
-                install_surface="checkout",
-                revision=git_revision(root),
+            return (
+                root,
+                InstallManifest(
+                    install_type=detected,
+                    install_root=str(root),
+                    install_surface="checkout",
+                    revision=git_revision(root),
+                ),
+                detected,
             )
+    # No source manifest and no checkout shape: try package / container.
+    kind, pkg_root, pkg_manifest = _detect_packaged_or_container()
+    if kind and pkg_root is not None and pkg_manifest is not None:
+        return pkg_root, pkg_manifest, kind
+    console.print(f"[red]{_unsupported_instructions(kind)}[/red]")
+    return None
 
-    if not install_type:
-        # No source manifest and no checkout shape: try package / container.
-        kind, pkg_root, pkg_manifest = _detect_packaged_or_container()
-        if kind and pkg_root is not None and pkg_manifest is not None:
-            root, manifest, install_type = pkg_root, pkg_manifest, kind
-        else:
-            console.print(f"[red]{_unsupported_instructions(None)}[/red]")
-            sys.exit(1)
+
+@app.callback(invoke_without_command=True)
+def upgrade_main() -> None:
+    """Pull the latest updates for this install, preserving operator config."""
+    console.print("[bold]maistro upgrade[/bold]")
+
+    target = _resolve_target()
+    if target is None:
+        sys.exit(1)
+    root, manifest, install_type = target
 
     if install_type not in ("git", "tag", "archive", "package", "container"):
         console.print(f"[red]{_unsupported_instructions(install_type)}[/red]")
         sys.exit(1)
 
-    if root is None or manifest is None:
-        console.print(f"[red]{_unsupported_instructions(install_type or None)}[/red]")
-        sys.exit(1)
-    driver = _Upgrade(root, manifest, install_type)
-    code = driver.run()
+    code = _Upgrade(root, manifest, install_type).run()
     if code != 0:
         sys.exit(code)
