@@ -45,6 +45,7 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -1957,6 +1958,16 @@ async def create_container(
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
 
+    # The Container is the process's one composition root, so its ledger is
+    # the process default (#718): the conductor's raw-gateway fallback — the
+    # single call class that crosses no canonical Invocation authority —
+    # marks its ungoverned evidence there instead of leaving a
+    # ledger-carrying process presenting complete quota percentages while
+    # omitting that call. Authoritative recording stays on the canonical
+    # effect path above; this default only receives the fallback's
+    # non-Invocation evidence.
+    set_default_quota_tracker(quota_tracker)
+
     usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
 
     # Prompt persistence is selected by the same backend decision as the
@@ -2185,8 +2196,13 @@ async def create_container(
     capability_invocation_store = await _wire_capability_invocations(
         pg_pool=pg_pool, db_pool=db_pool
     )
+    # The container's own canonical recording path (#718): every governed
+    # effect dispatched through this context records quota evidence through
+    # the Invocation authority, on the same durable ledger selected above.
     capability_effects = new_effect_context(
         invocation_store=capability_invocation_store,
+        usage_log=get_default_usage_log(),
+        quota_tracker=quota_tracker,
         # The container is an explicit composition root. Bare contexts remain
         # read-only until an application supplies policy authority.
         policy_evaluator=binding_scope_policy,
@@ -2508,6 +2524,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_invocation_evidence",
     "quota_usage_events",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
