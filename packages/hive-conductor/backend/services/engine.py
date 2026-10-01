@@ -10,9 +10,11 @@ Exposes two surfaces:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
 from adapters.task_backend import TaskRecord
@@ -66,17 +68,26 @@ def _sanitize_cause(exc: BaseException) -> str:
     return text
 
 
-async def _reset_runtime_source() -> None:
-    """Unwind the bridge's agent_materialization runtime registration (#1181).
+async def _unwind_agent_port(bridge: Any) -> None:
+    """Unwind a configured bridge after a failed boot (#1181).
 
-    `MaistroCoreBridge.start` has no stop half, but it does leave one piece of
-    process-global state behind: the runtime source the boot materializer
-    resolves against. A boot that fails after that point must forget it, or a
-    registry that never published would still own the materialization seam.
+    `MaistroCoreBridge.start` has no stop half, but it leaves two things
+    behind. First the module-global runtime source in
+    services.agent_materialization — forgotten first, so nothing can resolve
+    against a container that is being torn down. Then the bridge's Container
+    itself: its `aclose()` releases exactly what that container took — the
+    PostgreSQL pool lease (`holds_pg_pool`) and the SQLite connections it
+    opened — and is idempotent. Clearing `_agent_port` alone would only drop
+    the last reference: each retryable failed boot would take a fresh pool
+    lease until the database runs out of slots, and an aiosqlite worker (a
+    non-daemon thread) left holding queued work could block process exit.
     """
     from services.agent_materialization import reset_runtime_source
 
     reset_runtime_source()
+    container = getattr(bridge, "container", None)
+    if container is not None:
+        await container.aclose()
 
 
 class EngineService:
@@ -270,12 +281,13 @@ class EngineService:
         degradations: a configured bridge that cannot start falls back to the
         stub port, and capability wiring that cannot apply falls back to
         baselines/SAFE_NOOP — both now recorded as health-visible
-        degradations. A required step that raises unwinds the steps that did
-        start, in reverse order, marks this instance `startup_failed` with a
-        sanitized cause, clears its component handles, and re-raises — so
-        `start_engine` never publishes a partially-initialized singleton. A
-        failed start is retryable: the next `start()` resets this state and
-        re-runs the sequence from the top once the dependency is restored.
+        degradations. A required step that raises — or is cancelled while
+        awaiting — unwinds the steps that did start, in reverse order, marks
+        this instance `startup_failed` with a sanitized cause, clears its
+        component handles, and re-raises — so `start_engine` never publishes a
+        partially-initialized singleton. A failed start is retryable: the next
+        `start()` resets this state and re-runs the sequence from the top once
+        the dependency is restored.
         There is no path where a failed boot leaves a live-looking engine
         behind.
         """
@@ -301,11 +313,21 @@ class EngineService:
                     await bridge.start(settings)
                     self._bind_agent_port(bridge)
                     self._configured = True
-                    # The bridge registered the module-global runtime source
-                    # in services.agent_materialization; if a later step
-                    # fails, the unwind must forget it so no seam keeps
-                    # pointing at a container this engine no longer owns.
-                    unwind.append(("agent_port", _reset_runtime_source))
+                    # If a later step fails, the unwind must forget the
+                    # module-global runtime source the bridge registered in
+                    # services.agent_materialization — no seam may keep
+                    # pointing at a container this engine no longer owns —
+                    # and aclose the container itself, releasing the pool
+                    # lease / SQLite connections it took.
+                    unwind.append(("agent_port", partial(_unwind_agent_port, bridge)))
+                except asyncio.CancelledError:
+                    # A cancelled bridge.start may still have registered the
+                    # runtime source / opened the container; unwind it here
+                    # (it was never appended to `unwind`), then re-raise so
+                    # the outer rollback contract runs unchanged.
+                    with contextlib.suppress(Exception):
+                        await _unwind_agent_port(bridge)
+                    raise
                 except Exception as exc:
                     logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
                     self._bind_agent_port(StubAgentPort())
@@ -364,17 +386,24 @@ class EngineService:
             # required step — failure rolls the boot back.
             await self._start_task_backend(settings)
             unwind.append(("task_backend", self._stop_backend))
-        except Exception as exc:
-            # One deterministic rollback: stop what started, in reverse, then
-            # clear every component handle so the instance reads as
-            # not-running while `state`/`cause` keep the failure visible
-            # (#1181). `start_engine` does not publish an engine that got
-            # here, and the sanitized cause survives for `engine_health()`.
+        except BaseException as exc:
+            # Rollback must cover cancellation (#1181 review): CancelledError
+            # derives from BaseException on every supported Python, so an
+            # `except Exception` guard alone would let a cancelled lifespan
+            # task skip the unwind — leaving the recovery cadences running,
+            # the component handles set, and the instance reading `starting`.
+            # Every abnormal exit rolls back, then re-raises unchanged so the
+            # caller still observes the original exception.
             self._startup_error = _sanitize_cause(exc)
             self._state = "startup_failed"
             for name, stop_step in reversed(unwind):
                 try:
                     await stop_step()
+                except asyncio.CancelledError:
+                    # A second cancellation during teardown must not abort
+                    # the remaining unwind steps; the original exception is
+                    # re-raised below either way.
+                    logger.warning("engine_start_unwind_cancelled component=%s", name)
                 except Exception:
                     logger.exception("engine_start_unwind_failed component=%s", name)
             self._backend = None
@@ -404,10 +433,12 @@ class EngineService:
             )
             try:
                 await backend.start()
-            except Exception:
-                # The runner may have half-started before raising; the
-                # backend's own stop is exception-suppressed, so this is the
-                # deterministic rollback for the backend's own step.
+            except BaseException:
+                # A cancelled start may also have half-started the runner, so
+                # this rollback must cover BaseException (CancelledError),
+                # not just Exception; the backend's own stop is
+                # exception-suppressed. Either way, re-raise unchanged — the
+                # failure/cleanup contract is applied by `start()`.
                 with contextlib.suppress(Exception):
                     await backend.stop()
                 raise
@@ -688,6 +719,12 @@ _singleton: EngineService | None = None
 #: a failed start is never published, but /health must still show why the
 #: product cannot serve (#1181).
 _failed_startup: EngineService | None = None
+#: The boot attempt currently in flight, if any. Without it, `engine_health()`
+#: could not distinguish "never attempted" from "mid-boot": both have no
+#: singleton and no failed attempt, and a slow dependency (DB reconnect,
+#: recovery cadences) would read as the historical `not_started` 200 on
+#: `/health/ready` that ADR-100126-f9d6 excludes for `starting` (#1181).
+_booting: EngineService | None = None
 
 
 def get_engine() -> EngineService:
@@ -702,9 +739,18 @@ def engine_health() -> dict[str, Any]:
     A start that failed is not published — `get_engine()` keeps raising — but
     /health must still distinguish a clean not-started engine from one whose
     boot failed and was rolled back, so the failed attempt's snapshot stays
-    reachable here until the next start succeeds or the engine stops.
+    reachable here until the next start succeeds or the engine stops. A boot
+    in flight reports `starting` (not `not_started`), so probes cannot mistake
+    a slow dependency for a process that never tried to boot.
     """
-    engine = _singleton if _singleton is not None else _failed_startup
+    if _singleton is not None:
+        engine = _singleton
+    elif _booting is not None:
+        # The current attempt outranks the retained failure: while a retry is
+        # mid-boot, `starting` is the truthful present state.
+        engine = _booting
+    else:
+        engine = _failed_startup
     if engine is None:
         return {
             "state": "not_started",
@@ -727,13 +773,20 @@ async def start_engine(settings: Settings) -> EngineService:
     next `start_engine()` call runs a fresh boot once the dependency is
     restored.
     """
-    global _singleton, _failed_startup
+    global _singleton, _failed_startup, _booting
     engine = EngineService()
+    _booting = engine
     try:
         await engine.start(settings)
-    except Exception:
+    except BaseException:
+        # Cancellation included: a cancelled boot is still a failed attempt —
+        # retain it for `engine_health()` and re-raise unchanged.
         _failed_startup = engine
         raise
+    finally:
+        # The attempt is over: either published below or retained as the
+        # failed one. `starting` must never outlive the boot it described.
+        _booting = None
     _singleton = engine
     _failed_startup = None
     return engine

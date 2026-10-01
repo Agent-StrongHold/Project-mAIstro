@@ -7,12 +7,14 @@ Covers:
   metrics reset, DAG recovery, canonical recovery, task backend demo and
   production) → raise + deterministic unwind + `startup_failed` state +
   sanitized cause + unpublished singleton
+- cancellation mid-boot (CancelledError is a BaseException) → same rollback +
+  re-raise
 - retry after the dependency is restored succeeds (documented policy:
   retryable, never terminal-poisoned)
 - documented optional degradations (bridge→stub, capability wiring) reach
   `degraded` with a health-visible cause
-- stop() terminal state; engine_health() answers for not_started, failed,
-  and published engines
+- stop() terminal state; engine_health() answers for not_started, in-flight
+  (`starting`, which /health/ready gates), failed, and published engines
 - /health and /health/ready surfaces: engine field, degraded liveness,
   readiness 503 while a failed (or in-flight) engine gates the instance
 """
@@ -65,6 +67,7 @@ def _reset_engine_globals():
     # recorded (None), re-poisoning the globals this fixture owns.
     engine_mod._singleton = None
     engine_mod._failed_startup = None
+    engine_mod._booting = None
     feedback_service.set_outcome_store = seen.append
     yield
     engine_mod._singleton = prev_singleton
@@ -250,6 +253,120 @@ async def test_demo_backend_failure_unwinds_recovery_cadences(
     assert stopped == [True], "the half-started backend was stopped"
 
 
+async def test_cancelled_boot_unwinds_cadences_and_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CancelledError derives from BaseException on every supported Python, so
+    an `except Exception` rollback would never run for a lifespan task
+    cancelled while awaiting a startup step: the recovery cadences would keep
+    running and the instance would read `starting` forever. The rollback is
+    driven by a BaseException guard; the cancellation itself is re-raised."""
+    import asyncio
+    import types
+
+    import adapters.task_backend as task_backend
+    import services.canonical_recovery as canonical_recovery
+    import services.dag_recovery as dag_recovery
+    import services.engine as engine_mod
+
+    stopped: list[bool] = []
+    reached_backend = asyncio.Event()
+
+    class _NeverStartsBackend:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            reached_backend.set()
+            await asyncio.Event().wait()  # cancelled while awaiting here
+
+        async def stop(self) -> None:
+            stopped.append(True)
+
+    monkeypatch.setattr(task_backend, "LocalTaskBackend", _NeverStartsBackend)
+
+    conductor_mod = types.ModuleType("maistro.agents.conductor")
+
+    async def _stub_run_task(*a: Any, **kw: Any) -> Any:
+        return None
+
+    conductor_mod.run_task = _stub_run_task  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "maistro.agents.conductor", conductor_mod)
+
+    boot = asyncio.create_task(engine_mod.start_engine(_DemoSettings()))
+    await asyncio.wait_for(reached_backend.wait(), timeout=10)
+    boot.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await boot
+
+    # Same rollback contract as any raised failure: cadences stopped, handles
+    # cleared, failed attempt retained for engine_health(), nothing published.
+    assert engine_mod._singleton is None
+    assert dag_recovery._task is None, "started recovery cadence was unwound"
+    assert canonical_recovery._task is None, "started recovery cadence was unwound"
+    failed = engine_mod._failed_startup
+    assert failed is not None
+    assert failed.state == "startup_failed"
+    assert failed._backend is None
+    assert failed._agent_port is None
+    assert stopped == [True], "the half-started backend was stopped"
+    assert engine_mod.engine_health()["state"] == "startup_failed"
+
+
+async def test_in_flight_boot_reports_starting_not_not_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mid-boot, `engine_health()` answers `starting` — the state ADR-100126-f9d6
+    lists among the not-ready ones. With only the singleton/failed-attempt
+    globals to look at, a slow dependency (DB reconnect, recovery cadences)
+    read as the historical `not_started`, indistinguishable from a process
+    that never tried to boot."""
+    import asyncio
+    import contextlib
+    import types
+
+    import adapters.task_backend as task_backend
+    import services.engine as engine_mod
+
+    reached_backend = asyncio.Event()
+
+    class _SlowBackend:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            reached_backend.set()
+            await asyncio.Event().wait()  # boot held mid-flight
+
+        async def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(task_backend, "LocalTaskBackend", _SlowBackend)
+
+    conductor_mod = types.ModuleType("maistro.agents.conductor")
+
+    async def _stub_run_task(*a: Any, **kw: Any) -> Any:
+        return None
+
+    conductor_mod.run_task = _stub_run_task  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "maistro.agents.conductor", conductor_mod)
+
+    boot = asyncio.create_task(engine_mod.start_engine(_DemoSettings()))
+    try:
+        await asyncio.wait_for(reached_backend.wait(), timeout=10)
+        health = engine_mod.engine_health()
+        assert health["state"] == "starting"
+        assert health["cause"] is None
+        assert engine_mod.engine_health()["task_backend"] is None
+    finally:
+        boot.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await boot
+    # The in-flight marker never outlives the boot it described: the cancelled
+    # attempt is retained as failed, and `starting` is gone.
+    assert engine_mod.engine_health()["state"] == "startup_failed"
+
+
 async def test_production_backend_failure_unwinds_recovery_cadences(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,6 +431,64 @@ async def test_retry_after_dependency_restored_succeeds(
 
 
 # --- documented optional degradations ----------------------------------------
+
+
+async def test_started_bridge_container_is_aclosed_on_later_step_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured bridge that started, followed by a failed required step, is
+    unwound by closing its Container — not by dropping the reference.
+
+    `Container.aclose()` releases the pool lease / SQLite connections the
+    container took; leaving them live on every retryable failure would exhaust
+    database connection slots, and an abandoned aiosqlite worker (a
+    non-daemon thread) could block process exit.
+    """
+    import adapters.maistro_core as maistro_core
+    import services.dag_recovery as dag_recovery
+    import services.engine as engine_mod
+    from services import agent_materialization
+
+    closed: list[bool] = []
+
+    class _FakeContainer:
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    class _StartedBridge:
+        def __init__(self) -> None:
+            self.container: Any = None
+
+        async def start(self, settings: Any) -> None:
+            self.container = _FakeContainer()
+            agent_materialization.register_runtime_source(
+                container=self.container, llm=object(), preamble=""
+            )
+
+        async def route(self, messages: list[dict[str, Any]], **kw: Any) -> dict[str, Any]:
+            return {}
+
+    monkeypatch.setattr(maistro_core, "MaistroCoreBridge", _StartedBridge)
+
+    def _boom() -> None:
+        raise RuntimeError("dag cadence refused")
+
+    monkeypatch.setattr(dag_recovery, "start_dag_recovery", _boom)
+
+    class _Configured(_Settings):
+        maistro_router_api_key = "router-key"
+
+    with pytest.raises(RuntimeError, match="dag cadence refused"):
+        await engine_mod.start_engine(_Configured())
+
+    assert closed == [True], "the started bridge container was aclosed, not leaked"
+    assert agent_materialization._runtime_source is None, (
+        "the materialization seam was reset before the container went away"
+    )
+    failed = engine_mod._failed_startup
+    assert failed is not None
+    assert failed.state == "startup_failed"
+    assert failed._agent_port is None
 
 
 async def test_bridge_fallback_is_health_visible_degradation(
@@ -424,9 +599,7 @@ def test_sanitize_cause_redacts_credentials_before_truncation() -> None:
     the dependency interpolated into its exception text (review on #1181)."""
     from services.engine import _sanitize_cause
 
-    dsn = RuntimeError(
-        "could not connect to postgresql://ops:s3cr3t-Pa1nt@db.internal:5432/hive"
-    )
+    dsn = RuntimeError("could not connect to postgresql://ops:s3cr3t-Pa1nt@db.internal:5432/hive")
     cause = _sanitize_cause(dsn)
     assert "s3cr3t-Pa1nt" not in cause
     assert "REDACTED" in cause  # marker proves the redactor ran, not truncation
@@ -498,6 +671,7 @@ def test_health_ready_ignores_never_attempted_engine() -> None:
 
     engine_mod._singleton = None
     engine_mod._failed_startup = None
+    engine_mod._booting = None
 
     client = _client()
     ready = client.get("/health/ready")
@@ -508,6 +682,35 @@ def test_health_ready_ignores_never_attempted_engine() -> None:
 
     live = client.get("/health").json()
     assert live["engine"]["state"] == "not_started"
+
+
+def test_health_ready_gates_on_in_flight_boot() -> None:
+    """ADR-100126-f9d6 lists `starting` among the not-ready states: a boot held
+    mid-flight takes the instance out of rotation instead of answering the
+    historical 200 that `not_started` alone keeps for never-booted contexts."""
+    import services.engine as engine_mod
+
+    booting = engine_mod.EngineService()
+    booting._state = "starting"
+    engine_mod._singleton = None
+    engine_mod._failed_startup = None
+    engine_mod._booting = booting
+
+    client = _client()
+    ready = client.get("/health/ready")
+    assert ready.status_code == 503
+    body = ready.json()
+    assert body["ready"] is False
+    assert body["checks"]["engine"] is False
+
+    live = client.get("/health").json()
+    assert live["engine"]["state"] == "starting"
+    # Mid-boot there is no failure to report yet: no sanitized cause, and the
+    # engine state alone must not flip the aggregate `degraded` flag
+    # ("starting" is absent from its state set — the other disjuncts belong
+    # to other subsystems).
+    assert live["engine"]["cause"] is None
+    assert live["status"] == "ok"
 
 
 def test_health_reports_degraded_engine_state() -> None:
