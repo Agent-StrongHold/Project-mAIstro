@@ -187,6 +187,95 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     expect(auditPage.entries.length).toBeGreaterThan(0);
   });
 
+  // Exercise the routed production component, with deterministic network order.
+  // The API contract/scoping is independently exercised by the backend suite.
+  for (const staleRequest of ["first page", "continuation"] as const) {
+    test(`10b — audit filters survive a late ${staleRequest}`, async ({ page }) => {
+      await loginAsPM(page);
+      await page.addInitScript(() => localStorage.setItem("hive_onboarded", "1"));
+      let release: (() => void) | undefined;
+      let requests = 0;
+      await page.route("**/v1/audit?*", async (route) => {
+        const params = new URL(route.request().url()).searchParams;
+        requests += 1;
+        const filtered = params.get("action") === "login";
+        const held = !filtered && (staleRequest === "first page" || params.has("cursor"));
+        if (held) await new Promise<void>((resolve) => { release = resolve; });
+        await route.fulfill({ json: {
+          entries: Array.from({ length: filtered || held ? 1 : 100 }, (_, i) => ({
+            id: `${filtered ? "current" : "stale"}-${i}`,
+            action: filtered ? "login" : "scan", actor: "pmuser", target: null,
+            detail: { marker: filtered ? "current-filter" : "stale-filter" },
+            severity: "info", created_at: "2026-01-01T00:00:00Z",
+          })),
+          next_cursor: filtered || held ? null : "older",
+        } });
+      });
+      await page.goto("/audit");
+      if (staleRequest === "continuation") {
+        await expect(page.getByRole("row").first()).toBeVisible();
+        await page.getByRole("rowgroup").evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      }
+      await expect.poll(() => release !== undefined).toBe(true);
+      await page.getByRole("combobox").first().selectOption("login");
+      await expect(page.getByRole("row")).toHaveCount(1);
+      await expect(page.getByRole("row")).toContainText("current-filter");
+      const lateResponse = page.waitForResponse((r) =>
+        new URL(r.url()).pathname === "/v1/audit" &&
+        !new URL(r.url()).searchParams.has("action"));
+      release!();
+      await (await lateResponse).finished();
+      // Allow the response handler and React paint to finish before asserting
+      // that the old result neither replaced nor appended to the new walk.
+      await page.evaluate(() => new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }));
+      await expect(page.getByRole("row")).toHaveCount(1);
+      await expect(page.getByRole("row")).toContainText("current-filter");
+      expect(requests).toBe(staleRequest === "first page" ? 2 : 3);
+      await expect(page.getByRole("link", { name: "Export", exact: true }))
+        .toHaveAttribute("href", "/v1/audit/export?action=login");
+    });
+  }
+
+  test("10c — audit cursor loading bounds retained entries and mounted rows", async ({ page }) => {
+    await loginAsPM(page);
+    await page.addInitScript(() => localStorage.setItem("hive_onboarded", "1"));
+    const cursors: number[] = [];
+    await page.route("**/v1/audit?*", async (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      expect(params.get("limit")).toBe("100");
+      const start = Number(params.get("cursor") || "0");
+      cursors.push(start);
+      await route.fulfill({ json: {
+        entries: Array.from({ length: 100 }, (_, i) => ({
+          id: `audit-${start + i}`, action: "login", actor: "pmuser", target: null,
+          detail: { marker: `entry-${start + i}` }, severity: "info",
+          created_at: "2026-01-01T00:00:00Z",
+        })),
+        next_cursor: start < 700 ? String(start + 100) : null,
+      } });
+    });
+    await page.goto("/audit");
+    const rows = page.getByRole("row");
+    const viewport = page.getByRole("rowgroup");
+    await expect(rows.first()).toBeVisible();
+    expect(cursors).toEqual([0]);
+    for (let pageNumber = 1; pageNumber < 8; pageNumber += 1) {
+      await viewport.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      await expect.poll(() => cursors.length).toBe(pageNumber + 1);
+      await expect(page.getByText(`${Math.min((pageNumber + 1) * 100, 500)} retained locally`, { exact: false }))
+        .toBeVisible();
+      await expect.poll(() => rows.count()).toBeGreaterThan(0);
+      expect(await rows.count()).toBeLessThanOrEqual(30);
+    }
+    expect(cursors).toEqual([0, 100, 200, 300, 400, 500, 600, 700]);
+    await viewport.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    await expect(rows.last()).toContainText("entry-799");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(rows.first()).toContainText("entry-0");
+  });
+
   test("11 — PM can view DAG metrics", async ({ page }) => {
     await loginAsPM(page);
     const metricsResp = await page.request.get("/v1/dag-metrics");

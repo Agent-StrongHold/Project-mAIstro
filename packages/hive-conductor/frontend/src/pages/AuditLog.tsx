@@ -212,6 +212,9 @@ export default function AuditLog() {
   // reads current load state without re-observing on every render.
   const nextCursorRef = useRef<string | null>(null);
   const loadingMoreRef = useRef(false);
+  // Every filter change/refresh starts a new cursor walk. Responses from an
+  // abandoned walk must not replace rows, append rows, or reset its load lock.
+  const generationRef = useRef(0);
 
   const buildParams = useCallback(
     (cursor: string | null) => {
@@ -227,9 +230,18 @@ export default function AuditLog() {
   );
 
   const loadFirstPage = useCallback(async () => {
+    const generation = ++generationRef.current;
+    nextCursorRef.current = null;
+    loadingMoreRef.current = false;
+    entriesRef.current = [];
+    setEntries([]);
+    setNextCursor(null);
+    setLoadingMore(false);
+    setDetailEntry(null);
     try {
       setLoading(true);
       const page = await apiGet<AuditPage>(`/v1/audit?${buildParams(null)}`);
+      if (generation !== generationRef.current) return;
       entriesRef.current = page.entries;
       setEntries(page.entries);
       setDiscardedRows(0);
@@ -238,19 +250,21 @@ export default function AuditLog() {
       if (scrollRef.current) scrollRef.current.scrollTop = 0;
       setScrollTop(0);
     } catch {
-      toast("Failed to load audit log", "error");
+      if (generation === generationRef.current) toast("Failed to load audit log", "error");
     } finally {
-      setLoading(false);
+      if (generation === generationRef.current) setLoading(false);
     }
   }, [buildParams, toast]);
 
   const loadMore = useCallback(async () => {
     const cursor = nextCursorRef.current;
     if (cursor === null || loadingMoreRef.current) return;
+    const generation = generationRef.current;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
       const page = await apiGet<AuditPage>(`/v1/audit?${buildParams(cursor)}`);
+      if (generation !== generationRef.current) return;
       // Keyset pages are strictly contiguous: append, never merge. Retain a
       // sliding window so a long-lived tab cannot accumulate the whole corpus.
       const combined = [...entriesRef.current, ...page.entries];
@@ -262,14 +276,22 @@ export default function AuditLog() {
       setNextCursor(page.next_cursor);
       nextCursorRef.current = page.next_cursor;
     } catch {
-      toast("Failed to load more audit entries", "error");
+      if (generation === generationRef.current) toast("Failed to load more audit entries", "error");
     } finally {
-      loadingMoreRef.current = false;
-      setLoadingMore(false);
+      if (generation === generationRef.current) {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      }
     }
   }, [buildParams, toast]);
 
-  useEffect(() => { loadFirstPage(); }, [loadFirstPage]);
+  useEffect(() => {
+    void loadFirstPage();
+    return () => {
+      generationRef.current += 1;
+      nextCursorRef.current = null;
+    };
+  }, [loadFirstPage]);
 
   useEffect(() => {
     apiGet<AuditRetention>("/v1/audit/retention")
