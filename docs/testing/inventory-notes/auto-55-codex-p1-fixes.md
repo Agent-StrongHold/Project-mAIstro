@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +15
+  packages/maistro-core/tests: +21
 ---
 
 # Tests for the Codex review fixes on #1362
@@ -79,3 +79,34 @@ one applicable money budget denied every governed invocation.
   harness a second task it was already working on. The test dispatches under
   the old key and then runs the node: one task reaches the harness, and the
   pause carries the original invocation id.
+
+
+## The process default context (+4)
+
+`capabilities/test_effect_context_policy.py`, class
+`TestNestedContainersHandTheDefaultBack`. Containers nest, so the published
+default has to be a stack rather than one slot: closing an inner Container was
+clearing the slot outright, leaving the process with no published context and
+every later registry-constructed node — the bare `RunConsumer` fallback among
+them — resolving Bindings against a fresh empty one while a perfectly usable
+Container was still open.
+
+The four cases are the four ways a single slot gets it wrong: closing the
+inner restores the outer; closing *out of order* leaves the rest in place;
+the last release falls back to one shared ephemeral context rather than
+`None`; and re-publishing moves a context to the top instead of recording it
+twice, so one release cannot leave a stale duplicate answering as the default.
+
+## SQLite usage provenance (+2)
+
+`quota/test_sqlite_usage_log.py`
+
+- `test_canonical_invocation_provenance_survives_a_restart` — `snapshot` wrote
+  seven columns and `restore` read the same seven, so every restart discarded
+  the invocation identity, provider, billing cycle and reported flag. The test
+  also pins that a legacy callback event stays honestly empty rather than
+  defaulted.
+- `test_an_unreported_call_restores_as_unreported_not_missing` — `False` and
+  `None` mean different things here ("called and reported nothing" versus
+  "nobody recorded whether it did"), and storing the flag as an INTEGER makes
+  that easy to conflate on the way back.

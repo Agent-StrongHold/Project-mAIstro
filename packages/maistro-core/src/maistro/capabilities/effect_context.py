@@ -182,45 +182,77 @@ def new_effect_context(
     )
 
 
-_process_effect_context: CapabilityEffectContext | None = None
+#: Published Container contexts, outermost first. A list rather than one slot
+#: because containers nest: a test or an embedder can build a second Container
+#: inside the lifetime of the first, and closing the inner one must hand the
+#: default back to the outer rather than discard it. With a single slot, the
+#: inner close left the process with no published context at all, so every
+#: later registry-constructed node -- the bare `RunConsumer` fallback among
+#: them -- got a fresh empty context and failed Binding resolution while a
+#: perfectly usable Container was still open (Codex, #1362).
+_published_contexts: list[CapabilityEffectContext] = []
+
+#: The unpublished fallback, cached so nodes do not each get a private ledger.
+_ephemeral_context: CapabilityEffectContext | None = None
 
 
 def configure_default_effect_context(context: CapabilityEffectContext) -> None:
-    """Publish the Container-owned context. There is no second process authority."""
+    """Publish a Container-owned context as the process default.
 
-    global _process_effect_context
-    _process_effect_context = context
+    Re-publishing a context already on the stack moves it to the top rather
+    than recording it twice, so a later release cannot leave a stale duplicate
+    behind it.
+    """
+
+    _drop_published(context)
+    _published_contexts.append(context)
 
 
 def release_default_effect_context(context: CapabilityEffectContext) -> None:
-    """Drop the process default when the Container that published it closes."""
+    """Withdraw one Container's context when that Container closes.
 
-    global _process_effect_context
-    if _process_effect_context is context:
-        _process_effect_context = None
+    Removes this context wherever it sits, so containers that close out of
+    order still leave the remaining published contexts in their original
+    relative order. The default becomes whichever is then outermost-last --
+    not `None`, unless this was the only one.
+    """
+
+    _drop_published(context)
+
+
+def _drop_published(context: CapabilityEffectContext) -> None:
+    """Remove a context by identity; equality would match a distinct twin."""
+
+    for index, published in enumerate(_published_contexts):
+        if published is context:
+            del _published_contexts[index]
+            return
 
 
 def default_effect_context() -> CapabilityEffectContext:
     """Process-wide canonical context used by registry-constructed effect nodes.
 
     When a Container has published its context, this returns that exact
-    instance. Otherwise one ephemeral context is cached so nodes do not each
-    receive a private ledger. No default Binding is created; absence remains
-    a hard refusal.
+    instance -- the innermost still-open one. Otherwise one ephemeral context
+    is cached so nodes do not each receive a private ledger. No default
+    Binding is created; absence remains a hard refusal.
     """
 
-    global _process_effect_context
-    if _process_effect_context is None:
+    if _published_contexts:
+        return _published_contexts[-1]
+    global _ephemeral_context
+    if _ephemeral_context is None:
         # This named composition root deliberately selects the narrow scope
         # policy; unnamed contexts stay read-only until an application
         # supplies one.
-        _process_effect_context = new_effect_context(policy_evaluator=binding_scope_policy)
-    return _process_effect_context
+        _ephemeral_context = new_effect_context(policy_evaluator=binding_scope_policy)
+    return _ephemeral_context
 
 
 def _clear_default_effect_context() -> None:
-    global _process_effect_context
-    _process_effect_context = None
+    global _ephemeral_context
+    _published_contexts.clear()
+    _ephemeral_context = None
 
 
 # Tests and fixtures still call the lru_cache-style clearer.
