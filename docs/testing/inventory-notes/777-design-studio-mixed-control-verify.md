@@ -3040,3 +3040,72 @@ canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
 round: the develop-sync merge commit `ed90dfadf` (develop's own code, zero
 conflicts) + this note. No production or test code authored by this lane;
 inventory deltas all +0. No closure keywords used.
+
+## Round 47 — head `1838c4b2f` (develop sync `b9bcdd255 -> b683268ea`, merged clean; repair job `267a44b04aec446eafe7afbcf3a85e8b`)
+
+**Trigger:** round 46 ended BLOCKED on unlanded dependencies (not a sync
+conflict). Prior repair attempt (job `62173499bfd241a0b32ce2b7cc465bf4`) died
+on provider timeout (`checks: []`, no `check-*.log`; worktree was clean at the
+exact expected head `c074c6039` — nothing to salvage). This round: scheduled
+re-verification + develop sync — `origin/develop` advanced `b9bcdd255 ->
+b683268ea` (2 commits: M4 eventual "Bound Canvas retries and implement the
+store contract used by the runner" #1724/ADR-0398, "Optional S3-compatible
+cold storage: an archive tier below durable memory" #1727 — **neither is a
+#777 dependency**). Merged cleanly as `1838c4b2f` with zero conflicts (no file
+overlap with lane surfaces). Working tree clean before and after the merge.
+
+**Dependency audit (fresh at `1838c4b2f`, independently re-run — not trusted
+from round 46):**
+- `grep -rliE "goal_revision|GoalReconcil|owning_agent|subgoaldelegat"
+  packages/*/src` → only read-through references: campaigns eligibility
+  fields (`workspaces/campaigns/model.py:314` `goal_revision: str | None`,
+  docstring at `:166` "read ... through a read-only reader ... The state is
+  read, never copied" — M3-C6 #103, no GoalRevision entity), the
+  `interop/contract.py` ontology declaration, and `graph/seeds/pack_fixtures.py`
+  fixture text. **No maistro-goals package, no Goal store, no reconciler.**
+- `grep -niE "goal|reconcil"
+  packages/hive-conductor/backend/services/workspace_agent.py` → **0 matches**
+  — #804/#805/#806 reconciliation still absent.
+- `brief_store.py:5-8` still disclaims: "The interview is chat state, not a
+  Goal: nothing here is a Goal or CreativeBrief record" — #774 absent.
+  `brief_interview.py:1` still "Requirements interview **before** a Goal or
+  CreativeBrief is committed" — pre-commit only.
+- `grep -rli ladybug packages/*/src` → **0 files** — #776 absent.
+- #458 Goal remains ontology-declared only
+  (`interop/contract.py:354` `agent_goal_ownership` RelationshipSpec).
+- #775 creative Graph absent; no `control_mode`/mixed-control hits in
+  `packages/*/src`; e2e tree now holds 28 `.spec.ts` files (inventory-recorded
+  backend e2e suite: 23) — **no #777 mixed-control browser E2E exists**.
+- Salvage archive unchanged at `docs/research/777-design-studio-salvage/`.
+
+**Gates executed at `1838c4b2f` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2706 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, 1375/1375
+  banked, 0 unbanked (ledger round no-op; no amendment needed or performed).
+- `uv run pytest packages/maistro-canvas/tests -x -q` — **436 passed + 75
+  skipped** (merged develop code verified: #1724 canvas retry/store-contract
+  tests included).
+- `uv run pytest
+  packages/maistro-core/tests/archive/test_optional_dependency.py -q` — 6
+  passed (merged #1727 S3-optional-dependency tests).
+- `uv run pytest test_workspace_agent_identity.py test_workspace_mode.py
+  test_program_brief_routes.py
+  packages/maistro-core/tests/agents/test_brief_interview.py
+  packages/maistro-core/tests/graph/test_cross_domain_substrate.py -q` — 49
+  passed (#777-adjacent surfaces).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites.
+- `uv run python scripts/check-doc-links.py` — PASS (0 broken links).
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**All 13 acceptance criteria: still UNMET at this head** (none provable
+against reachable production behavior or meaningful tests; unchanged from
+round 46).
+
+**Conclusion (47th inspected head):** the lane remains **BLOCKED on unlanded
+canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Ladybug retrieval). Changes this
+round: the develop-sync merge commit `1838c4b2f` (develop's own code, zero
+conflicts) + this note. No production or test code authored by this lane;
+inventory deltas all +0. No closure keywords used.
