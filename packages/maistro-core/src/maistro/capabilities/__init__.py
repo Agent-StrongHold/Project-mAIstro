@@ -27,6 +27,16 @@ from maistro.capabilities.governed_invocation import (
 from maistro.capabilities.harness_manager import HarnessSessionManager
 from maistro.capabilities.http import AsyncHttp
 from maistro.capabilities.http_client import HttpxAsyncHttp
+from maistro.capabilities.image_generation import (
+    IMAGE_GENERATE_CAPABILITY,
+    ImageBlobStore,
+    ImageBlobUnavailable,
+    ImageGenerationEgress,
+    ImageGenerationRequest,
+    ImageGenerationResult,
+    ImageStorageError,
+    InMemoryImageBlobStore,
+)
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     EffectNotApplied,
@@ -77,6 +87,7 @@ from maistro.capabilities.types import (
 
 __all__ = [
     "HARNESS_RUNNER_SLOT",
+    "IMAGE_GENERATE_CAPABILITY",
     "ActionGate",
     "ApprovalAuthority",
     "ApprovalStatus",
@@ -95,7 +106,14 @@ __all__ = [
     "HarnessRunner",
     "HarnessSessionManager",
     "HttpxAsyncHttp",
+    "ImageBlobStore",
+    "ImageBlobUnavailable",
+    "ImageGenerationEgress",
+    "ImageGenerationRequest",
+    "ImageGenerationResult",
+    "ImageStorageError",
     "InMemoryApprovalStore",
+    "InMemoryImageBlobStore",
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationApprovalPending",

@@ -23,15 +23,26 @@ logger = structlog.get_logger()
 
 @dataclass
 class ModelQuota:
-    """A model's remaining headroom in the current billing cycle."""
+    """A model's remaining headroom in the current billing cycle.
+
+    ``used_pct is None`` means the provider's usage evidence is incomplete
+    (#718): at least one governed call reported no usage, so the true ratio
+    is unknowable. Such a model has no assertable headroom — presenting the
+    unreported remainder as ``0.0`` used / full headroom would read as a
+    complete accounting while understating spend — so ``headroom_tokens`` is
+    zero and quota-burn scheduling ranks it last instead of routing free-tier
+    burn toward a provider whose budget state is unknown.
+    """
 
     model: str
     provider: str
     free_tokens: int
-    used_pct: float
+    used_pct: float | None
 
     @property
     def headroom_tokens(self) -> int:
+        if self.used_pct is None:
+            return 0
         return max(0, round(self.free_tokens * (1.0 - self.used_pct)))
 
 
@@ -78,6 +89,15 @@ async def rank_models_by_headroom(
         provider = _provider_of(model)
         free_tokens = free_tokens_per_provider.get(provider, default_free_tokens)
         used_pct = await tracker.get_usage_pct(provider, billing_cycle, free_tokens)
+        if used_pct is None:
+            # Incomplete evidence is an operator-visible fact, not a scheduling
+            # input: say why this provider cannot be ranked by headroom.
+            await logger.awarning(
+                "rsi_model_quota_evidence_incomplete",
+                provider=provider,
+                model=model,
+                billing_cycle=billing_cycle,
+            )
         ranked.append(
             ModelQuota(model=model, provider=provider, free_tokens=free_tokens, used_pct=used_pct)
         )
