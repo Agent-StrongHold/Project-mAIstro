@@ -105,6 +105,7 @@ class SyncLoopRunner:
         """
         wait = self._default_timeout if timeout is None else timeout
         if wait <= 0:
+            coro.close()
             raise ValueError("timeout must be positive")
 
         if self._is_own_loop_thread():

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import threading
 import time
 from collections.abc import Sequence
@@ -288,6 +289,65 @@ class TestSyncLoopRunner:
             SyncLoopRunner(timeout=0)
         with pytest.raises(ValueError, match="timeout must be positive"):
             SyncLoopRunner(timeout=-1.0)
+
+    def test_run_rejects_a_nonpositive_wait(self) -> None:
+        runner = SyncLoopRunner()
+        coros = [asyncio.sleep(0), asyncio.sleep(0)]
+        try:
+            with pytest.raises(ValueError, match="timeout must be positive"):
+                runner.run(coros[0], timeout=0)
+            with pytest.raises(ValueError, match="timeout must be positive"):
+                runner.run(coros[1], timeout=-1.0)
+            # The rejected coroutines were closed by the runner, not leaked
+            # pending-never-awaited.
+            for coro in coros:
+                with pytest.raises(RuntimeError, match="cannot reuse"):
+                    coro.send(None)
+        finally:
+            runner.close()
+
+    def test_cancel_timed_out_reclaims_a_never_started_inner_coroutine(self) -> None:
+        """A caller timing out before the wrapper began on the dedicated loop
+        reclaims the inner coroutine itself — no pending-never-awaited leak."""
+        runner = SyncLoopRunner()
+        inner = asyncio.sleep(0)
+        future: concurrent.futures.Future[None] = concurrent.futures.Future()
+        # inner_started stays unset: the wrapper never began on the loop.
+        runner._cancel_timed_out(inner, future, threading.Event())
+        with pytest.raises(RuntimeError, match="cannot reuse"):
+            inner.send(None)
+
+    def test_close_leaves_a_stubborn_task_thread_to_the_reaper(self) -> None:
+        """A cancelled task that refuses to finish holds the drain open past
+        the join budget: the daemon thread is left to the process reaper
+        instead of closing a live loop underneath it, and the runner stays
+        closed to further calls."""
+        runner = SyncLoopRunner()
+        entered = threading.Event()
+
+        async def stubborn() -> None:
+            entered.set()
+            while True:
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    continue  # refuses to die
+
+        def caller() -> None:
+            with contextlib.suppress(TimeoutError):
+                runner.run(stubborn(), timeout=0.3)
+
+        thread = threading.Thread(target=caller)
+        thread.start()
+        assert entered.wait(timeout=5.0)
+        runner.close(timeout=0.2)
+        assert runner._thread is not None and runner._thread.is_alive()
+        # Further calls keep failing with the closed-loop signal.
+        with pytest.raises(SyncLoopClosedError):
+            runner.run(asyncio.sleep(0))
+        # The bounded caller timeout still releases the human caller.
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
 
 
 # ------------------------------------------------------------- bridge tests --

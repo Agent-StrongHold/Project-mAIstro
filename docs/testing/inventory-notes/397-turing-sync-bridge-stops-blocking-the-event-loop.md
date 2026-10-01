@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-turing/tests: +17
+  packages/maistro-turing/tests: +20
 ---
 # Issue 397 — the Turing sync bridge stops blocking the event loop
 
@@ -32,7 +32,7 @@ contract under test since the sync path must never run on the loop.
 
 ## Inventory delta
 
-`packages/maistro-turing/tests` gains 17 node IDs in
+`packages/maistro-turing/tests` gains 20 node IDs in
 `test_sync_runner.py`: the `SyncLoopRunner` matrix (success, exception,
 timeout-with-cancellation, reentrancy rejection, post-close rejection,
 shutdown cancelling outstanding work and joining the thread, close
@@ -44,9 +44,16 @@ work, bounded default), and the two freeze regressions: the chat session's
 loop keeps taking heartbeats throughout a 0.2s model call, and a producer
 works against a provider exposing only the async seam.
 
+CI-repair round (+3): the diff-coverage gate showed the timeout branch
+matrix left real arcs unexercised — a non-positive per-call `run()` wait is
+rejected (and its coroutine closed, not leaked), a caller timing out before
+the wrapper began on the dedicated loop reclaims the never-started inner
+coroutine, and `close()` leaves the daemon thread to the process reaper when
+a cancelled task refuses to finish inside the join budget.
+
 `packages/maistro-turing/backend/tests` is unchanged in count: the chat
 tests were re-pointed from `complete` to `acomplete` without renaming.
 
 ## Ephemeral counts
 
-maistro-turing tests: 190 → 207 (+17). Backend: 90 (unchanged).
+maistro-turing tests: 190 → 210 (+20). Backend: 90 (unchanged).
