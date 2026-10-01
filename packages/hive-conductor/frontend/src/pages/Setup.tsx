@@ -550,13 +550,15 @@ export default function Setup() {
               // entirely, so retiring it exposed a pre-existing dead end: no
               // presets means no cards, and requiring a selection then blocks
               // first-run provisioning with no error and no retry (#129).
-              (step === 1 && !preset && Object.keys(presets).length > 0) ||
+              // The declared "auto" default already resolves the step via
+              // resolvedHardware, so only an undeclared default blocks.
+              (step === 1 && !resolvedHardware && Object.keys(presets).length > 0) ||
               (step === 2 && (!adminUsername.trim() || !adminPassword || !userUsername.trim() || !userPassword))
             }>
               next {"\u2192"}
             </button>
           ) : (
-            <button className="btn btn-accent" onClick={() => void finish()} disabled={loading || (!preset && Object.keys(presets).length > 0)}>
+            <button className="btn btn-accent" onClick={() => void finish()} disabled={loading || (!resolvedHardware && Object.keys(presets).length > 0)}>
               {loading ? "configuring..." : "launch the hive \uD83D\uDC1D"}
             </button>
           )}
