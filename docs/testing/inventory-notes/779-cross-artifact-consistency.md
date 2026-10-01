@@ -50,11 +50,14 @@ Each test maps to an issue acceptance criterion:
   check) was removed while refactoring `_check_factual_claims` below the
   C901 complexity ceiling (per-claim judgment extracted into
   `_judge_allowed_claim`/`_impact_of_pattern`; messages byte-identical).
-- `maistro_design.consistency` is dispositioned as a library-only surface in
-  `quality/reachability-baseline.json` (same disposition as
-  `maistro_design.nodes`: reached via the registry kind string and tests;
-  the Design Studio inspection endpoint remains the future production call
-  path).
+- `maistro_design.consistency` is reachable from a production entry point:
+  `POST /v1/design/projects/{id}/consistency` (`routes.design`, a
+  hive-conductor dynamic root) is the Design Studio's synchronous inspection
+  surface over the same pure evaluator the `design.consistency_eval` node
+  runs, so the module needed no reachability-baseline entry (the earlier
+  repair-round baseline entry is removed again — it could never carry the
+  prior landed `reachability` authorization the two-merge rule requires).
+  Route tests: `docs/testing/inventory-notes/779-design-consistency-route.md`.
 
 Browser E2E (Design Studio UI) is out of scope for this slice: the evaluator
 and node land in `maistro-design` with deterministic, relationship-driven
