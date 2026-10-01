@@ -97,6 +97,35 @@ class _ClonePolicyError(ValueError):
         self.error_code = error_code
 
 
+def _check_clone_scheme_allowed(scheme: str, url: str) -> None:
+    """Hard-deny unauthenticated transports, then allowlist the rest.
+
+    The forbidden check runs before the allowlist check so a hostile config
+    that widens _ALLOWED_CLONE_SCHEMES can never smuggle git:// back in.
+    """
+    if f"{scheme}://" in _FORBIDDEN_CLONE_SCHEMES:
+        raise _ClonePolicyError(
+            f"Blocked: unauthenticated clone transport is not allowed: {url}",
+            "blocked_url_scheme",
+        )
+    if f"{scheme}://" not in tuple(s.lower() for s in _ALLOWED_CLONE_SCHEMES):
+        raise _ClonePolicyError(f"Blocked: url scheme is not allowed: {url}", "blocked_url_scheme")
+
+
+def _validate_remote_clone_host(parts: SplitResult, url: str) -> tuple[str, str]:
+    """Gate remote (non-file) sources behind the explicit host policy."""
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise _ClonePolicyError(f"Blocked: url has no host: {url}", "blocked_url_scheme")
+    allowlist = _clone_host_allowlist()
+    if allowlist and host not in allowlist:
+        raise _ClonePolicyError(
+            f"Blocked: clone host is not in policy: {host}", "blocked_clone_host"
+        )
+    scheme = parts.scheme.lower()
+    return scheme, host
+
+
 def _validate_clone_url(url: str) -> tuple[str, str]:
     """Validate a clone *source* URL against the transport/host policy.
 
@@ -113,24 +142,10 @@ def _validate_clone_url(url: str) -> tuple[str, str]:
         )
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
-    if f"{scheme}://" in _FORBIDDEN_CLONE_SCHEMES:
-        raise _ClonePolicyError(
-            f"Blocked: unauthenticated clone transport is not allowed: {url}",
-            "blocked_url_scheme",
-        )
-    if f"{scheme}://" not in tuple(s.lower() for s in _ALLOWED_CLONE_SCHEMES):
-        raise _ClonePolicyError(f"Blocked: url scheme is not allowed: {url}", "blocked_url_scheme")
+    _check_clone_scheme_allowed(scheme, url)
     if scheme == "file":
         return _validate_local_clone_source(parts, url)
-    host = (parts.hostname or "").lower()
-    if not host:
-        raise _ClonePolicyError(f"Blocked: url has no host: {url}", "blocked_url_scheme")
-    allowlist = _clone_host_allowlist()
-    if allowlist and host not in allowlist:
-        raise _ClonePolicyError(
-            f"Blocked: clone host is not in policy: {host}", "blocked_clone_host"
-        )
-    return scheme, host
+    return _validate_remote_clone_host(parts, url)
 
 
 def _validate_local_clone_source(parts: SplitResult, url: str) -> tuple[str, str]:
@@ -244,6 +259,55 @@ def _parse_log_lines(output: str) -> list[dict[str, str]]:
     return commits
 
 
+async def _resolve_pinned_head(dest: str, pin: str) -> tuple[str, dict[str, Any] | None]:
+    """Land the workspace exactly on ``pin`` after the default branch missed it.
+
+    The default branch did not land on the pin (the ref moved between
+    resolution and fetch — TOCTOU — or the pin is historical). Fetch the
+    digest itself, detach to it, and re-verify: the fetched object
+    identity must equal the pin or the workspace is rejected outright.
+    Returns ``(resolved_head, failure)`` — failure is None on success.
+    """
+    fetched = await _git(dest, "fetch", "--depth=1", "origin", pin)
+    if not fetched["success"]:
+        return "", fail(
+            stdout=fetched["stdout"],
+            exit_code=fetched.get("exit_code", 1),
+            error_code="commit_pin_mismatch",
+            recoverable=False,
+            suggested_action=(
+                f"The pinned commit {pin} is not reachable from the remote; "
+                "verify the digest or the source policy."
+            ),
+        )
+    checkout = await _git(dest, "checkout", "--detach", pin)
+    if not checkout["success"]:
+        return "", _pin_mismatch(pin, checkout)
+    head = await _git(dest, "rev-parse", "HEAD")
+    resolved = head["stdout"].strip().lower() if head["success"] else ""
+    if not head["success"] or resolved != pin:
+        return "", _pin_mismatch(pin, head)
+    return resolved, None
+
+
+async def _verify_commit_signature(dest: str, pin: str) -> dict[str, Any] | None:
+    """Enforce the signature policy on the pinned digest (fail closed)."""
+    signature = await _git(dest, "verify-commit", pin)
+    if not signature["success"]:
+        return fail(
+            stdout=signature["stdout"],
+            exit_code=signature.get("exit_code", 1),
+            error_code="commit_signature_unverified",
+            recoverable=False,
+            suggested_action=(
+                "The signature policy requires the pinned commit to carry a "
+                "verifiable signature; configure trusted keys or pin a "
+                "signed commit."
+            ),
+        )
+    return None
+
+
 async def _verify_cloned_source(
     dest: str, *, pin: str | None, require_signed: bool
 ) -> dict[str, Any]:
@@ -270,44 +334,14 @@ async def _verify_cloned_source(
     resolved = head["stdout"].strip().lower()
 
     if pin is not None and resolved != pin:
-        # The default branch did not land on the pin (the ref moved between
-        # resolution and fetch — TOCTOU — or the pin is historical). Fetch the
-        # digest itself, detach to it, and re-verify: the fetched object
-        # identity must equal the pin or the workspace is rejected outright.
-        fetched = await _git(dest, "fetch", "--depth=1", "origin", pin)
-        if not fetched["success"]:
-            return fail(
-                stdout=fetched["stdout"],
-                exit_code=fetched.get("exit_code", 1),
-                error_code="commit_pin_mismatch",
-                recoverable=False,
-                suggested_action=(
-                    f"The pinned commit {pin} is not reachable from the remote; "
-                    "verify the digest or the source policy."
-                ),
-            )
-        checkout = await _git(dest, "checkout", "--detach", pin)
-        if not checkout["success"]:
-            return _pin_mismatch(pin, checkout)
-        head = await _git(dest, "rev-parse", "HEAD")
-        resolved = head["stdout"].strip().lower() if head["success"] else ""
-        if not head["success"] or resolved != pin:
-            return _pin_mismatch(pin, head)
+        resolved, pin_failure = await _resolve_pinned_head(dest, pin)
+        if pin_failure is not None:
+            return pin_failure
 
     if require_signed and pin is not None:
-        signature = await _git(dest, "verify-commit", pin)
-        if not signature["success"]:
-            return fail(
-                stdout=signature["stdout"],
-                exit_code=signature.get("exit_code", 1),
-                error_code="commit_signature_unverified",
-                recoverable=False,
-                suggested_action=(
-                    "The signature policy requires the pinned commit to carry a "
-                    "verifiable signature; configure trusted keys or pin a "
-                    "signed commit."
-                ),
-            )
+        signature_failure = await _verify_commit_signature(dest, pin)
+        if signature_failure is not None:
+            return signature_failure
 
     submodule_failure = await _validate_submodule_urls(dest)
     if submodule_failure is not None:
@@ -407,46 +441,12 @@ async def git_clone(
     except ValueError:
         return _blocked_workspace_result(dest)
 
-    pin: str | None = None
-    if commit is not None:
-        if not _COMMIT_PIN_RE.match(commit):
-            return fail(
-                stdout=f"Blocked: commit pin must be a full 40- or 64-hex digest: {commit}",
-                error_code="invalid_commit_pin",
-                suggested_action=(
-                    "Resolve the branch to its full commit digest (git rev-parse) "
-                    "and pass that — branch names and short SHAs are not identities."
-                ),
-            )
-        pin = commit.lower()
+    pin, pin_failure = _parse_commit_pin(commit)
+    if pin_failure is not None:
+        return pin_failure
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            *_CLONE_CONFIG_HARDENING,
-            "clone",
-            "--depth=1",
-            "--",
-            url,
-            dest,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        output = stdout.decode() if stdout else "Cloned"
-        code = proc.returncode or 0
-        if code == 0:
-            verified = await _verify_cloned_source(dest, pin=pin, require_signed=require_signed)
-            if not verified.get("ok"):
-                return verified
-            return ok(stdout=output, exit_code=code, head_commit=verified["head_commit"])
-        return fail(
-            stdout=output,
-            exit_code=code,
-            error_code="git_clone_failed",
-            recoverable=True,
-            suggested_action="Verify the URL is reachable and dest doesn't already exist, then retry.",
-        )
+        output, code = await _run_git_clone(url, dest, timeout)
     except FileNotFoundError:
         return fail(
             stdout="git binary not found",
@@ -461,6 +461,56 @@ async def git_clone(
             recoverable=True,
             suggested_action="Retry with a longer timeout, or check repo size/network conditions.",
         )
+    if code != 0:
+        return fail(
+            stdout=output,
+            exit_code=code,
+            error_code="git_clone_failed",
+            recoverable=True,
+            suggested_action="Verify the URL is reachable and dest doesn't already exist, then retry.",
+        )
+    verified = await _verify_cloned_source(dest, pin=pin, require_signed=require_signed)
+    if not verified.get("ok"):
+        return verified
+    return ok(stdout=output, exit_code=code, head_commit=verified["head_commit"])
+
+
+def _parse_commit_pin(commit: str | None) -> tuple[str | None, dict[str, Any] | None]:
+    """Normalize an optional commit pin; only full digests are identities."""
+    if commit is None:
+        return None, None
+    if not _COMMIT_PIN_RE.match(commit):
+        return None, fail(
+            stdout=f"Blocked: commit pin must be a full 40- or 64-hex digest: {commit}",
+            error_code="invalid_commit_pin",
+            suggested_action=(
+                "Resolve the branch to its full commit digest (git rev-parse) "
+                "and pass that — branch names and short SHAs are not identities."
+            ),
+        )
+    return commit.lower(), None
+
+
+async def _run_git_clone(url: str, dest: str, timeout: int) -> tuple[str, int]:
+    """Run the hardened shallow clone subprocess; returns (output, exit_code).
+
+    Raises FileNotFoundError / TimeoutError for the caller to map onto its
+    structured failures.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        *_CLONE_CONFIG_HARDENING,
+        "clone",
+        "--depth=1",
+        "--",
+        url,
+        dest,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    output = stdout.decode() if stdout else "Cloned"
+    return output, proc.returncode or 0
 
 
 @mcp.tool()

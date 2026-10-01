@@ -74,3 +74,21 @@ mocks):
   hardened `git_clone`; the only raw-clone sites left are operator CLI args
   (`rsi harvest --clone-url`, `--repo` local path) — human trust domain,
   outside the candidate-source policy surface.
+
+## Repair round (CI Quality gate: radon CC ratchet)
+
+The radon ratchet at b2ca211948a0 flagged three new C-rank blocks introduced
+by the fix (`_validate_clone_url` 11, `_verify_cloned_source` 13,
+`git_clone` 11). Rather than growing `quality/radon-baseline.json` (the
+ratchet forbids growth outside reviewed remediation), each hotspot was
+decomposed into single-purpose helpers, behavior- and message-identical:
+`_check_clone_scheme_allowed` + `_validate_remote_clone_host` (URL policy),
+`_resolve_pinned_head` (TOCTOU fetch/detach/re-verify) +
+`_verify_commit_signature` (fail-closed signature policy), and
+`_parse_commit_pin` + `_run_git_clone` (pin normalization + hardened
+subprocess). No test moved: 116 git-tool tests and the 28 targeted RSI
+tests pass unchanged, `check-radon-baseline.py` reports 67 → 67 with zero
+new/regressed findings, xenon counts 67 C-blocks (baseline 77, none in
+tools/git), the vulture ledger holds at 1378 identities, mypy --strict has
+no errors outside the pre-existing maistro_bootstrap import-resolution gaps,
+and both suite inventories match.
