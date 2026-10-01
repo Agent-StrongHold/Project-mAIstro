@@ -49,7 +49,7 @@ from maistro.backlog.markdown_io import (
     status_to_structured,
     validate_document,
 )
-from maistro.backlog.model import BacklogItem, BacklogItemStatus, BacklogOrigin
+from maistro.backlog.model import BacklogItem, BacklogOrigin, status_is_terminal
 from maistro.backlog.store import BacklogStore
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
@@ -426,7 +426,7 @@ async def import_document(
 async def _apply_imported_status(
     store: BacklogStore,
     item: BacklogItem,
-    structured_status: BacklogItemStatus,
+    structured_status: str,
     actor: str,
 ) -> None:
     """Move an imported item to its written open/closed state, with evidence.
@@ -437,7 +437,7 @@ async def _apply_imported_status(
     backlog is honest about which closures arrived from prose rather than a
     reviewed evidence record.
     """
-    if structured_status.is_terminal:
+    if status_is_terminal(structured_status):
         await store.close_item(
             item.item_id,
             expected_version=item.version,
@@ -447,7 +447,7 @@ async def _apply_imported_status(
             evidence_refs=(f"{ROOT_DOCUMENT_ID}#{item.item_id}",),
         )
         return
-    if item.status.is_terminal:
+    if status_is_terminal(item.status):
         await store.reopen_item(
             item.item_id,
             expected_version=item.version,

@@ -26,7 +26,7 @@ from maistro.backlog.markdown_io import (
     status_to_structured,
     validate_document,
 )
-from maistro.backlog.model import BacklogItem, BacklogItemStatus, BacklogOrigin
+from maistro.backlog.model import BacklogItem, BacklogItemStatus, BacklogOrigin, status_is_terminal
 from maistro.backlog.store import InMemoryBacklogStore
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -187,8 +187,8 @@ def test_unknown_dependency_and_cycles_are_refused() -> None:
     ],
 )
 def test_status_words_map_onto_structured_state(word, expected) -> None:
-    assert status_to_structured(word) is expected
-    assert is_terminal_word(word) == expected.is_terminal
+    assert status_to_structured(word) == expected
+    assert is_terminal_word(word) == status_is_terminal(expected)
 
 
 def test_duplicate_ids_are_refused() -> None:

@@ -38,6 +38,7 @@ from maistro.backlog.model import (
     BacklogClaimError,
     BacklogItem,
     BacklogItemStatus,
+    status_is_terminal,
 )
 from maistro.backlog.store import DEFAULT_LEASE_SECONDS, BacklogStore
 
@@ -87,12 +88,12 @@ class AgentBacklogSurface:
         *,
         actor: str,
         workspace_id: str,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
     ) -> list[BacklogItem]:
         """Items the actor may see in the workspace."""
         await self._require(actor, workspace_id, "read")
         items = await self._store.list_items(workspace_id, status=status)
-        return [item for item in items if not item.status.is_terminal]
+        return [item for item in items if not status_is_terminal(item.status)]
 
     async def select(
         self,
@@ -109,7 +110,7 @@ class AgentBacklogSurface:
         it out on the claim instead of on interpretation.
         """
         candidates = await self.list_items(actor=actor, workspace_id=workspace_id)
-        open_items = [item for item in candidates if item.status is BacklogItemStatus.OPEN]
+        open_items = [item for item in candidates if item.status == BacklogItemStatus.OPEN]
         if not open_items:
             return None
         claimable: list[BacklogItem] = []
@@ -125,7 +126,7 @@ class AgentBacklogSurface:
         unresolved: list[str] = []
         for dep in best.dependencies:
             dep_item = await self._store.get_item(dep)
-            if dep_item is not None and not dep_item.status.is_terminal:
+            if dep_item is not None and not status_is_terminal(dep_item.status):
                 unresolved.append(dep)
         reason = "highest-priority open item"
         if unresolved:

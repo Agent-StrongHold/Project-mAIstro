@@ -17,6 +17,7 @@ from maistro.backlog.model import (
     BacklogClosure,
     BacklogItem,
     BacklogItemStatus,
+    status_is_terminal,
 )
 
 
@@ -92,7 +93,7 @@ def test_claim_activity_needs_release_and_unexpired_lease() -> None:
 
 
 def test_item_status_terminality() -> None:
-    assert BacklogItemStatus.DONE.is_terminal
-    assert BacklogItemStatus.REJECTED.is_terminal
-    assert not BacklogItemStatus.OPEN.is_terminal
-    assert not BacklogItemStatus.BLOCKED.is_terminal
+    assert status_is_terminal(BacklogItemStatus.DONE)
+    assert status_is_terminal(BacklogItemStatus.REJECTED)
+    assert not status_is_terminal(BacklogItemStatus.OPEN)
+    assert not status_is_terminal(BacklogItemStatus.BLOCKED)

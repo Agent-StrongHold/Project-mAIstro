@@ -39,6 +39,7 @@ from maistro.backlog.model import (
     BacklogItemNotFound,
     BacklogItemStatus,
     BacklogOrigin,
+    status_is_terminal,
 )
 from maistro.backlog.store import (
     DEFAULT_LEASE_SECONDS,
@@ -139,7 +140,7 @@ class SqliteBacklogStore:
         self,
         workspace_id: str,
         *,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         tag: str | None = None,
         parent_id: str | None = None,
         roots_only: bool = False,
@@ -148,7 +149,7 @@ class SqliteBacklogStore:
         params: list[object] = [workspace_id]
         if status is not None:
             clauses.append("status = ?")
-            params.append(status.value)
+            params.append(status)
         if tag is not None:
             clauses.append("tags LIKE ?")
             params.append(f'%"{tag}"%')
@@ -287,7 +288,7 @@ class SqliteBacklogStore:
         parent_id: str | None | object = UNSET,
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         dependencies: tuple[str, ...] | None = None,
         origin: BacklogOrigin | None | object = UNSET,
         priority: int | None = None,
@@ -340,7 +341,7 @@ class SqliteBacklogStore:
         *,
         expected_version: int,
         actor: str,
-        outcome: BacklogItemStatus,
+        outcome: str,
         closure_summary: str,
         evidence_refs: tuple[str, ...],
         at: datetime | None = None,
@@ -349,8 +350,8 @@ class SqliteBacklogStore:
             item = await self._fetch_item(conn, item_id)
             _require_fresh_version(item, expected_version)
             _require_valid_outcome(outcome)
-            if item.status.is_terminal:
-                raise BacklogClosureError(item_id, f"item is already closed ({item.status.value})")
+            if status_is_terminal(item.status):
+                raise BacklogClosureError(item_id, f"item is already closed ({item.status})")
             try:
                 closure = BacklogClosure(
                     summary=closure_summary,
@@ -386,7 +387,7 @@ class SqliteBacklogStore:
                     kind=BacklogEventKind.CLOSED,
                     item_version=updated.version,
                     payload={
-                        "outcome": outcome.value,
+                        "outcome": outcome,
                         "closure_summary": closure.summary,
                         "evidence_refs": list(closure.evidence_refs),
                     },
@@ -406,10 +407,8 @@ class SqliteBacklogStore:
         async with self._write() as conn:
             item = await self._fetch_item(conn, item_id)
             _require_fresh_version(item, expected_version)
-            if not item.status.is_terminal:
-                raise BacklogClosureError(
-                    item_id, f"item is not closed (status {item.status.value})"
-                )
+            if not status_is_terminal(item.status):
+                raise BacklogClosureError(item_id, f"item is not closed (status {item.status})")
             updated = item.model_copy(
                 update={
                     "status": BacklogItemStatus.OPEN,
@@ -426,7 +425,7 @@ class SqliteBacklogStore:
                     actor=actor,
                     kind=BacklogEventKind.REOPENED,
                     item_version=updated.version,
-                    payload={"previous_status": item.status.value},
+                    payload={"previous_status": item.status},
                     **({"at": at} if at is not None else {}),
                 ),
             )
@@ -444,9 +443,9 @@ class SqliteBacklogStore:
             raise ValueError("lease_seconds must be positive")
         async with self._write() as conn:
             item = await self._fetch_item(conn, item_id)
-            if item.status.is_terminal:
+            if status_is_terminal(item.status):
                 raise BacklogClosureError(
-                    item_id, f"a closed item ({item.status.value}) cannot be claimed"
+                    item_id, f"a closed item ({item.status}) cannot be claimed"
                 )
             now = _now(at)
             existing = await self._claim_row(item_id)
@@ -615,7 +614,7 @@ class SqliteBacklogStore:
                 item.item_id,
                 item.workspace_id,
                 item.parent_id,
-                item.status.value,
+                item.status,
                 json.dumps(list(item.tags)),
                 item.created_at.isoformat(),
                 item.updated_at.isoformat(),
@@ -630,7 +629,7 @@ class SqliteBacklogStore:
                   SET status = ?, tags = ?, updated_at = ?, version = ?, payload = ?
                 WHERE item_id = ?""",
             (
-                item.status.value,
+                item.status,
                 json.dumps(list(item.tags)),
                 item.updated_at.isoformat(),
                 item.version,
@@ -661,7 +660,7 @@ class SqliteBacklogStore:
         parent = await self._fetch_item(conn, parent_id)
         if parent.workspace_id != child.workspace_id:
             raise ValueError("a child item must live in its parent's Workspace")
-        if parent.status.is_terminal:
+        if status_is_terminal(parent.status):
             raise BacklogClosureError(parent_id, "cannot decompose a closed item")
         walker = parent
         seen: set[str] = set()
@@ -670,10 +669,6 @@ class SqliteBacklogStore:
                 raise ValueError("decomposition would create a parent/child cycle")
             seen.add(walker.parent_id)
             walker = await self._fetch_item(conn, walker.parent_id)
-
-
-def _require_fresh_version_removed() -> None:  # pragma: no cover - never called
-    pass
 
 
 async def _apply_changes(
@@ -699,7 +694,7 @@ async def _apply_changes(
               SET status = ?, tags = ?, updated_at = ?, version = ?, payload = ?
             WHERE item_id = ?""",
         (
-            updated.status.value,
+            updated.status,
             json.dumps(list(updated.tags)),
             updated.updated_at.isoformat(),
             updated.version,

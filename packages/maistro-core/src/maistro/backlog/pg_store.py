@@ -43,6 +43,7 @@ from maistro.backlog.model import (
     BacklogItemNotFound,
     BacklogItemStatus,
     BacklogOrigin,
+    status_is_terminal,
 )
 from maistro.backlog.store import (
     DEFAULT_LEASE_SECONDS,
@@ -86,7 +87,7 @@ class PgBacklogStore:
         self,
         workspace_id: str,
         *,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         tag: str | None = None,
         parent_id: str | None = None,
         roots_only: bool = False,
@@ -95,7 +96,7 @@ class PgBacklogStore:
         params: list[object] = [workspace_id]
         if status is not None:
             clauses.append(f"status = ${len(params) + 1}")
-            params.append(status.value)
+            params.append(status)
         if tag is not None:
             clauses.append(f"tags @> ${len(params) + 1}::jsonb")
             params.append(json.dumps([tag]))
@@ -204,7 +205,7 @@ class PgBacklogStore:
                 item.item_id,
                 item.workspace_id,
                 item.parent_id,
-                item.status.value,
+                item.status,
                 _tags_json(item),
                 item.created_at,
                 item.updated_at,
@@ -252,7 +253,7 @@ class PgBacklogStore:
         parent_id: str | None | object = UNSET,
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         dependencies: tuple[str, ...] | None = None,
         origin: BacklogOrigin | None | object = UNSET,
         priority: int | None = None,
@@ -299,7 +300,7 @@ class PgBacklogStore:
                         WHERE item_id = $1""",
                 updated.item_id,
                 updated.parent_id,
-                updated.status.value,
+                updated.status,
                 _tags_json(updated),
                 updated.updated_at,
                 updated.version,
@@ -326,7 +327,7 @@ class PgBacklogStore:
         *,
         expected_version: int,
         actor: str,
-        outcome: BacklogItemStatus,
+        outcome: str,
         closure_summary: str,
         evidence_refs: tuple[str, ...],
         at: datetime | None = None,
@@ -335,8 +336,8 @@ class PgBacklogStore:
             item = await self._fetch_item_for_update(conn, item_id)
             _require_fresh_version(item, expected_version)
             _require_valid_outcome(outcome)
-            if item.status.is_terminal:
-                raise BacklogClosureError(item_id, f"item is already closed ({item.status.value})")
+            if status_is_terminal(item.status):
+                raise BacklogClosureError(item_id, f"item is already closed ({item.status})")
             try:
                 closure = BacklogClosure(
                     summary=closure_summary,
@@ -372,7 +373,7 @@ class PgBacklogStore:
                     kind=BacklogEventKind.CLOSED,
                     item_version=updated.version,
                     payload={
-                        "outcome": outcome.value,
+                        "outcome": outcome,
                         "closure_summary": closure.summary,
                         "evidence_refs": list(closure.evidence_refs),
                     },
@@ -392,10 +393,8 @@ class PgBacklogStore:
         async with self._pool.acquire() as conn, conn.transaction():
             item = await self._fetch_item_for_update(conn, item_id)
             _require_fresh_version(item, expected_version)
-            if not item.status.is_terminal:
-                raise BacklogClosureError(
-                    item_id, f"item is not closed (status {item.status.value})"
-                )
+            if not status_is_terminal(item.status):
+                raise BacklogClosureError(item_id, f"item is not closed (status {item.status})")
             updated = item.model_copy(
                 update={
                     "status": BacklogItemStatus.OPEN,
@@ -412,7 +411,7 @@ class PgBacklogStore:
                     actor=actor,
                     kind=BacklogEventKind.REOPENED,
                     item_version=updated.version,
-                    payload={"previous_status": item.status.value},
+                    payload={"previous_status": item.status},
                     **({"at": at} if at is not None else {}),
                 ),
             )
@@ -430,9 +429,9 @@ class PgBacklogStore:
             raise ValueError("lease_seconds must be positive")
         async with self._pool.acquire() as conn, conn.transaction():
             item = await self._fetch_item_for_update(conn, item_id)
-            if item.status.is_terminal:
+            if status_is_terminal(item.status):
                 raise BacklogClosureError(
-                    item_id, f"a closed item ({item.status.value}) cannot be claimed"
+                    item_id, f"a closed item ({item.status}) cannot be claimed"
                 )
             now = _now(at)
             existing = await self._claim_row(conn, item_id)
@@ -604,7 +603,7 @@ class PgBacklogStore:
                       version = $5, payload = $6::text::jsonb
                 WHERE item_id = $1""",
             item.item_id,
-            item.status.value,
+            item.status,
             _tags_json(item),
             item.updated_at,
             item.version,
@@ -632,7 +631,7 @@ class PgBacklogStore:
         parent = await self._fetch_item(conn, parent_id)
         if parent.workspace_id != child.workspace_id:
             raise ValueError("a child item must live in its parent's Workspace")
-        if parent.status.is_terminal:
+        if status_is_terminal(parent.status):
             raise BacklogClosureError(parent_id, "cannot decompose a closed item")
         walker = parent
         seen: set[str] = set()
@@ -667,11 +666,13 @@ def _payload_dict(payload: object) -> dict[str, object]:
 
 
 def _jsonable_changes(changes: dict[str, object]) -> dict[str, object]:
-    """Event-payload form of a change plan (StrEnum values as plain strings)."""
-    return {
-        key: value.value if isinstance(value, BacklogItemStatus) else value
-        for key, value in changes.items()
-    }
+    """Event-payload form of a change plan.
+
+    Item statuses are boundary-validated plain strings (#101 convention), so
+    the plan is already payload-shaped; the copy keeps callers from sharing
+    the mutable event payload with the change plan.
+    """
+    return dict(changes)
 
 
 __all__ = ["BACKLOG_PG_TABLES", "PgBacklogStore"]

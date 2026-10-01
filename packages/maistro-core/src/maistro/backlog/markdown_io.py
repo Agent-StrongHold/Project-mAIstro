@@ -41,7 +41,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from maistro.backlog.model import BacklogItem, BacklogItemStatus
+from maistro.backlog.model import BacklogItem, BacklogItemStatus, status_is_terminal
 
 #: `**[engine-001] Title — Status[; `gap-x`] — milestone**`, with the id allowing
 #: the `[turing-030..034]` range form used for a batch of sibling items. Same
@@ -62,7 +62,7 @@ _DEP_REF = re.compile(r"`?\[?([a-z]+-)?(\d+(?:\.\.\d+)?)\]?`?")
 
 #: Statuses that mean "closed" in the Markdown vocabulary, mapped onto the
 #: structured terminal statuses. Everything else is open/blocked state.
-_TERMINAL_STATUS_WORDS: Mapping[str, BacklogItemStatus] = {
+_TERMINAL_STATUS_WORDS: Mapping[str, str] = {
     "Implemented": BacklogItemStatus.DONE,
     "Abandoned": BacklogItemStatus.REJECTED,
     "Obsolete": BacklogItemStatus.REJECTED,
@@ -342,7 +342,7 @@ def _render_header(item: BacklogItem) -> str:
 #: Deterministic vocabulary for items that were born in the database: the
 #: legend word each structured status renders as. Imported items keep the
 #: word they were written with (``BacklogOrigin.status_word``).
-_STATUS_WORD_BY_STATUS: Mapping[BacklogItemStatus, str] = {
+_STATUS_WORD_BY_STATUS: Mapping[str, str] = {
     BacklogItemStatus.OPEN: "Proposed",
     BacklogItemStatus.IN_PROGRESS: "Accepted",
     BacklogItemStatus.BLOCKED: "Blocked",
@@ -359,7 +359,7 @@ def _prose_body(item: BacklogItem) -> list[str]:
         lines.append(f"- Blocked-by: {refs}")
     if item.details:
         lines.extend(f"- {line}" for line in item.details.splitlines())
-    if item.status.is_terminal and item.closure is not None:
+    if status_is_terminal(item.status) and item.closure is not None:
         refs = ", ".join(f"`{ref}`" for ref in item.closure.evidence_refs)
         lines.append(f"- Evidence: {item.closure.summary} ({refs})")
     return lines
@@ -387,7 +387,7 @@ def render_document(
     return "\n".join(lines) + "\n"
 
 
-def status_to_structured(status_word: str) -> BacklogItemStatus:
+def status_to_structured(status_word: str) -> str:
     """Map a Markdown status legend word onto the structured status."""
     if status_word == _BLOCKED_STATUS_WORD:
         return BacklogItemStatus.BLOCKED

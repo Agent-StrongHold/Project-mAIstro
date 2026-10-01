@@ -45,6 +45,7 @@ from maistro.backlog.model import (
     BacklogItemStatus,
     BacklogOrigin,
     BacklogVersionConflict,
+    status_is_terminal,
 )
 
 #: Sentinel for "leave this clearable field unchanged" in ``update_item``.
@@ -104,7 +105,7 @@ class BacklogStore(Protocol):
         parent_id: str | None | object = UNSET,
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         dependencies: tuple[str, ...] | None = None,
         origin: BacklogOrigin | None | object = UNSET,
         priority: int | None = None,
@@ -118,7 +119,7 @@ class BacklogStore(Protocol):
         *,
         expected_version: int,
         actor: str,
-        outcome: BacklogItemStatus,
+        outcome: str,
         closure_summary: str,
         evidence_refs: tuple[str, ...],
         at: datetime | None = None,
@@ -137,7 +138,7 @@ class BacklogStore(Protocol):
         self,
         workspace_id: str,
         *,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         tag: str | None = None,
         parent_id: str | None = None,
         roots_only: bool = False,
@@ -188,8 +189,8 @@ def _require_fresh_version(item: BacklogItem, expected_version: int) -> None:
         raise BacklogVersionConflict(item.item_id, item.version)
 
 
-def _require_valid_outcome(outcome: BacklogItemStatus) -> None:
-    if not outcome.is_terminal:
+def _require_valid_outcome(outcome: str) -> None:
+    if not status_is_terminal(outcome):
         raise BacklogClosureError(str(outcome), f"{outcome!r} is not a terminal outcome")
 
 
@@ -205,7 +206,7 @@ def _plan_changes(
     parent_id: str | None | object,
     goal_id: str | None | object,
     goal_revision: int | None | object,
-    status: BacklogItemStatus | None,
+    status: str | None,
     dependencies: tuple[str, ...] | None,
     origin: BacklogOrigin | None | object,
     priority: int | None,
@@ -271,7 +272,7 @@ class InMemoryBacklogStore:
         self,
         workspace_id: str,
         *,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         tag: str | None = None,
         parent_id: str | None = None,
         roots_only: bool = False,
@@ -389,7 +390,7 @@ class InMemoryBacklogStore:
         parent_id: str | None | object = UNSET,
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         dependencies: tuple[str, ...] | None = None,
         origin: BacklogOrigin | None | object = UNSET,
         priority: int | None = None,
@@ -451,7 +452,7 @@ class InMemoryBacklogStore:
         *,
         expected_version: int,
         actor: str,
-        outcome: BacklogItemStatus,
+        outcome: str,
         closure_summary: str,
         evidence_refs: tuple[str, ...],
         at: datetime | None = None,
@@ -460,8 +461,8 @@ class InMemoryBacklogStore:
         self._require_fresh_version(item, expected_version)
         if outcome not in _TERMINAL_STATUSES:
             raise BacklogClosureError(item_id, f"{outcome!r} is not a terminal outcome")
-        if item.status.is_terminal:
-            raise BacklogClosureError(item_id, f"item is already closed ({item.status.value})")
+        if status_is_terminal(item.status):
+            raise BacklogClosureError(item_id, f"item is already closed ({item.status})")
         try:
             closure = BacklogClosure(
                 summary=closure_summary,
@@ -473,7 +474,7 @@ class InMemoryBacklogStore:
         open_children = [
             child.item_id
             for child in self._items.values()
-            if child.parent_id == item_id and not child.status.is_terminal
+            if child.parent_id == item_id and not status_is_terminal(child.status)
         ]
         if open_children:
             raise BacklogClosureError(
@@ -498,7 +499,7 @@ class InMemoryBacklogStore:
                 kind=BacklogEventKind.CLOSED,
                 item_version=updated.version,
                 payload={
-                    "outcome": outcome.value,
+                    "outcome": outcome,
                     "closure_summary": closure.summary,
                     "evidence_refs": list(closure.evidence_refs),
                 },
@@ -517,8 +518,8 @@ class InMemoryBacklogStore:
     ) -> BacklogItem:
         item = self._require_item(item_id)
         self._require_fresh_version(item, expected_version)
-        if not item.status.is_terminal:
-            raise BacklogClosureError(item_id, f"item is not closed (status {item.status.value})")
+        if not status_is_terminal(item.status):
+            raise BacklogClosureError(item_id, f"item is not closed (status {item.status})")
         updated = item.model_copy(
             update={
                 "status": BacklogItemStatus.OPEN,
@@ -535,7 +536,7 @@ class InMemoryBacklogStore:
                 actor=actor,
                 kind=BacklogEventKind.REOPENED,
                 item_version=updated.version,
-                payload={"previous_status": item.status.value},
+                payload={"previous_status": item.status},
                 **({"at": at} if at is not None else {}),
             ),
         )
@@ -551,10 +552,8 @@ class InMemoryBacklogStore:
     ) -> BacklogClaim:
         item = self._require_item(item_id)
         now = _now(at)
-        if item.status.is_terminal:
-            raise BacklogClosureError(
-                item_id, f"a closed item ({item.status.value}) cannot be claimed"
-            )
+        if status_is_terminal(item.status):
+            raise BacklogClosureError(item_id, f"a closed item ({item.status}) cannot be claimed")
         existing = self._claims.get(item_id)
         if existing is not None and existing.is_active(at=now):
             raise BacklogClaimError(item_id, existing)
@@ -673,7 +672,7 @@ class InMemoryBacklogStore:
             raise BacklogItemNotFound(parent_id)
         if parent.workspace_id != child.workspace_id:
             raise ValueError("a child item must live in its parent's Workspace")
-        if parent.status.is_terminal:
+        if status_is_terminal(parent.status):
             raise BacklogClosureError(parent_id, "cannot decompose a closed item")
         # Refuse cycles: walking up from the new parent must never reach the child.
         walker = parent

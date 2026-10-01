@@ -36,6 +36,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -51,24 +52,40 @@ def _naive_as_utc(value: datetime) -> datetime:
     return value if value.utcoffset() is not None else value.replace(tzinfo=UTC)
 
 
-class BacklogItemStatus(StrEnum):
-    """Portfolio state of one work item.
+class BacklogItemStatus:
+    """Portfolio state vocabulary of one work item.
+
+    Deliberately NOT a typed Literal/Enum work-state ladder (#101 convention;
+    same resolution the Conductor backlog surface took in #99): the documented
+    legend is the vocabulary and code carries it as boundary-validated opaque
+    strings, so a planning surface cannot fork a second execution lifecycle —
+    the execution-lifecycles ledger counts this as zero new vocabularies.
+    Membership is fail-closed at the boundary: the ``status`` field validator
+    on :class:`BacklogItem`, :func:`require_valid_status` and the stores' own
+    status filters refuse unknown values, which is the enforcement an Enum
+    provided without the second vocabulary.
 
     Distinct from any claim/lease state and from canonical Goal state: an
     item may be ``in_progress`` with no live claim (progress paused) and a
     claimed item's linked Goal is untouched.
     """
 
-    OPEN = "open"
-    IN_PROGRESS = "in_progress"
-    BLOCKED = "blocked"
-    DONE = "done"
-    REJECTED = "rejected"
+    OPEN: Final = "open"
+    IN_PROGRESS: Final = "in_progress"
+    BLOCKED: Final = "blocked"
+    DONE: Final = "done"
+    REJECTED: Final = "rejected"
 
-    @property
-    def is_terminal(self) -> bool:
-        return self in _TERMINAL_STATUSES
 
+_ALL_STATUSES = frozenset(
+    {
+        BacklogItemStatus.OPEN,
+        BacklogItemStatus.IN_PROGRESS,
+        BacklogItemStatus.BLOCKED,
+        BacklogItemStatus.DONE,
+        BacklogItemStatus.REJECTED,
+    }
+)
 
 _TERMINAL_STATUSES = frozenset({BacklogItemStatus.DONE, BacklogItemStatus.REJECTED})
 
@@ -78,6 +95,21 @@ _TERMINAL_STATUSES = frozenset({BacklogItemStatus.DONE, BacklogItemStatus.REJECT
 _MUTABLE_STATUSES = frozenset(
     {BacklogItemStatus.OPEN, BacklogItemStatus.IN_PROGRESS, BacklogItemStatus.BLOCKED}
 )
+
+
+def status_is_terminal(status: str) -> bool:
+    """Whether ``status`` is a terminal outcome (entered only via close_item)."""
+    return status in _TERMINAL_STATUSES
+
+
+def require_valid_status(status: str) -> str:
+    """Fail closed on a status the documented vocabulary does not define."""
+    if status not in _ALL_STATUSES:
+        raise ValueError(
+            f"unknown backlog status {status!r}; expected one of: "
+            + ", ".join(sorted(_ALL_STATUSES))
+        )
+    return status
 
 
 class BacklogEventKind(StrEnum):
@@ -200,7 +232,7 @@ class BacklogItem(BaseModel):
     parent_id: str | None = None
     title: str
     details: str = ""
-    status: BacklogItemStatus = BacklogItemStatus.OPEN
+    status: str = BacklogItemStatus.OPEN
     tags: tuple[str, ...] = ()
     milestone: str | None = None
     package: str | None = None
@@ -236,6 +268,12 @@ class BacklogItem(BaseModel):
             raise ValueError("must be a non-empty string")
         return value
 
+    @field_validator("status")
+    @classmethod
+    def _status_is_a_defined_value(cls, value: str) -> str:
+        """Fail closed on a status the documented vocabulary does not define."""
+        return require_valid_status(value)
+
     @field_validator("tags")
     @classmethod
     def _clean_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -269,7 +307,7 @@ class BacklogItem(BaseModel):
     def _enforce_consistency(self) -> BacklogItem:
         object.__setattr__(self, "created_at", _naive_as_utc(self.created_at))
         object.__setattr__(self, "updated_at", _naive_as_utc(self.updated_at))
-        if self.status.is_terminal != (self.closure is not None):
+        if status_is_terminal(self.status) != (self.closure is not None):
             raise ValueError(
                 "a terminal item (done/rejected) carries closure evidence; "
                 "a non-terminal item carries none"
