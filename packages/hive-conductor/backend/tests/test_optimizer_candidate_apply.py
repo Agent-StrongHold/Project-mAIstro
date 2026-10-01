@@ -601,3 +601,291 @@ async def test_measured_latency_above_threshold_still_scores(_isolated: Any) -> 
     snapshots = await _build_snapshot_for_dag("d-slow")
     assert snapshots["n1"].latency_score > 0.0
     assert snapshots["n1"].context["latency_ms_measured"] == 2
+
+
+# --- #861 repair: store resolution, workspace binding, and the failure
+# --- vocabulary of commit_candidate (every distinct outcome is pinned)
+
+
+def test_template_store_resolves_the_engine_container_bridge(
+    _isolated: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the canonical engine bridge is wired, the optimizer promotes
+    through the Container's template store — not a private lifecycle."""
+    from types import SimpleNamespace
+
+    import services.engine as engine_mod
+    from services import optimizer_candidates as oc
+
+    wired = SimpleNamespace(name="engine-store")
+    fake_engine = SimpleNamespace(
+        _agent_port=SimpleNamespace(container=SimpleNamespace(template_store=wired))
+    )
+    monkeypatch.setattr(engine_mod, "get_engine", lambda: fake_engine)
+    # No explicit override: the engine resolution wins.
+    oc.set_template_store(None)
+    try:
+        assert oc.template_store() is wired
+    finally:
+        oc.set_template_store(None)
+
+
+async def test_active_template_version_none_when_only_candidates_exist(
+    _isolated: Any,
+) -> None:
+    """A registered-but-never-promoted version is not the active version:
+    candidates never masquerade as the DAG's live template."""
+    from services.optimizer_candidates import active_template_version, template_store
+
+    from maistro.graph.template_adapter import snapshot_to_template
+
+    snapshot = _seed_dag("d-cand")
+    template = snapshot_to_template(
+        copy.deepcopy(snapshot), workspace_id="ws-t", template_id="d-cand", version=1
+    ).model_copy(update={"lifecycle": "candidate"})
+    await template_store().put(template)
+    assert await template_store().versions("d-cand") == [1]
+    assert await active_template_version("d-cand") is None
+
+
+def test_authorized_workspace_wins_over_the_configured_default() -> None:
+    """The candidate registers in the Workspace the request was authorized
+    against — the configured default never overrides the authorizing tenant
+    (#861 review)."""
+    from services.optimizer_candidates import _workspace_id_for
+
+    assert _workspace_id_for("d", {}, authorized_workspace_id="ws-auth") == "ws-auth"
+    # Without an authorizing scope the legacy chain still resolves.
+    assert _workspace_id_for("d-ws", {"workspace_id": "ws-snap"}) in {"ws-snap", "default"}
+
+
+async def test_candidate_registers_in_the_authorizing_workspace(_isolated: Any) -> None:
+    """End to end: commit_candidate lands the version under the authorized
+    Workspace even though settings default to another."""
+    from services.optimizer_candidates import commit_candidate, snapshot_hash, template_store
+
+    snapshot = _seed_dag("d-ws2")
+    committed = await commit_candidate(
+        "d-ws2",
+        {**copy.deepcopy(snapshot), "entry_node": "n2"},
+        actor="alice",
+        proposal_id="p-ws",
+        source_hash=snapshot_hash(snapshot),
+        reason="swap entry",
+        workspace_id="ws-authorizing",
+    )
+    assert committed["outcome"] == "applied"
+    template = await template_store().get("d-ws2", version=1)
+    assert template is not None
+    assert template.workspace_id == "ws-authorizing"
+
+
+async def test_concurrent_edit_during_promotion_is_compensated(
+    _isolated: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CAS-2: a human edit landing between the promotion commit and the
+    descriptor sync is never overwritten — the just-promoted version is
+    demoted, the prior active version restored, the outcome `stale`."""
+    import stores
+    from services.optimizer import record_decision
+    from services.optimizer_candidates import template_store
+
+    import maistro.graph.templates as templates_mod
+
+    _seed_dag("d-race")
+    first = await _propose_topology("d-race", _topology_proposal(to_value="m-strong"))
+    d1 = await record_decision(first["id"], "accepted", actor="alice")
+    assert d1["apply_outcome"] == "applied"
+    assert await template_store().lifecycle_of("d-race", 1) == "active"
+
+    second = await _propose_topology("d-race", _topology_proposal(to_value="m-stronger"))
+    real_promote = templates_mod.promote_audited
+
+    async def _racing_promote(store: Any, template_id: str, version: int, **kw: Any) -> None:
+        # The human edit lands after the promotion committed but before the
+        # descriptor sync sees the DAG again.
+        stores.dags["d-race"]["nodes"][1]["prompt"] = "concurrent human edit"
+        await real_promote(store, template_id, version, **kw)
+
+    monkeypatch.setattr(templates_mod, "promote_audited", _racing_promote)
+
+    d2 = await record_decision(second["id"], "accepted", actor="bob")
+    assert d2["apply_outcome"] == "stale"
+    assert d2["applied"] is False
+    # The racing version was demoted; the prior active version was restored.
+    assert await template_store().lifecycle_of("d-race", 2) == "candidate"
+    assert await template_store().lifecycle_of("d-race", 1) == "active"
+    # The concurrent edit survives verbatim — never overwritten.
+    assert stores.dags["d-race"]["nodes"][1]["prompt"] == "concurrent human edit"
+    assert stores.dags["d-race"]["nodes"][0]["model"] == "m-strong"  # v1 content
+
+
+async def test_failed_rollback_after_moved_base_reports_the_failed_compensation(
+    _isolated: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the descriptor moved AND the compensating demote fails, the record
+    says exactly that — no silent success, no silent half-state."""
+    import stores
+    from services.optimizer import record_decision
+    from services.optimizer_candidates import template_store
+
+    import maistro.graph.templates as templates_mod
+
+    _seed_dag("d-rbf")
+    first = await _propose_topology("d-rbf", _topology_proposal(to_value="m-strong"))
+    await record_decision(first["id"], "accepted", actor="alice")
+
+    second = await _propose_topology("d-rbf", _topology_proposal(to_value="m-stronger"))
+    real_promote = templates_mod.promote_audited
+
+    async def _racing_promote(store: Any, template_id: str, version: int, **kw: Any) -> None:
+        stores.dags["d-rbf"]["nodes"][1]["prompt"] = "moved during apply"
+        await real_promote(store, template_id, version, **kw)
+
+    monkeypatch.setattr(templates_mod, "promote_audited", _racing_promote)
+    store = template_store()
+    real_set_lifecycle = store.set_lifecycle
+
+    async def _failing_demote(template_id: str, version: int, lifecycle: str) -> None:
+        if lifecycle == "candidate" and version == 2:  # the compensation demote
+            raise RuntimeError("lifecycle sink down")
+        return await real_set_lifecycle(template_id, version, lifecycle)
+
+    monkeypatch.setattr(store, "set_lifecycle", _failing_demote)
+
+    d2 = await record_decision(second["id"], "accepted", actor="bob")
+    assert d2["apply_outcome"] == "stale"
+    assert "rollback of version 2 failed" in d2["apply_detail"]
+    assert "descriptor left untouched" in d2["apply_detail"]
+    # The descriptor still holds the concurrent edit, untouched.
+    assert stores.dags["d-rbf"]["nodes"][1]["prompt"] == "moved during apply"
+    applies = [e for e in list_entries() if e["action"] == "optimizer_apply"]
+    assert applies[-1]["detail"]["outcome"] == "stale"
+
+
+async def test_unreadable_template_store_reports_failed(_isolated: Any) -> None:
+    """A template store that cannot even be listed is a `failed` apply with
+    the failure named — never a fabricated success."""
+    from services.optimizer_candidates import commit_candidate, set_template_store, snapshot_hash
+
+    class _Unreadable:
+        async def versions(self, template_id: str) -> list[int]:
+            raise RuntimeError("store down")
+
+    snapshot = _seed_dag("d-uns")
+    set_template_store(_Unreadable())
+    committed = await commit_candidate(
+        "d-uns",
+        {**copy.deepcopy(snapshot), "entry_node": "n2"},
+        actor="alice",
+        proposal_id="p-uns",
+        source_hash=snapshot_hash(snapshot),
+    )
+    assert committed["outcome"] == "failed"
+    assert "template store unreadable" in committed["detail"]
+
+
+async def test_source_hash_moving_before_commit_is_refused(_isolated: Any) -> None:
+    """CAS-1: the descriptor moved after the synchronous binding check but
+    before commit_candidate ran — refuse, never re-target."""
+    from services.optimizer_candidates import commit_candidate, snapshot_hash, template_store
+
+    snapshot = _seed_dag("d-cas1")
+    source = snapshot_hash(snapshot)
+    # The DAG changes between proposal time and apply time.
+    stores_dag("d-cas1")["nodes"][0]["prompt"] = "edited later"
+    committed = await commit_candidate(
+        "d-cas1",
+        {**copy.deepcopy(snapshot), "entry_node": "n2"},
+        actor="alice",
+        proposal_id="p-cas1",
+        source_hash=source,
+    )
+    assert committed["outcome"] == "stale"
+    assert "DAG changed while the proposal was being applied" in committed["detail"]
+    assert await template_store().versions("d-cas1") == []
+
+
+async def test_refused_projection_reports_failed(
+    _isolated: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A projection refusal (the reviewed adapter rejects the snapshot) is
+    `failed` with the refusal named — no partial registration."""
+    from services.optimizer_candidates import commit_candidate, snapshot_hash, template_store
+
+    import maistro.graph.template_adapter as adapter_mod
+
+    snapshot = _seed_dag("d-proj")
+
+    def _refusing(*args: Any, **kw: Any) -> Any:
+        raise ValueError("adapter refuses this snapshot")
+
+    monkeypatch.setattr(adapter_mod, "snapshot_to_template", _refusing)
+    committed = await commit_candidate(
+        "d-proj",
+        {**copy.deepcopy(snapshot), "entry_node": "n2"},
+        actor="alice",
+        proposal_id="p-proj",
+        source_hash=snapshot_hash(snapshot),
+    )
+    assert committed["outcome"] == "failed"
+    assert "candidate projection refused" in committed["detail"]
+    assert await template_store().versions("d-proj") == []
+
+
+async def test_registration_failure_reports_failed(_isolated: Any) -> None:
+    """A store that refuses the candidate put is `failed` — nothing is
+    claimed and nothing was promoted."""
+    from services.optimizer_candidates import commit_candidate, set_template_store, snapshot_hash
+
+    from maistro.graph.templates import InMemoryGraphTemplateStore
+
+    class _RefusingPut(InMemoryGraphTemplateStore):
+        async def put(self, template: Any) -> Any:
+            raise RuntimeError("registration refused")
+
+    snapshot = _seed_dag("d-put")
+    set_template_store(_RefusingPut())
+    committed = await commit_candidate(
+        "d-put",
+        {**copy.deepcopy(snapshot), "entry_node": "n2"},
+        actor="alice",
+        proposal_id="p-put",
+        source_hash=snapshot_hash(snapshot),
+    )
+    assert committed["outcome"] == "failed"
+    assert "candidate registration failed" in committed["detail"]
+
+
+async def test_descriptor_sync_failure_reports_failed_not_applied(
+    _isolated: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The version promoted but the editable descriptor sync raised: the
+    record says the version is active yet the apply `failed` — no `applied`
+    claim over a surface that was never updated."""
+    import stores
+    from services.optimizer_candidates import commit_candidate, snapshot_hash, template_store
+
+    snapshot = _seed_dag("d-sync")
+
+    class _Unwritable(dict):  # type: ignore[type-arg]
+        def __setitem__(self, key: str, value: Any) -> None:
+            if key == "d-sync":
+                raise RuntimeError("descriptor sink down")
+            super().__setitem__(key, value)
+
+    monkeypatch.setattr(stores, "dags", _Unwritable(dict(stores.dags)))
+    committed = await commit_candidate(
+        "d-sync",
+        {**copy.deepcopy(snapshot), "entry_node": "n2"},
+        actor="alice",
+        proposal_id="p-sync",
+        source_hash=snapshot_hash(snapshot),
+    )
+    assert committed["outcome"] == "failed"
+    assert "descriptor sync failed" in committed["detail"]
+    assert committed["resulting_version"] is None
+    # The canonical authority DID commit the promoted version — the record's
+    # detail names that divergence rather than hiding it.
+    assert "version 1 is active" in committed["detail"]
+    assert await template_store().lifecycle_of("d-sync", 1) == "active"

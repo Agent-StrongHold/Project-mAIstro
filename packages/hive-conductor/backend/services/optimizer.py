@@ -567,8 +567,26 @@ async def _apply_auto_proposal(
 
     Returns the apply record. Kinds that name no concrete value to commit are
     `unsupported` — recorded as evidence, never reported as applied (#861).
+    Execution-tier kinds are `escalated` on this path exactly as on the
+    accept path: a REQUEST recorded for the delegated authority, never a
+    mutation and never an approval stamp.
     """
     from routes.audit import log_audit
+
+    if raw.get("kind", "") in ESCALATION_KINDS:
+        return record_escalation(
+            {
+                "id": proposal_id,
+                "dag_id": dag_id,
+                "topology_proposal": raw.get("topology_proposal")
+                or {
+                    "kind": raw.get("kind", ""),
+                    "target_node_id": target_node_id,
+                    "to_value": raw.get("to_value"),
+                },
+            },
+            actor=actor,
+        )
 
     candidate, outcome, detail = _mutated_snapshot(
         {

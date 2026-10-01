@@ -39,6 +39,22 @@ behavior (`apply_auto` marking valueless proposals applied; synchronous
 `record_decision`), and adds a source-level guard that no code path writes a
 tier approval stamp (`tier_approved_by`).
 
+## Repair round additions
+
+The repair round restored this file's implementation (lost to a salvage
+accident that emptied `services/optimizer.py` and left this suite untracked)
+and added 11 tests here plus 10 in `test_optimizer.py` covering the remaining
+outcome vocabulary (store unreadable / CAS-1 stale / projection refused /
+registration refused / descriptor-sync failure / CAS-2 compensation and its
+failed rollback), the engine-container template-store bridge, and the
+authorized-Workspace binding of candidate registration (proposals carry the
+Workspace the triggering request was authorized against; `commit_candidate`
+registers there, not in the configured default — completing the
+`routes/optimizer.py` change whose `run_optimizer(workspace_id=...)` half had
+been lost). `apply_auto` of an authorization kind now records an escalation
+request on the auto path too (pending, never applied) — the same treatment
+the accept path already had.
+
 ## Validation (this branch)
 
 - `uv run pytest packages/hive-conductor/backend/tests -q`: 2949 passed,
