@@ -128,3 +128,60 @@ Stop starting new work: the inventory timeout consumed the validation budget.
 Supply the exact promotable artifact/configuration, resolve rate-limit semantics,
 complete the workload/metric/physical-work oracles, and run a new >=4h soak before
 requesting promotion review. No push, PR, merge, comment, or issue closure done.
+
+## Assigned-head validation: `028cb44e11b7`
+
+Job `cba8c1ff61c84d3fa57cd180efddbf64` rechecked #860 only in the assigned
+`auto-860` worktree. Starting HEAD and supplied base `e2b2dfa02822` resolve;
+the initial tree was clean. No sync conflict or uncommitted salvage was present.
+No `check-*.log` files were present in this job directory; prior-job success
+claims were not reused as current evidence. Fresh logs are in that job directory.
+
+### Executed checks
+
+All Python commands below used `uv run`; command timeouts were 600–1800 seconds.
+
+| Command | Observed outcome / log |
+| --- | --- |
+| `python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1402 reviewed identities / 1402 findings, zero unclassified or never-allowlist; `vulture-repair.log`. No ledger amendment justified. |
+| `pytest tests/test_soak_promotion_gates.py packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests -x -q` | 506 passed, 5 PostgreSQL-dependent skips, 21 deprecation warnings in 114.89 s; `writer-pytest.log`. Includes all server tests, real middleware replica-allowance regressions and live uv-child sampler regression; not a deployed soak. |
+| `ruff check .` | PASS; `writer-ruff-check.log`. |
+| `ruff format --check .` | PASS, 2624 files; `writer-ruff-format.log`. |
+| `python scripts/check-doc-links.py` | PASS, 1394 Markdown files, zero broken relative links; `writer-doc-links.log`. |
+| `python scripts/check-merge-markers.py` and `git diff --check` | PASS; `writer-merge-markers.log` and clean whitespace check. |
+| `python scripts/check-deployment-claims.py` | PASS; `writer-deployment-claims.log`. Checks named components exist, not production behavior. |
+| Inline Python importing the real driver and evaluating round-6 JSON | PASS: asserted 90.43 < 14400 seconds, current evaluator rejects `sustain_duration` and missing `exact_rc_artifact`, current driver artifact check is false; `writer-evidence-check.log`. Historical evidence unchanged. |
+
+### Acceptance and architecture reconciliation
+
+| Criterion | Current disposition |
+| --- | --- |
+| Representative RC workload | PARTIAL: existing profile explicitly lacks concurrent users/Workspaces, Graph fan-out, successful tools/models, Design/Canvas and Goal/background traffic. Applicability to the selected RC is UNVERIFIED. |
+| Two production application replicas | UNVERIFIED: reference Compose defines two services; this validation does not deploy them. Middleware instances are not deployed replicas. |
+| Sustained saturation/reclaim/retry/leak observations | UNVERIFIED: executed JSON check confirms only 90.43 seconds for historical round 6; sampler regressions do not establish long-window behavior. |
+| No duplicated physical work; Goal reconciliation | UNVERIFIED: driver schedule probe checks occurrence admission then cancels the queued Run (`run_soak.py:1052`); no physical Attempt/effect or Goal reconciliation soak. |
+| Rate-limit/security/degraded non-bypass | NOT MET for one cluster-wide allowance: executed `test_replica_selection_has_an_independent_production_allowance` confirms `[200,200,429]` separately on both instances for the same authenticated or unauthenticated identity. Full RC security/degraded behavior UNVERIFIED. |
+| All required metrics and thresholds | PARTIAL: sampler tests pass, but driver-loop lag is not application-loop lag; complete RC worker/pool/queue/leak/timeout observations and thresholds remain UNVERIFIED. |
+| Active-work kill/restart, drain/fencing/recovery | UNVERIFIED: no new deployed restart, physical Attempt correlation or recovery observation. |
+| Long-running exact-RC soak | BLOCKED: no designated immutable promotion artifact/configuration supplied. `run_soak.py:635` rejects artifact equivalence for the host emulator regardless of duration; no qualifying soak executed. |
+| Findings filed/reclassified | PARTIAL: existing local classifications preserved; no new runtime defect discovered in this validation. External filing UNVERIFIED; GitHub mutations prohibited. |
+| Hash-tied human/machine RC evidence | PARTIAL: historical pack retained unchanged; fresh validation logs identify this checkout but are not RC soak evidence. Exact promoted image/configuration evidence UNVERIFIED. |
+
+Re-read repository instructions, accepted ADR-081426-1f7c, ADR-081626-f383,
+ADR-082426-82c7 and ADR-085, plus Proposed ADR-081. Admission uniqueness is
+not physical execution uniqueness. ADR-085's principal identity does not make
+process-local limiter state cluster-wide. ADR-081626-f383 itself does not
+establish lease-expiry takeover. None is an acceptance waiver; no alternative
+scheduler, Goal store, execution/event authority or authorization path was added.
+
+This checkpoint changes only this handoff. No production code, harness, tests,
+inventory counts, ledger or historical evidence changed, so no inventory delta
+is required. The requested ledger repair has no failing identity to repair.
+Do not manufacture one or rerun the host emulator for four hours as a substitute.
+
+Disposition: **BLOCKED**. Next owner must designate the exact RC image/config,
+resolve cluster-wide rate-limit semantics, complete representative workloads and
+physical-work/metric oracles, then execute and publish a fresh >=4-hour soak.
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: exact-RC prerequisites and sustained soak}`.
+This is a locally committed validation handoff, not completion of #860 or
+integration approval. No push, PR, merge, comment or issue closure performed.
