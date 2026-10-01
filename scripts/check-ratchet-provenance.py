@@ -34,6 +34,17 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "the evidence producer executes the reviewed registry declarations; it does not compare "
         "a candidate measurement against a mutable baseline"
     ),
+    ("check-route-permissions.py", "quality/route-permissions.json"): (
+        "the route-permission registry is the reviewed declaration being changed: adding a "
+        "prefix with a permission or an exempt_reason IS the substantive review, and the "
+        "tolerated-gap ledger it is checked against is resolved from the trusted base "
+        "separately by _load_baseline()"
+    ),
+    ("check-route-permissions.py", "quality/public-routes.json"): (
+        "read only to exclude already-declared unauthenticated paths from the authenticated "
+        "census; check-public-routes.py owns that registry's own ratchet and resolves it "
+        "from the trusted base"
+    ),
     ("check-retired-guidance.py", "quality/retired-guidance.json"): (
         "retirement guidance is the reviewed specification being changed"
     ),

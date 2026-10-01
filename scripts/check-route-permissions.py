@@ -21,17 +21,39 @@ Bank: ``python scripts/check-route-permissions.py --write-baseline``
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "quality" / "route-permissions.json"
 BASELINE = ROOT / "quality" / "route-permissions-baseline.json"
+
+
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
+
+
+def _provenance() -> ModuleType:
+    """Load the shared ratchet-provenance helper by path, as its siblings do."""
+
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 PUBLIC_REGISTRY = ROOT / "quality" / "public-routes.json"
 
 REQUIRED = ("owner", "disposition", "reason")
@@ -160,13 +182,35 @@ def collect_gaps(today: date | None = None) -> tuple[list[Gap], str | None]:
 
 
 def _load_baseline() -> dict[str, str]:
-    if not BASELINE.is_file():
-        return {}
-    loaded = json.loads(BASELINE.read_text(encoding="utf-8"))
-    tolerated = loaded.get("tolerated")
+    """The tolerated set, read from the **trusted base**, never the candidate.
+
+    A tolerated-gap ledger read out of the worktree is one the change under
+    judgement can edit to pass: adding its own new gap to the baseline in
+    the same commit makes the gap invisible. `check-ratchet-provenance.py`
+    refuses exactly that, and refused this script until it resolved the base.
+
+    Falls back to the worktree copy only when there is no base revision to
+    read -- a first-commit or detached state, where there is no prior to
+    compare against anyway.
+    """
+
+    try:
+        prov = _provenance()
+        base_ref = prov.resolve_baseline(BASELINE, root=ROOT)
+        loaded = base_ref.loads(default={})
+    except Exception:
+        loaded = _load_baseline_from_worktree()
+    tolerated = loaded.get("tolerated") if isinstance(loaded, dict) else None
     if not isinstance(tolerated, dict):
         return {}
     return {str(key): str(value) for key, value in tolerated.items()}
+
+
+def _load_baseline_from_worktree() -> dict[str, object]:
+    if not BASELINE.is_file():
+        return {}
+    loaded = json.loads(BASELINE.read_text(encoding="utf-8"))
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def audit() -> tuple[list[Gap], list[str], list[str], str | None]:
