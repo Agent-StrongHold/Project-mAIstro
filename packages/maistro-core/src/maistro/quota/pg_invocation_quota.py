@@ -209,7 +209,9 @@ class PgInvocationQuota:
                 return
             _refuse_unknown_over_confirmed(observation, reservation)
 
-            pending = await _settle_allocations(conn, observation)
+            pending = await _settle_allocations(
+                conn, observation, reservation_state=str(reservation["state"])
+            )
             await conn.execute(
                 "UPDATE invocation_quota_reservations SET state=$1, revision=$2 "
                 "WHERE invocation_id=$3",
@@ -422,7 +424,9 @@ def _refuse_unknown_over_confirmed(observation: QuotaObservation, reservation: A
         raise QuotaEvidenceConflict("unknown cannot replace a confirmed provider outcome")
 
 
-async def _settle_allocations(conn: Any, observation: QuotaObservation) -> bool:
+async def _settle_allocations(
+    conn: Any, observation: QuotaObservation, *, reservation_state: str
+) -> bool:
     """Lower each hold to measured usage; report whether any stays unmeasured."""
 
     allocations = await conn.fetch(
@@ -432,12 +436,32 @@ async def _settle_allocations(conn: Any, observation: QuotaObservation) -> bool:
         "WHERE a.invocation_id=$1",
         observation.invocation_id,
     )
+    retracts_a_release = reservation_state == "released" and observation.outcome == "completed"
     pending = False
     for allocation in allocations:
         unit = _json_value(allocation["definition"])["unit"]
         actual = observation.actual(unit)
         if actual is None:
-            pending = pending or not bool(allocation["measured"])
+            if retracts_a_release:
+                # Newer evidence says the provider *was* dispatched after all,
+                # and the release that zeroed this allocation went with the
+                # not-applied proof it is retracting. Without restoring the
+                # hold, a real but unmeasured call would settle consuming no
+                # quota at all. SQLite has always done this; PostgreSQL kept
+                # the released zeros and marked the reservation settled
+                # (Codex, #1362).
+                await conn.execute(
+                    "UPDATE invocation_quota_allocations "
+                    "SET spent=0, held=maximum, measured=FALSE "
+                    "WHERE invocation_id=$1 AND budget_id=$2",
+                    observation.invocation_id,
+                    allocation["budget_id"],
+                )
+                pending = True
+            else:
+                # A same-outcome partial correction keeps the dimensions it
+                # has already measured.
+                pending = pending or not bool(allocation["measured"])
             continue
         require_amount(actual, f"{unit} usage")
         await conn.execute(

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +14
+  packages/maistro-core/tests: +15
 ---
 
 # Tests for the Codex review fixes on #1362
@@ -36,6 +36,12 @@ removal inside the net above.
   limit 100 and opening spend 90 reported 100 units available and admitted a
   20-unit request against the 10 that remained. Runs against a real
   PostgreSQL; skips without `MAISTRO_TEST_PG_DSN`.
+- `test_pg_restores_the_hold_when_completion_retracts_a_release` — newer
+  evidence saying the call *did* happen must not leave it free. A
+  `not_applied` observation zeroes the allocation; a later higher-revision
+  `completed` with no usage was keeping those zeros, settling a real but
+  unmeasured provider call as consuming no quota. SQLite always restored
+  `held=maximum` here; PostgreSQL did not.
 
 `persistence/test_sqlite_quota.py`
 
