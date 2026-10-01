@@ -38,3 +38,17 @@ not bypassed: `test_retention_reference_inventory` required
 the purge must account for), so `retention_scope` gained the table and its
 policy row — eval evidence is execution state, deleted with the Run, not
 attribution history to preserve.
+
+Repair round (develop sync): develop's `047_capability_binding_revocations`
+claimed the same revision number while this branch was open, so the eval
+migration re-parented onto it as `048` — the renumbering this chain performs
+on every develop collision. Proving the chain on a live PostgreSQL 18 server
+then caught the migration assuming a fresh database: a bare `create_table`
+fails the stamp-back adoption test with `DuplicateTable`, so 048 now uses
+`IF NOT EXISTS` like 046/047. The chain-level guards were tightened to match:
+`test_migration_chain` pins `canonical_run_eval_scores` in `EXPECTED_TABLES`
+(a live-catalog set equality, so an unapplied or dropped eval table fails CI),
+and the effect-index suite asserts the single linear head is `048`. The eval
+store/validator identities are referenced in `_vulture_whitelist.py` (external
+consumers, implicit Pydantic invocation) so the per-identity vulture ledger
+stays exact without banking them as debt.

@@ -10,7 +10,11 @@ Invocation execution API.
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
+from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
+from maistro.runs.sqlite_store import SqliteRunStore
+from maistro.runs.store import InMemoryRunStore, RunStore
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -35,6 +39,12 @@ record_exception = "record_exception"
 set_status_on_exception = "set_status_on_exception"
 
 _VULTURE_REFERENCES = (record_exception, set_status_on_exception)
+
+# EvalSummary's projection field (#792). A frozen-dataclass instance attribute:
+# a class-object reference would not typecheck, so the whitelist below names it
+# through this module variable instead. The name is distinctive enough to be
+# safe at name level.
+latest_by_dimension = "latest_by_dimension"
 
 _VULTURE_WHITELIST = (
     Binding._validate_binding,
@@ -80,4 +90,30 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
+    # Eval scores as Run evidence on the canonical spine (M7-A3, #792).
+    # The store write/read seam is reached by the scoring caller inside the
+    # producing execution and by the #779 family-consistency reader, both
+    # outside this `packages/*/src` scan; the contract ships first by design,
+    # like CampaignSelector above. The Pydantic validators are invoked
+    # implicitly; the enum members and fields are serialization surface
+    # written through model_dump_json — `HUMAN` waits on the HITL fence
+    # (M7-A5) and `MODEL_JUDGE` rides Capability → Provider → Binding.
+    RunStore.record_eval_score,
+    RunStore.get_eval_score,
+    InMemoryRunStore.record_eval_score,
+    InMemoryRunStore.get_eval_score,
+    SqliteRunStore.record_eval_score,
+    SqliteRunStore.get_eval_score,
+    PgRunStore.record_eval_score,
+    PgRunStore.get_eval_score,
+    EvalMethod.MODEL_JUDGE,
+    EvalMethod.HUMAN,
+    EvalJudge._validate_judge,
+    RunEvalScore._validate_eval_score,
+    RunEvalScore.raw_score,
+    RunEvalScore.evidence_pointers,
+    # A frozen-dataclass instance attribute (#792): named via the module
+    # variable above rather than a class-object reference, which would not
+    # typecheck.
+    latest_by_dimension,
 )
