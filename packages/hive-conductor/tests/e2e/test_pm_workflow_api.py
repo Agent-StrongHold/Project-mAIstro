@@ -233,11 +233,19 @@ class TestAuditTrail:
     def test_audit_log_has_entries(self, client: httpx.Client, session):
         r = client.get("/v1/audit")
         assert r.status_code == 200
-        entries = r.json()
+        # #358: GET /v1/audit answers a bounded page envelope
+        # ``{entries, next_cursor}`` — keyset pagination, clamped limit — not
+        # the whole corpus as a bare array.
+        body = r.json()
+        assert set(body) >= {"entries", "next_cursor"}
+        entries = body["entries"]
         assert isinstance(entries, list)
-        # Should have at least dag_create + dag_run from above
+        # #358 also scopes a non-admin read to the entries naming this
+        # principal, so pmuser sees their own ``login`` from the session
+        # fixture above; ``dag_create`` is actor "system" and correctly stays
+        # out of this scope.
         actions = [e.get("action") for e in entries]
-        assert "dag_create" in actions or len(entries) > 0
+        assert "login" in actions or len(entries) > 0
 
 
 class TestDashboardAPIs:
