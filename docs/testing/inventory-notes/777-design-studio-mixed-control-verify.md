@@ -3183,3 +3183,84 @@ canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
 round: the develop-sync merge commit `44b39222e` (develop's own code, zero
 conflicts) + this note. No production or test code authored by this lane;
 inventory deltas all +0. No closure keywords used.
+
+## Round 49 — re-verification at merge head `2621dc62a` (base develop `3082279f1`)
+
+**Prior round resolution:** round 48's result artifact
+(`/home/dev/maistro/jobs/dd06daab0b884bf0a27cc6afb8065959/result.json`) was a
+clean dependency-block BLOCKED verdict (`success: true`, `agent_exit: 0`,
+`checks: []`, 13/13 UNMET) — **not** a develop sync conflict, and the working
+tree was clean at its exact expected head `3f3ae07b0` (verified before any
+edit; nothing to salvage). This round's actionable delta: origin/develop had
+advanced again.
+
+**Develop sync performed:** origin/develop advanced `51c0e1188` ->
+`3082279f1` (3 commits: M5-B RSI polling error handling/visibility
+gating/backoff #1737; brace-expansion lift past GHSA-q2hr-2g5m-vwhr in both
+frontends; governed `image.generate` egress via approved gateway Provider
+#286/#1638 — **none is a #777 blocking dependency**). Merged cleanly as
+`2621dc62a` with zero conflicts; merge touches develop's own
+capabilities/canvas/rsi/frontend files, no lane-surface overlap. Working tree
+clean before and after.
+
+**Note on #286/#1638:** the new governed image egress
+(`packages/maistro-core/src/maistro/capabilities/image_generation.py`,
+Binding -> Invocation -> approved Provider, blob reference + digest) is a
+governed-media *primitive* adjacent to #777's "governed media/providers" tool
+surface, but it is not one of the listed blockers; with Goal reconciliation,
+CreativeBrief, creative Graph and Ladybug retrieval all absent there is still
+no Design-Studio integration to build on it.
+
+**Dependency audit (fresh at `2621dc62a`, independently re-run — prior
+claims not trusted):**
+- `grep -ci "goal|reconcil"
+  packages/hive-conductor/backend/services/workspace_agent.py` -> **0
+  matches** — #804/#805/#806 reconciliation APIs still absent.
+- `grep -rli "GoalRevision|GoalReconcil" packages --include="*.py"` -> **0
+  files**. No `maistro-goals` package. #458 Goal remains ontology-declared
+  only (`interop/contract.py:354` `agent_goal_ownership` RelationshipSpec).
+- `brief_store.py:5-8` still disclaims: "The interview is chat state, not a
+  Goal: nothing here is a Goal or CreativeBrief record" — #774 absent.
+- `grep -rli ladybug packages/*/src` -> **0 files** — #776 absent.
+- `grep -rli "creative.graph|CreativeGraph" packages/*/src` -> **0 files** —
+  #775 absent. `grep -rli "control_mode|mixed.control" packages/*/src` ->
+  **0 files** — no mixed-control implementation.
+- e2e: 37 files in `packages/hive-conductor/tests/e2e/`, `ls | grep -i
+  "mixed|777|control"` empty — **no #777 mixed-control browser E2E exists**.
+  Salvage archive unchanged at `docs/research/777-design-studio-salvage/`.
+
+**Driver checks:** this job's directory contains **no `check-*.log` files**
+(manifest `checks: []`) — all validation below executed directly by this
+worker.
+
+**Gates executed at `2621dc62a` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2716 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, 1374/1374
+  identities banked, 0 unbanked, `never_allowlist: 0` (baseline base
+  `3082279f1` -> candidate `2621dc62a` tracked automatically; no ledger
+  amendment needed or performed).
+- `uv run pytest packages/maistro-core/tests/capabilities/test_image_generation_egress.py
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_program_brief_routes.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py
+  packages/maistro-core/tests/agents/test_brief_interview.py
+  packages/maistro-core/tests/graph/test_cross_domain_substrate.py -q` —
+  **77 passed** in 20.13s (merged #286 egress tests + #777-adjacent surfaces).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14/14 suites
+  (backend e2e: 23 specs).
+- `uv run python scripts/check-doc-links.py` — PASS (every relative markdown
+  link resolves).
+- `uv run python scripts/check-adr-index.py` — PASS.
+
+**All 13 acceptance criteria: still UNMET at this head** (none provable
+against reachable production behavior or meaningful tests; unchanged from
+rounds 46-48).
+
+**Conclusion (49th inspected head):** the lane remains **BLOCKED on unlanded
+canonical dependencies** (#458 Goal behavior, #804/#805/#806 reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Ladybug retrieval). Changes
+this round: the develop-sync merge commit `2621dc62a` (develop's own code,
+zero conflicts) + this note. No production or test code authored by this
+lane; inventory deltas all +0. No closure keywords used.
