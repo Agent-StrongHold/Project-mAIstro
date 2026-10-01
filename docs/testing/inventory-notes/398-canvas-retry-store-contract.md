@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-canvas/tests: +10
+  packages/maistro-canvas/tests: +12
 ---
 
 # Issue #398 — Canvas retry bound, store contract, and queue health evidence

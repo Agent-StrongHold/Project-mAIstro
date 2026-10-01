@@ -35,6 +35,7 @@ from canvas_testing.job_store_contract import (
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from maistro_canvas.canvas.retry_policy import RetryBackoff
 from maistro_canvas.types import GenerationJobRecord, JobQueueStats
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -212,3 +213,26 @@ def test_job_queue_stats_is_part_of_the_store_protocol() -> None:
     assert isinstance(InMemoryJobStore(), CanvasJobStore)
     assert hasattr(CanvasJobStore, "job_queue_stats")
     assert JobQueueStats.__dataclass_params__.frozen
+
+
+def test_retry_backoff_rejects_an_invalid_schedule() -> None:
+    """A schedule that would never terminate (negative base, shrinking
+    factor, cap below base) is constructor state, so the constructor is
+    where each must be refused — a bad schedule otherwise surfaces only as
+    an absurd ``next_retry_at`` written durably to a job row."""
+    with pytest.raises(ValueError, match="base_seconds must be non-negative"):
+        RetryBackoff(base_seconds=-1.0)
+    with pytest.raises(ValueError, match="factor must be >= 1"):
+        RetryBackoff(factor=0.5)
+    with pytest.raises(ValueError, match="cap_seconds must be >= base_seconds"):
+        RetryBackoff(base_seconds=10.0, cap_seconds=5.0)
+
+
+def test_retry_backoff_clamps_a_non_positive_attempt() -> None:
+    """An uncharged row (attempt 0, or a counter corruption reading negative)
+    must wait the attempt-1 delay, not a longer ``factor**-1`` one: the
+    first retry may not be slower than the second."""
+    backoff = RetryBackoff(base_seconds=3.0, factor=2.0, cap_seconds=60.0)
+
+    assert backoff.delay_for_attempt(0) == backoff.delay_for_attempt(1) == 3.0
+    assert backoff.delay_for_attempt(-7) == 3.0
