@@ -20,8 +20,11 @@ This gate closes that, in both directions:
   Dockerfiles its `used_by` names -- so a base update is always a reviewable
   change to this registry plus the Dockerfiles, never a silent tag move;
 - a reference without a digest survives only through an owned, issue-numbered
-  exemption in `quality/image-pins.json` -- same rule as the image inventory's
-  coverage exceptions, because an unowned exemption is just permission.
+  exemption in `quality/image-pins.json` (carrying `owner`, `issue` and
+  `reason`) -- same rule as the image inventory's coverage exceptions, because
+  an unowned exemption is just permission. Exemptions are valid for INTERNAL
+  images only; PUBLISHED and DISTRIBUTED images must pin, with no exemption
+  path.
 
 All digests are manifest-list (index) digests, so one pin fixes every
 architecture/platform variant: for a fixed target platform the same index
@@ -62,6 +65,10 @@ _SKIP = ("/.git/", "/node_modules/", "/.venv/", "/site-packages/")
 FROM_RE = re.compile(
     r"^\s*FROM\s+(?:(?:--\S+)\s+)*(?P<ref>\S+)(?:\s+AS\s+(?P<alias>\S+))?",
     re.IGNORECASE,
+)
+#: `ARG NAME[=default]` -- the default value is optional.
+ARG_RE = re.compile(
+    r"^\s*ARG\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:=(?P<value>\S+))?", re.IGNORECASE
 )
 #: `COPY ... --from=ref ...` -- the source image is one contiguous token.
 COPY_FROM_RE = re.compile(r"--from=(?P<ref>\S+)")
@@ -121,49 +128,107 @@ class DockerfileRefs:
         """`FROM builder` / `COPY --from=0` name a build stage, not an image."""
         return ref.lower() in stages or (ref.isdigit() and int(ref) < stage_count)
 
+    def _resolve_arg(self, ref: str, lineno: int, arg_defaults: dict[str, str]) -> str | None:
+        """Resolve one `$VAR` reference from its ARG default, else fail closed.
+
+        Returns the resolved concrete reference, or None after recording a
+        parse error -- a variable whose default we cannot see must never be
+        silently skipped, or the gate could pass an unpinned base.
+        """
+        resolved = arg_defaults.get(ref[1:]) if ref.startswith("$") else None
+        if resolved is None:
+            self.parse_errors.append(f"line {lineno}: cannot resolve build-arg reference {ref!r}")
+            return None
+        return resolved
+
     def parse(self) -> DockerfileRefs:
         stages: set[str] = set()
         stage_count = 0
+        arg_defaults: dict[str, str] = {}
         for lineno, raw in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
+            if self._record_arg(line, arg_defaults):
+                continue
             from_match = FROM_RE.match(line)
             if from_match:
-                stage_count += 1
-                ref = from_match.group("ref")
-                alias = from_match.group("alias")
-                if alias:
-                    stages.add(alias.lower())
-                if (
-                    ref.lower() == SCRATCH
-                    or ref.startswith("$")
-                    or self._is_stage(ref, stages, stage_count)
-                ):
-                    continue
-                self.refs.append((lineno, ref, "FROM"))
-                continue
-            if not re.match(r"^\s*COPY\b", line, re.IGNORECASE):
-                continue
-            source = COPY_FROM_RE.search(line)
-            if not source:
-                continue
-            ref = source.group("ref")
-            if self._is_stage(ref, stages, stage_count):
-                continue
-            if ref.startswith("$"):
-                self.parse_errors.append(
-                    f"line {lineno}: cannot resolve build-arg reference {ref!r}"
+                stage_count = self._record_from(
+                    from_match, lineno, stages, stage_count, arg_defaults
                 )
                 continue
-            self.refs.append((lineno, ref, "COPY --from"))
+            self._record_copy_from(line, lineno, stages, stage_count, arg_defaults)
         return self
+
+    @staticmethod
+    def _record_arg(line: str, arg_defaults: dict[str, str]) -> bool:
+        """Consume an `ARG NAME[=default]` line into `arg_defaults`."""
+        arg_match = ARG_RE.match(line)
+        if not arg_match:
+            return False
+        value = arg_match.group("value")
+        if value is not None:
+            arg_defaults[arg_match.group("name")] = value
+        return True
+
+    def _resolve_ref(self, ref: str, lineno: int, arg_defaults: dict[str, str]) -> str | None:
+        """Resolve one `$VAR` reference from its ARG default, else fail closed.
+
+        Returns the resolved concrete reference, or None after recording a
+        parse error -- a variable whose default we cannot see must never be
+        silently skipped, or the gate could pass an unpinned base.
+        """
+        if not ref.startswith("$"):
+            return ref
+        return self._resolve_arg(ref, lineno, arg_defaults)
+
+    def _record_from(
+        self,
+        from_match: re.Match[str],
+        lineno: int,
+        stages: set[str],
+        stage_count: int,
+        arg_defaults: dict[str, str],
+    ) -> int:
+        """Judge and register one FROM; returns the new stage count."""
+        ref = self._resolve_ref(from_match.group("ref"), lineno, arg_defaults)
+        if ref is None:
+            ref = ""
+        # Classify against *previously declared* stages only: this FROM
+        # registers its own alias and index below, after the decision.
+        # Registering first would make `FROM ubuntu AS ubuntu` resolve its
+        # external base to itself and slip through the gate with zero pins.
+        if ref and ref.lower() != SCRATCH and not self._is_stage(ref, stages, stage_count):
+            self.refs.append((lineno, ref, "FROM"))
+        alias = from_match.group("alias")
+        if alias:
+            stages.add(alias.lower())
+        return stage_count + 1
+
+    def _record_copy_from(
+        self,
+        line: str,
+        lineno: int,
+        stages: set[str],
+        stage_count: int,
+        arg_defaults: dict[str, str],
+    ) -> None:
+        """Judge one `COPY --from=<ref>` source image, if any."""
+        if not re.match(r"^\s*COPY\b", line, re.IGNORECASE):
+            return
+        source = COPY_FROM_RE.search(line)
+        if not source:
+            return
+        ref = self._resolve_ref(source.group("ref"), lineno, arg_defaults)
+        if ref is None or self._is_stage(ref, stages, stage_count):
+            return
+        self.refs.append((lineno, ref, "COPY --from"))
 
 
 def dockerfiles_on_disk() -> list[Path]:
     found = [
         path
-        for path in ROOT.rglob("Dockerfile*")
+        for path in ROOT.rglob("*Dockerfile*")
         if path.is_file()
         and not path.name.endswith(".dockerignore")
         and not any(part in str(path) for part in _SKIP)
@@ -320,6 +385,47 @@ def check_registration(
     return violations
 
 
+def validate_exemptions(
+    exemptions: list[dict],
+    dispositions: dict[str, str],
+    violations: list[Violation],
+) -> set[tuple[str, str]]:
+    """Check every exemption is owned and scoped before any can be applied.
+
+    An exemption naming only `file` and `ref` would let an unowned row waive
+    the pin rule, and one filed against a PUBLISHED or DISTRIBUTED Dockerfile
+    would punch a hole in the release contract (exemptions are INTERNAL-only).
+    Both are registry defects in their own right: fail loudly here instead of
+    silently honouring (or ignoring) the row in `check_ref`.
+    """
+    exempt: set[tuple[str, str]] = set()
+    for entry in exemptions:
+        file = str(entry.get("file") or "")
+        ref = str(entry.get("ref") or "")
+        where = f"quality/image-pins.json (exemption {file}/{ref})"
+        missing = [f for f in ("file", "ref", "owner", "issue", "reason") if not entry.get(f)]
+        if missing:
+            violations.append(
+                Violation(
+                    where,
+                    f"exemption is missing required field(s) {', '.join(missing)}; "
+                    "an unowned exemption is just permission",
+                )
+            )
+            continue
+        if dispositions.get(file, "PUBLISHED") in ("PUBLISHED", "DISTRIBUTED"):
+            violations.append(
+                Violation(
+                    where,
+                    f"exemptions apply to INTERNAL images only; {file} is "
+                    f"{dispositions.get(file, 'PUBLISHED')} and must pin by digest",
+                )
+            )
+            continue
+        exempt.add((file, ref))
+    return exempt
+
+
 def run_gate() -> int:
     pins_doc = load_json(PINS)
     dispositions = release_dispositions()
@@ -328,11 +434,7 @@ def run_gate() -> int:
     files = dockerfiles_on_disk()
     usage: dict[tuple[str, str, str], set[str]] = {}
 
-    exempt = {
-        (str(e.get("file")), str(e.get("ref")))
-        for e in pins_doc.get("exemptions", [])
-        if e.get("file") and e.get("ref")
-    }
+    exempt = validate_exemptions(list(pins_doc.get("exemptions", [])), dispositions, violations)
 
     for path in files:
         rel = path.relative_to(ROOT).as_posix()
@@ -379,15 +481,59 @@ def base_digests(dockerfiles: list[str]) -> list[str]:
     return sorted(refs)
 
 
+SLSA_PROVENANCE_PREFIX = "https://slsa.dev/provenance/"
+
+
+def _attested_base_digests(attestation_file: str, raw: str) -> set[str]:
+    """Collect the base digests the attestation file actually vouches for.
+
+    Malformed records fail closed with a SystemExit; a resolvedDependency
+    entry that is not a mapping is skipped rather than crashing the gate.
+    """
+    attested: set[str] = set()
+    for lineno, line in enumerate(raw.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+            statement = json.loads(base64.b64decode(record["payload"]))
+            predicate_type = str(statement["predicateType"])
+            predicate = statement["predicate"]
+        except Exception as exc:
+            raise SystemExit(
+                f"{attestation_file}: line {lineno} is not a cosign attestation "
+                f"record ({exc}); run `cosign download attestation` afresh"
+            ) from exc
+        if not predicate_type.startswith(SLSA_PROVENANCE_PREFIX):
+            continue  # sbom/license/... attestations cannot vouch for bases
+        # SLSA v1 keeps the list at predicate.resolvedDependencies; v0.2
+        # nested it under buildDefinition. Accept either, structurally.
+        for deps in (
+            predicate.get("resolvedDependencies", []),
+            predicate.get("buildDefinition", {}).get("resolvedDependencies", []),
+        ):
+            for dep in deps:
+                if not isinstance(dep, dict):
+                    continue
+                sha = dep.get("digest", {}).get("sha256")
+                if sha:
+                    attested.add(f"sha256:{sha}")
+    return attested
+
+
 def verify_attestation(attestation_file: str, dockerfile: str) -> int:
     """Every pinned base digest of `dockerfile` must appear in the attestations.
 
     `attestation_file` holds the NDJSON output of
-    `cosign download attestation <image>@<digest>`: one record per line, each
-    carrying a base64 DSSE payload whose inner payload is the in-toto statement.
-    buildx's SLSA provenance (mode=max) names every base image it resolved under
-    `resolvedDependencies`, so each digest appearing there is what proves the
-    release attestation covers every base (#349's last acceptance criterion).
+    `cosign download attestation <image>@<digest>`: one record per line, where
+    each record's `payload` base64-decodes directly to the in-toto statement.
+    Only SLSA provenance statements count, and only their structured
+    `resolvedDependencies` entries: buildx provenance (mode=max) names every
+    base image it resolved there, so a digest present in that list is what
+    proves the release attestation covers every base (#349's last acceptance
+    criterion). Digests mentioned anywhere else -- non-SLSA attestations,
+    invocation parameters, annotations -- never satisfy this check.
     """
     wanted = base_digests([dockerfile])
     if not wanted:
@@ -397,24 +543,9 @@ def verify_attestation(attestation_file: str, dockerfile: str) -> int:
     except OSError as exc:
         raise SystemExit(f"cannot read {attestation_file}: {exc}") from exc
 
-    blob_parts: list[str] = []
-    for lineno, line in enumerate(raw.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-            envelope = json.loads(base64.b64decode(record["payload"]))
-            statement = json.loads(base64.b64decode(envelope["payload"]))
-        except Exception as exc:
-            raise SystemExit(
-                f"{attestation_file}: line {lineno} is not a cosign attestation "
-                f"record ({exc}); run `cosign download attestation` afresh"
-            ) from exc
-        blob_parts.append(json.dumps(statement))
-    blob = "\n".join(blob_parts)
+    attested = _attested_base_digests(attestation_file, raw)
 
-    missing = [ref for ref in wanted if ref.rpartition("@")[2] not in blob]
+    missing = [ref for ref in wanted if ref.rpartition("@")[2] not in attested]
     if missing:
         for ref in missing:
             print(

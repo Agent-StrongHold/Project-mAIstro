@@ -156,6 +156,49 @@ def test_unpinned_internal_base_needs_an_owned_exemption(gate, tmp_path, monkeyp
     assert _run(gate, exempted, monkeypatch) == 0
 
 
+def test_exemption_without_owner_issue_reason_is_rejected(gate, tmp_path, monkeypatch, capsys):
+    """A `file`+`ref`-only row must not silently waive the pin rule."""
+    df = "Dockerfile.tests"
+    cases = [
+        {"file": df, "ref": "python:3.13.1-slim"},
+        {"file": df, "ref": "python:3.13.1-slim", "owner": "@someone", "issue": "#349"},
+    ]
+    for exemption in cases:
+        tree = _tree(
+            tmp_path,
+            {df: "FROM python:3.13.1-slim\n"},
+            [],
+            exemptions=[exemption],
+            inventory={df: "INTERNAL"},
+        )
+        assert _run(gate, tree, monkeypatch) == 1
+        err = capsys.readouterr().err
+        assert "missing required field(s)" in err
+        assert "unowned exemption is just permission" in err
+
+
+def test_exemption_cannot_waive_a_release_scoped_dockerfile(gate, tmp_path, monkeypatch, capsys):
+    """Exemptions are INTERNAL-only; a published image must pin, period."""
+    tree = _tree(
+        tmp_path,
+        {"Dockerfile": "FROM python:3.13.1-slim\n"},
+        [],
+        exemptions=[
+            {
+                "file": "Dockerfile",
+                "ref": "python:3.13.1-slim",
+                "owner": "@someone",
+                "issue": "#349",
+                "reason": "trying to dodge the release contract",
+            }
+        ],
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "INTERNAL images only" in err
+    assert "must pin python by" in err
+
+
 def test_unregistered_digest_fails(gate, tmp_path, monkeypatch, capsys):
     tree = _tree(
         tmp_path,
@@ -242,6 +285,32 @@ def test_stage_references_are_not_external_images(gate, tmp_path, monkeypatch):
     assert _run(gate, tree, monkeypatch) == 0
 
 
+def test_from_alias_identical_to_base_is_still_pinned(gate, tmp_path, monkeypatch):
+    """`FROM ubuntu AS ubuntu` must not classify its external base as a stage:
+    the alias (and index) register only after the ref is judged against
+    previously declared stages, or the gate passes with zero pins."""
+    tree = _tree(tmp_path, {"Dockerfile": "FROM ubuntu AS ubuntu\nRUN true\n"}, [])
+    assert _run(gate, tree, monkeypatch) == 1
+
+
+def test_first_stage_index_zero_is_not_a_stage_reference(gate, tmp_path, monkeypatch):
+    """`FROM 0` is the first stage: no earlier stage exists, so the digit
+    must be treated as an external (unpinnable) ref, not skipped."""
+    tree = _tree(tmp_path, {"Dockerfile": "FROM 0\nRUN true\n"}, [])
+    assert _run(gate, tree, monkeypatch) == 1
+
+
+def test_conditional_copier_template_is_discovered(gate, tmp_path, monkeypatch, capsys):
+    """Copier conditional filenames (`{% if %}Dockerfile{% endif %}.jinja`) must
+    be discovered by their name containing `Dockerfile`, not by the
+    `Dockerfile*` prefix, or a shipped scaffold stays outside the gate."""
+    name = "templates/single-tenant-multi-user/{% if host_target in ['docker', 'podman'] %}Dockerfile{% endif %}.jinja"
+    tree = _tree(tmp_path, {name: "FROM python:3.13.1-slim\n"}, [_pin()])
+    monkeypatch.setattr(gate, "ROOT", tree)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert name in capsys.readouterr().err
+
+
 def test_base_digests_lists_pinned_refs(gate, tmp_path, monkeypatch, capsys):
     tree = _tree(
         tmp_path,
@@ -272,17 +341,15 @@ def _attestation_records(digest_hexes: list[str]) -> str:
         "predicate": {
             "buildDefinition": {
                 "resolvedDependencies": [
-                    {"uri": f"pkg:docker/python@sha256:{h}"} for h in digest_hexes
+                    {"uri": f"pkg:docker/python@sha256:{h}", "digest": {"sha256": h}}
+                    for h in digest_hexes
                 ]
             }
         },
     }
-    envelope = {
-        "payloadType": "application/vnd.in-toto+json",
-        "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
-        "signatures": [],
-    }
-    record = {"payload": base64.b64encode(json.dumps(envelope).encode()).decode()}
+    # `cosign download attestation` NDJSON: record.payload decodes straight
+    # to the in-toto statement (no synthetic outer envelope).
+    record = {"payload": base64.b64encode(json.dumps(statement).encode()).decode()}
     return json.dumps(record) + "\n"
 
 
@@ -314,3 +381,53 @@ def test_attestation_check(gate, tmp_path, monkeypatch):
     junk.write_text("{}", encoding="utf-8")
     with pytest.raises(SystemExit, match="not a cosign attestation"):
         gate.verify_attestation(str(junk), df)
+
+
+def _nonslsa_record(digest_hex: str) -> str:
+    """A non-provenance attestation whose free-text fields name the digest."""
+    statement = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "predicateType": "https://spdx.dev/Document",
+        "predicate": {
+            "notes": f"built from sha256:{digest_hex}",
+            "packages": [{"name": "python", "versionInfo": f"sha256:{digest_hex}"}],
+        },
+    }
+    record = {"payload": base64.b64encode(json.dumps(statement).encode()).decode()}
+    return json.dumps(record) + "\n"
+
+
+def _unrelated_field_record(digest_hex: str) -> str:
+    """SLSA provenance naming the digest everywhere but resolvedDependencies."""
+    statement = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "buildDefinition": {"externalParameters": {"base": f"sha256:{digest_hex}"}},
+            "resolvedDependencies": [
+                {
+                    "uri": "pkg:docker/alpine@sha256:" + hex_of(OTHER_DIGEST),
+                    "digest": {"sha256": hex_of(OTHER_DIGEST)},
+                }
+            ],
+        },
+    }
+    record = {"payload": base64.b64encode(json.dumps(statement).encode()).decode()}
+    return json.dumps(record) + "\n"
+
+
+def test_attestation_ignores_digest_outside_slsa_resolved_dependencies(gate, tmp_path, monkeypatch):
+    """Only structured resolvedDependencies digests prove base coverage."""
+    df = "Dockerfile"
+    tree = _tree(tmp_path, {df: PINNED.format(d=hex_of(DIGEST), d2=hex_of(DIGEST))}, [])
+    monkeypatch.setattr(gate, "ROOT", tree)
+
+    # A non-SLSA record mentioning the digest must not satisfy the check.
+    nonslsa = tree / "nonslsa.json"
+    nonslsa.write_text(_nonslsa_record(hex_of(DIGEST)), encoding="utf-8")
+    assert gate.verify_attestation(str(nonslsa), df) == 1
+
+    # Nor may a SLSA statement that names it outside resolvedDependencies.
+    unrelated = tree / "unrelated.json"
+    unrelated.write_text(_unrelated_field_record(hex_of(DIGEST)), encoding="utf-8")
+    assert gate.verify_attestation(str(unrelated), df) == 1

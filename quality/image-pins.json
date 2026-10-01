@@ -31,7 +31,8 @@
       "recorded": "2026-09-30",
       "recorded_in": "#349",
       "note": "Copier template base: rendered downstream images pin the identical digest.",
-      "used_by": ["templates/autonoetic/Dockerfile.jinja"]
+      "used_by": ["templates/autonoetic/Dockerfile.jinja",
+                  "templates/single-tenant-multi-user/{% if host_target in ['docker', 'podman'] %}Dockerfile{% endif %}.jinja"]
     },
     {
       "image": "node",

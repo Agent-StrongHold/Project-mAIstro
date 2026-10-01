@@ -1,12 +1,12 @@
 ---
 inventory-delta:
-  tests/: +16
+  tests/: +22
 ---
 # 349-image-digest-pins
 
-Issue #349 pins every base/tool image reference in the repository's nine
+Issue #349 pins every base/tool image reference in the repository's
 Dockerfiles by immutable digest and adds the gate that keeps them pinned. The
-+16 collected node IDs in `tests/` are `tests/test_check_image_pins.py`, which
++22 collected node IDs in `tests/` are `tests/test_check_image_pins.py`, which
 holds `scripts/check-image-pins.py` to its contract:
 
 - `:latest` is rejected everywhere — explicit (`python:latest`) and implicit
@@ -25,7 +25,20 @@ holds `scripts/check-image-pins.py` to its contract:
   consumes this) and refuses unpinned ones;
 - `--verify-attestation` proves a cosign-downloaded SLSA attestation names
   every pinned base digest, fails when one is missing, and fails loudly on
-  input that is not cosign output — never vacuously.
+  input that is not cosign output — never vacuously. Only structured SLSA
+  `resolvedDependencies` digests count: a non-provenance attestation (SBOM,
+  license) or free-text mention of the digest cannot vouch for a base;
+- a `FROM` alias identical to its base (`FROM ubuntu AS ubuntu`) is still an
+  external image — the alias registers only after the ref is classified;
+- `FROM 0` (a digit naming the not-yet-declared first stage) is an external
+  ref, not silently skipped;
+- an exemption must carry `owner`, `issue` and `reason`, and can only shield
+  INTERNAL images — a PUBLISHED/DISTRIBUTED Dockerfile must pin, period;
+- `ARG` defaults resolve `$VAR` references, and an unresolvable one is a
+  recorded parse error, never a silent skip;
+- Copier conditional filenames (`{% if %}Dockerfile{% endif %}.jinja`) are
+  discovered by name containment, so shipped scaffolds cannot sit outside
+  the gate (the single-tenant template is pinned in `quality/image-pins.json`).
 
 The negative tests assert on the gate's actual failure text, so a reworded
 message cannot silently stop describing the violation.
