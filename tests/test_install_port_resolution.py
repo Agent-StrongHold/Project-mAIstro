@@ -36,8 +36,10 @@ INSTALL_SH = ROOT / "install.sh"
 
 #: The port-configuration functions, lifted verbatim from install.sh.
 _FUNCTIONS = (
+    "env_has",
     "env_get",
     "normalize_env_value",
+    "resolve_compose_value",
     "setting_value",
     "setting_source",
     "validate_port_value",
@@ -46,6 +48,7 @@ _FUNCTIONS = (
     "refresh_base_urls",
     "resolve_effective_config",
     "compose_published_port",
+    "binding_host_for_urls",
     "read_back_effective_ports",
     "http_ok",
     "wait_for_engine_health",
@@ -82,10 +85,8 @@ def _docker_shim(engine_port: str | None, conductor_port: str | None) -> str:
     not up, unsupported front-end). Everything else exits 0."""
     engine = "1" if engine_port is None else "0"
     conductor = "1" if conductor_port is None else "0"
-    engine_line = "" if engine_port is None else f"printf '%s\\n' \"127.0.0.1:{engine_port}\"; "
-    conductor_line = (
-        "" if conductor_port is None else f"printf '%s\\n' \"127.0.0.1:{conductor_port}\"; "
-    )
+    engine_line = "" if engine_port is None else f"printf '%s\\n' \"{engine_port}\"; "
+    conductor_line = "" if conductor_port is None else f"printf '%s\\n' \"{conductor_port}\"; "
     return f"""
 if [[ "${{1:-}}" == "compose" ]]; then
     while [[ $# -gt 0 ]]; do
@@ -322,7 +323,7 @@ def test_resolution_exports_the_effective_values_for_the_compose_invocation(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad", ["abc", "0", "65536", "-1", "80.5"])
+@pytest.mark.parametrize("bad", ["abc", "0", "65536", "-1", "80.5", "00065536"])
 def test_an_invalid_port_from_the_environment_fails_naming_its_source(
     tmp_path: Path, bad: str
 ) -> None:
@@ -341,7 +342,7 @@ def test_an_invalid_port_in_the_env_file_fails_naming_the_env_file_source(
     assert "(source: .env HIVE_PORT)" in result.stderr
 
 
-@pytest.mark.parametrize("edge", ["1", "65535"])
+@pytest.mark.parametrize("edge", ["1", "65535", "08"])
 def test_valid_port_boundaries_are_accepted(tmp_path: Path, edge: str) -> None:
     result = _run(tmp_path, "resolve_effective_config", env={"MAISTRO_PORT": edge})
     assert result.returncode == 0, result.stderr

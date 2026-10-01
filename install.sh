@@ -300,6 +300,90 @@ normalize_env_value() {
     printf '%s\n' "$value"
 }
 
+# Resolve Compose interpolation over one normalized value (#361 review):
+# ${NAME}, ${NAME:-default}, ${NAME-default} and $NAME, resolved the way
+# Compose does -- process environment first, then $ENV_FILE -- so an existing
+# .env line like MAISTRO_PORT=${DEV_PORT:-9001} validates as 9001 instead of
+# failing port validation on the literal expression. `$$` is Compose's
+# literal-$ escape. One pass over the value: substituted text is not
+# re-scanned, matching Compose. $self names the key currently being resolved,
+# so a .env self-reference like HIVE_PORT=\${HIVE_PORT:-9101} falls through to
+# its default instead of reading back its own expression. An unbalanced ${ is
+# left literal -- Compose rejects it at parse time -- and the numeric port
+# check below still refuses anything unresolved.
+resolve_compose_value() {
+    local self="$1" value="$2" out="" rest="$2" sentinel=$'\x01'
+    local head body name op default resolved present
+    value="${value//\$\$/$sentinel}"
+    rest="$value"
+    while [[ "$rest" == *'$'* ]]; do
+        head="${rest%%\$*}"
+        rest="${rest#*\$}"
+        case "$rest" in
+            '{'*)
+                body="${rest#\{}"
+                case "$body" in
+                    *'}'*) body="${body%%\}*}"; rest="${rest#*\}}" ;;
+                    *) out+="${head}\${"; rest="${rest#\{}"; break ;;
+                esac
+                name="${body%%:-*}"
+                if [[ "$name" == "$body" ]]; then
+                    name="${body%%-*}"
+                    if [[ "$name" == "$body" ]]; then
+                        op=""; default=""
+                    else
+                        op="-"; default="${body#"$name"-}"
+                    fi
+                else
+                    op=":-"; default="${body#"$name":-}"
+                fi
+                if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                    out+="${head}\${${body}}"
+                    continue
+                fi
+                present=0; resolved=""
+                if [[ "$name" == "$self" ]]; then
+                    : # self-reference: never read the key's own .env entry
+                elif [[ -n "${!name+x}" ]]; then
+                    present=1; resolved="${!name}"
+                elif env_has "$name"; then
+                    resolved="$(normalize_env_value "$(env_get "$name" || true)")"
+                    present=1
+                fi
+                case "$op" in
+                    ':-') [[ -z "$resolved" ]] && resolved="$default" ;;
+                    '-')  (( present )) || resolved="$default" ;;
+                    *)    (( present )) || resolved="" ;;
+                esac
+                out+="${head}${resolved}"
+                ;;
+            [A-Za-z_]*)
+                [[ "$rest" =~ ^([A-Za-z_][A-Za-z0-9_]*)(.*)$ ]]
+                name="${BASH_REMATCH[1]}"
+                rest="${BASH_REMATCH[2]}"
+                resolved=""
+                if [[ "$name" != "$self" ]]; then
+                    if [[ -n "${!name+x}" ]]; then
+                        resolved="${!name}"
+                    elif env_has "$name"; then
+                        resolved="$(normalize_env_value "$(env_get "$name" || true)")"
+                    fi
+                fi
+                out+="${head}${resolved}"
+                ;;
+            *)
+                out+="${head}\$"
+                if [[ -n "$rest" ]]; then
+                    out+="${rest:0:1}"
+                    rest="${rest:1}"
+                fi
+                ;;
+        esac
+    done
+    value="${out}${rest}"
+    printf '%s\n' "${value//"$sentinel"/\$}"
+}
+
 # Resolve one setting with Compose interpolation's precedence: process
 # environment, then $ENV_FILE, then the documented default.
 setting_value() {
@@ -310,8 +394,13 @@ setting_value() {
     fi
     value="$(normalize_env_value "$(env_get "$key" || true)")"
     if [[ -n "$value" ]]; then
-        printf '%s\n' "$value"
-        return 0
+        value="$(resolve_compose_value "$key" "$value")"
+        # An entry that resolves to nothing (e.g. ${MISSING:-}) falls through
+        # to the default, like a blank .env line does.
+        if [[ -n "$value" ]]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
     fi
     printf '%s\n' "$default"
 }
@@ -333,10 +422,13 @@ setting_source() {
 
 # A resolved port must be a number Compose will accept. A bad value fails
 # here, naming its source, instead of surfacing later as a false health
-# failure or a wrong printed URL (#361).
+# failure or a wrong printed URL (#361). The bounds check parses in base 10
+# explicitly: bare arithmetic would read leading zeroes as octal, so `08`
+# only failed via an "value too great for base" diagnostic and `00065536`
+# slipped through as octal 27486.
 validate_port_value() {
     local key="$1" value="$2" source_label="$3"
-    if [[ ! "$value" =~ ^[0-9]+$ ]] || ((value < 1 || value > 65535)); then
+    if [[ ! "$value" =~ ^[0-9]+$ ]] || ((10#$value < 1 || 10#$value > 65535)); then
         fail "Port setting ${key} resolved to '${value}' (source: ${source_label}); expected a number between 1 and 65535."
     fi
 }
@@ -404,16 +496,28 @@ compose_published_port() {
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" port "$service" "$private_port" 2>/dev/null
 }
 
+# Compose's `port` front-end reports wildcard bindings (0.0.0.0, [::]) that a
+# browser cannot open; loopback is the address that reaches them. A concrete
+# host is kept as-is, so a mapping like 127.0.0.2:9005 from an override file
+# probes and prints at 127.0.0.2, the address the stack actually bound.
+binding_host_for_urls() {
+    case "$1" in
+        0.0.0.0|::|\[::\]) printf '127.0.0.1\n' ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
 # Poll what compose actually bound, not what we resolved (#361). A successful
-# read-back overrides the resolved port; a failed one keeps the resolution
-# and says why. Only the port is taken from the mapping: the resolved bind
-# address is what the URLs should show even when the front-end reports a
-# wildcard host (0.0.0.0), where loopback is the address a browser can open.
+# read-back overrides the resolved host and port; a failed one keeps the
+# resolution and says why. The wildcard address a front-end reports for an
+# any-host binding becomes loopback; a concrete host from the mapping is
+# retained verbatim so probes and printed URLs cannot disagree with Compose.
 read_back_effective_ports() {
     local published engine_read=false conductor_read=false
 
     published="$(compose_published_port maistro-engine 8000 || true)"
     if [[ -n "$published" ]]; then
+        ENGINE_BIND_HOST="$(binding_host_for_urls "${published%:*}")"
         ENGINE_PORT="${published##*:}"
         validate_port_value MAISTRO_PORT "$ENGINE_PORT" "compose mapping (${published})"
         engine_read=true
@@ -421,6 +525,7 @@ read_back_effective_ports() {
 
     published="$(compose_published_port hive-conductor 8101 || true)"
     if [[ -n "$published" ]]; then
+        ENGINE_BIND_HOST="$(binding_host_for_urls "${published%:*}")"
         CONDUCTOR_PORT="${published##*:}"
         validate_port_value HIVE_PORT "$CONDUCTOR_PORT" "compose mapping (${published})"
         conductor_read=true
@@ -428,6 +533,7 @@ read_back_effective_ports() {
 
     if [[ "$engine_read" == true || "$conductor_read" == true ]]; then
         refresh_base_urls
+        export MAISTRO_BIND_HOST="$ENGINE_BIND_HOST"
         export MAISTRO_PORT="$ENGINE_PORT"
         export HIVE_PORT="$CONDUCTOR_PORT"
     fi
