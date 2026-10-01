@@ -1,4 +1,4 @@
-"""CLI for the registry tool: walk + validate + lint + generate.
+"""CLI for the registry tool: walk + validate + lint + generate + retrieve.
 
 Usage:
 
@@ -9,6 +9,9 @@ Usage:
     python -m maistro_registry.cli lint . --strict
     python -m maistro_registry.cli generate .
     python -m maistro_registry.cli generate . --output registry/
+    python -m maistro_registry.cli index .            # build retrieval index
+    python -m maistro_registry.cli search "query" .   # BM25 over the corpus
+    python -m maistro_registry.cli eval . --min-mrr 0.9
 
 No external CLI library: `argparse` from stdlib (no Click dep added).
 Conforms to `engine#ADR-039` substrate posture.
@@ -29,6 +32,16 @@ from maistro_registry.linker import (
     FilesystemResolver,
     LinkResult,
     check_links,
+)
+from maistro_registry.retrieval import (
+    OpenAICompatExpander,
+    RetrievalSearcher,
+    build_index,
+    evaluate,
+    load_corpus,
+    load_golden,
+    load_index,
+    save_index,
 )
 from maistro_registry.schema import FrontMatter
 from maistro_registry.validator import ValidationResult, validate_file
@@ -231,6 +244,100 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+# Shipped golden query set for `maistro-registry eval`. Corpus-specific by
+# design: it encodes which documents in THIS repo answer THIS repo's
+# architectural questions, which is what makes retrieval quality measured
+# rather than asserted (issue #26).
+_GOLDEN_DATA_FILE = Path(__file__).parent / "retrieval" / "golden_queries.json"
+
+
+def _load_searcher(
+    root: Path,
+    index_path: str | None,
+    max_df_share: float | None,
+) -> RetrievalSearcher:
+    """Prebuilt index when given, otherwise build from the corpus at `root`."""
+    index = load_index(Path(index_path)) if index_path else build_index(load_corpus(root))
+    if max_df_share is None:
+        return RetrievalSearcher(index)
+    return RetrievalSearcher(index, max_df_share=max_df_share)
+
+
+def cmd_index(args: argparse.Namespace) -> int:
+    """Build and save the lexical retrieval index (offline enrichment)."""
+    root = Path(args.root)
+    if not root.is_dir():
+        print(f"error: {root} is not a directory", file=sys.stderr)
+        return 2
+    documents = load_corpus(root)
+    if not documents:
+        print(f"no corpus documents found under {root}", file=sys.stderr)
+        return 2
+    index = build_index(documents)
+    out = Path(args.output) if args.output else (root / "registry" / "retrieval-index.json")
+    save_index(index, out)
+    print(
+        f"indexed {index.document_count} documents "
+        f"(fingerprint {index.fingerprint}, vocabulary {len(index.stats.document_frequency)})\n"
+        f"  {out}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def cmd_search(args: argparse.Namespace) -> int:
+    """Run one BM25 query and print ranked, provenance-carrying results."""
+    root = Path(args.root)
+    searcher = _load_searcher(root, args.index, args.max_df_share)
+    expander = None
+    if args.expand_endpoint:
+        expander = OpenAICompatExpander(
+            base_url=args.expand_endpoint,
+            model=args.expand_model or "",
+        )
+    response = searcher.search(args.query, k=args.k, expander=expander)
+
+    print(f"query: {response.query!r}")
+    print(f"terms kept: {' '.join(response.query_terms) or '(none)'}")
+    if response.rejected_terms:
+        print(f"terms rejected (corpus-statistical): {' '.join(response.rejected_terms)}")
+    if response.expanded_terms:
+        print(f"expanded terms kept: {' '.join(response.expanded_terms)}")
+    if response.expansion_skipped:
+        print(f"expansion skipped: {response.expansion_error}", file=sys.stderr)
+    if not response.results:
+        print("no results")
+        return 0
+    for result in response.results:
+        print(result.render())
+    return 0
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Measure retrieval quality over a golden set; fail below thresholds."""
+    root = Path(args.root)
+    searcher = _load_searcher(root, args.index, args.max_df_share)
+    golden_path = Path(args.golden) if args.golden else _GOLDEN_DATA_FILE
+    golden = load_golden(golden_path)
+    report = evaluate(lambda query, k: searcher.search(query, k=k), golden, k=args.k)
+    print(report.render())
+
+    failed = False
+    if args.min_mrr is not None and report.mean_mrr < args.min_mrr:
+        print(
+            f"FAIL: mean mrr {report.mean_mrr:.4f} < required {args.min_mrr}",
+            file=sys.stderr,
+        )
+        failed = True
+    if args.min_recall is not None and report.mean_recall < args.min_recall:
+        print(
+            f"FAIL: mean recall@{args.k} {report.mean_recall:.4f} < required {args.min_recall}",
+            file=sys.stderr,
+        )
+        failed = True
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="maistro-registry",
@@ -297,6 +404,81 @@ def build_parser() -> argparse.ArgumentParser:
         help="generate registry even if some files have validation errors",
     )
     p_gen.set_defaults(func=cmd_generate)
+
+    # --- retrieval (issue #26: corpus-aware architectural retrieval) ---
+
+    p_idx = sub.add_parser(
+        "index",
+        help="build the lexical retrieval index over the corpus (offline enrichment)",
+    )
+    p_idx.add_argument("root", nargs="?", default=".", help="repo root (default: cwd)")
+    p_idx.add_argument(
+        "--output",
+        "-o",
+        help="output index file (default: <root>/registry/retrieval-index.json)",
+    )
+    p_idx.set_defaults(func=cmd_index)
+
+    p_search = sub.add_parser(
+        "search",
+        help="BM25 search over the ADR/spec/known-gap corpus",
+    )
+    p_search.add_argument("query", help="the search query")
+    p_search.add_argument("root", nargs="?", default=".", help="repo root (default: cwd)")
+    p_search.add_argument("-k", type=int, default=10, help="number of results (default: 10)")
+    p_search.add_argument(
+        "--index",
+        help="use a prebuilt index file instead of building from the corpus",
+    )
+    p_search.add_argument(
+        "--max-df-share",
+        type=float,
+        default=None,
+        help=(
+            "reject query terms whose document-frequency share reaches this "
+            "(default: the measured 0.5)"
+        ),
+    )
+    p_search.add_argument(
+        "--expand-endpoint",
+        help="OpenAI-compatible API root for LLM query expansion (e.g. http://localhost:4000)",
+    )
+    p_search.add_argument(
+        "--expand-model",
+        help="model name for LLM query expansion (requires --expand-endpoint)",
+    )
+    p_search.set_defaults(func=cmd_search)
+
+    p_eval = sub.add_parser(
+        "eval",
+        help="measure retrieval quality over a golden query set",
+    )
+    p_eval.add_argument("root", nargs="?", default=".", help="repo root (default: cwd)")
+    p_eval.add_argument(
+        "--golden",
+        help=(
+            "golden set JSON (default: the shipped corpus golden set in "
+            "maistro_registry/retrieval/golden_queries.json)"
+        ),
+    )
+    p_eval.add_argument("--index", help="use a prebuilt index file instead of building")
+    p_eval.add_argument("-k", type=int, default=10, help="cutoff for the metrics (default: 10)")
+    p_eval.add_argument(
+        "--min-mrr", type=float, default=None, help="exit 1 if mean MRR falls below this"
+    )
+    p_eval.add_argument(
+        "--min-recall",
+        type=float,
+        default=None,
+        help="exit 1 if mean recall@k falls below this",
+    )
+    p_eval.add_argument(
+        "--max-df-share",
+        type=float,
+        default=None,
+        help="term-rejection ceiling (default: the measured 0.5)",
+    )
+    p_eval.set_defaults(func=cmd_eval)
 
     return parser
 

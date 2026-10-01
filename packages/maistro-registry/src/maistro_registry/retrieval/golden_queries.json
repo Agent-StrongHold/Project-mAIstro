@@ -1,0 +1,161 @@
+[
+  {
+    "query": "task queue persistence across restart",
+    "relevant": {
+      "KNOWN-GAPS#task-queue-persistence": 3,
+      "ADR-018": 2,
+      "ADR-056": 1
+    },
+    "note": "known-gap entry first: the shipped limitation is the direct answer, with the persistence ADR and the crash-recovery ADR as support"
+  },
+  {
+    "query": "BM25 lexical memory retrieval ranking",
+    "relevant": {
+      "SPEC-243": 3,
+      "ADR-080": 2,
+      "SPEC-240": 1
+    },
+    "note": "the ranking spec names BM25 in its title; ADR-080 part D is the decision it implements"
+  },
+  {
+    "query": "canvas publish export pptx structured exporters",
+    "relevant": {
+      "SPEC-070426-457b": 3,
+      "KNOWN-GAPS#canvas-publish-and-export": 3,
+      "ADR-045": 1
+    },
+    "note": "exporter spec and the known-gap entry are both direct answers"
+  },
+  {
+    "query": "task crash recovery checkpoint replay",
+    "relevant": {
+      "ADR-056": 3,
+      "SPEC-256": 3
+    },
+    "note": "the ADR decides it, the spec details checkpoint replay"
+  },
+  {
+    "query": "alembic database migrations",
+    "relevant": {
+      "SPEC-230": 3,
+      "ADR-012": 2
+    },
+    "note": "infrastructure spec plus the first-migration ADR; exercises singular/plural matching (migration/migrations)"
+  },
+  {
+    "query": "secrets migration to environment",
+    "relevant": {
+      "SPEC-003": 3
+    },
+    "note": "stopword 'to' must be rejected by corpus statistics without disturbing the hit"
+  },
+  {
+    "query": "setup wizard onboarding",
+    "relevant": {
+      "ADR-020": 3,
+      "SPEC-009": 2
+    },
+    "note": "'onboarding' appears only as prose context; title match must carry"
+  },
+  {
+    "query": "human as node",
+    "relevant": {
+      "SPEC-019": 3
+    },
+    "note": "registry-style proper name; short query against a long body"
+  },
+  {
+    "query": "agent decentralized identity did vc",
+    "relevant": {
+      "ADR-024": 3,
+      "ADR-084": 2,
+      "ADR-023": 1
+    },
+    "note": "ADR-024 is the DID/VC decision; ADR-084 the lifecycle follow-up; ADR-023 adjacent crypto plumbing (grade 1)"
+  },
+  {
+    "query": "memory decay reinforcement dynamics",
+    "relevant": {
+      "SPEC-240": 3,
+      "ADR-080": 2
+    },
+    "note": "'memory' has a high document-frequency share in this corpus and must stay kept below the 0.5 ceiling"
+  },
+  {
+    "query": "session search",
+    "relevant": {
+      "ADR-048": 3,
+      "SPEC-250": 2
+    },
+    "note": "two-word id-style query; the implementing spec grades 2"
+  },
+  {
+    "query": "git rollback shadow branch",
+    "relevant": {
+      "ADR-049": 3,
+      "SPEC-254": 3
+    },
+    "note": "ADR and its implementation spec are equally direct"
+  },
+  {
+    "query": "install bootstrap copier answers file",
+    "relevant": {
+      "SPEC-180": 3,
+      "ADR-033": 2
+    },
+    "note": "bootstrap contract spec plus the copier workflow ADR"
+  },
+  {
+    "query": "conductor degraded mode",
+    "relevant": {
+      "KNOWN-GAPS#conductor-degraded-modes": 3
+    },
+    "note": "answer lives only in a KNOWN-GAPS.md section — the split documents must be reachable"
+  },
+  {
+    "query": "front matter registry conventions",
+    "relevant": {
+      "ADR-031": 3
+    },
+    "note": "the registry's own conventions ADR"
+  },
+  {
+    "query": "external library adoption supply chain",
+    "relevant": {
+      "ADR-039": 3
+    },
+    "note": "policy ADR found by its subject matter, not its id"
+  },
+  {
+    "query": "lane scheduling",
+    "relevant": {
+      "SPEC-211": 3,
+      "ADR-010": 3
+    },
+    "note": "spec and ADR share the topic; both grade 3, ordering graded by nDCG"
+  },
+  {
+    "query": "graph execution durable run noderun attempt",
+    "relevant": {
+      "SPEC-081226-a66b": 3,
+      "ADR-082826-d9f5": 2
+    },
+    "note": "canonical lifecycle spec; 'run' is corpus-ubiquitous and must be rejected without losing the hit"
+  },
+  {
+    "query": "lightning federation",
+    "relevant": {
+      "SPEC-018": 3,
+      "ADR-027": 3
+    },
+    "note": "mirrored ADR/spec pair"
+  },
+  {
+    "query": "observability taxonomy logging metrics tracing",
+    "relevant": {
+      "ADR-037": 3,
+      "SPEC-228": 2
+    },
+    "note": "the taxonomy ADR plus the baseline-gaps spec measuring against it"
+  }
+]
