@@ -1028,6 +1028,17 @@ jobs:
       - name: image inventory (every Dockerfile is dispositioned; shipped ones name live jobs)
         run: uv run python scripts/check-image-inventory.py
 
+      # Digest pins close what the inventory comment names as its open gap: a
+      # mutable base means the released artifact can differ from the scanned
+      # one. This gate rejects `:latest` (explicit or implicit) everywhere, and
+      # requires every external image reference to be pinned
+      # `name:tag@sha256:<digest>` AND registered in quality/image-pins.json
+      # with the same coordinates (#349) -- so a base update can only land as a
+      # reviewable change to the registry plus the Dockerfiles, never as a
+      # silent tag move.
+      - name: image pins (release bases digest-pinned; no mutable :latest anywhere)
+        run: uv run python scripts/check-image-pins.py
+
       # BACKLOG.md is the hand-maintained work-source of record until the DB
       # backlog is live (#50), and agents read it as well as people. The gate
       # reads its vocabulary out of the file's own legend tables, so a legend
