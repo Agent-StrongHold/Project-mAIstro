@@ -276,12 +276,9 @@
       "id": "quota-verification",
       "subsystem": "Quota and billing",
       "disposition": "CONNECT",
-      "rationale": "ADR-085 provider-side quota verification and reconciliation. #56 attaches token and cost metadata to the Invocation, which is where these belong.",
+      "rationale": "ADR-085 provider-side quota verification. #718 wired the recording half (maistro.quota.recorder, and the ambient/reconciliation modules it composes) into the canonical Invocation terminalization, so those left this disposition; #1204 wired the SQLite usage-log snapshot behind the sqlite backend of create_container. The explicit verifier half (verify.py + the per-provider verifiers) still has no production caller and remains owed.",
       "root": "the Invocation cost path (#56)",
       "modules": [
-        "maistro.quota.ambient",
-        "maistro.quota.reconciliation",
-        "maistro.quota.recorder",
         "maistro.quota.verifiers",
         "maistro.quota.verifiers.mistral",
         "maistro.quota.verifiers.openrouter",
@@ -341,16 +338,6 @@
       "root": "maistro.config.settings construction",
       "modules": [
         "maistro.config.loader"
-      ]
-    },
-    {
-      "id": "interop-contract",
-      "subsystem": "Shared contracts and config",
-      "disposition": "LIBRARY",
-      "rationale": "The #458 interoperability ontology is a published import surface for products to converge onto, not a process entry point: INTEROP_ONTOLOGY_V1 is the executable form of quality/shared-interop-ontology-v1.json and exists to be imported by Builders/Conductor migration issues and the #459 parity suite, none of which may redefine the canonical concepts locally. Its parity and validation behavior is proven by packages/maistro-core/tests/interop/test_contract.py rather than by any runtime path.",
-      "modules": [
-        "maistro.interop",
-        "maistro.interop.contract"
       ]
     },
     {

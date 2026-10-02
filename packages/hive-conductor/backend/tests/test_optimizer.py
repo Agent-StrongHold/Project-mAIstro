@@ -27,6 +27,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
 from typing import Any
@@ -413,18 +414,29 @@ async def test_run_optimizer_default_does_not_apply() -> None:
     assert any(p["class"] == "auto_apply" for p in out["proposals"])
 
 
-async def test_run_optimizer_apply_auto_true_applies_unless_locked() -> None:
+async def test_run_optimizer_apply_auto_reports_truthful_outcomes() -> None:
+    """apply_auto=True without a concrete target value commits nothing.
+
+    The optimizer cannot author a model swap target, so the proposal is
+    reported `unsupported` — never `applied` (#861 removed the fake path that
+    marked valueless proposals applied with audit entries and no mutation).
+    """
     from services.optimizer import run_optimizer
 
     _seed_metrics("d2", "n-target", count=10, failed=8, p95=100)
     out = await run_optimizer("d2", apply_auto=True, actor="optimizer-bot")
-    # At least the model_swap auto-applies (no edit lock)
-    assert out["auto_applied"] >= 1
-    # Audit log has the auto-apply entry
+    # The model_swap proposal carries no target value → unsupported, not applied
+    assert out["auto_applied"] == 0
+    swap = next(p for p in out["proposals"] if p["kind"] == "model_swap")
+    assert swap["applied"] is False
+    assert swap["apply_outcome"] == "unsupported"
+    # No proposal claims an application it did not commit
+    assert all(not p["applied"] for p in out["proposals"])
     import stores
 
     apply_entries = [e for e in stores.audit_log.values() if e["action"] == "optimizer_auto_apply"]
     assert len(apply_entries) >= 1
+    assert all(e["detail"]["outcome"] != "applied" for e in apply_entries)
 
 
 async def test_run_optimizer_edit_lock_blocks_auto_apply() -> None:
@@ -477,9 +489,13 @@ async def test_record_decision_accepts_proposal() -> None:
     _seed_metrics("d-dec", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d-dec")
     pid = out["proposals"][0]["id"]
-    decision = record_decision(pid, "accepted", actor="alice")
+    decision = await record_decision(pid, "accepted", actor="alice")
     assert decision["decision"] == "accepted"
     assert decision["decided_by"] == "alice"
+    # The apply outcome is recorded and is truthful: the model-swap proposal
+    # names no target value, so nothing applied (#861).
+    assert decision["apply_outcome"] == "unsupported"
+    assert decision["applied"] is False
     # Audit log has the decision entry
     assert any(
         e["action"] == "optimizer_decision" and e["detail"]["proposal_id"] == pid
@@ -493,7 +509,7 @@ async def test_record_decision_rejects_proposal() -> None:
     _seed_metrics("d-rej", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d-rej")
     pid = out["proposals"][0]["id"]
-    d = record_decision(pid, "rejected", actor="bob")
+    d = await record_decision(pid, "rejected", actor="bob")
     assert d["decision"] == "rejected"
 
 
@@ -501,14 +517,14 @@ def test_record_decision_invalid_raises_value_error() -> None:
     from services.optimizer import record_decision
 
     with pytest.raises(ValueError, match="decision must be one of"):
-        record_decision("any", "maybe", actor="u")
+        asyncio.run(record_decision("any", "maybe", actor="u"))
 
 
 def test_record_decision_unknown_id_raises_key_error() -> None:
     from services.optimizer import record_decision
 
     with pytest.raises(KeyError):
-        record_decision("missing-id", "accepted", actor="u")
+        asyncio.run(record_decision("missing-id", "accepted", actor="u"))
 
 
 # --- list_proposals ------------------------------------------------------
@@ -535,7 +551,7 @@ async def test_list_proposals_filter_by_decision() -> None:
     out = await run_optimizer("d")
     assert len(out["proposals"]) >= 2  # spec invariant for this test
     # Accept the first; leave the rest pending.
-    record_decision(out["proposals"][0]["id"], "accepted", actor="u")
+    await record_decision(out["proposals"][0]["id"], "accepted", actor="u")
     accepted = list_proposals(decision="accepted")
     assert len(accepted) == 1
     pending = list_proposals(decision="pending")
@@ -575,11 +591,16 @@ def test_run_endpoint_returns_ranked_proposals(admin_client: Any) -> None:
 
 
 def test_run_endpoint_with_apply_auto_true(admin_client: Any) -> None:
+    """apply_auto over HTTP is truthful: without a concrete target value the
+    model-swap proposal is `unsupported`, so nothing claims an application
+    and auto_applied stays 0 (#861 removed the fake apply path)."""
     _seed_metrics("d-apply", "n1", count=10, failed=8, p95=100)
     workspace_id = _optimizer_workspace(admin_client)
     r = admin_client.post(f"/v1/optimizer/d-apply/run?apply_auto=true&workspace_id={workspace_id}")
     assert r.status_code == 200
-    assert r.json()["auto_applied"] >= 1
+    body = r.json()
+    assert body["auto_applied"] == 0
+    assert all(not p["applied"] for p in body["proposals"])
 
 
 def test_run_endpoint_requires_an_authorized_workspace(admin_client: Any) -> None:
@@ -903,3 +924,198 @@ async def test_only_zero_score_snapshots_are_skipped() -> None:
     _seed_metrics("d-clean", "n", count=10, failed=0, p95=100)
     out = await run_optimizer("d-clean")
     assert out["proposals"] == []
+
+
+# --- #861: mutated-snapshot refusal vocabulary (truthful apply outcomes) ---
+
+
+def _seed_mut_dag(dag_id: str = "d-mut") -> None:
+    """A minimal DAG record for direct _mutated_snapshot unit tests."""
+    import stores
+
+    stores.dags[dag_id] = {
+        "id": dag_id,
+        "entry_node": "n1",
+        "nodes": [
+            {"id": "n1", "model": "m-a", "prompt": "p"},
+            {"id": "n2", "model": "m-b", "prompt": "q"},
+        ],
+        "edges": [{"id": "e1", "from_node": "n1", "to_node": "n2", "weight": 1.0}],
+    }
+
+
+def _bound_proposal(kind: str, dag_id: str = "d-mut", **tp: Any) -> dict[str, Any]:
+    """A proposal bound to the current content of the seeded DAG."""
+    import stores
+    from services.optimizer_candidates import snapshot_hash
+
+    return {
+        "id": "p-1",
+        "dag_id": dag_id,
+        "kind": kind,
+        "source_dag_hash": snapshot_hash(stores.dags[dag_id]),
+        "topology_proposal": {"kind": kind, **tp},
+    }
+
+
+def test_collect_eval_verdicts_empty_dag_id_returns_empty() -> None:
+    """No dag_id means no verdicts can bind — the early empty return (#861)."""
+    from services.optimizer import _collect_eval_verdicts
+
+    _seed_eval_verdict("d-x", "run-x", 5)
+    assert _collect_eval_verdicts("") == []
+
+
+def test_mutated_snapshot_escalation_kind_is_never_applied() -> None:
+    """The backstop behind the escalation pre-checks: even a proposal that
+    reaches the builder with an authorization kind is refused unsupported —
+    tier changes are requests, never mutations (#861, #845/#60)."""
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("upgrade_execution_tier", target_node_id="n1", to_value="container")
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "authorization request" in detail
+
+
+def test_mutated_snapshot_node_field_without_matching_node_is_unsupported() -> None:
+    """A node-field mutation naming a node the snapshot does not have is
+    `unsupported`, not a partial application."""
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("swap_model", target_node_id="nX", to_value="m-strong")
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "no node 'nX'" in detail
+
+
+def test_mutated_snapshot_edge_field_mutation_builds_candidate() -> None:
+    """An edge-field kind (weight/condition) builds a candidate on the deep
+    copy — the live DAG record is untouched by building."""
+    import stores
+    from services.optimizer import BUILT, _mutated_snapshot
+    from services.optimizer_candidates import snapshot_hash
+
+    _seed_mut_dag()
+    hash_before = snapshot_hash(stores.dags["d-mut"])
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("tune_edge_weight", target_node_id="n1", from_value="n2", to_value=0.2)
+    )
+    assert outcome == BUILT and detail == ""
+    assert candidate is not None
+    assert candidate["edges"][0]["weight"] == 0.2
+    # Building mutated only the copy.
+    assert snapshot_hash(stores.dags["d-mut"]) == hash_before
+
+
+def test_mutated_snapshot_edge_field_without_matching_edge_is_unsupported() -> None:
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("set_edge_condition", target_node_id="n1", from_value="nX", to_value="ok")
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "no edge 'n1' -> 'nX'" in detail
+
+
+def test_mutated_snapshot_retry_count_requires_integer_value() -> None:
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("retry_count_tune", target_node_id="n1", to_value="fast")
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "no integer target value" in detail
+
+
+def test_mutated_snapshot_retry_count_without_matching_node_is_unsupported() -> None:
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("retry_count_tune", target_node_id="gone", to_value=3)
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "no node 'gone'" in detail
+
+
+def test_mutated_snapshot_without_dag_record_is_stale() -> None:
+    """A proposal whose DAG no longer exists is `stale` — refused, never
+    re-targeted (#861)."""
+    from services.optimizer import STALE, _mutated_snapshot
+
+    _seed_mut_dag()
+    proposal = _bound_proposal("swap_model", target_node_id="n1", to_value="m-strong")
+    proposal["dag_id"] = "d-vanished"
+    candidate, outcome, detail = _mutated_snapshot(proposal)
+    assert candidate is None
+    assert outcome == STALE
+    assert "no DAG record" in detail
+
+
+def test_mutated_snapshot_structural_mutation_builds_candidate() -> None:
+    """Structural kinds dispatch through the whole-snapshot mutator and build
+    a candidate (add_node here)."""
+    from services.optimizer import BUILT, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("add_node", target_node_id="n2", to_value="New Step")
+    )
+    assert outcome == BUILT and detail == ""
+    assert candidate is not None
+    assert candidate["nodes"][-1]["name"] == "New Step"
+    # The new node was wired to the target with an edge.
+    assert candidate["edges"][-1]["from_node"] == "n2"
+
+
+async def test_apply_auto_escalation_kind_is_a_pending_request(
+    _isolated: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An auto-apply proposal of an authorization kind is recorded as an
+    escalation REQUEST, not as a decision and never as an application —
+    `auto_applied` stays 0 and the audit holds the request for the delegated
+    authority (#861, #845/#60)."""
+    import services.optimizer as opt
+    import stores
+
+    _seed_mut_dag("d-esc")
+    _seed_metrics("d-esc", "n1", count=10, failed=8, p95=100)
+    monkeypatch.setattr(
+        opt,
+        "_propose_for_snapshot",
+        lambda snap: [
+            {
+                "class": opt.CLASS_AUTO_APPLY,
+                "kind": "upgrade_execution_tier",
+                "field_path": "nodes[n1].execution_tier",
+                "to_value": "container",
+                "rationale": "verdict asks for a stronger tier",
+            }
+        ],
+    )
+
+    out = await opt.run_optimizer("d-esc", apply_auto=True)
+    assert out["auto_applied"] == 0
+    (proposal,) = out["proposals"]
+    assert proposal["apply_outcome"] == "escalated"
+    assert proposal["applied"] is False
+    # A request is not a decision: it stays pending for the authority.
+    assert proposal["decision"] == opt.DECISION_PENDING
+    assert "tier_approved_by" not in repr(stores.dags["d-esc"])
+    requests = [
+        e for e in stores.audit_log.values() if e["action"] == "optimizer_escalation_request"
+    ]
+    assert len(requests) == 1
+    assert requests[0]["detail"]["requested_value"] == "container"
