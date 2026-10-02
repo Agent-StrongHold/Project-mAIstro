@@ -279,6 +279,36 @@
       "owner": "repair lane auto-1194 (maistro-implementer)",
       "issue": "#1194",
       "reason": "GET /a2a/tasks/by-idempotency-key/{idempotency_key} is the receipt-recovery half of #1194's transport idempotency: a dispatching worker that lost its lease after an ambiguous POST polls this endpoint with the same key and receives the original receipt (find_run_by_effect), distinguishing 'never accepted' (404) from 'accepted, receipt lost' - so the same logical delegation cannot be filed twice after a lease loss without explicit new-work semantics. Vulture reports it as an unused function at 60% confidence because FastAPI registers route handlers through the @router.get decorator; already banked under fastapi-route-handler in quality/vulture-baseline.json on this branch. Trusted-base note: same two-merge rule as the create_a2a_task grant above - effective from the next base, per the #1310 post-merge reconciliation precedent."
+    },
+    "packages/maistro-core/src/maistro/quota/__init__.py::unused function '__getattr__'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "The quota package's lazy re-export hook. Python calls it, nothing in this repository does, so a static scan cannot see a caller -- which is what `core-public-api-surface` exists to record. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/quota/pg_invocation_quota.py::unused method 'register_budget'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "Operator-facing API on the PostgreSQL quota door: a deployment registers its budgets through it, and the tests exercise it. No in-repository production call site, by design -- budgets are configuration, not code. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py::unused method 'register_budget'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "The SQLite half of the same operator-facing budget API. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py::unused method 'balance'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "Reads a budget's remaining allowance for operators and tests. Admission reads balances through its own locked path, so this public reader has no production caller. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py::unused attribute 'row_factory'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "`sqlite3.Connection.row_factory` is assigned, never read by this code: the driver reads it to shape every row the store fetches. `graph/durable_runs/stores.py` carries the identical row for the identical reason. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::unused variable 'all_match'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "A declared field on `WaitForSubtasksOut`, read through pydantic validation and serialization rather than by a Python attribute access -- exactly the case `pydantic-declarative-field` records. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
     }
   },
   "model-egress": {
