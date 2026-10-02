@@ -12,18 +12,20 @@ try:
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
 
-from maistro_design.creative_brief import (
-    ArtifactProvenance,
-    ArtifactRequirement,
-    BriefRevision,
+from maistro_design.brief import (
+    ArtifactProjection,
+    ArtifactRequest,
+    ArtifactRequestNotFoundError,
+    BriefContractError,
+    BriefReference,
+    BriefVersionConflictError,
     CreativeBrief,
-    CreativeBriefConflictError,
     CreativeBriefError,
-    CreativeBriefNotFoundError,
-    CreativeBriefStore,
-    CreativeBriefVersion,
-    InMemoryCreativeBriefStore,
-    SharedCreativeContext,
+    CrossWorkspaceReferenceError,
+    EvidenceReference,
+    ProjectionOverride,
+    ProtectedFieldOverrideError,
+    RequiredFact,
 )
 from maistro_design.engine import DesignEngine
 from maistro_design.protocols import (
@@ -94,17 +96,18 @@ __all__ = [
     "NATIVE_SLOTS",
     "ArtifactKind",
     "ArtifactNode",
-    "ArtifactProvenance",
-    "ArtifactRequirement",
-    "BriefRevision",
+    "ArtifactProjection",
+    "ArtifactRequest",
+    "ArtifactRequestNotFoundError",
+    "BriefContractError",
+    "BriefReference",
+    "BriefVersionConflictError",
     "CatalogImportPolicyError",
     "ColorToken",
     "CreativeBrief",
-    "CreativeBriefConflictError",
     "CreativeBriefError",
-    "CreativeBriefNotFoundError",
     "CreativeBriefStore",
-    "CreativeBriefVersion",
+    "CrossWorkspaceReferenceError",
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
@@ -121,8 +124,8 @@ __all__ = [
     "DiscoveryField",
     "DiscoveryIncompleteError",
     "DiscoveryResult",
+    "EvidenceReference",
     "HTMLRenderer",
-    "InMemoryCreativeBriefStore",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
     "InMemoryTrustBanishList",
@@ -131,16 +134,19 @@ __all__ = [
     "OpenDesignConfig",
     "OpenDesignProvider",
     "OutputFormat",
+    "PgCreativeBriefStore",
     "PgDesignProjectStore",
+    "ProjectionOverride",
+    "ProtectedFieldOverrideError",
     "RenderProvider",
     "RenderProviderError",
     "RenderSlot",
     "RenderSlotUnavailableError",
     "RendererDiscovery",
     "RendererRegistry",
+    "RequiredFact",
     "SVGRenderer",
     "ScanReport",
-    "SharedCreativeContext",
     "SkillMode",
     "SkillModeError",
     "SkillNotFoundError",
@@ -165,9 +171,17 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Lazy-load PgDesignProjectStore to avoid requiring sqlalchemy at import time."""
+    """Lazy-load PG stores to avoid requiring sqlalchemy at import time."""
     if name == "PgDesignProjectStore":
         from maistro_design.stores import PgDesignProjectStore
 
         return PgDesignProjectStore
+    if name == "PgCreativeBriefStore":
+        from maistro_design.brief_store import PgCreativeBriefStore
+
+        return PgCreativeBriefStore
+    if name == "CreativeBriefStore":
+        from maistro_design.protocols import CreativeBriefStore
+
+        return CreativeBriefStore
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
