@@ -1,0 +1,69 @@
+# Domain pack: game (M7-A4, #793)
+# Loop/verbs/beat-plan exploration; Canvas plus a structured artifact tree as
+# execute backends. A game pack, not a game engine — no runtime ships here.
+pack_id: game
+name: Game Pack
+summary: >-
+  Loop, verbs, and a beat plan explored before produce; canvas compositions
+  and a structured artifact tree produced on the same canonical loop, then
+  evaluated on verb clarity, onboarding beat, and fair challenge.
+explore_focus:
+  - loop
+  - verbs
+  - beat_plan
+execute_backends:
+  - canvas
+  - file_artifact_writer
+artifact_kinds:
+  - loop_spec
+  - verb_glossary
+  - beat_plan
+  - level_layout
+  - art_direction
+rubric_dimensions:
+  - dimension_id: verb_clarity
+    name: Verb clarity
+    description: What the player can do is stated as clear, distinct verbs.
+  - dimension_id: onboarding_beat
+    name: Onboarding beat
+    description: The first beat teaches the loop without a manual.
+  - dimension_id: fair_challenge
+    name: Fair challenge
+    description: Difficulty rises from the loop, not from withheld information.
+fence_points:
+  - explore.accept
+  - execute.park
+graph:
+  name: game-loop
+  entry_node: explore.loop
+  nodes:
+    - node_id: explore.loop
+      kind: pack.explore
+      phase: explore
+    - node_id: explore.verbs
+      kind: pack.explore
+      phase: explore
+    - node_id: explore.beat_plan
+      kind: pack.explore
+      phase: explore
+      fenced: true
+    - node_id: execute.canvas
+      kind: pack.execute
+      phase: execute
+    - node_id: execute.artifact_tree
+      kind: pack.execute
+      phase: execute
+      fenced: true
+    - node_id: evaluate.rubric
+      kind: pack.evaluate
+      phase: evaluate
+    - node_id: refine.revise
+      kind: pack.refine
+      phase: refine
+  edges:
+    - [explore.loop, explore.verbs]
+    - [explore.verbs, explore.beat_plan]
+    - [explore.beat_plan, execute.canvas]
+    - [execute.canvas, execute.artifact_tree]
+    - [execute.artifact_tree, evaluate.rubric]
+    - [evaluate.rubric, refine.revise]
