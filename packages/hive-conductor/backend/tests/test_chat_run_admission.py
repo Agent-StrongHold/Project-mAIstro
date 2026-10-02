@@ -495,3 +495,162 @@ def test_a_member_workspace_without_a_view_falls_back_to_the_default(
     run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
     assert run.workspace_id == default.id
     assert _runs_in(container, ws) == []
+
+
+def _answer() -> dict[str, Any]:
+    return {"choices": [{"message": {"role": "assistant", "content": "hello"}}]}
+
+
+@pytest.mark.contract("behavioral")
+def test_hive_window_forgets_completed_turns_without_a_later_admission(
+    container: Container,
+) -> None:
+    """The Workspace admitter's own window is swept when the turn ends (#131).
+
+    `Container._close_chat_run` sweeps a different admitter. Without a sweep
+    on this one, a final burst stays past `max_retained` until the next admit.
+    """
+
+    async def _turns() -> tuple[ChatRunAdmitter, list[str]]:
+        messages = [{"role": "user", "content": "hi"}]
+
+        async def _ok() -> dict[str, Any]:
+            return _answer()
+
+        ids: list[str] = []
+        turn = await chat_runs.admit_turn(_principal(), messages)  # type: ignore[arg-type]
+        admitter = next(iter(chat_runs._admitters.values()))
+        admitter._max_retained = 2
+        await chat_runs.execute_turn(turn, messages, _ok)
+        ids.append(turn.run.run_id)
+        for _ in range(2):
+            turn = await chat_runs.admit_turn(_principal(), messages)  # type: ignore[arg-type]
+            await chat_runs.execute_turn(turn, messages, _ok)
+            ids.append(turn.run.run_id)
+        return admitter, ids
+
+    admitter, ids = _run(_turns())
+    assert admitter.retained <= 2
+    oldest = _run(container.run_store.get_run(ids[0]))
+    assert oldest is None
+    assert _run(container.run_store.get_run(ids[-1])) is not None
+
+
+@pytest.mark.contract("behavioral")
+def test_a_running_hive_turn_is_not_swept_before_its_attempt(
+    container: Container,
+) -> None:
+    async def _turns() -> str:
+        messages = [{"role": "user", "content": "hi"}]
+        live = await chat_runs.admit_turn(_principal(), messages)  # type: ignore[arg-type]
+        admitter = next(iter(chat_runs._admitters.values()))
+        admitter._max_retained = 1
+
+        async def _ok() -> dict[str, Any]:
+            return _answer()
+
+        nxt = await chat_runs.admit_turn(_principal(), messages)  # type: ignore[arg-type]
+        await chat_runs.execute_turn(nxt, messages, _ok)
+        return live.run.run_id
+
+    live_id = _run(_turns())
+    live = _run(container.run_store.get_run(live_id))
+    assert live is not None
+    assert live.status is RunStatus.RUNNING
+
+
+@pytest.mark.contract("behavioral")
+def test_hive_admission_records_the_request_id(container: Container) -> None:
+    from maistro.runs.chat_admission import REQUEST_ID_KEY
+
+    principal = SimpleNamespace(state=SimpleNamespace(user={"id": USER}, request_id="req-hive-1"))
+
+    async def _turn() -> str:
+        turn = await chat_runs.admit_turn(  # type: ignore[arg-type]
+            principal, [{"role": "user", "content": "hi"}]
+        )
+        return turn.run.run_id
+
+    run, _node_runs, _attempts = _evidence(container, _run(_turn()))
+    assert run.provenance[REQUEST_ID_KEY] == "req-hive-1"
+
+
+@pytest.mark.contract("behavioral")
+def test_a_failed_move_to_running_releases_the_dispatch_shield(
+    container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shield is set while QUEUED, so a failure after that must clear it.
+
+    Otherwise the Run is cancelled but stays exempt from its Workspace's
+    retention sweep for the life of the process -- the one way the shield
+    added here could leak.
+    """
+    real_transition = container.run_store.transition_run
+
+    async def _fail_at_running(run_id: str, status: RunStatus, **kwargs: Any) -> Any:
+        if status is RunStatus.RUNNING:
+            raise RuntimeError("store unavailable at RUNNING")
+        return await real_transition(run_id, status, **kwargs)
+
+    monkeypatch.setattr(container.run_store, "transition_run", _fail_at_running)
+
+    async def _turn() -> None:
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as refused:
+            await chat_runs.admit_turn(_principal(), [{"role": "user", "content": "hi"}])  # type: ignore[arg-type]
+        assert refused.value.status_code == 503
+
+    _run(_turn())
+    monkeypatch.setattr(container.run_store, "transition_run", real_transition)
+
+    (admitter,) = chat_runs._admitters.values()
+    assert admitter._dispatch_pending == set(), "the shield outlived a refused admission"
+    default = _run(default_workspace.resolve_default_workspace(USER))
+    (run,) = _runs_in(container, default.id)
+    assert run.status is RunStatus.CANCELLED
+
+
+class _RecordingAdmitter:
+    """Just the two calls `_settle_window` makes, each able to fail."""
+
+    def __init__(self, *, release_fails: bool = False, sweep_fails: bool = False) -> None:
+        self.calls: list[str] = []
+        self._release_fails = release_fails
+        self._sweep_fails = sweep_fails
+
+    def release_dispatch_pending(self, run_id: str) -> None:
+        self.calls.append(f"release:{run_id}")
+        if self._release_fails:
+            raise RuntimeError("shield release failed")
+
+    async def sweep(self) -> int:
+        self.calls.append("sweep")
+        if self._sweep_fails:
+            raise RuntimeError("sweep failed")
+        return 0
+
+
+@pytest.mark.contract("behavioral")
+def test_settling_a_turn_still_sweeps_when_the_shield_release_fails() -> None:
+    """A failed release must not skip the sweep: the sweep is the retention
+    bound this change exists to restore, and it is independent of the shield."""
+    admitter = _RecordingAdmitter(release_fails=True)
+    run = SimpleNamespace(run_id="run-1")
+
+    _run(chat_runs._settle_window(admitter, run))  # type: ignore[arg-type]
+
+    assert admitter.calls == ["release:run-1", "sweep"]
+
+
+@pytest.mark.contract("behavioral")
+def test_settling_a_turn_never_turns_a_failed_sweep_into_a_failed_answer() -> None:
+    """`_settle_window` runs in `execute_turn`'s `finally`. If a sweep failure
+    escaped it, a turn the model already answered would surface as an error --
+    retention housekeeping deciding the user's result."""
+    admitter = _RecordingAdmitter(sweep_fails=True)
+    run = SimpleNamespace(run_id="run-1")
+
+    _run(chat_runs._settle_window(admitter, run))  # type: ignore[arg-type]
+
+    assert admitter.calls == ["release:run-1", "sweep"]
