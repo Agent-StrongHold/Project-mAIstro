@@ -8,9 +8,11 @@ lookup monkeypatched so nothing touches the network.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -189,3 +191,83 @@ def test_pull_request_with_empty_body_passes(gate, issues, monkeypatch, tmp_path
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     assert gate.main([]) == 0
+
+
+def test_pull_request_event_without_a_pull_request_object_skips(
+    gate, monkeypatch, tmp_path, capsys
+) -> None:
+    event = tmp_path / "event.json"
+    event.write_text("{}")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    assert gate.main([]) == 0
+    assert "skip:" in capsys.readouterr().out
+
+
+def test_missing_repository_argument_fails(gate, monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    assert _run(gate, tmp_path, "Closes #10") == 1
+
+
+def test_fetch_target_reads_title_and_sub_issues(gate, monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_urlopen(request, timeout=30):
+        calls.append(request.full_url)
+        payload = (
+            {"title": "P0 contract", "number": 53}
+            if request.full_url.endswith("/issues/53")
+            else [{"number": 99}]
+        )
+        body = json.dumps(payload).encode()
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(gate.urllib.request, "urlopen", fake_urlopen)
+    target = gate.fetch_target(REPO, 53, "test-token")
+    assert target == gate.Target(number=53, title="P0 contract", has_sub_issues=True)
+    assert calls[0].endswith("/repos/Agent-StrongHold/Project-mAIstro/issues/53")
+    assert calls[1].endswith("/sub_issues?per_page=1")
+
+
+def test_fetch_target_treats_missing_sub_issues_endpoint_as_empty(gate, monkeypatch) -> None:
+    def fake_urlopen(request, timeout=30):
+        if request.full_url.endswith("/sub_issues?per_page=1"):
+            raise HTTPError(request.full_url, 404, "missing", hdrs=None, fp=None)
+        return io.BytesIO(json.dumps({"title": "ordinary issue"}).encode())
+
+    monkeypatch.setattr(gate.urllib.request, "urlopen", fake_urlopen)
+    target = gate.fetch_target(REPO, 10, "test-token")
+    assert target == gate.Target(number=10, title="ordinary issue", has_sub_issues=False)
+
+
+@pytest.mark.parametrize(
+    "side_effect",
+    [
+        URLError("network down"),
+        json.JSONDecodeError("bad json", "{}", 0),
+        HTTPError("https://api.github.com/x", 500, "boom", hdrs=None, fp=None),
+    ],
+)
+def test_fetch_target_network_and_shape_errors_raise(gate, monkeypatch, side_effect) -> None:
+    def fake_urlopen(request, timeout=30):
+        if isinstance(side_effect, HTTPError) and request.full_url.endswith(
+            "/sub_issues?per_page=1"
+        ):
+            raise side_effect
+        if isinstance(side_effect, HTTPError):
+            raise side_effect
+        raise side_effect
+
+    monkeypatch.setattr(gate.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(gate.GitHubError):
+        gate.fetch_target(REPO, 10, "test-token")
+
+
+def test_fetch_target_rejects_a_non_object_issue_payload(gate, monkeypatch) -> None:
+    monkeypatch.setattr(
+        gate.urllib.request,
+        "urlopen",
+        lambda request, timeout=30: io.BytesIO(json.dumps([]).encode()),
+    )
+    with pytest.raises(gate.GitHubError, match="unexpected response shape"):
+        gate.fetch_target(REPO, 10, "test-token")
