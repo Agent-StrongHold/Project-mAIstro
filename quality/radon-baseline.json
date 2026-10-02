@@ -115,11 +115,11 @@
     {
       "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService.invoke",
       "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
-      "line": 408,
+      "line": 590,
       "name": "invoke",
       "classname": "InvocationExecutionService",
       "rank": "C",
-      "complexity": 13,
+      "complexity": 12,
       "rationale": "Landed with #1310's rework that makes ambiguous Invocation outcomes recoverable instead of permanently blocking; the recovered/failed-outcome branching concentrates in this single execute path. Post-merge ledger reconciliation records trunk reality under SPEC-264 - the ratchet is set at 13."
     },
     {
