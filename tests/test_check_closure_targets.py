@@ -87,6 +87,16 @@ def test_cross_repo_reference_is_ignored_unless_it_names_this_repo(gate) -> None
     assert gate.closing_targets(body, REPO) == [8]
 
 
+def test_full_url_closing_reference_is_recognised_for_this_repo(gate) -> None:
+    body = f"Closes https://github.com/{REPO}/issues/56"
+    assert gate.closing_targets(body, REPO) == [56]
+
+
+def test_full_url_closing_reference_for_another_repo_is_ignored(gate) -> None:
+    body = "Fixes https://github.com/other-org/other-repo/issues/56"
+    assert gate.closing_targets(body, REPO) == []
+
+
 def test_code_fenced_keyword_still_counts(gate) -> None:
     assert gate.closing_targets("```\nCloses #11\n```", REPO) == [11]
 
@@ -180,6 +190,17 @@ def test_pull_request_event_body_is_judged(gate, issues, monkeypatch, tmp_path) 
     issues[56] = ("[EPIC] cutover", False)
     event = tmp_path / "event.json"
     event.write_text(json.dumps({"pull_request": {"body": "closes #56"}}))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    assert gate.main([]) == 1
+
+
+def test_pull_request_title_is_scanned_for_squash_merge_keywords(
+    gate, issues, monkeypatch, tmp_path
+) -> None:
+    issues[56] = ("[EPIC] cutover", False)
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"pull_request": {"title": "Fixes #56", "body": "Part of #56."}}))
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     assert gate.main([]) == 1

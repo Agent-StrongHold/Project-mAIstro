@@ -48,7 +48,11 @@ _EPIC_TAG = re.compile(
 
 _CLOSING = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+"
-    r"(?:(?P<repo>[\w.-]+/[\w.-]+))?#(?P<number>\d+)\b",
+    r"(?:"
+    r"(?:(?P<repo>[\w.-]+/[\w.-]+))?#(?P<number>\d+)\b"
+    r"|"
+    r"https?://github\.com/(?P<url_repo>[\w.-]+/[\w.-]+)/issues/(?P<url_number>\d+)\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -68,10 +72,11 @@ def closing_targets(body: str, repo: str) -> list[int]:
     """Issue numbers in ``repo`` that ``body`` would close, in first-seen order."""
     numbers: list[int] = []
     for match in _CLOSING.finditer(body):
-        other = match.group("repo")
+        other = match.group("repo") or match.group("url_repo")
+        number_text = match.group("number") or match.group("url_number")
         if other and other.lower() != repo.lower():
             continue
-        number = int(match.group("number"))
+        number = int(number_text)
         if number not in numbers:
             numbers.append(number)
     return numbers
@@ -127,15 +132,17 @@ def problems_for(target: Target) -> list[str]:
     return found
 
 
-def pull_request_body(event_path: str | None) -> str | None:
-    """The PR body from the Actions event payload, or None if not a PR event."""
+def pull_request_text(event_path: str | None) -> str | None:
+    """PR title and body from the Actions event payload, or None if not a PR event."""
     if os.environ.get("GITHUB_EVENT_NAME", "") != "pull_request" or not event_path:
         return None
     event = json.loads(Path(event_path).read_text(encoding="utf-8"))
     pull_request = event.get("pull_request")
     if not isinstance(pull_request, dict):
         return None
-    return str(pull_request.get("body") or "")
+    title = str(pull_request.get("title") or "")
+    body = str(pull_request.get("body") or "")
+    return f"{title}\n{body}" if title or body else ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -151,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.body_file is not None:
         body: str | None = args.body_file.read_text(encoding="utf-8")
     else:
-        body = pull_request_body(os.environ.get("GITHUB_EVENT_PATH"))
+        body = pull_request_text(os.environ.get("GITHUB_EVENT_PATH"))
     if body is None:
         print("skip: not a pull_request event and no --body-file; no PR body to judge")
         return 0
