@@ -1182,7 +1182,6 @@
         "packages/maistro-core/src/maistro/sandbox/selector.py::unused method 'build_config'",
         "packages/maistro-core/src/maistro/scheduling/admission.py::unused method 'admit_due'",
         "packages/maistro-core/src/maistro/scheduling/model.py::unused method '_normalise_timestamps'",
-        "packages/maistro-core/src/maistro/scheduling/model.py::unused method '_validate'",
         "packages/maistro-core/src/maistro/scheduling/pg_store.py::unused method 'list_for_project'",
         "packages/maistro-core/src/maistro/scheduling/store.py::unused method 'list_for_project'",
         "packages/maistro-core/src/maistro/scheduling/store.py::unused method 'list_for_project'",
