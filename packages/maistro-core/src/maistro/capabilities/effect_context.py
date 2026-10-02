@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
+from maistro.capabilities.approval_store import InMemoryApprovalStore, SqliteApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import (
     InMemoryBindingStore,
@@ -197,9 +198,11 @@ async def new_sqlite_effect_context(
     bindings = SqliteBindingStore(conn)
     invocation_store = SqliteInvocationStore(conn)
     event_store = SqliteEventStore(conn)
+    approval_store = SqliteApprovalStore(conn)
     await bindings.ensure_schema()
     await invocation_store.ensure_schema()
     await event_store.ensure_schema()
+    await approval_store.ensure_schema()
     # The usage recorder attaches here, not only in `new_effect_context`
     # (#718): a durable deployment takes one of these two branches instead,
     # and a context built without it would dispatch governed effects whose
@@ -212,6 +215,7 @@ async def new_sqlite_effect_context(
         ),
         event_store=event_store,
         policy_evaluator=policy_evaluator or binding_scope_policy,
+        approval_store=approval_store,
     )
     return CapabilityEffectContext(
         bindings=bindings,
@@ -245,12 +249,14 @@ async def new_postgres_effect_context(
     # provider usage nothing ever recorded.
     selected_usage_log = usage_log or get_default_usage_log()
     usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
+    approval_store = InMemoryApprovalStore()
     governed = GovernedInvocationExecutionService(
         invocation_service=InvocationExecutionService(
             store=invocation_store, on_completed=usage_recorder.record
         ),
         event_store=event_store,
         policy_evaluator=policy_evaluator or binding_scope_policy,
+        approval_store=approval_store,
     )
     return CapabilityEffectContext(
         bindings=bindings,
@@ -260,6 +266,20 @@ async def new_postgres_effect_context(
         usage_log=selected_usage_log,
         credentials=credentials or CredentialRouter(),
     )
+
+
+_bound_container_effect_context: CapabilityEffectContext | None = None
+
+
+def bind_container_effect_context(context: CapabilityEffectContext | None) -> None:
+    global _bound_container_effect_context
+    _bound_container_effect_context = context
+    default_effect_context.cache_clear()
+
+
+def unbind_container_effect_context(context: CapabilityEffectContext) -> None:
+    if _bound_container_effect_context is context:
+        bind_container_effect_context(None)
 
 
 @lru_cache(maxsize=1)
@@ -273,6 +293,8 @@ def default_effect_context() -> CapabilityEffectContext:
     backend-specific context explicitly.
     """
 
+    if _bound_container_effect_context is not None:
+        return _bound_container_effect_context
     # This named composition root deliberately selects the narrow M1 policy;
     # unnamed contexts stay read-only until their application supplies one.
     return new_effect_context(policy_evaluator=binding_scope_policy)
@@ -284,9 +306,11 @@ new_in_memory_effect_context = new_effect_context
 __all__ = [
     "CapabilityEffectContext",
     "binding_scope_policy",
+    "bind_container_effect_context",
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
     "new_postgres_effect_context",
     "new_sqlite_effect_context",
+    "unbind_container_effect_context",
 ]

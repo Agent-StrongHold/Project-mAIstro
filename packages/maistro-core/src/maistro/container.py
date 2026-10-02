@@ -363,7 +363,8 @@ class Container:
     event_bus: EventBus = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
-    invocation_store: InvocationStore = None  # type: ignore[assignment]
+    invocation_store: Any = None  # type: ignore[assignment]
+    handler_invocation_store: InvocationStore = None  # type: ignore[assignment]
     handler_caller: HandlerCaller = None  # type: ignore[assignment]
     # Durable replay cursor for the legacy-event bridge (#1163): a claim
     # lease + fencing token so of several replicas that might tick
@@ -476,6 +477,10 @@ class Container:
         """
         if self.closed:
             return
+        if self.capability_effects is not None:
+            from maistro.capabilities.effect_context import unbind_container_effect_context
+
+            unbind_container_effect_context(self.capability_effects)
         # Marked closed before the await, so a release that raises does not
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
@@ -999,7 +1004,7 @@ class Container:
         batch = await process_events_batch(
             self.durable_event_log,
             self.trigger_store,
-            self.invocation_store,
+            self.handler_invocation_store,
             self.handler_caller,
             after_id=lease.position,
             limit=limit,
@@ -1651,7 +1656,7 @@ class Container:
 
     async def durable_invocations_for(self, event_id: int) -> list[Any]:
         """Handler invocations recorded for one durable event (delivery audit)."""
-        return list(await self.invocation_store.list_for_event(event_id))
+        return list(await self.handler_invocation_store.list_for_event(event_id))
 
     async def select_model(self, task: Any, budget: Any = None) -> Any:
         """Budget-constrained model selection via the wired cost-aware router."""
@@ -2175,7 +2180,7 @@ async def create_container(
 
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
-    invocation_store: InvocationStore
+    handler_invocation_store: InvocationStore
     consumer_cursor_store: ConsumerCursorStore
     # PostgreSQL first: a caller who supplied a pool asked for the durable
     # backend, and `db_pool` (SQLite) may be set at the same time because the
@@ -2186,20 +2191,20 @@ async def create_container(
         (
             durable_event_log,
             trigger_store,
-            invocation_store,
+            handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_pg_durable_events(pg_pool)
     elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
-            invocation_store,
+            handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_sqlite_durable_events(db_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
-        invocation_store = InMemoryInvocationStore()
+        handler_invocation_store = InMemoryInvocationStore()
         consumer_cursor_store = InMemoryConsumerCursorStore()
     handler_caller = HTTPHandlerCaller()
 
@@ -2339,7 +2344,8 @@ async def create_container(
         event_bus=event_bus,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
-        invocation_store=invocation_store,
+        invocation_store=capability_effects.invocation_store,
+        handler_invocation_store=handler_invocation_store,
         handler_caller=handler_caller,
         consumer_cursor_store=consumer_cursor_store,
         provider_registry=provider_registry,
@@ -2382,6 +2388,9 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
+    from maistro.capabilities.effect_context import bind_container_effect_context
+
+    bind_container_effect_context(capability_effects)
     logger.info("Container wired (%s stores)", backend)
     return container
 
