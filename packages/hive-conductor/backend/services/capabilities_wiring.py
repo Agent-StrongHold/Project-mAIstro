@@ -15,7 +15,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import InMemoryBindingStore
+from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.http_client import HttpxAsyncHttp
 from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
@@ -41,7 +41,7 @@ class _VaultLike(Protocol):
 _TOKEN_KEY = "HOST_HEALTH_TOKEN"
 
 
-def wire_capabilities(
+async def wire_capabilities(
     registry: CapabilityRegistry,
     *,
     settings_model: SettingsModel,
@@ -49,8 +49,13 @@ def wire_capabilities(
     vault: _VaultLike | None = None,
     effect_context: CapabilityEffectContext | None = None,
 ) -> None:
-    """Register host-health providers (if configured) then apply activation."""
-    _register_host_health(
+    """Register host-health providers (if configured) then apply activation.
+
+    Async because boot registration writes a Binding, and on a durable backend
+    that write is I/O. The engine starts this from its own ``start()``, which
+    is already a coroutine, so nothing gains a thread or a loop here.
+    """
+    await _register_host_health(
         registry,
         config,
         vault,
@@ -71,7 +76,7 @@ def _resolve_token(config: Settings, vault: _VaultLike | None) -> str | None:
     return None
 
 
-def _register_host_health(
+async def _register_host_health(
     registry: CapabilityRegistry,
     config: Settings,
     vault: _VaultLike | None,
@@ -88,7 +93,7 @@ def _register_host_health(
     registry.register(HostHealthMonitor(http))
     registry.register(HostHealthAction(http, autonomy=config.infra_autonomy, approval=inbox))
     logger.info("registered host-health infra providers -> %s", url)
-    _register_self_repair(registry, config, effect_context)
+    await _register_self_repair(registry, config, effect_context)
 
 
 def _self_repair_binding() -> Binding:
@@ -157,21 +162,28 @@ def _build_self_repair_effect_invoker(
     return invoke_action
 
 
-def _register_self_repair(
+async def _register_self_repair(
     registry: CapabilityRegistry,
     config: Settings,
     effect_context: CapabilityEffectContext,
 ) -> None:
-    """Register self_repair with decision-time infra_action admission (SPEC-188/#846)."""
+    """Register self_repair with decision-time infra_action admission (SPEC-188/#846).
+
+    Boot registration goes through ``register_boot_binding``, which every
+    backend supports -- in-memory, SQLite and PostgreSQL alike. It previously went
+    through the in-memory store's synchronous ``register``, so this narrowed to
+    that concrete class first and self_repair turned itself off on exactly the
+    deployments that persist anything (#1133). ``put`` has the semantics boot
+    registration needs on all three: idempotent for an identical Binding,
+    `ValueError` for a changed one, and `BindingNotFound` for an identity that
+    has been revoked -- which on a durable store means revoked in some earlier
+    process, by a tombstone that outlived it.
+    """
     monitor = registry.provider("infra_monitor", "host_health")
     if monitor is None:
         return
-    binding = _self_repair_binding()
-    if not isinstance(effect_context.bindings, InMemoryBindingStore):
-        logger.warning("self_repair disabled: BindingStore has no boot registration seam")
-        return
     try:
-        effect_context.bindings.register(binding)
+        binding = await register_boot_binding(effect_context.bindings, _self_repair_binding())
     except Exception:
         logger.exception("self_repair disabled: failed to register its Binding")
         return
