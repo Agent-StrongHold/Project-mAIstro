@@ -80,3 +80,14 @@ head is `049`. The eval
 store/validator identities are referenced in `_vulture_whitelist.py` (external
 consumers, implicit Pydantic invocation) so the per-identity vulture ledger
 stays exact without banking them as debt.
+
+Repair round (develop sync round 2, conflict resolution): develop's #774 had
+independently taken revision `049` on the same parent `048` for the
+`design_creative_briefs` table, so the preserved merge left two revisions
+claiming `049` and the chain branched (`get_heads() == ["049", "049"]`).
+Per the renumbering this chain performs on every develop collision, the eval
+migration keeps `049` (it re-parented onto 048 first) and develop's briefs
+migration re-parents onto it as `050`; the effect-index suite now walks to
+`050` and asserts the single linear head is `050`, and `_vulture_whitelist.py`
+resolves its conflict by keeping both branches' entries (the eval identities
+and develop's harness-target vocabulary).
