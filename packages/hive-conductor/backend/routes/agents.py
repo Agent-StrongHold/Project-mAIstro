@@ -31,6 +31,7 @@ from services.agent_materialization import (
     delete_agent_definition,
     materialize_runtime,
     scan_config,
+    scan_messages,  # noqa: F401 — re-exported for callers that scan chat payloads directly
     slugify_agent_name,
     update_agent_definition,
     upsert_agent_definition,
