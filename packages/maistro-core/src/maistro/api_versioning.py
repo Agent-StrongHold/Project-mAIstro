@@ -306,52 +306,62 @@ class VersionNegotiationMiddleware:
             self._send_with_version_headers(send, version, form),
         )
 
-    async def _cache_body(
-        self, receive: Any, headers: dict[str, str]
-    ) -> tuple[bytes, list[dict[str, Any]], bool]:
-        """Read a JSON request body up to the cache cap.
+    def _body_worth_buffering(self, headers: dict[str, str]) -> bool:
+        """Whether the body form is even possible for this request.
 
-        Returns ``(buffered, drained, overflow)``. Only ``application/json``
-        bodies are buffered (only they can carry the body-form selector);
-        anything else streams through untouched and nothing is drained. On
-        overflow the *buffer* is abandoned but the drained messages are kept
-        for replay, so the downstream app sees the same byte stream it always
-        did (and the payload-size middleware still applies its own limits).
+        Only ``application/json`` bodies can carry the body-form selector;
+        anything else streams through untouched and nothing is drained. A
+        declared body larger than the cap never buffers either — the
+        payload-size middleware answers for it if it is over that limit too.
         """
         content_type = headers.get("content-type", "")
         if content_type.split(";", 1)[0].strip() != _DEFAULT_CONTENT_TYPE:
-            return b"", [], False
-        # A declared body larger than the cap never buffers; the payload-size
-        # middleware answers for it if it is over that limit too.
+            return False
         content_length = headers.get("content-length")
-        if (
-            content_length is not None
-            and content_length.isdigit()
-            and int(content_length) > self.body_cache_cap_bytes
-        ):
-            return b"", [], False
+        if content_length is not None and content_length.isdigit():
+            return int(content_length) <= self.body_cache_cap_bytes
+        return True
 
+    async def _drain_body(self, receive: Any, drained: list[dict[str, Any]]) -> tuple[bytes, bool]:
+        """Read a chunked body to completion or to the cache cap.
+
+        Every message seen is appended to ``drained`` for replay. Returns
+        ``(buffered, overflow)``. On overflow the *buffer* is abandoned but
+        the drained messages are kept, so the downstream app sees the same
+        byte stream it always did.
+        """
         chunks: list[bytes] = []
-        drained: list[dict[str, Any]] = []
         total = 0
-        overflow = False
         while True:
             message = await receive()
             drained.append(message)
             if message["type"] == "http.disconnect":
-                return b"", drained, False
+                return b"", False
             if message["type"] != "http.request":
                 continue
             chunk = message.get("body", b"")
             total += len(chunk)
             if total > self.body_cache_cap_bytes:
-                overflow = True
-                break
+                return b"", True
             if chunk:
                 chunks.append(chunk)
             if not message.get("more_body"):
-                break
-        return b"".join(chunks), drained, overflow
+                return b"".join(chunks), False
+
+    async def _cache_body(
+        self, receive: Any, headers: dict[str, str]
+    ) -> tuple[bytes, list[dict[str, Any]], bool]:
+        """Read a JSON request body up to the cache cap.
+
+        Returns ``(buffered, drained, overflow)``. Only eligible bodies (see
+        :meth:`_body_worth_buffering`) are read at all; on overflow the
+        buffer is abandoned but the drained messages are kept for replay.
+        """
+        if not self._body_worth_buffering(headers):
+            return b"", [], False
+        drained: list[dict[str, Any]] = []
+        buffered, overflow = await self._drain_body(receive, drained)
+        return buffered, drained, overflow
 
     def _send_with_version_headers(self, send: Any, version: int | None, form: str | None) -> Any:
         async def wrapped_send(message: dict[str, Any]) -> None:
