@@ -4155,3 +4155,78 @@ AC3–AC13) stay blocked on unlanded canonical dependencies (#458 Goal store,
 condition forbids substituting. Driver attention required: land the branch
 (the +2 banked identities and suite-inventory state ride it), then the
 dependencies.
+
+## Re-verification at merge `6400b842e` — develop synced (4e50b4615 M1-closeout image-pins); previous NEEDS-DEEP-REVIEW re-reviewed
+
+Round 60. The prior round (job 46297ecc74fb49b98da6513f7c5a9998, end head
+`8378e6d79`) resolved the develop sync through `0c042e80e` and proved the
+post-land vulture gate; its verdict was NEEDS-DEEP-REVIEW (driver attention:
+land the branch, then the unlanded dependencies). Develop then advanced to
+`4e50b46153` ([M1 closeout] Pin base images and installer tool images by
+immutable digest, #1709) and `7861ec199` ([M7-A3] eval scores on
+Run/NodeRun/Attempt, #1681, merged as `a95df03a9` before this round). This
+round re-synced and re-verified.
+
+### Executed at `6400b842e` (all fresh)
+
+- `git merge origin/develop --no-edit` (4e50b4615) — clean, zero conflicts;
+  head now `6400b842e`, working tree clean.
+- **New develop gate** `uv run python scripts/check-image-pins.py` —
+  **EXIT=0** ("9 pinned base/tool image(s) across 10 Dockerfile(s), all
+  registered in image-pins.json"). Added by #1709; passes on this branch
+  unchanged (`.github/workflows/quality.yml:957`).
+- Vulture gate, CI invocation (`.github/workflows/quality.yml:841-845`):
+  in-branch **exit 1 solely on the documented two-merge trusted half** —
+  baseline "base 4e50b46153bd", **1370 reviewed → 1372 findings**, the only
+  delta the +2 lane seam identities
+  (`maistro_design/engine.py:248: unused method 'get_workspace_agent'`,
+  `:270: unused method 'get_reconciler'`), already banked in the branch's
+  `quality/vulture-baseline.json`; `unclassified: 0`, `never_allowlist: 0`.
+- **Post-land simulation re-proven at the new head:** throwaway worktree at
+  `6400b842e` + one empty control commit, `RATCHET_BASE_REV=6400b842e` →
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → **EXIT=0**, **1372 reviewed → 1372 findings**, zero
+  deltas. Operator note for future rounds: the sim must run the *sim
+  worktree's own* script copy (`ROOT = Path(__file__).parents[1]` — running
+  the main worktree's copy makes the self-reference guard see the main
+  worktree's HEAD), and the sim worktree's fresh `uv run` venv lacks
+  vulture; use the main worktree's `.venv/bin/python` against the sim's
+  script.
+- `uv run ruff check .` — All checks passed. `uv run ruff format --check .`
+  — 2738 files already formatted.
+- `uv run pytest packages/maistro-design/tests -q` — **435 passed, 1
+  skipped**. `uv run pytest
+  packages/hive-conductor/backend/tests/test_design_service_startup.py
+  packages/maistro-design/tests/test_engine_workspace_seam.py -q` — **35
+  passed**.
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **3202 passed,
+  6 skipped, 0 failed on the first run** (round 59's single
+  `test_property_marked_field_is_immediately_locked` flake did not recur).
+- `uv run python scripts/check-suite-inventory.py` — ok: 14 suite(s) match.
+  `uv run python scripts/check-doc-links.py` — 0 broken links.
+
+### Dependency audit re-confirmed at `6400b842e` (fresh greps)
+
+- #804/#805/#806 Goal reconciliation: `grep -rln 'GoalReconcil|goal_reconcil'
+  packages/*/src` — **0 matches** (neither #1681 nor #1709 introduced it).
+- #458 Goal store: `goal_revision` matches remain ontology/campaigns/brief
+  surfaces only (`interop/contract.py`, `workspaces/campaigns/` policy records
+  that defer to the canonical spine, `runs/model.py` reference,
+  `maistro_design/brief*.py` — the #774 CreativeBrief contract's binding key).
+  No Goal store, no Goal ownership/delegation records.
+- #776 Ladybug working graph: only match is still the book title in
+  `dags/author_examples.py:29`.
+- AC1 wiring unchanged: `design_service.py:240-258` injects the #53 front door
+  (`workspace_agent_service.resolve_workspace_agent`); `reconciler_factory`
+  deliberately uninjected with the in-code reason recorded.
+
+### Conclusion (round 60)
+
+Nothing in the two newly merged develop commits (#1681, #1709) unblocks the
+remaining acceptance criteria. All in-lane gates are green (or provably green
+on land for the trusted-half vulture case); the lane's remaining criteria
+(AC1 #804 half, AC3–AC13) remain blocked on the same unlanded canonical
+dependencies (#458, #804/#805/#806, #776) that the stop condition forbids
+substituting. Verdict stays NEEDS-DEEP-REVIEW: driver attention — land the
+branch (the +2 banked seam identities and all gate state ride it), then land
+the dependencies, then re-open #777 for the dependent halves.
