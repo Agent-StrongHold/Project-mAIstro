@@ -7,6 +7,11 @@ scores (`FitnessWeights`). Capability (benchmarks) and architecture-fit (LLM
 judge) are *injected* when a gateway is available, so this module stays
 runnable offline. `compose_scorecard()` is pure and takes already-gathered
 `FitnessInputs`; `evaluate_candidate()` runs the tools to produce them.
+
+Since #392 the gates include `fail_first_evidence` (see `maistro_rsi.fail_first`):
+a source-touching candidate must prove a changed test fails on the exact base
+revision for the intended reason — or, under a declared refactor/doc contract,
+show the explicit alternative evidence instead.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +40,7 @@ from maistro_evolve.coverage_gate import (
     uncovered_new_lines,
 )
 from maistro_evolve.doc_regression import doc_regressions
+from maistro_evolve.improvement import ImprovementKind
 from maistro_evolve.mutation_probe import MutationProbe, probe_diff_mutations
 from maistro_evolve.scorecard import (
     FitnessWeights,
@@ -52,7 +59,13 @@ from maistro_evolve.tdd_gate import (
     count_net_new_tests,
     new_test_signal,
     red_green_signal,
-    run_test_selection,
+)
+from maistro_rsi.fail_first import (
+    EvidenceContract,
+    FailFirstEvidence,
+    collect_fail_first_evidence,
+    fail_first_gate,
+    resolve_contract,
 )
 from maistro_rsi.regression_judge import REJECT_BELOW, JudgeVerdict
 from maistro_rsi.test_inventory import (
@@ -266,6 +279,19 @@ class FitnessInputs:
     # to fail on, so the gate passes without verifying rather than inventing a
     # failure the caller never asked about.
     test_inventory: InventoryEvidence | None = None
+    # Fail-first evidence contract (#392). ``changed_src``/``changed_tests``
+    # are the diff's non-test/test .py files (the contract's shape input);
+    # ``declared_kind`` is the slot's ImprovementKind value (the declaration
+    # input; None/generic → BEHAVIOR for source-touching diffs).
+    # ``fail_first`` is the collected probe record (None = never probed —
+    # missing evidence under the behavior contract, fail closed).
+    # ``baseline_quality_composite`` is the changed source's mean quality at
+    # the base revision, the left side of the refactor contract's delta.
+    changed_src: list[str] = field(default_factory=list)
+    changed_tests: list[str] = field(default_factory=list)
+    declared_kind: str | None = None
+    fail_first: FailFirstEvidence | None = None
+    baseline_quality_composite: float | None = None
 
 
 def _ladder_signals(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
@@ -488,6 +514,18 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
             "; ".join(inp.vacuous_test_reasons)
             or "changed tests depend on the accompanying change",
         ),
+        fail_first_gate(
+            resolve_contract(inp.declared_kind, inp.changed_src, inp.changed_tests),
+            inp.fail_first,
+            quality_delta=(
+                inp.code_quality_composite - inp.baseline_quality_composite
+                if inp.code_quality_composite is not None
+                and inp.baseline_quality_composite is not None
+                else None
+            ),
+            net_new_tests=inp.net_new_tests,
+            assertion_score=inp.assertion_score,
+        ),
         *inp.lint_gates,
         *_conditional_gates(inp),
     ]
@@ -704,40 +742,30 @@ def _mean_assertion(cwd: Path, test_files: list[str]) -> tuple[float | None, str
     return round(mean, 4), f"mean assertion strength over {len(scores)} changed test file(s)"
 
 
-def _red_green_evidence(
-    cwd: Path, baseline_ref: str, src: list[str], tests: list[str], timeout: int
-) -> TddEvidence:
-    """Fill TddEvidence by running the candidate's changed tests against the
-    baseline source: revert the changed source files to ``baseline_ref`` in the
-    worktree (keeping the candidate's tests), run those tests (expect RED), then
-    restore the candidate source. Green-on-candidate is the plain run.
-    """
-    if not tests:
-        return TddEvidence()
-    cand_rc, _ = run_test_selection(cwd, tests, timeout=timeout)
-    base_rc: int | None = None
-    if src:
-        try:
-            subprocess.run(
-                ["git", "checkout", baseline_ref, "--", *src],
-                cwd=str(cwd),
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            base_rc, _ = run_test_selection(cwd, tests, timeout=timeout)
-        except (OSError, subprocess.CalledProcessError):
-            base_rc = None
-        finally:
-            subprocess.run(
-                ["git", "checkout", "HEAD", "--", *src],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-            )
-    return TddEvidence(
-        changed_tests=tests, baseline_changed_rc=base_rc, candidate_changed_rc=cand_rc
-    )
+def _mean_quality_at_base(cwd: Path, baseline_ref: str, src_files: list[str]) -> float | None:
+    """Mean code-quality composite of the changed source files AS THEY WERE on
+    ``baseline_ref`` — the left side of the refactor contract's quality delta.
+    Files absent on baseline contribute nothing (a new file has no baseline
+    quality to improve upon). Returns None when no baseline version of any
+    changed file could be read: the refactor contract then fails closed."""
+    composites: list[float] = []
+    for i, rel in enumerate(src_files):
+        base = subprocess.run(
+            ["git", "show", f"{baseline_ref}:{rel}"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if base.returncode != 0 or not base.stdout.strip():
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            snap = Path(td) / f"base_{i}_{Path(rel).name}"
+            snap.write_text(base.stdout, encoding="utf-8")
+            composites.append(score_path(snap).composite)
+    if not composites:
+        return None
+    return round(sum(composites) / len(composites), 4)
 
 
 def _vacuous_test_reasons(src: list[str], tests: list[str], tdd: TddEvidence) -> list[str]:
@@ -777,6 +805,7 @@ def evaluate_candidate(
     test_argv: tuple[str, ...] = (),
     baseline_inventory: InventoryResult | None = None,
     allow_test_inventory_shrink: bool = False,
+    declared_kind: ImprovementKind | str | None = None,
 ) -> Scorecard:
     """Run the local signals for a candidate and compose the Scorecard.
 
@@ -804,6 +833,18 @@ def evaluate_candidate(
     src = [f for f in changed_files if f.endswith(".py") and not _is_test(f)]
     tests = changed_test_paths(changed_files)
     all_py = [f for f in changed_files if f.endswith(".py")]
+    # The declared contract (#392): the slot's ImprovementKind decides whether
+    # source-touching work owes fail-first evidence (default) or the refactor
+    # alternative (declared refactor/doc polish).
+    declared = declared_kind.value if isinstance(declared_kind, ImprovementKind) else declared_kind
+    contract = resolve_contract(declared, src, tests)
+    baseline_quality: float | None = None
+    if contract is EvidenceContract.REFACTOR and baseline_ref:
+        baseline_quality = _mean_quality_at_base(cwd, baseline_ref, src)
+    # Test-config surfaces touched by this diff — the shared taint signal for
+    # the protected-inventory gate (#306) and the fail-first contract (#392):
+    # a config edit can both hide inventory shrinkage and manufacture a red.
+    config_changed = changed_config_files(changed_files)
 
     tests_passed, test_reason = _run(test_command, cwd, timeout, argv=test_argv)
     cand_cov, missing = measure_coverage_detailed(
@@ -811,12 +852,24 @@ def evaluate_candidate(
     )
     cq, cq_detail = _mean_quality(cwd, src)
     astr, astr_detail = _mean_assertion(cwd, tests)
+    fail_first: FailFirstEvidence | None = None
     if tdd is None:
-        tdd = (
-            _red_green_evidence(cwd, baseline_ref, src, tests, timeout)
-            if baseline_ref
-            else TddEvidence(changed_tests=tests)
-        )
+        if baseline_ref and tests:
+            fail_first = collect_fail_first_evidence(
+                cwd,
+                baseline_ref,
+                src,
+                tests,
+                timeout,
+                config_files_changed=config_changed,
+            )
+            tdd = (
+                fail_first.tdd_view(tests)
+                if fail_first is not None
+                else TddEvidence(changed_tests=tests)
+            )
+        else:
+            tdd = TddEvidence(changed_tests=tests)
     net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
     doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
     from maistro_rsi.spec_tracker import new_ac_coverage, proposed_specs
@@ -839,7 +892,7 @@ def evaluate_candidate(
     inventory_evidence = InventoryEvidence(
         candidate=collect_inventory(cwd, shlex.split(coverage_pytest_args)),
         base=baseline_inventory,
-        config_files_changed=changed_config_files(changed_files),
+        config_files_changed=config_changed,
         allow_shrink=allow_test_inventory_shrink,
     )
 
@@ -867,6 +920,11 @@ def evaluate_candidate(
         uncollectable_test_reasons=uncollectable,
         vacuous_test_reasons=vacuous_reasons,
         test_inventory=inventory_evidence,
+        changed_src=src,
+        changed_tests=tests,
+        declared_kind=declared,
+        fail_first=fail_first,
+        baseline_quality_composite=baseline_quality,
     )
     prelim = compose_scorecard(inputs, weights)
     if not prelim.gates_passed:

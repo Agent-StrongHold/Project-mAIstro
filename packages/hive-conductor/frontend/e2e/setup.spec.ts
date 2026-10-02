@@ -3,9 +3,23 @@ import { expect, test, type Page } from "@playwright/test";
 // The live wizard is five steps (Hive -> Hardware -> Accounts -> Modules ->
 // Confirm). The Accounts step requires admin + daily-user credentials before
 // "next" enables, so every flow that reaches Optional modules walks it here.
+// #287: when no gateway answers, the wizard keeps "next" locked until the
+// unverified-availability acknowledgement is checked, so — like
+// tests/e2e/session.ts — wait briefly for the checkbox and check it when it
+// renders. A discovered catalog never renders it and this is a no-op there.
+async function acknowledgeUnverifiedModels(page: Page) {
+  const ack = page.getByTestId("unverified-ack").getByRole("checkbox");
+  const visible = await ack
+    .waitFor({ state: "visible", timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+  if (visible) await ack.check();
+}
+
 async function reachModulesStep(page: Page) {
   await page.goto("/");
   await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");
+  await acknowledgeUnverifiedModels(page);
   await page.locator("button", { hasText: "next" }).click();
   await page.getByText("Beast", { exact: true }).click();
   await page.locator("button", { hasText: "next" }).click();
@@ -39,6 +53,7 @@ test.describe("Setup Wizard", () => {
     const input = page.locator('input[placeholder="Hive Conductor"]');
     await expect(input).toBeVisible();
     await input.fill("Test Hive");
+    await acknowledgeUnverifiedModels(page);
     await page.locator("button", { hasText: "next" }).click();
     await expect(page.getByText("Pick your hardware tier")).toBeVisible();
   });
@@ -46,6 +61,7 @@ test.describe("Setup Wizard", () => {
   test("can select hardware preset", async ({ page }) => {
     await page.goto("/");
     await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");
+    await acknowledgeUnverifiedModels(page);
     await page.locator("button", { hasText: "next" }).click();
     await page.getByText("Beast", { exact: true }).click();
     await page.locator("button", { hasText: "next" }).click();
