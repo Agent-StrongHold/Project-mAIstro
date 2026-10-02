@@ -54,6 +54,14 @@ from maistro_evolve.tdd_gate import (
     red_green_signal,
     run_test_selection,
 )
+from maistro_rsi.fail_first import (
+    assess_promotion_evidence,
+    failing_node_ids,
+    failure_output_digest,
+    introduced_test_ids,
+    match_introduced_failure,
+    python_sources_are_doc_only,
+)
 from maistro_rsi.regression_judge import REJECT_BELOW, JudgeVerdict
 from maistro_rsi.test_inventory import (
     InventoryResult,
@@ -266,6 +274,10 @@ class FitnessInputs:
     # to fail on, so the gate passes without verifying rather than inventing a
     # failure the caller never asked about.
     test_inventory: InventoryEvidence | None = None
+    # Fail-first / alternative-contract gate (#392). None on compose-only calls
+    # that did not evaluate an objective. ``evaluate_candidate`` always sets it,
+    # so a promotion cannot skip the check by forgetting to ask.
+    fail_first_gate: GateResult | None = None
 
 
 def _ladder_signals(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
@@ -405,11 +417,18 @@ def protected_inventory_gate(ev: InventoryEvidence | None) -> GateResult:
     )
 
 
+def _fail_first_gates(inp: FitnessInputs) -> list[GateResult]:
+    """The #392 gate, present only when the evaluator measured an objective."""
+    if inp.fail_first_gate is None:
+        return []
+    return [inp.fail_first_gate]
+
+
 def _conditional_gates(inp: FitnessInputs) -> list[GateResult]:
     """Gates that only exist when their (optional) evidence was gathered: the
     second-opinion LLM regression judge, and the diff-scoped mutation probe.
     Kept out of ``compose_scorecard`` so the assembly there stays flat."""
-    gates: list[GateResult] = []
+    gates: list[GateResult] = _fail_first_gates(inp)
     if inp.regression_judge is not None:
         verdict = inp.regression_judge
         if verdict.status == "unavailable":
@@ -704,6 +723,27 @@ def _mean_assertion(cwd: Path, test_files: list[str]) -> tuple[float | None, str
     return round(mean, 4), f"mean assertion strength over {len(scores)} changed test file(s)"
 
 
+def _git_text(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def _rev(cwd: Path, ref: str) -> str:
+    return _git_text(cwd, "rev-parse", "--verify", ref).strip()
+
+
+def _file_text(cwd: Path, rel: str) -> str:
+    try:
+        return (cwd / rel).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def _red_green_evidence(
     cwd: Path, baseline_ref: str, src: list[str], tests: list[str], timeout: int
 ) -> TddEvidence:
@@ -711,11 +751,32 @@ def _red_green_evidence(
     baseline source: revert the changed source files to ``baseline_ref`` in the
     worktree (keeping the candidate's tests), run those tests (expect RED), then
     restore the candidate source. Green-on-candidate is the plain run.
+
+    Also records the fail-first identity (#392): both SHAs, which changed tests
+    the candidate introduced, and — when the baseline run is red — the failing
+    node id plus a digest of that output. A run that never executed is marked
+    non-reproducible rather than treated as a real failure.
     """
+    base_sha = _rev(cwd, baseline_ref) if baseline_ref else ""
+    candidate_sha = _rev(cwd, "HEAD")
+    introduced = (
+        introduced_test_ids(
+            {rel: _git_text(cwd, "show", f"{baseline_ref}:{rel}") for rel in tests},
+            {rel: _file_text(cwd, rel) for rel in tests},
+        )
+        if tests
+        else set()
+    )
     if not tests:
-        return TddEvidence()
-    cand_rc, _ = run_test_selection(cwd, tests, timeout=timeout)
+        return TddEvidence(
+            base_sha=base_sha,
+            candidate_sha=candidate_sha,
+            introduced_test_ids=sorted(introduced),
+        )
+    cand_rc, _cand_out = run_test_selection(cwd, tests, timeout=timeout)
     base_rc: int | None = None
+    base_out = ""
+    execution_failed = False
     if src:
         try:
             subprocess.run(
@@ -725,9 +786,12 @@ def _red_green_evidence(
                 capture_output=True,
                 text=True,
             )
-            base_rc, _ = run_test_selection(cwd, tests, timeout=timeout)
+            base_rc, base_out = run_test_selection(cwd, tests, timeout=timeout)
+            if "test run failed to execute" in base_out:
+                execution_failed = True
         except (OSError, subprocess.CalledProcessError):
             base_rc = None
+            execution_failed = True
         finally:
             subprocess.run(
                 ["git", "checkout", "HEAD", "--", *src],
@@ -735,9 +799,29 @@ def _red_green_evidence(
                 capture_output=True,
                 text=True,
             )
+    failure_ids = failing_node_ids(base_out) if base_rc not in (None, 0) else []
+    failing_id = match_introduced_failure(failure_ids, introduced)
+    digest = failure_output_digest(base_out) if failing_id else ""
     return TddEvidence(
-        changed_tests=tests, baseline_changed_rc=base_rc, candidate_changed_rc=cand_rc
+        changed_tests=tests,
+        baseline_changed_rc=base_rc,
+        candidate_changed_rc=cand_rc,
+        base_sha=base_sha,
+        candidate_sha=candidate_sha,
+        failing_test_id=failing_id,
+        failure_output_digest=digest,
+        introduced_test_ids=sorted(introduced),
+        baseline_failure_ids=failure_ids,
+        baseline_execution_failed=execution_failed,
     )
+
+
+def _doc_only_py(cwd: Path, baseline_ref: str | None, src: list[str]) -> bool:
+    """Whether every changed source file is docstring/annotation/comment-only."""
+    if not src or not baseline_ref:
+        return not src
+    pairs = [(_git_text(cwd, "show", f"{baseline_ref}:{rel}"), _file_text(cwd, rel)) for rel in src]
+    return python_sources_are_doc_only(pairs)
 
 
 def _vacuous_test_reasons(src: list[str], tests: list[str], tdd: TddEvidence) -> list[str]:
@@ -842,6 +926,18 @@ def evaluate_candidate(
         config_files_changed=changed_config_files(changed_files),
         allow_shrink=allow_test_inventory_shrink,
     )
+    # #392: an objective with no prior failing evidence cannot be promoted.
+    # Alternative contracts (refactor / documentation / spec-draft) are the
+    # only way through without a red test, and a characterization snapshot
+    # satisfies none of them.
+    fail_gate = assess_promotion_evidence(
+        objective=target,
+        changed_files=changed_files,
+        config_files_changed=inventory_evidence.config_files_changed,
+        tests_passed=tests_passed,
+        tdd=tdd,
+        doc_only_py=_doc_only_py(cwd, baseline_ref, src),
+    )
 
     inputs = FitnessInputs(
         tests_passed=tests_passed,
@@ -867,6 +963,7 @@ def evaluate_candidate(
         uncollectable_test_reasons=uncollectable,
         vacuous_test_reasons=vacuous_reasons,
         test_inventory=inventory_evidence,
+        fail_first_gate=fail_gate,
     )
     prelim = compose_scorecard(inputs, weights)
     if not prelim.gates_passed:

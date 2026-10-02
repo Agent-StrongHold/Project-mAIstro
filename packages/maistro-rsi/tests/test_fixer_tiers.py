@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from maistro_evolve.improvement import ImprovementKind
+from maistro_rsi.fail_first import (
+    DOC_CONTRACT,
+    FAIL_FIRST_CLAUSE,
+    REFACTOR_CONTRACT,
+    SPEC_DRAFT_CONTRACT,
+)
 from maistro_rsi.local_loop import _fixer_objective, _guess_test_path
 
 
@@ -12,21 +18,38 @@ def test_feature_tier_is_ambitious_and_multi_file() -> None:
     assert "ambitious" in obj.lower()
     assert "multiple" in obj.lower() or "across the files" in obj.lower()
     assert "NEW tests written first" in obj
+    assert FAIL_FIRST_CLAUSE in obj
 
 
-def test_bounded_tiers_are_test_first_and_minimal() -> None:
+def test_bounded_behavior_kinds_require_fail_first() -> None:
     for kind in (
         ImprovementKind.BUG_FIX,
         ImprovementKind.NEW_TEST,
         ImprovementKind.ASSERTION,
-        ImprovementKind.REFACTOR,
-        ImprovementKind.DOC,
+        ImprovementKind.EDGE_CASE,
+        ImprovementKind.PERF,
+        ImprovementKind.SPEC,
     ):
         obj = _fixer_objective("pkg/mod.py", kind, "do the thing")
         assert "do the thing" in obj
-        assert "test-first" in obj.lower()
-        assert "minimal" in obj.lower()
-        assert "only this module and its test file" in obj
+        assert FAIL_FIRST_CLAUSE in obj
+        assert "minimal" in obj.lower() or kind is ImprovementKind.SPEC
+
+
+def test_refactor_and_doc_use_alternative_contracts() -> None:
+    refactor = _fixer_objective("pkg/mod.py", ImprovementKind.REFACTOR, "do the thing")
+    assert REFACTOR_CONTRACT in refactor
+    assert FAIL_FIRST_CLAUSE not in refactor
+    assert "only this module" in refactor
+
+    doc = _fixer_objective("pkg/mod.py", ImprovementKind.DOC, "do the thing")
+    assert DOC_CONTRACT in doc
+    assert FAIL_FIRST_CLAUSE not in doc
+
+    backlog = _fixer_objective("pkg/mod.py", ImprovementKind.BACKLOG, "do the thing")
+    assert SPEC_DRAFT_CONTRACT in backlog
+    assert FAIL_FIRST_CLAUSE not in backlog
+    assert "docs/specs/" in backlog
 
 
 def test_guess_test_path_maps_src_to_tests() -> None:

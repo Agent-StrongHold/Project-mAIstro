@@ -44,6 +44,16 @@ class TddEvidence:
     # Whole-suite failing counts, for the "fixed a pre-existing failing test" mode.
     baseline_suite_failures: int = 0
     candidate_suite_failures: int = 0
+    # Fail-first record (#392). The red→green *signal* above stays a bonus;
+    # these fields are what the RSI promotion gate reads so a candidate cannot
+    # be marked improved without a prior failure on the exact base revision.
+    base_sha: str = ""
+    candidate_sha: str = ""
+    failing_test_id: str = ""
+    failure_output_digest: str = ""
+    introduced_test_ids: list[str] = field(default_factory=list)
+    baseline_failure_ids: list[str] = field(default_factory=list)
+    baseline_execution_failed: bool = False
 
 
 def red_green_signal(evidence: TddEvidence, weight: float = 0.05) -> SignalScore:
