@@ -147,13 +147,22 @@ async def test_sqlite_racing_execution_services_dispatch_provider_once(tmp_path)
 
 
 def test_default_effect_context_is_cached_before_container_configuration() -> None:
-    previous = effect_context._process_effect_context
+    """With nothing published, the ephemeral fallback is built once and reused.
+
+    The name moved with #1133: the single `_process_effect_context` slot became
+    a `_published_contexts` stack plus one `_ephemeral_context` cache, so this
+    pins the cache, and the empty stack is what makes it the value under test.
+    """
+    published = list(effect_context._published_contexts)
+    previous = effect_context._ephemeral_context
     try:
-        effect_context._process_effect_context = None
+        effect_context._published_contexts.clear()
+        effect_context._ephemeral_context = None
         first = default_effect_context()
         assert default_effect_context() is first
     finally:
-        effect_context._process_effect_context = previous
+        effect_context._ephemeral_context = previous
+        effect_context._published_contexts[:] = published
 
 
 @pytest.mark.asyncio
