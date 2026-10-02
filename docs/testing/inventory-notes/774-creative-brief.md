@@ -192,7 +192,7 @@ the provenance of the correction.
 > (at tip `b9bcdd255`) and the merged #774 tree at 34.5978; both numbers are the
 > no-database undercount, as established above.
 
-## Round 3 (CI repair at merge `a58815784`, develop sync to `088cc1ef0`)
+## CI-repair round 3 (SAST + ratchet at merge `a58815784`, develop sync to `088cc1ef0`)
 
 - **Develop sync**: `origin/develop` advanced to `088cc1ef0` mid-round (second
   collision in a row). #398's `048_canvas_job_retry_backoff` claimed the head the
@@ -229,3 +229,73 @@ the provenance of the correction.
   (fresh service container, one `alembic upgrade head`, one measurement). Local
   reproduction must recreate + re-migrate the database per measurement; done,
   the committed head then measures **39.1237** and the gate exits 0.
+
+## Round 4 (develop sync: resolve the CreativeBrief contract collision)
+
+`origin/develop` landed e5c461087 (PR #1695, WIP parent-epic #773) ahead of
+this child lane: a second, dataclass-based CreativeBrief prototype
+(`maistro_design/creative_brief.py`, in-memory store only, V105-marked
+retained API) colliding with this lane's contract in
+`maistro_design/__init__.py` and `tests/test_creative_brief.py`. The merge
+(`e48e16266`) resolves in favor of the #774 implementation, per the
+acceptance criterion that ONE schema/model and persistence contract owns
+CreativeBrief domain state:
+
+- kept `brief.py` + `brief_store.py` + migration `049_design_creative_briefs`
+  + the three-suite test pyramid; removed `creative_brief.py` (develop-side
+  consumers were only its own `__init__` re-exports and its own test file —
+  no other develop code imports it; provenance preserved at e5c461087);
+- removed the two develop inventory notes that recorded the removed suite's
+  deltas (`773-creative-brief-projection.md` +42, `auto-773-48e0.md` +1), so
+  the ledger sum matches collection again; this note's +59 holds (46
+  contract + 12 store + 1 PG node IDs, unchanged);
+- reverted the `pyproject.toml` `V105` ruff-external hunk: it existed solely
+  for `creative_brief.py`'s `noqa: V105` markers; `brief.py` holds its
+  identities via the documented `_vulture_usage` TYPE_CHECKING block;
+- took everything else from develop as-is, including the #1769 revert of the
+  principal-identity/route-permissions ratchets and the ADR-131 changes.
+
+Re-validated on the resolved tree (not inherited from round 3):
+
+- `uv run ruff check .` and `ruff format --check .` clean (2713 files);
+- `packages/maistro-design/tests`: 409 passed, 1 skipped (PG leg); the 58
+  node IDs of `test_creative_brief.py` + `test_creative_brief_store.py` were
+  also run as the explicit acceptance set (58 passed);
+- the named CI-repair gate `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exits 0: 1374 reviewed
+  identities -> 1372 findings, 0 unclassified. Removing `creative_brief.py`
+  resurrected nothing: `brief.py`'s same-named `_require_non_blank` helper
+  still masks the `workspaces/model.py` field-validator identity, and no
+  creative_brief identity was ever banked in either parent's ledger. No
+  ledger amendment required;
+- `check-suite-inventory.py` ok (14 suites match — the removal of the +43
+  delta notes exactly matches the removed tests);
+- `check-reachability.py` exit 0 (1170 modules); `check-merge-markers.py`,
+  `check-cross-package-imports.py` (2725 files),
+  `check-durable-table-inventory.py` (79 tables), and
+  `verify-monorepo-layout.sh` all exit 0;
+- live PostgreSQL (fresh `pgvector/pg18` container): `alembic upgrade head`
+  applies the merged chain through `049_design_creative_briefs` (develop's
+  047 revocations + 048 canvas backoff, then the briefs migration — one
+  linear head), `tests/migrations` 100/100, and
+  `test_creative_brief_pg.py::test_brief_round_trips_through_postgres`
+  passes. DSN note for reproducers: `MAISTRO_TEST_DATABASE_URL` must be a
+  plain `postgresql://` URL for the `tests/migrations` and store legs (they
+  hand it to asyncpg/alembic directly); only the design PG leg accepts a
+  `postgresql+asyncpg://` scheme;
+- merge-touched suites from the develop side re-run green:
+  `maistro-core` chat-admission/container-chat-run/identity suites plus
+  `hive-conductor` chat-run admission = 170 passed;
+- a direct behavioral probe against the resolved production module
+  (independent of the test suite) re-proved: two artifact branches receive
+  byte-identical `shared_context()` with only `artifact_request` differing;
+  a creative-context redirect mints v2 (`supersedes_brief_id`, same
+  lineage/Goal revision) with v1 untouched; a Goal-revision change (3 -> 4)
+  is a new version without rewriting v1/v2; projections carry
+  Goal+brief+Persona+DS versions verbatim; explained `copy_variant`
+  overrides apply while `cta`/`goal_revision`/`audience`/`required_facts`
+  overrides are refused as protected (notably `cta` itself is protected —
+  channel branches cannot rewrite the shared CTA); a cross-Workspace
+  persona reference is rejected at construction; the schema carries no
+  authorization vocabulary.
+
