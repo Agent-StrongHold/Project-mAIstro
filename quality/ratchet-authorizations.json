@@ -713,6 +713,51 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. Re-keyed from @15, which this change deletes: develop has taken this block down to 14, and a grant names the complexity it authorizes. Keeping @15 would not be inert -- the checker consults grants exactly when a regression makes that value reachable again, so the stale key would pre-authorize raising this function back to 15 (Codex, #1761)."
+    },
+    "packages/maistro-design/src/maistro_design/consistency.py::_build_refinement@17": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-design/src/maistro_design/consistency.py::_check_sibling_contradictions@16": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-design/src/maistro_design/consistency.py::evaluate_project_snapshot@15": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/fail_first.py::_has_related_failure@14": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1730 (fail-first evidence for RSI code-improvement objectives), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the fail-first evidence gate: related-failure matching, evidence collection and the gate decision itself. Refactoring is cheapest now, while the code is days old, and #1792 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/fail_first.py::collect_fail_first_evidence@12": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1730 (fail-first evidence for RSI code-improvement objectives), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the fail-first evidence gate: related-failure matching, evidence collection and the gate decision itself. Refactoring is cheapest now, while the code is days old, and #1792 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/fail_first.py::fail_first_gate@11": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1730 (fail-first evidence for RSI code-improvement objectives), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the fail-first evidence gate: related-failure matching, evidence collection and the gate decision itself. Refactoring is cheapest now, while the code is days old, and #1792 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::evaluate_candidate@30": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). This block dates from the initial release (2026-08-21) and has sat at this complexity ever since; the radon ratchet simply never looked, because it scanned only packages/maistro-core/src. #1684 widens the scan to every shipped package, and this grant admits the block at the complexity it already had. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. #1761 granted the same class of block; this is the second round, for the ones that round missed."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::compose_scorecard@23": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). This block dates from the initial release (2026-08-21) and has sat at this complexity ever since; the radon ratchet simply never looked, because it scanned only packages/maistro-core/src. #1684 widens the scan to every shipped package, and this grant admits the block at the complexity it already had. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. #1761 granted the same class of block; this is the second round, for the ones that round missed."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._fitness_decision@19": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). This block dates from the initial release (2026-08-21) and has sat at this complexity ever since; the radon ratchet simply never looked, because it scanned only packages/maistro-core/src. #1684 widens the scan to every shipped package, and this grant admits the block at the complexity it already had. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. #1761 granted the same class of block; this is the second round, for the ones that round missed."
     }
   },
   "contract-markers": {
