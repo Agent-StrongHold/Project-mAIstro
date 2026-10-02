@@ -25,8 +25,10 @@ test_an_archived_record_comes_back_byte_identical[s3]` error while importing
 after 30 seconds. The focused command reported `1 passed, 1 error in 40.49s`.
 
 This is evidence that the coverage producer remains unproven locally, not
-proof that the CI gate has passed or that #41 code should be changed. Earlier
-focused #41 acceptance suites remain the valid behavior evidence (driver
-check-3: 416 passed, 127 skipped; check-4: 121 passed). The coverage gate and
-external closure of #1176 remain unverified and must be resolved on an
-uncongested CI runner before a merge-ready verdict.
+proof that the CI gate has passed or that #41 code should be changed. Focused
+current behavior evidence passed: the task/idempotency/spine suite reported
+**416 passed, 127 skipped**, and the chat-admission, chat-to-graph E2E,
+container chat-run, and server chat API suite reported **132 passed**. Driver
+check-4 also reports **121 passed** for the shipped Hive boundary suite. The
+coverage gate and external closure of #1176 remain unverified and must be
+resolved on an uncongested CI runner before a merge-ready verdict.
