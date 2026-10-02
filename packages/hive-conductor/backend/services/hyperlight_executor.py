@@ -399,16 +399,35 @@ with Sandbox(sc) as sb:
         Reaping the process is only half of it. `wait()` collects the exit
         status; the drain is what holds the pipe readers, so a failure path
         that waits without settling the drain still walks away from an open
-        pair of pipes. Both are settled here, and neither one's own error may
-        displace the failure that brought us here -- this runs *because*
+        pair of pipes. Both are settled here, and the drain's own error may
+        not displace the failure that brought us here -- this runs *because*
         something already went wrong, and that is the story the caller gets.
+
+        One `CancelledError` at that `await` is not like the others. The drain
+        was just cancelled on the line above, so it raising is finished
+        business. A cancellation of *this* task lands at the very same await
+        and is the Attempt being torn down -- the one thing this adapter exists
+        to honour, and the one thing it must not report as a transport error.
+        They are indistinguishable by type, so `cancelling()` is what tells
+        them apart: it counts cancellation requests against the running task
+        and nothing else. A pending one is carried past the reap, so the child
+        is still collected, and then re-raised.
         """
         with contextlib.suppress(ProcessLookupError):
             process.kill()
         draining.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
+        torn_down: asyncio.CancelledError | None = None
+        try:
             await draining
+        except asyncio.CancelledError as cancelled:
+            running = asyncio.current_task()
+            if running is not None and running.cancelling() > 0:
+                torn_down = cancelled
+        except Exception:
+            logger.debug("drain failed while settling a failed sandbox run", exc_info=True)
         await process.wait()
+        if torn_down is not None:
+            raise torn_down
 
     def _sync_run(self, cmd: list[str], env: dict, timeout_s: int) -> dict[str, Any]:
         try:

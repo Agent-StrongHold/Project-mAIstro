@@ -192,3 +192,71 @@ async def test_a_transport_failure_settles_the_drain_and_reaps_the_child(
 
     (child,) = spawned
     assert child.returncode is not None, "child was not reaped"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_during_cleanup_is_not_swallowed_by_the_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation of *this* task must survive the cleanup it interrupts.
+
+    `_settle` consumes the drain by awaiting a Task it has just cancelled, so
+    `await draining` raises `CancelledError` as a matter of course. But the
+    same `await` is where a cancellation of the *parent* lands if the Attempt
+    is torn down mid-cleanup, and the two are indistinguishable by type.
+    Treating both as finished business reports the earlier transport error and
+    returns normally -- the adapter swallowing the cancellation it exists to
+    honour.
+    """
+    import services.hyperlight_executor as hyperlight
+
+    holding = asyncio.Event()
+    release = asyncio.Event()
+
+    class _StubProcess:
+        """A child whose drain takes a turn to unwind, so cancel can land."""
+
+        returncode = -9
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                holding.set()
+                await release.wait()
+                raise
+            return b"", b""
+
+        def kill(self) -> None:
+            return None
+
+        async def wait(self) -> int:
+            return -9
+
+    async def _stub_exec(*args: object, **kwargs: object) -> _StubProcess:
+        return _StubProcess()
+
+    async def _explode(awaitable: object, timeout: object) -> object:
+        # Yield once so the drain Task reaches its first suspension; a Task
+        # cancelled before its first step unwinds too fast to park in.
+        await asyncio.sleep(0)
+        raise RuntimeError("transport exploded")
+
+    # Patching `wait_for` takes it away from this test too, so keep a handle
+    # on the real one: an unbounded wait here would hang CI instead of
+    # failing it.
+    real_wait_for = asyncio.wait_for
+    monkeypatch.setattr(hyperlight.asyncio, "create_subprocess_exec", _stub_exec)
+    monkeypatch.setattr(hyperlight.asyncio, "wait_for", _explode)
+    executor = SandboxExecutor()
+
+    running = asyncio.create_task(executor._run_cancellable([sys.executable, "-c", "pass"], {}, 30))
+    await real_wait_for(holding.wait(), timeout=10)
+
+    # `_settle` is now parked on `await draining`. This is the cancellation
+    # that must not be mistaken for the drain's own.
+    running.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await real_wait_for(running, timeout=10)
