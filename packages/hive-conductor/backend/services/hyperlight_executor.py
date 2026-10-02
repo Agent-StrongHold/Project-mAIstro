@@ -363,28 +363,52 @@ with Sandbox(sc) as sb:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        # The drain is owned as a Task before anything downstream can fail.
+        # Handed straight to `wait_for`, `process.communicate()` is an unowned
+        # coroutine, and `wait_for` is not guaranteed to reach the `await` that
+        # consumes it: anything that raises first -- the transport failure
+        # below -- drops it on the floor, leaving the child's pipes with no
+        # reader and Python shouting `coroutine ... was never awaited` into a
+        # log nobody reads. A Task is consumable from every exit path, so
+        # `_settle` can always finish what this line started.
+        draining = asyncio.create_task(process.communicate())
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
+            stdout, stderr = await asyncio.wait_for(draining, timeout=timeout_s)
         except asyncio.CancelledError:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
+            await self._settle(process, draining)
             raise
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
+            await self._settle(process, draining)
             return {"output": "", "error": "timeout", "success": False}
         except Exception as exc:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
+            await self._settle(process, draining)
             return {"output": "", "error": str(exc)[:200], "success": False}
         return {
             "output": stdout.decode(errors="replace"),
             "error": stderr.decode(errors="replace")[:500],
             "success": process.returncode == 0,
         }
+
+    @staticmethod
+    async def _settle(
+        process: asyncio.subprocess.Process,
+        draining: asyncio.Task[tuple[bytes, bytes]],
+    ) -> None:
+        """Kill the child and consume its drain, whatever state either is in.
+
+        Reaping the process is only half of it. `wait()` collects the exit
+        status; the drain is what holds the pipe readers, so a failure path
+        that waits without settling the drain still walks away from an open
+        pair of pipes. Both are settled here, and neither one's own error may
+        displace the failure that brought us here -- this runs *because*
+        something already went wrong, and that is the story the caller gets.
+        """
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        draining.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await draining
+        await process.wait()
 
     def _sync_run(self, cmd: list[str], env: dict, timeout_s: int) -> dict[str, Any]:
         try:
