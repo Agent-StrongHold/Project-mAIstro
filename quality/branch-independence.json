@@ -121,6 +121,14 @@
       "reason": "Reviewed per-table retention specification; changing a table's retention claim is the substantive change."
     },
     {
+      "id": "image-pin-registry",
+      "kind": "specification",
+      "paths": [
+        "quality/image-pins.json"
+      ],
+      "reason": "Reviewed digest-pin approval authority (#349): a base/tool image update is the substantive, reviewable registry-plus-Dockerfile change, not a repository-wide measurement that unrelated branches must rewrite."
+    },
+    {
       "id": "shipped-surface-truth",
       "kind": "specification",
       "paths": [
