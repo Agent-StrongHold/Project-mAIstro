@@ -25,7 +25,7 @@ profile by construction.
 
 | Profile | Components | Use case |
 |---------|-----------|----------|
-| `full-ui` | maistro-server + Workspaces (`hive-conductor`) + persistence | Full deployment with Workspaces UI |
+| `full-ui` | maistro-server + packages/hive-conductor + persistence | Full deployment with Workspaces UI |
 | `full-headless` | maistro-server + persistence | API-only, no UI |
 | `proxmox-vm` | maistro-server + persistence | Self-hosted on Proxmox; separate VMs preferred |
 | `docker-vps` | maistro-server + persistence | Single VPS with Docker/Podman |

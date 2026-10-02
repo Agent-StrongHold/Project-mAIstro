@@ -158,7 +158,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-082226-ff3c | v3 | Accepted | 2026-08-22 | 2026-08-25 | 2026-08-30 05:07 CDT | Design coverage: one monotone number for how much of the decided design is proven. |
 | ADR-082326-5386 | v3 | Accepted | 2026-08-23 | 2026-08-25 | 2026-08-25 01:01 CDT | Outbound HTTP policy at the shared-client seam. |
 | ADR-082326-8194 | v3 | Accepted | 2026-08-23 | 2026-08-23 | 2026-08-25 15:08 CDT | Embedding vectors live on the memory rows, at one declared dimension. |
-| ADR-082326-c126 | v4 | Proposed | 2026-08-23 | — | 2026-09-26 00:38 CDT | Chat turn Run granularity and retention. |
+| ADR-082326-c126 | v4 | Accepted | 2026-08-23 | 2026-09-27 | 2026-09-26 00:38 CDT | Chat turn Run granularity and retention. |
 | ADR-082426-19ed | v1 | Accepted | 2026-08-24 | 2026-08-24 | 2026-08-24 18:51 CDT | A Run cannot claim success over a node that failed. |
 | ADR-082426-2192 | v5 | Accepted | 2026-08-24 | 2026-08-24 | 2026-09-26 15:30 CDT | maistro-server builds a Container, and the OpenAI door routes through it. |
 | ADR-082426-6201 | v1 | Accepted | 2026-08-24 | 2026-08-24 | 2026-08-24 18:11 CDT | In-agent delegation is not a NodeRun, and the A2A local transport has no consumer. |
