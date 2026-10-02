@@ -184,9 +184,14 @@ through the core `AuditLog` on the configured backend; `routes/audit.py` reads f
 `memory://`. One effect context per process — `default_effect_context()` is the Container's
 instance, not a second `lru_cache`d one.
 
-**Today.** `container.py:1443 capability_effects = new_in_memory_effect_context()`
-unconditionally; `approval_store=None`; `SqliteInvocationStore`/`SqliteApprovalStore` exist
-with no constructor call; no PostgreSQL implementation.
+**Today (2026-10-02, after #1321/#1760).** Backend selection exists:
+`container._wire_capability_effects` builds `new_sqlite_effect_context` with a SQLite pool,
+`new_postgres_effect_context` with a PostgreSQL pool, and the in-memory context otherwise,
+then registers boot Bindings on whichever store it chose. Two halves of the invariant are
+still open. `CapabilityEffectContext` carries no Approval store, so an approval is not
+durable on any backend. And `effect_context.default_effect_context()` is still its own
+`lru_cache`d in-memory context — the fallback registry-constructed effect nodes use — not
+the Container's instance.
 
 **Check.** `packages/maistro-core/tests/test_container_postgres.py` sibling asserting the
 store classes by backend; `test_effect_context_identity.py` asserting
@@ -422,7 +427,7 @@ retiring its ledger row → Phase 2 deletes → epics close by ac-state, never b
 | P0.1, P0.2 grants | in review, [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
 | P0.1, P0.2 checks | in review, [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805); red until #1804 is in its merge base |
 | P0.3, P0.4, P0.6–P0.9 checks | not started |
-| P0.5 | prerequisite A partly landed (below); the check is not started |
+| P0.5 | backend selection landed with #1321 (see P0.5 "Today"); durable approvals and one process-wide context remain; the check is not started |
 
 An early draft of the P0.1/P0.2 checks reached `develop` without review on 2026-10-01 and
 was reverted by [#1769](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1769); the
