@@ -3,11 +3,15 @@
 Four security-relevant events -- a failed login, an elevation, a HITL cancel
 and a denied tool call -- are driven through Hive's own backend paths with a
 real SQLite Container bound where the bridge binds it. Each must leave exactly
-one row, keyed by the principal's ``user_id``, readable through the
-Container's Sentinel ``AuditLog``. ``GET /v1/audit`` must serve that same store.
+one row readable through the Container's Sentinel ``AuditLog``. ``GET /v1/audit``
+must serve that same store. Hive today keys JsonStore rows by username for auth
+events and by ``user_id`` for chat-tool blocks; convergence must normalize to
+``Principal.user_id`` (and later Workspace/Run — SQLite audit has neither column yet).
 
-Today none of them do: Hive's ``log_audit`` writes ``stores.audit_log`` (a
-``JsonStore``) and nothing in the Hive backend reaches ``container.audit_log``.
+Today none of them reach the core store: Hive's ``log_audit`` writes
+``stores.audit_log`` (a ``JsonStore``) and nothing in the Hive backend reaches
+``container.audit_log``. HITL cancel does write the JsonStore
+(``routes/hitl.py``); canonical ``_mutate_hitl`` still emits nothing.
 Each such case is in ``KNOWN_GAPS``, where the test asserts the event is still
 absent from the core store -- so the change that converges one fails here until
 its entry is deleted.
@@ -108,7 +112,7 @@ async def _core_rows(container: Container) -> list[AuditEntry]:
 
 
 async def _assert_converges(
-    case: str, container: Container, before: list[AuditEntry], user_id: str
+    case: str, container: Container, before: list[AuditEntry], expected_actor: str
 ) -> None:
     after = await _core_rows(container)
     new = after[: len(after) - len(before)]
@@ -116,13 +120,24 @@ async def _assert_converges(
         assert new == [], f"{case} now reaches the core AuditLog; delete it from KNOWN_GAPS"
         return
     assert len(new) == 1, new
-    assert new[0].user_id == user_id
+    assert new[0].user_id == expected_actor
+
+
+def test_known_gaps_name_real_cases() -> None:
+    cases = {
+        "failed_login",
+        "elevation",
+        "hitl_cancel",
+        "denied_tool_call",
+        "audit_read_path",
+    }
+    assert cases >= KNOWN_GAPS
 
 
 async def test_failed_login_is_one_core_audit_row(
     client: httpx.AsyncClient, booted: Container
 ) -> None:
-    user_id, username, _password = _USER
+    _user_id, username, _password = _USER
     before = await _core_rows(booted)
 
     response = await client.post(
@@ -130,13 +145,13 @@ async def test_failed_login_is_one_core_audit_row(
     )
 
     assert response.status_code == 401
-    await _assert_converges("failed_login", booted, before, user_id)
+    await _assert_converges("failed_login", booted, before, username)
 
 
 async def test_elevation_is_one_core_audit_row(
     client: httpx.AsyncClient, booted: Container
 ) -> None:
-    user_id, username, password = _USER
+    _user_id, username, password = _USER
     await _login(client, username, password)
     before = await _core_rows(booted)
 
@@ -145,7 +160,7 @@ async def test_elevation_is_one_core_audit_row(
     )
 
     assert response.status_code == 200, response.text
-    await _assert_converges("elevation", booted, before, user_id)
+    await _assert_converges("elevation", booted, before, username)
 
 
 async def _paused_hitl_run(container: Container, *, creator: str) -> str:
@@ -196,7 +211,7 @@ async def test_hitl_cancel_is_one_core_audit_row(
     response = await client.post(f"/v1/hitl/{run_id}/ask/cancel")
 
     assert response.status_code == 200, response.text
-    await _assert_converges("hitl_cancel", booted, before, user_id)
+    await _assert_converges("hitl_cancel", booted, before, username)
 
 
 async def test_denied_tool_call_is_one_core_audit_row(booted: Container) -> None:
