@@ -29,8 +29,8 @@ adopted one is untouched. An adopted table created without the foreign key
 keeps working; the store's paired (project, workspace) check carries the
 scope guarantee regardless.
 
-Revision ID: 048
-Revises: 047
+Revision ID: 050
+Revises: 049
 Create Date: 2026-09-28
 """
 
@@ -39,10 +39,13 @@ from __future__ import annotations
 from alembic import op
 
 # Renumbered from `047` to `048` after a develop collision (#1133's durable
-# Binding revocations took 047 first) — the same renumbering every develop
-# collision performs so the chain keeps exactly one linear head.
-revision = "049"
-down_revision = "048"
+# Binding revocations took 047 first), then to `049` after #398's canvas
+# retry backoff claimed `048`, and finally to `050` after the #792 merge
+# collision in which both this revision and the canonical Run eval-score
+# evidence took `049` on the same parent `048` — the same renumbering every
+# develop collision performs so the chain keeps exactly one linear head.
+revision = "050"
+down_revision = "049"
 branch_labels = None
 depends_on = None
 
