@@ -83,11 +83,17 @@ class ResolvedBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     binding_id: str
+    # Defaulted so Invocation rows written before scope correlation (#1133)
+    # still deserialize for reconciliation; from_provider always populates
+    # them from the resolved Binding, and the Invocation validator refuses a
+    # scope-less admission going forward.
+    workspace_id: str = ""
+    project_id: str = ""
+    node_id: str = ""
     capability: str
     provider_name: str
     provider_trust_tier: str
-    workspace_id: str = ""
-    project_id: str = ""
+    enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
     credential_refs: tuple[str, ...] = ()
     policy_refs: tuple[str, ...] = ()
@@ -120,11 +126,18 @@ class ResolvedBinding(BaseModel):
             )
         return cls(
             binding_id=binding.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            node_id=binding.node_id,
             capability=binding.capability,
             provider_name=provider.name,
             provider_trust_tier=provider.trust_tier,
-            workspace_id=binding.workspace_id,
-            project_id=binding.project_id,
+            # Evidence for the authorization snapshot (#1195): carried from the
+            # operator kill-switch, so a disabled Binding can never resolve to
+            # an enabled-looking Invocation decision. A caller may also re-resolve
+            # an already-resolved Binding, which carries `enabled` rather than
+            # `disabled`; that state is the same kill-switch, already read.
+            enabled=getattr(binding, "enabled", not getattr(binding, "disabled", False)),
             config=binding.config,
             credential_refs=binding.credential_refs,
             policy_refs=binding.policy_refs,
