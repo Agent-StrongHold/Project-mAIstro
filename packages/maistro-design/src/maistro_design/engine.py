@@ -81,14 +81,7 @@ _BINARY_FORMATS = frozenset({OutputFormat.PNG, OutputFormat.PDF, OutputFormat.PP
 
 
 def _artifact_leaf(fmt: OutputFormat, content: str | bytes) -> ArtifactNode:
-    """Classify by format, not by content's Python type.
-
-    A text format (HTML/CSS/JS/SVG/JSON/MARKDOWN) handed to us as UTF-8 bytes
-    must still become a FILE leaf — scan_design_output() skips BLOB leaves
-    entirely, so classifying by isinstance(content, bytes) would let a
-    byte-encoded <script> payload bypass the Warden scan build_multimodal_output()
-    otherwise guarantees.
-    """
+    """Classify by format, not by content's Python type."""
     if fmt in _BINARY_FORMATS:
         return ArtifactNode(key=fmt.value, kind=ArtifactKind.BLOB, format=fmt, value=content)
     text_value = content.decode("utf-8") if isinstance(content, bytes) else content
@@ -101,21 +94,7 @@ def build_multimodal_output(
     trust_tier: TrustTier,
     banish_list: InMemoryTrustBanishList | None = None,
 ) -> DesignOutput:
-    """Assemble a hierarchical DesignOutput from content a caller already produced.
-
-    generate() never calls an LLM or an image-gen backend (ADR-061), so it has no
-    real per-format content to assemble. Callers invoke this *after* their own
-    LLM/image-gen step — e.g. from maistro-core's conduit once it has a response
-    for each of a skill's declared output_formats.
-
-    One entry produces a single FILE (str) or BLOB (bytes) root, matching
-    generate()'s single-artifact shape. Multiple entries produce a CONTAINER
-    root with one FILE/BLOB child per format, keyed by OutputFormat.value
-    (e.g. "html", "css", "png") since no real filenames exist pre-render.
-
-    Runs scan_design_output() before returning; raises TrustBannedError if a
-    blocking pattern is found, same as generate().
-    """
+    """Assemble a hierarchical DesignOutput from content a caller already produced."""
     if not contents:
         msg = "build_multimodal_output() requires at least one (format, content) entry"
         raise ValueError(msg)
@@ -135,17 +114,13 @@ def build_multimodal_output(
 
 
 async def persist_blobs(output: DesignOutput, canvas_store: CanvasStore) -> dict[str, str]:
-    """Persist every BLOB leaf in output via canvas_store.store_blob().
-
-    Returns {dotted_address: stored_id} for each BLOB leaf. Does not mutate
-    output — outputs are immutable once created (ADR-062326-702b).
-    """
+    """Persist every BLOB leaf in output via canvas_store.store_blob()."""
     stored: dict[str, str] = {}
     for address, node in output.root.walk():
         if node.kind is not ArtifactKind.BLOB:
             continue
         stored[address] = await canvas_store.store_blob(
-            node.value,  # type: ignore[arg-type]  # BLOB leaves always carry bytes
+            node.value,  # type: ignore[arg-type]
             format=node.format.value if node.format else "",
             metadata=node.metadata,
         )
@@ -153,10 +128,7 @@ async def persist_blobs(output: DesignOutput, canvas_store: CanvasStore) -> dict
 
 
 class DesignEngine:
-    """Orchestrates skill → discovery → Warden scan → prompt stack → canvas/A2A.
-
-    One instance per session. context_trust_tier is monotonically decreasing.
-    """
+    """Orchestrates skill → discovery → Warden scan → prompt stack → canvas/A2A."""
 
     def __init__(
         self,
@@ -191,22 +163,14 @@ class DesignEngine:
 
     @property
     def systems(self) -> DesignSystemRegistry:
-        """The registry this engine resolves `design_system_slug` against.
-
-        Public because the Conductor's `GET /design/systems` has to report what
-        is actually registered (#293), and a route in another package reaching
-        into `_systems` is a coupling that breaks without a word.
-        """
+        """The registry this engine resolves design_system_slug against."""
         return self._systems
 
     def _contaminate(self, tier: TrustTier) -> None:
         self._context_trust_tier = self._context_trust_tier.min(tier)
 
     def reset_context(self) -> None:
-        """Reset trust context to T0 (trusted).
-
-        Call before each generate() to prevent trust contamination across requests.
-        """
+        """Reset trust context to T0 (trusted)."""
         self._context_trust_tier = TrustTier.T0
 
     def _check_compatibility(self, skill: Any, design_system_slug: str) -> None:
@@ -267,21 +231,20 @@ class DesignEngine:
     def _build_prompt_stack(self, skill: Any, system: Any, discovery: DiscoveryResult) -> str:
         parts: list[str] = []
         if skill.system_prompt:
-            parts.append(f"## Skill Instructions\n{skill.system_prompt}")
+            parts.append("## Skill Instructions\n" + skill.system_prompt)
         if system.design_md:
-            parts.append(f"## Design System: {system.name}\n{system.design_md}")
+            parts.append("## Design System: " + system.name + "\n" + system.design_md)
         elif system.tokens_css:
-            parts.append(f"## Design Tokens ({system.name})\n```css\n{system.tokens_css}\n```")
+            parts.append(
+                "## Design Tokens (" + system.name + ")\n```css\n" + system.tokens_css + "\n```"
+            )
         if discovery.responses:
             response_lines = "\n".join(f"- **{k}**: {v}" for k, v in discovery.responses.items())
-            parts.append(f"## Discovery Responses\n{response_lines}")
+            parts.append("## Discovery Responses\n" + response_lines)
         return "\n\n".join(parts)
 
     async def run_discovery(self, skill_slug: str) -> list[dict[str, Any]]:
-        """Return the skill's discovery form as a list of serialisable dicts.
-
-        Raises SkillNotFoundError for unknown slugs.
-        """
+        """Return the skill's discovery form as a list of serialisable dicts."""
         skill = self._skills.get(skill_slug)
         if skill is None:
             msg = f"Design skill '{skill_slug}' not found"
@@ -291,17 +254,7 @@ class DesignEngine:
     async def generate(
         self, discovery: DiscoveryResult, org_id: str = "default-org", team_id: str | None = None
     ) -> DesignProject:
-        """Build a DesignProject from completed discovery responses.
-
-        Pipeline:
-          1. Reset trust context to T0 (prevent cross-request contamination)
-          2. Resolve skill + design system; check compatibility, image_gen, and renderers
-          3. Contaminate context with skill + system + discovery trust tiers
-          4. Scan discovery responses through banish list and Warden
-          5. Validate required discovery fields
-          6. Assemble prompt stack and optionally create a CanvasRecord
-          7. Persist project via project_store if available
-        """
+        """Build a DesignProject from completed discovery responses."""
         self.reset_context()
         skill = self._skills.get(discovery.skill_slug)
         if skill is None:

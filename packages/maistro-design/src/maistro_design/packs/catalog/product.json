@@ -1,0 +1,13 @@
+{
+  "pack_id": "product",
+  "graph_template": "loop.explore-execute-evaluate-refine",
+  "run_identity": "canonical",
+  "backends": ["builders", "canvas"],
+  "artifact_kinds": ["brief", "deck", "copy"],
+  "fence_points": ["rubric-lock", "variant-accept"],
+  "rubric_dimensions": [
+    {"id": "offer-clarity", "label": "Clarity of offer"},
+    {"id": "claim-evidence", "label": "Claim-evidence"},
+    {"id": "channel-fit", "label": "Channel fit"}
+  ]
+}

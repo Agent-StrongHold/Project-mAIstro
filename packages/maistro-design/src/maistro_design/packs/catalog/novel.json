@@ -1,0 +1,13 @@
+{
+  "pack_id": "novel",
+  "graph_template": "loop.explore-execute-evaluate-refine",
+  "run_identity": "canonical",
+  "backends": ["builders"],
+  "artifact_kinds": ["premise", "chapter", "manuscript"],
+  "fence_points": ["rubric-lock", "voice-accept"],
+  "rubric_dimensions": [
+    {"id": "voice-consistency", "label": "Voice consistency"},
+    {"id": "structure", "label": "Structure"},
+    {"id": "promise-payoff", "label": "Promise to payoff"}
+  ]
+}

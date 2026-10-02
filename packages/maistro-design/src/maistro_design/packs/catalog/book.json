@@ -1,0 +1,13 @@
+{
+  "pack_id": "book",
+  "graph_template": "loop.explore-execute-evaluate-refine",
+  "run_identity": "canonical",
+  "backends": ["builders"],
+  "artifact_kinds": ["outline", "chapter"],
+  "fence_points": ["rubric-lock", "structure-accept"],
+  "rubric_dimensions": [
+    {"id": "thesis-coherence", "label": "Thesis coherence"},
+    {"id": "chapter-purpose", "label": "Chapter purpose"},
+    {"id": "claim-evidence", "label": "Claim-evidence"}
+  ]
+}
