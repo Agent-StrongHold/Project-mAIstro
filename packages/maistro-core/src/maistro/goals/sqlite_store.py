@@ -1,8 +1,8 @@
 """SQLite persistence for canonical Goals and their revisions (#1572).
 
-The revision table carries `UNIQUE (goal_id, sequence)`. Append-only ordering
+The revision table carries `PRIMARY KEY (goal_id, goal_revision)`. Append-only ordering
 is therefore a property of the database rather than of a read-then-write in
-this process: two writers racing the same next sequence both pass any check
+this process: two writers racing the same next number both pass any check
 one of them could make in Python, and exactly one survives the insert.
 
 Every mutation goes through `_serialized_write`. SQLite opens a transaction
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS canonical_goals (
     owner_agent_id TEXT NOT NULL,
     parent_goal_id TEXT,
     state TEXT NOT NULL,
-    current_revision TEXT NOT NULL,
+    current_revision INTEGER NOT NULL,
     payload TEXT NOT NULL,
     FOREIGN KEY (parent_goal_id) REFERENCES canonical_goals(goal_id) ON DELETE RESTRICT
 );
@@ -59,14 +59,13 @@ CREATE INDEX IF NOT EXISTS idx_canonical_goals_project
     ON canonical_goals(workspace_id, project_id);
 
 CREATE TABLE IF NOT EXISTS canonical_goal_revisions (
-    goal_revision TEXT PRIMARY KEY,
     goal_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
+    goal_revision INTEGER NOT NULL,
     payload TEXT NOT NULL,
+    PRIMARY KEY (goal_id, goal_revision),
     -- Append-only, enforced by the database rather than by a read-then-write
-    -- in one process: two writers racing the same next sequence both pass any
+    -- in one process: two writers racing the same next revision both pass any
     -- Python-side check, and exactly one survives this.
-    UNIQUE (goal_id, sequence),
     FOREIGN KEY (goal_id) REFERENCES canonical_goals(goal_id) ON DELETE RESTRICT
 );
 """
@@ -163,11 +162,10 @@ class SqliteGoalStore:
     async def _write_revision(self, revision: GoalRevision) -> None:
         await self._conn.execute(
             """INSERT INTO canonical_goal_revisions
-               (goal_revision, goal_id, sequence, payload) VALUES (?, ?, ?, ?)""",
+               (goal_id, goal_revision, payload) VALUES (?, ?, ?)""",
             (
-                revision.goal_revision,
                 revision.goal_id,
-                revision.sequence,
+                revision.goal_revision,
                 revision.model_dump_json(),
             ),
         )
@@ -176,7 +174,7 @@ class SqliteGoalStore:
         return await self._read_goal(workspace_id, goal_id)
 
     async def revise(
-        self, workspace_id: str, goal_id: str, *, expected_revision: str, revision: GoalRevision
+        self, workspace_id: str, goal_id: str, *, expected_revision: int, revision: GoalRevision
     ) -> Goal:
         async with self._serialized_write():
             goal = await self._require(workspace_id, goal_id)
@@ -191,9 +189,9 @@ class SqliteGoalStore:
                 raise GoalLineageError("a revision must belong to the Goal it revises")
             try:
                 await self._write_revision(revision)
-            except Exception as exc:  # the UNIQUE(goal_id, sequence) guard
+            except Exception as exc:  # the PRIMARY KEY (goal_id, goal_revision) guard
                 raise GoalRevisionConflict(
-                    f"revision sequence {revision.sequence} is already taken for {goal_id!r}"
+                    f"revision {revision.goal_revision} is already taken for {goal_id!r}"
                 ) from exc
             updated = goal.model_copy(
                 update={
@@ -245,17 +243,19 @@ class SqliteGoalStore:
     async def revisions(self, workspace_id: str, goal_id: str) -> list[GoalRevision]:
         await self._require(workspace_id, goal_id)
         cursor = await self._conn.execute(
-            "SELECT payload FROM canonical_goal_revisions WHERE goal_id = ? ORDER BY sequence",
+            "SELECT payload FROM canonical_goal_revisions WHERE goal_id = ? ORDER BY goal_revision",
             (goal_id,),
         )
         return [GoalRevision.model_validate_json(row[0]) for row in await cursor.fetchall()]
 
-    async def revision(self, workspace_id: str, goal_revision: str) -> GoalRevision | None:
+    async def revision(
+        self, workspace_id: str, goal_id: str, goal_revision: int
+    ) -> GoalRevision | None:
         cursor = await self._conn.execute(
             """SELECT r.payload FROM canonical_goal_revisions r
                JOIN canonical_goals g ON g.goal_id = r.goal_id
-               WHERE r.goal_revision = ? AND g.workspace_id = ?""",
-            (goal_revision, workspace_id),
+               WHERE r.goal_id = ? AND r.goal_revision = ? AND g.workspace_id = ?""",
+            (goal_id, goal_revision, workspace_id),
         )
         row = await cursor.fetchone()
         return None if row is None else GoalRevision.model_validate_json(row[0])

@@ -48,7 +48,7 @@ class GoalStore(Protocol):
         ...
 
     async def revise(
-        self, workspace_id: str, goal_id: str, *, expected_revision: str, revision: GoalRevision
+        self, workspace_id: str, goal_id: str, *, expected_revision: int, revision: GoalRevision
     ) -> Goal:
         """Append a revision and move the pointer, if the pointer still matches.
 
@@ -83,8 +83,14 @@ class GoalStore(Protocol):
         """Every revision of this Goal, oldest first. Append-only."""
         ...
 
-    async def revision(self, workspace_id: str, goal_revision: str) -> GoalRevision | None:
-        """One revision by id, so a historical Run can read the exact text it ran against."""
+    async def revision(
+        self, workspace_id: str, goal_id: str, goal_revision: int
+    ) -> GoalRevision | None:
+        """One revision of one Goal, so a historical Run can read what it ran against.
+
+        Takes the Goal as well as the number: `goal_revision` counts within a
+        Goal, so the pair is the identity and the number alone is not.
+        """
         ...
 
     async def active_for_agent(self, workspace_id: str, agent_id: str) -> list[Goal]:
@@ -125,7 +131,7 @@ class InMemoryGoalStore:
     def __init__(self) -> None:
         self._goals: dict[str, Goal] = {}
         self._revisions: dict[str, list[GoalRevision]] = {}
-        self._by_revision: dict[str, GoalRevision] = {}
+        self._by_revision: dict[tuple[str, int], GoalRevision] = {}
         self._lock = asyncio.Lock()
 
     def _visible(self, workspace_id: str, goal_id: str) -> Goal | None:
@@ -156,14 +162,14 @@ class InMemoryGoalStore:
             _assert_lineage(parent, goal)
             self._goals[goal.goal_id] = goal
             self._revisions[goal.goal_id] = [revision]
-            self._by_revision[revision.goal_revision] = revision
+            self._by_revision[(revision.goal_id, revision.goal_revision)] = revision
             return goal
 
     async def get(self, workspace_id: str, goal_id: str) -> Goal | None:
         return self._visible(workspace_id, goal_id)
 
     async def revise(
-        self, workspace_id: str, goal_id: str, *, expected_revision: str, revision: GoalRevision
+        self, workspace_id: str, goal_id: str, *, expected_revision: int, revision: GoalRevision
     ) -> Goal:
         async with self._lock:
             goal = self._require(workspace_id, goal_id)
@@ -177,9 +183,10 @@ class InMemoryGoalStore:
             if revision.goal_id != goal_id:
                 raise GoalLineageError("a revision must belong to the Goal it revises")
             history = self._revisions[goal_id]
-            if revision.sequence != history[-1].sequence + 1:
+            if revision.goal_revision != history[-1].goal_revision + 1:
                 raise GoalRevisionConflict(
-                    f"revision sequence must be {history[-1].sequence + 1}, got {revision.sequence}"
+                    f"revision must be {history[-1].goal_revision + 1}, "
+                    f"got {revision.goal_revision}"
                 )
             updated = goal.model_copy(
                 update={
@@ -188,7 +195,7 @@ class InMemoryGoalStore:
                 }
             )
             history.append(revision)
-            self._by_revision[revision.goal_revision] = revision
+            self._by_revision[(revision.goal_id, revision.goal_revision)] = revision
             self._goals[goal_id] = updated
             return updated
 
@@ -234,11 +241,12 @@ class InMemoryGoalStore:
         self._require(workspace_id, goal_id)
         return list(self._revisions[goal_id])
 
-    async def revision(self, workspace_id: str, goal_revision: str) -> GoalRevision | None:
-        found = self._by_revision.get(goal_revision)
-        if found is None or self._visible(workspace_id, found.goal_id) is None:
+    async def revision(
+        self, workspace_id: str, goal_id: str, goal_revision: int
+    ) -> GoalRevision | None:
+        if self._visible(workspace_id, goal_id) is None:
             return None
-        return found
+        return self._by_revision.get((goal_id, goal_revision))
 
     async def active_for_agent(self, workspace_id: str, agent_id: str) -> list[Goal]:
         return sorted(

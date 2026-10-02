@@ -67,12 +67,14 @@ class GoalRevision(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    goal_revision: str = Field(default_factory=_id)
     goal_id: str
-    #: Append-only ordering within one Goal, starting at 1. Separate from the
-    #: id so a reader can tell which of two revisions is newer without a
-    #: timestamp comparison that two writers in the same millisecond lose.
-    sequence: int = Field(ge=1)
+    #: The revision number, unique within one Goal and starting at 1. An
+    #: integer rather than an opaque id because every consumer already reads
+    #: it as one -- `BacklogItem.goal_revision`, `CreativeBrief.goal_revision`
+    #: and the Design pack types are all `int`, two of them `ge=1` -- and
+    #: because it answers "which of these two is newer" without a timestamp
+    #: comparison that two writers in the same millisecond lose.
+    goal_revision: int = Field(ge=1)
     desired_state: str
     #: What makes this Goal satisfied. Evaluated by #805 against canonical
     #: evidence; this module stores them and judges none of them.
@@ -83,7 +85,7 @@ class GoalRevision(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    @field_validator("goal_revision", "goal_id", "desired_state", "author_id")
+    @field_validator("goal_id", "desired_state", "author_id")
     @classmethod
     def _non_blank(cls, value: str) -> str:
         if not value.strip():
@@ -108,11 +110,11 @@ class Goal(BaseModel):
     state: GoalState = GoalState.ACTIVE
     #: Pointer into this Goal's append-only revisions. Explicit rather than
     #: "the newest row", so a reader never races a concurrent revision.
-    current_revision: str
+    current_revision: int = Field(ge=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    @field_validator("goal_id", "workspace_id", "project_id", "owner_agent_id", "current_revision")
+    @field_validator("goal_id", "workspace_id", "project_id", "owner_agent_id")
     @classmethod
     def _non_blank(cls, value: str) -> str:
         if not value.strip():

@@ -7,9 +7,9 @@ than a test is how two backends come to disagree.
 
 What differs is the concurrency, not the SQL. SQLite serialises writers at the
 database, so its read-then-write critical section is enough on its own. A pool
-does not serialise anything, so here the `UNIQUE (goal_id, sequence)`
+does not serialise anything, so here the `PRIMARY KEY (goal_id, goal_revision)`
 constraint is the primary defence rather than a backstop: two reconcilers can
-both read the same current revision, both compute the same next sequence, and
+both read the same current revision, both compute the same next number, and
 only one can insert it. The compare-and-set below narrows the window; the
 constraint closes it.
 
@@ -43,7 +43,7 @@ _SCHEMA = (
         owner_agent_id TEXT NOT NULL,
         parent_goal_id TEXT REFERENCES canonical_goals(goal_id) ON DELETE RESTRICT,
         state TEXT NOT NULL,
-        current_revision TEXT NOT NULL,
+        current_revision INTEGER NOT NULL,
         payload JSONB NOT NULL
     )""",
     """CREATE INDEX IF NOT EXISTS idx_canonical_goals_owner
@@ -53,11 +53,10 @@ _SCHEMA = (
     """CREATE INDEX IF NOT EXISTS idx_canonical_goals_project
         ON canonical_goals(workspace_id, project_id)""",
     """CREATE TABLE IF NOT EXISTS canonical_goal_revisions (
-        goal_revision TEXT PRIMARY KEY,
         goal_id TEXT NOT NULL REFERENCES canonical_goals(goal_id) ON DELETE RESTRICT,
-        sequence INTEGER NOT NULL,
+        goal_revision INTEGER NOT NULL,
         payload JSONB NOT NULL,
-        UNIQUE (goal_id, sequence)
+        PRIMARY KEY (goal_id, goal_revision)
     )""",
 )
 
@@ -111,11 +110,10 @@ class PgGoalStore:
     async def _write_revision(self, conn: Any, revision: GoalRevision) -> None:
         await conn.execute(
             """INSERT INTO canonical_goal_revisions
-               (goal_revision, goal_id, sequence, payload)
-               VALUES ($1, $2, $3, $4::text::jsonb)""",
-            revision.goal_revision,
+               (goal_id, goal_revision, payload)
+               VALUES ($1, $2, $3::text::jsonb)""",
             revision.goal_id,
-            revision.sequence,
+            revision.goal_revision,
             json_of(revision),
         )
 
@@ -148,7 +146,7 @@ class PgGoalStore:
             return await self._read_goal(conn, workspace_id, goal_id)
 
     async def revise(
-        self, workspace_id: str, goal_id: str, *, expected_revision: str, revision: GoalRevision
+        self, workspace_id: str, goal_id: str, *, expected_revision: int, revision: GoalRevision
     ) -> Goal:
         async with self._pool.acquire() as conn, conn.transaction():
             goal = await self._require(conn, workspace_id, goal_id)
@@ -163,9 +161,9 @@ class PgGoalStore:
                 raise GoalLineageError("a revision must belong to the Goal it revises")
             try:
                 await self._write_revision(conn, revision)
-            except Exception as exc:  # UNIQUE (goal_id, sequence)
+            except Exception as exc:  # PRIMARY KEY (goal_id, goal_revision)
                 raise GoalRevisionConflict(
-                    f"revision sequence {revision.sequence} is already taken for {goal_id!r}"
+                    f"revision {revision.goal_revision} is already taken for {goal_id!r}"
                 ) from exc
             updated = goal.model_copy(
                 update={
@@ -218,17 +216,20 @@ class PgGoalStore:
         async with self._pool.acquire() as conn:
             await self._require(conn, workspace_id, goal_id)
             rows = await conn.fetch(
-                "SELECT payload FROM canonical_goal_revisions WHERE goal_id = $1 ORDER BY sequence",
+                "SELECT payload FROM canonical_goal_revisions WHERE goal_id = $1 ORDER BY goal_revision",
                 goal_id,
             )
             return [model_of(GoalRevision, row["payload"]) for row in rows]
 
-    async def revision(self, workspace_id: str, goal_revision: str) -> GoalRevision | None:
+    async def revision(
+        self, workspace_id: str, goal_id: str, goal_revision: int
+    ) -> GoalRevision | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """SELECT r.payload FROM canonical_goal_revisions r
                    JOIN canonical_goals g ON g.goal_id = r.goal_id
-                   WHERE r.goal_revision = $1 AND g.workspace_id = $2""",
+                   WHERE r.goal_id = $1 AND r.goal_revision = $2 AND g.workspace_id = $3""",
+                goal_id,
                 goal_revision,
                 workspace_id,
             )

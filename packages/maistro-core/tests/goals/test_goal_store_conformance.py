@@ -66,10 +66,10 @@ def gid(ws: str):
     return make
 
 
-def _revision(goal_id: str, *, sequence: int = 1, desired: str = "ship the thing") -> GoalRevision:
+def _revision(goal_id: str, *, number: int = 1, desired: str = "ship the thing") -> GoalRevision:
     return GoalRevision(
         goal_id=goal_id,
-        sequence=sequence,
+        goal_revision=number,
         desired_state=desired,
         success_conditions=["the thing is shipped"],
         stop_conditions=["the thing is cancelled"],
@@ -231,7 +231,7 @@ async def test_a_goal_in_another_workspace_is_indistinguishable_from_a_missing_o
 
     assert await store.get(other_ws, gid("foreign")) is None
     assert await store.get(ws, "g-does-not-exist") is None
-    assert await store.revision(other_ws, revision.goal_revision) is None
+    assert await store.revision(other_ws, gid("foreign"), revision.goal_revision) is None
 
     with pytest.raises(GoalNotFound):
         await store.revisions(other_ws, gid("foreign"))
@@ -243,19 +243,19 @@ async def test_revisions_are_append_only_and_move_the_pointer(backend, ws, gid) 
     first = _revision(gid("revise"))
     await store.create(_goal(first, workspace_id=ws), first)
 
-    second = _revision(gid("revise"), sequence=2, desired="ship the better thing")
+    second = _revision(gid("revise"), number=2, desired="ship the better thing")
     updated = await store.revise(
         ws, gid("revise"), expected_revision=first.goal_revision, revision=second
     )
 
     assert updated.current_revision == second.goal_revision
     history = await store.revisions(ws, gid("revise"))
-    assert [r.sequence for r in history] == [1, 2]
+    assert [r.goal_revision for r in history] == [1, 2]
     assert [r.desired_state for r in history] == ["ship the thing", "ship the better thing"]
 
     # The superseded revision is still readable: a Run admitted against it
     # must be able to say what it was pursuing.
-    carried = await store.revision(ws, first.goal_revision)
+    carried = await store.revision(ws, gid("revise"), first.goal_revision)
     assert carried is not None
     assert carried.desired_state == "ship the thing"
 
@@ -265,7 +265,7 @@ async def test_a_stale_revision_pointer_loses(backend, ws, gid) -> None:
     store = await backend.store()
     first = _revision(gid("stale"))
     await store.create(_goal(first, workspace_id=ws), first)
-    second = _revision(gid("stale"), sequence=2, desired="second")
+    second = _revision(gid("stale"), number=2, desired="second")
     await store.revise(ws, gid("stale"), expected_revision=first.goal_revision, revision=second)
 
     with pytest.raises(GoalRevisionConflict):
@@ -273,7 +273,7 @@ async def test_a_stale_revision_pointer_loses(backend, ws, gid) -> None:
             ws,
             gid("stale"),
             expected_revision=first.goal_revision,
-            revision=_revision(gid("stale"), sequence=3, desired="third"),
+            revision=_revision(gid("stale"), number=3, desired="third"),
         )
 
 
@@ -290,7 +290,7 @@ async def test_two_concurrent_revisions_have_exactly_one_winner(backend, ws, gid
             ws,
             gid("race"),
             expected_revision=first.goal_revision,
-            revision=_revision(gid("race"), sequence=2, desired=desired),
+            revision=_revision(gid("race"), number=2, desired=desired),
         )
 
     results = await asyncio.gather(revise("a"), revise("b"), return_exceptions=True)
@@ -325,7 +325,7 @@ async def test_terminal_states_are_final(backend, ws, gid) -> None:
             ws,
             gid("terminal"),
             expected_revision=revision.goal_revision,
-            revision=_revision(gid("terminal"), sequence=2),
+            revision=_revision(gid("terminal"), number=2),
         )
 
 
@@ -359,7 +359,7 @@ async def test_ownership_moves_only_by_an_explicit_transition(backend, ws, gid) 
     with pytest.raises(GoalStateConflict):
         await store.reassign(ws, gid("own"), expected_agent_id=AGENT, owner_agent_id="agent-3")
 
-    second = _revision(gid("own"), sequence=2, desired="restated")
+    second = _revision(gid("own"), number=2, desired="restated")
     revised = await store.revise(
         ws, gid("own"), expected_revision=revision.goal_revision, revision=second
     )
@@ -424,14 +424,14 @@ async def test_state_survives_the_object_that_wrote_it(backend, ws, gid) -> None
     store = await backend.store()
     first = _revision(gid("durable"))
     await store.create(_goal(first, workspace_id=ws), first)
-    second = _revision(gid("durable"), sequence=2, desired="after reopen")
+    second = _revision(gid("durable"), number=2, desired="after reopen")
     await store.revise(ws, gid("durable"), expected_revision=first.goal_revision, revision=second)
 
     reopened = await backend.store()
     found = await reopened.get(ws, gid("durable"))
     assert found is not None
     assert found.current_revision == second.goal_revision
-    assert [r.sequence for r in await reopened.revisions(ws, gid("durable"))] == [1, 2]
+    assert [r.goal_revision for r in await reopened.revisions(ws, gid("durable"))] == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -441,5 +441,5 @@ async def test_a_duplicate_goal_id_is_refused(backend, ws, gid) -> None:
     await store.create(_goal(revision, workspace_id=ws), revision)
 
     with pytest.raises(GoalRevisionConflict):
-        again = _revision(gid("dup"), sequence=1, desired="second attempt")
+        again = _revision(gid("dup"), number=1, desired="second attempt")
         await store.create(_goal(again, workspace_id=ws), again)
