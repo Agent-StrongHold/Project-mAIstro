@@ -3580,3 +3580,72 @@ program_brief_routes, chat_brief_interview, workspace_mode,
 airtable_principal_scope); suite-inventory 14/14; doc-links PASS;
 adr-index OK. No production or test code changed this round; the only
 tree edits are the ledger amendment and this note.
+
+## Round 55 (head `1c0014ff0`, 55th inspected head): first dependency-adjacent land — #773 CreativeBrief projection; acceptance block unchanged
+
+Branch state: HEAD `1c0014ff0` = lane merge of develop `ac87cbbcc` into the
+round-54 head (`0d806d34a`); working tree clean; `origin/develop` exactly
+`ac87cbbcc` (fetched fresh this round, merge-base == HEAD's develop parent)
+— no sync conflict. Prior job `529795d0` was a wall-clock timeout
+(`agent_exit` 124, `checks: []`, no `check-*.log`); tree was clean at the
+expected head, nothing to salvage. Driver ran no checks this round either;
+all validation below was executed directly.
+
+### Dependency state change (first since round 1)
+
+Develop landed `e5c461087` "Unified Creative Production — one brief to
+coordinated multi-artifact outputs (#1695)" (2026-10-01 21:45, after the
+round-52 head): the #773 epic's **CreativeBrief projection** now exists as
+Design-Studio domain state in `packages/maistro-design/` — versioned
+`CreativeBriefVersion` lineage bound to one caller-supplied canonical Goal
+revision, `SharedCreativeContext(branch)`, `ArtifactProvenance`, and a
+42-case boundary test suite. It validates Workspace/Project/Goal/Agent
+(+optional Persona) reference shape and the `goal_revision` projection
+against `maistro.interop` (#458 declarations) via
+`creative_brief.py:107-160`; single-lineage-per-Goal-revision and
+frozen-history semantics are enforced (`TestRevision`/`TestLineage`).
+
+What it does **not** do (correctly, per #777's stop condition): no Goal
+store or revision *records* (shape validation only — `goal_revision` is
+caller-supplied, `interop/contract.py:208-228`), no #804 consumption, no
+Run lifecycle, no authorization, and `routes/design.py` exposes **zero**
+CreativeBrief references (no HTTP seam yet).
+
+### Dependency audit (fresh at `1c0014ff0`)
+
+- #804/#805/#806 still absent: `workspace_agent.py` 0 goal/reconcil
+  matches; 0 `GoalRevision|GoalReconcil|goal_store` files; no `class Goal`
+  in any `packages/*/src`; `runs/reconciliation.py` remains Attempt/NodeRun
+  bookkeeping.
+- #458 behavior still absent: Goal exists only as `INTEROP_ONTOLOGY_V1`
+  declarations (`contract.py:4-5,312-316`); no Goal store/record/ownership
+  transfer.
+- #775 absent: only the `creative_brief.py:39` comment stating the lane has
+  not landed.
+- #776 absent: only "ladybug" hit is a book title
+  (`hive-conductor/dags/author_examples.py:29`).
+- Mixed control: 0 `control_mode|mixed-control` hits in `packages/*/src`;
+  26 e2e spec files (23 collected), none exercising #777 mixed control.
+
+### Acceptance — 13 of 13 still unmet (refinement on AC2/AC10)
+
+The brief-side halves of AC2 and AC10 now have tested domain state
+(CreativeBrief bound to goal_revision + Persona + Design System fields;
+guidance-only change appends brief versions instead of touching the Goal
+reference), but both criteria remain unprovable as stated: no canonical
+Goal revision can be *produced* (#458 behavior absent) and no #804
+reconciliation exists to consume. AC1/3/4/5/6/7/8/9/11/12/13 unchanged
+from round 54.
+
+### Gates green (all fresh at `1c0014ff0`)
+
+ruff check pass; ruff format 2716 files; vulture baseline exit 0 (1372
+reviewed == findings, 0 unbanked, no amendment); pytest 394 passed
+(`packages/maistro-design/tests`, incl. the CreativeBrief suite) + 57
+passed (workspace_agent_identity, program_brief_routes,
+chat_brief_interview, workspace_mode, `maistro-core/tests/interop`);
+suite-inventory 14/14; doc-links 0 broken; adr-index OK. No production or
+test code changed this round; the only tree edit is this note.
+
+Lane remains a clean dependency block on #458 behavior /
+#804/#805/#806 / #775 / #776.
