@@ -16,9 +16,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+# UV_HTTP_TIMEOUT: uv's 30s per-request default killed this build on a
+# congested runner network — `uv sync --frozen` died minutes in on
+# "Failed to download alembic ... network timeout (current value: 30s)"
+# while sibling wheels were still landing on retry (docker-build canary
+# build at 7102397a7, CI run 36833974902). 120s gives one stalled mirror
+# response room to finish without letting a wedged network hold the
+# 25-minute job hostage. Lock drift still fails: `--frozen` is untouched.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=120
 
 WORKDIR /workspace
 
