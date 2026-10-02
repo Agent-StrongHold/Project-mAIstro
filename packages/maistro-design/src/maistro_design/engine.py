@@ -10,8 +10,11 @@ One engine instance per session; callers manage session lifecycle.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
+from maistro.agents.base import Agent
+from maistro.runs.reconciliation import AttemptLifecycleReconciler, RecoveryEventSink
+from maistro.runs.store import RunStore
 from maistro_design.scan import scan_design_output
 from maistro_design.trust import (
     InMemoryTrustBanishList,
@@ -34,6 +37,18 @@ from maistro_design.types import (
     SkillNotFoundError,
     TrustBannedError,
 )
+
+
+# New types for optional dependencies
+class WorkspaceAgentResolver(Protocol):
+    async def __call__(self, workspace_id: str) -> Agent: ...
+
+
+class ReconcilerFactory(Protocol):
+    def __call__(
+        self, run_store: RunStore, *, event_sink: RecoveryEventSink | None = None
+    ) -> AttemptLifecycleReconciler: ...
+
 
 if TYPE_CHECKING:
     from maistro_canvas.protocols import CanvasStore, ImageGenClient
@@ -156,6 +171,10 @@ class DesignEngine:
     """Orchestrates skill → discovery → Warden scan → prompt stack → canvas/A2A.
 
     One instance per session. context_trust_tier is monotonically decreasing.
+
+    Optional dependencies:
+    - workspace_agent_resolver: A callable to resolve the persistent Workspace Agent for a given workspace ID.
+    - reconciler_factory: A callable to create an AttemptLifecycleReconciler for Goal reconciliation.
     """
 
     def __init__(
@@ -170,6 +189,9 @@ class DesignEngine:
         svg_renderer: SVGRenderer | None = None,
         typography_renderer: TypographyRenderer | None = None,
         project_store: DesignProjectStore | None = None,
+        *,
+        workspace_agent_resolver: WorkspaceAgentResolver | None = None,
+        reconciler_factory: ReconcilerFactory | None = None,
     ) -> None:
         self._skills = skill_registry
         self._systems = system_registry
@@ -183,11 +205,46 @@ class DesignEngine:
         self._svg_renderer = svg_renderer
         self._typography_renderer = typography_renderer
         self._project_store = project_store
+        self._workspace_agent_resolver = workspace_agent_resolver
+        self._reconciler_factory = reconciler_factory
         self._context_trust_tier: TrustTier = TrustTier.T0
 
     @property
     def context_trust_tier(self) -> TrustTier:
         return self._context_trust_tier
+
+    async def get_workspace_agent(self, workspace_id: str) -> Agent:
+        """Resolve the persistent Workspace Agent for the given workspace.
+
+        Args:
+            workspace_id: The canonical workspace identifier.
+
+        Returns:
+            The Workspace Agent instance.
+
+        Raises:
+            WorkspaceNotFound: If the workspace does not exist.
+            WorkspaceAgentConflict: If the agent is not owned by the workspace.
+        """
+        if self._workspace_agent_resolver is None:
+            raise RuntimeError("workspace_agent_resolver is not configured")
+        return await self._workspace_agent_resolver(workspace_id)
+
+    def get_reconciler(
+        self, run_store: RunStore, *, event_sink: RecoveryEventSink | None = None
+    ) -> AttemptLifecycleReconciler:
+        """Create an AttemptLifecycleReconciler for Goal reconciliation.
+
+        Args:
+            run_store: The RunStore to use for reconciliation.
+            event_sink: Optional event sink for recovery events.
+
+        Returns:
+            An AttemptLifecycleReconciler instance.
+        """
+        if self._reconciler_factory is None:
+            raise RuntimeError("reconciler_factory is not configured")
+        return self._reconciler_factory(run_store, event_sink=event_sink)
 
     @property
     def systems(self) -> DesignSystemRegistry:
