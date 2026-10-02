@@ -126,9 +126,11 @@ without an expiry.
 **Measured starting debt (2026-10-01): 40 prefixes**, not the 18 counted by hand — every
 authenticated `/v1` prefix the hive app mounts, since the registry starts empty.
 
-**AC text (for #53 / #373).** "AC-P2: `check-public-routes.py` proves every registered
-Conductor route is either scoped, public-by-declaration, or exempt-by-declaration; an
-undeclared route fails CI; `PrivilegeMiddleware` is deleted or enforces its table."
+**AC text (for #53 / #373).** "AC-P2: `check-route-permissions.py` proves every registered
+Conductor route is either scoped, public-by-declaration (via
+`quality/public-routes.json`), or exempt-by-declaration (via
+`quality/route-permissions.json`); an undeclared route fails CI;
+`PrivilegeMiddleware` is deleted or enforces its table."
 
 ### P0.3 Typed API contract, one client
 
