@@ -94,6 +94,9 @@ EXPECTED_TABLES = frozenset(
         "canonical_workspaces",
         "canonical_workspace_memberships",
         "child_profiles",
+        # Versioned CreativeBrief lineages (#774) — the immutable creative
+        # provenance Runs/artifacts cite; append-only by contract.
+        "design_creative_briefs",
         "design_outputs",
         "design_projects",
         # Short-lived elevation grants (#72): durable so a grant issued before
