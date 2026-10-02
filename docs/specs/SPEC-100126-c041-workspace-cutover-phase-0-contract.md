@@ -86,9 +86,9 @@ plan's `AC-Pn` maps to `AC-n` one to one:
 | AC-P4 | `SPEC-100126-c041/AC-4` | P0.4 One durable audit store | #53, #325 |
 | AC-P5 | `SPEC-100126-c041/AC-5` | P0.5 Backend-selected effect context | #804 |
 | AC-P6 | `SPEC-100126-c041/AC-6` | P0.6 The Workspace app is a package | §7 prerequisite B (unopened) |
-| AC-P7 | `SPEC-100126-c041/AC-7` | P0.7 Crash-window invariants | #804, #62 |
+| AC-P7 | `SPEC-100126-c041/AC-7` | P0.7 Crash-window invariants | #804 (#62 closed 2026-09-27 by #1618's kill-recovery evidence, which this criterion builds on) |
 | AC-P8 | `SPEC-100126-c041/AC-8` | P0.8 Store-boundary scope | #364 |
-| AC-P9 | `SPEC-100126-c041/AC-9` | P0.9 Aggregated inbound scan | #1037, #66 |
+| AC-P9 | `SPEC-100126-c041/AC-9` | P0.9 Aggregated inbound scan | #804, #66 (#1037 closed 2026-09-23 by #1555) |
 
 A test proving a criterion carries `@pytest.mark.ac("SPEC-100126-c041/AC-N")`
 and, once the criterion's module is known, the spec gains an `ac-modules`
@@ -114,11 +114,12 @@ its marker (per `check-ac-state.py --mandate`).
 - **AC-1** (AC-P1, #53): every authenticated request in maistro-server,
   hive-conductor and the Turing backend yields one `maistro.identity.Principal`;
   no handler reads a dict-shaped user; the fitness ledger is empty.
-<!-- ac-state: unproven AC-2 - proven by #53 / #373 (P0.2 default-deny route table; quality/route-permissions.json under check-public-routes.py) -->
-- **AC-2** (AC-P2, #53 / #373): `check-public-routes.py` proves every
-  registered Conductor route is either scoped, public-by-declaration, or
-  exempt-by-declaration; an undeclared route fails CI; `PrivilegeMiddleware` is
-  deleted or enforces its table.
+<!-- ac-state: unproven AC-2 - proven by #53 / #373 (P0.2 default-deny route table; quality/route-permissions.json under check-route-permissions.py) -->
+- **AC-2** (AC-P2, #53 / #373): `check-route-permissions.py` proves every
+  registered Conductor route is either scoped, public-by-declaration (via
+  `quality/public-routes.json`), or exempt-by-declaration (via
+  `quality/route-permissions.json`); an undeclared route fails CI;
+  `PrivilegeMiddleware` is deleted or enforces its table.
 <!-- ac-state: unproven AC-3 - proven by #1048 (P0.3 generated types.gen.ts and one client; raw-fetch and hand-typed-entity ledgers) -->
 - **AC-3** (AC-P3, #1048): Workspace Home and every surface it composes import
   backend entity types only from `types.gen.ts` and call only the generated
@@ -137,16 +138,16 @@ its marker (per `check-ac-state.py --mandate`).
   as new top-level `routes`, `config`, `middleware`, `main`, `state` modules;
   `scripts/check-cross-package-imports.py` rejects a new top-level module under
   `packages/*/backend/` that is not inside a package with `__init__.py`.
-<!-- ac-state: unproven AC-7 - proven by #804 / #62 (P0.7 RUNNING-run recovery sweep plus one crash-injection test per window) -->
-- **AC-7** (AC-P7, #804 / #62): a process killed at any of the four named
+<!-- ac-state: unproven AC-7 - proven by #804 (P0.7 RUNNING-run recovery sweep plus one crash-injection test per window) -->
+- **AC-7** (AC-P7, #804): a process killed at any of the four named
   points leaves a Run that the next recovery tick settles or resumes; no Run is
   RUNNING with no live Attempt after one tick.
 <!-- ac-state: unproven AC-8 - proven by #364 (P0.8 store-boundary scope conformance per store, on all three backends) -->
 - **AC-8** (AC-P8, #364): workspaces, projects, runs and audit each have a
   store-boundary scope test; `actor_principal_id` is required and validated at
   admission; audit rows carry and filter by `org_id`.
-<!-- ac-state: unproven AC-9 - proven by #1037 / #66 (P0.9 aggregated-context Warden boundary test, evasion cases, armed Sentinel permission table) -->
-- **AC-9** (AC-P9, #1037 / #66): the Workspace Agent's inbound scan covers the
+<!-- ac-state: unproven AC-9 - proven by #804 / #66 (P0.9 aggregated-context Warden boundary test, evasion cases, armed Sentinel permission table) -->
+- **AC-9** (AC-P9, #804 / #66): the Workspace Agent's inbound scan covers the
   aggregated turn context after normalization; the three reproduced evasions
   are detected; the Sentinel permission table is armed in every supported
   profile.
