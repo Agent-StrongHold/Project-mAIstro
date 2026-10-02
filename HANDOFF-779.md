@@ -266,3 +266,56 @@ corrected this round to say exactly that. Building that surface (frontend
 panel + truthful snapshot source + E2E spec) is the remaining feature slice
 for this issue; it is not reachable by patching the evaluator, whose
 issue-level behavior is fully proven.
+
+---
+
+# Round 6 (repair, job e84b95991a5d43b995565d26a9a9cff7) — develop sync + note banking
+
+## Outcome (this round)
+
+- Root cause of the standing "CI gates red; operator review required" block:
+  the branch predated develop's absorb of the same #773/#779 content —
+  develop landed it byte-identical via PR #1663 (`bebc51fd8`), then moved to
+  `4df9dd9bd`. The branch's remaining delta vs develop was only the missing
+  sync, so the synthetic merge-queue tree could not reproduce any branch-local
+  finding.
+- Merged `origin/develop` (`4df9dd9bd`) into `auto-779`: **zero conflicts**
+  (all 11 #779 surface files already byte-identical on both sides;
+  `git diff origin/develop HEAD` over the surface is empty).
+- Salvaged and verified the previous run's uncommitted banked note:
+  measured `design_coverage` **38.8827%** over 158 taken decisions (92 at
+  zero) with `--run-tests` against pg18 (`MAISTRO_TEST_PG_DSN`/
+  `DATABASE_URL` wired, `alembic upgrade head` applied) — exact match to the
+  salvaged value. Develop's banked 38.7892 had one criterion skipped in its
+  own run (93 at zero), hence the small delta. Committed as `01f855513`.
+
+## Validation executed this round (all RC 0)
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact scoped invocation, quality.yml
+  "vulture" step): 1372 reviewed identities → 1372 findings, ratchet OK
+  against base `68079320f8df`. No ledger amendment needed.
+- `check-ac-state.py --run-tests --ratchet` → "OK: 10 debt counters sit
+  exactly on their ceilings and 1 progress counter sits exactly on its
+  floor" (fold from 13 notes at `4df9dd9bde4c`).
+- `check-ac-state.py --run-tests --ratchet --mandate 4df9dd9bd` (merge-group
+  command line) → chain mandate OK: 0 absent links introduced.
+- `ruff check .`, `ruff format --check .` → clean.
+- `mypy --strict packages/maistro-core/src` → no issues in 655 files.
+- 15 fast quality gates (radon/release/doc-links/reachability/credential-
+  authority/wiring-reads/agent-store-writes/contract-markers/convergence-
+  matrix/reachability-dispositions/security-inventory/image-inventory/
+  backlog-consistency/execution-lifecycles/model-egress) → all OK.
+- `pytest packages/maistro-design/tests -q` → 413 passed (incl. the 19
+  consistency tests); `pytest
+  packages/hive-conductor/backend/tests/test_design_consistency_route.py -q`
+  → 8 passed.
+
+## Residual
+
+- AC-8 (browser E2E) remains the recorded product-surface slice (see round-5
+  AC-8 re-inspection above); everything else this issue owns is proven.
+- Acceptance criteria 1–7 map to the 19 consistency tests + 8 route tests;
+  spot-checked bodies still exercise the real evaluator/store behavior
+  (locked artifact byte-identical after evaluation; retry mints fresh
+  Run/NodeRun/Attempt ids and preserves the failed evaluation by run id).
