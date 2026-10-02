@@ -3821,3 +3821,154 @@ Land the dependencies first (`#458` Goal store, then `#804`/`#805`/`#806`
 reconciliation, `#774` CreativeBrief records, `#775` creative Graph,
 `#776` working graph), then implement `#777` as the consumer projection.
 No closure keywords used (`Refs #777` only).
+
+## Round 57 (head `52bff5022`, salvage-commit round): seam repaired, truthfully wired and tested; dependency block unchanged
+
+Round context: lane head `52bff5022fd35c5cb0286a4e43a7295e9ed62bce` — the
+driver's salvage commit of the previous worker's uncommitted engine.py change,
+plus one untracked inventory note left for review. This round reviewed,
+repaired, wired, and tested that salvage instead of restarting it.
+
+### Develop sync check
+
+`git fetch origin develop` — `origin/develop` = `33bcd3ce2` (the lane's
+declared develop base); merge-base(HEAD, origin/develop) = `4df9dd9bd`; HEAD
+has 86 commits not on origin/develop, origin/develop has 2 not on HEAD:
+`fd584a9b1` (EngineService atomic startup, not a #777 dependency) and
+`33bcd3ce2` (**#774 versioned CreativeBrief contract** — CreativeBrief +
+append-only `design_creative_briefs` store + migration 047 on *unmerged
+upstream*). The previous round's block was **not** a develop sync conflict (it
+was uncommitted work, salvaged by the driver), so per the lane brief **no
+merge was performed**; the sync is the driver's landing decision. At THIS
+head, `packages/maistro-design/creative_brief.py` remains the Round-55
+in-memory projection and self-documents that #774 persistence has not landed
+*here*.
+
+### Salvage review — what the driver-committed seam got wrong (evidence)
+
+The salvaged `DesignEngine` change (constructor params
+`workspace_agent_resolver`/`reconciler_factory` + two accessor methods) had
+three defects, each fixed this round:
+
+1. **False Goal-reconciliation claim.** `get_reconciler`'s docstring and the
+   class docstring said the `AttemptLifecycleReconciler` was "for Goal
+   reconciliation". `packages/maistro-core/src/maistro/runs/reconciliation.py:1-4`
+   states it "owns universal lifecycle bookkeeping only" — it is physical
+   Attempt/NodeRun reconciliation, not #804. Docstrings now say exactly that
+   and point #804 at its own future seam.
+2. **Type lie on the resolver return.** The protocol annotated
+   `-> maistro.agents.base.Agent` (the *runtime agent instance* class,
+   `agents/base.py:219`), but the canonical #53 front door
+   `services/workspace_agent.resolve_workspace_agent` returns the app layer's
+   persistent roster row (`models/schemas.py:151` pydantic `Agent`). The
+   protocol now returns `Any` with the canonical producer and its error types
+   named in prose.
+3. **Untested, unwired.** No test exercised the seam and no production code
+   consumed it. Both fixed below.
+
+### Production wiring (first real consumption)
+
+`packages/hive-conductor/backend/services/design_service.py` now constructs
+the engine with `workspace_agent_resolver=workspace_agent_service.resolve_workspace_agent`
+— Design Studio consumes the one persistent Workspace Agent (#53) and can
+never materialize a private one. The `reconciler_factory` seam deliberately
+stays uninjected: run-store wiring is owned by `maistro.runs.wiring`, and the
+Goal reconciler an injection would actually want (#804) has not landed.
+
+### Dependency audit (fresh greps at `52bff5022`, not trusted)
+
+- `grep -rE 'class GoalRevision|class GoalReconcil|goal_store' packages/*/src --include='*.py'`
+  → 0 (#458 Goal store absent).
+- `grep -ril ladybug packages/*/src packages/*/backend` → only
+  `dags/author_examples.py:29` book title (#776 absent).
+- `grep -c 'workspace_agent' packages/hive-conductor/backend/routes/design.py`
+  → 0 (no Goal lineage in the Design Studio routes yet).
+- `packages/maistro-design/src/maistro_design/creative_brief.py:35-39` —
+  "#774 persistence and #775 creative-Graph lanes have not landed yet" (at
+  this head; the versioned #774 contract sits on unmerged upstream
+  `33bcd3ce2`).
+- `packages/maistro-core/src/maistro/interop/contract.py` — `Goal` remains an
+  ontology declaration (`revision="goal_revision"`), no store.
+
+### Acceptance — 12 of 13 UNMET; AC1 now has a tested consumption seam
+
+AC1 ("consume the persistent Workspace Agent ... rather than instantiating a
+Design-Studio-private root Agent/reconciler") is now **partially evidenced**:
+the constructor seams + start_design_service wiring + both test classes prove
+consume-not-own for the Workspace Agent and the physical reconciler. It is not
+*proven as stated* because #804's Goal reconciliation — the other half of the
+criterion's "Goal reconciliation APIs" — still does not exist to consume.
+AC2-AC13 unchanged UNMET (no Goal revisions, no #776 retrieval, no E2Es, no
+control-continuum state, no durable ownership/lock/delegation state, no
+mixed-control browser spec).
+
+### Gates executed this round (all fresh)
+
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2727 files already formatted.
+- `uv run pytest packages/maistro-design/tests -q` — **420 passed** (413 + 7
+  new seam tests in `test_engine_workspace_seam.py`).
+- `uv run pytest packages/hive-conductor/backend/tests/test_design_service_startup.py
+  test_workspace_agent_identity.py test_agent_materialization.py
+  test_workspace_mode.py -q` — **78 passed** (includes the 2 new
+  front-door wiring tests; 28 in the design-startup file).
+- `uv run python scripts/check-suite-inventory.py` — **ok: 14 suite(s) match**
+  (design 420, conductor backend 3183 — deltas recorded in
+  `design_engine_optional_dependencies.md`'s `inventory-delta` block; the
+  salvage-era note's unparsable front matter was rewritten into the
+  gate's required `<suite>: <±count>` shape, which would otherwise have
+  raised `LedgerError` on the first inventory run after commit).
+- `uv run python scripts/check-doc-links.py` — Every relative markdown link
+  resolves.
+- `mypy packages/maistro-design/src` — 19 pre-existing `import-untyped`-class
+  errors (no `py.typed` exists in any workspace package; maistro-design is
+  not in the repo mypy gate per AGENTS.md). The salvage added no new error
+  class: its import lines produce the same environmental
+  "missing library stubs" finding as the pre-existing
+  `maistro_canvas.protocols` import, and the `unused type: ignore` at
+  `engine.py:163` predates the salvage (canvas was already untyped).
+
+### CI-repair: vulture per-identity ledger (exact-debt-ledger)
+
+`uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` flagged exactly **2 NEW
+unbanked identities**, both from the salvage commit, both reviewed **retained**
+(consumed by the new tests and the app-layer wiring; they are the seam surface
+engine-internal code will use when #804 lands):
+
+- `protocol-and-adapter-port: packages/maistro-design/src/maistro_design/engine.py::unused method 'get_workspace_agent'`
+- `protocol-and-adapter-port: packages/maistro-design/src/maistro_design/engine.py::unused method 'get_reconciler'`
+
+Per the lane brief, `quality/vulture-baseline.json` was amended: surgical diff
+of exactly +2 identity keys under `protocol-and-adapter-port` (same rule that
+already banks the sibling `engine.py::run_discovery` / `systems`
+public-seam methods), nothing else touched. Alternative designs were rejected
+on evidence: dropping the accessors leaves write-only private attributes,
+which vulture reports as `unused attribute` — unclassified by any rule, which
+the gate treats as an unconditional failure; deleting the seam entirely would
+abandon salvage and the only truthful consumption path.
+
+**Residual (same as Round 53, unfixable from this lane by design):** the
+gate's TRUSTED half still exits 1 in-branch because the trusted ledger and
+`ratchet-authorizations.json` are read from the merge-base commit
+(`scripts/ratchet_provenance.py`: "a new grant does not take effect in the
+change that introduces it"). The amended bank turns the gate green once the
+driver lands/syncs this branch past the current base.
+
+### Why not a fuller implementation
+
+Unchanged from Rounds 1-56: the stop condition forbids a Design-Studio-private
+Agent runtime, Goal owner, reconciliation loop, memory system, permissions
+model, Persona variant, Graph engine, or artifact authority, and #458
+Goal-store behavior, #804/#805/#806 reconciliation, and #776 remain unlanded
+in this tree. #777 stays a consumer projection; the dependencies must land
+first (#774's contract is now on unmerged upstream — a first real movement).
+
+### Residual / next
+
+Driver: land the branch (the amended vulture bank + the suite-inventory delta
+ride on it); sync `33bcd3ce2` to pick up the #774 CreativeBrief contract.
+Then #777's remaining criteria need #458 Goal-store behavior, #804/#805/#806
+reconciliation, and #776 — after which the archived draft shape
+(`docs/research/777-design-studio-salvage/`, minus its documented fabrication
+bugs) and this seam are the starting points.

@@ -10,9 +10,8 @@ One engine instance per session; callers manage session lifecycle.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from maistro.agents.base import Agent
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, RecoveryEventSink
 from maistro.runs.store import RunStore
 from maistro_design.scan import scan_design_output
@@ -38,13 +37,42 @@ from maistro_design.types import (
     TrustBannedError,
 )
 
+# Injection seams for #777: Design Studio consumes the persistent Workspace
+# Agent (#53 front door) and the canonical physical-execution reconciler
+# instead of instantiating private ones. maistro-design cannot depend on the
+# app layer that owns those objects, so callers inject them here.
+#
+# These are seams, not implementations: with nothing injected, DesignEngine
+# raises rather than silently substituting its own agent or reconciler.
 
-# New types for optional dependencies
+
+@runtime_checkable
 class WorkspaceAgentResolver(Protocol):
-    async def __call__(self, workspace_id: str) -> Agent: ...
+    """Resolve the Workspace's single persistent Agent (#53 front door).
+
+    The canonical producer is the app layer's Workspace Agent service (in the
+    reference Conductor: ``services.workspace_agent.resolve_workspace_agent``),
+    which returns the persistent roster row for the Workspace's stable Agent
+    and raises its own ownership errors (``WorkspaceNotFound`` for a Workspace
+    the canonical store does not hold, ``WorkspaceAgentConflict`` when the
+    Agent id holds a row of another Workspace). This package does not own
+    those types, so the resolved agent is typed loosely here.
+    """
+
+    async def __call__(self, workspace_id: str) -> Any: ...
 
 
+@runtime_checkable
 class ReconcilerFactory(Protocol):
+    """Build the canonical physical-execution reconciler for a run store.
+
+    This is the Attempt/NodeRun lifecycle reconciler from ``maistro.runs`` —
+    universal bookkeeping between physical Attempts and logical execution. It
+    is NOT Goal reconciliation (#804/#805/#806), which is owned elsewhere and
+    not implemented at this head; when that lands it should be injected
+    through its own seam, not smuggled behind this one.
+    """
+
     def __call__(
         self, run_store: RunStore, *, event_sink: RecoveryEventSink | None = None
     ) -> AttemptLifecycleReconciler: ...
@@ -172,9 +200,13 @@ class DesignEngine:
 
     One instance per session. context_trust_tier is monotonically decreasing.
 
-    Optional dependencies:
-    - workspace_agent_resolver: A callable to resolve the persistent Workspace Agent for a given workspace ID.
-    - reconciler_factory: A callable to create an AttemptLifecycleReconciler for Goal reconciliation.
+    Optional dependencies (injected, never self-constructed — #777):
+    - workspace_agent_resolver: the persistent Workspace Agent front door
+      (#53). DesignEngine never builds an agent of its own.
+    - reconciler_factory: builds the canonical AttemptLifecycleReconciler over
+      a caller-supplied run store. This reconciles physical Attempts into
+      logical Run/NodeRun state; it is not a Goal reconciliator (#804), and
+      DesignEngine never builds a reconciler of its own.
     """
 
     def __init__(
@@ -213,18 +245,23 @@ class DesignEngine:
     def context_trust_tier(self) -> TrustTier:
         return self._context_trust_tier
 
-    async def get_workspace_agent(self, workspace_id: str) -> Agent:
-        """Resolve the persistent Workspace Agent for the given workspace.
+    async def get_workspace_agent(self, workspace_id: str) -> Any:
+        """Resolve the Workspace's persistent Agent through the injected seam.
 
         Args:
             workspace_id: The canonical workspace identifier.
 
         Returns:
-            The Workspace Agent instance.
+            Whatever the injected resolver returns — the persistent Workspace
+            Agent roster row owned by the app layer (never a DesignEngine-
+            constructed substitute).
 
         Raises:
-            WorkspaceNotFound: If the workspace does not exist.
-            WorkspaceAgentConflict: If the agent is not owned by the workspace.
+            RuntimeError: If no resolver was injected.
+            LookupError/ValueError subclasses: whatever the canonical front
+            door raises for an unknown or conflicting Workspace (the reference
+            Conductor's resolver raises ``WorkspaceNotFound`` and
+            ``WorkspaceAgentConflict``); these propagate unchanged.
         """
         if self._workspace_agent_resolver is None:
             raise RuntimeError("workspace_agent_resolver is not configured")
@@ -233,14 +270,20 @@ class DesignEngine:
     def get_reconciler(
         self, run_store: RunStore, *, event_sink: RecoveryEventSink | None = None
     ) -> AttemptLifecycleReconciler:
-        """Create an AttemptLifecycleReconciler for Goal reconciliation.
+        """Build the canonical AttemptLifecycleReconciler via the injected seam.
+
+        This reconciles already-persisted physical Attempts into logical
+        Run/NodeRun activity (``maistro.runs.reconciliation``). It is not a
+        Goal reconciliator — #804/#805/#806 own that and have not landed.
 
         Args:
-            run_store: The RunStore to use for reconciliation.
-            event_sink: Optional event sink for recovery events.
+            run_store: The run store the reconciler reads and transitions.
+            event_sink: Optional sink forwarded for recovery disposition events.
 
         Returns:
-            An AttemptLifecycleReconciler instance.
+            Whatever the injected factory builds (contractually an
+            ``AttemptLifecycleReconciler``); never an engine-private
+            reconciler.
         """
         if self._reconciler_factory is None:
             raise RuntimeError("reconciler_factory is not configured")

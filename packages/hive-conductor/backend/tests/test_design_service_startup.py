@@ -21,8 +21,10 @@ from __future__ import annotations
 import re
 
 import pytest
-from services import design_service
+import stores
+from services import design_service, workspace_agent, workspace_authority
 
+from maistro.workspaces.store import InMemoryWorkspaceStore
 from maistro_design.systems.importer import BUNDLED_SLUGS
 from maistro_design.types import DesignSystemNotFoundError, DiscoveryResult
 
@@ -339,3 +341,63 @@ class TestImportableMeansParseable:
         (root / "sparse" / "tokens.css").write_text(":root{}", encoding="utf-8")
         monkeypatch.setattr(importer, "CATALOG_ROOT", root)
         assert design_service._importable("sparse")
+
+
+class TestTheWorkspaceAgentSeamIsTheRealFrontDoor:
+    """#777: Design Studio must consume the persistent Workspace Agent (#53)
+    rather than ever materializing a Design-Studio-private one. `start_design_service`
+    injects `services.workspace_agent.resolve_workspace_agent` into the engine,
+    so the only agent the seam can return is the canonical roster row — and a
+    Workspace the canonical store does not hold fails with the front door's own
+    ownership error, not with a substitute."""
+
+    @pytest.fixture
+    async def wired_engine(self, monkeypatch):
+        """The engine `start_design_service` builds, over an in-memory canonical
+        Workspace store (same pattern as `test_workspace_agent_identity.py`)."""
+        store = InMemoryWorkspaceStore()
+        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: store)
+        monkeypatch.setattr(design_service, "_get_async_session_factory", lambda: None)
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_store_singleton", None)
+        monkeypatch.setattr(design_service, "_renderer_registry_singleton", None)
+        before = set(stores.agents.keys())
+        yield store
+        for key in set(stores.agents.keys()) - before:
+            stores.agents.pop(key, None)
+        for key in list(stores.workspaces.keys()):
+            stores.workspaces.pop(key, None)
+
+    class _Settings:
+        open_design_url = None
+        open_design_api_key = None
+
+    async def _start(self) -> None:
+        await design_service.start_design_service(self._Settings())
+
+    async def test_the_engine_returns_the_canonical_roster_row(self, wired_engine):
+        await self._start()
+        engine = design_service.get_design_engine()
+        view = await workspace_authority.create_workspace(
+            creator_user_id="alice",
+            name="Studio",
+            persona_template_id="personal",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+
+        through_seam = await engine.get_workspace_agent(view.id)
+        front_door = await workspace_agent.resolve_workspace_agent(view.id)
+
+        assert through_seam is front_door
+        assert through_seam.workspace_id == view.id
+        assert workspace_agent.persona_template_id(through_seam) == "program_manager"
+        assert stores.agents[through_seam.id].workspace_id == view.id
+
+    async def test_an_unknown_workspace_raises_the_front_doors_error(self, wired_engine):
+        await self._start()
+        engine = design_service.get_design_engine()
+
+        with pytest.raises(workspace_agent.WorkspaceNotFound):
+            await engine.get_workspace_agent("no-such-workspace")
