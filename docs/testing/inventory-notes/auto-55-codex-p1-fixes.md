@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +24
+  packages/maistro-core/tests: +58
 ---
 
 # Tests for the Codex review fixes on #1362
 
-`+24` is the net movement for `packages/maistro-core/tests` across this
+`+58` is the net movement for `packages/maistro-core/tests` across this
 branch's Codex-fix commits — additions minus the one test that was replaced.
 (It has grown as review rounds landed; the number in the front matter is the
 one to trust, and this sentence is kept equal to it on purpose, because a
@@ -137,3 +137,35 @@ evidence lived in its sibling implementation.
 
 Coverage for `maistro/persistence/sqlite_quota.py` is 98% with this file
 alone (one uncovered line, 71).
+
+## Diff-coverage gaps the gate named
+
+`+34` for two files the per-file diff-coverage floor reported, neither of
+which had anything testing the lines it measured.
+
+`quota/test_lazy_exports.py` — **+10**. `maistro/quota/__init__.py` exports
+lazily so importing config does not drag Invocation accounting in behind it,
+and sat at 18.2% line coverage with every export unexercised. The shape
+invites one specific bug: a name in `__all__` that `__getattr__` has no branch
+for, which imports clean and fails at first use. The suite resolves every
+advertised name, pins the two loader branches by identity rather than shape,
+and checks that an unknown name raises `AttributeError` rather than the
+`KeyError` the dict lookup would otherwise leak — a `KeyError` from attribute
+access breaks `hasattr`, `getattr(..., default)` and `from ... import` each in
+a different way. The module is now at 100%.
+
+`capabilities/test_durable_approval_validation.py` — **+24**. The store's
+existing tests build *valid* approvals; nothing built an invalid one, so every
+refusal in `DurableApproval` was unexercised. A validator nothing tests can be
+deleted without a test failing, which is the same as not having it. Covered:
+each correlation field blank or whitespace (parametrized over
+`_IDENTITY_FIELDS`, because a blank one does not narrow a lookup and the row
+would answer for a different effect than it authorizes); the three
+digest-derivation paths; and both halves of resolution consistency — a
+resolved approval naming no actor or no time, and a pending one claiming a
+time — for both terminal states, since a denial nobody signed is as
+unauditable as an approval nobody signed.
+
+`approval_store.py` rises to 77%; what remains uncovered there is
+`PgApprovalStore`, which has no tests on any branch and needs a live server,
+and is not in scope for this note.
