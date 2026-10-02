@@ -19,6 +19,8 @@ related:
   - maistro-engine#ADR-086
   - maistro-engine#ADR-101
 supersedes: []
+superseded-by:
+  - maistro-engine#ADR-101
 blocks: []
 blocked-by: []
 contracts:
