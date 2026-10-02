@@ -104,7 +104,13 @@ class LearningPromoter:
         approved_ids = self._approval_gate.get_approved_ids()
         for lid in approved_ids:
             for lr in candidates:
-                if lr.id == lid and lr.status == "active":
+                # The evidence verdict is re-evaluated at consumption time, not
+                # only when the request was queued: outcomes recorded while an
+                # approval sat pending can sink confidence below the floor, and
+                # a stale approval must not bypass the rule the queue enforces.
+                # Candidates were re-enumerated from the store this pass, so
+                # _promotable_candidate sees the current measured confidence.
+                if lr.id == lid and self._promotable_candidate(lr):
                     logger.info(
                         "Gate-approved promotion: learning #%d (hits=%d)",
                         lid,
