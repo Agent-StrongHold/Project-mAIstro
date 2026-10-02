@@ -494,11 +494,6 @@
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
     },
-    "packages/maistro-evolve/src/maistro_evolve/crossover.py::crossover@15": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
-    },
     "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle@11": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
@@ -728,6 +723,26 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
+    },
+    "packages/maistro-canvas/src/maistro_canvas/canvas/retry_policy.py::classify_failure@14": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
+    },
+    "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::CanvasJobRunner.tick_once@11": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
+    },
+    "packages/maistro-server/src/maistro_server/api/health.py::readiness@16": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
+    },
+    "packages/maistro-evolve/src/maistro_evolve/crossover.py::crossover@14": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. Re-keyed from @15, which this change deletes: develop has taken this block down to 14, and a grant names the complexity it authorizes. Keeping @15 would not be inert -- the checker consults grants exactly when a regression makes that value reachable again, so the stale key would pre-authorize raising this function back to 15 (Codex, #1761)."
     }
   },
   "contract-markers": {
@@ -904,6 +919,96 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#55",
       "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/providers/__init__.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/providers/config.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/providers/errors.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/providers/protocols.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/providers/registry.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/providers/router.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/providers/types.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/quota/ambient.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/quota/reconciliation.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/quota/recorder.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/quota/usage_log.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/quota/usage_report.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/resilience/__init__.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/resilience/backoff.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/resilience/classifier.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/resilience/fallback.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/resilience/p1.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/resilience/slo.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
     }
   }
 }

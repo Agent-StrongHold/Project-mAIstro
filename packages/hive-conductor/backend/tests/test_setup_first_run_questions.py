@@ -136,7 +136,17 @@ def test_server_field_defaults_come_from_the_declaration() -> None:
     from routes.setup import SetupCompleteBody
 
     served = _served_questions()
+    # Fields the server accepts that are NOT operator questions (#287):
+    # wizard-internal control metadata attached to the completion payload,
+    # documented here so a new field cannot silently dodge the parity check
+    # below. model_availability carries the SPA's final gateway-preflight
+    # verdict ("verified"/"unverified") — the server never defaults it to a
+    # question answer, and the terminal collector does not state it.
+    non_question_fields = {"model_availability"}
     for name, field in SetupCompleteBody.model_fields.items():
+        if name in non_question_fields:
+            assert name not in served
+            continue
         declared = served[name]
         if field.is_required():
             assert declared["required"] is True
@@ -150,6 +160,10 @@ def test_server_field_defaults_come_from_the_declaration() -> None:
             continue
         assert declared["required"] is False
         assert field.default == declared["default"]
+    # And the declaration covers every question-bearing field: no orphan
+    # question, no undeclared accepted field beyond the documented control
+    # metadata.
+    assert set(served) | non_question_fields == set(SetupCompleteBody.model_fields)
 
 
 def test_omitted_hardware_preset_takes_the_declared_default() -> None:
