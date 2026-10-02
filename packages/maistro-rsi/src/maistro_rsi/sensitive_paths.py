@@ -64,6 +64,14 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # happens to live (Codex, #513).
     "hive-conductor/backend/services/rsi.py",
     "hive-conductor/backend/routes/rsi.py",
+    # The #509 dispatch backend: it builds the ``docker run`` argv that decides
+    # WHERE a run's candidate code executes — caps, mounts, network, user,
+    # interpreter resolution. A candidate that could edit it could move its own
+    # execution back onto the host without touching either file above — the
+    # same one-diff authorization hole the test-suite patterns below close for
+    # the classifier itself, so its pinning suite travels with it.
+    "hive-conductor/backend/services/rsi_container_dispatch.py",
+    "hive-conductor/backend/tests/test_rsi_container_dispatch.py",
     # The services package initializer, on the same reasoning as the others
     # below: a docstring today, on the runtime import path regardless.
     "hive-conductor/backend/services/__init__.py",
