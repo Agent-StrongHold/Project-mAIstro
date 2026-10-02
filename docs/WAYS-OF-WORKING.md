@@ -88,7 +88,7 @@ Four tiers, work flows **upward**, every promotion is a PR (never a direct push)
 detail in [ADR-095](adr/ADR-095-four-tier-branch-model.md):
 
 ```
-feat/* bug/* idea/* doc/* chore/* fix/*  →  develop  →  integration  →  main
+feat/* bug/* idea/* doc/* docs/* chore/* fix/*  →  develop  →  integration  →  main
 ```
 
 - **Branch off `develop`**, PR into `develop`. Not `main`, not `integration`.

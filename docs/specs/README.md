@@ -35,7 +35,7 @@ Frozen **reference** trees that specs ported from (hyperagent bundle, gateway sn
 
 ## AC Defined specs (implementation backlog)
 
-**52 specs** with acceptance criteria defined but not yet fully implemented.
+**54 specs** with acceptance criteria defined but not yet fully implemented.
 Regenerate: `uv run python scripts/generate-spec-ac-defined-index.py`.
 
 | ID | Title | File |
@@ -84,6 +84,8 @@ Regenerate: `uv run python scripts/generate-spec-ac-defined-index.py`.
 | SPEC-090326-b7e2 | Browser navigation governed by the canonical outbound policy | [SPEC-090326-b7e2-browser-navigation-canonical-outbound-policy.md](SPEC-090326-b7e2-browser-navigation-canonical-outbound-policy.md) |
 | SPEC-091226-1341 | "Gates Ran path-scoped execution evidence" | [SPEC-091226-1341-gates-ran-path-scope-evaluator.md](SPEC-091226-1341-gates-ran-path-scope-evaluator.md) |
 | SPEC-091726-7c2a | "A requirements interview precedes every Goal and CreativeBrief commit" | [SPEC-091726-7c2a-brief-interview-before-goal-commit.md](SPEC-091726-7c2a-brief-interview-before-goal-commit.md) |
+| SPEC-092826-a774 | CreativeBrief is a versioned Design Studio projection of one canonical Goal revision | [SPEC-092826-a774-creative-brief-contract.md](SPEC-092826-a774-creative-brief-contract.md) |
+| SPEC-100126-b779 | "Cross-artifact consistency evaluation and targeted refinement" | [SPEC-100126-b779-cross-artifact-consistency-evaluation.md](SPEC-100126-b779-cross-artifact-consistency-evaluation.md) |
 | SPEC-175 | Task progress webhook (conductor-router compatibility) | [SPEC-175-task-progress-webhook.md](SPEC-175-task-progress-webhook.md) |
 | SPEC-176 | Hive Conductor monorepo package | [SPEC-176-hive-conductor-package.md](SPEC-176-hive-conductor-package.md) |
 | SPEC-177 | Hyperagent graph execution (legacy port) | [SPEC-177-hyperagent-graph-execution.md](SPEC-177-hyperagent-graph-execution.md) |
