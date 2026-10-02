@@ -407,19 +407,38 @@ Open §7 issues → land P0 checks red with baselines → P0.1–P0.4 green → 
 green → **M1 RunStore unification (#251)** → Phase 1 steps 1–6 (step 7 deferred v1.1), each PR
 retiring its ledger row → Phase 2 deletes → epics close by ac-state, never by keyword.
 
-### Phase 0 progress (2026-10-01)
+### Phase 0 progress (2026-10-02)
 
 | Item | State |
 |---|---|
-| §5 retirement ledger + gate | in review, [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766) |
-| §6 epic-closure guard | in review, [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) |
-| AC-P1–P9 registration | in review, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
-| P0.1, P0.2 checks | grants PR, then checks PR (the two merges above); measured debt 31 and 40 |
-| P0.3–P0.9 checks | not started |
+| §5 retirement ledger + gate | queued, [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766); delete-by values follow the §9 v1.0 amendments |
+| §6 epic-closure guard | queued, [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) |
+| AC-P1–P9 registration | queued, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
+| P0.1, P0.2 grants | queued, [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
+| P0.1, P0.2 checks | draft, [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805); red until #1804 is in its merge base |
+| P0.3, P0.4, P0.6–P0.9 checks | not started |
+| P0.5 | prerequisite A partly landed (below); the check is not started |
 
 An early draft of the P0.1/P0.2 checks reached `develop` without review on 2026-10-01 and
 was reverted by [#1769](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1769); the
 checks described in P0.1 and P0.2 above are the corrected design.
+
+### Landed elsewhere that moves this plan
+
+Work merged outside the cutover PRs, and which item it advances. Re-read before starting
+the item; none of these closes a cutover criterion on its own.
+
+| PR | What landed | Plan item |
+|---|---|---|
+| [#1321](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1321) | `new_sqlite_effect_context` / `new_postgres_effect_context` give a configured database durable Binding, Invocation and event authority; SQLite Invocation claim is atomic; `check_direct_effects.py` fails closed on dynamic-URL graph-node HTTP | §7 prerequisite A (durable Binding/Invocation; Approval store not covered) → P0.5 |
+| [#1760](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1760) | boot Bindings register on durable stores, so persistence no longer disables `self_repair` and `/v1/harness` | §7 A; #1133 (closes #1759) |
+| [#1795](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1795) | dead PostgreSQL-event warning removed | #1133 AC-15 |
+| [#1617](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1617) | ADR-082326-c126 accepted: one Run per chat turn, admitter-bounded retention, a turn without a Run is refused (closes #131) | Phase 1 step 3; P0.7 |
+| [#1618](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1618) | adversarial kill-recovery evidence pack (closed #62 on 2026-09-27) | P0.7: build the crash-window check on this evidence; #804 remains the open owner |
+| [#1555](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1555) | stable Workspace Agent identity and per-user default Workspace (closed #1037 on 2026-09-23) | Phase 1 step 3 and AC-P9 cite #1037, which is closed; their open owner is #804 |
+| [#1735](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1735) | durable, recoverable task queue (#91) | #251 RunStore unification (the queue is what creates canonical Runs) |
+| [#1718](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1718) | EngineService startup atomic and health-visible on partial failure (#1181) | §6 "fallback construction is a second authority" |
+| [#1670](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1670) | Canvas API/store/lease path operable and restart-safe (#851) | v1.0 Canvas blocker (§9 issue cross-reference) |
 
 ## 9. v1.0 stakeholder amendments (2026-10-01)
 
