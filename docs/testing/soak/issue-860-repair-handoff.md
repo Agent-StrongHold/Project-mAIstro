@@ -62,3 +62,43 @@ Verdict: **BLOCKED**, not integration approval. CI debt is not the blocker: the 
 Next owner must designate immutable RC image/configuration and applicable workload surfaces, resolve the aggregate rate-limit acceptance mismatch, implement/use a production-topology runner with physical Attempt correlation and complete application metrics, then execute at least four hours on the unchanged RC and publish hashes plus raw and interpreted evidence. Do not promote the historical shakedown or synthetic regression fixtures to release evidence.
 
 Progress: checked 1 assigned issue; done 0 (acceptance unresolved); skipped 0; errors 0 in executed validation; 5 PostgreSQL integration cases skipped explicitly. This handoff is committed locally as the completed repair-round checkpoint, not completion of #860.
+
+---
+
+# Current repair round — starting HEAD `7a52345ba731`
+
+## Frozen scope
+
+- Issue: #860 only; writer lane `auto-860`.
+- Starting HEAD: `7a52345ba73163fe9ecd4a58c9fe7caf5c92355f`; supplied develop base: `4df9dd9bde4c6d03fccd1466cf9d6827a8fd4aa8`.
+- Starting worktree clean; no salvage patch needed.
+- Repair targets: `docs/testing/soak/m3a-soak-evidence.md`, this handoff, and (only for reviewed findings of the requested CI gate) `quality/vulture-baseline.json`.
+- Validation inputs: existing soak profile/evidence/harness/tests, relevant ADRs and deployment/rate-limit implementation, vulture checker and ledger.
+- No driver `check-*.log` files present in the supplied job directory at initial inspection.
+
+## Assumptions and limits
+
+This is a writer repair, not verifier-only execution. Existing preflight evidence cannot establish a four-hour soak of the exact production RC artifact. No GitHub mutation or new issue filing is authorized. Missing production proof must remain explicitly unverified; no scheduler, execution authority, or cluster-wide limiter will be invented in this lane.
+
+## Progress
+
+- Confirmed exact assigned HEAD and clean worktree.
+- Requested vulture gate passed: 1,371 findings / 1,371 reviewed identities, zero unclassified and zero never-allowlist findings. No ledger amendment is justified.
+- Prior result artifact reports BLOCKED at the current starting HEAD. Inspection confirms the historical H3 shared-store assertion has already been corrected: current evidence explicitly states process-local allowances and unmet replica-selection acceptance. No speculative repair to that text is warranted.
+- `uv run ruff check .`: PASS; `uv run ruff format --check .`: PASS (2,720 files).
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py -x -q -rs`: 80 passed, 5 skipped in 23.43 seconds. PostgreSQL integration skips explicitly require `MAISTRO_TEST_PG_DSN`; no live database concurrency proof is claimed.
+- `uv run python scripts/check-deployment-claims.py`: PASS.
+- `uv run python scripts/check-execution-lifecycles.py`: PASS, 19 classified/discovered lifecycles.
+- `uv run python scripts/check-merge-markers.py`: PASS.
+- Re-read accepted runtime, execution-fencing and rate-limit ADRs plus proposed deployment ADR. Reconciliation unchanged: Attempt identifies physical execution; lease expiry is not automatic takeover authority; per-principal limits do not imply a shared store. No new execution/authorization authority is introduced.
+- Existing tests were inspected and rerun, not added or changed; no inventory delta is required. Historical handoff above is preserved, with this round appended.
+- Executed an `uv run python` import of the current harness and reevaluated the four fixed historical evidence paths with `failed_promotion_checks`: run 1 and repair validation each fail seven gates; round 5 fails rate enforcement, duration and exact artifact; round 6 fails duration and exact artifact (90.43 seconds versus 14,400 required). All four fail duration and exact artifact. This checks summary flags, not physical execution traces.
+- `git diff --check`: PASS. An executed byte-for-byte prefix assertion confirms the previous committed handoff is preserved, with only this round appended.
+
+## Current acceptance disposition and handoff
+
+The ten-criterion table above remains the disposition after this round's independent inspection and execution, not a reliance on prior green claims. The production middleware tests again demonstrate replica-local allowances for both authenticated and unauthenticated identities. The live subprocess sampler regression passed; that is not application telemetry under RC load. The reference Compose declares two replicas but does not designate immutable promotion images/configuration. No production RC deployment or four-hour soak was executed. Representative traffic coverage, physical-work deduplication/Goal reconciliation, full telemetry, saturation/reclaim/leak observations and active-work recovery remain UNVERIFIED. Local finding classifications and historical hash-tied evidence remain preserved; external filing is UNVERIFIED and prohibited in this lane.
+
+**Verdict: BLOCKED.** The requested CI gate is already green and the prior documentation contradiction already repaired. There is no evidence-backed code or ledger repair to make. Completion needs a designated immutable RC/configuration, resolution of the replica-selection rate-limit mismatch, a production-topology workload/telemetry runner and a qualifying soak; a longer host-process preflight cannot supply that proof. No ledger, production, harness, test or inventory files changed. Only this handoff changed.
+
+Progress: checked 1, done 0 (issue acceptance incomplete), skipped 0 issues, errors 0 validation commands; 5 explicitly skipped PostgreSQL test cases. Next: promotion owner supplies RC artifact/configuration and resolves remaining acceptance prerequisites. This checkpoint is committed locally, not integration approval.
