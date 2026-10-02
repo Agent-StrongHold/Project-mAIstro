@@ -98,17 +98,56 @@ class RevocableBindingStore(BindingStore, Protocol):
     :class:`InMemoryBindingStore` was the only implementation -- declared
     sync, because that store needs no I/O to register. No durable store can
     satisfy a synchronous write, so the one member that made this contract
-    unmeetable was the member no effect path uses: production calls
-    ``register`` in two places, both of which narrow to the concrete
-    in-memory class first. Revocation is what the runtime needs from this
-    protocol, and revocation is what it now asks for.
+    unmeetable was the member no effect path uses. Revocation is what the
+    runtime needs from this protocol, and revocation is what it asks for.
 
-    Boot registration on a durable backend is a separate gap, tracked apart
-    from this one: hive-conductor still disables self_repair and the harness
-    route when the store is durable.
+    Boot registration is :meth:`BindingStore.put`, which every backend
+    implements and which has the semantics boot needs on all three:
+    idempotent for an identical Binding, ``ValueError`` for a changed one,
+    and ``BindingNotFound`` over a revocation tombstone -- so a restart
+    cannot re-grant an identity an operator withdrew. hive-conductor's
+    self_repair and harness route went through the in-memory ``register``
+    and narrowed to that concrete class first, which turned both off on
+    exactly the deployments that persist anything; they call ``put`` now
+    (#1133).
     """
 
     async def revoke(self, binding_id: str) -> None: ...
+
+
+async def register_boot_binding(bindings: BindingStore, binding: Binding) -> Binding:
+    """Register a composition-time Binding once, and again on every restart.
+
+    Returns the registered record, which after the first boot is the one
+    already stored. A durable store compares the *whole* Binding, and a
+    freshly constructed one differs from the stored copy by ``created_at``
+    alone -- so a composition root that simply re-``put`` its boot Binding
+    succeeded on the first boot and raised ``ValueError`` on every one after,
+    taking the capability offline exactly when the deployment persisted
+    anything (Codex, #1760).
+
+    Reusing the stored record rather than stamping a fixed ``created_at``
+    keeps the real first-registration time, which is the only thing that
+    timestamp is for.
+
+    A *changed* definition is still refused. Equality is checked with the
+    candidate's own ``created_at`` substituted in, so the comparison asks the
+    question that matters -- has this identity been redefined -- rather than
+    the one that is answered differently on every process start.
+
+    Revocation survives this: a revoked identity is absent from ``get`` and
+    refused by ``put``, so a restart cannot re-grant what an operator withdrew.
+    """
+
+    existing = await bindings.get(binding.binding_id)
+    if existing is None:
+        return await bindings.put(binding)
+    if existing.model_copy(update={"created_at": binding.created_at}) != binding:
+        raise ValueError(
+            f"Binding {binding.binding_id!r} is registered with a different definition; "
+            "a boot Binding is immutable and cannot be redefined in place"
+        )
+    return existing
 
 
 def _scope_checked(
@@ -455,4 +494,5 @@ __all__ = [
     "PgBindingStore",
     "RevocableBindingStore",
     "SqliteBindingStore",
+    "register_boot_binding",
 ]
