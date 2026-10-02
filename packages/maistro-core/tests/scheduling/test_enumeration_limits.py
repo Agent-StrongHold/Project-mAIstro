@@ -193,9 +193,7 @@ def test_a_thirty_day_backlog_enumerates_only_its_catchup_window() -> None:
     clock out of the way the count is a fact about the window.
     """
     schedule = _schedule(last_fired_at=NOON - timedelta(days=30))
-    result = evaluate(
-        schedule, now=NOON, limits=EnumerationLimits(walk_budget_seconds=math.inf)
-    )
+    result = evaluate(schedule, now=NOON, limits=EnumerationLimits(walk_budget_seconds=math.inf))
 
     # One occurrence per minute, so the window's width is the examination
     # count -- and it is the thirty-day cursor that it refuses.
