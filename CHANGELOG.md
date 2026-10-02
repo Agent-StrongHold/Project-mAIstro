@@ -47,6 +47,23 @@ or placeholder-only section.
 
 ### Security
 
+- **Every base/tool image in every Dockerfile is pinned by immutable digest
+  (#349).** Build stages no longer float on mutable tags and the uv installer
+  is no longer copied from a `:latest` image, so a registry tag move cannot
+  change the code that installs every dependency without a repository diff.
+  Each reference is pinned `name:tag@sha256:<digest>` — the digest is the
+  resolution authority (a manifest-list index digest, so a fixed target
+  platform always resolves the same per-arch artifact), the tag the
+  human-readable version annotation. All nine pins are registered in
+  `quality/image-pins.json`; the new `check-image-pins` gate (quality.yml)
+  rejects `:latest` anywhere and fails any unregistered digest or unpinned
+  base without an owned, issue-numbered exemption, so base updates land only
+  as reviewable registry-plus-Dockerfile changes — refreshed automatically by
+  Dependabot's docker ecosystem, whose PRs carry the changelog, scan, rebuild
+  and smoke evidence of the ordinary PR gates. Release images publish with
+  SLSA provenance in mode=max and release.yml refuses a release whose
+  provenance attestation does not name every pinned base digest.
+
 - **Active root Runs are capped per principal and per Workspace (#1182,
   partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
   refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for
