@@ -23,6 +23,9 @@ if TYPE_CHECKING:
     import asyncpg
 
 
+# Column layout matches Alembic revision 040 (`capability_bindings`): the JSON
+# payload preserves the complete immutable record while the projected columns
+# keep scope lookups indexed and auditable.
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS capability_bindings (
     binding_id TEXT PRIMARY KEY,
@@ -220,7 +223,12 @@ async def _resolve(
 
 
 class InMemoryBindingStore:
-    """Concurrency-safe process-local BindingStore for explicit ephemeral use."""
+    """Concurrency-safe process-local BindingStore for explicit ephemeral use.
+
+    Binding identities are immutable. Re-registering the exact same Binding is
+    idempotent; trying to change the definition behind an existing id is
+    rejected instead of silently widening authority.
+    """
 
     def __init__(self) -> None:
         self._items: dict[str, Binding] = {}
@@ -394,10 +402,48 @@ class SqliteBindingStore:
 
 
 class PgBindingStore:
-    """PostgreSQL-backed immutable Binding authority shared by replicas."""
+    """PostgreSQL-backed immutable Binding authority shared by replicas.
+
+    ``ensure_schema`` mirrors Alembic revision 040 so a deployment that has not
+    run migrations (local composition, tests) still gets the same table shape
+    the migration owns in production.
+    """
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS capability_bindings (
+                    binding_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    capability TEXT NOT NULL,
+                    node_id TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMPTZ NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_capability_binding_scope
+                    ON capability_bindings (workspace_id, project_id, capability, binding_id)
+                """
+            )
+            # Revocation tombstones (#1133). Created here as well as by alembic
+            # 047 so an effect context built outside the migration path does
+            # not query a table that does not exist.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS capability_binding_revocations (
+                    binding_id TEXT PRIMARY KEY,
+                    revoked_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
 
     async def _is_revoked(self, binding_id: str) -> bool:
         found = await self._pool.fetchval(
