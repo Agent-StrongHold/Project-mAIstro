@@ -17,6 +17,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import maistro_rsi.local_loop as local_loop
+from maistro_rsi.competitors import Competitor
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
 from maistro_rsi.protocols import MicroVmSandbox
 
@@ -235,6 +236,52 @@ async def test_apply_patch_factory_model_beats_cycle_model(tmp_path, monkeypatch
     await apply_fn(None, str(tmp_path), "groq/kimi-k2")
 
     assert _FakeResponsesCallable.built_models == ["cli-override"]
+
+
+@pytest.mark.ac("SPEC-082926-a6ab/AC-7")
+def test_the_builders_factory_is_told_which_sandbox_to_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC-082926-a6ab/AC-7: the resolved sandbox reaches the builders factory.
+
+    The apply function is built from the run's own config, so the isolation the
+    run resolved to (and its image) is what the factory is told — a config that
+    says ``container`` cannot silently hand the builders agent a host-worktree
+    sandbox. Since #509 the Conductor's HTTP path dispatches the whole loop
+    into the runner container, so this construction happens inside it; the
+    guarantee is the loop's, wherever it executes, which is why the proof
+    lives against `maistro_rsi.local_loop` directly.
+    """
+    factory_calls: list[dict] = []
+
+    def _factory(objective: str, **kwargs: object) -> None:
+        factory_calls.append({"objective": objective, **kwargs})
+
+    monkeypatch.setattr(local_loop, "make_builders_apply_patch", _factory)
+
+    config = LocalRsiConfig(
+        repo_path=str(tmp_path / "repo"),
+        test_command="python -m pytest -q",
+        work_root=str(tmp_path / "work"),
+        isolation="container",
+        sandbox_image="maistro-rsi-runner:latest",
+    )
+    loop = LocalRsiLoop(config)
+    loop._apply_for_competitor(Competitor(model="some-model"), "improve the thing")
+
+    assert factory_calls == [
+        {
+            "objective": "improve the thing",
+            "model": "some-model",
+            "temperature": None,
+            "reasoning_effort": None,
+            "system_prompt": None,
+            "max_agent_turns": 6,
+            "isolation": "container",
+            "image": "maistro-rsi-runner:latest",
+            "source_repository": str(tmp_path / "repo"),
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
