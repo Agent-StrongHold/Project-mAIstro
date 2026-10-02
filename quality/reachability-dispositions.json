@@ -277,12 +277,9 @@
       "id": "quota-verification",
       "subsystem": "Quota and billing",
       "disposition": "CONNECT",
-      "rationale": "ADR-085 provider-side quota verification and reconciliation. #56 attaches token and cost metadata to the Invocation, which is where these belong.",
+      "rationale": "ADR-085 provider-side quota verification. #718 wired the recording half (maistro.quota.recorder, and the ambient/reconciliation modules it composes) into the canonical Invocation terminalization, so those left this disposition; #1204 wired the SQLite usage-log snapshot behind the sqlite backend of create_container. The explicit verifier half (verify.py + the per-provider verifiers) still has no production caller and remains owed.",
       "root": "the Invocation cost path (#56)",
       "modules": [
-        "maistro.quota.ambient",
-        "maistro.quota.reconciliation",
-        "maistro.quota.recorder",
         "maistro.quota.verifiers",
         "maistro.quota.verifiers.mistral",
         "maistro.quota.verifiers.openrouter",
@@ -425,7 +422,6 @@
       "root": "the real Conductor chat and tool paths (#66)",
       "modules": [
         "maistro.security.guardrail",
-        "maistro.security.secure_random",
         "maistro.security.strike_recovery",
         "maistro.security.task_policy",
         "maistro.security.trust_boundary",
@@ -493,10 +489,9 @@
       "id": "canvas-legacy-layerrecord",
       "subsystem": "Canvas ability",
       "disposition": "RETIRE",
-      "rationale": "ADR-044 (Accepted) names store.py, compositor.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules, with no data migration and new work on AssetInstance. Verified against the ADR body, not inferred. Retired once ADR-045's cutover lands; ADR-045 is still Proposed and routes.py still wires the legacy executor.",
+      "rationale": "ADR-044 (Accepted) names store.py, compositor.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules, with no data migration and new work on AssetInstance. Verified against the ADR body, not inferred. Retired once ADR-045's cutover lands; ADR-045 is still Proposed and routes.py still wires the legacy executor. store.py left this list when the supported server wired it as the /v2/canvas persistence layer (#851): reachable production code is not an unreachable-module disposition.",
       "replaced_by": "maistro_canvas.canvas.asset_store / asset_tool (ADR-044)",
       "modules": [
-        "maistro_canvas.canvas.store",
         "maistro_canvas.canvas.tool"
       ]
     },

@@ -151,6 +151,7 @@ ROUTE_EXEMPT = {
     "/v1/chat": "the product's primary surface; admin is blocked from it, users live in it",
     "/v1/messages": "the user's own notification inbox",
     "/v1/tasks": "the user's own missions",
+    "/v1/backlog": "the user's own planning board — per-item ownership is enforced fail-closed in routes/services.backlog (401 anonymous, 403 viewer/non-member, 404 not-yours with no existence oracle), and elevation would 403 the daily account off its primary planning surface (#99)",
     "/v1/work-items": "the user's own drafts (suggest/clarify/confirm)",
     "/v1/memory": "the user's own memory entries (CRUD + reinforce/decay/contradict)",
     "/v1/program": "onboarding coaching (guidance/interview/pulse)",
@@ -282,9 +283,14 @@ def _route_is_scoped(path: str, method: str, protected: dict[str, dict[str, str]
     The _PROTECTED_OPS match stays raw startswith ON PURPOSE: that is exactly
     how middleware._required_permission matches at runtime, and this checker
     must model enforcement as it is, not as it ought to be.
+
+    No URL-suffix shortcut here either (#403): the former
+    ``path.endswith("/invoke")`` blanket exemption mirrored the middleware
+    carve-out it modeled and inherited its flaw — any future route with the
+    suffix would skip classification. A route is scoped only through a
+    registered capability prefix or an explicit ROUTE_EXEMPT entry with a
+    named reason.
     """
-    if path.endswith("/invoke"):
-        return True  # documented exemption in _required_permission
     if _route_is_exempt(path):
         return True
     return any(path.startswith(prefix) for prefix in protected.get(method, {}))

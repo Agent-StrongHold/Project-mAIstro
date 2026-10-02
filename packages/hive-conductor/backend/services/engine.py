@@ -239,8 +239,26 @@ class EngineService:
                 # executor switch. Workspace Persona identity is resolved before
                 # submission through the generic materialized roster; execution
                 # has one authority regardless of legacy POC environment values.
+                #
+                # #718: that one authority is the bridge's canonical model-chat
+                # egress, not a bare `run_task`. Handing the raw function here
+                # left every demo task completion off the Invocation/quota
+                # ledger while per-provider rows presented as complete — the
+                # same defect the maistro-server `/tasks` worker had before it
+                # supplied its egress. `None` (stub port, no bridge) keeps the
+                # raw call: that process has no canonical authority to cross.
+                bridge_egress = getattr(self._agent_port, "governed_egress", None)
+                bridge_workspace = settings.hive_default_workspace_id
+
+                async def governed_executor(task: Any) -> Any:
+                    return await run_task(
+                        task,
+                        governed_egress=bridge_egress,
+                        workspace_id=bridge_workspace,
+                    )
+
                 backend = LocalTaskBackend(
-                    executor=run_task,
+                    executor=governed_executor,
                     admitter=self.task_admitter,
                     run_store=self.run_store,
                 )
@@ -453,8 +471,15 @@ class EngineService:
         return bool(remove(task_id))
 
     async def cancel_task(self, task_id: str, *, user_id: str | None = None) -> bool:
-        """Cancel through the one backend, preserving its ownership check."""
-        if self._backend is None or self._backend.get(task_id, user_id=user_id) is None:
+        """Cancel through the one backend, preserving its ownership check.
+
+        The probe is `get_async`, not the sync `get`: this coroutine runs on
+        the event loop (async `DELETE /v1/missions/{id}`), and the production
+        backend's sync probe is a 30s-timeout httpx GET that would pin every
+        coroutine in the worker behind one slow maistro-server response —
+        the same blocking boundary #1180 moved out of the stream.
+        """
+        if self._backend is None or await self._backend.get_async(task_id, user_id=user_id) is None:
             return False
         return await self._backend.cancel(task_id, user_id=user_id)
 

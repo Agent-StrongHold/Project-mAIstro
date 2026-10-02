@@ -28,6 +28,17 @@ from maistro.http import shared_client
 
 logger = logging.getLogger(__name__)
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
+#: Live per-node progress sink (#1183): awaited with one event dict per node
+#: transition. The canonical identity fields (`run_id`, `node_run_id`,
+#: `attempt_id`) come from the executing `NodeContext`, so a stream consumer
+#: can correlate live frames to durable Run/NodeRun/Attempt truth.
+RunProgressHook = Callable[[dict[str, Any]], Any]
+#: Longest node response carried verbatim in a live progress event (#1183).
+#: Mirrors the projection store's per-event cap: a live frame is a progress
+#: signal, not the record, and an uncapped copy of every response in the
+#: bounded progress channel would let one chatty node own server memory.
+#: The full text stays in the canonical NodeRun and the run record.
+_PROGRESS_RESPONSE_MAX_CHARS = 2000
 _CONTEXT_PREFIX = "__hive_context__::"
 
 
@@ -403,6 +414,7 @@ async def _run_llm_node(
     *,
     effect_context: CapabilityEffectContext | None = None,
     ctx: NodeContext | None = None,
+    governed_runtime: Any | None = None,
 ) -> None:
     role = node.get("role", "worker")
     if node.get("tool"):
@@ -427,14 +439,36 @@ async def _run_llm_node(
     if parent_outputs:
         user_content += "\n\nContext from previous steps:\n" + "\n---\n".join(parent_outputs[-3:])
     try:
-        builder = llm_builder or _build_llm_call
-        response = await builder(on_response)(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
-            model=model,
-        )
+        if governed_runtime is not None and ctx is not None and ctx.attempt_id:
+            # Canonical cutover (#718): the physical model call crosses the
+            # governed Binding -> Invocation egress, so its usage evidence is
+            # recorded once by the Invocation authority's terminalization
+            # recorder. This node supplies no callback of its own; the raw
+            # builder below is the compatibility fallback for callers with no
+            # canonical effect authority (standalone tests, direct calls).
+            from services.governed_model import dag_node_completion
+
+            response = await dag_node_completion(
+                governed_runtime,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                node_id=nid,
+                workspace_id=ctx.workspace_id or "default",
+                project_id=ctx.project_id or "agent-runtime",
+                system=system,
+                user=user_content,
+                model=model,
+            )
+        else:
+            builder = llm_builder or _build_llm_call
+            response = await builder(on_response)(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ],
+                model=model,
+            )
         results[nid] = {"role": role, "response": response, "success": True, "model": model}
     except Exception as exc:
         results[nid] = {"role": role, "response": str(exc), "success": False, "model": model}
@@ -590,6 +624,8 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         on_response: OnResponseHook | None,
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
         effect_context: CapabilityEffectContext | None = None,
+        governed_runtime: Any | None = None,
+        progress: RunProgressHook | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
         self._task_desc = task_desc
@@ -598,14 +634,92 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._on_response = on_response
         self._llm_builder = llm_builder
         self._effect_context = effect_context
+        # GovernedModelRuntime composed from the live Container; when present
+        # the node's model call crosses the canonical Invocation egress (#718)
+        # and ``_llm_builder``/``_on_response`` stay compatibility fallbacks.
+        self._governed_runtime = governed_runtime
+        self._progress = progress
+
+    async def _emit_progress(self, event: dict[str, Any]) -> None:
+        """Publish one live node transition; never fail the node for it.
+
+        Progress fan-out is presentation, not execution truth: a slow or
+        broken subscriber must not flip a NodeRun's outcome. Failures are
+        logged and dropped, exactly like the `on_response` hook failures.
+        """
+        if self._progress is None:
+            return
+        try:
+            await self._progress(event)
+        except Exception:
+            logger.warning(
+                "graph_runner_progress_hook_failed node=%s", event.get("node_id"), exc_info=True
+            )
 
     async def _execute(self, inputs: _LegacyInputs, ctx: NodeContext) -> _LegacyOutput:
         node_id = ctx.node_id
-        parent_outputs = _context_from_inputs(inputs)
         tier = _classify_node_execution(self._raw_node, node_id)
         if tier == "blocked":
             raise PermissionError("Execution blocked: untrusted node requires admin approval")
 
+        role = str(self._raw_node.get("role", "worker"))
+        await self._emit_progress(
+            {
+                "kind": "node_started",
+                "run_id": ctx.run_id,
+                "node_run_id": ctx.node_run_id,
+                "attempt_id": ctx.attempt_id,
+                "node_id": node_id,
+                "role": role,
+            }
+        )
+        try:
+            output = await self._run_node_tier(inputs, ctx, node_id=node_id, tier=tier)
+        except Exception:
+            # One failure signal per started node, whatever the failure was,
+            # so a live consumer never waits on a node that will never answer
+            # (#1183). CancelledError is BaseException: a cancelled node is
+            # not a node that failed, and its Run's cancellation is reported
+            # by the Run itself.
+            await self._emit_progress(
+                {
+                    "kind": "node_failed",
+                    "run_id": ctx.run_id,
+                    "node_run_id": ctx.node_run_id,
+                    "attempt_id": ctx.attempt_id,
+                    "node_id": node_id,
+                    "role": role,
+                }
+            )
+            raise
+        await self._emit_progress(
+            {
+                "kind": "node_completed",
+                "run_id": ctx.run_id,
+                "node_run_id": ctx.node_run_id,
+                "attempt_id": ctx.attempt_id,
+                "node_id": node_id,
+                "role": role,
+                "response": output.response[:_PROGRESS_RESPONSE_MAX_CHARS],
+                **(
+                    {"response_truncated": True}
+                    if len(output.response) > _PROGRESS_RESPONSE_MAX_CHARS
+                    else {}
+                ),
+            }
+        )
+        return output
+
+    async def _run_node_tier(
+        self,
+        inputs: _LegacyInputs,
+        ctx: NodeContext,
+        *,
+        node_id: str,
+        tier: str,
+    ) -> _LegacyOutput:
+        """Execute one classified node tier; raises on failure."""
+        parent_outputs = _context_from_inputs(inputs)
         if tier == "sandbox":
             context = "\n---\n".join(parent_outputs.values())
             result = await asyncio.to_thread(
@@ -633,6 +747,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 llm_builder=self._llm_builder,
                 effect_context=self._effect_context,
                 ctx=ctx,
+                governed_runtime=self._governed_runtime,
             )
             result = scratch[node_id]
 
