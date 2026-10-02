@@ -36,7 +36,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "043_invocation_quota_door"
-down_revision = "048"
+down_revision = "050"
 branch_labels = None
 depends_on = None
 
