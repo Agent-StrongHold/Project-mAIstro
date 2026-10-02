@@ -85,9 +85,10 @@ two kinds of entry: each file that touches `<x>.state.user`, directly or through
 a `role`/`roles` field outside the listed owner modules. Baseline ledger
 `quality/principal-identity-baseline.json`, ratchet to zero.
 
-**Measured starting debt (2026-10-01): 31 entries.** Three parallel principal classes —
-hive `HiveUser` (`models/schemas.py`), canvas `CurrentUser` (`auth.py`) and core
-`_SubsystemIdentity` (`privilege.py`) — and 28 files reading dict-shaped `state.user`:
+**Measured starting debt (2026-10-01): 32 entries.** Four parallel principal classes —
+maistro-server `AuthenticatedPrincipal` (`api/principal.py`), hive `HiveUser`
+(`models/schemas.py`), canvas `CurrentUser` (`auth.py`) and core `_SubsystemIdentity`
+(`privilege.py`) — and 28 files reading dict-shaped `state.user`:
 23 hive routes, 2 hive services, hive and Turing auth middleware, and Turing
 `security.py`. Most hive reads go through `getattr(request.state, "user", ...)`, which an
 attribute-only scan misses (a first draft of the check counted 3).
@@ -413,11 +414,11 @@ retiring its ledger row → Phase 2 deletes → epics close by ac-state, never b
 
 | Item | State |
 |---|---|
-| §5 retirement ledger + gate | queued, [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766); delete-by values follow the §9 v1.0 amendments |
-| §6 epic-closure guard | queued, [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) |
-| AC-P1–P9 registration | queued, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
-| P0.1, P0.2 grants | queued, [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
-| P0.1, P0.2 checks | draft, [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805); red until #1804 is in its merge base |
+| §5 retirement ledger + gate | in review, [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766); delete-by values follow the §9 v1.0 amendments |
+| §6 epic-closure guard | in review, [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) |
+| AC-P1–P9 registration | in review, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
+| P0.1, P0.2 grants | in review, [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
+| P0.1, P0.2 checks | in review, [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805); red until #1804 is in its merge base |
 | P0.3, P0.4, P0.6–P0.9 checks | not started |
 | P0.5 | prerequisite A partly landed (below); the check is not started |
 
