@@ -108,3 +108,42 @@ database; `test_check_promotion_surface.py` + `test_check_convergence_matrix.py`
 + maistro-rsi suites 889 passed; maistro-core memory/persistence 502 passed
 (103 sqlite/PG skips without DSN) and `test_write_authority_conformance.py`
 again 42 passed with live PG legs (alembic head 047).
+
+## Independent verification round 2 (verifier, head 6c62e18664c5 = b9db8716d + develop 33bcd3ce merge)
+
+All executed by the verifier in this worktree at the exact head; not taken from
+any prior claim:
+
+- Gates re-run with CI's exact argv: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exit 0 (1370 reviewed
+  identities -> 1370 findings). Note for future rounds: a bare
+  `check-vulture-baseline.py` with no path args scans trees CI does not
+  (tests/, third-party surfaces) and reports hundreds of stale/new identities —
+  that invocation is not the exact-debt-ledger gate and its failure is not a
+  regression of this branch. `check-ratchet-provenance.py`,
+  `check-shipped-surface-truth.py`, `check-promotion-surface.py`,
+  `check-promotion-surface-provenance.py`, `check-convergence-matrix.py`,
+  `check-reachability.py`, `check-release-consistency.py` all exit 0.
+- mypy clean over all six `packages/*/src` trees (745 files); `ruff check` /
+  `ruff format --check` clean (driver checks 1-2 at this head).
+- `test_exposure_mode.py` + `test_write_authority_conformance.py`: 62 passed /
+  98 skipped without a DSN; against a fresh pgvector pg18 container
+  (`alembic upgrade head` -> 049) the same files are 76 passed / 84 skipped,
+  i.e. every postgres leg executed, including the denied-write-leaves-no-state
+  and undeclared-store-refuses-every-record scenarios.
+- Full `packages/maistro-core/tests/memory` + `tests/persistence` +
+  `test_container_episodic_store.py` with the live DSN: 1161 passed / 84
+  skipped (skips are the declared-mode matrix legs assigned to other backends).
+- Root mirror `tests/memory`: 64 passed. `tests/migrations/
+  test_memory_embeddings.py` + `test_pg_store_wiring.py` with
+  `MAISTRO_TEST_DATABASE_URL`: 44 passed.
+- Root-suite gate self-checks with `RATCHET_BASE_REV=33bcd3ce2`: 204 passed
+  (`test_check_promotion_surface.py`, `test_check_convergence_matrix.py`,
+  `test_check_ratchet_provenance.py`, `test_check_vulture_baseline.py`,
+  `test_check_release_consistency.py`, `test_check_reachability.py`).
+- Code audit re-confirmed at this head: `require_write_authority` is the first
+  statement of `store`/`record`/`check_auto_promotions` in all ten store
+  classes; container, testing harness, hive-conductor engine and
+  feedback_service all declare `exposure_mode`; the gate reads only mode,
+  actor and per-block tag. No closure keyword (fixes/closes/resolves) in the
+  PR body or any branch commit message.
