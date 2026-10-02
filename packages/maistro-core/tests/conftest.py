@@ -19,6 +19,14 @@ os.environ.setdefault("ALLOW_UNSAFE_RESOURCE_OVERRIDES", "true")
 os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "6000")
 os.environ.setdefault("RATE_LIMIT_BURST", "1000")
 
+# Pin the Rich/Click render width so CLI output assertions do not depend on the
+# developer's terminal. Rich resolves `COLUMNS` in `Console.__init__`, and the
+# CLI modules build their consoles at import time, so this has to be set here
+# (conftest is imported before any test module) and unconditionally -- an
+# inherited `COLUMNS` would otherwise silently re-flow tables and wrap paths.
+# 80 is what CI renders at, so local output matches CI's.
+os.environ["COLUMNS"] = "80"
+
 
 @pytest.fixture(autouse=True)
 def _reset_singletons() -> Iterator[None]:
