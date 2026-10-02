@@ -10,6 +10,9 @@ Invocation execution API.
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.identity import __getattr__ as identity_getattr
+from maistro.identity._crypto import ConductorSeed, DerivedKey
+from maistro.identity.principal import Principal
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
@@ -48,6 +51,17 @@ _VULTURE_REFERENCES = (record_exception, set_status_on_exception)
 latest_by_dimension = "latest_by_dimension"
 
 _VULTURE_WHITELIST = (
+    # P0.1 identity split (#53): Principal is always importable; crypto and lifecycle
+    # symbols load through __getattr__ and ConductorSeed's public API.
+    identity_getattr,
+    Principal.from_legacy_dict,
+    Principal.to_legacy_dict,
+    ConductorSeed.from_mnemonic,
+    ConductorSeed.derive_named,
+    ConductorSeed.did_key,
+    ConductorSeed.mnemonic_words,
+    ConductorSeed.zero,
+    DerivedKey.curve,
     Binding._validate_binding,
     ResolvedBinding._validate_resolved,
     ResolvedBinding.provider_trust_tier,
