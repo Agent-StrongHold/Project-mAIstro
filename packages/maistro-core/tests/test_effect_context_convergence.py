@@ -93,10 +93,9 @@ async def test_sqlite_url_selects_durable_effect_stores() -> None:
 
 @requires_postgres
 async def test_postgres_url_selects_durable_effect_stores() -> None:
-    from maistro.capabilities.pg_binding_store import PgBindingStore
-
+    from maistro.capabilities.binding_store import PgBindingStore
     from maistro.capabilities.pg_invocation_store import PgInvocationStore
-    from maistro.events.pg_stores import PgEventStore
+    from maistro.events.pg_envelope import PgEventStore
 
     container = await _container(database_url=postgres_dsn())
     try:
@@ -140,9 +139,7 @@ async def test_capability_effects_and_container_share_one_invocation_store() -> 
         shared = container.capability_effects.invocation_store is container.invocation_store
         if "single_invocation_authority" in KNOWN_GAPS:
             assert not shared, "invocation authority is unified now; delete the gap"
-            assert isinstance(
-                container.capability_effects.invocation_store, SqliteInvocationStore
-            )
+            assert isinstance(container.capability_effects.invocation_store, SqliteInvocationStore)
             assert isinstance(container.invocation_store, EventsSqliteInvocationStore)
         else:
             assert shared
