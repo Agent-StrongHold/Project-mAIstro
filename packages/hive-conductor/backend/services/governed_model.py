@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from maistro.agents.types import LLMProviderError
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.effect_context import CapabilityEffectContext
@@ -154,6 +155,116 @@ def control_plane_binding(
         provider_name=provider_name,
         credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
     )
+
+
+def dag_node_runtime(container: Any) -> GovernedModelRuntime | None:
+    """Compose the authorities a legacy-DAG node model call needs, or None.
+
+    Legacy DAG LLM nodes route their physical completion through the canonical
+    Binding -> Invocation egress (#718) whenever the bridge Container is live
+    and the deployment gateway is configured. None — which makes the node fall
+    back to its compatibility builder — means no canonical authority exists to
+    compose (standalone tests, direct construction, unconfigured gateway); it
+    never means a second gateway is fabricated here. Precedence lives with the
+    node: the governed egress wins over any injected raw builder, because the
+    canonical effect path owns the authoritative recording hook once.
+    """
+
+    if container is None:
+        return None
+    effects = getattr(container, "capability_effects", None)
+    registry = getattr(container, "provider_registry", None)
+    router = getattr(container, "llm_router", None)
+    if effects is None or registry is None or router is None:
+        return None
+    try:
+        endpoint = _endpoint()
+    except ProviderActivationError:
+        return None
+    return GovernedModelRuntime(
+        effects=effects,
+        registry=registry,
+        router=router,
+        endpoint=endpoint,
+    )
+
+
+async def dag_node_completion(
+    runtime: GovernedModelRuntime,
+    *,
+    run_id: str,
+    node_run_id: str,
+    attempt_id: str,
+    node_id: str,
+    workspace_id: str,
+    project_id: str,
+    system: str,
+    user: str,
+    model: str,
+) -> str:
+    """Run one legacy-DAG node completion across canonical Binding -> Invocation.
+
+    The physical call is the governed model egress, so its usage evidence lands
+    on the quota ledger through the Invocation authority's single
+    terminalization recorder (#718) — no per-node callback, no second ledger.
+    The request shape (JSON response format, temperature 0.3) preserves what the
+    legacy raw builder sent, so node outputs do not change with the cutover.
+    The Binding names the deployment's registered default gateway key; the
+    credential is added to this Run's own Workspace/Project scope idempotently
+    and without discarding health state (#1248), exactly as control-plane
+    effects do.
+    """
+
+    runtime.effects.credentials.add(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key=runtime.endpoint.api_key,
+        ),
+    )
+    result = await ModelChatEgress(
+        runtime.effects,
+        registry=runtime.registry,
+        router=runtime.router,
+        endpoint=runtime.endpoint,
+    ).complete(
+        binding=Binding(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            node_id=node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+            # Pin the node's requested model: the persisted Binding/Invocation
+            # then names exactly which provider/model the physical call used,
+            # which is the attribution the quota ledger rows carry.
+            provider_name=model,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+        run_id=run_id,
+        node_run_id=node_run_id,
+        attempt_id=attempt_id,
+        effect_key=f"dag-llm-{node_id}-{attempt_id}",
+        request=ModelChatRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        ),
+    )
+    choices = result.body.get("choices")
+    message = (
+        choices[0].get("message")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict)
+        else None
+    )
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise LLMProviderError("dag node: governed gateway returned no content")
+    return content
 
 
 async def ensure_binding(runtime: GovernedModelRuntime, binding: Binding) -> Binding:

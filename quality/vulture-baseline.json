@@ -694,7 +694,6 @@
         "packages/maistro-core/src/maistro/agents/auditor/checks.py::unused function 'check_production_code_in_test_pr'",
         "packages/maistro-core/src/maistro/agents/auditor/checks.py::unused function 'check_protocol_compliance'",
         "packages/maistro-core/src/maistro/agents/auditor/checks.py::unused function 'check_type_annotations'",
-        "packages/maistro-core/src/maistro/agents/base.py::unused attribute '_quota_tracker'",
         "packages/maistro-core/src/maistro/agents/catalog.py::unused class 'AgentCatalog'",
         "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'from_identity'",
         "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'list_by_priority_tier'",
@@ -1314,7 +1313,6 @@
         "packages/maistro-core/src/maistro/vault.py::unused method 'use'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'",
-        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'"
       ]
     },
@@ -1359,7 +1357,6 @@
         "packages/maistro-canvas/src/maistro_canvas/canvas/asset_tool.py::unused method '_action_render_page'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/asset_tool.py::unused method '_action_upsert_instance'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/executor.py::unused method 'run_job'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/store.py::unused class 'PgCanvasStore'",
         "packages/maistro-core/src/maistro/capabilities/providers/self_repair.py::unused property 'last_cycle'",
         "packages/maistro-core/src/maistro/capabilities/slots/self_repair.py::unused property 'acted'",
         "packages/maistro-core/src/maistro/capabilities/slots/self_repair.py::unused property 'escalated'",
