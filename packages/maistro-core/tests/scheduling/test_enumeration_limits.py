@@ -12,7 +12,6 @@ reported, never claimed to have been considered.
 from __future__ import annotations
 
 import math
-import time
 from datetime import UTC, datetime, timedelta
 
 from maistro.scheduling.engine import (
@@ -168,17 +167,33 @@ def test_a_window_within_the_host_bound_is_not_reported_as_clamped() -> None:
 # --- bounded wall clock under a 50k-style backlog ----------------------------
 
 
-def test_a_seven_day_backlog_evaluates_in_bounded_wall_time() -> None:
-    """The audit's failure mode: a stale per-minute schedule stalling the loop
-    for ~0.64s. Under the default limits one evaluation stays far below that,
-    whatever the backlog size."""
-    start = time.monotonic()
+def test_a_thirty_day_backlog_enumerates_only_its_catchup_window() -> None:
+    """The audit's failure mode, stated as work rather than seconds.
+
+    A stale per-minute schedule stalled the loop for ~0.64s because it reparsed
+    every occurrence back to its creation. `_schedule()` is thirty days old, so
+    an unbounded evaluation would examine ~43,200 of them; the seven-day
+    catchup window holds it to 10,080, and the fire list is capped separately.
+
+    This asserted `elapsed < 0.5` until #1802. A stopwatch measures the machine
+    as much as the code -- coverage instrumentation on a shared runner cleared
+    that bound with no algorithmic change -- and it is the weaker claim besides:
+    a fast machine passes a latency bound even when enumeration examined far
+    more than it should. Counting the work catches that; timing it does not.
+    The same correction was made for the same reason in #184.
+    """
     result = evaluate(_schedule(), now=NOON)
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.5
+
+    # One occurrence per minute, so the window's width *is* the examination
+    # bound -- and it is the schedule's age (thirty days) that it refuses.
+    assert len(result.fires) + len(result.skipped) == int(SEVEN_DAYS // 60)
+
+    # The fire list is capped independently of the window: a window the engine
+    # will happily examine can still yield more fires than one tick should
+    # admit.
+    assert len(result.fires) <= DEFAULT_ENUMERATION_LIMITS.max_enumerated_fires
+
     # Bounded work is still honest work: what it examined it reported.
-    seen = len(result.fires) + len(result.skipped)
-    assert seen > 0
     if not result.enumeration_incomplete:
         assert result.enumeration_stopped_at is None
 
