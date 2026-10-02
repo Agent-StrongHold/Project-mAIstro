@@ -312,6 +312,30 @@
         "quality/workspace-retirement.json"
       ],
       "reason": "The retirement ledger records reviewed cutover dispositions while check-workspace-retirement.py resolves importer tolerances and untrack grants from the trusted base, so a candidate edit cannot authorize new consumers of a retiring surface."
+    },
+    {
+      "id": "principal-identity-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/principal-identity-baseline.json"
+      ],
+      "reason": "Workspace cutover P0.1: parallel principal identities are measured on the candidate and compared against the ledger resolved from the trusted base."
+    },
+    {
+      "id": "route-permissions-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/route-permissions-baseline.json"
+      ],
+      "reason": "Workspace cutover P0.2: undeclared route prefixes are measured on the candidate and compared against the ledger resolved from the trusted base."
+    },
+    {
+      "id": "route-permissions-registry",
+      "kind": "specification",
+      "paths": [
+        "quality/route-permissions.json"
+      ],
+      "reason": "Reviewed authenticated-route permission registry: declaring a prefix permission or exemption is the substantive security change."
     }
   ]
 }
