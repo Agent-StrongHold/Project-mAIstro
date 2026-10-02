@@ -88,7 +88,7 @@ EXPECTED_TABLES = frozenset(
         "canonical_project_resources",
         "canonical_projects",
         "canonical_runs",
-        # Eval scores as durable Run evidence on the spine (048, #792): a
+        # Eval scores as durable Run evidence on the spine (049, #792): a
         # score names the Run, NodeRun and Attempt it scored, so it is
         # execution evidence, not a sidecar lifecycle.
         "canonical_run_eval_scores",
@@ -124,6 +124,12 @@ EXPECTED_TABLES = frozenset(
         "prompt_labels",
         "prompts",
         "quota_usage",
+        # One immutable evidence row per canonical physical Invocation (041,
+        # #718): at-most-once quota accounting and explicit unreported usage
+        # evidence, projected into `quota_usage`.
+        "quota_invocation_evidence",
+        # Durable per-event identities that make `record_usage` retries and
+        # crash-ambiguous commits harmless (#1204).
         "quota_usage_events",
         # Schedule definitions and their fire cursors (016). Durable so that a
         # cursor survives a restart and two scheduler replicas share one rather

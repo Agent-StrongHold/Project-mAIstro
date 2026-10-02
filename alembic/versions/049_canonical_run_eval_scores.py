@@ -14,8 +14,8 @@ columns the reads order or join on. Non-finite scores cannot occur — the model
 rejects NaN/Infinity — so the payload needs no non-finite tagging beyond what
 `maistro.runs.evidence_json` already does for the spine tables.
 
-Revision ID: 048
-Revises: 047
+Revision ID: 049
+Revises: 048
 Create Date: 2026-09-29
 """
 
@@ -23,11 +23,12 @@ from __future__ import annotations
 
 from alembic import op
 
-# 048 after develop's `047_capability_binding_revocations` (#1133) claimed the
-# same number while this branch was open — the same renumbering this chain
-# performs on every develop collision.
-revision = "048"
-down_revision = "047"
+# 049 after develop's `048_canvas_job_retry_backoff` (#398) claimed the
+# number this branch first took after the earlier `047`
+# `capability_binding_revocations` (#1133) collision — the same renumbering
+# this chain performs on every develop collision.
+revision = "049"
+down_revision = "048"
 branch_labels = None
 depends_on = None
 

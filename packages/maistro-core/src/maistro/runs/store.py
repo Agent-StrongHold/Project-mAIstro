@@ -796,6 +796,7 @@ class InMemoryRunStore:
             if attempt.node_run_id in node_run_ids
         ]:
             del self._attempts[attempt_id]
+
     async def create_run(
         self,
         graph: Graph,

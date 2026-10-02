@@ -61,15 +61,18 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) now continues the chain after this
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
-    # that; #792's eval-score evidence re-parented onto that 047 as `048`
-    # after the collision, so the single linear head is `048`.
-    walked = {item.revision for item in directory.walk_revisions("base", "048")}
+    # that; #398's `048_canvas_job_retry_backoff` claimed the next number
+    # while this branch was open, so #792's eval-score evidence re-parented
+    # onto that 048 as `049` after the collision — the single linear head is
+    # `049`.
+    walked = {item.revision for item in directory.walk_revisions("base", "049")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
     assert "045" in walked
     assert "047" in walked
-    assert directory.get_heads() == ["048"]
+    assert "048" in walked
+    assert directory.get_heads() == ["049"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

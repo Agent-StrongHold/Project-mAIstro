@@ -15,7 +15,7 @@ from maistro.runs.concurrency import (
     ACTIVE_ROOT_STATUS_VALUES,
     RunConcurrencyLimits,
 )
-from maistro.runs.evidence_json import json_of, model_of, model_of_json
+from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,

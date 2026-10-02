@@ -76,10 +76,13 @@ dict-shaped user; the fitness ledger is empty."
 reviewed reason it has none. Unmatched is denied, not allowed. One vocabulary
 (`scope.verb`) is shared by the middleware, `Principal.scopes`, and Binding `policy_refs`.
 
-**Today.** `middleware/auth.py:377-380` returns `None` for unmatched prefixes and
+**Today.** `middleware/auth.py:411-464` returns `None` for unmatched prefixes and
 `dispatch` forwards; 18 routers (`/v1/tasks`, `/v1/memory`, `/v1/quotas`, `/v1/work-items`,
-`/v1/program`, `/v1/dag-runs`, …) have no entry; `endswith("/invoke")` and
-`endswith("/feedback")` exempt any future route with that suffix (#403 covers `/invoke`).
+`/v1/program`, `/v1/dag-runs`, …) have no entry; the `endswith("/invoke")`
+suffix exemption was removed by #403 — elevation binds to registered
+capability identifiers, not URL naming, and any future route with that
+suffix needs an explicit reviewed policy like every other route — leaving
+`endswith("/feedback")` as the only suffix exemption.
 `PrivilegeMiddleware` is a no-op.
 
 **Check.** Extend `scripts/check-public-routes.py` (already bound to this middleware) with a
