@@ -53,7 +53,7 @@ on:
     # tests/test_branch_policy.py, so a push to any documented branch receives
     # this gate set — a `feature/*` or bare-name branch is not a documented
     # shape and gets its gates at PR time, where pull_request is unfiltered.
-    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, chore/*]
+    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, docs/*, chore/*]
 
 # See the rationale in ci.yml: supersede candidate runs, let protected-branch
 # pushes finish so their pass/fail record survives.

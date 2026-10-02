@@ -1054,6 +1054,11 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#55",
       "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/events/pg_envelope.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "The PostgreSQL EventEnvelope store joins the promotion path for the same reason its 48 neighbours did: the M1 effect door (#55 / #1362) composes Invocation, quota and the canonical event envelope onto the container promotion path, and this module is the durable half of the envelope already granted beside it (events/envelope.py, events/durable_log.py, events/bus.py). It became reachable specifically when #1362 merged #1321: the reconciled durable PostgreSQL builder imports PgEventStore, where before only the SQLite store was composed on that path. It writes and reads event rows -- an append-only record of what happened, read by nothing that decides what happens next. It scores no candidate, gates no merge, and installs no promotion authority, which is the question this ratchet asks. This grant lands first so #1362 cannot approve its own promotion-surface expansion."
     }
   }
 }
