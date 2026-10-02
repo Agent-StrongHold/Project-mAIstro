@@ -82,3 +82,37 @@ develop base 4df9dd9bd:
 - Adjacent gates green: check-image-inventory, check-ratchet-provenance,
   vulture ratchet (1371 identities, no unbanked), ruff check + format,
   tests/test_prepull_copy_sources.py + tests/test_check_diff_coverage.py.
+
+## Repair-round validation log (2026-10-02, merge e4a614e05)
+
+The named CI failure for this round was the `test` job (ci.yml), red on the
+merge-queue tree while the branch head itself was clean. Cause: develop moved
+ahead — 4e50b46153bd (PR #1709) landed the same #349 content this branch
+carries, plus the M7-A3 eval-on-Run work. Resolution: merged origin/develop
+(clean — `git merge-tree --write-tree` reports no conflicts, and the shared
+#349 files are byte-identical on both sides), then re-ran the whole `test`
+job battery locally on the merged tree:
+
+- root suite `tests/ --ignore=tests/tools/registry`: 4103 passed, 126 skipped
+  (includes the 38 image-pins gate tests and the shipped-state self-checks);
+- `packages/maistro-core/tests`: 11236 passed, 765 skipped, 1 xfailed
+  (covers the merged M7-A3 `tests/runs/test_eval_on_run*.py`); bootstrap +
+  server + canvas: 1149 passed; turing + turing-backend + design + rsi +
+  evolve: 2345 passed; the single-process cross-suite step
+  (`tests/` + hive-conductor backend + design): 7807 passed;
+- `scripts/check-suite-inventory.py` -> ok (14 suites match);
+- `scripts/check-image-pins.py` -> exit 0 on the merged tree (9 pins,
+  10 Dockerfiles); `check-ratchet-provenance.py` -> all 9 ratchets OK
+  against base 4e50b46153bd; `check-image-inventory.py` -> ok;
+- fresh sandbox fault injections re-proved all three rejection classes on
+  the merged tree, each with the gate's own error text and exit 1:
+  `python:latest` tag annotation, unpinned tag in the PUBLISHED root
+  Dockerfile, and a digest absent from `quality/image-pins.json`;
+- live registry HEAD of the pinned python digest still resolves to
+  `application/vnd.oci.image.index.v1+json` at exactly the pinned digest
+  (deterministic multi-arch resolution), and both Copier templates plus all
+  release Dockerfiles carry `name:tag@sha256:<digest>` pins;
+- ruff check + format --check green (2728 files).
+
+No production code changed in this round: the only tree change is this
+branch now containing develop's 4e50b46153bd as an ancestor.
