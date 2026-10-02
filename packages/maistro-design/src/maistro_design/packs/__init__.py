@@ -67,7 +67,9 @@ _VULTURE_WHITELIST = (
     # A pydantic field has no class-level attribute (pydantic v2), so the
     # reference goes through an unvalidated instance: the field is the
     # canonical binding-reference surface pack_graph_template writes.
-    Node.model_construct().binding_ids,
+    # `node_type` is the one required Node field, so `model_construct` needs
+    # it named even though nothing here validates or executes the instance.
+    Node.model_construct(node_type="").binding_ids,
 )
 
 __all__ = [

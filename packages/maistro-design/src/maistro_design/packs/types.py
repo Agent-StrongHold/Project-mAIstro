@@ -36,8 +36,12 @@ Placement (the A1 documentation hook): this contract lives in ONE place,
 `maistro_design.packs`, because Design Studio hosts all three packs and
 `maistro-design` is its substrate package (ADR-061) which already depends on
 `maistro-core` for canonical Graph/Goal semantics (ADR-081226-034b direction).
-The M7-A1 ADR/spec had not landed when this was written; this module
-docstring is the recorded placement decision until it does.
+M7-A1 has since landed as ADR-092926-7a01 / SPEC-093026-7a90 and does not
+move it: packs there are data under registry/repertoire supply chains that
+cannot register ontology kinds, own workstate, mint identity, or bypass the
+effect chain (ADR-092926-7a01 §5) — exactly the invariants this module
+enforces. The manifest format itself remains A1 open question Q4; this
+in-repo YAML registry is this lane's answer to it.
 """
 
 from __future__ import annotations

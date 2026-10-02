@@ -5,11 +5,12 @@ inventory-delta:
 
 # #793 (M7-A4) repair round — pack-contract boundary tests
 
-Round 2 (this round) added **no tests**; it recovered the uncommitted round-1
+Rounds 2 and 3 added **no tests**; round 2 recovered the uncommitted round-1
 salvage (which CI had never seen), merged origin/develop (28 commits, quality
 ledger + uv.lock overlaps resolved), and repaired the exact-debt-ledger and
 reachability gates — see "Round 2" at the bottom. Test-suite count is
-unchanged at 384 (checked by `scripts/check-suite-inventory.py`).
+unchanged (446 collected in `packages/maistro-design/tests`, checked by
+`scripts/check-suite-inventory.py`).
 
 CI-repair for the M7-A4 domain-packs branch: the diff-coverage gate named
 `packs/registry.py` (86% of changed lines) and `packs/types.py` (77.8% of
@@ -99,3 +100,47 @@ both touched suites, `check-radon-baseline.py`, `bump_version.py --check`,
 `check_enumerations.py`, `check-shipped-surface-truth.py`, ruff check/format.
 Suites: maistro-design 384 passed; hive-conductor backend 3018 passed / 6
 skipped; maistro-server 464 passed.
+
+## Round 3 — coverage (PostgreSQL) gate evidence; A1 placement note
+
+The merge queue reported `coverage (PostgreSQL)` red at 70b893c (job
+110337901565, step *Apply the chain, then the suites that need a schema (under
+coverage)*). The failing test was
+`packages/maistro-core/tests/runs/test_parked_run_resume.py::
+test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_death`
+(`[sqlite]` leg) with "a live resumed Attempt was not renewed by the
+heartbeat". Evidence gathered this round:
+
+- **Not this branch's code.** The branch diff is `maistro_design.packs` + the
+  hive `/design/packs` route + docs/ledger/uv.lock (the lock adds only
+  `pyyaml` to maistro-design's own dependencies — no shared version moves).
+  The failing test, `runs/consumption.py`, and `runs/execution.py` are
+  untouched by it.
+- **Exact CI step reproduced locally** against pgvector pg17 in CI order
+  (migrations suite on an unmigrated DB → `alembic upgrade head` → the PG
+  producer step): run 1 failed the **same test on the `[postgres]` leg**
+  (1 failed, 4604 passed); a rerun at the same head with no tree change
+  passed **4605 passed, 8 skipped**. In isolation all three legs pass.
+  Adjacent pass/fail at one head with the failing leg moving between
+  backends is the load-sensitive heartbeat-renewal-wait flake the test's own
+  comment documents (introduced 2a0624c5a after #1273/#1340; previously
+  recorded in `854-governed-promotion-evidence.md`).
+- **Disposition:** no code or test change — the flake lives in a core
+  scheduling test this lane must not weaken, and the producer step is green
+  on rerun. The canvas leg of the same CI step also passed under coverage
+  (488 passed / 3 skipped).
+- Rest of the gate family at b46f3274: CI-shaped mypy green (875 files),
+  ruff check/format green, the lint job's script gates green (merge markers,
+  monorepo layout, cross-package imports, frontend→route, deployment claims,
+  secret-field labels, retired guidance, compose secrets, durable-table
+  inventory, promotion surface), vulture ledger gate exit 0 (unclassified 0,
+  never_allowlist 0), suite inventories green (design 446, conductor 3186),
+  maistro-design 446 passed, hive-conductor backend 3185 passed / 1 skipped
+  under coverage, `check-diff-coverage.py coverage.xml --base origin/develop`
+  green (every measured file ≥90% lines / ≥80% branches).
+- The `maistro_design.packs` placement docstring now cites the landed M7-A1
+  documents (ADR-092926-7a01 / SPEC-093026-7a90): packs there are data that
+  cannot register ontology kinds, own workstate, mint identity, or bypass the
+  effect chain (ADR-092926-7a01 §5) — the invariants this module already
+  enforces. The in-repo YAML registry is this lane's answer to spec open
+  question Q4 (pack manifest format). No behavior change.
