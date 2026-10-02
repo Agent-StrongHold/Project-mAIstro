@@ -29,6 +29,7 @@ from maistro_design.brief import (
     ProtectedFieldOverrideError,
     RequiredFact,
 )
+
 # The #773 parent-epic brief surface (`creative_brief.py`, versioned lineages
 # + shared creative context) stays importable beside it. The two contracts
 # spell three names identically; at this top level those stay owned by the
