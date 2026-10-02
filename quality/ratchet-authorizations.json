@@ -1077,6 +1077,11 @@
       "issue": "#53",
       "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
     },
+    "parallel_principal_class::packages/maistro-server/src/maistro_server/api/principal.py::AuthenticatedPrincipal": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
     "state_user_access::packages/hive-conductor/backend/middleware/auth.py": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#53",
