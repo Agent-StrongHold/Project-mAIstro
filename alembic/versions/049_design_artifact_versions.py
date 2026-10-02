@@ -24,8 +24,8 @@ placeholder `orgs`/`teams` anchors 003 had created — `org` is a soft scope
 axis (ADR-068) enforced by stores, not by the schema — and these tables
 follow the same shape as `design_projects.org_id` at chain tip.
 
-Revision ID: 048
-Revises: 047
+Revision ID: 049
+Revises: 048
 Create Date: 2026-09-28
 """
 
@@ -33,8 +33,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "048"
-down_revision = "047"
+revision = "049"
+down_revision = "048"
 branch_labels = None
 depends_on = None
 
