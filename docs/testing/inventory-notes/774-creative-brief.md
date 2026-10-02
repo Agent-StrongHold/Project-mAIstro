@@ -348,3 +348,35 @@ migration is renumbered once more to **`050_design_creative_briefs`**
 (`down_revision = "049"`); the effect-index chain test now walks to `050` and
 asserts `get_heads() == ["050"]`, `SPEC-092826` follows. No test node IDs
 moved; the inventory delta (+59) is unchanged.
+
+## Round 6 (develop sync at the #792 repair: the briefs migration re-parents onto the eval 049 as 050)
+
+The #792 lane's develop sync merged `origin/develop` (tip `33bcd3ce288`) into
+`auto-792` and preserved the conflict for resolution. Both branches had taken
+revision `049` on the same parent `048` — this contract's
+`design_creative_briefs` on develop, the canonical Run eval-score evidence on
+the #792 branch — so `get_heads()` answered `["049", "049"]` and Alembic's
+script directory refused the duplicate. Per the same one-linear-head
+convention the rounds above document, the eval-score migration keeps `049`
+(it re-parented onto 048 first, in the #792 lane's round 2) and the briefs
+migration is renumbered to **`050_design_creative_briefs`**
+(`down_revision = "049"`). The effect-index chain test now walks to `050`,
+asserts `get_heads() == ["050"]`, and its resolution comment names the
+collision. `SPEC-092826`'s "migration 049" mention follows the renumber. No
+test node IDs moved; this note's inventory delta (+59) is unchanged.
+
+## Round 7 (auto-780 develop sync of the #792 repair: the eval evidence re-parents onto this branch's `050` as `051`)
+
+Merging the #792 eval-on-run work into auto-780 collided the head a fourth
+time, from the other side: this branch's `049_design_artifact_versions` (#780)
+and the eval-score migration had both taken `049` on the same parent `048`,
+and this branch's `050_design_creative_briefs` already continued that `049`.
+Per the same one-linear-head convention, the branch's own chain stands
+(`049` artifact versions -> `050` briefs) and the incoming eval-score
+migration re-parents onto that `050` as **`051_canonical_run_eval_scores`**
+(`down_revision = "050"`; Round 6's opposite numbering was the auto-792
+lane's resolution and is superseded on this branch). The effect-index chain
+test now walks to `051` and asserts `get_heads() == ["051"]`;
+`test_migration_chain`'s eval-table comment and `retention_scope`'s policy
+comment follow the renumber. No test node IDs moved; the inventory deltas are
+unchanged.

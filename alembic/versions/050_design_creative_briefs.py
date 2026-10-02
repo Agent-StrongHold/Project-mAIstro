@@ -42,7 +42,9 @@ from alembic import op
 # (#1133's durable Binding revocations, #398's Canvas job retry backoff), then
 # to `050` when #780's design-artifact version ledger took `049` first — the
 # same renumbering every develop collision performs so the chain keeps exactly
-# one linear head.
+# one linear head. The eval-score evidence (#792), which had taken `049` on
+# develop before this branch's ledger claimed the same number on the same
+# parent, re-parents onto this `050` as `051`.
 revision = "050"
 down_revision = "049"
 branch_labels = None

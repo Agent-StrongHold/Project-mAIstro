@@ -88,6 +88,10 @@ EXPECTED_TABLES = frozenset(
         "canonical_project_resources",
         "canonical_projects",
         "canonical_runs",
+        # Eval scores as durable Run evidence on the spine (051, #792): a
+        # score names the Run, NodeRun and Attempt it scored, so it is
+        # execution evidence, not a sidecar lifecycle.
+        "canonical_run_eval_scores",
         # The Workspace those Projects and Runs belong to (#516). Their
         # `workspace_id` columns were bare Text with nothing to reference
         # until migration 019 gave the Workspace a table of its own.

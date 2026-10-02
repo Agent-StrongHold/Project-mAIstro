@@ -21,6 +21,7 @@ Reference                                         Declared constraint           
 ================================================  ============================  ====================================================
 canonical_attempts.node_run_id                    FK ON DELETE RESTRICT (012)   Delete — spine children go first, in the purge transaction.
 canonical_node_runs.run_id                        FK ON DELETE RESTRICT (012)   Delete — same transaction.
+canonical_run_eval_scores.run_id (+ node/attempt ids)   FK ON DELETE RESTRICT (051)   Delete in the purge transaction, before the spine rows it names. Eval scores are execution evidence on the spine itself (M7-A3), not attribution history: a score whose producing Run, NodeRun and Attempt are gone is not a receipt, it is a dangling verdict.
 canonical_runs.parent_run_id                      FK (012)                      Never selected — a Run with live descendants is not a candidate.
 canonical_runs.parent_node_run_id                 FK (012)                      Never selected — same rule, through a NodeRun.
 graph_continuations.run_id                        PK only, **no FK** (021)      Delete in the purge transaction. Traversal state is execution identity, not audit (ADR-062); a continuation whose Run is gone is not history, it is a recovery trap — the recovery tick reads due run_ids from this table. `CanonicalDurableRunStore.get` already refuses the dangling case outright ("purged without reconciling Graph continuation state"), and its `reconcile_persistence` remains the crash backstop.
@@ -67,6 +68,10 @@ RUN_REFERENCING_TABLES: tuple[str, ...] = (
     "canonical_attempts",
     "canonical_node_runs",
     "canonical_runs",
+    # Eval scores are Run evidence on the spine (M7-A3): every row carries the
+    # run_id of the Run that produced the scored artifact, so a purge that
+    # forgot this table would orphan the scores of the Runs it deletes.
+    "canonical_run_eval_scores",
     "graph_continuations",
     "canonical_event_log",
     "tasks",

@@ -63,11 +63,13 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
     # that; #398's `048_canvas_job_retry_backoff` continues it, and
     # `049_design_artifact_versions` (#780) continues that; #774's
-    # `050_design_creative_briefs` — renumbered twice, first from the 047 it
-    # took when develop had not yet claimed that, then past 048 and 049 as
-    # #398 and #780 claimed them — continues after that, so the single linear
-    # head is `050`.
-    walked = {item.revision for item in directory.walk_revisions("base", "050")}
+    # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
+    # #780 claimed them — continues after that. #792's eval-score evidence,
+    # which had taken `049` on develop while this branch's artifact-version
+    # ledger took the same number on the same parent, re-parents onto that
+    # `050` as `051_canonical_run_eval_scores`, so the single linear head is
+    # `051`.
+    walked = {item.revision for item in directory.walk_revisions("base", "051")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -76,7 +78,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "047" in walked
     assert "048" in walked
     assert "049" in walked
-    assert directory.get_heads() == ["050"]
+    assert "050" in walked
+    assert directory.get_heads() == ["051"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
