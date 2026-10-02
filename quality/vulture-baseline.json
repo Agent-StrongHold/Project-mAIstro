@@ -1356,7 +1356,6 @@
         "packages/maistro-canvas/src/maistro_canvas/canvas/asset_tool.py::unused method '_action_render_page'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/asset_tool.py::unused method '_action_upsert_instance'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/executor.py::unused method 'run_job'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/store.py::unused class 'PgCanvasStore'",
         "packages/maistro-core/src/maistro/capabilities/providers/self_repair.py::unused property 'last_cycle'",
         "packages/maistro-core/src/maistro/capabilities/slots/self_repair.py::unused property 'acted'",
         "packages/maistro-core/src/maistro/capabilities/slots/self_repair.py::unused property 'escalated'",
