@@ -157,7 +157,11 @@ def new_test_signal(
 
 
 def run_test_selection(
-    repo_dir: str | Path, selectors: list[str], *, timeout: int = 600
+    repo_dir: str | Path,
+    selectors: list[str],
+    *,
+    timeout: int = 600,
+    extra_args: tuple[str, ...] = (),
 ) -> tuple[int, str]:
     """Run pytest on specific files/selectors in ``repo_dir``; return (exit_code, output).
 
@@ -165,6 +169,10 @@ def run_test_selection(
     against a baseline checkout (expect non-zero) and the candidate (expect zero).
     Also the executor behind the mutation probe, so every pytest-over-candidate
     run in the scorecard flows through here.
+
+    ``extra_args`` extends the invocation (after ``-q -p no:cacheprovider``) for
+    callers that need more from the same run — the fail-first probe passes
+    ``-rfE`` so failure/error identities are parseable from the short summary.
     """
     # The candidate boundary env (#78): this executes the candidate's own
     # tests — conftest, fixtures, declared plugins — so it must not inherit the
@@ -176,7 +184,16 @@ def run_test_selection(
     env = candidate_env()
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *selectors],
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                *extra_args,
+                *selectors,
+            ],
             cwd=str(repo_dir),
             capture_output=True,
             text=True,
