@@ -304,6 +304,14 @@
         "quality/wiring-reads-baseline.json"
       ],
       "reason": "The wiring-reads gate measures the candidate but resolves its comparison ledger and authorizations from the trusted base, so editing the candidate copy cannot authorize new unread wiring."
+    },
+    {
+      "id": "workspace-retirement",
+      "kind": "base_derived",
+      "paths": [
+        "quality/workspace-retirement.json"
+      ],
+      "reason": "The retirement ledger records reviewed cutover dispositions while check-workspace-retirement.py resolves importer tolerances and untrack grants from the trusted base, so a candidate edit cannot authorize new consumers of a retiring surface."
     }
   ]
 }

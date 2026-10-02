@@ -205,11 +205,6 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
-      # The Workspace cutover only deprecates the old Conductor surfaces if
-      # they can't pick up new consumers while their replacements land, so
-      # quality/workspace-retirement.json only shrinks (#1046, cutover S0.1).
-      - name: Retiring Conductor surfaces gain no new importers
-        run: python3 scripts/check-workspace-retirement.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it

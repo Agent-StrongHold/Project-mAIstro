@@ -59,11 +59,10 @@ def tree(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_the_current_repository_passes(gate) -> None:
+def test_the_ledger_matches_the_current_repository(gate) -> None:
     ledger = json.loads(gate.LEDGER.read_text())
 
     assert gate.check(ledger, ROOT) == []
-    assert gate.main() == 0
 
 
 @pytest.mark.parametrize(
@@ -156,3 +155,28 @@ def test_keep_entries_may_be_imported_freely(gate, tree: Path) -> None:
     keep = _entry(disposition="KEEP", delete_by=None)
 
     assert gate.check({"entries": [keep]}, tree) == []
+
+
+def _ledger(*entries: dict[str, Any]) -> dict[str, Any]:
+    return {"entries": list(entries)}
+
+
+def test_an_importer_the_trusted_base_did_not_list_needs_a_landed_grant(gate) -> None:
+    app = "packages/hive-conductor/frontend/src/App.tsx"
+    trusted = _ledger(_entry())
+    candidate = _ledger(_entry(importers=[app]))
+    key = f"{PAGES}/Docs.tsx::{app}"
+    assert gate.provenance_failures(candidate, trusted, set()) == [
+        f"{key}: NEW tolerated importer absent from the trusted base and not previously authorized"
+    ]
+    assert gate.provenance_failures(candidate, trusted, {key}) == []
+    assert gate.provenance_failures(candidate, candidate, set()) == []
+
+
+def test_dropping_or_keeping_a_tracked_entry_needs_a_landed_grant(gate) -> None:
+    trusted = _ledger(_entry())
+    path = f"{PAGES}/Docs.tsx"
+    for candidate in (_ledger(), _ledger(_entry(disposition="KEEP", delete_by=None))):
+        [failure] = gate.provenance_failures(candidate, trusted, set())
+        assert failure.startswith(f"{path}: tracked at the trusted base")
+        assert gate.provenance_failures(candidate, trusted, {f"untrack::{path}"}) == []

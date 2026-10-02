@@ -787,6 +787,14 @@ jobs:
       - name: enumeration coverage (derived control lists — ratchet)
         run: uv run python scripts/check_enumerations.py
 
+      # The Workspace cutover only deprecates the old Conductor surfaces if
+      # they can't pick up new consumers while their replacements land, so
+      # quality/workspace-retirement.json only shrinks (#1046, cutover S0.1).
+      # Its importer lists are judged against the merge base, so it needs this
+      # job's full history.
+      - name: workspace retirement (retiring Conductor surfaces gain no importers — ratchet)
+        run: uv run python scripts/check-workspace-retirement.py
+
       # The vendored IFEval grader and corpus are the *exam* the RSI loop is
       # scored against, so they must stay byte-comparable to what Google
       # published. This verifies the committed tree still matches its pinned

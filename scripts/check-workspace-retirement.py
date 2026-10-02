@@ -13,21 +13,32 @@ ledger to three rules:
   importing must be pruned, so the list only shrinks.
 
 Tests are not importers: they go with the module they exercise.
+
+The importer lists are tolerated debt, so they are judged against the ledger
+at the trusted merge base (docs/ci/RATCHET-PROVENANCE.md). An importer the base
+did not list, or a tracked entry the candidate drops or turns KEEP, needs a
+grant in ``quality/ratchet-authorizations.json`` that already landed:
+``<entry path>::<importer>`` and ``untrack::<entry path>`` respectively.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import os
 import re
 import sys
 from collections.abc import Iterable
 from pathlib import Path
+from types import ModuleType
 from typing import Any, TypeGuard
 
 ROOT = Path(__file__).resolve().parent.parent
 LEDGER = ROOT / "quality" / "workspace-retirement.json"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
+RATCHET = "workspace-retirement"
+METRIC_DEFINITION_VERSION = "1"
 CONDUCTOR = Path("packages") / "hive-conductor"
 BACKEND = CONDUCTOR / "backend"
 FRONTEND_SRC = CONDUCTOR / "frontend" / "src"
@@ -247,12 +258,88 @@ def check(ledger: Any, root: Path) -> list[str]:
     return failures
 
 
+def _entries(ledger: Any) -> list[dict[str, Any]]:
+    entries = ledger.get("entries") if isinstance(ledger, dict) else None
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
+def tolerated_importers(ledger: Any) -> set[str]:
+    return {
+        f"{entry.get('path')}::{importer}"
+        for entry in _entries(ledger)
+        for importer in entry.get("importers", [])
+        if isinstance(importer, str)
+    }
+
+
+def tracked_paths(ledger: Any) -> set[str]:
+    return {
+        str(entry.get("path")) for entry in _entries(ledger) if entry.get("disposition") != "KEEP"
+    }
+
+
+def provenance_failures(candidate: Any, trusted: Any, authorized: set[str]) -> list[str]:
+    """Loosening relative to the trusted ledger that no landed grant covers."""
+    failures = [
+        f"{key}: NEW tolerated importer absent from the trusted base and not previously authorized"
+        for key in sorted(tolerated_importers(candidate) - tolerated_importers(trusted))
+        if key not in authorized
+    ]
+    failures.extend(
+        f"{path}: tracked at the trusted base but dropped or turned KEEP without an "
+        f"already-landed untrack::{path} grant"
+        for path in sorted(tracked_paths(trusted) - tracked_paths(candidate))
+        if f"untrack::{path}" not in authorized
+    )
+    return failures
+
+
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
 def main() -> int:
     if not LEDGER.exists():
         print(f"FAIL: {LEDGER} is missing", file=sys.stderr)
         return 1
     ledger = json.loads(LEDGER.read_text())
     failures = check(ledger, ROOT)
+
+    prov = _provenance()
+    try:
+        prov.require_measurement(_entries(ledger), ratchet=RATCHET, what="ledger entries")
+        trusted_ref = prov.resolve_baseline(LEDGER, root=ROOT)
+        trusted = trusted_ref.loads(default={})
+        authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=trusted_ref,
+            tool="python ast + import scan",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{len(tolerated_importers(trusted))} tolerated importers",
+            new_value=f"{len(tolerated_importers(ledger))} tolerated importers",
+            candidate_sha=prov.head_sha(ROOT),
+            authorizations=(),
+        ).render()
+    )
+    failures.extend(provenance_failures(ledger, trusted, set(authorized)))
     if failures:
         print("FAIL: the workspace retirement ledger does not match the tree\n")
         for failure in failures:
