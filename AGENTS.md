@@ -46,8 +46,12 @@ Shared Python runtime and monorepo substrate for AI agent platforms: orchestrato
 ## Quality ratchets and grants
 
 The repo gates on per-identity ledgers in `quality/*.json` (vulture, radon,
-promotion surface, reachability, direct effects, suite inventory). Two rules
-account for most blocked PRs:
+promotion surface, reachability, direct effects). **Suite inventory is separate:**
+`scripts/check-suite-inventory.py` records per-suite test counts in
+`docs/testing/inventory/baseline.json`, with per-change deltas in
+`docs/testing/inventory-notes/` — not node identities, and not the grant workflow
+below. See [docs/quality-gates.md](docs/quality-gates.md). Two rules account for
+most blocked PRs:
 
 - **A floor raise takes two merges.** `ratchet_provenance.load_authorizations`
   reads `quality/ratchet-authorizations.json` **from the merge base**, not from
@@ -66,8 +70,10 @@ defaults (`packages`, `tests`) bank rows the blocking job can never see.
 **`quality/*.json` merge cleanly while losing rows.** Two branches append, git
 auto-resolves to one side, nothing conflicts and nothing asks. After any merge
 or `git checkout <ref> -- quality/...`, diff row counts against `origin/develop`
-before trusting it; expect `git diff --numstat` to be additions-only when you
-meant to add. `vulture-baseline.json` is a **multiset** — it carries intentional
+before trusting it; compare with `git diff --numstat origin/develop -- quality/`
+(`git checkout` updates both index and worktree, so a bare `git diff --numstat`
+can print nothing even when rows were replaced). `vulture-baseline.json` is a
+**multiset** — it carries intentional
 duplicates, so never pass its lists through `set()`.
 
 ## Verifying your own work
