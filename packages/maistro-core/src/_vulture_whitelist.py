@@ -10,6 +10,7 @@ Invocation execution API.
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
@@ -90,6 +91,23 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
+    # EPIC M4-E (#25): the closed evolvable-harness-component vocabulary and
+    # the proposal's Pydantic model validators. Members are the serialized
+    # values an optimizer's proposal carries (the same posture as the ledger's
+    # schema-enum-member rule: enum members are serialized values that need
+    # not appear as direct reads in package-local static analysis); the
+    # validators run at proposal construction. Their in-tree consumers are the
+    # #783/#822 child streams, outside this scan until those issues land.
+    HarnessTargetKind.PROMPT,
+    HarnessTargetKind.TOOL_SELECTION,
+    HarnessTargetKind.SKILLS,
+    HarnessTargetKind.MEMORY_RETRIEVAL_POLICY,
+    HarnessTargetKind.PLANNING_STRATEGY,
+    HarnessTargetKind.SUBAGENT_DEFINITIONS,
+    HarnessTargetKind.GRAPH_TOPOLOGY,
+    HarnessTargetKind.AUTHORIZED_CODE,
+    HarnessEvolutionProposal._identifier_fields_are_not_blank,
+    HarnessEvolutionProposal._candidate_edges_reference_candidate_nodes,
     # Eval scores as Run evidence on the canonical spine (M7-A3, #792).
     # The store write/read seam is reached by the scoring caller inside the
     # producing execution and by the #779 family-consistency reader, both
