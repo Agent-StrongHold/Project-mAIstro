@@ -197,3 +197,63 @@ async def test_evidence_and_its_aggregate_commit_together(
 
     assert result["total_tokens"] == 150
     assert result["request_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_record_unreported_counts_the_call_without_inventing_tokens(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """A provider that answered but reported no usage still costs a request.
+
+    The counter exists so an operator can tell "this cycle used 150 tokens"
+    from "this cycle used 150 tokens *that we know of*". Inventing an estimate
+    here would make the aggregate agree with itself and disagree with the bill,
+    so the tokens stay at zero and `usage_complete` carries the doubt instead.
+    """
+    result = await tracker.record_unreported("openai", "  Monthly  ")
+
+    assert result == {
+        "provider": "openai",
+        "cycle_key": cycle_key("monthly"),
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_count": 1,
+        "unreported_count": 1,
+        "usage_complete": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_record_unreported_accumulates_beside_reported_usage(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """Reported and unreported calls share one row; only the counters differ."""
+    await tracker.record_usage("openai", "monthly", 100, 50)
+    await tracker.record_unreported("openai", "monthly")
+    result = await tracker.record_unreported("openai", "monthly")
+
+    # Three requests, two of them unaccounted, and the 150 reported tokens
+    # neither grown nor lost by the two that reported nothing.
+    assert result["request_count"] == 3
+    assert result["unreported_count"] == 2
+    assert result["total_tokens"] == 150
+    assert result["usage_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_record_unreported_is_committed_not_merely_buffered(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """The projection is durable when the call returns, not at some later flush.
+
+    Read back through a rollback: anything still sitting in an open transaction
+    would disappear, so surviving one is what distinguishes a committed write
+    from a buffered one.
+    """
+    await tracker.record_unreported("anthropic", "monthly")
+    await tracker._conn.rollback()
+
+    after = await tracker._fetch_usage("anthropic", cycle_key("monthly"))
+    assert after["request_count"] == 1
+    assert after["unreported_count"] == 1

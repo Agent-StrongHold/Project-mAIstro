@@ -1,12 +1,15 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +21
+  packages/maistro-core/tests: +24
 ---
 
 # Tests for the Codex review fixes on #1362
 
-`+14` is the net movement for `packages/maistro-core/tests` across this
+`+24` is the net movement for `packages/maistro-core/tests` across this
 branch's Codex-fix commits — additions minus the one test that was replaced.
+(It has grown as review rounds landed; the number in the front matter is the
+one to trust, and this sentence is kept equal to it on purpose, because a
+note whose prose and front matter disagree is worse than one with neither.)
 The additions are listed below by what they pin rather than by file
 arithmetic; each fails against the commit it was written for, which I checked
 by reverting the fix and re-running.
@@ -110,3 +113,27 @@ twice, so one release cannot leave a stale duplicate answering as the default.
   `None` mean different things here ("called and reported nothing" versus
   "nobody recorded whether it did"), and storing the flag as an INTEGER makes
   that easy to conflate on the way back.
+
+## SQLite unreported-usage projection
+
+`persistence/test_sqlite_quota.py` — three tests, written because the diff
+gate scored `sqlite_quota.record_unreported` as entirely uncovered. It was:
+`test_pg_quota.py` covers the PostgreSQL tracker's version of the method and
+nothing covered the SQLite one, so the branch changed a method whose only
+evidence lived in its sibling implementation.
+
+- `test_record_unreported_counts_the_call_without_inventing_tokens` — a
+  provider that answered but reported no usage costs a request and zero
+  tokens, and the row says `usage_complete: False`. The point is the doubt
+  being recorded rather than estimated: an invented estimate makes the
+  aggregate agree with itself and disagree with the bill.
+- `test_record_unreported_accumulates_beside_reported_usage` — reported and
+  unreported calls share one row, and two unreported calls neither grow nor
+  lose the 150 tokens a reported call already banked.
+- `test_record_unreported_is_committed_not_merely_buffered` — reads back
+  through a `rollback()`, so a write still sitting in an open transaction
+  disappears. Verified by removing the `commit()`: this test fails and the
+  other seventeen pass.
+
+Coverage for `maistro/persistence/sqlite_quota.py` is 98% with this file
+alone (one uncovered line, 71).
