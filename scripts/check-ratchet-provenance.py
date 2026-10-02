@@ -101,6 +101,11 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "against a prior-tree oracle would compare against a matrix that predates the "
         "surfaces this tree ships"
     ),
+    ("check-workspace-retirement.py", "quality/workspace-retirement.json"): (
+        "the workspace retirement ledger is the reviewed cutover specification being "
+        "changed; importer tolerances and untrack grants are compared separately against "
+        "the trusted base via ratchet_provenance"
+    ),
 }
 
 # Adapter values are tooling identities (filename stems), not paths. Keeping the
