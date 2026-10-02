@@ -14,6 +14,14 @@ type DegradedService = { service: string; reason: string };
  * The fetch is deliberately silent on failure: the banner's job is to report
  * a degraded Conductor, and a banner that noisily reports its own network
  * error would be a third problem on a bad day.
+ *
+ * Announced with `aria-live="polite"` but deliberately NOT `role="status"`:
+ * the app's toasts (components/shared.tsx) own that role, and several e2e
+ * specs select the toast as `getByRole("status")` — a second app-wide
+ * role=status would make every one of those strict-mode assertions resolve
+ * two elements whenever the Conductor is actually degraded (observed live:
+ * api-error-copy and api-timeout failed exactly that way under the e2e-ui
+ * compose harness, where no LLM gateway is configured).
  */
 export function DegradedBanner() {
   const [services, setServices] = useState<DegradedService[]>([]);
@@ -36,7 +44,7 @@ export function DegradedBanner() {
   if (services.length === 0) return null;
 
   return (
-    <div className="degraded-banner" role="status" aria-live="polite" data-testid="degraded-banner">
+    <div className="degraded-banner" aria-live="polite" data-testid="degraded-banner">
       <div className="degraded-banner-title">Degraded mode — some optional capabilities are unavailable:</div>
       <ul>
         {services.map((s) => (
