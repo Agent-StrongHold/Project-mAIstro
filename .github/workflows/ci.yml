@@ -537,6 +537,16 @@ jobs:
             packages/maistro-canvas/frontend/package-lock.json
       - run: npm ci && npm run lint && npm run build
         working-directory: packages/hive-conductor/frontend
+      # Frontend entity types are generated from the backend's OpenAPI document
+      # and committed (#1048). Regenerating both and diffing makes a backend
+      # schema change the frontend has not picked up a red build here, rather
+      # than an `undefined` in the browser. Fix: run the same two commands
+      # locally and commit types.gen.ts.
+      - name: Generated API types match the backend's OpenAPI document (#1048)
+        run: |
+          uv run python scripts/dump-hive-openapi.py
+          npm --prefix packages/hive-conductor/frontend run gen:api
+          git diff --exit-code -- packages/hive-conductor/frontend/src/api/types.gen.ts
       - run: npm ci && npm run test:ci
         working-directory: packages/maistro-canvas/frontend
       - run: npm run lint
