@@ -257,6 +257,7 @@ async def test_blank_scope_is_refused_on_create() -> None:
         engine.dispose()
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-11")
 async def test_create_refuses_a_project_registered_to_another_workspace() -> None:
     store, resources = _store(project_rows=[("proj-1", "ws-2")])
     connection, engine = resources
@@ -268,6 +269,7 @@ async def test_create_refuses_a_project_registered_to_another_workspace() -> Non
         engine.dispose()
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-11")
 async def test_create_refuses_an_unregistered_project() -> None:
     store, resources = _store(project_rows=[])
     connection, engine = resources

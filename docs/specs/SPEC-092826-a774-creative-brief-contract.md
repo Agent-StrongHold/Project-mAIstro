@@ -36,6 +36,21 @@ tests:
   - packages/maistro-design/tests/test_creative_brief.py
   - packages/maistro-design/tests/test_creative_brief_store.py
   - packages/maistro-design/tests/test_creative_brief_pg.py
+ac-modules:
+  AC-1: 'maistro_design.brief'
+  AC-2: 'maistro_design.brief'
+  AC-3: 'maistro_design.brief'
+  AC-4: 'maistro_design.brief'
+  AC-5: 'maistro_design.brief'
+  AC-6: 'maistro_design.brief'
+  AC-7: 'maistro_design.brief'
+  AC-8: 'maistro_design.brief'
+  AC-9: 'maistro_design.brief'
+  AC-10: 'maistro_design.brief'
+  AC-11: 'maistro_design.brief_store'
+  AC-12: 'maistro_design.brief'
+  AC-13: 'maistro_design.brief'
+  AC-14: 'maistro_design.brief'
 ---
 
 # SPEC-092826-a774: CreativeBrief is a versioned Design Studio projection of one canonical Goal revision
@@ -102,27 +117,32 @@ Neither erases nor rewrites prior versions; newly eligible work consumes
 
 ## Acceptance criteria
 
-- AC-1: one model + one persistence contract own CreativeBrief domain state;
-  the store satisfies `CreativeBriefStore`.
-- AC-2: every brief references one canonical Goal identity + exact revision.
-- AC-3: Goal ownership/delegation remain canonical references; no brief path
-  mutates scope or ownership.
-- AC-4: Persona and Design System are versioned references, not copies.
-- AC-5: creative-context updates mint versions; prior versions and the
+- **AC-1** one model + one persistence contract own CreativeBrief domain
+  state; the store satisfies `CreativeBriefStore`.
+- **AC-2** every brief references one canonical Goal identity + exact
+  revision.
+- **AC-3** Goal ownership/delegation remain canonical references; no brief
+  path mutates scope or ownership.
+- **AC-4** Persona and Design System are versioned references, not copies.
+- **AC-5** creative-context updates mint versions; prior versions and the
   projections derived from them stay byte-identical.
-- AC-6: a changed outcome is a new Goal revision + new brief version, without
-  history rewrite.
-- AC-7: projections expose the exact Goal + brief + Persona + Design System
-  versions consumed.
-- AC-8: projections retain source versions; overrides are explicit, explained,
-  and rejected on protected context.
-- AC-9: required facts carry evidence references; prohibited claims are a
+- **AC-6** a changed outcome is a new Goal revision + new brief version,
+  without history rewrite.
+- **AC-7** projections expose the exact Goal + brief + Persona + Design
+  System versions consumed.
+- **AC-8** projections retain source versions; overrides are explicit,
+  explained, and rejected on protected context.
+- **AC-9** required facts carry evidence references; prohibited claims are a
   distinct field; no generated-claims store exists.
-- AC-10: supervision constraints are annotations with no authority.
-- AC-11: cross-Workspace references are structurally rejected (model and
+- **AC-10** supervision constraints are annotations with no authority.
+- **AC-11** cross-Workspace references are structurally rejected (model and
   store).
-- AC-12: two artifact branches receive `shared_context()`-identical context,
-  differing only in explicit request/overrides.
-- AC-13: redirects produce versioned state with untouched provenance.
-- AC-14: no brief field grants authorization or bypasses Capability/Binding
-  policy (`extra='forbid'` + vocabulary guard).
+- **AC-12** two artifact branches receive `shared_context()`-identical
+  context, differing only in explicit request/overrides.
+- **AC-13** redirects produce versioned state with untouched provenance.
+- **AC-14** no brief field grants authorization or bypasses
+  Capability/Binding policy (`extra='forbid'` + vocabulary guard).
+
+Each criterion is claimed by `@pytest.mark.ac("SPEC-092826-a774/AC-N")` on
+the tests in `test_creative_brief.py` (domain model) and
+`test_creative_brief_store.py` (persistence guards).
