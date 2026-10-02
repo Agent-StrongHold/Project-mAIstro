@@ -296,23 +296,6 @@
         "quality/wiring-reads-baseline.json"
       ],
       "reason": "The wiring-reads gate measures the candidate but resolves its comparison ledger and authorizations from the trusted base, so editing the candidate copy cannot authorize new unread wiring."
-    },
-    {
-      "id": "route-permissions",
-      "kind": "specification",
-      "paths": [
-        "quality/route-permissions.json"
-      ],
-      "reason": "Reviewed per-prefix permission specification: every mounted authenticated prefix must carry an exact permission or exemption, so a branch adds rows for the routes it ships instead of rewriting a shared aggregate (same rationale as shipped-surface-truth)."
-    },
-    {
-      "id": "principal-identity-route-baselines",
-      "kind": "base_derived",
-      "paths": [
-        "quality/principal-identity-baseline.json",
-        "quality/route-permissions-baseline.json"
-      ],
-      "reason": "Per-change debt ledgers for the P0.1/P0.2 ratchets; the gates judge NEW rows against the merge base and require stale rows to be pruned, so a branch rewrites only rows for debt it actually fixed or introduced."
     }
   ]
 }
