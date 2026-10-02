@@ -679,14 +679,17 @@ if TYPE_CHECKING:
     #: so no direct read exists in this scan set. The tuple is scanner input
     #: only (never evaluated at runtime): class-level access to required
     #: dataclass fields raises AttributeError, so the references must stay
-    #: type-check-time.
+    #: type-check-time. mypy narrows this further: a field without a default
+    #: is instance-only, so only defaulted fields and properties are
+    #: class-readable; the required-field references carry targeted
+    #: ``ignore[misc]`` (same precedent as runs/model.py.__iadd__).
     _VULTURE_REFERENCES = (
-        CreativeGraphPlan.branch_request_ids,
-        CreativeGraphPlan.branch_node_ids,
+        CreativeGraphPlan.branch_request_ids,  # type: ignore[misc]
+        CreativeGraphPlan.branch_node_ids,  # type: ignore[misc]
         CreativeGraphPlan.shared_stage_node_ids,
-        InvalidationReport.goal_revision_changed,
-        InvalidationReport.unchanged_request_ids,
+        InvalidationReport.goal_revision_changed,  # type: ignore[misc]
+        InvalidationReport.unchanged_request_ids,  # type: ignore[misc]
         InvalidationReport.invalidated_node_ids,
-        ArtifactProvenanceRecord.consumed_message_decision_id,
-        ArtifactProvenanceRecord.consumed_visual_decision_id,
+        ArtifactProvenanceRecord.consumed_message_decision_id,  # type: ignore[misc]
+        ArtifactProvenanceRecord.consumed_visual_decision_id,  # type: ignore[misc]
     )
