@@ -54,6 +54,12 @@ MAX_RESULT_CHARS = 2000
 #: that run's events under their own cap.
 MAX_RESULT_CHARS_PER_RUN = 50 * MAX_RESULT_CHARS
 
+#: When this process came up. The in-memory run history starts here, so a
+#: KPI counting "runs today" from a non-durable store can say when its own
+#: coverage began instead of passing a partial count off as a whole day
+#: (#380).
+_PROCESS_BOOT_TS = time.time()
+
 
 def _bounded(result: dict[str, Any] | None) -> dict[str, Any] | None:
     """A run result with its node responses truncated to `MAX_RESULT_CHARS`.
@@ -92,6 +98,13 @@ class DagRunEvent:
     capability: str  # e.g. "create_initiative", "poll_jira"
     payload: dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
+    #: 1-based position of this event in its run's total event history.
+    #:
+    #: Assigned by `append_event` from the run's monotonic `event_seq` counter
+    #: -- NOT from `len(run.events)`, which the `MAX_EVENTS_PER_RUN` trim
+    #: shrinks -- so a consumer can tell "contiguous" from "I lost events"
+    #: even after the bounded buffer has dropped the oldest entries (#1183).
+    seq: int = 0
 
 
 @dataclass
@@ -118,6 +131,11 @@ class DagRun:
     #: neither, so a completed run never reported completion to the list
     #: endpoint (#697).
     status: str = "running"
+    #: Total events ever appended to this run. The `events` list is trimmed to
+    #: `MAX_EVENTS_PER_RUN`, so it cannot serve as a sequence identity; this
+    #: counter is what stream consumers compare against to detect a gap
+    #: (#1183). Persisted with the record.
+    event_seq: int = 0
     result: dict[str, Any] | None = None
     #: The canonical `Run` this execution is, when the caller has one.
     #:
@@ -143,6 +161,7 @@ class DagRun:
             canonical_run_id=raw.get("canonical_run_id", ""),
             workspace_id=raw.get("workspace_id", ""),
             project_id=raw.get("project_id", ""),
+            event_seq=raw.get("event_seq", 0),
         )
 
     def to_record(self) -> dict[str, Any]:
@@ -165,6 +184,7 @@ class DagRun:
             "canonical_run_id": self.canonical_run_id,
             "workspace_id": self.workspace_id,
             "project_id": self.project_id,
+            "event_seq": self.event_seq,
             "events": [asdict(ev) for ev in self.events],
         }
 
@@ -202,6 +222,7 @@ class DagRun:
                     "capability": ev.capability,
                     "payload": ev.payload,
                     "timestamp": ev.timestamp,
+                    "seq": ev.seq,
                 }
                 for ev in self.events
             ],
@@ -355,11 +376,21 @@ class DagRunStore:
         )
         run = self._runs.get(run_id)
         if run is not None:
+            # Sequence identity is assigned from the total-appended counter,
+            # never from the (trimmed) events list, so the seqs a consumer
+            # sees stay gap-detectable across `MAX_EVENTS_PER_RUN` trims
+            # (#1183).
+            run.event_seq += 1
+            ev.seq = run.event_seq
             run.events.append(ev)
             if len(run.events) > MAX_EVENTS_PER_RUN:
                 run.events = run.events[-MAX_EVENTS_PER_RUN:]
             self._persist(run)
-        # Fan out to SSE subscribers.
+        # Fan out to SSE subscribers. A bounded queue that is full drops the
+        # event -- a subscriber cannot be allowed to stall the producing run --
+        # but the drop is NOT silent: the event carries its `seq`, so the
+        # SSE route detects the discontinuity and emits an explicit resync
+        # marker instead of presenting a contiguous stream (#1183).
         for q in self._subscribers.get(run_id, []):
             with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(ev)
@@ -391,6 +422,34 @@ class DagRunStore:
     def list_runs(self, *, limit: int = 25) -> list[dict[str, Any]]:
         recent = list(self._order)[-limit:]
         return [self._runs[rid].to_summary() for rid in reversed(recent) if rid in self._runs]
+
+    def count_since(self, *, user_id: str = "", started_after: float = 0.0) -> dict[str, Any]:
+        """Count this principal's working-set runs started after `started_after`.
+
+        The dashboard's "runs today" KPI reads this rather than
+        `list_runs(limit=25)`: a default page limit would cap the KPI at 25
+        and pass that off as a day total (#380). The scan is O(working set),
+        which MAX_RUNS bounds, and the reply says what the count is a count
+        *of*: the bound, whether the store is durable, and the newest
+        matching start. A caller whose count lands on the bound knows the
+        number is a floor, not a total.
+        """
+        count = 0
+        newest: float | None = None
+        for run in self._runs.values():
+            if user_id and run.user_id != user_id:
+                continue
+            if run.started_at < started_after:
+                continue
+            count += 1
+            if newest is None or run.started_at > newest:
+                newest = run.started_at
+        return {
+            "count": count,
+            "last_started_at": newest,
+            "bound": self._order.maxlen or 0,
+            "is_durable": self._records is not None,
+        }
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         run = self._runs.get(run_id)

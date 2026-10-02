@@ -22,6 +22,7 @@ import {
   Network,
   Zap,
   Repeat,
+  ListTodo,
 } from "lucide-react";
 
 const fullNav = [
@@ -39,6 +40,8 @@ const fullNav = [
   // renders, `App.tsx` still registers it, and a repo-wide search finds no
   // other Link or NavLink to it (#129).
   { to: "/missions", icon: Target, label: "Missions" },
+  // #99: editable backlog (board/list/detail) over the canonical service.
+  { to: "/backlog", icon: ListTodo, label: "Backlog" },
   { to: "/agents", icon: Bot, label: "Agents" },
   { to: "/topology", icon: Network, label: "Topology" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },

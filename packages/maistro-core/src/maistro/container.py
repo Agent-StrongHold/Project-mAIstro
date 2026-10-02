@@ -45,6 +45,7 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -90,6 +91,11 @@ from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
 from maistro.workspaces.backlog_history.store import BacklogHistoryStore
 from maistro.workspaces.backlog_history.wiring import wire_backlog_history_store
+from maistro.workspaces.campaigns.store import CampaignStore
+from maistro.workspaces.campaigns.wiring import (
+    wire_campaign_store,
+    wire_in_memory_campaign_store,
+)
 from maistro.workspaces.store import WorkspaceStore
 from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
@@ -217,6 +223,12 @@ class Container:
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
+    #: Durable home for Workspace work campaigns and their operator controls
+    #: (#103, SPEC-092626-1831). SQLite-backed when the deployment selected
+    #: SQLite, so pin-next / pause / exclude / human-only survive a restart
+    #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
+    #: campaign tables are not part of the schema yet.
+    campaign_store: CampaignStore | None = None
     run_store: RunStore = None  # type: ignore[assignment]
     #: The product read seam over `run_store` (#1152): Workspace membership
     #: decides who may read a Run tree, and foreign ids answer like missing ones.
@@ -1837,6 +1849,14 @@ def _identity_lifecycle_stores() -> tuple[
     return InMemoryIdentityStore(), InMemoryTokenStore(), InMemorySecretStore()
 
 
+async def _wire_campaign_backend(db_pool: Any) -> CampaignStore:
+    """The campaign backend follows the SQLite pool; without one, the
+    in-memory fallback (whose wiring logs the durability cost) stands in."""
+    if db_pool is not None:
+        return await wire_campaign_store(db_pool)
+    return wire_in_memory_campaign_store()
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -1960,6 +1980,16 @@ async def create_container(
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
 
+    # The Container is the process's one composition root, so its ledger is
+    # the process default (#718): the conductor's raw-gateway fallback — the
+    # single call class that crosses no canonical Invocation authority —
+    # marks its ungoverned evidence there instead of leaving a
+    # ledger-carrying process presenting complete quota percentages while
+    # omitting that call. Authoritative recording stays on the canonical
+    # effect path above; this default only receives the fallback's
+    # non-Invocation evidence.
+    set_default_quota_tracker(quota_tracker)
+
     usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
 
     # Prompt persistence is selected by the same backend decision as the
@@ -2003,18 +2033,15 @@ async def create_container(
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
-    # Same backend decision as the Workspace store above (#516): an item's
-    # history is filed where the item's Projects are, or restart loses exactly
-    # the provenance that made the item auditable. On SQLite the journal gets
-    # its own connection (`history_conn`): its append holds a `BEGIN
-    # IMMEDIATE` across read and write, and the spine stores sharing
-    # `db_pool` commit and roll back on their own locks' cadence (#327,
-    # #1199).
     backlog_history_store = await wire_backlog_history_store(
         history_conn,
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
+    # Campaigns ride the SQLite pool when there is one; a PostgreSQL
+    # deployment gets the in-memory fallback plus a startup warning naming
+    # the cost, rather than a silent durability lie (#103, AC-5).
+    campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
     # reconcile, or the tiers cannot answer a restart the same way.
@@ -2196,8 +2223,13 @@ async def create_container(
     capability_invocation_store = await _wire_capability_invocations(
         pg_pool=pg_pool, db_pool=db_pool
     )
+    # The container's own canonical recording path (#718): every governed
+    # effect dispatched through this context records quota evidence through
+    # the Invocation authority, on the same durable ledger selected above.
     capability_effects = new_effect_context(
         invocation_store=capability_invocation_store,
+        usage_log=get_default_usage_log(),
+        quota_tracker=quota_tracker,
         # The container is an explicit composition root. Bare contexts remain
         # read-only until an application supplies policy authority.
         policy_evaluator=binding_scope_policy,
@@ -2249,6 +2281,7 @@ async def create_container(
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         backlog_history_store=backlog_history_store,
+        campaign_store=campaign_store,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
         task_admitter=task_admitter,
@@ -2520,6 +2553,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_invocation_evidence",
     "quota_usage_events",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed

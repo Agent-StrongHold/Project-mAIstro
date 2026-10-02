@@ -26,6 +26,7 @@ from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, Age
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
+from services.governed_model import dag_node_runtime
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
 from services.scan_continuations import scan_continuation
@@ -366,6 +367,8 @@ def _resolver(
     on_response: OnResponseHook | None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
     effect_context: Any = None,
+    governed_runtime: Any = None,
+    progress: Any = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -380,6 +383,8 @@ def _resolver(
             on_response=on_response,
             llm_builder=llm_builder,
             effect_context=effect_context,
+            governed_runtime=governed_runtime,
+            progress=progress,
         )
 
     return resolve
@@ -401,6 +406,7 @@ def _recovery_resolver(run: Run):
     if execution_mode not in {"interactive", "autonomous"}:
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
+    container = _container()
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -415,9 +421,8 @@ def _recovery_resolver(run: Run):
         execution_mode=execution_mode,
         on_response=None,
         llm_builder=None,
-        effect_context=(
-            getattr(_container(), "capability_effects", None) if _container() else None
-        ),
+        effect_context=(getattr(container, "capability_effects", None) if container else None),
+        governed_runtime=dag_node_runtime(container),
     )
 
 
@@ -516,12 +521,22 @@ async def execute_dag(
     user_credentials: dict[str, str] | None = None,
     execution_mode: str = "autonomous",
     on_response: OnResponseHook | None = None,
+    on_event: Callable[[dict[str, Any]], Any] | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
     scope: DagExecutionScope | None = None,
 ) -> dict[str, Any]:
-    """Run a shipped Hive DAG as one canonical durable Graph Run."""
+    """Run a shipped Hive DAG as one canonical durable Graph Run.
+
+    ``on_event`` (#1183) is an optional live per-node progress sink: it is
+    awaited with one event dict per node transition (``node_started`` /
+    ``node_completed`` / ``node_failed``) carrying the executing NodeRun's
+    canonical identity (``run_id``/``node_run_id``/``attempt_id``). It is a
+    presentation seam only -- it can neither change traversal nor outcomes,
+    and a raising sink is suppressed by the node adapter. Durable recovery
+    never attaches one: there is no live stream to serve.
+    """
     if scope is None:
         # Keep the user parameter only as a consistency check for old callers;
         # it is never an authorization source.
@@ -560,10 +575,11 @@ async def execute_dag(
         )
         admitted_run_id = admitted.run_id
 
-    record = await run_durable_graph(
-        graph,
-        store=get_run_store(),
-        node_resolver=_resolver(
+    def _build_resolver() -> Any:
+        # One Container read per execution: the effect authority and the
+        # governed model runtime (#718) come from the same live composition.
+        container = _container()
+        return _resolver(
             raw_by_id,
             task_desc=task_desc,
             node_env=_node_env(
@@ -574,10 +590,15 @@ async def execute_dag(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
-            effect_context=(
-                getattr(_container(), "capability_effects", None) if _container() else None
-            ),
-        ),
+            progress=on_event,
+            effect_context=(getattr(container, "capability_effects", None) if container else None),
+            governed_runtime=dag_node_runtime(container),
+        )
+
+    record = await run_durable_graph(
+        graph,
+        store=get_run_store(),
+        node_resolver=_build_resolver(),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,
         run_store=canonical_run_store,
