@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from maistro.agents.circuit_breaker import circuit_breaker_from_settings
+from maistro.agents.circuit_breaker import domain_bank_from_settings
 from maistro.config.settings import Settings
 from maistro.security.resource_policy import (
     _FLOORS,
@@ -135,9 +135,9 @@ def test_circuit_breaker_uses_validated_effective_settings() -> None:
         circuit_breaker_failure_threshold=2,
         circuit_breaker_recovery_timeout_s=90,
     )
-    breaker = circuit_breaker_from_settings(settings)
-    assert breaker.failure_threshold == 2
-    assert breaker.recovery_timeout == 90
+    bank = domain_bank_from_settings(settings)
+    assert bank.failure_threshold == 2
+    assert bank.recovery_timeout == 90
 
 
 def test_the_suite_env_would_hide_these_refusals_without_the_fixture(

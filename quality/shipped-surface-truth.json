@@ -1600,7 +1600,7 @@
       "handler": "stream_dag_run",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming is a frame facade over canonical_dag_runner.execute_dag, so the button's run is one interactive durable Run/NodeRun/Attempt in the authorized Workspace/Project, audited as dag_run, and the same dag_run_store projection POST /{dag_id}/run records is written under the canonical run_id as soon as the Run settles; an unexpected (non-Run) failure frame carries only the exception kind, while a failed Run reports its canonical error exactly as the HTTP route does (#766)",
+      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming streams one interactive durable Run/NodeRun/Attempt live in the authorized Workspace/Project, audited as dag_run: node frames are emitted while the Run is in flight, each durably recorded into the same dag_run_store projection POST /{dag_id}/run records (under the canonical run_id) BEFORE its frame is sent and stamped with the projection's per-run sequence number; idle stretches carry bounded heartbeat frames, a consumer that stops reading gets an explicit resync frame plus a canonical-truth replay instead of silent loss, and closing the socket cancels the in-flight Run as #355 documents; an unexpected (non-Run) failure frame carries only the exception kind, while a failed Run reports its canonical error exactly as the HTTP route does (#766)",
       "effect_owner": "services.dag_execution_scope.authorize_hive_dag_scope -> services.graph_runner.execute_dag_streaming -> services.canonical_dag_runner.execute_dag (durable Run/NodeRun/Attempt) + services.dag_run_store projection"
     },
     {
@@ -2152,6 +2152,86 @@
       "production_enabled": true,
       "reason": "adds the artifact to the vault",
       "effect_owner": "turing artifact vault"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_campaign",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a versioned campaign policy record (owner-only); grants no permission and touches no Goal",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/policy",
+      "handler": "update_policy",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a new campaign policy_version, keeping prior versions for audit (owner-only)",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/controls",
+      "handler": "set_control",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "writes a durable pin-next/pause/exclude/human-only operator control, attributed to the actor",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/controls/{control_id}/clear",
+      "handler": "clear_control",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears an operator control as its own recorded decision (clearing is a record, not a deletion)",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "PUT",
+      "route": "/{campaign_id}/items/{item_id}",
+      "handler": "set_item_record",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "replaces the item's per-campaign mode override and explicit human priority; never writes the BacklogItem or Goal",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/items/{item_id}/park",
+      "handler": "park_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "parks an item with evidence, removing it from the eligible set until an attributed unpark",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/parks/{park_id}/unpark",
+      "handler": "unpark_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "attributed un-park decision returning the item to the eligible set",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/usage",
+      "handler": "record_usage",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records observed budget consumption against the campaign's stop conditions",
+      "effect_owner": "campaign store + campaign audit"
     }
   ],
   "frontend_surfaces": [
@@ -2374,6 +2454,14 @@
       "production_enabled": true,
       "reason": "decides a review through the real backend route",
       "effect_owner": "routes/rsi.py decide_review"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "signal": "timer-status-simulation",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "owner_issue": 359,
+      "reason": "the scanned timer is the #359 backoff re-arm (setTimeout(() => void run(false), backoffDelayMs())), which polls real backend state; the status words the detector matches inside its lazily captured body are the runs-list JSX (`r.status === 'running'`), which renders the backend's own status rather than a client-timer success animation. Unresolved only because the detector cannot yet distinguish a re-arm timer from a success-animation timer, not because any state is faked."
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Settings.tsx",

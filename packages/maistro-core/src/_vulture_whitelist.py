@@ -10,8 +10,22 @@ Invocation execution API.
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.state import PersistedStore
+from maistro.workspaces.campaigns.model import (
+    Actor,
+    AreaRef,
+    BacklogItemView,
+    CampaignDefinition,
+    ControlRecord,
+    ItemPolicyRecord,
+    ParkEvidence,
+    ParkRecord,
+    ParkUnpark,
+)
+from maistro.workspaces.campaigns.sqlite_store import SqliteCampaignStore
+from maistro.workspaces.campaigns.store import CampaignSelector
 
 # OpenTelemetry API keywords mirrored by the Protocol signature in
 # maistro.observability.telemetry_safety.TelemetryTracer. The keywords are
@@ -42,4 +56,46 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
+    # Workspace work campaigns (#103, SPEC-092626-1831). Pydantic invokes the
+    # validators; the Actor-valued fields are serialization surface written
+    # through model_dump_json and read by consumers outside this scan (the
+    # HTTP API responses and the importing product's UI).
+    Actor._require_identity,
+    AreaRef._require_value,
+    BacklogItemView._require_identity,
+    CampaignDefinition._require_campaign_text,
+    ControlRecord._scope_matches_kind,
+    ParkEvidence._require_reason,
+    CampaignDefinition.created_by,
+    ControlRecord.set_by,
+    ControlRecord.cleared_by,
+    ItemPolicyRecord.updated_by,
+    ParkRecord.parked_by,
+    ParkUnpark.unparked_by,
+    # The retention deletion path is resolved dynamically by
+    # scripts/check-durable-table-inventory.py from
+    # quality/durable-table-retention.json; no scanned call site names it.
+    SqliteCampaignStore.delete_campaign,
+    # The selection entrypoint is the contract's public face (#804 persistent
+    # Workspace Agent now, #50 RSI later). Consumers live outside this scan
+    # until those issues land; the contract ships first by design.
+    CampaignSelector.eligible_items,
+    CampaignSelector.select_next,
+    # EPIC M4-E (#25): the closed evolvable-harness-component vocabulary and
+    # the proposal's Pydantic model validators. Members are the serialized
+    # values an optimizer's proposal carries (the same posture as the ledger's
+    # schema-enum-member rule: enum members are serialized values that need
+    # not appear as direct reads in package-local static analysis); the
+    # validators run at proposal construction. Their in-tree consumers are the
+    # #783/#822 child streams, outside this scan until those issues land.
+    HarnessTargetKind.PROMPT,
+    HarnessTargetKind.TOOL_SELECTION,
+    HarnessTargetKind.SKILLS,
+    HarnessTargetKind.MEMORY_RETRIEVAL_POLICY,
+    HarnessTargetKind.PLANNING_STRATEGY,
+    HarnessTargetKind.SUBAGENT_DEFINITIONS,
+    HarnessTargetKind.GRAPH_TOPOLOGY,
+    HarnessTargetKind.AUTHORIZED_CODE,
+    HarnessEvolutionProposal._identifier_fields_are_not_blank,
+    HarnessEvolutionProposal._candidate_edges_reference_candidate_nodes,
 )

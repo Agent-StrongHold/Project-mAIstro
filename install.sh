@@ -12,10 +12,27 @@ set -euo pipefail
 # Where this script lives, so its helpers resolve whatever the caller's cwd is.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Effective port configuration (#361) resolves in one place, with Compose
+# interpolation's own precedence:
+#   1. process environment (explicit override)
+#   2. $ENV_FILE (what Compose reads when the environment is unset)
+#   3. these defaults
+# BIND_HOST/PORT below are the *requested* values used when writing a fresh
+# .env; resolve_effective_config() recomputes the effective set after
+# sync_env_file, and every consumer (the compose invocation, health probes,
+# the first-run bootstrap callback, printed URLs) reads only that resolved
+# set — then start_engine reads the published mapping back from compose
+# before polling, so what is probed and printed is what compose bound.
+# The loopback bind is the supported local-install posture, not debug code
+# (devskim DS162092 matches the literal below).
+DEFAULT_BIND_HOST="127.0.0.1" # devskim: ignore DS162092 until 2027-12-31
+DEFAULT_ENGINE_PORT="8000"
+DEFAULT_CONDUCTOR_PORT="8101"
+
 COMPOSE_FILE="${MAISTRO_COMPOSE_FILE:-docker-compose.yml}"
 ENV_FILE="${MAISTRO_ENV_FILE:-.env}"
-BIND_HOST="${MAISTRO_BIND_HOST:-127.0.0.1}"
-PORT="${MAISTRO_PORT:-8000}"
+BIND_HOST="${MAISTRO_BIND_HOST:-$DEFAULT_BIND_HOST}"
+PORT="${MAISTRO_PORT:-$DEFAULT_ENGINE_PORT}"
 PLAN_DIR="${MAISTRO_INSTALL_PLAN_DIR:-.maistro-install}"
 ANSWERS_FILE="${MAISTRO_INSTALL_ANSWERS:-}"
 SKIP_WIZARD="${MAISTRO_SKIP_WIZARD:-0}"
@@ -24,6 +41,13 @@ AUTO_INSTALL_DEPS="${MAISTRO_AUTO_INSTALL_DEPS:-0}"
 MACOS_RUNTIME="${MAISTRO_MACOS_RUNTIME:-}"
 INSTALL_CLI="${MAISTRO_INSTALL_CLI:-1}"
 OPEN_BROWSER="${MAISTRO_OPEN_BROWSER:-1}"
+
+# How this install was launched — recorded so `maistro upgrade` can report it.
+# get.sh sets MAISTRO_INSTALL_SURFACE=curl; a direct `./install.sh` is a checkout.
+INSTALL_SURFACE="${MAISTRO_INSTALL_SURFACE:-checkout}"
+# Marker an archive install leaves at the install root (get.sh writes it;
+# install.sh reads it to classify archive vs. source-tree upgrades).
+ARCHIVE_MARKER="${MAISTRO_ARCHIVE_MARKER:-.maistro-archive-install}"
 
 # Docker API floor the embedded docker CLI can negotiate (Engine 25 exposes
 # API 1.44; Engine 24 tops out at 1.43). The engine images COPY the CLI from
@@ -112,14 +136,22 @@ Options:
   -h, --help          Show this help.
 
 Environment:
-  MAISTRO_DIR, MAISTRO_PORT, MAISTRO_BIND_HOST, MAISTRO_INSTALL_ANSWERS,
+  MAISTRO_DIR, MAISTRO_PORT, HIVE_PORT, MAISTRO_BIND_HOST, MAISTRO_INSTALL_ANSWERS,
   MAISTRO_SKIP_WIZARD, MAISTRO_START_STACK, MAISTRO_COMPOSE_FILE,
   MAISTRO_AUTO_INSTALL_DEPS (1 = install deps on macOS without prompting),
   MAISTRO_MACOS_RUNTIME (colima | docker-desktop = preselect, skip the prompt),
   MAISTRO_INSTALL_CLI (0 = do not install the host 'maistro' CLI),
   MAISTRO_OPEN_BROWSER (0 = do not open the Conductor UI when ready),
   MAISTRO_IMAGE_TAG (container tag the image_pull compose pins to; defaults to
-    the release tag this checkout sits on, else 'latest').
+    the release tag this checkout sits on, else 'latest'),
+  MAISTRO_SOURCE_URL (upstream repo URL recorded in the install manifest for
+    archive checkouts; get.sh sets it, since archives carry no git metadata).
+
+  Ports and the bind address resolve like Compose interpolation: the process
+  environment wins, then the .env file, then the built-in defaults (engine
+  8000, Conductor 8101, the loopback bind default). The installer reads
+  the published mapping back from compose before health polling, so the
+  probes and the printed URLs always follow the effective ports.
 
 macOS:
   When no container runtime is found, the installer asks whether to install
@@ -257,6 +289,279 @@ env_get() {
     fi
 }
 
+# --- One resolved port configuration (#361) ---------------------------------
+# Compose interpolates ${MAISTRO_BIND_HOST}, ${MAISTRO_PORT} and ${HIVE_PORT}
+# from the process environment first, then the .env file, then its in-file
+# default. The installer used to read only the process environment, so a port
+# customized in .env started correctly and then failed health polling and
+# printed the wrong URL. Every installer consumer now reads one resolution
+# with Compose's own precedence, and start_engine reads the published
+# mapping back from compose before polling.
+
+# Match Compose's env-file parsing for the values this installer resolves:
+# an inline comment counts only when a whitespace precedes the '#', and one
+# level of matching quotes is removed.
+normalize_env_value() {
+    local value
+    value="$(printf '%s' "$1" | sed -e 's/[[:space:]]\{1\}[[:space:]]*#.*$//' -e 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$value" in
+        \"*\") value="${value#\"}"; value="${value%\"}" ;;
+        \'*\') value="${value\'}"; value="${value%\'}" ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+# Resolve Compose interpolation over one normalized value (#361 review):
+# ${NAME}, ${NAME:-default}, ${NAME-default} and $NAME, resolved the way
+# Compose does -- process environment first, then $ENV_FILE -- so an existing
+# .env line like MAISTRO_PORT=${DEV_PORT:-9001} validates as 9001 instead of
+# failing port validation on the literal expression. `$$` is Compose's
+# literal-$ escape. One pass over the value: substituted text is not
+# re-scanned, matching Compose. $self names the key currently being resolved,
+# so a .env self-reference like HIVE_PORT=\${HIVE_PORT:-9101} falls through to
+# its default instead of reading back its own expression. An unbalanced ${ is
+# left literal -- Compose rejects it at parse time -- and the numeric port
+# check below still refuses anything unresolved.
+resolve_compose_value() {
+    local self="$1" value="$2" out="" rest="$2" sentinel=$'\x01'
+    local head body name op default resolved present
+    value="${value//\$\$/$sentinel}"
+    rest="$value"
+    while [[ "$rest" == *'$'* ]]; do
+        head="${rest%%\$*}"
+        rest="${rest#*\$}"
+        case "$rest" in
+            '{'*)
+                body="${rest#\{}"
+                case "$body" in
+                    *'}'*) body="${body%%\}*}"; rest="${rest#*\}}" ;;
+                    *) out+="${head}\${"; rest="${rest#\{}"; break ;;
+                esac
+                name="${body%%:-*}"
+                if [[ "$name" == "$body" ]]; then
+                    name="${body%%-*}"
+                    if [[ "$name" == "$body" ]]; then
+                        op=""; default=""
+                    else
+                        op="-"; default="${body#"$name"-}"
+                    fi
+                else
+                    op=":-"; default="${body#"$name":-}"
+                fi
+                if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                    out+="${head}\${${body}}"
+                    continue
+                fi
+                present=0; resolved=""
+                if [[ "$name" == "$self" ]]; then
+                    : # self-reference: never read the key's own .env entry
+                elif [[ -n "${!name+x}" ]]; then
+                    present=1; resolved="${!name}"
+                elif env_has "$name"; then
+                    resolved="$(normalize_env_value "$(env_get "$name" || true)")"
+                    present=1
+                fi
+                case "$op" in
+                    ':-') [[ -z "$resolved" ]] && resolved="$default" ;;
+                    '-')  (( present )) || resolved="$default" ;;
+                    *)    (( present )) || resolved="" ;;
+                esac
+                out+="${head}${resolved}"
+                ;;
+            [A-Za-z_]*)
+                [[ "$rest" =~ ^([A-Za-z_][A-Za-z0-9_]*)(.*)$ ]]
+                name="${BASH_REMATCH[1]}"
+                rest="${BASH_REMATCH[2]}"
+                resolved=""
+                if [[ "$name" != "$self" ]]; then
+                    if [[ -n "${!name+x}" ]]; then
+                        resolved="${!name}"
+                    elif env_has "$name"; then
+                        resolved="$(normalize_env_value "$(env_get "$name" || true)")"
+                    fi
+                fi
+                out+="${head}${resolved}"
+                ;;
+            *)
+                out+="${head}\$"
+                if [[ -n "$rest" ]]; then
+                    out+="${rest:0:1}"
+                    rest="${rest:1}"
+                fi
+                ;;
+        esac
+    done
+    value="${out}${rest}"
+    printf '%s\n' "${value//"$sentinel"/\$}"
+}
+
+# Resolve one setting with Compose interpolation's precedence: process
+# environment, then $ENV_FILE, then the documented default.
+setting_value() {
+    local key="$1" default="$2" value=""
+    if [[ -n "${!key:-}" ]]; then
+        printf '%s\n' "${!key}"
+        return 0
+    fi
+    value="$(normalize_env_value "$(env_get "$key" || true)")"
+    if [[ -n "$value" ]]; then
+        value="$(resolve_compose_value "$key" "$value")"
+        # An entry that resolves to nothing (e.g. ${MISSING:-}) falls through
+        # to the default, like a blank .env line does.
+        if [[ -n "$value" ]]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+    fi
+    printf '%s\n' "$default"
+}
+
+# Where a setting's effective value came from. Non-secret by construction —
+# this exact string is printed in the port diagnostics (#361).
+setting_source() {
+    local key="$1"
+    if [[ -n "${!key:-}" ]]; then
+        printf 'environment %s' "$key"
+        return 0
+    fi
+    if [[ -n "$(normalize_env_value "$(env_get "$key" || true)")" ]]; then
+        printf '.env %s' "$key"
+        return 0
+    fi
+    printf 'default'
+}
+
+# A resolved port must be a number Compose will accept. A bad value fails
+# here, naming its source, instead of surfacing later as a false health
+# failure or a wrong printed URL (#361). The bounds check parses in base 10
+# explicitly: bare arithmetic would read leading zeroes as octal, so `08`
+# only failed via an "value too great for base" diagnostic and `00065536`
+# slipped through as octal 27486.
+validate_port_value() {
+    local key="$1" value="$2" source_label="$3"
+    if [[ ! "$value" =~ ^[0-9]+$ ]] || ((10#$value < 1 || 10#$value > 65535)); then
+        fail "Port setting ${key} resolved to '${value}' (source: ${source_label}); expected a number between 1 and 65535."
+    fi
+}
+
+# Compose's host-address:port syntax brackets IPv6 literals ([::1]:8000:8000).
+# Bracket a bare literal so the same value works for the compose mapping and
+# the printed URLs; anything else (IPv4, a bracketed literal, a hostname)
+# passes through unchanged.
+normalize_bind_host() {
+    local host="$1"
+    if [[ "$host" == *:* && "$host" != \[* ]]; then
+        host="[${host}]"
+    fi
+    printf '%s\n' "$host"
+}
+
+http_base_url() {
+    local host="$1" port="$2"
+    if [[ "$host" == *:* && "$host" != \[* ]]; then
+        host="[${host}]"
+    fi
+    # The printed/probed URL is the operator's own bind address; TLS terminates
+    # at an optional fronting proxy, so the local scheme is http by design
+    # (devskim DS137138 matches the scheme literal below).
+    printf 'http://%s:%s' "$host" "$port" # devskim: ignore DS137138 until 2027-12-31
+}
+
+refresh_base_urls() {
+    ENGINE_BASE_URL="$(http_base_url "$ENGINE_BIND_HOST" "$ENGINE_PORT")"
+    CONDUCTOR_BASE_URL="$(http_base_url "$ENGINE_BIND_HOST" "$CONDUCTOR_PORT")"
+}
+
+# The one resolved port configuration (#361). Sets ENGINE_BIND_HOST,
+# ENGINE_PORT, CONDUCTOR_PORT (+ ENGINE_BASE_URL / CONDUCTOR_BASE_URL) and
+# exports them for the compose invocation, so interpolation, probes,
+# callbacks, and printed URLs cannot disagree about a port. Diagnostics name
+# the non-secret source of each value.
+resolve_effective_config() {
+    local bind_source port_source conductor_source
+    bind_source="$(setting_source MAISTRO_BIND_HOST)"
+    port_source="$(setting_source MAISTRO_PORT)"
+    conductor_source="$(setting_source HIVE_PORT)"
+
+    ENGINE_BIND_HOST="$(normalize_bind_host "$(setting_value MAISTRO_BIND_HOST "$DEFAULT_BIND_HOST")")"
+    ENGINE_PORT="$(setting_value MAISTRO_PORT "$DEFAULT_ENGINE_PORT")"
+    validate_port_value MAISTRO_PORT "$ENGINE_PORT" "$port_source"
+    CONDUCTOR_PORT="$(setting_value HIVE_PORT "$DEFAULT_CONDUCTOR_PORT")"
+    validate_port_value HIVE_PORT "$CONDUCTOR_PORT" "$conductor_source"
+
+    export MAISTRO_BIND_HOST="$ENGINE_BIND_HOST"
+    export MAISTRO_PORT="$ENGINE_PORT"
+    export HIVE_PORT="$CONDUCTOR_PORT"
+    refresh_base_urls
+
+    info "Engine bind address ${ENGINE_BIND_HOST} (source: ${bind_source})"
+    info "Engine port ${ENGINE_PORT} (source: ${port_source})"
+    info "Conductor port ${CONDUCTOR_PORT} (source: ${conductor_source})"
+}
+
+# Read the published host port back from the compose front-end (#361): the
+# authoritative answer to which port the stack actually bound, including any
+# override file's remap (the mechanism a reverse-proxy-fronted deployment
+# exercises too). Echoes the front-end's host:port and returns 0; returns 1
+# when it cannot answer (container not up, unsupported subcommand) and the
+# caller falls back to the resolved configuration, saying so.
+compose_published_port() {
+    local service="$1" private_port="$2"
+    "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" port "$service" "$private_port" 2>/dev/null
+}
+
+# Compose's `port` front-end reports wildcard bindings (0.0.0.0, [::]) that a
+# browser cannot open; loopback is the address that reaches them. A concrete
+# host is kept as-is, so a mapping like 127.0.0.2:9005 from an override file
+# probes and prints at 127.0.0.2, the address the stack actually bound.
+binding_host_for_urls() {
+    case "$1" in
+        # Rewriting the wildcard to loopback is the point of this branch, not
+        # debug code (devskim DS162092 matches the literal below).
+        0.0.0.0|::|\[::\]) printf '127.0.0.1\n' ;; # devskim: ignore DS162092 until 2027-12-31
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# Poll what compose actually bound, not what we resolved (#361). A successful
+# read-back overrides the resolved host and port; a failed one keeps the
+# resolution and says why. The wildcard address a front-end reports for an
+# any-host binding becomes loopback; a concrete host from the mapping is
+# retained verbatim so probes and printed URLs cannot disagree with Compose.
+read_back_effective_ports() {
+    local published engine_read=false conductor_read=false
+
+    published="$(compose_published_port maistro-engine 8000 || true)"
+    if [[ -n "$published" ]]; then
+        ENGINE_BIND_HOST="$(binding_host_for_urls "${published%:*}")"
+        ENGINE_PORT="${published##*:}"
+        validate_port_value MAISTRO_PORT "$ENGINE_PORT" "compose mapping (${published})"
+        engine_read=true
+    fi
+
+    published="$(compose_published_port hive-conductor 8101 || true)"
+    if [[ -n "$published" ]]; then
+        ENGINE_BIND_HOST="$(binding_host_for_urls "${published%:*}")"
+        CONDUCTOR_PORT="${published##*:}"
+        validate_port_value HIVE_PORT "$CONDUCTOR_PORT" "compose mapping (${published})"
+        conductor_read=true
+    fi
+
+    if [[ "$engine_read" == true || "$conductor_read" == true ]]; then
+        refresh_base_urls
+        export MAISTRO_BIND_HOST="$ENGINE_BIND_HOST"
+        export MAISTRO_PORT="$ENGINE_PORT"
+        export HIVE_PORT="$CONDUCTOR_PORT"
+    fi
+
+    [[ "$engine_read" == true ]] \
+        || warn "Could not read the engine's published port back from compose; polling the resolved configuration (${ENGINE_PORT})."
+    [[ "$conductor_read" == true ]] \
+        || warn "Could not read the Conductor's published port back from compose; polling the resolved configuration (${CONDUCTOR_PORT})."
+
+    info "Probing engine at ${ENGINE_BASE_URL} and Conductor at ${CONDUCTOR_BASE_URL}."
+}
+
 # Every write to $ENV_FILE goes through scripts/secret_env.py (#357).
 #
 # `printf >>` and `cat >` create the file under the caller's umask -- 0644 on a
@@ -361,6 +666,7 @@ TASK_DELEGATION_KEY=${delegation_key}
 REQUIRE_AUTH=true
 MAISTRO_BIND_HOST=${BIND_HOST}
 MAISTRO_PORT=${PORT}
+HIVE_PORT=${HIVE_PORT:-$DEFAULT_CONDUCTOR_PORT}
 
 # Database
 POSTGRES_PASSWORD=${db_pass}
@@ -458,6 +764,7 @@ repair_existing_env() {
     append_env_once REQUIRE_AUTH "true"
     append_env_once MAISTRO_BIND_HOST "$BIND_HOST"
     append_env_once MAISTRO_PORT "$PORT"
+    append_env_once HIVE_PORT "${HIVE_PORT:-$DEFAULT_CONDUCTOR_PORT}"
     append_env_once POSTGRES_PASSWORD "$db_pass"
     fill_env_value DB_PASSWORD "$db_pass"
     append_env_once DATABASE_URL "postgresql://maistro:${db_pass}@postgres:5432/maistro"
@@ -957,23 +1264,35 @@ delivery_mode() {
     grep -o '"mode"[[:space:]]*:[[:space:]]*"[a-z_]*"' "$f" | head -1 | grep -o '[a-z_]*"$' | tr -d '"'
 }
 
+# Effective delivery mode the stack actually uses: image_pull only when the
+# wizard selected it AND the pinned images are published (standalone compose
+# file present); anything else — wizard skipped, images not ready — falls back
+# to a source build. Kept as a pure helper so write_install_manifest() can
+# record it before compose_files() runs in main() (and even when --no-start
+# skips it), so `maistro upgrade` replays the same delivery path (#353).
+effective_delivery_mode() {
+    if [[ "$(delivery_mode)" == "image_pull" \
+        && "${MAISTRO_IMAGE_PULL_READY:-0}" == "1" \
+        && -f "$PLAN_DIR/compose.install.yml" ]]; then
+        echo "image_pull"
+    else
+        echo "source_build"
+    fi
+}
+
 compose_files() {
     COMPOSE_FILES=(-f "$COMPOSE_FILE")
     COMPOSE_UP_ARGS=(up -d --build)
-    local mode
-    mode="$(delivery_mode)"
-    if [[ "$mode" == "image_pull" ]]; then
-        if [[ "${MAISTRO_IMAGE_PULL_READY:-0}" == "1" && -f "$PLAN_DIR/compose.install.yml" ]]; then
-            # Standalone file: no build: keys anywhere, and no --build — pinned
-            # images only. --project-directory keeps .env interpolation and
-            # relative bind mounts anchored at the repo root.
-            COMPOSE_FILES=(--project-directory "$PWD" -f "$PLAN_DIR/compose.install.yml")
-            COMPOSE_UP_ARGS=(up -d)
-            info "Delivery: image_pull — pinned images (tag ${MAISTRO_IMAGE_TAG}) from $PLAN_DIR/compose.install.yml (no local build)."
-        else
-            warn "delivery_mode=image_pull selected, but pinned images are not published yet."
-            warn "Falling back to source build (identical runtime behavior, longer install)."
-        fi
+    if [[ "$(effective_delivery_mode)" == "image_pull" ]]; then
+        # Standalone file: no build: keys anywhere, and no --build — pinned
+        # images only. --project-directory keeps .env interpolation and
+        # relative bind mounts anchored at the repo root.
+        COMPOSE_FILES=(--project-directory "$PWD" -f "$PLAN_DIR/compose.install.yml")
+        COMPOSE_UP_ARGS=(up -d)
+        info "Delivery: image_pull — pinned images (tag ${MAISTRO_IMAGE_TAG}) from $PLAN_DIR/compose.install.yml (no local build)."
+    elif [[ "$(delivery_mode)" == "image_pull" ]]; then
+        warn "delivery_mode=image_pull selected, but pinned images are not published yet."
+        warn "Falling back to source build (identical runtime behavior, longer install)."
     fi
     local override="$PLAN_DIR/compose.override.yml"
     if [[ -f "$override" ]]; then
@@ -1125,9 +1444,21 @@ start_engine() {
     info "Starting maistro-engine..."
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_UP_ARGS[@]}"
 
+    # Read the mapping compose actually bound back before polling (#361):
+    # what we resolved is the fallback, what compose published is the truth.
+    read_back_effective_ports
+
+    wait_for_engine_health
+    wait_for_conductor_health
+}
+
+# Poll the resolved-and-read-back configuration (#361). The URLs come from the
+# one resolved port configuration — never from the process environment
+# directly — so a port customized in .env is probed where it actually binds.
+wait_for_engine_health() {
     info "Waiting for engine health..."
     local attempts=0
-    until http_ok "http://${BIND_HOST}:${PORT}/health/live" || http_ok "http://${BIND_HOST}:${PORT}/health"; do
+    until http_ok "${ENGINE_BASE_URL}/health/live" || http_ok "${ENGINE_BASE_URL}/health"; do
         attempts=$((attempts + 1))
         if [[ $attempts -gt 60 ]]; then
             fail "Engine did not become healthy. Check: ${COMPOSE_CMD[*]} ${COMPOSE_FILES[*]} logs maistro-engine"
@@ -1135,10 +1466,12 @@ start_engine() {
         sleep 2
     done
     ok "Engine healthy."
+}
 
+wait_for_conductor_health() {
     info "Waiting for Conductor UI health..."
-    attempts=0
-    until http_ok "http://${BIND_HOST}:${HIVE_PORT:-8101}/health/ready"; do
+    local attempts=0
+    until http_ok "${CONDUCTOR_BASE_URL}/health/ready"; do
         attempts=$((attempts + 1))
         if [[ $attempts -gt 60 ]]; then
             fail "Conductor did not become ready. Check: ${COMPOSE_CMD[*]} ${COMPOSE_FILES[*]} logs hive-conductor"
@@ -1194,7 +1527,7 @@ secret_file_run() {
 # retry. Without a staged file, account setup continues in the web UI.
 bootstrap_first_run() {
     local creds="${MAISTRO_BOOTSTRAP_CREDENTIALS_FILE:-$PLAN_DIR/bootstrap-credentials.json}"
-    local base="http://${BIND_HOST}:${HIVE_PORT:-8101}"
+    local base="$CONDUCTOR_BASE_URL"
 
     if [[ ! -f "$creds" ]]; then
         info "No staged bootstrap credentials — account setup continues in the web UI."
@@ -1207,6 +1540,10 @@ bootstrap_first_run() {
 
     ensure_python
 
+    # Not a second opinion about first-run state: this probes the same
+    # authority the SPA AuthGuard polls (routes/setup.py::_is_setup_complete
+    # via GET /v1/setup/status), so the terminal path and the browser path
+    # cannot disagree about whether setup still needs doing (#443).
     if curl -sf "$base/v1/setup/status" 2>/dev/null | grep -q '"setup_complete"[[:space:]]*:[[:space:]]*true'; then
         info "Setup already complete — removing staged credentials (consumed)."
         purge_file "$creds"
@@ -1319,6 +1656,77 @@ note_residual_risk() {
     info "the original blocks may persist. If your threat model includes"
     info "recovery from this disk, rely on full-disk encryption and key"
     info "destruction rather than on this step."
+}
+
+# Durable install manifest consumed by `maistro upgrade`. Records the install
+# type (git/tag/archive), the authoritative root, the release ref and the
+# image tag so upgrade resolves its target from metadata — never from the
+# caller's current directory (#353). Written once install.sh has settled the
+# source tree and credentials; get.sh delegates here, so every supported curl
+# and direct-checkout install produces one.
+write_install_manifest() {
+    local manifest_dir="$PLAN_DIR"
+    local manifest="$manifest_dir/install-manifest.json"
+    mkdir -p "$manifest_dir" 2>/dev/null || true
+    local itype="" ref="" rev="" source_url="" ts version_json
+
+    if [[ -f "$ARCHIVE_MARKER" ]]; then
+        itype="archive"
+        ref="$MAISTRO_IMAGE_TAG"
+        version_json="null"
+        # An archive checkout has no git metadata to derive the upstream from,
+        # so get.sh hands the repo URL over explicitly (same delegation as
+        # MAISTRO_IMAGE_TAG). Without it, `maistro upgrade` preflight rejects
+        # every archive install before running any command.
+        source_url="$(sed 's#\.git$##' <<< "${MAISTRO_SOURCE_URL:-}")"
+    elif git rev-parse --git-dir >/dev/null 2>&1; then
+        rev="$(git rev-parse HEAD 2>/dev/null || true)"
+        source_url="$(git remote get-url origin 2>/dev/null | sed 's#\.git$##' || true)"
+        if git describe --tags --exact-match >/dev/null 2>&1; then
+            itype="tag"
+            ref="$(git describe --tags --exact-match 2>/dev/null || true)"
+            version_json="\"$ref\""
+        else
+            itype="git"
+            ref="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+            version_json="null"
+        fi
+    else
+        warn "Could not classify the install type (no git checkout or archive marker); \
+writing no install manifest. 'maistro upgrade' will fall back to detection."
+        return 0
+    fi
+
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    cat > "$manifest" <<MANIFEST_EOF
+{
+  "kind": "maistro_install_manifest",
+  "schema_version": 1,
+  "install_type": "$itype",
+  "install_root": "$PWD",
+  "install_surface": "$INSTALL_SURFACE",
+  "version": $version_json,
+  "ref": "$ref",
+  "revision": "$rev",
+  "image_tag": "$MAISTRO_IMAGE_TAG",
+  "delivery_mode": "$(effective_delivery_mode)",
+  "source_url": "$source_url",
+  "plan_dir": "$PLAN_DIR",
+  "installed_at": "$ts"
+}
+MANIFEST_EOF
+    ok "Wrote install manifest ($itype@$ref) to $manifest"
+
+    # Discovery pointer: `maistro upgrade` reads the manifest from the
+    # canonical <root>/.maistro-install regardless of where the plan
+    # artifacts were materialized, so a custom --plan-dir install leaves a
+    # copy there recording the selected plan_dir. Without it, upgrade would
+    # discard the manifest and regenerate guessed compose defaults.
+    if [[ "$PLAN_DIR" != ".maistro-install" && "$PLAN_DIR" != "$PWD/.maistro-install" ]]; then
+        mkdir -p "$PWD/.maistro-install" 2>/dev/null || true
+        cp "$manifest" "$PWD/.maistro-install/install-manifest.json" 2>/dev/null || true
+        ok "Recorded plan_dir pointer at $PWD/.maistro-install/install-manifest.json"
+    fi
 }
 
 # Write operator recovery commands next to the plan artifacts and echo the
@@ -1436,8 +1844,8 @@ persist_repo_root() {
 print_success() {
     echo ""
     echo "maistro-engine is ready"
-    echo "  Engine API:  http://${BIND_HOST}:${PORT}"
-    echo "  Conductor:   http://${BIND_HOST}:${HIVE_PORT:-8101}  (chat, DAGs, deck builder)"
+    echo "  Engine API:  ${ENGINE_BASE_URL}"
+    echo "  Conductor:   ${CONDUCTOR_BASE_URL}  (chat, DAGs, deck builder)"
     echo "  Token:       stored in $ENV_FILE as MAISTRO_ACCESS_TOKEN (not printed)"
     echo "  Install dir: $PWD"
     echo "  Plan dir:    $PLAN_DIR"
@@ -1466,7 +1874,7 @@ open_browser() {
     [[ "$OPEN_BROWSER" == "0" || "$OPEN_BROWSER" == "false" ]] && return 0
     [[ "$START_STACK" == "0" || "$START_STACK" == "false" ]] && return 0
 
-    local url="http://${BIND_HOST}:${HIVE_PORT:-8101}"
+    local url="$CONDUCTOR_BASE_URL"
     if is_macos && command -v open >/dev/null 2>&1; then
         info "Opening the Conductor UI: $url"
         open "$url" >/dev/null 2>&1 || true
@@ -1491,8 +1899,10 @@ main() {
 
     [[ -f "$COMPOSE_FILE" ]] || fail "Missing $COMPOSE_FILE. Run this from the maistro-engine repo root."
     run_feature_wizard
+    write_install_manifest
     sync_env_file
     validate_env_contract
+    resolve_effective_config
     start_engine
     bootstrap_first_run
     write_recovery_md
