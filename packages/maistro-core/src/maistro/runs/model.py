@@ -284,7 +284,6 @@ class Run(BaseModel):
     retention_expires_at: datetime | None = None
     result: Any | None = None
     error: str | None = None
-    eval_scores: list[RunEvalScore] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_run(self) -> Run:

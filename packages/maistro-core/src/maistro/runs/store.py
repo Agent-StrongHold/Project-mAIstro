@@ -705,8 +705,10 @@ class InMemoryRunStore:
         # either inserts, and this is the claim that refuses the second one
         # rather than leaving two Runs that agree on one job id.
         self._canvas_job_claims: dict[str, str] = {}
-        # Append-only eval evidence is stored as part of the Run object.
-        # No separate index needed.
+        # Append-only eval evidence keyed by eval_id (M7-A3). No per-run index:
+        # the volume is the scored dimensions of the Runs held here, and the
+        # spine maps run_id -> node_run_ids already.
+        self._eval_scores: dict[str, RunEvalScore] = {}
 
     def _prune_terminal_runs(self) -> None:
         """Evict the oldest terminal Runs once the store exceeds its bound.
@@ -796,6 +798,12 @@ class InMemoryRunStore:
             if attempt.node_run_id in node_run_ids
         ]:
             del self._attempts[attempt_id]
+        # Eval scores are Run evidence: they die with the Run, never before it
+        # and never after (M7-A3).
+        for eval_id in [
+            eval_id for eval_id, score in self._eval_scores.items() if score.run_id == run_id
+        ]:
+            del self._eval_scores[eval_id]
 
     async def create_run(
         self,
@@ -1377,33 +1385,28 @@ class InMemoryRunStore:
         return True
 
     async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
-        # Ensure eval_id is unique across all runs
-        for run in self._runs.values():
-            if any(es.eval_id == eval_score.eval_id for es in run.eval_scores):
-                raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
+        if eval_score.eval_id in self._eval_scores:
+            raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
         run = self._require_run(eval_score.run_id)
         node_run = self._require_node_run(eval_score.node_run_id)
         attempt = self._require_attempt(eval_score.attempt_id)
         validate_eval_score_spine(run=run, node_run=node_run, attempt=attempt)
-        run.eval_scores.append(eval_score.model_copy(deep=True))
-        run.updated_at = datetime.now(UTC)
+        self._eval_scores[eval_score.eval_id] = eval_score.model_copy(deep=True)
         return eval_score.model_copy(deep=True)
 
     async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
         self._require_run(run_id)
-        run = self._runs.get(run_id)
-        if run is None:
-            return []
-        scores = [score.model_copy(deep=True) for score in run.eval_scores]
+        scores = [
+            score.model_copy(deep=True)
+            for score in self._eval_scores.values()
+            if score.run_id == run_id
+        ]
         scores.sort(key=lambda score: (score.scored_at, score.eval_id))
         return scores
 
     async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
-        for run in self._runs.values():
-            for score in run.eval_scores:
-                if score.eval_id == eval_id:
-                    return score.model_copy(deep=True)
-        return None
+        score = self._eval_scores.get(eval_id)
+        return score.model_copy(deep=True) if score is not None else None
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         run = self._require_run(run_id)

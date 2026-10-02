@@ -611,23 +611,17 @@ class PgRunStore:
     async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
         """Append one scored rubric dimension to the Run's durable evidence (M7-A3).
 
-        The update runs inside a transaction that locks the Run row first, so a
-        concurrent delete cannot land between the spine checks and the update.
+        The insert runs inside a transaction that locks the Run row first, so a
+        concurrent delete cannot land between the spine checks and the insert;
+        the RESTRICT foreign keys are what catch whatever the checks cannot
+        cover. Append-only, exactly like the SQLite twin.
         """
         async with self._pool.acquire() as conn, conn.transaction():
-            # Check for duplicate eval_id across all runs (application-level guard;
-            # rely on UUID uniqueness in practice).
-            existing = await conn.fetchval(
-                """SELECT 1 FROM canonical_runs
-                   WHERE EXISTS (
-                     SELECT 1 FROM jsonb_array_elements(payload->'eval_scores') AS elem
-                     WHERE (elem->>'eval_id') = $1
-                   ) LIMIT 1""",
+            if await conn.fetchval(
+                "SELECT 1 FROM canonical_run_eval_scores WHERE eval_id = $1",
                 eval_score.eval_id,
-            )
-            if existing:
+            ):
                 raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
-            # Lock and fetch the spine entities.
             run_row = await conn.fetchrow(
                 "SELECT payload FROM canonical_runs WHERE run_id = $1 FOR UPDATE",
                 eval_score.run_id,
@@ -646,55 +640,40 @@ class PgRunStore:
             )
             if attempt_row is None:
                 raise AttemptNotFound(eval_score.attempt_id)
-            # Validate the spine.
             validate_eval_score_spine(
                 run=Run.model_validate(run_row["payload"]),
                 node_run=NodeRun.model_validate(node_run_row["payload"]),
                 attempt=Attempt.model_validate(attempt_row["payload"]),
             )
-            # Append the score to the run's eval_scores list.
-            run = Run.model_validate(run_row["payload"])
-            run.eval_scores.append(eval_score.model_copy(deep=True))
-            # Update the run's payload.
             await conn.execute(
-                """UPDATE canonical_runs
-                   SET payload = $2::jsonb
-                   WHERE run_id = $1""",
+                """INSERT INTO canonical_run_eval_scores
+                   (eval_id, run_id, node_run_id, attempt_id, scored_at, payload)
+                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",
+                eval_score.eval_id,
                 eval_score.run_id,
-                json_of(run),
+                eval_score.node_run_id,
+                eval_score.attempt_id,
+                eval_score.scored_at.isoformat(),
+                json_of(eval_score),
             )
         return eval_score.model_copy(deep=True)
 
     async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
         await self._require_run(run_id)
         async with self._pool.acquire() as conn:
-            run_row = await conn.fetchrow(
-                "SELECT payload FROM canonical_runs WHERE run_id = $1", run_id
+            rows = await conn.fetch(
+                """SELECT payload FROM canonical_run_eval_scores
+                   WHERE run_id = $1 ORDER BY scored_at, eval_id""",
+                run_id,
             )
-            if run_row is None:
-                return []
-            run = Run.model_validate(run_row["payload"])
-            scores = [score.model_copy(deep=True) for score in run.eval_scores]
-            scores.sort(key=lambda score: (score.scored_at, score.eval_id))
-            return scores
+        return [model_of(RunEvalScore, row["payload"]) for row in rows]
 
     async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
         async with self._pool.acquire() as conn:
-            run_row = await conn.fetchrow(
-                """SELECT payload FROM canonical_runs
-                   WHERE EXISTS (
-                     SELECT 1 FROM jsonb_array_elements(payload->'eval_scores') AS elem
-                     WHERE (elem->>'eval_id') = $1
-                   ) LIMIT 1""",
-                eval_id,
+            row = await conn.fetchrow(
+                "SELECT payload FROM canonical_run_eval_scores WHERE eval_id = $1", eval_id
             )
-            if run_row is None:
-                return None
-            run = Run.model_validate(run_row["payload"])
-            for score in run.eval_scores:
-                if score.eval_id == eval_id:
-                    return score.model_copy(deep=True)
-        return None
+        return model_of(RunEvalScore, row["payload"]) if row is not None else None
 
     async def get_run(self, run_id: str) -> Run | None:
         payload = await self._payload(

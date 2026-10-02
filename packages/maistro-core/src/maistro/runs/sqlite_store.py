@@ -877,35 +877,35 @@ class SqliteRunStore:
     async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
         """Append one scored rubric dimension to the Run's durable evidence (M7-A3).
 
-        The update runs inside a write lock that prevents concurrent modifications,
-        so a concurrent delete cannot land between the spine checks and the update.
+        Refuses anything that is not one connected spine triple — Run, NodeRun,
+        Attempt — so an eval record can never dangle beside the execution that
+        produced it. Append-only: a duplicate eval_id is an integrity error and
+        a prior record is never rewritten, which is what keeps a failed eval
+        queryable after the retry that supersedes it.
         """
         async with self._write_lock:
-            # Check for duplicate eval_id across all runs (application-level guard;
-            # rely on UUID uniqueness in practice).
-            cursor = await self._conn.execute(
-                """SELECT 1 FROM canonical_runs
-                   WHERE EXISTS (
-                     SELECT 1 FROM json_each(payload, '$.eval_scores')
-                     WHERE json_extract(value, '$.eval_id') = ?
-                   ) LIMIT 1""",
+            existing = await self._fetchone(
+                "SELECT 1 FROM canonical_run_eval_scores WHERE eval_id = ?",
                 (eval_score.eval_id,),
             )
-            if await cursor.fetchone() is not None:
+            if existing is not None:
                 raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
-            # Fetch the spine entities.
             run = await self._require_run(eval_score.run_id)
             node_run = await self._require_node_run(eval_score.node_run_id)
             attempt = await self._require_attempt(eval_score.attempt_id)
             validate_eval_score_spine(run=run, node_run=node_run, attempt=attempt)
-            # Append the score to the run's eval_scores list.
-            run.eval_scores.append(eval_score.model_copy(deep=True))
-            # Update the run's payload.
             await self._conn.execute(
-                """UPDATE canonical_runs
-                   SET payload = ?
-                   WHERE run_id = ?""",
-                (json_of(run), eval_score.run_id),
+                """INSERT INTO canonical_run_eval_scores
+                   (eval_id, run_id, node_run_id, attempt_id, scored_at, payload)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    eval_score.eval_id,
+                    eval_score.run_id,
+                    eval_score.node_run_id,
+                    eval_score.attempt_id,
+                    eval_score.scored_at.isoformat(),
+                    json_of(eval_score),
+                ),
             )
             await self._conn.commit()
         return eval_score.model_copy(deep=True)
@@ -913,35 +913,18 @@ class SqliteRunStore:
     async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
         await self._require_run(run_id)
         cursor = await self._conn.execute(
-            "SELECT payload FROM canonical_runs WHERE run_id = ?",
+            "SELECT payload FROM canonical_run_eval_scores WHERE run_id = ? "
+            "ORDER BY scored_at, eval_id",
             (run_id,),
         )
-        row = await cursor.fetchone()
-        if row is None:
-            return []
-        run = model_of_json(Run, row[0])
-        scores = [score.model_copy(deep=True) for score in run.eval_scores]
-        scores.sort(key=lambda score: (score.scored_at, score.eval_id))
-        return scores
+        return [model_of_json(RunEvalScore, row[0]) for row in await cursor.fetchall()]
 
     async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
-        async with self._write_lock:
-            cursor = await self._conn.execute(
-                """SELECT payload FROM canonical_runs
-                   WHERE EXISTS (
-                     SELECT 1 FROM json_each(payload, '$.eval_scores')
-                     WHERE json_extract(value, '$.eval_id') = ?
-                   ) LIMIT 1""",
-                (eval_id,),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                return None
-            run = model_of_json(Run, row[0])
-            for score in run.eval_scores:
-                if score.eval_id == eval_id:
-                    return score.model_copy(deep=True)
-        return None
+        row = await self._fetchone(
+            "SELECT payload FROM canonical_run_eval_scores WHERE eval_id = ?",
+            (eval_id,),
+        )
+        return model_of_json(RunEvalScore, row[0]) if row is not None else None
 
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.

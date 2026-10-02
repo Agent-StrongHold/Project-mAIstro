@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +34
+  packages/maistro-core/tests: +45
 ---
 <!-- Measured by scripts/check-suite-inventory.py --update; see README.md. -->
 # 792-eval-on-run
@@ -31,6 +31,19 @@ What the tests pin, mapped to the issue's acceptance list:
   evidence with the Run when the Run is deleted.
 - Model-level judge rules: deterministic scoring names no judge; model-judge
   and human records must name an agreeing judge.
+
+The repair round added `runs/test_eval_on_run_pg_internals.py` (+11): the
+PostgreSQL eval statements drove no SQL in the no-services coverage leg — the
+`spine` fixture's PG cases skip without a server, so `pg_store.py`'s eval
+paths measured at 23.5% and the per-file diff-coverage gate failed. Following
+the `test_pg_store_internals.py` seam, a stand-in pool routes by statement
+shape: the insert's column list and payload, every spine-guard refusal before
+any INSERT, the table-only read paths, and the deletion order (`delete_run`
+and the retention purge both take the eval rows before the spine rows they
+name, batch-shaped `ANY($1::text[])`). Constraint enforcement and JSONB
+behaviour stay with the PG-gated conformance leg; what the no-services leg
+now proves is that the statements themselves are made, in order, with the
+right columns.
 
 Two existing conformance gates caught the schema addition and were satisfied,
 not bypassed: `test_retention_reference_inventory` required
