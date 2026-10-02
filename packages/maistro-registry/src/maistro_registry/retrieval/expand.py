@@ -1,13 +1,19 @@
-"""LLM query expansion over an OpenAI-compatible endpoint.
+"""LLM query expansion through the governed model gateway.
 
 Issue #26 lists "LLM query expansion" as one input to corpus-aware
 retrieval — but an expansion call must never make retrieval *depend* on a
-service being up. The shape is therefore:
+service being up, and it must not open a second road to a model endpoint:
+every shipped model call crosses the governed Provider boundary
+(ADR-081226-6b46), and `maistro.capabilities.providers.llm_gateway` is the
+one module allowed to hold HTTP for one (quality/model-egress.json). The
+shape is therefore:
 
 - a `QueryExpander` protocol (one method: query -> candidate terms),
 - `NoExpansion`, the deterministic default that adds nothing, and
-- `OpenAICompatExpander`, which asks an OpenAI-compatible chat endpoint
-  (LiteLLM proxy, vLLM, OpenAI itself) for a JSON array of search terms.
+- `OpenAICompatExpander`, which sends the expansion prompt through
+  `execute_model_chat` — the approved gateway call — at an
+  OpenAI-compatible gateway root (the LiteLLM proxy by convention;
+  `GatewayEndpoint` appends `/v1` when the root omits it).
 
 Two failure disciplines, both deliberate:
 
@@ -25,22 +31,27 @@ expansion term through corpus statistics (`terms.CorpusStats`), so a
 model that confidently suggests terms this corpus has never used gains
 nothing — the corpus, not the LLM, has the last word.
 
-HTTP goes through `maistro.http.sync_client`, so expansion traffic rides
-the same outbound policy as every other client this process builds
-(`linker.py` set this precedent for the GitHub resolver).
+The module-level `execute_model_chat` reference is the test seam: tests
+monkeypatch it (the same shape maistro-core's own gateway tests use), so
+no test touches a network.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, Protocol
 
 import httpx
 
-from maistro.http import sync_client
+from maistro.capabilities.providers.llm_gateway import (
+    GatewayEndpoint,
+    LlmGatewayProvider,
+    ModelChatRequest,
+    execute_model_chat,
+)
 
-# Module-level so tests can monkeypatch it, exactly like linker.py.
 _EXPANSION_TIMEOUT_SECONDS = 15.0
 _MAX_EXPANSION_TERMS = 8
 
@@ -78,12 +89,13 @@ class NoExpansion:
 
 
 class OpenAICompatExpander:
-    """Query expansion against an OpenAI-compatible `/chat/completions`.
+    """Query expansion over the governed gateway's chat-completions seam.
 
     `base_url` is the API root (e.g. `http://localhost:4000` for a local
-    LiteLLM proxy); `api_key` defaults to the `MAISTRO_EXPAND_API_KEY`
-    environment variable, matching how the compose stack already hands
-    out proxy keys.
+    LiteLLM proxy — a missing `/v1` suffix is appended by
+    `GatewayEndpoint`); `api_key` defaults to the `MAISTRO_EXPAND_API_KEY`
+    environment variable, matching how the compose stack already hands out
+    proxy keys.
     """
 
     def __init__(
@@ -99,35 +111,29 @@ class OpenAICompatExpander:
             raise ValueError("base_url is required")
         if not model:
             raise ValueError("model is required")
-        self._base_url = base_url.rstrip("/")
-        self._model = model
-        self._api_key = api_key if api_key is not None else os.environ.get("MAISTRO_EXPAND_API_KEY")
-        self._timeout = timeout
+        key = api_key if api_key is not None else os.environ.get("MAISTRO_EXPAND_API_KEY")
+        self._endpoint = GatewayEndpoint(base_url=base_url, api_key=key or "", timeout_s=timeout)
+        self._provider = LlmGatewayProvider(None, model=model)
         self._max_terms = max_terms
 
-    @property
-    def completions_url(self) -> str:
-        return f"{self._base_url}/chat/completions"
-
     def expand(self, query: str) -> list[str]:
-        headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        payload = {
-            "model": self._model,
-            "messages": [
+        request = ModelChatRequest(
+            messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": query},
             ],
-            "temperature": 0,
-            "max_tokens": 200,
-        }
+            temperature=0,
+            max_tokens=200,
+        )
         try:
-            with sync_client(timeout=self._timeout) as client:
-                response = client.post(self.completions_url, json=payload, headers=headers)
-                response.raise_for_status()
-                body = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+            body = asyncio.run(execute_model_chat(self._provider, request, endpoint=self._endpoint))
+        except (httpx.HTTPError, RuntimeError, PermissionError, ValueError) as exc:
+            # The governed call reports connect failures as EffectNotApplied
+            # and HTTP failures as LlmAuthError/LlmHttpError — RuntimeErrors
+            # and a PermissionError; transport faults that are not
+            # connect-classified arrive as httpx.HTTPError. Every one of
+            # them means "no usable completion", which is all
+            # ExpansionError promises to its caller.
             raise ExpansionError(f"expansion request failed: {exc}") from exc
         return self._parse_terms(body)
 

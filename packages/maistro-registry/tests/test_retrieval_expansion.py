@@ -1,19 +1,30 @@
-"""LLM query expansion: transport discipline and corpus oversight.
+"""LLM query expansion: governed egress and corpus oversight.
 
 Two contracts: the expander *raises* on failure (a silently-empty
 expansion would disguise an outage as "the model found nothing"), and
 the searcher treats expansion output as *candidates* that corpus
-statistics can still veto. The HTTP seam is faked at `sync_client`, the
-same seam the linker tests use, so no test touches a network.
+statistics can still veto. The HTTP seam is faked at
+`execute_model_chat` — the one governed model-egress call the expander
+is allowed to use (quality/model-egress.json) — the same seam
+maistro-core's gateway tests fake, so no test touches a network.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from maistro.capabilities.invocation import EffectNotApplied
+from maistro.capabilities.providers.llm_gateway import (
+    GatewayEndpoint,
+    LlmAuthError,
+    LlmGatewayProvider,
+    LlmHttpError,
+    ModelChatRequest,
+)
 from maistro_registry.retrieval import (
     ExpansionError,
     NoExpansion,
@@ -25,78 +36,71 @@ from maistro_registry.retrieval import (
 from maistro_registry.retrieval import expand as expand_module
 
 
-class _Response:
-    status_code = 200
-
-    def __init__(self, payload: Any) -> None:
-        self._payload = payload
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> Any:
-        return self._payload
-
-
-class _ExplodingResponse:
-    status_code = 500
-
-    def raise_for_status(self) -> None:
-        import httpx
-
-        raise httpx.HTTPStatusError(
-            "boom", request=httpx.Request("POST", "http://x"), response=httpx.Response(500)
-        )
-
-    def json(self) -> Any:  # pragma: no cover - raise_for_status fires first
-        return {}
-
-
-class _Client:
-    def __init__(self, response: Any) -> None:
-        self.response = response
-        self.posts: list[tuple[str, dict[str, Any], dict[str, str]]] = []
-
-    def __enter__(self) -> _Client:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
-
-    def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> _Response:
-        self.posts.append((url, json, headers))
-        return self.response  # type: ignore[return-value]
-
-
 def _completion(text: str) -> dict[str, Any]:
     return {"choices": [{"message": {"content": text}}]}
 
 
-def _install(monkeypatch: pytest.MonkeyPatch, response: Any) -> _Client:
-    client = _Client(response)
-    monkeypatch.setattr(expand_module, "sync_client", lambda **kwargs: client)
-    return client
+class _Gateway:
+    """Stands in for `execute_model_chat` and records what crossed it."""
+
+    def __init__(
+        self,
+        body: dict[str, Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.body = body
+        self.error = error
+        self.calls: list[tuple[LlmGatewayProvider, ModelChatRequest, GatewayEndpoint]] = []
+
+    async def __call__(
+        self,
+        provider: LlmGatewayProvider,
+        request: ModelChatRequest,
+        *,
+        endpoint: GatewayEndpoint,
+    ) -> dict[str, Any]:
+        self.calls.append((provider, request, endpoint))
+        if self.error is not None:
+            raise self.error
+        assert self.body is not None, "fake gateway needs a body or an error"
+        return self.body
+
+
+def _install(
+    monkeypatch: pytest.MonkeyPatch,
+    body: dict[str, Any] | None = None,
+    error: Exception | None = None,
+) -> _Gateway:
+    gateway = _Gateway(body=body, error=error)
+    monkeypatch.setattr(expand_module, "execute_model_chat", gateway)
+    return gateway
 
 
 def _expander() -> OpenAICompatExpander:
     return OpenAICompatExpander(base_url="http://llm.test/v1", model="test-model", api_key="k")
 
 
-def test_expander_posts_openai_compat_payload_and_parses_array(
+def test_expander_sends_a_governed_request_and_parses_array(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = _install(monkeypatch, _Response(_completion('["queue recovery", "TaskRecord"]')))
+    gateway = _install(monkeypatch, _completion('["queue recovery", "TaskRecord"]'))
     terms = _expander().expand("task queue restart")
     assert terms == ["queue recovery", "TaskRecord"]
-    url, payload, headers = client.posts[0]
-    assert url == "http://llm.test/v1/chat/completions"
-    assert payload["model"] == "test-model"
-    assert payload["temperature"] == 0
-    assert headers["Authorization"] == "Bearer k"
+
+    provider, request, endpoint = gateway.calls[0]
+    # The egress is the approved gateway Provider, pinned to the asked model.
+    assert isinstance(provider, LlmGatewayProvider)
+    assert provider.name == "test-model"
+    assert request.temperature == 0
+    assert request.max_tokens == 200
+    assert [m["role"] for m in request.messages] == ["system", "user"]
+    # Credential stays on the endpoint, never in the request payload.
+    assert endpoint.api_key == "k"
+    assert endpoint.base_url == "http://llm.test/v1"
 
 
 def test_expander_tolerates_fenced_array(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install(monkeypatch, _Response(_completion('```json\n["a term"]\n```')))
+    _install(monkeypatch, _completion('```json\n["a term"]\n```'))
     assert _expander().expand("q") == ["a term"]
 
 
@@ -110,13 +114,25 @@ def test_expander_tolerates_fenced_array(monkeypatch: pytest.MonkeyPatch) -> Non
     ],
 )
 def test_expander_raises_on_unusable_output(monkeypatch: pytest.MonkeyPatch, payload: Any) -> None:
-    _install(monkeypatch, _Response(payload))
+    _install(monkeypatch, payload)
     with pytest.raises(ExpansionError):
         _expander().expand("q")
 
 
-def test_expander_raises_on_http_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install(monkeypatch, _ExplodingResponse())
+def test_expander_maps_gateway_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch, error=LlmAuthError("llm_auth_failed status=401", status_code=401))
+    with pytest.raises(ExpansionError, match="expansion request failed"):
+        _expander().expand("q")
+
+
+def test_expander_maps_gateway_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch, error=LlmHttpError("llm_rate_limited status=429", status_code=429))
+    with pytest.raises(ExpansionError, match="expansion request failed"):
+        _expander().expand("q")
+
+
+def test_expander_maps_unreachable_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch, error=EffectNotApplied("model gateway unreachable, no effect occurred"))
     with pytest.raises(ExpansionError, match="expansion request failed"):
         _expander().expand("q")
 
@@ -130,9 +146,11 @@ def test_expander_requires_base_url_and_model() -> None:
 
 def test_api_key_defaults_to_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAISTRO_EXPAND_API_KEY", "env-key")
-    client = _install(monkeypatch, _Response(_completion("[]")))
+    gateway = _install(monkeypatch, _completion("[]"))
     OpenAICompatExpander(base_url="http://llm.test", model="m").expand("q")
-    assert client.posts[0][2]["Authorization"] == "Bearer env-key"
+    # A root without /v1 is normalized by GatewayEndpoint on the governed path.
+    assert gateway.calls[0][2].api_key == "env-key"
+    assert gateway.calls[0][2].base_url == "http://llm.test"
 
 
 def test_no_expansion_contributes_nothing() -> None:
@@ -181,17 +199,7 @@ def _repo(tmp_path: Path, make_doc: object) -> Path:
 def test_searcher_falls_back_when_expansion_fails(
     tmp_path: Path, make_doc: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import httpx
-
-    def _explode(**kwargs: Any) -> _Client:
-        def _raise(*a: Any, **k: Any) -> _Response:
-            raise httpx.ConnectError("down")
-
-        client = _Client(_Response({}))
-        client.post = _raise  # type: ignore[method-assign]
-        return client
-
-    monkeypatch.setattr(expand_module, "sync_client", lambda **kwargs: _explode())
+    _install(monkeypatch, error=EffectNotApplied("model gateway unreachable, no effect occurred"))
     searcher = RetrievalSearcher(build_index(load_corpus(_repo(tmp_path, make_doc))))
     response = searcher.search("queue", k=2, expander=_expander())
     assert response.expansion_skipped is True
@@ -221,3 +229,11 @@ def test_expansion_terms_face_corpus_statistics(tmp_path: Path, make_doc: object
     assert {r.doc_id for r in response.results} == {"ADR-001", "ADR-002"}
     vault = next(r for r in response.results if r.doc_id == "ADR-002")
     assert "secret" in vault.matched_terms
+
+
+def test_expansion_call_is_async_driven_not_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """expand() drives the governed async call itself; no loop may leak."""
+    gateway = _install(monkeypatch, _completion("[]"))
+    asyncio.set_event_loop(None)
+    _expander().expand("q")
+    assert len(gateway.calls) == 1

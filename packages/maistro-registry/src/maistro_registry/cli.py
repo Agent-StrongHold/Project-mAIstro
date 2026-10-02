@@ -20,6 +20,7 @@ Conforms to `engine#ADR-039` substrate posture.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ from maistro_registry.retrieval import (
     load_corpus,
     load_golden,
     load_index,
+    report_to_dict,
     save_index,
 )
 from maistro_registry.schema import FrontMatter
@@ -291,10 +293,10 @@ def cmd_search(args: argparse.Namespace) -> int:
     searcher = _load_searcher(root, args.index, args.max_df_share)
     expander = None
     if args.expand_endpoint:
-        expander = OpenAICompatExpander(
-            base_url=args.expand_endpoint,
-            model=args.expand_model or "",
-        )
+        if not args.expand_model:
+            print("error: --expand-model is required with --expand-endpoint", file=sys.stderr)
+            return 2
+        expander = OpenAICompatExpander(base_url=args.expand_endpoint, model=args.expand_model)
     response = searcher.search(args.query, k=args.k, expander=expander)
 
     print(f"query: {response.query!r}")
@@ -310,6 +312,8 @@ def cmd_search(args: argparse.Namespace) -> int:
         return 0
     for result in response.results:
         print(result.render())
+        if args.terms:
+            print(f"         matched: {' '.join(result.matched_terms) or '(none)'}")
     return 0
 
 
@@ -320,7 +324,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
     golden_path = Path(args.golden) if args.golden else _GOLDEN_DATA_FILE
     golden = load_golden(golden_path)
     report = evaluate(lambda query, k: searcher.search(query, k=k), golden, k=args.k)
-    print(report.render())
+    if args.json:
+        # Machine-readable artifact (CI logs, dashboards): the whole report,
+        # per-query cases included, exactly as report_to_dict serializes it.
+        print(json.dumps(report_to_dict(report), indent=2))
+    else:
+        print(report.render())
 
     failed = False
     if args.min_mrr is not None and report.mean_mrr < args.min_mrr:
@@ -447,6 +456,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--expand-model",
         help="model name for LLM query expansion (requires --expand-endpoint)",
     )
+    p_search.add_argument(
+        "--terms",
+        action="store_true",
+        help="print the query terms each result matched (the 'why' behind the rank)",
+    )
     p_search.set_defaults(func=cmd_search)
 
     p_eval = sub.add_parser(
@@ -477,6 +491,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="term-rejection ceiling (default: the measured 0.5)",
+    )
+    p_eval.add_argument(
+        "--json",
+        action="store_true",
+        help="print the report as JSON (for artifacts) instead of the human render",
     )
     p_eval.set_defaults(func=cmd_eval)
 

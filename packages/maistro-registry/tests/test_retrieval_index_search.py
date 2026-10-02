@@ -21,7 +21,7 @@ from maistro_registry.retrieval import (
     load_index,
     save_index,
 )
-from maistro_registry.retrieval.terms import CorpusStats, tokenize
+from maistro_registry.retrieval.terms import CorpusStats, idf, tokenize
 
 
 @pytest.fixture()
@@ -88,6 +88,24 @@ def test_useless_term_rejection_is_measured_not_enumerated() -> None:
     empty = CorpusStats.from_documents([])
     kept, rejected = empty.reject_useless(["anything"])
     assert kept == () and rejected == ("anything",)
+
+
+def test_df_share_and_idf_refuse_to_invent_signal() -> None:
+    """The two scoring inputs stay honest on degenerate inputs: an empty
+    corpus and an unseen term contribute zero, not a division error or a
+    fabricated weight."""
+    empty = CorpusStats.from_documents([])
+    assert empty.df_share("anything") == 0.0
+    assert idf(empty, "anything") == 0.0
+
+    stats = CorpusStats.from_documents([["export"], ["export", "queue"]])
+    assert stats.df_share("export") == 1.0
+    # df == 0: a term no document contains scores nothing...
+    assert idf(stats, "unseen") == 0.0
+    # ...and a term in every document is silenced by the +1 inside the log,
+    # never negative.
+    assert idf(stats, "export") > 0.0
+    assert idf(stats, "queue") > idf(stats, "export")
 
 
 def test_enrichment_extracts_title_headings_and_slug_keywords(

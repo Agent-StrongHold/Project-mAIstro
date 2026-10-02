@@ -27,12 +27,14 @@ pipeline lives in `maistro_registry/retrieval/`:
   approximation) and the serializable index. A saved index carries a
   corpus fingerprint over (path, version) pairs and refuses to load
   under a foreign format version.
-- **`expand.py`** — optional LLM query expansion against any
-  OpenAI-compatible endpoint. The expander raises on failure; the
-  searcher catches, reports `expansion_skipped`, and proceeds
-  lexical-only. Expansion output is candidate terms that corpus
-  statistics can still veto — the corpus, not the model, has the last
-  word.
+- **`expand.py`** — optional LLM query expansion sent through the one
+  governed model-egress seam (`execute_model_chat` in
+  `maistro.capabilities.providers.llm_gateway`, the module
+  `quality/model-egress.json` approves; no second HTTP road to a model
+  endpoint). The expander raises on failure; the searcher catches,
+  reports `expansion_skipped`, and proceeds lexical-only. Expansion
+  output is candidate terms that corpus statistics can still veto — the
+  corpus, not the model, has the last word.
 - **`search.py`** — the pipeline: tokenize → reject useless terms →
   expand → Okapi BM25 → deterministic rank (score desc, path asc).
 - **`quality.py`** — graded golden queries (3 = direct, 2 = strong,
@@ -43,12 +45,18 @@ pipeline lives in `maistro_registry/retrieval/`:
 
 ```bash
 maistro-registry search "canvas publish export pptx" . -k 5
+maistro-registry search "task queue restart" . --terms   # show what each result matched
 maistro-registry search "task queue restart" . \
   --expand-endpoint http://localhost:4000 --expand-model gpt-4o-mini
 maistro-registry index . --output registry/retrieval-index.json
 maistro-registry search "alembic" . --index registry/retrieval-index.json
 maistro-registry eval . --min-mrr 0.9 --min-recall 0.9   # exit 1 below threshold
+maistro-registry eval . --json                           # machine-readable report for artifacts
 ```
+
+Expansion endpoint roots are OpenAI-compatible API roots (a missing
+`/v1` is appended for you); the credential travels on the gateway
+endpoint only, never in the request payload.
 
 `eval` without `--golden` uses the shipped golden set
 (`maistro_registry/retrieval/golden_queries.json`), which encodes which

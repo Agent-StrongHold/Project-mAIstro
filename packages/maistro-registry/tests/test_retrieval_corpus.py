@@ -117,3 +117,64 @@ def test_broken_front_matter_degrades_to_body_only(tmp_path: Path, make_doc: obj
     assert broken.doc_id == "ADR-999-broken"
     assert broken.status is None
     assert "searchable" in broken.body
+
+
+def test_empty_front_matter_block_degrades_to_body_only(tmp_path: Path) -> None:
+    """A file whose front-matter block is EMPTY has nothing to validate —
+    the same body-only degradation as a broken block, via the other leg."""
+    (tmp_path / "docs/adr").mkdir(parents=True)
+    (tmp_path / "docs/adr/ADR-060-empty.md").write_text(
+        "---\n---\n\n# Empty on purpose\n\nstill searchable prose\n",
+        encoding="utf-8",
+    )
+    doc = next(d for d in load_corpus(tmp_path) if d.path.endswith("ADR-060-empty.md"))
+    assert doc.front_matter is None
+    assert doc.doc_id == "ADR-060-empty"
+    assert doc.title == "Empty on purpose"
+
+
+def test_known_gaps_without_sections_is_one_document(tmp_path: Path, make_doc: object) -> None:
+    """A KNOWN-GAPS.md with no `### ` headings cannot be split — the whole
+    file stays retrievable as the single unit the file id names."""
+    _make_repo(tmp_path, make_doc)
+    (tmp_path / "KNOWN-GAPS.md").write_text(
+        "# Known Gaps\n\nEverything works; nothing is known broken.\n",
+        encoding="utf-8",
+    )
+    gaps = [d for d in load_corpus(tmp_path) if d.kind == "known-gap"]
+    assert [g.doc_id for g in gaps] == ["KNOWN-GAPS"]
+    assert "nothing is known broken" in gaps[0].body
+
+
+def test_known_gaps_starting_with_a_section_has_no_intro_document(
+    tmp_path: Path, make_doc: object
+) -> None:
+    """Sections from the first line: no intro unit is invented for them."""
+    _make_repo(tmp_path, make_doc)
+    (tmp_path / "KNOWN-GAPS.md").write_text(
+        "### Task queue persistence\n\nThe queue does not recover.\n",
+        encoding="utf-8",
+    )
+    gaps = [d for d in load_corpus(tmp_path) if d.kind == "known-gap"]
+    assert [g.doc_id for g in gaps] == ["KNOWN-GAPS#task-queue-persistence"]
+
+
+def test_walk_skips_non_markdown_entries(tmp_path: Path, make_doc: object) -> None:
+    """The corpus is ADR/spec *markdown*: a stray non-md file and a
+    directory that merely looks like a document are not corpus."""
+    _make_repo(tmp_path, make_doc)
+    (tmp_path / "docs/specs/notes.txt").write_text("not markdown", encoding="utf-8")
+    (tmp_path / "docs/adr/ADR-099-dir.md").mkdir()  # a directory named like a doc
+    paths = [d.path for d in load_corpus(tmp_path)]
+    assert "docs/specs/notes.txt" not in paths
+    assert "docs/adr/ADR-099-dir.md" not in paths
+
+
+def test_known_gaps_inclusion_is_opt_out(tmp_path: Path, make_doc: object) -> None:
+    _make_repo(tmp_path, make_doc)
+    (tmp_path / "KNOWN-GAPS.md").write_text(
+        "### Task queue persistence\n\nThe queue does not recover.\n",
+        encoding="utf-8",
+    )
+    without = load_corpus(tmp_path, include_known_gaps=False)
+    assert not [d for d in without if d.kind == "known-gap"]

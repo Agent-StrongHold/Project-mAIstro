@@ -122,6 +122,11 @@ def test_load_golden_validates_shape(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="relevant"):
         load_golden(bad_grades)
 
+    out_of_range = tmp_path / "range.json"
+    out_of_range.write_text('[{"query": "q", "relevant": {"A": 4}}]', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"grades must be in 1\.\.3"):
+        load_golden(out_of_range)
+
 
 def test_evaluate_aggregates_and_reports_misses() -> None:
     golden = [
@@ -154,6 +159,11 @@ def test_evaluate_aggregates_and_reports_misses() -> None:
     assert "MISS" in rendered and "missed: ADR-009" in rendered
     as_dict = report_to_dict(report)
     assert as_dict["mean_mrr"] == 0.5 and len(as_dict["cases"]) == 2
+    # The per-case audit trail survives serialization: which relevant docs
+    # matched (and, by absence, which were missed) is exactly what an
+    # artifact consumer needs to debug a MISS.
+    assert as_dict["cases"][0]["matched_relevant"] == ["ADR-001"]
+    assert as_dict["cases"][1]["matched_relevant"] == []
 
 
 def test_shipped_golden_set_is_wellformed() -> None:

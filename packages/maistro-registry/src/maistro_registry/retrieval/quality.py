@@ -150,6 +150,14 @@ def load_golden(path: Path) -> list[GoldenQuery]:
             isinstance(doc, str) and isinstance(grade, int) for doc, grade in relevant.items()
         ):
             raise ValueError(f"{path}: 'relevant' must map doc-id strings to int grades")
+        # Grades are the named scale, not free integers: RELATED is the
+        # floor (anything lower could not be told apart from noise) and
+        # DIRECT the ceiling (nothing is more on-point than on-point).
+        if not all(GRADE_RELATED <= grade <= GRADE_DIRECT for grade in relevant.values()):
+            raise ValueError(
+                f"{path}: grades must be in {GRADE_RELATED}..{GRADE_DIRECT} "
+                f"(RELATED..DIRECT); got {sorted(relevant.values())}"
+            )
         note = entry.get("note", "")
         queries.append(
             GoldenQuery(
@@ -213,6 +221,7 @@ def report_to_dict(report: QualityReport) -> dict[str, Any]:
                 "query": c.query,
                 "ranked_ids": list(c.ranked_ids),
                 "relevant_ids": sorted(c.relevant_ids),
+                "matched_relevant": list(c.matched_relevant),
                 "recall": c.recall,
                 "mrr": c.mrr,
                 "ndcg": c.ndcg,

@@ -53,6 +53,7 @@ from maistro_registry.retrieval.quality import (
     mrr,
     ndcg_at_k,
     recall_at_k,
+    report_to_dict,
 )
 from maistro_registry.retrieval.search import (
     RetrievalSearcher,
@@ -85,6 +86,7 @@ __all__ = [
     "mrr",
     "ndcg_at_k",
     "recall_at_k",
+    "report_to_dict",
     "save_index",
     "tokenize",
 ]
