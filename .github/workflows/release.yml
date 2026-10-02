@@ -425,7 +425,10 @@ jobs:
           file: Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.maistro_engine }}
-          provenance: true
+          # mode=max, not the default min mode: the SLSA statement must name
+          # every base image it resolved, because the step below fails the
+          # release if any base digest is missing from the provenance (#349).
+          provenance: mode=max
           sbom: true
 
       - name: Build + push hive-conductor
@@ -436,7 +439,9 @@ jobs:
           file: packages/hive-conductor/Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.hive_conductor }}
-          provenance: true
+          # Same as maistro-engine above: mode=max so base digests land in the
+          # SLSA statement the attestation check below demands (#349).
+          provenance: mode=max
           sbom: true
 
       # Pinned binary + hardcoded checksum, the same shape security.yml uses
@@ -493,6 +498,28 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The released image's provenance must name every base digest its
+      # Dockerfile pins (#349). This is the check that stops the two from
+      # drifting apart silently: a base bumped in the Dockerfile without the
+      # build actually resolving it (or a provenance downgraded to min mode,
+      # which omits materials) fails the release here, before anything is
+      # announced. Digests come from scripts/check-image-pins.py --base-digests,
+      # the same registry quality/image-pins.json holds CI to.
+      - name: Provenance attestations must name every pinned base digest
+        env:
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign download attestation \
+            "${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}" > engine.attestations.json
+          cosign download attestation \
+            "${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}" > conductor.attestations.json
+          python3 scripts/check-image-pins.py \
+            --verify-attestation engine.attestations.json --dockerfile Dockerfile
+          python3 scripts/check-image-pins.py \
+            --verify-attestation conductor.attestations.json --dockerfile packages/hive-conductor/Dockerfile
+
       - name: SBOMs for both images (syft, CycloneDX-JSON)
         env:
           ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
@@ -529,6 +556,12 @@ jobs:
             echo '```'
             echo "maistro-engine:  ${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}"
             echo "hive-conductor:  ${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}"
+            echo '```'
+            echo
+            echo "### Pinned base/tool images (digest-pinned, #349)"
+            echo
+            echo '```'
+            python3 scripts/check-image-pins.py --base-digests Dockerfile packages/hive-conductor/Dockerfile
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
