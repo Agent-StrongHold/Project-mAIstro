@@ -42,10 +42,10 @@ _INSERT_SQL = text("""
             :created_by, :created_at)
 """)
 
-_SELECT_COLUMNS = """
-    brief_id, lineage_id, version, supersedes_brief_id, workspace_id, project_id,
-    goal_id, goal_revision, payload, created_by, created_at
-"""
+#: The read projection, spelled out in each statement below as a literal:
+#: semgrep's ``avoid-sqlalchemy-text`` refuses any ``text()`` argument that is
+#: not a string literal, so the shared column list cannot be interpolated — and
+#: every value that does vary arrives as a bound ``:param``, never string SQL.
 
 
 def _coerce_brief(row: Any) -> CreativeBrief:
@@ -147,7 +147,9 @@ class PgCreativeBriefStore:
             row = (
                 await session.execute(
                     text(
-                        f"SELECT {_SELECT_COLUMNS} FROM design_creative_briefs "
+                        "SELECT brief_id, lineage_id, version, supersedes_brief_id, "
+                        "workspace_id, project_id, goal_id, goal_revision, payload, "
+                        "created_by, created_at FROM design_creative_briefs "
                         "WHERE brief_id = :brief_id AND workspace_id = :workspace_id"
                     ),
                     {"brief_id": brief_id, "workspace_id": workspace_id},
@@ -167,7 +169,9 @@ class PgCreativeBriefStore:
             row = (
                 await session.execute(
                     text(
-                        f"SELECT {_SELECT_COLUMNS} FROM design_creative_briefs "
+                        "SELECT brief_id, lineage_id, version, supersedes_brief_id, "
+                        "workspace_id, project_id, goal_id, goal_revision, payload, "
+                        "created_by, created_at FROM design_creative_briefs "
                         "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
                         "ORDER BY version DESC LIMIT 1"
                     ),
@@ -189,7 +193,9 @@ class PgCreativeBriefStore:
             rows = (
                 await session.execute(
                     text(
-                        f"SELECT {_SELECT_COLUMNS} FROM design_creative_briefs "
+                        "SELECT brief_id, lineage_id, version, supersedes_brief_id, "
+                        "workspace_id, project_id, goal_id, goal_revision, payload, "
+                        "created_by, created_at FROM design_creative_briefs "
                         "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
                         "ORDER BY version ASC"
                     ),
