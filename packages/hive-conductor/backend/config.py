@@ -370,6 +370,33 @@ class Settings(BaseSettings):
     # malformed file is an error rather than an empty overlay.
     rsi_test_profiles_file: str = ""
 
+    # Container dispatch for HTTP-initiated RSI runs (#509). The loop runs
+    # inside an ephemeral container built from Dockerfile.rsi-runner; these
+    # name the image, the gateway endpoint reachable from the container's
+    # network, the compose network to join (empty = auto-detect from the
+    # maistro-litellm container), and an optional host root for the per-run
+    # report directories (empty = the system temp dir). Nothing here is taken
+    # from a request: output directories are always derived from the run id.
+    rsi_runner_image: str = "maistro-rsi-runner:latest"
+    # In-compose default: maistro-litellm is the gateway's service name on
+    # the stack's private bridge network, so this is container-to-container
+    # and never off-host; there is no CA to sign it (same disposition as
+    # DEFAULT_GATEWAY_URL in services/rsi_container_dispatch.py). The marker
+    # sits on the line itself because DevSkim only honors a suppression
+    # comment on the flagged line — one in the preceding comment block left
+    # the finding live in CI. Deployments override this via rsi_gateway_url,
+    # whose scheme is whatever the operator gives it.
+    rsi_gateway_url: str = (
+        "http://maistro-litellm:4000"  # devskim: ignore DS137138 until 2027-12-31
+    )
+    rsi_container_network: str = ""
+    rsi_work_root: str = ""
+    # Resource ceilings for a dispatched runner container, mirroring
+    # tools/run_rsi_isolated.sh's defaults (a runaway ceiling, not a squeeze).
+    rsi_container_memory: str = "6g"
+    rsi_container_cpus: str = "4"
+    rsi_container_pids: str = "1024"
+
     # self_repair (SPEC-188) cadence; <=0 disables the periodic loop (API still works).
     self_repair_interval_s: int = 90
 
