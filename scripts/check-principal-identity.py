@@ -59,7 +59,6 @@ ALLOWED_PARALLEL_CLASS_FILES = frozenset(
         "packages/maistro-core/src/maistro/types/agent.py",
         "packages/maistro-core/src/maistro/security/_types.py",
         "packages/maistro-core/src/maistro/memory/episodic/sharing.py",
-        "packages/maistro-server/src/maistro_server/api/principal.py",
         "packages/hive-conductor/backend/services/governed_model.py",
     }
 )

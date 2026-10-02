@@ -5,6 +5,7 @@
     "parallel_principal_class::packages/hive-conductor/backend/models/schemas.py::HiveUser": "class HiveUser defines role",
     "parallel_principal_class::packages/maistro-canvas/src/maistro_canvas/auth.py::CurrentUser": "class CurrentUser defines roles",
     "parallel_principal_class::packages/maistro-core/src/maistro/privilege.py::_SubsystemIdentity": "class _SubsystemIdentity defines role",
+    "parallel_principal_class::packages/maistro-server/src/maistro_server/api/principal.py::AuthenticatedPrincipal": "class AuthenticatedPrincipal defines roles",
     "state_user_access::packages/hive-conductor/backend/middleware/auth.py": "1 dict-shaped user access(es)",
     "state_user_access::packages/hive-conductor/backend/routes/agents.py": "1 dict-shaped user access(es)",
     "state_user_access::packages/hive-conductor/backend/routes/attention.py": "1 dict-shaped user access(es)",
