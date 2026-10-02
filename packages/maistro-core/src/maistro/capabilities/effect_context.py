@@ -16,7 +16,9 @@ from maistro.capabilities.approval_store import ApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import (
     InMemoryBindingStore,
+    PgBindingStore,
     RevocableBindingStore,
+    SqliteBindingStore,
 )
 from maistro.capabilities.credential_routing import CredentialRouting
 from maistro.capabilities.governed_invocation import (
@@ -30,8 +32,11 @@ from maistro.capabilities.invocation import (
     InvocationQuota,
     InvocationStore,
 )
+from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.capabilities.pg_invocation_store import PgInvocationStore
 from maistro.credentials.router import CredentialRouter
-from maistro.events.envelope import EventStore, InMemoryEventStore
+from maistro.events.envelope import EventStore, InMemoryEventStore, SqliteEventStore
+from maistro.events.pg_envelope import PgEventStore
 from maistro.policy.types import Decision, PolicyVerdict
 from maistro.quota.recorder import CanonicalInvocationUsageRecorder
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
@@ -262,34 +267,127 @@ default_effect_context.cache_clear = _clear_default_effect_context  # type: igno
 new_in_memory_effect_context = new_effect_context
 
 
-async def new_sqlite_effect_context(connection: Any) -> CapabilityEffectContext:
-    """Compose durable effect stores on one SQLite connection.
-
-    This is the same ``new_effect_context`` door with backend-selected stores.
-    It does not construct a second Invocation service.
-    """
+async def new_sqlite_effect_context(
+    conn: Any,
+    *,
+    credentials: CredentialRouter | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
+    quota: InvocationQuota | None = None,
+    invocation_store: InvocationStore | None = None,
+    event_store: EventStore | None = None,
+    approvals: ApprovalStore | None = None,
+) -> CapabilityEffectContext:
+    """Build the canonical effect authority on the container's SQLite database."""
 
     from maistro.capabilities.approval_store import SqliteApprovalStore
-    from maistro.capabilities.binding_store import SqliteBindingStore
-    from maistro.capabilities.invocation_store import SqliteInvocationStore
-    from maistro.events.envelope import SqliteEventStore
 
-    bindings = SqliteBindingStore(connection)
-    invocations = SqliteInvocationStore(connection)
-    approvals = SqliteApprovalStore(connection)
-    events = SqliteEventStore(connection)
+    bindings = SqliteBindingStore(conn)
     await bindings.ensure_schema()
-    await invocations.ensure_schema()
-    await approvals.ensure_schema()
-    await events.ensure_schema()
+    # Injected rather than opened when the Container already selected them:
+    # the canonical EventStore and Invocation ledger are the Container's to
+    # choose, and a builder that quietly opened its own pair would hand a
+    # durable deployment an effect context recording into stores nothing else
+    # reads (#1133 AC-8).
+    if invocation_store is None:
+        invocation_store = SqliteInvocationStore(conn)
+        await invocation_store.ensure_schema()
+    if event_store is None:
+        event_store = SqliteEventStore(conn)
+        await event_store.ensure_schema()
+    if approvals is None:
+        approvals = SqliteApprovalStore(conn)
+        await approvals.ensure_schema()
+    return _durable_context(
+        bindings=bindings,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        approvals=approvals,
+        credentials=credentials,
+        policy_evaluator=policy_evaluator,
+        usage_log=usage_log,
+        quota_tracker=quota_tracker,
+        quota=quota,
+    )
+
+
+async def new_postgres_effect_context(
+    pool: Any,
+    *,
+    credentials: CredentialRouter | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
+    quota: InvocationQuota | None = None,
+    invocation_store: InvocationStore | None = None,
+    event_store: EventStore | None = None,
+    approvals: ApprovalStore | None = None,
+) -> CapabilityEffectContext:
+    """Build the canonical effect authority on a shared PostgreSQL pool."""
+
+    from maistro.capabilities.approval_store import PgApprovalStore
+
+    bindings = PgBindingStore(pool)
+    await bindings.ensure_schema()
+    # Injected rather than opened when the Container already selected them:
+    # the canonical EventStore and Invocation ledger are the Container's to
+    # choose, and a builder that quietly opened its own pair would hand a
+    # durable deployment an effect context recording into stores nothing else
+    # reads (#1133 AC-8).
+    if invocation_store is None:
+        invocation_store = PgInvocationStore(pool)
+        await invocation_store.ensure_schema()
+    if event_store is None:
+        event_store = PgEventStore(pool)
+        await event_store.ensure_schema()
+    if approvals is None:
+        approvals = PgApprovalStore(pool)
+        await approvals.ensure_schema()
+    return _durable_context(
+        bindings=bindings,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        approvals=approvals,
+        credentials=credentials,
+        policy_evaluator=policy_evaluator,
+        usage_log=usage_log,
+        quota_tracker=quota_tracker,
+        quota=quota,
+    )
+
+
+def _durable_context(
+    *,
+    bindings: RevocableBindingStore,
+    invocation_store: InvocationStore,
+    event_store: EventStore,
+    approvals: ApprovalStore,
+    credentials: CredentialRouter | None,
+    policy_evaluator: PolicyEvaluator | None,
+    usage_log: InMemoryUsageLog | None,
+    quota_tracker: Any,
+    quota: InvocationQuota | None,
+) -> CapabilityEffectContext:
+    """The shared tail of the two durable builders.
+
+    Both go through `new_effect_context` rather than composing a second
+    service: the usage recorder (#718), the quota door and the approval store
+    are attached there once, so a durable deployment cannot take a branch that
+    quietly omits one. The two builders above differ only in which concrete
+    stores they open, which is the only thing a backend should decide.
+    """
+
     return new_effect_context(
         binding_store=bindings,
-        invocation_store=invocations,
+        invocation_store=invocation_store,
+        event_store=event_store,
         approval_store=approvals,
-        event_store=events,
-        # A named composition root selects the narrow scope policy; bare
-        # contexts stay read-only until an application supplies one.
-        policy_evaluator=binding_scope_policy,
+        credentials=credentials,
+        policy_evaluator=policy_evaluator or binding_scope_policy,
+        usage_log=usage_log,
+        quota_tracker=quota_tracker,
+        quota=quota,
     )
 
 
@@ -300,6 +398,7 @@ __all__ = [
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
+    "new_postgres_effect_context",
     "new_sqlite_effect_context",
     "release_default_effect_context",
 ]

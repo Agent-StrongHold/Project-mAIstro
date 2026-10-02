@@ -77,11 +77,12 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    The composition root installs this service for governed model effects, so
-    policy decisions and terminal Invocation events cover live provider calls
-    rather than only direct test consumers. Policy events and approvals remain
-    governed side effects; neither path may bypass the Invocation service or
-    its effect identity.
+    The composition root installs this service for governed model effects and
+    for the rest of the canonical effect consumers, the retained PM polling
+    graph nodes among them, so policy decisions and terminal Invocation events
+    cover live provider calls rather than only direct test consumers. Policy
+    events and approvals remain governed side effects; neither path may bypass
+    the Invocation service or its effect identity.
     """
 
     def __init__(

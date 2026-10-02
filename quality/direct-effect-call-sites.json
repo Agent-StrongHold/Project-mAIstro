@@ -15,13 +15,68 @@
     "packages/hive-conductor/backend/adapters/maistro_core.py::_HttpOpenAILLMClient.complete::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/adapters/maistro_core.py",
       "qualname": "_HttpOpenAILLMClient.complete",
-      "line": 77,
+      "line": 83,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+    },
+    "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/routes/widgets.py",
+      "qualname": "widget_jira",
+      "line": 117,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#2": {
+      "path": "packages/hive-conductor/backend/routes/widgets.py",
+      "qualname": "widget_jira",
+      "line": 134,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. Second occurrence is the pagination loop of the same widget poll."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_base_tables_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_base_tables_json.load",
+      "line": 86,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_bases_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_bases_json.load",
+      "line": 111,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_records_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_records_json.load",
+      "line": 59,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
     },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus._extract_patterns::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
@@ -59,7 +114,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_analyze_dashboard::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_analyze_dashboard",
-      "line": 1575,
+      "line": 1689,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -70,7 +125,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_browse_url",
-      "line": 1201,
+      "line": 1298,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "_browse_url",
@@ -78,10 +133,54 @@
       "owner": "#57",
       "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_check_blockers::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_check_blockers",
+      "line": 933,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing blocker-check tool."
+    },
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_get_issue::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_get_issue",
+      "line": 874,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing single-issue fetch tool."
+    },
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_poll_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_poll_jira",
+      "line": 788,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing jira.poll tool."
+    },
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_search_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_search_jira",
+      "line": 833,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing jira search tool."
+    },
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_web_search",
-      "line": 1185,
+      "line": 1282,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "_web_search",
@@ -114,7 +213,7 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_build_llm_call._httpx_llm::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_build_llm_call._httpx_llm",
-      "line": 403,
+      "line": 556,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -125,7 +224,7 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_browse_url",
-      "line": 196,
+      "line": 212,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "browse_url",
@@ -136,7 +235,7 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_clarify::MODEL_EFFECT:hive.clarify#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_clarify",
-      "line": 186,
+      "line": 202,
       "category": "MODEL_EFFECT",
       "entry_point": "hive.clarify",
       "callee": "clarify",
@@ -147,13 +246,24 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_web_search",
-      "line": 178,
+      "line": 194,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "web_search",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#57",
       "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
+    },
+    "packages/hive-conductor/backend/services/mcp_client.py::test_jira_rest::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/mcp_client.py",
+      "qualname": "test_jira_rest",
+      "line": 90,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Operator-triggered PAT connectivity verification calls Jira /rest/api/3/myself directly with the raw token. It is not a polling effect, but it is the same Jira REST class now owned by canonical capabilities; recorded as migration debt so the Workspace cutover routes verification through the governed door too."
     },
     "packages/hive-conductor/backend/services/skill_optimizer.py::optimize_skill::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/skill_optimizer.py",
@@ -279,7 +389,7 @@
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_probe_model::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
       "qualname": "_probe_model",
-      "line": 213,
+      "line": 228,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -290,7 +400,7 @@
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_run_code_probe::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
       "qualname": "_run_code_probe",
-      "line": 168,
+      "line": 183,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -301,7 +411,7 @@
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py::LiteLLMCallable._post_with_pacing::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py",
       "qualname": "LiteLLMCallable._post_with_pacing",
-      "line": 518,
+      "line": 534,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "_post",
@@ -389,7 +499,7 @@
     "packages/maistro-core/src/maistro/agents/conductor.py::_call_gateway::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/agents/conductor.py",
       "qualname": "_call_gateway",
-      "line": 127,
+      "line": 270,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -400,7 +510,7 @@
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
       "qualname": "GovernedInvocationExecutionService.invoke",
-      "line": 160,
+      "line": 271,
       "category": "CANONICAL_INVOCATION",
       "entry_point": "InvocationExecutionService.invoke",
       "callee": "self._invocations.invoke",
@@ -411,7 +521,7 @@
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.send_invocation::CANONICAL_INVOCATION:GovernedInvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
       "qualname": "HarnessSessionManager.send_invocation",
-      "line": 174,
+      "line": 270,
       "category": "CANONICAL_INVOCATION",
       "entry_point": "GovernedInvocationExecutionService.invoke",
       "callee": "invocation_service.invoke",
@@ -422,7 +532,7 @@
     "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py::execute_image_generation::MODEL_EFFECT:openai-compatible-image-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py",
       "qualname": "execute_image_generation",
-      "line": 151,
+      "line": 195,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-image-http",
       "callee": "client.post",
@@ -433,35 +543,13 @@
     "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
       "qualname": "execute_model_chat",
-      "line": 152,
+      "line": 239,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
       "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
       "rationale": "The approved Provider implementation itself: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
-    },
-    "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py::execute_airtable::CANONICAL_INVOCATION:airtable-polling-http-provider#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
-      "qualname": "execute_airtable",
-      "line": 218,
-      "category": "CANONICAL_INVOCATION",
-      "entry_point": "airtable-polling-http-provider",
-      "callee": "client.get",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#1195",
-      "rationale": "Approved Airtable Provider HTTP is executed only after the canonical Binding and governed Invocation path resolves and claims this effect."
-    },
-    "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py::execute_jira::CANONICAL_INVOCATION:jira-polling-http-provider#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
-      "qualname": "execute_jira",
-      "line": 188,
-      "category": "CANONICAL_INVOCATION",
-      "entry_point": "jira-polling-http-provider",
-      "callee": "client.get",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#1195",
-      "rationale": "Approved Jira Provider HTTP is executed only after the canonical Binding and governed Invocation path resolves and claims this effect."
     },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
@@ -499,7 +587,7 @@
     "packages/maistro-rsi/src/maistro_rsi/autorun.py::make_llm_proposer._propose::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/autorun.py",
       "qualname": "make_llm_proposer._propose",
-      "line": 223,
+      "line": 267,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "_post",
@@ -510,7 +598,7 @@
     "packages/maistro-rsi/src/maistro_rsi/free_router.py::resolve_concrete_free_model::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/free_router.py",
       "qualname": "resolve_concrete_free_model",
-      "line": 66,
+      "line": 91,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "_post",
@@ -521,7 +609,7 @@
     "packages/maistro-rsi/src/maistro_rsi/gateway.py::make_gateway_llm_call.llm_call::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/gateway.py",
       "qualname": "make_gateway_llm_call.llm_call",
-      "line": 78,
+      "line": 96,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",

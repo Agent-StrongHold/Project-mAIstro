@@ -304,9 +304,11 @@ def test_prometheus_exposition_formats_bool_gauge_as_numeric() -> None:
 
 def test_empty_registry_exposes_only_uptime(monkeypatch: pytest.MonkeyPatch) -> None:
     monotonic_values = iter((10.0, 12.34))
-    # metrics_module.time is the global time module, so pytest teardown can
-    # also read the fake. The fallback keeps those extra reads from raising
-    # StopIteration while the two scripted values still decide uptime.
+    # ``metrics_module.time`` *is* the global ``time`` module, so anything the
+    # harness itself times between this test's body and monkeypatch undo (e.g.
+    # pytest teardown reporting) also consumes the fake. The 12.34 fallback
+    # keeps those extra reads harmless while the two scripted values still
+    # decide the asserted uptime.
     monkeypatch.setattr(metrics_module.time, "monotonic", lambda: next(monotonic_values, 12.34))
     reg = MetricsRegistry()
 
