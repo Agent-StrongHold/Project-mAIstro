@@ -1,4 +1,63 @@
-# Handoff — issue #779, lane L779, repair round 3 (job 94a91df251524bcf99d40fd5d75223e5)
+# Handoff — issue #779, lane L779, repair round 5 (job 7504817da28742f881e9fef6302cbe21)
+
+## Outcome (this round)
+
+Resolved the round's named gate failure with fresh executed evidence at the
+current head, and synced the round's develop base.
+
+1. **Develop sync:** merged `origin/develop` (c91e354f3, the round's declared
+   base) into `auto-779` → merge commit `8822439aa`. Trial `git merge-tree`
+   was clean; the 3 incoming commits (harness targets, gateway model
+   discovery, a verify record) do not overlap any #779 surface.
+2. **Salvage preserved then corrected:** the incoming uncommitted edit banked
+   `design_coverage: 38.8827` — a measurement taken *before* the develop sync
+   (backup: `incoming-779.patch` in the job directory). At the synced head,
+   with CI's postgres env, the exact failing CI step **fails** with
+   `design_coverage: 38.7892 falls below the floor of 38.8827`: develop's
+   commits added taken decisions, shifting the denominator. The stale floor
+   was replaced with the actually-measured low-end value at this head
+   (**38.7892**, still an improvement over the last committed 38.4934). Two
+   full gate runs measured 38.7892 then 38.8827 over the same 158 taken
+   decisions — the documented load-flake band — so banking the low end keeps
+   the floor honest and CI-robust (floors are enforced; unbanked improvements
+   are tolerated in merge-group/PR context).
+3. **Exact CI gate proven RC 0** in full merge-group simulation: pg18
+   `auto-779-pg` (127.0.0.1:25779), `uv run alembic upgrade head` RC 0,
+   `DATABASE_URL`/`MAISTRO_TEST_PG_DSN` per `quality.yml:660-661`,
+   `GITHUB_EVENT_NAME=merge_group` + `GITHUB_EVENT_PATH` with
+   `base_sha=c91e354f3`, then the exact step `scripts/check-ac-state.py
+   --run-tests --ratchet --mandate c91e354f3…` → RC 0: 10 debt counters on
+   ceilings, coverage on floor, acceptance mandate 8 newly claimed / 0
+   unproven, chain mandate clean, and "candidate preserves the actual measured
+   AC-state of base c91e354f3".
+4. **Vulture exact-debt-ledger:** `check-vulture-baseline.py packages/*/src
+   --min-confidence 60 --exclude '*/third_party/*'` → 1372 ↔ 1372, 0
+   unclassified, 0 never-allowlist, RC 0. No amendment needed — develop's new
+   identities (harness_targets, gateway model discovery) are already banked at
+   the base revision; the count moved 1378→1372 with the base, as designed.
+
+## Validation executed this round (all RC 0)
+
+- `uv run ruff check .` / `uv run ruff format --check .` (2712 files)
+- `uv run pytest packages/maistro-design/tests -q` → 413 passed
+- `pytest packages/hive-conductor/backend/tests/test_design_consistency_route.py -q` → 8 passed
+- `check-suite-inventory.py` for both suites → ok
+- `check-ratchet-provenance.py` (note provenance) / `check-doc-links.py` /
+  `check-contract-markers.py` / `check-reachability.py` (1171 modules) /
+  `check-cross-package-imports.py` (2724 files) → OK
+- `uv run mypy <7 package srcs>` → Success, no issues in 765 files
+
+## Residual
+
+Unchanged from round 4: AC-8 (Design Studio consistency/refinement product
+surface the browser can truthfully obtain, plus its `*.spec.ts`) remains the
+honestly-declared-unproven slice; AC-1..AC-7 stay proven by the executed
+suites mapped in the inventory note. The maistro-core load flakes behind the
+±0.1 coverage band also remain (dedicated flake lane material).
+
+---
+
+# Repair round 3 (job 94a91df251524bcf99d40fd5d75223e5)
 
 ## Outcome (this round)
 
