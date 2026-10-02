@@ -17,6 +17,17 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
+# CI evidence (run 36835563311, job 110282105809): BOTH buildx attempts of
+# this image died inside pip on `files.pythonhosted.org` read timeouts --
+# pip's 15s default, under runner load, on metadata fetches and a ~950KB
+# wheel. The resolution itself is sound (a pip --dry-run of the same
+# requirements resolves cleanly), so the defect is transport patience, not
+# pinning. State the patience instead of rediscovering it on the next
+# registry slow spell; buildx-build-retry.sh still retries the whole
+# invocation above this layer.
+ENV PIP_DEFAULT_TIMEOUT=60 \
+    PIP_RETRIES=10
+
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 COPY pyproject.toml uv.lock README.md ./
@@ -40,6 +51,10 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    # Same transport-patience fix as the builder stage above: this stage's
+    # pip install was the second of the two timeouts in run 36835563311.
+    PIP_DEFAULT_TIMEOUT=60 \
+    PIP_RETRIES=10 \
     # Browsers installed to a world-readable path so the non-root runtime user
     # can find Chromium (default ~/.cache/ms-playwright is root-only).
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright

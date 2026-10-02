@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { apiGet, fallbackMessage } from "../lib/api";
+import { apiGet, fallbackMessage, ApiError } from "../lib/api";
 import { SecretField, TextField } from "../components/shared";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
@@ -12,6 +12,14 @@ type Preset = { name: string; label: string; description: string; max_vcpu: numb
 type FirstRunQuestionMeta = { key: string; label: string; default: unknown; required: boolean; description: string };
 
 type IdentityStatus = "checking" | "operational" | "disabled" | "misconfigured" | "unavailable";
+
+// Gateway model-discovery lifecycle (#287): "pending" while the catalog fetch
+// is in flight, "ok" once the gateway answered with a non-empty, well-formed
+// catalog, "failed" for every distinguishable failure (auth, not found,
+// gateway error, network, malformed, empty). A failed check keeps the curated
+// list usable for offline setup, but it must never be presented as
+// successfully discovered gateway state.
+type ModelCheck = "pending" | "ok" | "failed";
 
 const MODULES = [
   { id: "crypto_identity", name: "Crypto Identity", desc: "BIP39 HD wallet seed, DID addresses, hierarchical key derivation, agent signing (ADR-021/024)", requires: [] },
@@ -49,6 +57,16 @@ export default function Setup() {
   const [mnemonic, setMnemonic] = useState<string[] | null>(null);
   const [didKey, setDidKey] = useState<string | null>(null);
   const [mnemonicConfirmed, setMnemonicConfirmed] = useState(false);
+  const [modelCheck, setModelCheck] = useState<ModelCheck>("pending");
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [modelErrorKind, setModelErrorKind] = useState<string | null>(null);
+  // The stored default the backend substitutes when the gateway catalog is
+  // NOT discovered. A distinct provenance state (#287): cached, never
+  // discovered, and never rendered as live gateway state.
+  const [cachedDefault, setCachedDefault] = useState<string | null>(null);
+  const [fallbackAcknowledged, setFallbackAcknowledged] = useState(false);
+  const [manualModel, setManualModel] = useState(false);
+  const [fetchKey, setFetchKey] = useState(0);
   // Modules the operator explicitly toggled. A toggle is an explicit choice
   // for that module only — untouched modules still take the declared default,
   // even if the seed arrives after a toggle.
@@ -77,10 +95,10 @@ export default function Setup() {
   // Load available models from the LLM gateway via Hive's
   // /v1/settings/models proxy. The user's LITELLM key stays server-side.
   // Setup runs BEFORE any login, so the auth-gated /v1/settings/models will
-  // 401; that's expected — we fall back to a curated list of known
-  // LLM-gateway models so the dropdown is always populated. After the
-  // admin user finishes setup, settings can refresh the list from the
-  // live gateway.
+  // 401: the curated list below is only ever a baseline for offline setup,
+  // and a failed fetch keeps it explicitly marked unverified (#287) instead
+  // of passing it off as discovered gateway state. After the admin user
+  // finishes setup, settings can refresh the list from the live gateway.
   useEffect(() => {
     // Curated LLM gateway model aliases — sorted by "good router default"
     // first (small, fast, cheap), then by family. Trim / extend as the
@@ -115,32 +133,90 @@ export default function Setup() {
     ];
     setAvailableModels(FALLBACK_MODELS);
 
-    // Best-effort: ask the live gateway for the latest list; replace if we
-    // get a non-empty response. If we're pre-login the 401 just keeps the
-    // fallback. Settings page (post-login) gets a richer refresh path.
+    // Best-effort: ask the live gateway for the real catalog and replace the
+    // curated baseline only on a well-formed, non-empty answer (#287). Every
+    // failure path keeps the curated list usable but records WHY the gateway
+    // state is not trustworthy: modelCheck stays "failed" with an actionable,
+    // per-cause message, so the UI can demand an explicit
+    // unverified-availability acknowledgement and offer a retry instead of
+    // silently marking gateway/model setup complete after a failed fetch.
+    function failDiscovery(kind: string, message: string) {
+      setModelCheck("failed");
+      setModelErrorKind(kind);
+      setModelError(message);
+    }
     let active = true;
     setModelsLoading(true);
-    apiGet<{ models: string[] }>("/v1/settings/models")
+    setModelCheck("pending");
+    setModelError(null);
+    setModelErrorKind(null);
+    setCachedDefault(null);
+    apiGet<{ models?: unknown; discovered?: boolean; source?: string; error?: { kind?: string; message?: string } | null }>("/v1/settings/models")
       .then((data) => {
         if (!active) return;
-        const models = (data.models ?? []).filter(Boolean);
-        if (models.length > 0) {
-          setAvailableModels(models);
-          // Re-point an explicit choice the gateway does not know. An empty
-          // selection means "server default" and stays empty — picking a
-          // model here for the operator would restate a default the
-          // declaration owns (#443).
-          if (routerModel && !models.includes(routerModel)) {
-            const preferred =
-              models.find((m) => m === "gemini-3.1-flash-lite") ??
-              models.find((m) => m.startsWith("gemini-") && m.includes("flash")) ??
-              models[0];
-            setRouterModel(preferred);
-          }
+        // A malformed payload is its own failure class, not an empty catalog:
+        // only an array of non-empty strings counts as a catalog.
+        if (!Array.isArray(data.models)) {
+          failDiscovery("malformed", "The gateway response could not be parsed as a model catalog. Check the gateway deployment.");
+          return;
         }
+        const models = data.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0);
+        // Only a catalog the backend explicitly DISCOVERED from the gateway
+        // may show as discovered (#287). A 200 with `discovered: false`
+        // carries a sanitized failure class (not_configured, tls, policy, …)
+        // and a *substitute* list — the stored default — never a live
+        // catalog. It takes the failure path with the backend's own kind,
+        // and the substitute is surfaced as the cached default, distinct
+        // from the curated suggestions.
+        if (data.discovered !== true) {
+          setCachedDefault(models[0] ?? null);
+          failDiscovery(
+            data.error?.kind ?? "unexpected",
+            data.error?.message ?? "The gateway catalog could not be discovered.",
+          );
+          return;
+        }
+        if (models.length === 0) {
+          failDiscovery("empty", "The gateway answered but returned an empty model catalog. Nothing is confirmed available; the list below is curated suggestions.");
+          return;
+        }
+        setAvailableModels(models);
+        // Re-point a selection the gateway does not serve (including the
+        // empty "server default" seed) to a discovered model: a discovered
+        // catalog is verified state, so the preflight below can actually
+        // verify the effective router model (#287). The operator can still
+        // opt back out via the explicit "Server default" option (#443).
+        setRouterModel((cur) =>
+          models.includes(cur)
+            ? cur
+            : models.find((m) => m === "gemini-3.1-flash-lite") ??
+              models.find((m) => m.startsWith("gemini-") && m.includes("flash")) ??
+              models[0],
+        );
+        setModelCheck("ok");
+        setModelError(null);
+        setModelErrorKind(null);
       })
-      .catch(() => {
-        /* pre-login 401 expected — fallback list is already in place */
+      .catch((err) => {
+        if (!active) return;
+        if (err instanceof ApiError) {
+          // Distinguishable causes (#287): auth, missing endpoint, gateway
+          // outage, connectivity/timeout, other. The copy says what to do,
+          // not just what broke; raw statuses stay in the console via debugApi.
+          if (err.status === 401 || err.status === 403) {
+            failDiscovery("auth", "Gateway authentication failed. During setup there is no signed-in session, so the gateway catalog could not be queried — model availability below is unverified.");
+          } else if (err.status === 404) {
+            failDiscovery("not_found", "The gateway model-discovery endpoint was not found (404). Check the configured gateway URL.");
+          } else if (err.status >= 500) {
+            failDiscovery("server", `The gateway reported a server error (HTTP ${err.status}). It may be misconfigured or overloaded — retry, and fix the gateway if it persists.`);
+          } else if (err.status === 0) {
+            failDiscovery("network", "Could not reach the gateway to discover models (network error or timeout). Check connectivity and proxy settings.");
+          } else {
+            failDiscovery("http", `The gateway rejected the model-discovery request (HTTP ${err.status}).`);
+          }
+        } else {
+          failDiscovery("unexpected", "An unexpected error occurred while discovering gateway models.");
+        }
       })
       .finally(() => {
         if (active) setModelsLoading(false);
@@ -148,7 +224,7 @@ export default function Setup() {
     return () => {
       active = false;
     };
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fetchKey]);
 
   useEffect(() => {
     let active = true;
@@ -254,12 +330,34 @@ export default function Setup() {
     setLoading(true);
     setError(null);
     try {
+      // Final preflight (#287): re-query the gateway for the effective
+      // default model right before setup completes. "verified" requires the
+      // gateway to answer AND list the chosen model; any failure — or a
+      // catalog that lacks the model — completes as explicitly "unverified",
+      // recorded server-side with the setup configuration, instead of a
+      // failed fetch silently passing for a valid gateway catalog.
+      let modelAvailability: "verified" | "unverified" = "unverified";
+      try {
+        const check = await apiGet<{ models?: unknown; discovered?: boolean }>("/v1/settings/models");
+        const models = Array.isArray(check.models)
+          ? check.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0)
+          : [];
+        // "verified" requires a catalog the backend actually discovered from
+        // the gateway: a 200 that carries the stored-default substitute never
+        // qualifies, so it is recorded as explicitly unverified (#287).
+        if (check.discovered === true && models.includes(routerModel)) modelAvailability = "verified";
+      } catch {
+        modelAvailability = "unverified";
+      }
       const res = await fetch("/v1/setup/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conductor_name: conductorName,
           default_model: routerModel.trim() || null,
+          // Final preflight verdict (#287): "verified" only when the gateway
+          // catalog was actually discovered AND lists the effective model.
+          model_availability: modelAvailability,
           // An explicit pick wins; otherwise state the declared default. No
           // declaration and no pick means the key is omitted and the server
           // names the missing field rather than the SPA guessing.
@@ -374,7 +472,16 @@ export default function Setup() {
                     field keeps its name when the models list arrives and the
                     <input> becomes a <select> (#375). */}
                 <label htmlFor="setup-router-model" style={{ display: "block", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>Router model</label>
-                {availableModels.length > 0 ? (
+                {manualModel || availableModels.length === 0 ? (
+                  <input
+                    id="setup-router-model"
+                    className="input-field"
+                    placeholder={modelsLoading ? "Loading models from gateway…" : "gemini-3.1-flash-lite"}
+                    value={routerModel}
+                    onChange={(e) => setRouterModel(e.target.value)}
+                    disabled={modelsLoading}
+                  />
+                ) : (
                   <select
                     id="setup-router-model"
                     className="input-field"
@@ -391,15 +498,42 @@ export default function Setup() {
                       </option>
                     ))}
                   </select>
-                ) : (
-                  <input
-                    id="setup-router-model"
-                    className="input-field"
-                    placeholder={modelsLoading ? "Loading models from gateway…" : "server default"}
-                    value={routerModel}
-                    onChange={(e) => setRouterModel(e.target.value)}
-                    disabled={modelsLoading}
-                  />
+                )}
+                {availableModels.length > 0 && (
+                  <div style={{ marginTop: 6 }}>
+                    {manualModel ? (
+                      <button type="button" className="btn" data-testid="model-list-toggle" onClick={() => { setManualModel(false); setFallbackAcknowledged(false); }}>Pick from the model list instead</button>
+                    ) : (
+                      <button type="button" className="btn" data-testid="model-manual-toggle" onClick={() => { setManualModel(true); setFallbackAcknowledged(false); }}>Enter a model ID manually</button>
+                    )}
+                  </div>
+                )}
+                {/* Discovery provenance (#287): the wizard must never blur a
+                    real gateway catalog into curated suggestions or manual
+                    entry — each renders with its own status line, and only
+                    the discovered state counts as verified. */}
+                <div data-testid="model-discovery-status" style={{ fontFamily: "var(--mono)", fontSize: 12, marginTop: 6, color: modelCheck === "ok" && !manualModel ? "var(--ok)" : "var(--pencil)" }}>
+                  {modelCheck === "pending" && !manualModel && "Checking the gateway model catalog…"}
+                  {modelCheck === "ok" && !manualModel && `✓ ${availableModels.length} models discovered from the gateway`}
+                  {modelCheck === "failed" && !manualModel && "Curated suggestions — the gateway was not queried successfully, availability is UNVERIFIED"}
+                  {manualModel && "Manual entry — the gateway has not confirmed this ID; availability is UNVERIFIED"}
+                </div>
+                {modelCheck === "failed" && cachedDefault !== null && !manualModel && (
+                  <div data-testid="model-cached-default" style={{ fontFamily: "var(--mono)", fontSize: 12, marginTop: 4, color: "var(--pencil)" }}>
+                    Cached default — <code>{cachedDefault}</code> is the Conductor's stored default, not a model discovered from the gateway.
+                  </div>
+                )}
+                {modelError && (
+                  <div role="alert" data-testid={`model-error-${modelErrorKind ?? "unknown"}`} style={{ padding: "6px 10px", background: "rgba(196,69,42,0.12)", border: "1px solid var(--danger)", borderRadius: 4, fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)" }}>
+                    <div>{modelError}</div>
+                    <button type="button" className="btn" data-testid="model-retry" style={{ marginTop: 6 }} disabled={modelsLoading} onClick={() => setFetchKey((k) => k + 1)}>Retry gateway discovery</button>
+                  </div>
+                )}
+                {(modelCheck === "failed" || manualModel) && (
+                  <div data-testid="unverified-ack" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                    <input type="checkbox" id="unverified-model-ack" checked={fallbackAcknowledged} onChange={(e) => setFallbackAcknowledged(e.target.checked)} />
+                    <label htmlFor="unverified-model-ack" style={{ fontFamily: "var(--hand)", fontSize: 13, cursor: "pointer" }}>I understand the gateway has not confirmed this model and availability is unverified.</label>
+                  </div>
                 )}
                 <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                   The queen bee's brain — classifies intent, complexity, and cost to route each request to the best worker model. Needs to be fast and cheap, not the strongest. <code>gemini-3.1-flash-lite</code> is a good default.{" "}
@@ -510,7 +644,12 @@ export default function Setup() {
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HIVE</div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{conductorName}</div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>router: {routerModel || "server default"}</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>
+                  router: {routerModel || "server default"}
+                  {(manualModel || modelCheck === "failed") && (
+                    <span data-testid="router-model-unverified" style={{ color: "var(--danger)" }}> · unverified</span>
+                  )}
+                </div>
               </div>
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HARDWARE</div>
@@ -545,6 +684,10 @@ export default function Setup() {
           {step < steps.length - 1 ? (
             <button className="btn btn-accent" onClick={() => setStep(step + 1)} disabled={
               (step === 0 && !conductorName.trim()) ||
+              // A failed gateway discovery or a manually entered model ID may
+              // proceed only with an explicit unverified-availability
+              // acknowledgement (#287) — never silently.
+              (step === 0 && (modelCheck === "failed" || manualModel) && !fallbackAcknowledged) ||
               // Only require a hardware choice when there is one to make.
               // POC mode used to select "laptop" locally and skip this step
               // entirely, so retiring it exposed a pre-existing dead end: no
