@@ -171,7 +171,6 @@
     "maistro_canvas.canvas.asset_store",
     "maistro_canvas.canvas.asset_tool",
     "maistro_canvas.canvas.runner",
-    "maistro_canvas.canvas.store",
     "maistro_canvas.canvas.tool",
     "maistro_design.nodes",
     "maistro_evolve.architecture_fit",
