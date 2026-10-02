@@ -20,6 +20,10 @@ from services.design_service import (
     get_renderer_registry,
 )
 
+from maistro_design.consistency import (
+    CreativeProjectSnapshot,
+    evaluate_project_snapshot,
+)
 from maistro_design.systems.importer import ORIGIN_EXTERNAL
 from maistro_design.types import (
     DesignError,
@@ -362,6 +366,46 @@ async def create_render_job(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Render job creation failed: {e!s}") from None
+
+
+@router.post("/projects/{project_id}/consistency")
+async def evaluate_project_consistency(
+    project_id: str, snapshot: CreativeProjectSnapshot
+) -> dict[str, Any]:
+    """Inspect one creative family for cross-artifact consistency (#779).
+
+    The Design Studio submits the project's frozen snapshot — brief, persona,
+    design system, shared decisions, artifacts and provided evidence as the
+    creative session holds them — and receives the evaluator's full result
+    contract back: per-dimension verdicts, evidence-backed findings, exact
+    brief/decision/artifact versions that were evaluated, and a refinement
+    proposal for the affected branches only. The evaluation is deliberately
+    read-only: it proposes work, it never rewrites the project — canonical
+    DAG/Run logic decides what actually runs, under the user's locks and
+    control mode. The same evaluation is available as the canonical graph node
+    ``design.consistency_eval`` (kind registered in ``maistro_design.nodes``)
+    when it must run inside a Run with NodeRun/Attempt provenance; this route
+    is the Design Studio's synchronous inspection surface over the identical
+    pure evaluator, so both surfaces cannot disagree.
+
+    Body: a ``CreativeProjectSnapshot``. A snapshot naming a different
+    project than the path is refused (400) instead of silently mis-filing the
+    result — the same canonical-provenance guard the graph node applies.
+
+    Returns:
+      The ``ConsistencyEvaluation`` result contract (passed, provenance,
+      dimension_results, findings, refinement).
+    """
+    _require_ready()
+    if snapshot.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snapshot project_id {snapshot.project_id!r} does not match "
+                f"the requested project {project_id!r}"
+            ),
+        )
+    return evaluate_project_snapshot(snapshot).model_dump(mode="json")
 
 
 @router.get("/projects/{project_id}/render/{job_id}")
