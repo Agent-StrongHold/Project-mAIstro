@@ -14,6 +14,11 @@ on:
   # worse than none: the green tick means different things depending on the base
   # and nothing on the PR says which. #161.
   pull_request:
+    # `edited` is load-bearing for the closure guard below: a `Closes #N` added
+    # by editing the body after the last push must re-run check-closure-targets
+    # against the payload's current body, or a green check vouching for the old
+    # body lets the keyword close an epic at merge time (#56 review on #1773).
+    types: [opened, reopened, synchronize, edited]
   # A merge queue evaluates a synthetic commit containing the current base plus
   # the queued candidate(s). Every required CI job must report on that SHA, not
   # merely on the feature-branch head that was green before it entered the queue.
@@ -75,6 +80,11 @@ jobs:
 
   lint-and-type-check:
     runs-on: ubuntu-latest
+    # The workflow defaults plus `issues: read` for check-closure-targets.py.
+    permissions:
+      contents: read
+      actions: read
+      issues: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -205,6 +215,15 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # #56 was an epic closed by one PR's `Closes` keyword: the PR delivered
+      # a slice, the keyword closed the whole thing, and every acceptance
+      # criterion it never touched read as done. An issue titled [EPIC],
+      # [MILESTONE] or [INITIATIVE], or one with sub-issues, closes by hand
+      # once check-ac-state reports every criterion reachable (cutover S0.2).
+      - name: No PR closes an epic by keyword
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-closure-targets.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it
@@ -518,6 +537,16 @@ jobs:
             packages/maistro-canvas/frontend/package-lock.json
       - run: npm ci && npm run lint && npm run build
         working-directory: packages/hive-conductor/frontend
+      # Frontend entity types are generated from the backend's OpenAPI document
+      # and committed (#1048). Regenerating both and diffing makes a backend
+      # schema change the frontend has not picked up a red build here, rather
+      # than an `undefined` in the browser. Fix: run the same two commands
+      # locally and commit types.gen.ts.
+      - name: Generated API types match the backend's OpenAPI document (#1048)
+        run: |
+          uv run python scripts/dump-hive-openapi.py
+          npm --prefix packages/hive-conductor/frontend run gen:api
+          git diff --exit-code -- packages/hive-conductor/frontend/src/api/types.gen.ts
       - run: npm ci && npm run test:ci
         working-directory: packages/maistro-canvas/frontend
       - run: npm run lint
