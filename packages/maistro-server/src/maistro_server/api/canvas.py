@@ -163,7 +163,9 @@ def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
 
 
 async def _require_design(store: Any, design_id: str, org_id: str) -> _DesignRecord:
-    record = await store.get_canvas(design_id)
+    # Scoped read (#857): the org rides into the SQL predicate, so another
+    # org's canvas reads as absent rather than as a filtered row.
+    record = await store.get_canvas(design_id, org_id=org_id)
     if (
         record is None
         or record.org_id != org_id
@@ -230,7 +232,7 @@ async def get_design(request: Request, design_id: str, auth: RequireAuth) -> JSO
     body = _design_dict(record)
     body["layers"] = [
         layer.to_dict() if hasattr(layer, "to_dict") else asdict(layer)
-        for layer in await store.list_layers(design_id)
+        for layer in await store.list_layers(design_id, org_id=_owner_id(auth))
         if hasattr(layer, "to_dict") or is_dataclass(layer)
     ]
     return _json(request, body)
@@ -246,7 +248,7 @@ async def update_design(
         record.name = body.name
     if body.background_color is not None:
         record.background_color = body.background_color
-    updated = await store.update_canvas(record)
+    updated = await store.update_canvas(record, org_id=_owner_id(auth))
     await _emit(request, "design.updated", {"design_id": design_id, "org_id": record.org_id})
     return _json(request, _design_dict(updated))
 
@@ -259,7 +261,7 @@ async def delete_design(request: Request, design_id: str, auth: RequireAuth) -> 
     store = _store(request)
     record = await _require_design(store, design_id, _owner_id(auth))
     record.archived_at = datetime.now(UTC)
-    await store.update_canvas(record)
+    await store.update_canvas(record, org_id=_owner_id(auth))
     await _emit(request, "design.deleted", {"design_id": design_id, "org_id": record.org_id})
     return _json(request, {"deleted": True, "id": design_id})
 
@@ -339,7 +341,7 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
     failure propagates as a truthful 502 — a configured provider failing is
     never converted into fake success.
     """
-    composite = await store.latest_composite(design_id)
+    composite = await store.latest_composite(design_id, org_id=org_id)
     if composite is None:
         compositor = getattr(request.app.state, "canvas_compositor", None)
         if compositor is None:
@@ -351,7 +353,7 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
         try:
             composite = await compositor.composite(
                 await _require_design(store, design_id, org_id),
-                await store.list_layers(design_id),
+                await store.list_layers(design_id, org_id=org_id),
             )
         except HTTPException:
             raise
@@ -422,7 +424,7 @@ async def publish_design(
     exporter = _exporter(request)
     _validate_format(exporter, body.format)
     composite = await _pinned_composite(request, store, design_id, _owner_id(auth))
-    layers = await store.list_layers(design_id)
+    layers = await store.list_layers(design_id, org_id=_owner_id(auth))
     try:
         version = await exporter.export_canvas(
             record,
@@ -470,7 +472,7 @@ async def export_design(
     fmt = format.lower()
     _validate_format(exporter, fmt)
     composite = await _pinned_composite(request, store, design_id, _owner_id(auth))
-    layers = await store.list_layers(design_id)
+    layers = await store.list_layers(design_id, org_id=_owner_id(auth))
     try:
         version = await exporter.export_canvas(
             record,
