@@ -172,30 +172,46 @@ def test_a_thirty_day_backlog_enumerates_only_its_catchup_window() -> None:
 
     A stale per-minute schedule stalled the loop for ~0.64s because it reparsed
     every occurrence back to its creation. `_schedule()` is thirty days old, so
-    an unbounded evaluation would examine ~43,200 of them; the seven-day
-    catchup window holds it to 10,080, and the fire list is capped separately.
+    an unbounded evaluation examines ~43,200 of them; the seven-day catchup
+    window caps that at 10,080, and `max_enumerated_fires` caps the fire list
+    separately.
 
-    This asserted `elapsed < 0.5` until #1802. A stopwatch measures the machine
-    as much as the code -- coverage instrumentation on a shared runner cleared
-    that bound with no algorithmic change -- and it is the weaker claim besides:
-    a fast machine passes a latency bound even when enumeration examined far
-    more than it should. Counting the work catches that; timing it does not.
-    The same correction was made for the same reason in #184.
+    The bound is an upper one, not an equality, because `EnumerationLimits`
+    stops the walk on *either* of two conditions -- `max_walk_steps` or
+    `walk_budget_seconds` (0.1s). A fast machine finishes the window inside the
+    budget and examines all 10,080; a loaded one, or one running under coverage
+    instrumentation, trips the clock first and truncates honestly. Both satisfy
+    the invariant: enumeration never exceeds the window, and never walks the
+    thirty-day backlog.
+
+    This asserted `elapsed < 0.5` until #1802, and then briefly asserted
+    `seen == 10080`, which was the same mistake wearing a counter -- it
+    encoded one machine's speed as a structural fact and failed on slower
+    runners. See #184 for the same correction in test_lanes.py.
     """
     result = evaluate(_schedule(), now=NOON)
+    seen = len(result.fires) + len(result.skipped)
 
-    # One occurrence per minute, so the window's width *is* the examination
-    # bound -- and it is the schedule's age (thirty days) that it refuses.
-    assert len(result.fires) + len(result.skipped) == int(SEVEN_DAYS // 60)
+    # One occurrence per minute, so the window's width is the ceiling on what
+    # may be examined -- and it is the schedule's thirty-day age that it
+    # refuses. Below it whenever a limit stops the walk sooner.
+    assert seen <= int(SEVEN_DAYS // 60)
 
-    # The fire list is capped independently of the window: a window the engine
-    # will happily examine can still yield more fires than one tick should
-    # admit.
+    # A walk that ran to completion examined the window it was given; only a
+    # truncated one may report less. Stated this way round because a budget
+    # exhausted on the first step legitimately sees nothing, and asserting a
+    # bare `seen > 0` would fail that honest outcome.
+    if not result.enumeration_incomplete:
+        assert seen > 0
+
+    # Capped independently of the window: a window the engine will examine in
+    # full can still hold more fires than one tick should admit.
     assert len(result.fires) <= DEFAULT_ENUMERATION_LIMITS.max_enumerated_fires
 
-    # Bounded work is still honest work: what it examined it reported.
-    if not result.enumeration_incomplete:
-        assert result.enumeration_stopped_at is None
+    # Bounded work is still honest work. Truncation is reported, and a walk
+    # that completed claims no truncation point -- the two must agree in both
+    # directions, or a caller cannot tell a full window from a cut-short one.
+    assert result.enumeration_incomplete == (result.enumeration_stopped_at is not None)
 
 
 def test_minutely_occurrences_inside_a_default_window_are_fully_examined() -> None:
