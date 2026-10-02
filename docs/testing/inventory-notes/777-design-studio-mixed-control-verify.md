@@ -4058,3 +4058,100 @@ Unchanged: #777's remaining criteria need #458 Goal-store behavior,
 contract tests are the first dependency satisfied. The vulture trusted-half
 residual resolves when this branch lands (the +2 identities then join the
 trusted ledger); no in-branch action can green it earlier by design.
+
+## Re-verification at merge `e63432c3b` — develop synced (0c042e80e); post-land gate proof executed
+
+Round context: repair job `46297ecc` after the prior round's NEEDS-DEEP-REVIEW
+(job `a86ea392`, end head `74fc47bd3`). `git fetch origin` shows origin/develop
+advanced by exactly one commit, `0c042e80e` (EPIC M4-A #1732:
+`Dockerfile.rsi-runner` UV_HTTP_TIMEOUT widen + `auto-21-epic-verification.md`
+note) — **not a #777 dependency**. Merged with `git merge origin/develop
+--no-edit`: **zero conflicts**, exactly the two upstream files. Merge head:
+`e63432c3b`. Working tree clean before and after the merge.
+
+### Which vulture invocation CI actually runs (verified from workflow sources,
+not assumed)
+
+- `.github/workflows/quality.yml:842-845` and
+  `.github/workflows/vulture-ratchet.yml:81-85` both run
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` — exactly the lane-brief invocation. A bare-args run
+  (`packages tests`) is **not** what CI executes; this round's initial bare run
+  produced a large spurious delta (frontend/cage/dags paths outside the CI scan
+  universe) and was discarded as operator error.
+- Control attempt at origin/develop: running the develop worktree's own script
+  exits non-zero with a guard — "the base revision resolves to HEAD itself ...
+  the baseline would be read from the very commit under judgement"
+  (`scripts/ratchet_provenance.py`). The ratchet structurally judges a *change*
+  against its base; on a PR branch the base is origin/develop, so the branch's
+  +2 seam identities are unauthorized until the branch itself lands. This
+  confirms the in-branch trusted-half exit 1 is unavoidable-by-design, not a
+  regression introduced by the lane.
+- **Post-land simulation (new hard evidence, previously only asserted):** in a
+  throwaway worktree at `e63432c3b` plus one empty control commit, with
+  `RATCHET_BASE_REV=e63432c3b` (i.e. judging the next change against this
+  branch as the trusted base):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → **EXIT=0**, `1372 reviewed identities -> 1372 findings`,
+  zero deltas, `unclassified: 0`, `never_allowlist: 0`. The gate provably turns
+  green the moment the branch lands; the amended bank is byte-exact
+  (`engine.py::unused method 'get_workspace_agent'` / `'get_reconciler'`,
+  `quality/vulture-baseline.json:1373-1374`).
+- Genuinely-dead-fix option re-evaluated and again rejected on evidence: both
+  methods are exercised by `test_engine_workspace_seam.py` (7 passed) and are
+  the documented consumption API for the #804-era wiring; deleting reviewed,
+  tested seam surface to silence the scanner would be a cosmetic change, which
+  the repair contract forbids.
+
+### Dependency audit re-confirmed at `e63432c3b` (fresh greps)
+
+- #804/#805/#806 Goal reconciliation: `grep -rl 'GoalReconcil|goal_reconcil'
+  packages/*/src` — zero matches; `runs/reconciliation.py` remains physical
+  Attempt/NodeRun bookkeeping.
+- #458 Goal store: `goal_revision` matches are the ontology declaration
+  (`interop/contract.py`) and `workspaces/campaigns/` (#103, SPEC-092626-1831),
+  whose own docstring states a campaign "never owns or reassigns a Goal" —
+  policy records that defer to the canonical spine, **not** a Goal store.
+- #776 Ladybug working graph: only match is a book title in
+  `dags/author_examples.py:29`.
+- #774 CreativeBrief: in-tree (`brief.py`, `brief_store.py`, migration 049)
+  from merge `2c9d471b0` — unchanged.
+- AC1 wiring unchanged: `design_service.py:240-254` injects the #53 front door
+  (`workspace_agent_service.resolve_workspace_agent`); `reconciler_factory`
+  deliberately uninjected (#804 absent; run-store wiring owned by
+  `maistro.runs.wiring`).
+
+### Executed at `e63432c3b` (all fresh)
+
+- `git merge origin/develop --no-edit` — clean, zero conflicts.
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2732 files already formatted.
+- `uv run pytest packages/maistro-design/tests -q` — **435 passed, 1
+  skipped**.
+- `uv run pytest packages/maistro-design/tests/test_engine_workspace_seam.py
+  -q` — **7 passed**; `uv run pytest
+  packages/hive-conductor/backend/tests/test_design_service_startup.py -q` —
+  **28 passed**.
+- `uv run pytest packages/hive-conductor/backend/tests -q` — first run: 3201
+  passed, 6 skipped, 1 failed
+  (`test_property_substrate.py::test_property_marked_field_is_immediately_locked`);
+  the same test **passes in isolation**, and two consecutive full-suite re-runs
+  (**3202 passed, 6 skipped, 0 failed**, with and without the random-ordering
+  plugin) are green — a transient order-dependent flake, not a branch
+  regression. Develop control run of the same full suite at `0c042e80e`: 3200
+  passed, 6 skipped, 0 failed.
+- `uv run python scripts/check-suite-inventory.py` — ok: 14 suite(s) match.
+- `uv run python scripts/check-doc-links.py` — 0 broken links.
+- Vulture gate (CI invocation) — exit 1 solely on the documented two-merge
+  trusted half (see above); candidate half clean; post-land simulation exit 0.
+
+### Conclusion
+
+The develop-sync block is resolved at `e63432c3b`; every in-lane repairable
+item is repaired and verified, and the post-land gate behavior is now proven
+rather than asserted. The lane's remaining acceptance criteria (AC1 #804 half,
+AC3–AC13) stay blocked on unlanded canonical dependencies (#458 Goal store,
+#804/#805/#806 Goal reconciliation, #776 Ladybug working graph) that the stop
+condition forbids substituting. Driver attention required: land the branch
+(the +2 banked identities and suite-inventory state ride it), then the
+dependencies.
