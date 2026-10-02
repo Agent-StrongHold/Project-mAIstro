@@ -38,6 +38,7 @@ from maistro_evolve.cycle import (
     EvolutionConfig,
 )
 from maistro_evolve.population import PopulationStore
+from maistro_evolve.promotion import objective_version
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 
 
@@ -45,7 +46,13 @@ def _genome(
     genome_id: str,
     fitness_score: float | None = None,
     approved_for_promotion: bool = False,
+    eval_scores: dict[str, float] | None = None,
 ) -> PipelineGenome:
+    # Promotion now also requires measured capability evidence (#853), so the
+    # fixture defaults to a real, gate-passing score; the capability gate's
+    # refusal paths are exercised explicitly in TestCapabilityPromotionGate.
+    if eval_scores is None:
+        eval_scores = {"code_rsi": 0.6}
     return PipelineGenome(
         id=genome_id,
         name=genome_id,
@@ -69,6 +76,7 @@ def _genome(
             use_scout=False,
         ),
         eval_weights=EvalWeights(),
+        eval_scores=eval_scores,
         fitness_score=fitness_score,
         created_at=datetime.now(UTC).isoformat(),
         updated_at=datetime.now(UTC).isoformat(),
@@ -256,6 +264,140 @@ class TestPromotionGate:
         store.add(winner)
         with pytest.raises(PermissionError):
             asyncio.run(store.promote_audited("winner", _trail()))
+
+
+# --------------------------------------------------------------------------
+# 3b. Measured-capability gate before promotion (#853)
+# --------------------------------------------------------------------------
+
+
+class TestCapabilityPromotionGate:
+    """A deliberately do-nothing candidate cannot buy promotion with missing
+    metrics or an objective reweighting: the gate reads recorded eval scores
+    against fixed thresholds and consults no weight vector (#853).
+
+    Since #854 the capability gate fires inside the governed promotion
+    refusal (``promotion_eligibility`` runs the same ``_check_hard_gate``)
+    and remains defense-in-depth in ``_promote`` — either way the refusal is
+    recorded and nothing activates.
+    """
+
+    def test_promote_never_evaluated_genome_raises(self, tmp_path):
+        # The NotImplementedError flavour: a benchmark that cannot run
+        # (run_osworld raises) records no score at all — and the promotion
+        # contract refuses a candidate with no recorded scores, whatever its
+        # padded fitness claims.
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome("donothing", fitness_score=85.262, approved_for_promotion=True, eval_scores={})
+        store.add(g)
+        with pytest.raises(PermissionError, match="not evaluated"):
+            asyncio.run(store.promote_audited("donothing", _trail()))
+        assert store.get("donothing").is_active is False
+
+    def test_promote_gate_failing_genome_raises_even_with_padded_context(self, tmp_path):
+        # Missing metrics padded to their old ideal values (cost/latency full
+        # marks, default Elo) do not rescue a below-gate score.
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome(
+            "weak",
+            fitness_score=85.262,
+            approved_for_promotion=True,
+            eval_scores={"proxy_ifeval": 0.1},
+        )
+        g.harness_params = {
+            "total_cost_usd": 0.0,
+            "avg_latency_seconds": 0.0,
+            "avg_elo": 1200.0,
+        }
+        store.add(g)
+        # The #853 hard gate fires inside the governed refusal (#854 envelope):
+        # the below-threshold score is named, padded context is ignored.
+        with pytest.raises(PermissionError, match=r"hard gate: proxy_ifeval score 0\.100"):
+            asyncio.run(store.promote_audited("weak", _trail()))
+        assert store.get("weak").is_active is False
+
+    def test_reweighted_objective_cannot_rescue_a_gated_candidate(self, tmp_path):
+        # The gate is a constraint, not a tradeable weight: recomputing the
+        # candidate's fitness under ANY objective still zeroes out, and the
+        # promotion gate (threshold-based, weight-blind) still refuses.
+        from maistro_evolve.fitness import compute_fitness
+        from maistro_evolve.objective import EvaluationObjective, FitnessTermWeights
+
+        alt = EvaluationObjective(
+            version="alt-test-v1",
+            benchmark_weights={"proxy_ifeval": 1.0},
+            default_benchmark_weight=1.0,
+            fitness_term_weights=FitnessTermWeights(
+                eval_score=0.01,
+                cost_efficiency=0.33,
+                latency_efficiency=0.33,
+                diversity_bonus=0.33,
+                elo_bonus=0.0,
+            ),
+        )
+        g = _genome(
+            "weak2",
+            fitness_score=85.262,
+            approved_for_promotion=True,
+            eval_scores={"proxy_ifeval": 0.1},
+        )
+        g.harness_params = {
+            "avg_elo": 1400.0,
+            "elo_battles": 30,
+            # Complete, current, repeated evidence — every #854 leg passes, so
+            # the ONLY thing that can refuse is the weight-blind gate.
+            "eval_samples": {"proxy_ifeval": 2},
+            "eval_history": {"proxy_ifeval": [0.1, 0.1]},
+            "objective_version": objective_version(["proxy_ifeval"]),
+            "evidence_cycle": 1,
+        }
+        other = _genome("peer", eval_scores={"proxy_ifeval": 0.9})
+        other.id = "peer"
+        components = compute_fitness(g, [g, other], alt)
+        assert components.total == 0.0
+        assert not components.passed_hard_gate
+        store = PopulationStore(tmp_path / "pop.db")
+        store.add(g)
+        # All evidence legs satisfied, yet the threshold gate still refuses —
+        # no objective reweighting, Elo padding, or fitness inflation (85.262)
+        # can clear it.
+        with pytest.raises(PermissionError, match=r"hard gate: proxy_ifeval score 0\.100"):
+            asyncio.run(store.promote_audited("weak2", _trail()))
+        assert store.get("weak2").is_active is False
+
+    def test_raw_transition_gates_capability_out_from_under_the_policy(self, tmp_path):
+        # Defense-in-depth, tested at its own layer: the governed policy
+        # refuses first via promote_audited, but the raw transition must keep
+        # the capability gate for any future caller that reaches _promote out
+        # from under the governed entrypoint (the exact regression this
+        # private transition exists to make constructible-proof, #342 +
+        # #853). An approved genome with a below-gate score cannot be flipped
+        # active by skipping the policy.
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome(
+            "rawgate",
+            fitness_score=99.0,
+            approved_for_promotion=True,
+            eval_scores={"proxy_ifeval": 0.1},
+        )
+        store.add(g)
+        with pytest.raises(PermissionError, match="cannot be promoted"):
+            store._promote("rawgate")
+        assert store.get("rawgate").is_active is False
+
+    def test_compensation_restore_skips_capability_never_approval(self, tmp_path):
+        # The audit-failure compensation path restores with
+        # require_capability=False (a revert of an already-made decision,
+        # not a new promotion) — but the human-approval gate applies
+        # unconditionally even there. A never-approved genome cannot be
+        # slipped active by riding a compensation restore.
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome("unapproved", fitness_score=99.0, eval_scores={"code_rsi": 0.9})
+        assert g.approved_for_promotion is False
+        store.add(g)
+        with pytest.raises(PermissionError, match="not been approved"):
+            store._promote("unapproved", require_capability=False)
+        assert store.get("unapproved").is_active is False
 
 
 # --------------------------------------------------------------------------
