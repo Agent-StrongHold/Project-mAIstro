@@ -19,6 +19,15 @@
 # can turn an otherwise reproducible image into a source-build failure.
 FROM python:3.13.15-slim-bookworm AS builder
 WORKDIR /app
+# CI evidence (run 36835563311, job 110282105809): both buildx attempts of the
+# sibling research image died inside pip on `files.pythonhosted.org` read
+# timeouts -- pip's 15s default, under runner load, on multi-hundred-KB wheels.
+# The resolution itself is sound (a pip --dry-run of the same requirements
+# resolves cleanly), so the defect is transport patience, not pinning. State
+# the patience instead of rediscovering it on the next registry slow spell;
+# buildx-build-retry.sh still retries the whole invocation above this layer.
+ENV PIP_DEFAULT_TIMEOUT=60 \
+    PIP_RETRIES=10
 ENV PATH="/app/venv/bin:$PATH"
 RUN python -m venv /app/venv
 COPY pyproject.toml uv.lock README.md ./
