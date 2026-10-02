@@ -171,47 +171,45 @@ def test_a_thirty_day_backlog_enumerates_only_its_catchup_window() -> None:
     """The audit's failure mode, stated as work rather than seconds.
 
     A stale per-minute schedule stalled the loop for ~0.64s because it reparsed
-    every occurrence back to its creation. `_schedule()` is thirty days old, so
-    an unbounded evaluation examines ~43,200 of them; the seven-day catchup
-    window caps that at 10,080, and `max_enumerated_fires` caps the fire list
-    separately.
+    every occurrence back to its creation. This schedule last fired thirty days
+    ago, so an unbounded walk examines ~43,200 occurrences; the seven-day
+    catchup window holds it to exactly 10,080, and `max_enumerated_fires` caps
+    the fire list at 512 independently of that.
 
-    The bound is an upper one, not an equality, because `EnumerationLimits`
-    stops the walk on *either* of two conditions -- `max_walk_steps` or
-    `walk_budget_seconds` (0.1s). A fast machine finishes the window inside the
-    budget and examines all 10,080; a loaded one, or one running under coverage
-    instrumentation, trips the clock first and truncates honestly. Both satisfy
-    the invariant: enumeration never exceeds the window, and never walks the
-    thirty-day backlog.
+    `last_fired_at` is overridden to thirty days because the shared fixture
+    sets it to exactly seven, which coincides with the catchup horizon:
+    `enumeration_start` takes the latest of the cursor, the horizon and
+    `created_at`, so with the fixture's value the walk starts seven days back
+    whether or not the window still bounds anything. The assertion would hold
+    even if the window restriction regressed, which is the one thing this test
+    exists to catch (Codex, #1803).
 
-    This asserted `elapsed < 0.5` until #1802, and then briefly asserted
-    `seen == 10080`, which was the same mistake wearing a counter -- it
-    encoded one machine's speed as a structural fact and failed on slower
-    runners. See #184 for the same correction in test_lanes.py.
+    The time budget is disabled for the same reason the complete-walk tests
+    above disable it. `EnumerationLimits` stops on *either* `max_walk_steps` or
+    `walk_budget_seconds` (0.1 by default), so under instrumentation the walk
+    truncates early and the count becomes a measure of the machine. This
+    asserted `elapsed < 0.5` until #1802 and then an exact count under the
+    default budget, which was the same mistake wearing a counter. With the
+    clock out of the way the count is a fact about the window.
     """
-    result = evaluate(_schedule(), now=NOON)
-    seen = len(result.fires) + len(result.skipped)
+    schedule = _schedule(last_fired_at=NOON - timedelta(days=30))
+    result = evaluate(
+        schedule, now=NOON, limits=EnumerationLimits(walk_budget_seconds=math.inf)
+    )
 
-    # One occurrence per minute, so the window's width is the ceiling on what
-    # may be examined -- and it is the schedule's thirty-day age that it
-    # refuses. Below it whenever a limit stops the walk sooner.
-    assert seen <= int(SEVEN_DAYS // 60)
+    # One occurrence per minute, so the window's width is the examination
+    # count -- and it is the thirty-day cursor that it refuses.
+    assert len(result.fires) + len(result.skipped) == int(SEVEN_DAYS // 60)
 
-    # A walk that ran to completion examined the window it was given; only a
-    # truncated one may report less. Stated this way round because a budget
-    # exhausted on the first step legitimately sees nothing, and asserting a
-    # bare `seen > 0` would fail that honest outcome.
-    if not result.enumeration_incomplete:
-        assert seen > 0
-
-    # Capped independently of the window: a window the engine will examine in
-    # full can still hold more fires than one tick should admit.
+    # Capped independently of the window: a window the engine walks in full can
+    # still hold more fires than one tick should admit.
     assert len(result.fires) <= DEFAULT_ENUMERATION_LIMITS.max_enumerated_fires
 
-    # Bounded work is still honest work. Truncation is reported, and a walk
-    # that completed claims no truncation point -- the two must agree in both
-    # directions, or a caller cannot tell a full window from a cut-short one.
+    # A walk that was not truncated names no truncation point, and one that was
+    # must -- the two must agree in both directions, or a caller cannot tell a
+    # full window from a cut-short one.
     assert result.enumeration_incomplete == (result.enumeration_stopped_at is not None)
+    assert result.enumeration_incomplete is False
 
 
 def test_minutely_occurrences_inside_a_default_window_are_fully_examined() -> None:
