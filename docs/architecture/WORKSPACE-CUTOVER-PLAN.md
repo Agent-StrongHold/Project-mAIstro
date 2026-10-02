@@ -370,9 +370,11 @@ PR body for `Closes/Fixes/Resolves #N`; fail if the target's leading bracketed t
 the word EPIC, MILESTONE or INITIATIVE, or the target has sub-issues. The tag test, not a
 literal `[EPIC]` prefix, because real titles qualify the tag: `[EPIC M1-B]`,
 `[MILESTONE M4]`, `[MASTER INITIATIVE]`. Epics close by hand when `check-ac-state` reports
-every criterion `reachable`. This is the #56 hole. The check re-runs only when a PR is
-opened, reopened or pushed to, so adding `Closes #N` by editing the body alone is caught on
-the next push.
+every criterion `reachable`. This is the #56 hole. The workflow triggers on `opened`,
+`reopened`, `synchronize` and `edited`, and the script reads the body from the event
+payload, so a body edit re-runs the check against the body as it now stands. Triggering
+only on opened/reopened/synchronize is not enough: a `Closes #N` appended after the final
+push would ride a green check (vouching for the old body) straight into the merge.
 
 **Freeze extended to surfaces.** Add to `quality/m1-convergence-freeze.json` (or an M3
 sibling) a rule: a new file under `frontend/src/pages` that declares a backend entity type
