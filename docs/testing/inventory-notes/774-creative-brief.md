@@ -299,3 +299,41 @@ Re-validated on the resolved tree (not inherited from round 3):
   persona reference is rejected at construction; the schema carries no
   authorization vocabulary.
 
+
+## Round 5 (CI-repair: restore the V105 ruff-external registration the round-4 merge over-reverted)
+
+The verifier's deterministic check flagged `RUF102 Invalid rule code in
+`# noqa`: V105` at `maistro_design/consistency.py:105`. Root cause: the
+round-4 merge resolution reverted the `V105` entry from pyproject
+`[tool.ruff.lint] external` believing the removed develop prototype
+`creative_brief.py` was its only user — but develop-side PR #1663
+(`bebc51fd8`, cross-artifact consistency) had independently landed a second
+legitimate user: the Pydantic-dispatched `ClaimRule._require_evidence_backing`
+validator carries `# noqa: V105` (vulture "unused method") per the
+[779 note](779-cross-artifact-consistency.md), which states those markers
+assume "codes registered in ruff `external`". Dropping the marker instead
+would have surfaced `_require_evidence_backing` as a new unbanked vulture
+identity, failing the exact-debt-ledger gate; re-registering the code is the
+state the 779 note documents as intended.
+
+- `pyproject.toml`: `external` is again `["V102", "V105", "V106", "V107"]`,
+  with a comment naming the consistency.py marker and the round-4
+  over-revert. No suppression semantics changed: RUF102 external registration
+  only teaches Ruff that V105 is a valid external-analyzer code; the vulture
+  per-identity ledger still enforces every identity.
+- `quality/vulture-baseline.json`: **unchanged** — the gate re-run exits 0
+  (1371 reviewed identities -> 1370 findings, `unclassified: 0`,
+  `never_allowlist: 0`), so no amendment was needed in this CI-repair round.
+
+Re-validated on the repaired tree:
+
+- `uv run ruff check .` clean; `ruff format --check .` clean (2721 files);
+- `uv run pytest packages/maistro-design/tests -x -q`: 428 passed, 1 skipped
+  (PG leg); the explicit acceptance set (`test_creative_brief.py` +
+  `test_creative_brief_store.py`) is 58 passed;
+- the named CI-repair gate `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exits 0;
+- canonical `uv run mypy` over core/server/turing/canvas/bootstrap/registry:
+  no issues in 745 source files;
+- `check-suite-inventory.py` (14 suites), `verify-monorepo-layout.sh`, and
+  `check-merge-markers.py` all exit 0.
