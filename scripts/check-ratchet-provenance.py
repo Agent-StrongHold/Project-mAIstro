@@ -91,17 +91,6 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "against a prior-tree oracle would compare against a matrix that predates the "
         "surfaces this tree ships"
     ),
-    ("check-route-permissions.py", "quality/route-permissions.json"): (
-        "the route-permission registry is the reviewed per-prefix specification being "
-        "changed: every mounted authenticated prefix must carry an exact declaration, so "
-        "a prior-tree oracle would predate the routes this tree mounts; the tolerated-gap "
-        "baseline is separately base-resolved by check-route-permissions-provenance"
-    ),
-    ("check-route-permissions.py", "quality/public-routes.json"): (
-        "public paths are the reviewed anonymity specification: declaring a prefix "
-        "public is precisely the security decision under review, not a measurement "
-        "against a prior-state oracle"
-    ),
 }
 
 # Adapter values are tooling identities (filename stems), not paths. Keeping the
@@ -136,12 +125,6 @@ DELEGATED_ADAPTERS: dict[tuple[str, str], str] = {
     ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json"): ("check-lifecycle-provenance"),
     ("check-adr-status-language.py", "quality/adr-status-language-baseline.json"): (
         "check-adr-status-language-provenance"
-    ),
-    ("check-principal-identity.py", "quality/principal-identity-baseline.json"): (
-        "check-principal-identity-provenance"
-    ),
-    ("check-route-permissions.py", "quality/route-permissions-baseline.json"): (
-        "check-route-permissions-provenance"
     ),
 }
 

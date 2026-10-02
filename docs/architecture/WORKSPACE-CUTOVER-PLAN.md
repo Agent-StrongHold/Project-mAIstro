@@ -4,6 +4,12 @@
 **Owners:** #1046 (Adaptive Workspace), #804 (Persistent Workspace Agent), #53 (Conductor onto Conduit + canonical Runs), #65 (Workspace-centric inspection), #82 (Workspace backlog)
 **Companion policy:** [M1-CONVERGENCE-FREEZE.md](M1-CONVERGENCE-FREEZE.md) · [CONVERGENCE-MATRIX.md](CONVERGENCE-MATRIX.md) · [KNOWN-GAPS.md](../../KNOWN-GAPS.md)
 
+**Update (develop sync, 2026-10-02):** the P0.1/P0.2 enforcement artifacts named below
+(`scripts/check-principal-identity.py`, `scripts/check-route-permissions.py`, their baseline
+ledgers, and `tests/fitness/test_principal_identity.py`) were reverted on develop (#1769,
+reverting 430139cb7). Those plan items are back to not-started on the develop line; the
+sections below remain the design intent, not a record of landed enforcement.
+
 ## Why this document exists
 
 The Conductor UI is the third attempt at a product surface, and the flaws it carries are

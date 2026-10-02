@@ -265,3 +265,58 @@ catalog assertion is defined to spell out).
   `check-vulture-baseline.py` fails solely on the 41 granted backlog
   identities plus the 9 develop-side identity-drift rows. Driver step
   unchanged: land the staged grants on develop, then re-queue.
+
+## Third CI-repair addendum (develop-sync round at 9220542bf)
+
+The lane required finishing the develop sync ("resolve every conflict in place and commit
+the resolution") after a prior run left an in-flight, uncommitted merge. Two merge commits
+land: `a22dfa9da` (the inherited in-flight merge of `a74a2b939`) and `9220542bf` (merge of
+`origin/develop` at `68079320f`, the round's declared base). Both merges conflicted only in
+`quality/vulture-baseline.json`; each was resolved by exact-set arithmetic against the
+candidate's banked ledger plus develop's per-rule delta — `a74a2b939` removed
+`workspaces/model.py::unused method '_require_non_blank'` from `core-public-api-surface`
+(one-line diff vs. our side), and `68079320f` removed
+`canvas/store.py::unused class 'PgCanvasStore'` from `protocol-and-adapter-port`, an entry
+our ledger already carries under `planned-package-api`, so that resolution is our side
+verbatim.
+
+- **Develop's revert (#1769) supersedes round 2's P0.1/P0.2 adapters.** Develop reverted
+  430139cb7, deleting `scripts/check-principal-identity.py`,
+  `scripts/check-route-permissions.py`, their baseline ledgers, and the fitness test. The
+  two delegated adapters this branch added in the previous round lost their consumers and
+  became crash-if-run orphans, and `check-ratchet-provenance.py` (by its own
+  stale-mapping doctrine) fails on any mapping naming a deleted consumer. Both adapters
+  are removed and the four stale entries (two `CANDIDATE_AUTHORED`, two
+  `DELEGATED_ADAPTERS`) pruned. Provenance policy tests: 90 passed
+  (`test_check_ratchet_provenance.py`, `test_ratchet_provenance*.py`,
+  `test_ratchet_base_rev_policy.py`).
+- **exact-debt-ledger re-banked after the sync:** `check-vulture-baseline.py --update`
+  (the sanctioned candidate-ledger rewrite) pruned 11 identities the merge made stale —
+  `backlog/model.py::unused method '_require_non_blank'` (no longer flagged),
+  eight rows pointing at the revert-deleted `identity/_crypto.py` / `identity/principal.py`
+  plus the old `identity/__init__.py::__getattr__`, and
+  `canvas/store.py::unused class 'PgCanvasStore'` (no longer flagged) — and added six rows
+  for the merged `identity/__init__.py` shape (`curve`, `from_mnemonic`, `derive_named`,
+  `did_key`, `mnemonic_words`, `zero`). Candidate bookkeeping is exact again; `--update`
+  refused nothing (0 unclassified, 0 never-allowlist). `maistro.identity` imports and all
+  69 identity tests pass on the merged module.
+- **Named merge-queue failure (Supply chain / pip-audit) re-proven at the post-merge
+  head:** the `security` job sequence run verbatim (`uv sync --locked --extra dev`;
+  `uv pip install pip-audit`; `uv pip freeze --exclude-editable`; `pip-audit --strict
+  --format=json`; `scripts/pip_audit_gate.py`) → gate exit 0, one known advisory
+  (ecdsa==0.19.2 PYSEC-2026-1325) triaged in ALLOWED, direct-dependency usage ratchet OK.
+- **Merge fallout battery, all green at `9220542bf`:** `uv sync --locked --all-extras` OK;
+  `alembic heads` → `049 (head)` (single head after absorbing develop's canvas migrations);
+  `ruff check .` / `ruff format --check .` clean; `check-suite-inventory.py` 14/14 suites;
+  `mypy --strict packages/maistro-core/src` clean (660 files); backlog suite 38 passed /
+  16 skipped; migration chain **13 passed** on a pristine pg18 database (`migr82` dropped
+  and recreated); `verify-wheel-imports.py` 10/10 wheels import from a clean venv
+  (pyproject/uv.lock moved in the merge, so the conditional wheel gate was proven too);
+  `check-shipped-surface-truth.py` OK.
+- **Remaining red is unchanged and still structural:** the delegated reachability
+  (`maistro.backlog.*` NEW-unauthorized) and vulture trusted legs — 50 identities against
+  the trusted base (41 granted backlog rows plus the identity-module drift rows). Grants
+  are read **from the base revision** by design (`ratchet_provenance.load_authorizations`,
+  #534's two-merge rule), so no candidate-side edit can clear them; the driver must land
+  the staged grants on develop, then re-queue. No GitHub mutations are permitted from this
+  worker.
