@@ -43,6 +43,51 @@ Shared Python runtime and monorepo substrate for AI agent platforms: orchestrato
 - Run `uv run pytest` and ruff before pushing when you touch Python.
 - Link ADR updates when behavior or public contracts change.
 
+## Quality ratchets and grants
+
+The repo gates on per-identity ledgers in `quality/*.json` (vulture, radon,
+promotion surface, reachability, direct effects, suite inventory). Two rules
+account for most blocked PRs:
+
+- **A floor raise takes two merges.** `ratchet_provenance.load_authorizations`
+  reads `quality/ratchet-authorizations.json` **from the merge base**, not from
+  your branch, so a grant never authorizes the change that introduces it. Land
+  the grant first, then the change. The gates say so when they fail
+  ("candidate baseline edits cannot approve them") — believe them rather than
+  re-running.
+- **Banking is not authorizing.** Most ratchets check twice: your ledger must
+  match the scan *and* the new debt must be authorized from the base. A clean
+  candidate ledger with no grant still fails.
+
+Run a gate with **CI's exact arguments** — `grep` the workflow. The vulture
+scan is `packages/*/src --min-confidence 60 --exclude '*/third_party/*'`; its
+defaults (`packages`, `tests`) bank rows the blocking job can never see.
+
+**`quality/*.json` merge cleanly while losing rows.** Two branches append, git
+auto-resolves to one side, nothing conflicts and nothing asks. After any merge
+or `git checkout <ref> -- quality/...`, diff row counts against `origin/develop`
+before trusting it; expect `git diff --numstat` to be additions-only when you
+meant to add. `vulture-baseline.json` is a **multiset** — it carries intentional
+duplicates, so never pass its lists through `set()`.
+
+## Verifying your own work
+
+- **Confirm the push landed.** `git add -A && git commit … && git push` skips the
+  push when `commit` exits non-zero — which it does after a conflict-free
+  `git merge`, because the merge already committed. Compare
+  `git rev-parse HEAD` with `git rev-parse origin/<branch>` afterwards.
+- **A missing module and a real violation both exit 1.** A fresh `git worktree`
+  venv has base deps only; run `uv sync --locked --extra dev` before trusting a
+  gate's exit code, and read its output rather than its status.
+- **Show a new test fails against the regression it names.** A test can pass for
+  the wrong reason — a fixture that pins the value under test, or a bound that
+  encodes the current machine's speed. Assert structure over wall-clock timing
+  where the code allows it, and check the degenerate paths, not just the happy
+  one.
+- **CI failures are often not yours.** Runner shutdowns, and tests that assert a
+  transient UI state or a latency bound, fail on PRs that cannot have caused
+  them. Read the log before changing code.
+
 ## Security and secrets
 
 - Never commit `.env`, API keys, or credentials. Root `.gitignore` already ignores `.env` and `.env.local`.
