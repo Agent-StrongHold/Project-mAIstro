@@ -14,6 +14,10 @@ import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.types.errors import ConfigError
+from maistro.workspaces.backlog_history import (
+    BacklogHistoryEvent,
+    BacklogHistoryEventKind,
+)
 from maistro.workspaces.backlog_history.store import InMemoryBacklogHistoryStore
 from maistro.workspaces.backlog_history.wiring import wire_backlog_history_store
 from maistro.workspaces.wiring import backend_of
@@ -84,15 +88,62 @@ async def test_a_postgres_project_store_falls_back_loudly(
     assert any("no PostgreSQL backend yet" in record.message for record in caplog.records)
 
 
-async def test_sqlite_store_refuses_a_project_store_without_a_transaction(tmp_path) -> None:
+async def test_the_journal_takes_its_own_connection_and_pairs_with_no_other_store(
+    tmp_path,
+) -> None:
+    """The journal's append holds its own `BEGIN IMMEDIATE` on its own
+    connection (#101, following the one-transaction-per-connection rule of
+    #327/#1199), so it pairs with no other store's transaction. The
+    constructor taking a bare connection — and refusing the retired
+    `project_store=` coupling — is what keeps a shared-transaction regression
+    from coming back silently."""
     import aiosqlite
 
     from maistro.workspaces.backlog_history.sqlite_store import SqliteBacklogHistoryStore
 
     conn = await aiosqlite.connect(tmp_path / "wired.db")
     try:
-        with pytest.raises(TypeError, match="transaction"):
+        store = SqliteBacklogHistoryStore(conn)
+        await store.ensure_schema()
+        assert store is not None
+
+        with pytest.raises(TypeError):
             SqliteBacklogHistoryStore(conn, project_store=InMemoryProjectScopeStore())
+    finally:
+        await conn.close()
+
+
+async def test_concurrent_appends_get_distinct_gap_free_sequences(tmp_path) -> None:
+    """The atomicity the journal's own critical section buys: the sequence
+    read and the insert run inside one `BEGIN IMMEDIATE`, so concurrent
+    appends for one item serialize into per-item sequences without a gap or
+    a collision — with no sibling store's transaction involved."""
+    import asyncio
+
+    import aiosqlite
+
+    from maistro.workspaces.backlog_history.sqlite_store import SqliteBacklogHistoryStore
+
+    def _journal_event(item_id: str) -> BacklogHistoryEvent:
+        return BacklogHistoryEvent(
+            workspace_id="ws-a",
+            project_id="p-1",
+            item_id=item_id,
+            kind=BacklogHistoryEventKind.ITEM_RECORDED,
+        )
+
+    conn = await aiosqlite.connect(tmp_path / "wired.db")
+    try:
+        store = SqliteBacklogHistoryStore(conn)
+        await store.ensure_schema()
+        recorded = await asyncio.gather(
+            *(store.append(_journal_event("item-1")) for _ in range(5)),
+            return_exceptions=False,
+        )
+        # `gather` returns the append results in call order; the sequences
+        # themselves are whatever order the critical section serialized them
+        # into — distinct and gap-free is the contract.
+        assert sorted(event.sequence for event in recorded) == [1, 2, 3, 4, 5]
     finally:
         await conn.close()
 
