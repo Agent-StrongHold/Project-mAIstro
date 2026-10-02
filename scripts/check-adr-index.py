@@ -139,9 +139,7 @@ def _build_row(front_matter: object) -> str:
     created = str(front_matter.created)
     accepted = _expected_accepted(front_matter)
     summary = str(getattr(front_matter, "title", adr_id)).rstrip(".") + "."
-    return (
-        f"| {adr_id} | {ver} | {status} | {created} | {accepted} | {modified} | {summary} |"
-    )
+    return f"| {adr_id} | {ver} | {status} | {created} | {accepted} | {modified} | {summary} |"
 
 
 def _expected_accepted(front_matter: object) -> str:
