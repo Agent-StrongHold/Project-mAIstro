@@ -17,7 +17,11 @@ import pytest
 
 from maistro_evolve.improvement import ImprovementKind
 from maistro_rsi import fail_first
-from maistro_rsi.candidate_fitness import FitnessInputs, compose_scorecard
+from maistro_rsi.candidate_fitness import (
+    FitnessInputs,
+    _mean_quality_at_base,
+    compose_scorecard,
+)
 from maistro_rsi.fail_first import (
     EvidenceContract,
     FailFirstEvidence,
@@ -210,6 +214,64 @@ def test_refactor_contract_requires_a_measured_quality_delta() -> None:
     assert "code-quality composite improved" in improvement.reason
 
 
+def test_declared_refactor_contract_wiring_judges_the_measured_delta(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """End-to-end wiring (#392): a source-touching candidate DECLARED refactor
+    owes no red test, but the loop must actually measure the alternative —
+    the code-quality composite of the changed files against their baseline
+    versions — and reject the candidate when that delta is absent or does not
+    improve. The fail-first gate is the enforcement point either way."""
+    from maistro_rsi import candidate_fitness
+
+    repo = _repo(tmp_path)
+    (repo / "src.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "candidate refactor")
+
+    monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
+    monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
+
+    def evaluate() -> object:
+        return candidate_fitness.evaluate_candidate(
+            str(repo),
+            ["src.py"],
+            test_command="exit 0",
+            baseline_ref="base",
+            baseline_coverage=80.0,
+            declared_kind=ImprovementKind.REFACTOR,
+        )
+
+    def ff_gate(card: object):  # type: ignore[no-untyped-def]
+        return next(g for g in card.gates if g.name == "fail_first_evidence")
+
+    # Improvement: the alternative contract is met and recorded.
+    monkeypatch.setattr(candidate_fitness, "_mean_quality", lambda *a, **k: (0.9, "cand"))
+    monkeypatch.setattr(candidate_fitness, "_mean_quality_at_base", lambda *a, **k: 0.7)
+    improved = evaluate()
+    gate = ff_gate(improved)
+    assert improved.accepted is True
+    assert gate.passed is True
+    assert gate.detail["contract"] == "refactor"
+    assert gate.detail["quality_delta"] == pytest.approx(0.2)
+
+    # No improvement: the same wiring rejects — "clarity" without a measured
+    # delta is not evidence.
+    monkeypatch.setattr(candidate_fitness, "_mean_quality", lambda *a, **k: (0.6, "cand"))
+    regressed = evaluate()
+    gate = ff_gate(regressed)
+    assert regressed.accepted is False
+    assert gate.passed is False
+    assert "did not improve" in gate.reason
+
+    # Unverifiable (no baseline composite): fails closed, never passes.
+    monkeypatch.setattr(candidate_fitness, "_mean_quality_at_base", lambda *a, **k: None)
+    unverifiable = evaluate()
+    gate = ff_gate(unverifiable)
+    assert unverifiable.accepted is False
+    assert "fail closed" in gate.reason
+
+
 def test_characterization_contract_is_the_test_only_alternative() -> None:
     ok = fail_first_gate(EvidenceContract.CHARACTERIZATION, None, net_new_tests=1)
     assert ok.passed is True
@@ -295,6 +357,35 @@ def test_failure_digest_is_stable_and_identity_sensitive() -> None:
     b = failure_digest(["t.py::test_b", "t.py::test_a"])
     assert a == b  # order-independent
     assert a != failure_digest(["t.py::test_a"])
+
+
+# ---------------------------------------------------------------------------
+# The refactor contract's baseline half: real git (git show + real scorer)
+# ---------------------------------------------------------------------------
+
+
+def test_refactor_baseline_quality_scores_the_base_revision(tmp_path: Path) -> None:
+    """_mean_quality_at_base scores the changed files AS THEY WERE on the
+    baseline ref — the left side of the refactor contract's quality delta."""
+    repo = _repo(tmp_path)
+    baseline_quality = _mean_quality_at_base(repo, "base", ["src.py"])
+    assert baseline_quality is not None
+    assert 0.0 <= baseline_quality <= 1.0
+
+
+def test_refactor_baseline_quality_skips_files_absent_on_base(tmp_path: Path) -> None:
+    """A NEW module has no baseline version to improve upon — it contributes
+    nothing to the mean; when NO changed file is readable on the base the
+    refactor contract has no verifiable left side and gets None (fail closed)."""
+    repo = _repo(tmp_path)
+    (repo / "newmod.py").write_text("def h():\n    return 7\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "candidate adds newmod")
+
+    mixed = _mean_quality_at_base(repo, "HEAD~1", ["src.py", "newmod.py"])
+    assert mixed is not None  # src.py is readable on the base: it scores
+    only_new = _mean_quality_at_base(repo, "HEAD~1", ["newmod.py"])
+    assert only_new is None  # nothing readable: the contract cannot verify
 
 
 # ---------------------------------------------------------------------------

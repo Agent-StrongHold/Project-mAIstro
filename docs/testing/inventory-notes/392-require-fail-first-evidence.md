@@ -1,12 +1,23 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +38
+  packages/maistro-rsi/tests: +43
 ---
 # 392-require-fail-first-evidence
 
 ## What moved
 
-`packages/maistro-rsi/tests/test_fail_first.py` is new (+37 node IDs): nine
+Repair round (coverage-gate evidence): the refactor alternative contract is now
+exercised where it is wired, not only as a pure gate — `test_fail_first.py`
+gains three tests (+3): the `evaluate_candidate` refactor wiring judged by the
+measured quality delta (improvement accepted + recorded, non-improvement and
+unverifiable-baseline rejected), and `_mean_quality_at_base` against a REAL
+git repo (baseline scoring; new-module skip with fail-closed None).
+`test_local_loop.py` gains two (+2): a full-loop promotion whose git-notes
+record carries the real red→green probe (base/candidate SHA, failing
+identities, digest, passing result) and the legacy-scorecard tolerance (no
+fail_first gate → key simply omitted).
+
+`packages/maistro-rsi/tests/test_fail_first.py` is new (+40 node IDs): nine
 parametrized contract-resolution cases plus the promotion gate's rejection
 matrix (missing / already-passing / non-reproducible / config-tainted /
 unrelated fail-first evidence), the alternative evidence contracts (refactor
@@ -17,7 +28,8 @@ deletion that must not be resurrected, a monkeypatched flaky second probe,
 and the config-taint case against a live repo), and the git-notes trace
 round-trip.
 
-`test_fixer_tiers.py` gains one test (+1): the REFACTOR/DOC fixer scaffold now
+`test_fixer_tiers.py` gains one test (+1, unchanged this round): the
+REFACTOR/DOC fixer scaffold now
 demands behavior-preserving polish with a measurable code-quality improvement
 instead of the test-first scaffold, and the bounded tiers' scaffold must state
 the enforced fail-first proof.
