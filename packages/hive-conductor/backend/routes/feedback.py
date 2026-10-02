@@ -12,7 +12,7 @@ node kind. The target Run is authorized through the canonical Workspace
 inspection door, and its Project is authoritative; a body project_id may
 confirm that scope but cannot replace it.
 
-Auth: requires the logged-in user (AuthMiddleware sets request.state.user).
+Auth: requires the logged-in user (AuthMiddleware sets request.state.principal).
 The user_id from the session is the actor; cross-user writes are
 impossible because the route never accepts user_id from the body.
 
@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from services.dag_run_inspection import visible_run_detail
 from services.feedback_service import ALLOWED_THUMBS, record_thumb
+from services.request_principal import require_actor_id
 
 from routes.audit import log_audit
 
@@ -61,10 +62,7 @@ def _resolve_user_id(request: Request) -> str:
     Raises 401 if missing (defensive — AuthMiddleware already protects
     the path so this should be impossible in practice, but the assert
     keeps the contract explicit + tested)."""
-    user = getattr(request.state, "user", None)
-    if not user or not user.get("id"):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(user["id"])
+    return require_actor_id(request)
 
 
 def _resolve_project_id(request: Request, body: FeedbackBody, run_project_id: str) -> str:

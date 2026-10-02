@@ -36,6 +36,7 @@ from services.agent_materialization import (
     upsert_agent_definition,
     workspace_agents,
 )
+from services.request_principal import optional_actor_id
 from services.workspace_authority import is_member, member_role
 
 from routes.audit import log_audit
@@ -55,8 +56,7 @@ def _now() -> datetime:
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    return str(user.get("id") or user.get("username") or "dev")
+    return optional_actor_id(request, default="dev")
 
 
 async def _is_member(user_id: str, workspace_id: str) -> bool:
