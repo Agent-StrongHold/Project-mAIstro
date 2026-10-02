@@ -821,15 +821,21 @@ jobs:
           # core 67, evolve 25, rsi 30, canvas 11, bootstrap 2, registry 2,
           # design 1, server 1, turing 1.
           #
-          # 140 -> 139 before this even merged: #1674 took
+          # This number has moved twice before merging, which is the point of
+          # recording why. 140 -> 139: #1674 took
           # tau_bench.py::_score_tool_usage from C (14) to B (9), and the radon
-          # ledger dropped the same row.
+          # ledger dropped the same row. 139 -> 145: #1663 added three C blocks
+          # in maistro-design and #1730 added three in maistro-rsi and regressed
+          # three more there (#1793 grants all nine; #1791/#1792 track taking
+          # them back down). Both PRs merged on 2026-10-02, into packages this
+          # scan does not watch *until this PR lands* -- which is the argument
+          # for landing it rather than refreshing the number again.
           #
-          # 139 is the same number check-radon-baseline.py now carries, and that
+          # 145 is the same number check-radon-baseline.py now carries, and that
           # is the point: the two tools measure the same blocks over the same
           # scope, so a divergence between this count and the ledger's length is
           # itself a signal that one of them stopped looking.
-          XENON_BASELINE: 139
+          XENON_BASELINE: 145
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
