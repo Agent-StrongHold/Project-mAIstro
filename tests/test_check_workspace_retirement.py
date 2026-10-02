@@ -180,3 +180,47 @@ def test_dropping_or_keeping_a_tracked_entry_needs_a_landed_grant(gate) -> None:
         [failure] = gate.provenance_failures(candidate, trusted, set())
         assert failure.startswith(f"{path}: tracked at the trusted base")
         assert gate.provenance_failures(candidate, trusted, {f"untrack::{path}"}) == []
+
+
+def test_a_store_missing_from_the_ledger_fails(gate, tree: Path) -> None:
+    _write(
+        tree,
+        STORES,
+        "known = JsonStore('known')\nunknown = JsonStore('unknown')\n",
+    )
+    failures = gate.check(
+        {"entries": [_entry(kind="store", path=f"{STORES}::known")]}, tree
+    )
+
+    assert failures == [
+        f"{STORES}::unknown: store exists in stores.py but is absent from the ledger"
+    ]
+
+
+def test_stores_module_aliases_are_tracked(gate, tree: Path) -> None:
+    _write(tree, STORES, "dag_runs = JsonStore('dag_runs')\n")
+    _write(
+        tree,
+        "packages/hive-conductor/backend/services/x.py",
+        "import stores as legacy\nlegacy.dag_runs\n",
+    )
+
+    failures = gate.check({"entries": [_entry(kind="store", path=f"{STORES}::dag_runs")]}, tree)
+
+    assert failures == [
+        f"{STORES}::dag_runs: NEW importer packages/hive-conductor/backend/services/x.py"
+        " -- a retiring surface may not gain consumers"
+    ]
+
+
+def test_a_new_importer_cannot_be_self_authorized_in_the_candidate_ledger(gate, tree: Path) -> None:
+    app = "packages/hive-conductor/frontend/src/App.tsx"
+    _write(tree, app, 'import D from "./pages/Docs";\n')
+    trusted = _ledger(_entry())
+    candidate = _ledger(_entry(importers=[app]))
+
+    failures = gate.check(candidate, tree, trusted=trusted)
+
+    assert failures == [
+        f"{PAGES}/Docs.tsx: NEW importer {app} -- a retiring surface may not gain consumers"
+    ]

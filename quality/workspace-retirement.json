@@ -6,7 +6,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
       "disposition": "PROJECT",
       "replaced_by": "Workspace Home (#1048)",
-      "delete_by": "v1.0",
+      "delete_by": "M3-E",
       "owner": "#1048",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -39,7 +39,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/Missions.tsx",
       "disposition": "MERGE",
       "replaced_by": "Workspace backlog (#82)",
-      "delete_by": "v1.0",
+      "delete_by": "M3-C",
       "owner": "#82",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -50,7 +50,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/WorkItems.tsx",
       "disposition": "MERGE",
       "replaced_by": "Workspace backlog (#82)",
-      "delete_by": "v1.0",
+      "delete_by": "M3-C",
       "owner": "#82",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -61,7 +61,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/Chat.tsx",
       "disposition": "PROJECT",
       "replaced_by": "Workspace Agent chat (#1037)",
-      "delete_by": "v1.0",
+      "delete_by": "M3-D",
       "owner": "#1037",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -72,7 +72,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/Memory.tsx",
       "disposition": "PROJECT",
       "replaced_by": "user model / Workspace memory (#776/#1047)",
-      "delete_by": "v1.0",
+      "delete_by": "M3-E",
       "owner": "#1047",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -83,7 +83,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/KnowledgeBase.tsx",
       "disposition": "PROJECT",
       "replaced_by": "user model / Workspace memory (#776/#1047)",
-      "delete_by": "v1.0",
+      "delete_by": "M3-E",
       "owner": "#1047",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -94,7 +94,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/Agents.tsx",
       "disposition": "PROJECT",
       "replaced_by": "capabilities projection over the capability registry (#59)",
-      "delete_by": "v1.0",
+      "delete_by": "M3",
       "owner": "#59",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -105,7 +105,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/Topology.tsx",
       "disposition": "PROJECT",
       "replaced_by": "capabilities projection over the capability registry (#59)",
-      "delete_by": "v1.0",
+      "delete_by": "M3",
       "owner": "#59",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -116,7 +116,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/Skills.tsx",
       "disposition": "PROJECT",
       "replaced_by": "capabilities projection over the capability registry (#59)",
-      "delete_by": "v1.0",
+      "delete_by": "M3",
       "owner": "#59",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -127,7 +127,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/MCP.tsx",
       "disposition": "PROJECT",
       "replaced_by": "capabilities projection over the capability registry (#59)",
-      "delete_by": "v1.0",
+      "delete_by": "M3",
       "owner": "#59",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -226,7 +226,7 @@
       "path": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
       "disposition": "PROJECT",
       "replaced_by": "hidden for v1.0; Run inspection over canonical Evolve Runs returns v1.2 (#51)",
-      "delete_by": "v1.0",
+      "delete_by": "M4",
       "owner": "#51",
       "importers": [
         "packages/hive-conductor/frontend/src/App.tsx"
@@ -268,13 +268,10 @@
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/DesignStudio.tsx",
-      "disposition": "PROJECT",
-      "replaced_by": "Design Studio on the generated client (#286/#773)",
-      "delete_by": "v1.0",
-      "owner": "#286",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#286"
     },
     {
       "kind": "page",
@@ -746,6 +743,17 @@
     },
     {
       "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::backlog_items",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3-C",
+      "owner": "#82",
+      "importers": [
+        "packages/hive-conductor/backend/services/backlog.py"
+      ]
+    },
+    {
+      "kind": "store",
       "path": "packages/hive-conductor/backend/stores.py::chat_sessions",
       "disposition": "RETIRE",
       "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
@@ -803,6 +811,17 @@
       "owner": "#82",
       "importers": [
         "packages/hive-conductor/backend/services/program_store.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::brief_interviews",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3-D",
+      "owner": "#1037",
+      "importers": [
+        "packages/hive-conductor/backend/services/brief_store.py"
       ]
     },
     {
@@ -929,6 +948,17 @@
       "owner": "#1046",
       "importers": [
         "packages/hive-conductor/backend/services/registration_policy.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::username_claims",
+      "disposition": "RETIRE",
+      "replaced_by": "P0.1 identity store",
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/backend/services/username_registry.py"
       ]
     }
   ]

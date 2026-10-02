@@ -32,7 +32,7 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
-from typing import Any, TypeGuard
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 LEDGER = ROOT / "quality" / "workspace-retirement.json"
@@ -42,6 +42,7 @@ METRIC_DEFINITION_VERSION = "1"
 CONDUCTOR = Path("packages") / "hive-conductor"
 BACKEND = CONDUCTOR / "backend"
 FRONTEND_SRC = CONDUCTOR / "frontend" / "src"
+STORES_PATH = "packages/hive-conductor/backend/stores.py"
 
 KINDS = frozenset({"page", "router", "store"})
 DISPOSITIONS = frozenset({"PROJECT", "RETIRE", "MERGE", "KEEP"})
@@ -119,26 +120,69 @@ def _sources(root: Path, base: Path, suffixes: Iterable[str]) -> list[Path]:
     return sorted(found)
 
 
+def _is_store_constructor(value: ast.expr | None) -> bool:
+    if not isinstance(value, ast.Call):
+        return False
+    func = value.func
+    if isinstance(func, ast.Name):
+        return func.id in {"ModelStore", "JsonStore"}
+    if isinstance(func, ast.Attribute):
+        return func.attr in {"ModelStore", "JsonStore"}
+    return False
+
+
+def _assigned_store_names(module_body: list[ast.stmt]) -> set[str]:
+    names: set[str] = set()
+    for node in module_body:
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            if len(node.targets) != 1:
+                continue
+            targets = list(node.targets)
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and node.target is not None:
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        if not _is_store_constructor(value):
+            continue
+        target = targets[0]
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+    return names
+
+
+def _module_level_names(module_body: list[ast.stmt]) -> set[str]:
+    names: set[str] = set()
+    for node in module_body:
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign) and node.target is not None:
+            targets = [node.target]
+        else:
+            continue
+        names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return names
+
+
 def _store_names(root: Path, stores_path: str) -> set[str]:
     path = root / stores_path
     if not path.exists():
         return set()
-    names: set[str] = set()
-    for node in ast.parse(path.read_text()).body:
-        targets: list[ast.expr] = []
-        if isinstance(node, ast.Assign):
-            targets = list(node.targets)
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        names.update(t.id for t in targets if isinstance(t, ast.Name))
-    return names
+    return _assigned_store_names(ast.parse(path.read_text()).body)
 
 
 def asset_exists(entry: dict[str, Any], root: Path) -> bool:
     path = str(entry["path"])
     if entry["kind"] == "store":
         stores_path, name = path.split("::", 1)
-        return name in _store_names(root, stores_path)
+        stores_file = root / stores_path
+        if not stores_file.exists():
+            return False
+        return name in _module_level_names(ast.parse(stores_file.read_text()).body)
     return (root / path).exists()
 
 
@@ -154,12 +198,15 @@ def _from_import_modules(node: ast.ImportFrom, *, in_routes: bool) -> set[str]:
     return {node.module} if node.module.startswith("routes.") else set()
 
 
-def _is_stores_attribute(node: ast.AST) -> TypeGuard[ast.Attribute]:
-    return (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "stores"
-    )
+def _stores_aliases(tree: ast.AST) -> set[str]:
+    """Local names bound to the ``stores`` module, including ``import stores as legacy``."""
+    aliases = {"stores"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "stores":
+                    aliases.add(alias.asname or "stores")
+    return aliases
 
 
 def _python_refs(rel: Path, tree: ast.AST) -> tuple[set[str], set[str]]:
@@ -167,6 +214,7 @@ def _python_refs(rel: Path, tree: ast.AST) -> tuple[set[str], set[str]]:
     in_routes = rel.parent == BACKEND / "routes"
     modules: set[str] = set()
     stores: set[str] = set()
+    store_aliases = _stores_aliases(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(a.name for a in node.names if a.name.startswith("routes."))
@@ -174,7 +222,11 @@ def _python_refs(rel: Path, tree: ast.AST) -> tuple[set[str], set[str]]:
             modules |= _from_import_modules(node, in_routes=in_routes)
             if node.level == 0 and node.module == "stores":
                 stores.update(a.name for a in node.names)
-        elif _is_stores_attribute(node):
+        elif (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in store_aliases
+        ):
             stores.add(node.attr)
         elif isinstance(node, ast.Constant) and _ROUTE_STRING.match(str(node.value)):
             modules.add(str(node.value))
@@ -224,13 +276,40 @@ def find_importers(entries: list[dict[str, Any]], root: Path) -> dict[str, set[s
     return result
 
 
-def check(ledger: Any, root: Path) -> list[str]:
+def _ledger_store_names(entries: list[dict[str, Any]]) -> set[str]:
+    return {
+        path.split("::", 1)[1]
+        for entry in entries
+        if entry.get("kind") == "store"
+        and isinstance(path := entry.get("path"), str)
+        and "::" in path
+    }
+
+
+def _trusted_importers(trusted: Any | None) -> dict[str, set[str]]:
+    if trusted is None or not _entries(trusted):
+        return {}
+    return {
+        str(entry.get("path")): set(entry.get("importers", []))
+        for entry in _entries(trusted)
+        if entry.get("disposition") != "KEEP"
+    }
+
+
+def check(ledger: Any, root: Path, *, trusted: Any | None = None) -> list[str]:
     if not isinstance(ledger, dict) or not isinstance(ledger.get("entries"), list):
         return ["ledger must be an object with an 'entries' list"]
     entries = ledger["entries"]
     failures = [e for i, entry in enumerate(entries) for e in validate_entry(entry, i)]
     if failures:
         return failures
+
+    discovered_stores = _store_names(root, STORES_PATH)
+    declared_stores = _ledger_store_names(entries)
+    failures.extend(
+        f"{STORES_PATH}::{name}: store exists in stores.py but is absent from the ledger"
+        for name in sorted(discovered_stores - declared_stores)
+    )
 
     seen: set[str] = set()
     for entry in entries:
@@ -244,16 +323,21 @@ def check(ledger: Any, root: Path) -> list[str]:
         elif not entry.get("deleted", False) and not exists:
             failures.append(f"{path}: not found; delete the entry's asset and mark it deleted")
 
+    trusted_allowed = _trusted_importers(trusted)
+    compare_against_trusted = bool(trusted_allowed)
     for path, found in find_importers(entries, root).items():
         entry = next(e for e in entries if e["path"] == path)
-        allowed = set(entry.get("importers", []))
+        candidate_allowed = set(entry.get("importers", []))
+        baseline_allowed = (
+            trusted_allowed.get(path, set()) if compare_against_trusted else candidate_allowed
+        )
         failures.extend(
             f"{path}: NEW importer {importer} -- a retiring surface may not gain consumers"
-            for importer in sorted(found - allowed)
+            for importer in sorted(found - baseline_allowed)
         )
         failures.extend(
             f"{path}: {importer} no longer imports it; prune it from importers"
-            for importer in sorted(allowed - found)
+            for importer in sorted(candidate_allowed - found)
         )
     return failures
 
@@ -316,7 +400,6 @@ def main() -> int:
         print(f"FAIL: {LEDGER} is missing", file=sys.stderr)
         return 1
     ledger = json.loads(LEDGER.read_text())
-    failures = check(ledger, ROOT)
 
     prov = _provenance()
     try:
@@ -327,6 +410,8 @@ def main() -> int:
     except prov.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
+
+    failures = check(ledger, ROOT, trusted=trusted)
     print(
         prov.Provenance(
             ratchet=RATCHET,
