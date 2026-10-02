@@ -3972,3 +3972,89 @@ Then #777's remaining criteria need #458 Goal-store behavior, #804/#805/#806
 reconciliation, and #776 — after which the archived draft shape
 (`docs/research/777-design-studio-salvage/`, minus its documented fabrication
 bugs) and this seam are the starting points.
+
+## Re-verification at merge `2c9d471b0` — previous BLOCK resolved: develop synced
+
+The prior round's stated next step ("sync `33bcd3ce2` to pick up the #774
+CreativeBrief contract") is executed this round. `origin/develop` (2 commits:
+`33bcd3ce2` #774 versioned CreativeBrief contract, `fd584a9b1` EngineService
+startup atomicity) is merged into `auto-777` as `2c9d471b0`. The merge was
+clean: the only overlapping file was `quality/vulture-baseline.json`, and git's
+line-level auto-merge produced exactly the correct union (the branch's +2
+`engine.py::get_workspace_agent`/`get_reconciler` identities kept, develop's
+removal of `maistro/scheduling/model.py::unused method '_validate'` applied).
+No branch-authored file imported the deleted `creative_brief.py` module
+(verified by grep before merging; only `__init__.py`/`test_creative_brief.py`,
+both rewritten by `33bcd3ce2` itself, referenced it).
+
+### Dependency audit delta at `2c9d471b0`
+
+- **#774 CreativeBrief — LANDED (this merge).**
+  `packages/maistro-design/src/maistro_design/brief.py` (immutable-by-version
+  `CreativeBrief` bound to one canonical `goal_id`/`goal_revision`; Persona and
+  Design System recorded as `BriefReference` identity+version, never copies;
+  structural cross-Workspace reference rejection) and `brief_store.py`
+  (append-only PG persistence, workspace-scoped, refuses briefs whose Project
+  is not registered to the claimed Workspace), plus migration
+  `alembic/versions/049_design_creative_briefs.py`.
+- **Unchanged absent:** #458 Goal store (no `GoalRevision` records — briefs
+  still cannot be produced from a canonical revision record), #804/#805/#806
+  reconciliation, #775 creative Graph, #776 Ladybug working graph.
+- `fd584a9b1` makes EngineService startup atomic; the design-service startup
+  tests were re-run against it (below) and pass unchanged.
+
+### Acceptance delta
+
+- **AC2 moves UNMET → contract-level partial:** the versioned brief bound to
+  one Goal revision + Persona + Design System now exists and is tested
+  (`test_creative_brief.py`, `test_creative_brief_store.py`,
+  `test_creative_brief_pg.py`). The *product path* (a Goal revision record
+  producing a brief) still cannot exist because #458's Goal store is absent —
+  `goal_id`/`goal_revision` remain caller-supplied strings.
+- AC1, AC3–AC13: unchanged from the round-57 assessment (AC1 keeps its tested
+  consumption seam; the #804 half of its criterion is still unlandable).
+
+### CI-repair gate state (vulture per-identity ledger) — re-run at `2c9d471b0`
+
+`uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`: summary clean (1372
+findings, 0 unclassified, 0 never-allowlist, **0 candidate-ledger deltas** —
+the merged bank exactly matches the scan), exit 1 solely on the TRUSTED half:
+the trusted ledger is read from the new merge-base `33bcd3ce2`, whose bank
+predates the branch's 2 reviewed-retained seam identities. This is the same
+documented two-merge property (`scripts/ratchet_provenance.py`: a grant does
+not take effect in the change that introduces it): the banked identities ride
+this branch and become trusted ledger the moment the branch lands. Eliminating
+them instead was evaluated and rejected on evidence: the only in-scan-universe
+(`packages/*/src`) consumer locations would be a parallel maistro-server
+design surface (a second front door — prohibited duplication) or behavioral
+changes to the engine's render flows (guessed scope, no #777 evidence
+requires them); hive-conductor consumption (e.g. a route) is outside the scan
+universe and could not clear the finding. The methods are reviewed-retained,
+not dead: both are exercised by `test_engine_workspace_seam.py` and the
+`get_reconciler` consumer is #804-era run wiring by explicit design.
+
+### Executed at `2c9d471b0` (all fresh)
+
+- `git merge origin/develop` — clean; `quality/vulture-baseline.json`
+  auto-merged as the exact union (verified by diff).
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2732 files already formatted.
+- `uv run pytest packages/maistro-design/tests -x -q` — **435 passed, 1
+  skipped** (pg test without a database; includes the landed #774 suite).
+- `uv run pytest packages/hive-conductor/backend/tests/test_design_service_startup.py
+  test_engine_startup_atomicity.py test_engine_service.py -q` — **100 passed**
+  (design startup + the newly-landed atomicity suite against the merged tree).
+- `uv run pytest tests/migrations/test_migration_chain.py -q` — 13 skipped
+  (needs Postgres; unchanged behavior, migration 049 rides the chain).
+- `uv run python scripts/check-suite-inventory.py` — **ok: 14 suite(s) match**
+  (conductor backend now 3208 with the landed atomicity tests).
+- `uv run python scripts/check-doc-links.py` — 0 broken links.
+
+### Residual / next
+
+Unchanged: #777's remaining criteria need #458 Goal-store behavior,
+#804/#805/#806 reconciliation, and #776 to land; #774 is now in-tree and its
+contract tests are the first dependency satisfied. The vulture trusted-half
+residual resolves when this branch lands (the +2 identities then join the
+trusted ledger); no in-branch action can green it earlier by design.
