@@ -42,6 +42,11 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 FROM python:3.13.15-slim-bookworm AS pybuild
 WORKDIR /app
+# CI evidence (run 36835563311): pip's 15s transport timeouts, not resolution
+# failures, killed the sibling research image's builds under runner load.
+# State the patience here too -- this stage pip-installs the same PyPI set.
+ENV PIP_DEFAULT_TIMEOUT=60 \
+    PIP_RETRIES=10
 ENV PATH="/app/venv/bin:$PATH"
 RUN python -m venv /app/venv
 # Install the maistro library packages (non-editable) so the venv is fully
