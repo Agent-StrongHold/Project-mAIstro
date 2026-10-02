@@ -293,3 +293,80 @@ async def test_detail_degrades_to_run_level_lineage_without_the_durable_spine(
     assert detail is not None
     assert detail["creative_provenance"]["goal_revision"] == 4
     assert detail["artifacts"] == []
+
+
+async def test_artifact_reconstruction_degrades_when_the_durable_read_fails(
+    creative_fulfillment: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable-store read error is a degraded answer, not a failed read:
+    the run-level creative block still answers and the per-artifact
+    reconstruction degrades to an empty list (#775's no-invented-state rule)."""
+    from services.dag_run_inspection import visible_run_detail
+
+    record = creative_fulfillment
+    await _seed_projection(record)
+
+    class _ExplodingStore:
+        async def get(self, run_id: str) -> Any:
+            raise RuntimeError("durable spine unavailable")
+
+    import services.engine as engine_mod
+
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(run_reader=_SpineStub(record), graph_run_store=_ExplodingStore()),
+    )
+
+    detail = await visible_run_detail(_AUTHED_USER_ID, record.run.run_id)
+    assert detail is not None
+    assert detail["creative_provenance"]["goal_revision"] == 4
+    assert detail["artifacts"] == []
+
+
+async def test_artifact_reconstruction_degrades_when_the_spine_never_saw_the_run(
+    creative_fulfillment: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable store that answers None (run unknown to the spine) yields the
+    same degraded empty-artifact answer — never fabricated lineage."""
+    from services.dag_run_inspection import visible_run_detail
+
+    record = creative_fulfillment
+    await _seed_projection(record)
+
+    class _AmnesiacStore:
+        async def get(self, run_id: str) -> None:
+            return None
+
+    import services.engine as engine_mod
+
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(run_reader=_SpineStub(record), graph_run_store=_AmnesiacStore()),
+    )
+
+    detail = await visible_run_detail(_AUTHED_USER_ID, record.run.run_id)
+    assert detail is not None
+    assert detail["creative_provenance"]["goal_revision"] == 4
+    assert detail["artifacts"] == []
+
+
+async def test_engine_graph_run_store_degrades_without_a_container_bridge() -> None:
+    """The `graph_run_store` seam is None — never a fabricated store — when the
+    agent port carries no container or the container carries no durable graph
+    store, mirroring the `run_store` seam it was modeled on."""
+    from types import SimpleNamespace as NS
+
+    from services.engine import EngineService
+
+    engine = EngineService()
+    # No port bound at all: both getattrs take their defaults.
+    assert engine.graph_run_store is None
+    # A container without the durable graph store: still None.
+    engine._agent_port = NS(container=NS())
+    assert engine.graph_run_store is None
+    # A container that carries one: exactly that object, no wrapper.
+    store = object()
+    engine._agent_port = NS(container=NS(graph_run_store=store))
+    assert engine.graph_run_store is store

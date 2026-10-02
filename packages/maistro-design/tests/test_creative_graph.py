@@ -25,7 +25,8 @@ from pydantic import BaseModel
 
 from maistro.graph.durable_runs import InMemoryDurableRunStore, resume_durable_graph
 from maistro.graph.durable_runs.stores import SqliteDurableRunStore
-from maistro.graph.nodes import get_node
+from maistro.graph.nodes import NodeContext, get_node
+from maistro.graph.types import GraphBlackboard
 from maistro.runs.model import RunStatus
 from maistro_design.brief import (
     ArtifactRequest,
@@ -47,6 +48,7 @@ from maistro_design.creative_graph import (
 )
 from maistro_design.creative_nodes import (
     CreativeArtifactGenerate,
+    artifact_annotation_key,
     shared_context_from_brief,
     shared_decision_digest,
 )
@@ -767,3 +769,261 @@ async def test_inspection_explains_goal_brief_decisions_and_delegation_per_artif
     # The branches cite one shared message decision and one shared visual decision.
     assert len({item.consumed_message_decision_id for item in provenance}) == 1
     assert len({item.consumed_visual_decision_id for item in provenance}) == 1
+
+
+# ── stage guard paths: each node's refusals and blackboard-absent fallbacks ───
+#
+# The happy paths above drive every stage through the durable executor; these
+# unit-level cases pin the guards the executor only reaches when a launch
+# payload, branch record, or blackboard annotation is malformed — the
+# contract refusals the graph promises before any provider is touched.
+
+
+def _unit_ctx(blackboard: Any = None) -> Any:
+    """A minimal NodeContext for direct stage execution."""
+
+    return NodeContext(
+        run_id="run-guard-paths",
+        dag_id="creative-production",
+        node_id="node-under-test",
+        blackboard=blackboard,
+    )
+
+
+def _plan_annotation(request_id: str, *, message_decision_id: str, visual_decision_id: str) -> str:
+    """One durable branch record, canonical-JSON exactly as generate writes it."""
+    import json as _json
+
+    return _json.dumps(
+        {
+            "artifact_id": f"art-{request_id}",
+            "request_id": request_id,
+            "channel": "poster",
+            "content_digest": f"digest-{request_id}",
+            "consumed_message_decision_id": message_decision_id,
+            "consumed_visual_decision_id": visual_decision_id,
+            "goal_revision": 4,
+            "brief_version": 1,
+        }
+    )
+
+
+async def test_brief_resolve_refuses_incomplete_launch_payloads() -> None:
+    """The entry stage refuses a launch payload missing canonical identity."""
+    from maistro_design.creative_nodes import CreativeBriefResolve
+
+    complete = {
+        "goal_id": GOAL,
+        "goal_revision": 4,
+        "brief_id": "brief-1",
+        "brief_version": 1,
+        "workspace_id": WS,
+        "shared_context": {"goal_id": GOAL, "audience": "home bakers"},
+    }
+    for field in ("goal_id", "goal_revision", "brief_id", "brief_version", "workspace_id"):
+        payload = {k: v for k, v in complete.items() if k != field}
+        result = await CreativeBriefResolve().run({"brief": payload}, _unit_ctx())
+        assert not result.success, field
+        assert "missing" in result.error_message, field
+
+    # A payload with identity but no shared creative context is equally refused.
+    identity_only = {k: v for k, v in complete.items() if k != "shared_context"}
+    result = await CreativeBriefResolve().run({"brief": identity_only}, _unit_ctx())
+    assert not result.success
+    assert "shared_context" in result.error_message
+
+
+async def test_brief_resolve_without_blackboard_still_resolves_the_context() -> None:
+    """Persistence is a blackboard service, not a resolution precondition."""
+    from maistro_design.creative_nodes import CreativeBriefResolve
+
+    payload = {
+        "goal_id": GOAL,
+        "goal_revision": 4,
+        "brief_id": "brief-1",
+        "brief_version": 1,
+        "workspace_id": WS,
+        "shared_context": {"goal_id": GOAL, "audience": "home bakers"},
+    }
+    result = await CreativeBriefResolve().run({"brief": payload}, _unit_ctx(blackboard=None))
+    assert result.success
+    assert result.output.shared_context["goal_id"] == GOAL
+
+
+async def test_shared_stages_persist_without_a_blackboard() -> None:
+    """Decision recording skips silently when no blackboard carries state."""
+    from maistro_design.creative_nodes import CreativeMessageArchitecture
+
+    context = shared_context_from_brief(_brief())
+    result = await CreativeMessageArchitecture().run(
+        {"shared_context": context}, _unit_ctx(blackboard=None)
+    )
+    assert result.success
+    assert result.output.message_decision_id == shared_decision_digest(context)
+
+
+async def test_visual_direction_refuses_a_context_without_a_design_system() -> None:
+    from maistro_design.creative_nodes import CreativeVisualDirection
+
+    context = shared_context_from_brief(_brief())
+    context.pop("design_system_slug")
+    result = await CreativeVisualDirection().run(
+        {"shared_context": context}, _unit_ctx(blackboard=None)
+    )
+    assert not result.success
+    assert "design system reference" in result.error_message
+
+
+async def test_artifact_plan_refuses_a_context_without_requests() -> None:
+    from maistro_design.creative_nodes import CreativeArtifactPlan
+
+    context = shared_context_from_brief(_brief())
+    context["artifact_requests"] = []
+    result = await CreativeArtifactPlan().run(
+        {"shared_context": context, "request": {}}, _unit_ctx(blackboard=None)
+    )
+    assert not result.success
+    assert "no artifact requests" in result.error_message
+
+
+async def test_artifact_generate_refusals_pin_each_required_decision() -> None:
+    """A branch refuses to generate against missing identity or decisions."""
+    from maistro_design.creative_nodes import CreativeArtifactGenerate
+
+    context = shared_context_from_brief(_brief())
+    request = {"request_id": "poster-launch", "channel": "poster", "format": "png"}
+
+    # No request identity at all.
+    result = await CreativeArtifactGenerate().run(
+        {"shared_context": context, "request": {"channel": "poster"}}, _unit_ctx()
+    )
+    assert not result.success
+    assert "no request_id" in result.error_message
+
+    # Canonical retry visits fall back to the blackboard; with none attached
+    # there is no persisted shared context to consume.
+    result = await CreativeArtifactGenerate().run({"request": request}, _unit_ctx(blackboard=None))
+    assert not result.success
+    assert "no persisted shared context" in result.error_message
+
+    # A blackboard that persists the context but no decisions leaves the
+    # branch without its message decision.
+    bare_board = GraphBlackboard(
+        task_objective="creative fan-out",
+        workspace=WS,
+        metadata={"shared_context": context},
+    )
+    result = await CreativeArtifactGenerate().run(
+        {"request": request}, _unit_ctx(blackboard=bare_board)
+    )
+    assert not result.success
+    assert "no message decision" in result.error_message
+
+    # A message decision without a visual decision is still refused.
+    result = await CreativeArtifactGenerate().run(
+        {"request": request, "message_decision_id": "msg-1"},
+        _unit_ctx(blackboard=bare_board),
+    )
+    assert not result.success
+    assert "no visual decision" in result.error_message
+
+    # With both decisions the branch generates even without a blackboard —
+    # the durable artifact record is persistence, not generation input.
+    result = await CreativeArtifactGenerate().run(
+        {
+            "shared_context": context,
+            "request": request,
+            "message_decision_id": "msg-1",
+            "visual_decision_id": "vis-1",
+        },
+        _unit_ctx(blackboard=None),
+    )
+    assert result.success
+    assert result.output.consumed_message_decision_id == "msg-1"
+    assert result.output.consumed_visual_decision_id == "vis-1"
+
+
+async def test_cross_critique_reports_missing_records_and_divergent_decisions() -> None:
+    """Fan-in names every unplanned branch and any decision divergence."""
+    from maistro_design.creative_nodes import CreativeCrossCritique
+
+    context = shared_context_from_brief(_brief())
+    board = GraphBlackboard(
+        task_objective="creative fan-out",
+        workspace=WS,
+        node_annotations={
+            artifact_annotation_key("landing-page"): _plan_annotation(
+                "landing-page", message_decision_id="msg-A", visual_decision_id="vis-1"
+            ),
+            artifact_annotation_key("launch-deck"): _plan_annotation(
+                "launch-deck", message_decision_id="msg-B", visual_decision_id="vis-1"
+            ),
+        },
+    )
+    result = await CreativeCrossCritique().run(
+        {"shared_context": context}, _unit_ctx(blackboard=board)
+    )
+    assert result.success
+    assert result.output.artifact_count == 2
+    assert not result.output.shared_decision_consistent
+    assert "no artifact record for request 'poster-launch'" in result.output.findings
+    assert "branches consumed different shared decisions" in result.output.findings
+
+
+async def test_cross_critique_ignores_non_artifact_and_malformed_annotations() -> None:
+    """Only well-formed ``artifact::`` records count as branch evidence."""
+    from maistro_design.creative_nodes import CreativeCrossCritique
+
+    context = shared_context_from_brief(_brief())
+    board = GraphBlackboard(
+        task_objective="creative fan-out",
+        workspace=WS,
+        node_annotations={
+            "agent.note": "not an artifact record",
+            artifact_annotation_key("broken"): "{not json",
+            artifact_annotation_key("scalar"): '"a bare string"',
+            artifact_annotation_key("poster-launch"): _plan_annotation(
+                "poster-launch", message_decision_id="msg-1", visual_decision_id="vis-1"
+            ),
+        },
+    )
+    result = await CreativeCrossCritique().run(
+        {"shared_context": context}, _unit_ctx(blackboard=board)
+    )
+    assert result.success
+    assert result.output.artifact_count == 1
+    assert result.output.shared_decision_consistent
+    # The two planned branches without a record are named; the malformed and
+    # non-artifact annotations contributed nothing (no divergence finding).
+    assert "no artifact record for request 'landing-page'" in result.output.findings
+    assert "no artifact record for request 'launch-deck'" in result.output.findings
+    assert "branches consumed different shared decisions" not in result.output.findings
+
+
+async def test_cross_critique_without_a_blackboard_sees_no_branch_records() -> None:
+    from maistro_design.creative_nodes import CreativeCrossCritique
+
+    context = shared_context_from_brief(_brief())
+    result = await CreativeCrossCritique().run(
+        {"shared_context": context}, _unit_ctx(blackboard=None)
+    )
+    assert result.success
+    assert result.output.artifact_count == 0
+    planned = {r["request_id"] for r in context["artifact_requests"]}
+    reported = {finding.split("'")[1] for finding in result.output.findings}
+    assert planned <= reported
+
+
+def test_package_surface_resolves_the_creative_graph_lazily() -> None:
+    """The package ``__getattr__`` fall-through reaches the creative graph.
+
+    The #775 lazy re-exports resolve to exactly the canonical module objects
+    (so no second creative-graph surface can grow beside them), and unknown
+    names still fall through every branch to ``AttributeError``.
+    """
+    import maistro_design
+    from maistro_design import creative_graph as creative_graph_module
+
+    assert maistro_design.plan_creative_graph is creative_graph_module.plan_creative_graph
+    assert maistro_design.run_creative_graph is creative_graph_module.run_creative_graph
+    assert maistro_design.CreativeGraphPlan is creative_graph_module.CreativeGraphPlan
