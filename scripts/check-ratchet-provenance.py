@@ -79,16 +79,6 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "direct-effect entries are per-call-site reviewed policy: exact AST identities must "
         "match both directions and every live site must state disposition, owner and rationale"
     ),
-    ("check-route-permissions.py", "quality/route-permissions.json"): (
-        "the route-permission registry is the reviewed per-prefix specification being "
-        "changed: every mounted authenticated prefix must carry an exact permission or "
-        "exemption, so a prior-tree oracle would predate the routes this tree ships"
-    ),
-    ("check-route-permissions.py", "quality/public-routes.json"): (
-        "the public-route registry is the reviewed public-surface specification being "
-        "changed: it scopes which mounted routes the ratchet excludes, it is not a "
-        "candidate-vs-prior-state comparison oracle"
-    ),
     ("check-durable-table-inventory.py", "quality/durable-table-retention.json"): (
         "the retention inventory is the reviewed per-table specification being changed: "
         "every table the tree creates must carry an entry and every entry must name a "
