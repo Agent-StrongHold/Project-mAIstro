@@ -56,7 +56,12 @@ from the change under review. A ledger that does not exist at the base tolerates
 so a check cannot introduce its own baseline. The first PR grants each starting entry under
 the ratchet's name; the second, stackable on it, adds the checker and a ledger matching
 those grants. Each checker gets a row in RATCHET-PROVENANCE.md's inventory in the same
-PR.
+PR. Once the second PR banks the ledger, **delete those starting-debt grants from the
+candidate tree in the same PR.** Permission is read from the trusted base, so the deletion
+does not remove the authorization for banking; leaving the grants in place would let a later
+change re-bank the same debt without a new review ([`SPEC-082926-6f49`](../specs/SPEC-082926-6f49-authorized-floor-fall-for-a-corrected-measurement.md)
+spent-grant bookkeeping; cutover S1.0 lands the grants in
+[#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804)).
 
 **Acceptance criteria are registered in SPEC-100126-c041**
 (`docs/specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md`, PR [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768)). The
@@ -115,7 +120,11 @@ suffix needs an explicit reviewed policy like every other route — leaving
 **Check.** `scripts/check-route-permissions.py`, a sibling of `check-public-routes.py`
 rather than an extension of it: it imports the hive app to read the mounted `/v1/{segment}`
 prefixes, so it runs in `quality.yml` beside `check_enumerations.py`, not in the
-bare-`python3` lint job. Registry `quality/route-permissions.json`: every mounted prefix
+bare-`python3` lint job. Before judging prefixes it reads `app.state.optional_routers` and
+refuses when any optional router (`routes.design`, `routes.canvas`, `routes.evolution`,
+`routes.rsi`) failed to import — the same completeness rule as
+`scripts/check-frontend-api-routes.py`, so a missing package cannot produce a partial census
+that pre-approves or omits production routes. Registry `quality/route-permissions.json`: every mounted prefix
 not public by `quality/public-routes.json` must appear with exactly one of a permission or
 an `exempt_reason`, plus owner, disposition and reason; a temporary entry also needs an
 issue and an unexpired date — the shape `public-routes.json` already uses. A registry entry
