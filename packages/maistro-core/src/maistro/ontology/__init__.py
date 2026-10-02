@@ -1,4 +1,4 @@
-"""Ontology layer per [`engine#ADR-036`](../../../../docs/adr/ADR-036-ontology-semantic-object-layer.md).
+"""Ontology layer per [`engine#ADR-036`](../../../../../docs/adr/ADR-036-ontology-semantic-object-layer.md).
 
 v1.0 ships the **Semantic** facet only — typed entities backed by Pydantic
 for validation, queryable by kind + filters. Kinetic and Dynamic facets
@@ -8,9 +8,13 @@ Public surface:
 
 - ``OntologyEntity`` — the typed entity (id + kind + revision + facets).
 - ``Ontology`` — Protocol every implementation must satisfy.
-- ``InMemoryOntology`` — in-process implementation; suitable for tests
-  and engine boot. SQLAlchemy-backed implementation lands in a follow-up
-  on this branch.
+- ``InMemoryOntology`` — the only implementation, in-process and not
+  thread-safe. There is no durable, SQLAlchemy-backed store.
+
+This layer has no production consumer yet: nothing outside
+``maistro.ontology`` resolves semantic objects through the registry.
+Connecting it is tracked by #34, which the reachability ledger records
+as the CONNECT disposition for this subsystem.
 
 Usage:
 
