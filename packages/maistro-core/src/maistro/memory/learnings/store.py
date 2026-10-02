@@ -64,6 +64,11 @@ class InMemoryLearningStore:
             )
             existing.learning = learning.learning
             existing.trigger_keys = learning.trigger_keys
+            # The epistemic type moves with the text it qualifies. Keeping the
+            # old row's type would let the reworded claim ride the stronger
+            # ranking bonus and skip the counterfactual evaluation its new
+            # type owes before promotion (M4-B3).
+            existing.epistemic_type = learning.epistemic_type
             # The producer moves with the content it produced. Dedup
             # replaces what the row says, so leaving the old ids in place
             # would attribute the surviving text to the Run that no longer
