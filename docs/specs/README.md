@@ -30,6 +30,7 @@ Frozen **reference** trees that specs ported from (hyperagent bundle, gateway sn
 | SPEC-091226-1341 | [Gates Ran path-scoped execution evidence](SPEC-091226-1341-gates-ran-path-scope-evaluator.md) |
 | SPEC-092626-1831 | [Workspace work campaigns (Proposed)](SPEC-092626-1831-workspace-work-campaigns.md) |
 | SPEC-093026-7a90 | [Closed-loop design process contract (Proposed)](SPEC-093026-7a90-closed-loop-design-process-contract.md) |
+| SPEC-100126-c041 | [Workspace cutover Phase 0 contract (Proposed)](SPEC-100126-c041-workspace-cutover-phase-0-contract.md) |
 
 <!-- ac-defined-start -->
 
