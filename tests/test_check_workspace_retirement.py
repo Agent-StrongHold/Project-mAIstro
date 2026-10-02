@@ -188,9 +188,7 @@ def test_a_store_missing_from_the_ledger_fails(gate, tree: Path) -> None:
         STORES,
         "known = JsonStore('known')\nunknown = JsonStore('unknown')\n",
     )
-    failures = gate.check(
-        {"entries": [_entry(kind="store", path=f"{STORES}::known")]}, tree
-    )
+    failures = gate.check({"entries": [_entry(kind="store", path=f"{STORES}::known")]}, tree)
 
     assert failures == [
         f"{STORES}::unknown: store exists in stores.py but is absent from the ledger"
