@@ -2134,17 +2134,6 @@ async def create_container(
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
         consumer_cursor_store = InMemoryConsumerCursorStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
