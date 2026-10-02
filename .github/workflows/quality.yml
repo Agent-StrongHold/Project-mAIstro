@@ -795,6 +795,20 @@ jobs:
       - name: workspace retirement (retiring Conductor surfaces gain no importers — ratchet)
         run: uv run python scripts/check-workspace-retirement.py
 
+      # Default-allow route prefixes are the seam Workspace cutover P0.2 closes:
+      # every authenticated /v1/{segment} mount must declare a permission or a
+      # reviewed exempt_reason before Workspace surfaces land (#53 AC-P2). Same
+      # app introspection as the enumeration check above, so it lives beside it.
+      - name: route permissions (every authenticated prefix declared — ratchet)
+        run: uv run python scripts/check-route-permissions.py
+
+      # Parallel HTTP principal types and dict-shaped request.state.user are
+      # how the last three Conductor attempts kept diverging identity. P0.1
+      # ratchets them to one canonical Principal in maistro-core (#53). Its
+      # baseline is read from the merge base, so it needs this job's history.
+      - name: principal identity (one HTTP principal surface — ratchet)
+        run: uv run python scripts/check-principal-identity.py
+
       # The vendored IFEval grader and corpus are the *exam* the RSI loop is
       # scored against, so they must stay byte-comparable to what Google
       # published. This verifies the committed tree still matches its pinned
