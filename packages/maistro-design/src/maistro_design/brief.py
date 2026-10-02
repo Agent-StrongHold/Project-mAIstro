@@ -595,6 +595,53 @@ class CreativeBrief(BaseModel):
         )
 
 
+if TYPE_CHECKING:
+
+    def _vulture_creative_brief_contract_usage(
+        evidence: EvidenceReference,
+        fact: RequiredFact,
+        reference: BriefReference,
+        request: ArtifactRequest,
+        override: ProjectionOverride,
+        projection: ArtifactProjection,
+        brief: CreativeBrief,
+    ) -> None:
+        """Keep reflection-owned CreativeBrief contract surface visible to Vulture.
+
+        Pydantic invokes the ``_validate*`` model validators at runtime, and the
+        declarative fields below are serialization/persistence surface read
+        reflectively (``model_dump`` in :meth:`CreativeBrief.new_version`, the
+        brief store round-trip, and the #774 tests).
+        ``ArtifactProjection.shared_context`` is the two-branch equivalence
+        seam those tests assert on. None of this is dead code; the narrow
+        ``packages/*/src`` production-only Vulture scan just cannot see the
+        reflective consumers. Follows the repo's ``_vulture_*_usage``
+        TYPE_CHECKING precedent (e1f16ddae).
+
+        Vulture matches by bare name, not per-symbol: referencing ``_validate``
+        here also marks identically-named in-scope methods (e.g.
+        ``maistro.core`` ``scheduling/model.py::_validate``) as used, which is
+        why that reviewed ledger identity was pruned alongside this block.
+        """
+        _ = evidence._validate
+        _ = fact._validate
+        _ = reference._validate
+        _ = request._validate
+        _ = override._validate
+        _ = projection._validate
+        _ = projection.projection_id
+        _ = projection.artifact_request
+        _ = projection.derived_at
+        _ = projection.shared_context
+        _ = brief._validate_contract
+        _ = brief.beneficiaries
+        _ = brief.success_interpretation
+        _ = brief.tone_constraints
+        _ = brief.supervision_constraints
+
+    _ = _vulture_creative_brief_contract_usage
+
+
 def _validate_reference_kind(
     reference: BriefReference, allowed: frozenset[str], field: str
 ) -> None:
@@ -602,27 +649,3 @@ def _validate_reference_kind(
     if reference.kind not in allowed:
         msg = f"CreativeBrief.{field} requires kind in {sorted(allowed)}, got {reference.kind!r}"
         raise BriefContractError(msg)
-
-
-if TYPE_CHECKING:
-    #: Vulture references: the ``@model_validator(mode="after")`` hooks are
-    #: dispatched by pydantic through the decorator, which the static call
-    #: graph cannot see, and the ``ArtifactProjection`` provenance fields are
-    #: consumed through serialization rather than direct reads in this scan
-    #: set -- the same framework-dispatch blindness ``maistro-core``'s
-    #: ``_vulture_whitelist`` documents for pydantic hooks. The tuple is
-    #: scanner input only (never evaluated at runtime): class-level access to
-    #: pydantic fields raises AttributeError, so the references must stay
-    #: type-check-time.
-    _VULTURE_REFERENCES = (
-        EvidenceReference._validate,
-        RequiredFact._validate,
-        BriefReference._validate,
-        ArtifactRequest._validate,
-        ProjectionOverride._validate,
-        ArtifactProjection._validate,
-        CreativeBrief._validate_contract,
-        ArtifactProjection.projection_id,
-        ArtifactProjection.artifact_request,
-        ArtifactProjection.derived_at,
-    )

@@ -29,12 +29,8 @@ adopted one is untouched. An adopted table created without the foreign key
 keeps working; the store's paired (project, workspace) check carries the
 scope guarantee regardless.
 
-Revision ID: 049 — renumbered from 047: develop's
-`047_capability_binding_revocations` (#1133) claimed that id while this
-branch was open and `048_canvas_job_retry_backoff` continued that chain, so
-this revision re-parented onto `048` (the same renumbering this chain
-performs on every develop collision; #286/#1194 convention).
-Revises: 048
+Revision ID: 050
+Revises: 049
 Create Date: 2026-09-28
 """
 
@@ -42,8 +38,14 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "049"
-down_revision = "048"
+# Renumbered from `047` to `048` after a develop collision (#1133's durable
+# Binding revocations took 047 first), then to `049` after #398's canvas
+# retry backoff claimed `048`, and finally to `050` after the #792 merge
+# collision in which both this revision and the canonical Run eval-score
+# evidence took `049` on the same parent `048` — the same renumbering every
+# develop collision performs so the chain keeps exactly one linear head.
+revision = "050"
+down_revision = "049"
 branch_labels = None
 depends_on = None
 

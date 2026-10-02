@@ -29,23 +29,6 @@ from maistro_design.brief import (
     ProtectedFieldOverrideError,
     RequiredFact,
 )
-
-# The #773 parent-epic brief surface (`creative_brief.py`, versioned lineages
-# + shared creative context) stays importable beside it. The two contracts
-# spell three names identically; at this top level those stay owned by the
-# #774 contract above, so only the non-colliding names are re-exported here —
-# the colliding three remain importable from ``maistro_design.creative_brief``
-# itself, which is what its own suite uses.
-from maistro_design.creative_brief import (
-    ArtifactProvenance,
-    ArtifactRequirement,
-    BriefRevision,
-    CreativeBriefConflictError,
-    CreativeBriefNotFoundError,
-    CreativeBriefVersion,
-    InMemoryCreativeBriefStore,
-    SharedCreativeContext,
-)
 from maistro_design.engine import DesignEngine
 from maistro_design.protocols import (
     DesignEngineProtocol,
@@ -116,22 +99,16 @@ __all__ = [
     "ArtifactKind",
     "ArtifactNode",
     "ArtifactProjection",
-    "ArtifactProvenance",
     "ArtifactRequest",
     "ArtifactRequestNotFoundError",
-    "ArtifactRequirement",
     "BriefContractError",
     "BriefReference",
-    "BriefRevision",
     "BriefVersionConflictError",
     "CatalogImportPolicyError",
     "ColorToken",
     "CreativeBrief",
-    "CreativeBriefConflictError",
     "CreativeBriefError",
-    "CreativeBriefNotFoundError",
     "CreativeBriefStore",
-    "CreativeBriefVersion",
     "CreativeGraphPlan",
     "CrossWorkspaceReferenceError",
     "DesignEngine",
@@ -152,7 +129,6 @@ __all__ = [
     "DiscoveryResult",
     "EvidenceReference",
     "HTMLRenderer",
-    "InMemoryCreativeBriefStore",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
     "InMemoryTrustBanishList",
@@ -174,7 +150,6 @@ __all__ = [
     "RequiredFact",
     "SVGRenderer",
     "ScanReport",
-    "SharedCreativeContext",
     "SkillMode",
     "SkillModeError",
     "SkillNotFoundError",

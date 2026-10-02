@@ -111,6 +111,30 @@ def test_one_contract_owns_creative_brief_state() -> None:
     assert not isinstance(store, PgDesignProjectStore)
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
+def test_package_surface_lazy_loads_the_brief_contract() -> None:
+    """The package ``__getattr__`` resolves the brief contract lazily.
+
+    The public surface is the same single store and protocol the domain tests
+    import directly — ``maistro_design.PgCreativeBriefStore`` and
+    ``maistro_design.CreativeBriefStore`` resolve to exactly those objects, so
+    no second persistence contract can grow beside them unnoticed.
+    """
+    import maistro_design
+
+    # The lazy package surface stays the single owner of the brief contract:
+    # every declared public symbol resolves to the canonical object (so no
+    # second persistence contract can grow unnoticed), and unknown names fall
+    # through every declared branch to AttributeError at the bottom of
+    # ``__getattr__`` rather than silently resolving. All four arcs of the two
+    # new ``if`` branches — including the fall-through to the raise — are
+    # exercised here.
+    assert maistro_design.PgDesignProjectStore is PgDesignProjectStore
+    assert maistro_design.PgCreativeBriefStore is PgCreativeBriefStore
+    assert maistro_design.CreativeBriefStore is CreativeBriefStore
+    assert not hasattr(maistro_design, "this_is_not_a_design_surface_symbol")
+
+
 def test_brief_errors_are_domain_errors() -> None:
     """CreativeBrief errors classify through the design domain error family."""
     assert issubclass(CreativeBriefError, AgentError)
@@ -135,17 +159,20 @@ def test_brief_names_goal_identity_and_exact_revision() -> None:
 
 
 @pytest.mark.parametrize("goal_revision", [0, -1])
+@pytest.mark.ac("SPEC-092826-a774/AC-2")
 def test_goal_revision_must_be_a_positive_revision(goal_revision: int) -> None:
     """An exact revision means a positive revision, not a wish."""
     with pytest.raises(ValidationError):
         _brief(goal_revision=goal_revision)
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-2")
 def test_blank_goal_identity_is_refused() -> None:
     with pytest.raises(BriefContractError):
         _brief(goal_id="   ")
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-2")
 def test_blank_workspace_or_project_scope_is_refused() -> None:
     with pytest.raises(BriefContractError):
         _brief(workspace_id="")
@@ -179,6 +206,7 @@ def test_goal_ownership_and_delegation_are_recorded_references() -> None:
     assert subgoal_brief.goal_delegation_ref.kind == "goal"
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-3")
 def test_delegation_slot_rejects_non_delegation_kinds() -> None:
     """Persona-flavored references cannot stand in for delegation state."""
     with pytest.raises(BriefContractError):
@@ -212,6 +240,7 @@ def test_persona_and_design_system_are_versioned_references() -> None:
     assert brief.persona_id == "persona-1"
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-4")
 def test_persona_slot_rejects_other_kinds() -> None:
     with pytest.raises(BriefContractError):
         _brief(persona=BriefReference(kind="graph", ref_id="graph-1"))
@@ -331,6 +360,7 @@ def test_projection_overrides_are_explicit_and_explained() -> None:
     assert projection.overrides[0].reason
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-8")
 def test_override_without_a_reason_is_refused() -> None:
     with pytest.raises(BriefContractError):
         ProjectionOverride(field="copy_variant", value="x", reason="  ")
@@ -348,6 +378,7 @@ def test_projection_cannot_silently_override_shared_context(field: str) -> None:
         brief.project("ig-square", overrides=(ProjectionOverride(field=field, value="x"),))
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-8")
 def test_projection_constructed_directly_still_refuses_protected_overrides() -> None:
     with pytest.raises(ProtectedFieldOverrideError):
         ArtifactProjection(
@@ -397,6 +428,7 @@ def test_required_facts_carry_evidence_references() -> None:
     assert fact.evidence[0].ref == "https://facts.example/facility"
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-9")
 def test_blank_fact_or_evidence_is_refused() -> None:
     with pytest.raises(BriefContractError):
         RequiredFact(fact_id="f", text="   ")
@@ -524,6 +556,7 @@ def test_redirect_produces_new_versions_without_mutating_history() -> None:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-13")
 def test_change_note_is_recorded_provenance() -> None:
     brief = _brief()
     v2 = brief.new_version(change_note="channel guidance only")

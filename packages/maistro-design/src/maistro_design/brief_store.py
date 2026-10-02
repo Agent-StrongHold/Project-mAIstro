@@ -42,10 +42,32 @@ _INSERT_SQL = text("""
             :created_by, :created_at)
 """)
 
-#: The read projection, spelled out in each statement below as a literal:
-#: semgrep's ``avoid-sqlalchemy-text`` refuses any ``text()`` argument that is
-#: not a string literal, so the shared column list cannot be interpolated — and
-#: every value that does vary arrives as a bound ``:param``, never string SQL.
+# Read statements are module-level constants: the table and column list are
+# literals, the caller-supplied values are bound parameters (:name), and no
+# user input ever reaches the SQL text. Each statement is written out in full
+# as one plain string literal — building them by concatenating fragments makes
+# the ``text()`` argument non-literal again for the security scanner's
+# no-dynamic-SQL rule (avoid-sqlalchemy-text), which accepts literals only.
+_GET_SQL = text("""
+    SELECT brief_id, lineage_id, version, supersedes_brief_id, workspace_id, project_id,
+           goal_id, goal_revision, payload, created_by, created_at
+    FROM design_creative_briefs
+    WHERE brief_id = :brief_id AND workspace_id = :workspace_id
+""")
+_LATEST_SQL = text("""
+    SELECT brief_id, lineage_id, version, supersedes_brief_id, workspace_id, project_id,
+           goal_id, goal_revision, payload, created_by, created_at
+    FROM design_creative_briefs
+    WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id
+    ORDER BY version DESC LIMIT 1
+""")
+_VERSIONS_SQL = text("""
+    SELECT brief_id, lineage_id, version, supersedes_brief_id, workspace_id, project_id,
+           goal_id, goal_revision, payload, created_by, created_at
+    FROM design_creative_briefs
+    WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id
+    ORDER BY version ASC
+""")
 
 
 def _coerce_brief(row: Any) -> CreativeBrief:
@@ -146,12 +168,7 @@ class PgCreativeBriefStore:
         async with self.session_factory() as session:
             row = (
                 await session.execute(
-                    text(
-                        "SELECT brief_id, lineage_id, version, supersedes_brief_id, "
-                        "workspace_id, project_id, goal_id, goal_revision, payload, "
-                        "created_by, created_at FROM design_creative_briefs "
-                        "WHERE brief_id = :brief_id AND workspace_id = :workspace_id"
-                    ),
+                    _GET_SQL,
                     {"brief_id": brief_id, "workspace_id": workspace_id},
                 )
             ).fetchone()
@@ -168,13 +185,7 @@ class PgCreativeBriefStore:
         async with self.session_factory() as session:
             row = (
                 await session.execute(
-                    text(
-                        "SELECT brief_id, lineage_id, version, supersedes_brief_id, "
-                        "workspace_id, project_id, goal_id, goal_revision, payload, "
-                        "created_by, created_at FROM design_creative_briefs "
-                        "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
-                        "ORDER BY version DESC LIMIT 1"
-                    ),
+                    _LATEST_SQL,
                     {"lineage_id": lineage_id, "workspace_id": workspace_id},
                 )
             ).fetchone()
@@ -192,13 +203,7 @@ class PgCreativeBriefStore:
         async with self.session_factory() as session:
             rows = (
                 await session.execute(
-                    text(
-                        "SELECT brief_id, lineage_id, version, supersedes_brief_id, "
-                        "workspace_id, project_id, goal_id, goal_revision, payload, "
-                        "created_by, created_at FROM design_creative_briefs "
-                        "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
-                        "ORDER BY version ASC"
-                    ),
+                    _VERSIONS_SQL,
                     {"lineage_id": lineage_id, "workspace_id": workspace_id},
                 )
             ).fetchall()
