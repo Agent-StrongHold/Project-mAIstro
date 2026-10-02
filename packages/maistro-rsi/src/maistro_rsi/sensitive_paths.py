@@ -129,6 +129,13 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "maistro/capabilities/governed_invocation.py",
     "maistro/capabilities/authority.py",
     "maistro/capabilities/approval_store.py",
+    # binding_store.py is the gate itself, not a record of one: `_resolve` and
+    # `_scope_checked` enforce registration, disablement, revocation, and
+    # workspace/project/node/capability scope before every physical effect.
+    # `binding.py` next to it really is an inert dataclass and stays tolerated;
+    # this one is where a candidate would weaken the check and authorize its
+    # own effects without touching a protected module (Codex, #1758).
+    "maistro/capabilities/binding_store.py",
     "maistro/capabilities/invocation.py",
     "maistro/capabilities/invocation_store.py",
     "maistro/capabilities/pg_invocation_store.py",
