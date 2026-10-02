@@ -14,6 +14,11 @@ on:
   # worse than none: the green tick means different things depending on the base
   # and nothing on the PR says which. #161.
   pull_request:
+    # `edited` is load-bearing for the closure guard below: a `Closes #N` added
+    # by editing the body after the last push must re-run check-closure-targets
+    # against the payload's current body, or a green check vouching for the old
+    # body lets the keyword close an epic at merge time (#56 review on #1773).
+    types: [opened, reopened, synchronize, edited]
   # A merge queue evaluates a synthetic commit containing the current base plus
   # the queued candidate(s). Every required CI job must report on that SHA, not
   # merely on the feature-branch head that was green before it entered the queue.
