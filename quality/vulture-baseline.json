@@ -564,7 +564,6 @@
         "packages/maistro-core/src/maistro/types/prompt.py::unused variable 'reviewed_at'",
         "packages/maistro-core/src/maistro/types/skill.py::unused variable 'download_count'",
         "packages/maistro-core/src/maistro/types/skill.py::unused variable 'source_type'",
-        "packages/maistro-evolve/src/maistro_evolve/benchmarks/repo_history.py::unused variable 'failing_tests'",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/repo_history.py::unused variable 'gold_patch'",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/repo_history.py::unused variable 'issue_text'",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/repo_history.py::unused variable 'test_patch'",
