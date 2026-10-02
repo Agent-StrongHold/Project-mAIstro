@@ -53,3 +53,32 @@ holds `scripts/check-image-pins.py` to its contract:
 
 The negative tests assert on the gate's actual failure text, so a reworded
 message cannot silently stop describing the violation.
+
+## Repair-round validation log (2026-10-02, head 21b137fa5)
+
+The prior CI failure (run 36794778316: `check-image-pins.py` at 84.6% of its
+changed lines) is closed by 05f77af80 and re-proven locally against the
+develop base 4df9dd9bd:
+
+- `coverage run --branch --source=scripts` over the four root test files that
+  exercise the two changed scripts (61 passed), then
+  `check-diff-coverage.py coverage.xml --base 4df9dd9bd` -> ok; per-file:
+  `scripts/check-image-pins.py` 267/267 changed lines (100%) at 98.3% branch
+  rate. The publish-set floor is untouched by this branch (no
+  `packages/*/src` changes; the floor's producers measure only those trees).
+- `python scripts/check-image-pins.py` -> exit 0 on the shipped tree (9 pins,
+  10 Dockerfiles); the scan set equals the full `find -name '*Dockerfile*'
+  population minus the one `.dockerignore`, so no Dockerfile sits outside the
+  gate.
+- Fault injection in a sandbox copy: `FROM python:latest`, a tag-move digest
+  absent from `quality/image-pins.json`, and an unpinned tag in a PUBLISHED
+  Dockerfile are each rejected with the gate's own error text and exit 1.
+- `--base-digests Dockerfile packages/hive-conductor/Dockerfile` enumerates
+  all four release base digests (release.yml's attestation check input).
+- Live registry inspection of the python pin: the digest resolves to an OCI
+  image **index** (`application/vnd.oci.image.index.v1+json`) with per-arch
+  manifests — the manifest-list claim behind deterministic platform
+  resolution holds against the real registry.
+- Adjacent gates green: check-image-inventory, check-ratchet-provenance,
+  vulture ratchet (1371 identities, no unbanked), ruff check + format,
+  tests/test_prepull_copy_sources.py + tests/test_check_diff_coverage.py.
