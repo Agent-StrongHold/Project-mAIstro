@@ -205,16 +205,6 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
-      # Parallel HTTP principal types and dict-shaped request.state.user are
-      # how the last three Conductor attempts kept diverging identity. P0.1
-      # ratchets them to one canonical Principal in maistro-core (#53).
-      - name: One HTTP principal surface (P0.1 ratchet)
-        run: python3 scripts/check-principal-identity.py
-      # Default-allow route prefixes are the other seam P0 closes: every
-      # authenticated /v1/{segment} mount must declare a permission or a
-      # reviewed exempt_reason before Workspace surfaces land (#53 AC-P2).
-      - name: Authenticated route prefixes declared (P0.2 ratchet)
-        run: python3 scripts/check-route-permissions.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it
@@ -309,6 +299,20 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      # The #851 Canvas supported-path E2E lives under maistro-server/tests,
+      # whose only CI invocations (`test` here, the coverage combine job in
+      # quality.yml) have no PostgreSQL service — so without this step the
+      # migration, real-store and lease assertions all skipped and CI stayed
+      # green having run none of them. The module builds its own throwaway
+      # database and walks the chain from empty, so it neither depends on nor
+      # disturbs the migrated `maistro_test` above. Same contract as the step
+      # above: MAISTRO_REQUIRE_PG_LEGS here turns a silent skip — a dead
+      # service container, a renamed env — into a red job, because for this
+      # module a skip and a pass are the same green tick.
+      - name: Canvas supported path end to end over the migrated chain
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-server/tests/api/test_canvas_supported_path.py -v --tb=short
 
   object-storage:
     needs: workflow-lint

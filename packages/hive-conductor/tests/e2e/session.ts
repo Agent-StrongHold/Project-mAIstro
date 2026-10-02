@@ -36,6 +36,18 @@ export async function setupIfNeeded(page: Page) {
 
   // 1/5 — Hive
   await conductorName.fill("PM Test Hive");
+  // #287: a failed gateway model discovery no longer lets Next through
+  // silently — the wizard disables it until "availability is UNVERIFIED" is
+  // explicitly acknowledged. The harness ships no gateway, so discovery
+  // fails on every cold boot and the checkbox always renders here; wait for
+  // it and check it. If a real catalog is ever discovered the checkbox never
+  // appears, the bounded wait gives up, and the step was already unlocked.
+  const unverifiedAck = page.getByTestId("unverified-ack").getByRole("checkbox");
+  const ackVisible = await unverifiedAck
+    .waitFor({ state: "visible", timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+  if (ackVisible) await unverifiedAck.check();
   await page.locator("button", { hasText: /next/i }).click();
 
   // 2/5 — Hardware
