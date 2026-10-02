@@ -94,13 +94,16 @@ EXPECTED_TABLES = frozenset(
         "canonical_workspaces",
         "canonical_workspace_memberships",
         "child_profiles",
-        # The versioned creative artifact state (#780, 048): the append-only
+        # The versioned creative artifact state (#780, 049): the append-only
         # version ledger, its explicit user locks, durable project guidance,
         # and per-branch control rows projected onto canonical execution.
         "design_artifact_versions",
         "design_artifact_locks",
         "design_branch_controls",
         "design_project_guidance",
+        # Versioned CreativeBrief lineages (#774, 050) — the immutable creative
+        # provenance Runs/artifacts cite; append-only by contract.
+        "design_creative_briefs",
         "design_outputs",
         "design_projects",
         # Short-lived elevation grants (#72): durable so a grant issued before

@@ -1,593 +1,564 @@
-"""CreativeBrief versioned projection contract (#773).
+"""The versioned CreativeBrief shared-context contract (#774).
 
-Covers the parent epic's shared-context invariant: one versioned CreativeBrief
-bound to one exact canonical Goal revision, supplying identical shared context
-to every artifact branch, provenance retention on produced artifacts, and no
-second identity or execution authority. Groundwork for the #774 child lane.
+These tests hold the half of #774 that lives in the domain model: one frozen,
+immutable-by-version CreativeBrief that references the canonical Project Goal
+(+ exact revision), Persona, Design System, and delegation state without ever
+owning them; channel projections that carry source identity verbatim; and the
+structural refusals the contract promises — cross-Workspace references,
+protected-context overrides, and any field that would make the brief an
+authorization surface.
+
+The persistence half is in ``test_creative_brief_store.py`` (SQL composition
+and guards) and ``test_creative_brief_pg.py`` (real PostgreSQL, skipped
+without a server).
 """
 
 from __future__ import annotations
 
-import dataclasses
-from datetime import UTC, datetime
-
 import pytest
+from pydantic import ValidationError
 
-from maistro_design.creative_brief import (
-    ArtifactProvenance,
-    ArtifactRequirement,
-    BriefRevision,
+from maistro.types.errors import AgentError
+from maistro_design.brief import (
+    ArtifactProjection,
+    ArtifactRequest,
+    ArtifactRequestNotFoundError,
+    BriefContractError,
+    BriefReference,
     CreativeBrief,
-    CreativeBriefConflictError,
     CreativeBriefError,
-    CreativeBriefNotFoundError,
-    CreativeBriefStore,
-    CreativeBriefVersion,
-    InMemoryCreativeBriefStore,
+    CrossWorkspaceReferenceError,
+    EvidenceReference,
+    ProjectionOverride,
+    ProtectedFieldOverrideError,
+    RequiredFact,
 )
-from maistro_design.types import DesignError
+from maistro_design.brief_store import PgCreativeBriefStore
+from maistro_design.protocols import CreativeBriefStore
+from maistro_design.stores import PgDesignProjectStore
 
-WORKSPACE = "ws-1"
-PROJECT = "proj-1"
-GOAL = "goal-773"
-GOAL_REVISION = "rev-7"
-AGENT = "agent-ws-orchestrator"
+pytestmark = pytest.mark.contract("boundary")
 
-
-def make_store() -> InMemoryCreativeBriefStore:
-    return InMemoryCreativeBriefStore()
+WS = "ws-1"
+PROJ = "proj-1"
+GOAL = "goal-1"
 
 
-async def create_brief(store: InMemoryCreativeBriefStore, **overrides: object) -> CreativeBrief:
-    """Create the reference spring-launch brief family, with per-test overrides."""
-    kwargs: dict[str, object] = {
-        "workspace_id": WORKSPACE,
-        "project_id": PROJECT,
+def _brief(**overrides: object) -> CreativeBrief:
+    """A minimal valid brief: one Goal revision, Persona, Design System, two channels."""
+    values: dict[str, object] = {
+        "workspace_id": WS,
+        "project_id": PROJ,
         "goal_id": GOAL,
-        "goal_revision": GOAL_REVISION,
-        "owner_agent_id": AGENT,
-        "persona_id": "persona-atelier",
-        "design_system_slug": "atelier-zero",
-        "design_system_version": "2.1.0",
-        "success_criteria": ("launch-ready site", "coherent coupon campaign"),
-        "audience": "indie makers",
-        "source_references": ("memory://workspace/brand-voice",),
-        "artifact_requirements": (
-            ArtifactRequirement("landing-page", "single page, CTA above the fold"),
-            ArtifactRequirement("coupon", "20% spring code, one per customer"),
+        "goal_revision": 3,
+        "goal_owner_agent_id": "agent-orchestrator",
+        "persona": BriefReference(
+            kind="persona",
+            ref_id="persona-1",
+            version="p-v7",
+            workspace_id=WS,
         ),
-        "creative_constraints": ("no dark patterns",),
-        "summary": "Spring launch family",
+        "design_system": BriefReference(
+            kind="design_system",
+            ref_id="brand-x",
+            version="2026.09",
+        ),
+        "audience": "home bakers",
+        "required_messages": ("Fresh daily", "Local grain"),
+        "cta": "Order by Friday",
+        "required_facts": (
+            RequiredFact(
+                fact_id="fact-gluten-free",
+                text="Every loaf is baked in a gluten-free facility.",
+                evidence=(EvidenceReference(kind="url", ref="https://facts.example/facility"),),
+            ),
+        ),
+        "prohibited_claims": ("cures disease",),
+        "artifact_requests": (
+            ArtifactRequest(
+                request_id="ig-square",
+                channel="social",
+                format="png",
+                dimensions="1080x1080",
+                requirements=("square crop",),
+            ),
+            ArtifactRequest(
+                request_id="story-916",
+                channel="social",
+                format="png",
+                dimensions="1080x1920",
+            ),
+        ),
+        "supervision_constraints": ("stop for human approval before publishing",),
     }
-    kwargs.update(overrides)
-    return await store.create(**kwargs)  # type: ignore[arg-type]
+    values.update(overrides)
+    return CreativeBrief.model_validate(values)
 
 
-# ── Creation binds the exact canonical Goal revision ─────────────────────────
+# ── One schema/model and persistence contract owns the domain state ──────────
 
 
-class TestCreation:
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_create_mints_version_one_bound_to_goal_revision(self):
-        """Given canonical refs When create Then v1 carries the exact Goal revision."""
-        store = make_store()
-        brief = await create_brief(store)
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
+def test_one_contract_owns_creative_brief_state() -> None:
+    """The model and the persistence contract are the package's single owners."""
+    from maistro_design import CreativeBrief as ExportedBrief
 
-        current = brief.current
-        assert brief.brief_id == current.brief_id
-        assert current.version == 1
-        assert current.goal_id == GOAL
-        assert current.goal_revision == GOAL_REVISION
-        assert current.workspace_id == WORKSPACE
-        assert current.project_id == PROJECT
-        assert current.owner_agent_id == AGENT
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_list_by_goal_resolves_the_lineage_in_scope(self):
-        """Goal + CreativeBrief resolve finds the one lineage for the revision."""
-        store = make_store()
-        brief = await create_brief(store)
-
-        found = await store.list_by_goal(
-            GOAL, GOAL_REVISION, workspace_id=WORKSPACE, project_id=PROJECT
-        )
-        assert [item.brief_id for item in found] == [brief.brief_id]
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_list_by_goal_scope_keyed(self):
-        """A sibling workspace/project cannot resolve the lineage."""
-        await create_brief(make_store())
-
-        empty = await make_store().list_by_goal(
-            GOAL, GOAL_REVISION, workspace_id="other-ws", project_id=PROJECT
-        )
-        assert empty == []
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_second_lineage_for_same_goal_revision_conflicts(self):
-        """Goal + CreativeBrief resolve stays unambiguous: no forked lineages."""
-        store = make_store()
-        await create_brief(store)
-
-        with pytest.raises(CreativeBriefConflictError, match="revise it instead"):
-            await create_brief(store, audience="a different audience, same Goal")
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_new_goal_revision_gets_its_own_lineage(self):
-        """A new Goal revision is a new projection, not a fork of the old one."""
-        store = make_store()
-        await create_brief(store)
-        successor = await create_brief(store, goal_revision="rev-8")
-
-        assert successor.current.goal_revision == "rev-8"
-        original = await store.list_by_goal(
-            GOAL, GOAL_REVISION, workspace_id=WORKSPACE, project_id=PROJECT
-        )
-        assert successor.brief_id != original[0].brief_id
+    assert ExportedBrief is CreativeBrief
+    store: CreativeBriefStore = PgCreativeBriefStore(session_factory=object())
+    assert isinstance(store, CreativeBriefStore)
+    # And it is a distinct contract from the DesignProject store: one type per
+    # domain state, not a second method bolted onto projects.
+    assert not isinstance(store, PgDesignProjectStore)
 
 
-# ── Canonical identity validation through the shared ontology (#458) ─────────
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
+def test_package_surface_lazy_loads_the_brief_contract() -> None:
+    """The package ``__getattr__`` resolves the brief contract lazily.
+
+    The public surface is the same single store and protocol the domain tests
+    import directly — ``maistro_design.PgCreativeBriefStore`` and
+    ``maistro_design.CreativeBriefStore`` resolve to exactly those objects, so
+    no second persistence contract can grow beside them unnoticed.
+    """
+    import maistro_design
+
+    # The lazy package surface stays the single owner of the brief contract:
+    # every declared public symbol resolves to the canonical object (so no
+    # second persistence contract can grow unnoticed), and unknown names fall
+    # through every declared branch to AttributeError at the bottom of
+    # ``__getattr__`` rather than silently resolving. All four arcs of the two
+    # new ``if`` branches — including the fall-through to the raise — are
+    # exercised here.
+    assert maistro_design.PgDesignProjectStore is PgDesignProjectStore
+    assert maistro_design.PgCreativeBriefStore is PgCreativeBriefStore
+    assert maistro_design.CreativeBriefStore is CreativeBriefStore
+    assert not hasattr(maistro_design, "this_is_not_a_design_surface_symbol")
 
 
-class TestCanonicalReferences:
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_blank_goal_revision_refused(self):
-        """The v1 contract requires an exact goal_revision on every Goal projection."""
-        store = make_store()
-        with pytest.raises(CreativeBriefError, match="interoperability contract"):
-            await create_brief(store, goal_revision="   ")
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_non_positive_integer_revision_refused(self):
-        store = make_store()
-        with pytest.raises(CreativeBriefError, match="interoperability contract"):
-            await create_brief(store, goal_revision=0)
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_blank_scope_reference_refused(self):
-        """Scope lineage (Workspace -> Project -> Goal) must be present."""
-        store = make_store()
-        with pytest.raises(CreativeBriefError, match="workspace_id"):
-            await create_brief(store, workspace_id="")
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_blank_owner_agent_refused(self):
-        """A brief names its accountable Agent; flavor is separate from accountability."""
-        store = make_store()
-        with pytest.raises(CreativeBriefError, match="owner_agent_id"):
-            await create_brief(store, owner_agent_id="")
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_blank_persona_when_present_refused(self):
-        store = make_store()
-        with pytest.raises(CreativeBriefError, match="persona_id"):
-            await create_brief(store, persona_id=" ")
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_errors_are_design_domain_errors(self):
-        """The product boundary stays typed: contract failures are CreativeBriefError."""
-        assert issubclass(CreativeBriefError, DesignError)
-        assert issubclass(CreativeBriefNotFoundError, CreativeBriefError)
-        assert issubclass(CreativeBriefConflictError, CreativeBriefError)
+def test_brief_errors_are_domain_errors() -> None:
+    """CreativeBrief errors classify through the design domain error family."""
+    assert issubclass(CreativeBriefError, AgentError)
+    assert CrossWorkspaceReferenceError("").code == "CREATIVE_BRIEF_CROSS_WORKSPACE"
+    assert BriefContractError("").code == "CREATIVE_BRIEF_CONTRACT"
+    assert ProtectedFieldOverrideError("").code == "CREATIVE_BRIEF_PROTECTED_OVERRIDE"
+    assert ArtifactRequestNotFoundError("").code == "CREATIVE_BRIEF_REQUEST_NOT_FOUND"
 
 
-# ── Shared context across artifact branches (#773 invariant) ─────────────────
+# ── Canonical Goal identity + exact revision ─────────────────────────────────
 
 
-class TestSharedContext:
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_all_branches_share_one_identity(self):
-        """Website, coupon, deck, script: same Goal revision + brief version + team."""
-        store = make_store()
-        brief = await create_brief(store)
-        current = brief.current
-
-        contexts = [
-            current.shared_context(branch)
-            for branch in ("landing-page", "coupon", "deck", "video-script")
-        ]
-        for context in contexts:
-            assert context.goal_id == GOAL
-            assert context.goal_revision == GOAL_REVISION
-            assert context.brief_id == brief.brief_id
-            assert context.brief_version == 1
-            assert context.owner_agent_id == AGENT
-            assert context.persona_id == "persona-atelier"
-            assert context.design_system_slug == "atelier-zero"
-            assert context.audience == "indie makers"
-            assert context.source_references == ("memory://workspace/brand-voice",)
-            assert context.creative_constraints == ("no dark patterns",)
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_declared_branch_carries_its_channel_requirement(self):
-        store = make_store()
-        brief = await create_brief(store)
-
-        context = brief.current.shared_context("coupon")
-        assert context.branch == "coupon"
-        assert context.requirement == "20% spring code, one per customer"
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_undeclared_branch_still_receives_shared_identity(self):
-        """A branch without a declared requirement is not unbriefed work."""
-        store = make_store()
-        brief = await create_brief(store)
-
-        context = brief.current.shared_context("podcast-trailer")
-        assert context.requirement is None
-        assert context.goal_revision == GOAL_REVISION
-        assert context.brief_version == 1
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_shared_context_serializes_canonical_field_names(self):
-        """Downstream consumers read goal_id/goal_revision, the interop names."""
-        store = make_store()
-        brief = await create_brief(store)
-
-        payload = brief.current.shared_context("landing-page").to_dict()
-        assert payload["goal_id"] == GOAL
-        assert payload["goal_revision"] == GOAL_REVISION
-        assert payload["brief_id"] == brief.brief_id
-        assert payload["brief_version"] == 1
-        assert payload["creative_constraints"] == ["no dark patterns"]
+@pytest.mark.ac("SPEC-092826-a774/AC-2")
+def test_brief_names_goal_identity_and_exact_revision() -> None:
+    brief = _brief()
+    assert brief.goal_id == GOAL
+    assert brief.goal_revision == 3
+    # The reference set satisfies the shared interoperability ontology:
+    # Goal -> Project -> Workspace (#458).
+    assert brief.project_id == PROJ
+    assert brief.workspace_id == WS
 
 
-# ── Versioned evolution without identity mutation ────────────────────────────
+@pytest.mark.parametrize("goal_revision", [0, -1])
+@pytest.mark.ac("SPEC-092826-a774/AC-2")
+def test_goal_revision_must_be_a_positive_revision(goal_revision: int) -> None:
+    """An exact revision means a positive revision, not a wish."""
+    with pytest.raises(ValidationError):
+        _brief(goal_revision=goal_revision)
 
 
-class TestRevision:
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_revise_appends_version_and_keeps_goal_identity(self):
-        """Guidance evolution is a new version against the same Goal revision."""
-        store = make_store()
-        brief = await create_brief(store)
-
-        revised = await store.revise(
-            brief.brief_id,
-            workspace_id=WORKSPACE,
-            project_id=PROJECT,
-            revision=BriefRevision(summary="Tighten CTA guidance", audience="indie makers + devs"),
-        )
-
-        assert revised.current.version == 2
-        assert revised.current.audience == "indie makers + devs"
-        assert revised.current.goal_id == GOAL
-        assert revised.current.goal_revision == GOAL_REVISION
-        assert revised.current.owner_agent_id == AGENT
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_revision_cannot_carry_identity_fields(self):
-        """Compile-level negative control: a revision accepts no identity field."""
-        names = {field.name for field in dataclasses.fields(BriefRevision)}
-        forbidden = {
-            "brief_id",
-            "version",
-            "goal_id",
-            "goal_revision",
-            "workspace_id",
-            "project_id",
-            "owner_agent_id",
-            "created_at",
-        }
-        assert not names & forbidden
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_historical_versions_stay_immutable_after_revision(self):
-        """Historical Runs must still resolve the version they consumed."""
-        store = make_store()
-        brief = await create_brief(store)
-        v1 = brief.current
-
-        revised = await store.revise(
-            brief.brief_id,
-            workspace_id=WORKSPACE,
-            project_id=PROJECT,
-            revision=BriefRevision(summary="v2", persona_id="persona-brutalist"),
-        )
-
-        assert revised.version(1) is v1
-        assert v1.persona_id == "persona-atelier"
-        assert revised.current.version == 2
-        assert revised.current.persona_id == "persona-brutalist"
-        # The pre-revise handle is an immutable snapshot: it still shows v1,
-        # exactly what a Run or artifact that consumed v1 must keep seeing.
-        assert brief.current.version == 1
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_revise_carries_undeclared_fields_forward(self):
-        """None means keep: references cannot be silently dropped by a revision."""
-        store = make_store()
-        brief = await create_brief(store)
-
-        revised = await store.revise(
-            brief.brief_id,
-            workspace_id=WORKSPACE,
-            project_id=PROJECT,
-            revision=BriefRevision(summary="Only the summary changes"),
-        )
-
-        current = revised.current
-        assert current.persona_id == "persona-atelier"
-        assert current.design_system_slug == "atelier-zero"
-        assert current.success_criteria == ("launch-ready site", "coherent coupon campaign")
-        assert current.artifact_requirements == brief.current.artifact_requirements
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_history_is_ordered_oldest_first(self):
-        store = make_store()
-        brief = await create_brief(store)
-        await store.revise(
-            brief.brief_id,
-            workspace_id=WORKSPACE,
-            project_id=PROJECT,
-            revision=BriefRevision(summary="v2"),
-        )
-        await store.revise(
-            brief.brief_id,
-            workspace_id=WORKSPACE,
-            project_id=PROJECT,
-            revision=BriefRevision(summary="v3"),
-        )
-
-        versions = await store.history(brief.brief_id, workspace_id=WORKSPACE, project_id=PROJECT)
-        assert [item.version for item in versions] == [1, 2, 3]
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_unknown_version_refused(self):
-        store = make_store()
-        brief = await create_brief(store)
-
-        with pytest.raises(CreativeBriefNotFoundError):
-            brief.version(9)
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_lineage_rejects_discontiguous_versions(self):
-        """A lineage is contiguous from 1 by construction."""
-        with pytest.raises(CreativeBriefError, match="contiguous"):
-            CreativeBrief(brief_id="b1", versions=(make_version(version=2),))
+@pytest.mark.ac("SPEC-092826-a774/AC-2")
+def test_blank_goal_identity_is_refused() -> None:
+    with pytest.raises(BriefContractError):
+        _brief(goal_id="   ")
 
 
-# ── Version boundary validation ───────────────────────────────────────────────
+@pytest.mark.ac("SPEC-092826-a774/AC-2")
+def test_blank_workspace_or_project_scope_is_refused() -> None:
+    with pytest.raises(BriefContractError):
+        _brief(workspace_id="")
+    with pytest.raises(BriefContractError):
+        _brief(project_id="  ")
 
 
-def make_version(**overrides: object) -> CreativeBriefVersion:
-    """A valid reference version, with per-test overrides."""
-    kwargs: dict[str, object] = {
-        "brief_id": "b1",
-        "version": 1,
-        "goal_id": GOAL,
-        "goal_revision": GOAL_REVISION,
-        "workspace_id": WORKSPACE,
-        "project_id": PROJECT,
-        "owner_agent_id": AGENT,
-        "persona_id": None,
-        "design_system_slug": None,
-        "design_system_version": None,
-        "success_criteria": (),
-        "audience": "readers",
-        "source_references": (),
-        "artifact_requirements": (),
-        "creative_constraints": (),
-        "summary": "reference version",
-        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
-    }
-    kwargs.update(overrides)
-    return CreativeBriefVersion(**kwargs)  # type: ignore[arg-type]
+# ── Goal ownership/delegation stays canonical; the brief only references ────
 
 
-class TestVersionValidation:
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    @pytest.mark.parametrize(
-        ("field", "bad_value"),
-        [
-            ("success_criteria", ["a list, not a tuple"]),
-            ("source_references", "a bare string"),
-            ("creative_constraints", ("",)),
-        ],
+@pytest.mark.ac("SPEC-092826-a774/AC-3")
+def test_goal_ownership_and_delegation_are_recorded_references() -> None:
+    brief = _brief(
+        goal_delegation_ref=BriefReference(
+            kind="delegation",
+            ref_id="delegation-9",
+            version="d-v2",
+            workspace_id=WS,
+        ),
     )
-    def test_non_tuple_or_blank_string_collections_refused(self, field: str, bad_value: object):
-        with pytest.raises(CreativeBriefError, match=field):
-            make_version(**{field: bad_value})
+    # Ownership is a recorded accountability fact, not a Design-Studio owner:
+    # the brief exposes no way to transfer, reassign, or execute ownership.
+    assert brief.goal_owner_agent_id == "agent-orchestrator"
+    assert brief.goal_delegation_ref is not None
+    assert brief.goal_delegation_ref.ref_id == "delegation-9"
+    # A subgoal is still a Goal — the delegation slot accepts goal references.
+    subgoal_brief = _brief(
+        goal_delegation_ref=BriefReference(kind="goal", ref_id="goal-1-sub", workspace_id=WS),
+    )
+    assert subgoal_brief.goal_delegation_ref is not None
+    assert subgoal_brief.goal_delegation_ref.kind == "goal"
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    @pytest.mark.parametrize("bad_version", ["1", 1.0, True, 0, -1])
-    def test_version_number_must_be_a_positive_int(self, bad_version: object):
-        with pytest.raises(CreativeBriefError, match="positive integer"):
-            make_version(version=bad_version)
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_artifact_requirements_must_hold_requirement_values(self):
-        with pytest.raises(CreativeBriefError, match="ArtifactRequirement"):
-            make_version(artifact_requirements=("coupon: plain string, not a requirement",))
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_duplicate_branch_names_in_artifact_requirements_refused(self):
-        """requirement_for() returns the first match, so duplicates would make
-        serialized requirements branch-order-dependent; refuse them outright."""
-        requirements = (
-            ArtifactRequirement("coupon", "one per customer"),
-            ArtifactRequirement("website", "WCAG 2.2 AA"),
-            ArtifactRequirement("coupon", "no stacking with other offers"),
-        )
-        with pytest.raises(CreativeBriefError, match=r"at most once.*coupon"):
-            make_version(artifact_requirements=requirements)
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_to_dict_round_trips_the_published_context(self):
-        """A published version serializes everything a Run/artifact must recover."""
-        requirement = ArtifactRequirement("coupon", "one per customer")
-        version = make_version(
-            persona_id="persona-atelier",
-            design_system_slug="atelier-zero",
-            design_system_version="2.1.0",
-            success_criteria=("launch-ready",),
-            source_references=("memory://workspace/brand-voice",),
-            artifact_requirements=(requirement,),
-            creative_constraints=("no dark patterns",),
+@pytest.mark.ac("SPEC-092826-a774/AC-3")
+def test_delegation_slot_rejects_non_delegation_kinds() -> None:
+    """Persona-flavored references cannot stand in for delegation state."""
+    with pytest.raises(BriefContractError):
+        _brief(
+            goal_delegation_ref=BriefReference(kind="persona", ref_id="persona-1", workspace_id=WS)
         )
 
-        payload = version.to_dict()
-        assert payload["brief_id"] == "b1"
-        assert payload["version"] == 1
-        assert payload["goal_id"] == GOAL
-        assert payload["goal_revision"] == GOAL_REVISION
-        assert payload["persona_id"] == "persona-atelier"
-        assert payload["design_system_version"] == "2.1.0"
-        assert payload["success_criteria"] == ["launch-ready"]
-        assert payload["artifact_requirements"] == [
-            {"branch": "coupon", "requirement": "one per customer"}
-        ]
-        assert payload["created_at"] == version.created_at.isoformat()
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_lineage_rejects_empty_or_foreign_versions(self):
-        with pytest.raises(CreativeBriefError, match="at least one CreativeBriefVersion"):
-            CreativeBrief(brief_id="b1", versions=())
-        with pytest.raises(CreativeBriefError, match="share the brief_id"):
-            CreativeBrief(brief_id="b1", versions=(make_version(), make_version(brief_id="b2")))
-        with pytest.raises(CreativeBriefError, match="same Goal revision and scope"):
-            CreativeBrief(
-                brief_id="b1",
-                versions=(make_version(), make_version(version=2, workspace_id="other-ws")),
+@pytest.mark.ac("SPEC-092826-a774/AC-3")
+def test_new_version_cannot_move_scope_or_rewrite_lineage() -> None:
+    """A brief lineage lives in one Workspace/Project; moving is a new lineage."""
+    brief = _brief()
+    for field in ("workspace_id", "project_id", "lineage_id", "version", "brief_id"):
+        with pytest.raises(BriefContractError):
+            brief.new_version(**{field: "moved"})
+
+
+# ── Persona and Design System are references, not copies ────────────────────
+
+
+@pytest.mark.ac("SPEC-092826-a774/AC-4")
+def test_persona_and_design_system_are_versioned_references() -> None:
+    brief = _brief()
+    assert brief.persona.kind == "persona"
+    assert brief.persona.ref_id == "persona-1"
+    assert brief.persona.version == "p-v7"
+    assert brief.design_system_slug == "brand-x"
+    assert brief.design_system_version == "2026.09"
+    # Identity accessors resolve through the reference — there is no embedded
+    # copy of the Persona or Design System payload on the brief.
+    assert brief.persona_id == "persona-1"
+
+
+@pytest.mark.ac("SPEC-092826-a774/AC-4")
+def test_persona_slot_rejects_other_kinds() -> None:
+    with pytest.raises(BriefContractError):
+        _brief(persona=BriefReference(kind="graph", ref_id="graph-1"))
+
+
+# ── Updating creative context creates a version; history stays intact ───────
+
+
+@pytest.mark.ac("SPEC-092826-a774/AC-5")
+def test_brief_versions_are_frozen() -> None:
+    brief = _brief()
+    with pytest.raises(ValidationError):
+        brief.audience = "silent rewrite"  # type: ignore[misc]
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-5")
+def test_updating_creative_context_creates_a_new_version() -> None:
+    v1 = _brief()
+    v2 = v1.new_version(
+        audience="serious pastry students",
+        change_note="audience treatment changed; Goal untouched",
+    )
+    assert v2.version == 2
+    assert v2.supersedes_brief_id == v1.brief_id
+    assert v2.lineage_id == v1.lineage_id
+    assert v2.audience == "serious pastry students"
+    # The prior version — the one historical artifacts consumed — is unchanged.
+    assert v1.audience == "home bakers"
+    assert v1.version == 1
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-6")
+def test_changed_outcome_is_a_goal_revision_change_plus_new_brief_version() -> None:
+    """A redirect of the desired outcome: new canonical Goal revision first,
+    then a brief version consuming it — the old version is not rewritten."""
+    v1 = _brief()
+    v2 = v1.new_version(goal_id="goal-2", goal_revision=1, change_note="Goal redirect")
+    assert v2.goal_id == "goal-2"
+    assert v2.goal_revision == 1
+    assert v1.goal_id == GOAL and v1.goal_revision == 3
+
+
+def test_version_update_rejects_unknown_fields() -> None:
+    brief = _brief()
+    with pytest.raises(BriefContractError):
+        brief.new_version(not_a_brief_field=1)
+
+
+# ── Historical artifacts identify exactly what they consumed ────────────────
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-7")
+def test_projection_carries_every_consumed_identity() -> None:
+    brief = _brief()
+    projection = brief.project("ig-square")
+    shared = projection.shared_context()
+    assert shared["goal_id"] == GOAL
+    assert shared["goal_revision"] == 3
+    assert shared["brief_id"] == brief.brief_id
+    assert shared["brief_lineage_id"] == brief.lineage_id
+    assert shared["brief_version"] == brief.version
+    assert shared["persona_id"] == "persona-1"
+    assert shared["persona_version"] == "p-v7"
+    assert shared["design_system_slug"] == "brand-x"
+    assert shared["design_system_version"] == "2026.09"
+    assert shared["goal_owner_agent_id"] == "agent-orchestrator"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-7")
+def test_projection_from_a_prior_version_keeps_that_version() -> None:
+    """A projection derived before a redirect keeps citing the version it used."""
+    v1 = _brief()
+    old_projection = v1.project("story-916")
+    v1.new_version(audience="changed audience")
+    assert old_projection.brief_version == 1
+    assert old_projection.audience == "home bakers"
+
+
+# ── Two artifact branches: identical shared context, explicit channel diff ──
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-12")
+def test_two_artifact_branches_share_goal_and_brief_context() -> None:
+    brief = _brief()
+    square = brief.project("ig-square")
+    story = brief.project("story-916")
+    # Semantically identical shared Goal/brief/Persona/Design-System context.
+    assert square.shared_context() == story.shared_context()
+    # Differing only in the explicit artifact/channel projection.
+    assert square.artifact_request.request_id == "ig-square"
+    assert story.artifact_request.request_id == "story-916"
+    assert square.artifact_request.dimensions == "1080x1080"
+    assert story.artifact_request.dimensions == "1080x1920"
+    assert square.overrides == () and story.overrides == ()
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-8")
+def test_projection_overrides_are_explicit_and_explained() -> None:
+    brief = _brief()
+    projection = brief.project(
+        "ig-square",
+        overrides=(
+            ProjectionOverride(
+                field="copy_variant",
+                value="seasonal",
+                reason="channel A/B variant for the social feed",
+            ),
+        ),
+    )
+    assert projection.overrides[0].field == "copy_variant"
+    assert projection.overrides[0].reason
+
+
+@pytest.mark.ac("SPEC-092826-a774/AC-8")
+def test_override_without_a_reason_is_refused() -> None:
+    with pytest.raises(BriefContractError):
+        ProjectionOverride(field="copy_variant", value="x", reason="  ")
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["goal_id", "goal_revision", "brief_version", "persona_id", "required_facts"],
+)
+@pytest.mark.ac("SPEC-092826-a774/AC-8")
+def test_projection_cannot_silently_override_shared_context(field: str) -> None:
+    """Derived channel work adjusts presentation; shared changes need a version."""
+    brief = _brief()
+    with pytest.raises(ProtectedFieldOverrideError):
+        brief.project("ig-square", overrides=(ProjectionOverride(field=field, value="x"),))
+
+
+@pytest.mark.ac("SPEC-092826-a774/AC-8")
+def test_projection_constructed_directly_still_refuses_protected_overrides() -> None:
+    with pytest.raises(ProtectedFieldOverrideError):
+        ArtifactProjection(
+            channel="social",
+            workspace_id=WS,
+            project_id=PROJ,
+            goal_id=GOAL,
+            goal_revision=1,
+            goal_owner_agent_id="agent-1",
+            brief_lineage_id="lineage",
+            brief_id="brief",
+            brief_version=1,
+            persona_id="p",
+            persona_version=None,
+            design_system_slug="s",
+            design_system_version=None,
+            artifact_request=ArtifactRequest(request_id="r", channel="social", format="png"),
+            overrides=(ProjectionOverride(field="audience", value="nobody"),),
+        )
+
+
+def test_unknown_artifact_request_is_refused() -> None:
+    brief = _brief()
+    with pytest.raises(ArtifactRequestNotFoundError):
+        brief.project("does-not-exist")
+
+
+def test_artifact_request_ids_must_be_unique() -> None:
+    with pytest.raises(BriefContractError):
+        _brief(
+            artifact_requests=(
+                ArtifactRequest(request_id="dup", channel="social", format="png"),
+                ArtifactRequest(request_id="dup", channel="print", format="pdf"),
             )
-
-
-# ── Scope isolation (#326 lesson: no defaults, no cross-scope leakage) ───────
-
-
-class TestScopeIsolation:
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_get_wrong_scope_returns_none_without_leaking(self):
-        store = make_store()
-        brief = await create_brief(store)
-
-        assert await store.get(brief.brief_id, workspace_id="other-ws", project_id=PROJECT) is None
-        assert (
-            await store.get(brief.brief_id, workspace_id=WORKSPACE, project_id="other-proj") is None
-        )
-        assert await store.get("missing-id", workspace_id=WORKSPACE, project_id=PROJECT) is None
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_revise_outside_scope_raises_not_found(self):
-        """A sibling scope cannot append versions to a lineage it cannot see."""
-        store = make_store()
-        brief = await create_brief(store)
-
-        for kwargs in (
-            {"workspace_id": "other-ws", "project_id": PROJECT},
-            {"workspace_id": WORKSPACE, "project_id": "other-proj"},
-        ):
-            with pytest.raises(CreativeBriefNotFoundError):
-                await store.revise(
-                    brief.brief_id, revision=BriefRevision(summary="smuggled"), **kwargs
-                )
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_runtime_protocol_conformance(self):
-        """The reference store satisfies the reviewed protocol surface."""
-        assert isinstance(make_store(), CreativeBriefStore)
-
-
-# ── Provenance retention on produced artifacts (#773 acceptance) ─────────────
-
-
-class TestArtifactProvenance:
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_bind_joins_creative_and_execution_lineage(self):
-        """Every artifact keeps Goal revision + brief version + Run/NodeRun/Attempt."""
-        store = make_store()
-        brief = await create_brief(store)
-
-        provenance = ArtifactProvenance.bind(
-            brief.current,
-            run_id="run-1",
-            node_run_id="node-1",
-            attempt_id="attempt-1",
         )
 
-        assert provenance.goal_id == GOAL
-        assert provenance.goal_revision == GOAL_REVISION
-        assert provenance.brief_id == brief.brief_id
-        assert provenance.brief_version == 1
-        assert provenance.run_id == "run-1"
-        assert provenance.node_run_id == "node-1"
-        assert provenance.attempt_id == "attempt-1"
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    @pytest.mark.parametrize("field", ["run_id", "node_run_id", "attempt_id"])
-    async def test_bind_refuses_blank_execution_identity(self, field: str):
-        """No canonical execution evidence, no artifact provenance."""
-        store = make_store()
-        brief = await create_brief(store)
+# ── Source truth is referenced; claims are not the brief's to generate ──────
 
-        ids = {"run_id": "run-1", "node_run_id": "node-1", "attempt_id": "attempt-1"}
-        ids[field] = "  "
-        with pytest.raises(CreativeBriefError, match=field):
-            ArtifactProvenance.bind(brief.current, **ids)
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_provenance_refuses_a_foreign_goal_claim(self):
-        """Historical provenance is not rewritable onto a different Goal revision."""
-        store = make_store()
-        brief = await create_brief(store)
-        provenance = ArtifactProvenance.bind(
-            brief.current, run_id="run-1", node_run_id="node-1", attempt_id="attempt-1"
+@pytest.mark.ac("SPEC-092826-a774/AC-9")
+def test_required_facts_carry_evidence_references() -> None:
+    brief = _brief()
+    fact = brief.required_facts[0]
+    assert fact.text.startswith("Every loaf")
+    assert fact.evidence[0].kind == "url"
+    assert fact.evidence[0].ref == "https://facts.example/facility"
+
+
+@pytest.mark.ac("SPEC-092826-a774/AC-9")
+def test_blank_fact_or_evidence_is_refused() -> None:
+    with pytest.raises(BriefContractError):
+        RequiredFact(fact_id="f", text="   ")
+    with pytest.raises(BriefContractError):
+        EvidenceReference(kind="url", ref="")
+
+
+@pytest.mark.ac("SPEC-092826-a774/AC-9")
+def test_facts_and_prohibited_claims_are_distinct_fields() -> None:
+    """Source truth in, generated claims never: the brief constrains, not claims."""
+    brief = _brief()
+    assert brief.required_facts[0].fact_id == "fact-gluten-free"
+    assert brief.prohibited_claims == ("cures disease",)
+    assert "generated_claims" not in CreativeBrief.model_fields
+    projection = brief.project("ig-square")
+    assert projection.required_facts == brief.required_facts
+    assert projection.prohibited_claims == brief.prohibited_claims
+
+
+# ── Cross-Workspace references are structurally rejected ────────────────────
+
+
+@pytest.mark.parametrize(
+    ("field", "reference"),
+    [
+        ("persona", BriefReference(kind="persona", ref_id="p", version="1", workspace_id="ws-2")),
+        (
+            "design_system",
+            BriefReference(kind="design_system", ref_id="d", version="1", workspace_id="ws-2"),
+        ),
+        ("goal_delegation_ref", BriefReference(kind="delegation", ref_id="x", workspace_id="ws-2")),
+        ("fulfillment_graph_ref", BriefReference(kind="graph", ref_id="g", workspace_id="ws-2")),
+        ("source", BriefReference(kind="artifact", ref_id="a", workspace_id="ws-2")),
+    ],
+)
+@pytest.mark.ac("SPEC-092826-a774/AC-11")
+def test_cross_workspace_references_are_rejected(field: str, reference: BriefReference) -> None:
+    overrides: dict[str, object] = (
+        {"source_references": (reference,)} if field == "source" else {field: reference}
+    )
+    with pytest.raises(CrossWorkspaceReferenceError):
+        _brief(**overrides)
+
+
+def test_unscoped_references_are_accepted_and_pass_through() -> None:
+    """A reference that cannot know its Workspace (e.g. a bundled design
+    system) is a plain identity; the persistence layer owns scope truth."""
+    brief = _brief()
+    assert brief.design_system.workspace_id is None
+
+
+# ── No authorization surface ────────────────────────────────────────────────
+
+
+_AUTHORIZATION_VOCABULARY = (
+    "grants",
+    "grant_ids",
+    "capabilities",
+    "capability_ids",
+    "bindings",
+    "binding_ids",
+    "invocations",
+    "approvals",
+    "permissions",
+    "scopes",
+    "policy_overrides",
+    "authorization",
+    "secrets",
+    "credentials",
+)
+
+
+@pytest.mark.ac("SPEC-092826-a774/AC-14")
+def test_brief_has_no_authorization_fields() -> None:
+    """No CreativeBrief field grants authorization or bypasses Capability/
+    Binding policy — the vocabulary of authorization is absent by construction."""
+    for model in (CreativeBrief, ArtifactProjection):
+        present = set(model.model_fields)
+        assert present.isdisjoint(_AUTHORIZATION_VOCABULARY), (
+            f"{model.__name__} grew an authorization surface: "
+            f"{sorted(present & set(_AUTHORIZATION_VOCABULARY))}"
         )
 
-        provenance.assert_matches_goal(GOAL, GOAL_REVISION)
-        with pytest.raises(CreativeBriefConflictError, match="not 'goal-773' revision 'rev-9'"):
-            provenance.assert_matches_goal(GOAL, "rev-9")
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    async def test_provenance_serializes_for_transport(self):
-        store = make_store()
-        brief = await create_brief(store)
-        provenance = ArtifactProvenance.bind(
-            brief.current, run_id="run-1", node_run_id="node-1", attempt_id="attempt-1"
-        )
+@pytest.mark.parametrize("field", ["grants", "capability_ids", "approval_bypass"])
+@pytest.mark.ac("SPEC-092826-a774/AC-14")
+def test_authorization_shaped_extra_fields_are_refused(field: str) -> None:
+    """``extra='forbid'``: an authorization payload cannot ride along on a brief."""
+    values = _brief().model_dump()
+    values[field] = [{"effect": "publish", "granted": True}]
+    with pytest.raises(ValidationError):
+        CreativeBrief.model_validate(values)
 
-        payload = provenance.to_dict()
-        assert payload == {
-            "goal_id": GOAL,
-            "goal_revision": GOAL_REVISION,
-            "brief_id": brief.brief_id,
-            "brief_version": 1,
-            "run_id": "run-1",
-            "node_run_id": "node-1",
-            "attempt_id": "attempt-1",
-        }
+
+@pytest.mark.ac("SPEC-092826-a774/AC-10")
+def test_supervision_constraints_are_annotations_only() -> None:
+    brief = _brief()
+    assert brief.supervision_constraints == ("stop for human approval before publishing",)
+    # They are plain recorded text: no type, grant, or capability travels with
+    # them, and the projection passes them through verbatim.
+    assert brief.project("ig-square").shared_context()["goal_owner_agent_id"]
+
+
+# ── Redirect provenance ─────────────────────────────────────────────────────
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-13")
+def test_redirect_produces_new_versions_without_mutating_history() -> None:
+    v1 = _brief()
+    v1_snapshot = v1.model_dump()
+    v2 = v1.new_version(
+        persona=BriefReference(kind="persona", ref_id="p2", version="p-v1", workspace_id=WS),
+        change_note="persona change",
+    )
+    v3 = v2.new_version(goal_id="goal-9", goal_revision=2, change_note="outcome redirect")
+    # Nothing about v1 moved: same persona, same goal, same provenance.
+    assert v1.model_dump() == v1_snapshot
+    assert v2.supersedes_brief_id == v1.brief_id
+    assert v3.supersedes_brief_id == v2.brief_id
+    assert v3.version == 3
+    assert v3.goal_id == "goal-9" and v3.goal_revision == 2
+    assert v3.persona_id == "p2"
+    assert v1.persona_id == "persona-1"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-13")
+def test_change_note_is_recorded_provenance() -> None:
+    brief = _brief()
+    v2 = brief.new_version(change_note="channel guidance only")
+    assert v2.change_note == "channel guidance only"
+    assert v2.created_at >= brief.created_at
