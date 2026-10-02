@@ -80,6 +80,18 @@ def _log_redaction_active() -> bool:
         return False
 
 
+def _engine_state() -> dict:
+    """Engine lifecycle state (#1181). Same defensive contract as every probe
+    here: /health must answer even when the engine module itself is broken.
+    """
+    try:
+        from services.engine import engine_health
+
+        return engine_health()
+    except Exception:
+        return {"state": "unknown", "cause": "health_probe_failed", "degradations": []}
+
+
 def _workspace_authority_available() -> bool:
     """Whether Workspace requests can reach their canonical store (#37).
 
@@ -158,6 +170,7 @@ def health() -> dict:
     memory_decay = _memory_decay_state()
     memory_decay_enabled = _memory_decay_running(memory_decay)
     log_redaction = _log_redaction_active()
+    engine = _engine_state()
 
     return {
         "status": "ok",
@@ -190,10 +203,14 @@ def health() -> dict:
         # #333/#1179: the durability/ack mode per store family — whether a
         # 2xx from a mutation route means the State writer committed it.
         "persistence": _persistence_status(),
+        # #1181: engine lifecycle visibility. Liveness stays 200 "ok" — it is
+        # the readiness probe that takes a failed engine out of rotation.
+        "engine": engine,
         "degraded": (not llm_configured)
         or (not memory_decay_enabled)
         or (not log_redaction)
-        or identity_required,
+        or identity_required
+        or engine["state"] in {"degraded", "startup_failed", "unknown"},
     }
 
 
@@ -224,7 +241,13 @@ def ready(response: Response) -> ReadyResponse:
         checks["identity"] = False
     checks["log_redaction"] = _log_redaction_active()
     checks["workspace_authority"] = _workspace_authority_available()
-    is_ready = checks["api"] and checks["workspace_authority"]
+    # #1181: an engine whose boot failed (or is mid-boot, or was stopped) takes
+    # the instance out of rotation — the product's chat/mission surfaces fail
+    # closed without it. `not_started` keeps the historical contract for
+    # contexts that never run the app lifespan (tests, scripts); an unreadable
+    # probe reports not-ready, never ready.
+    checks["engine"] = _engine_state()["state"] in {"ready", "degraded", "not_started"}
+    is_ready = checks["api"] and checks["workspace_authority"] and checks["engine"]
     if not is_ready:
         # 503 so the image and Compose healthchecks, which only look at the
         # status code, take the instance out of rotation.
