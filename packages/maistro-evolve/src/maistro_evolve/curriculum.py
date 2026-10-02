@@ -165,14 +165,6 @@ class AdmissionDecision:
                 return o
         return None
 
-    def failure_reasons(self) -> tuple[str, ...]:
-        """Human-readable reasons for every gate that did not affirmatively pass."""
-        return tuple(
-            f"{o.gate}: {o.detail or ('executed but not passed' if o.executed else 'not executed')}"
-            for o in self.outcomes
-            if not (o.executed and o.passed)
-        )
-
 
 def _check_well_formed(draft: ChallengeDraft) -> GateOutcome:
     problems: list[str] = []
@@ -382,7 +374,9 @@ class Curriculum:
         return decision
 
     def summary(self) -> dict[str, int]:
-        return {"admitted": len(self._items), "rejected": len(self._rejected)}
+        # Read through the public accessors so the store's own reporting and
+        # any caller's inspection agree on one definition of each count.
+        return {"admitted": len(self.items), "rejected": len(self.rejected)}
 
 
 async def generate_curriculum(

@@ -28,6 +28,10 @@ from maistro_evolve.curriculum import (
     validate_challenge,
 )
 
+# SPEC-282's behavioral contract (ADR-032): every test here exercises the
+# fail-closed admission behavior the spec declares as its contract kind.
+pytestmark = [pytest.mark.contract("behavioral")]
+
 
 def _draft(
     *,
@@ -216,19 +220,6 @@ class TestProtectedGates:
         well_formed = decision.outcome(GATE_WELL_FORMED)
         assert well_formed is not None and not well_formed.passed
         assert "not a callable checker" in well_formed.detail
-
-
-class TestFailureReasons:
-    @pytest.mark.asyncio
-    @pytest.mark.ac("SPEC-282/AC-1")
-    async def test_failure_reasons_name_every_unaffirmed_gate(self):
-        """AC-1: the decision reports why each refusing gate refused."""
-        decision = await _run(solver=None, baseline_answer=None)
-        reasons = decision.failure_reasons()
-        assert any("solver_solves" in r for r in reasons)
-        assert any("baseline_fails" in r for r in reasons)
-        # Passed gates are never listed as reasons.
-        assert not any("well_formed" in r for r in reasons)
 
 
 class TestCurriculumStore:

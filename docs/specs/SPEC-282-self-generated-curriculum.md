@@ -7,10 +7,9 @@ status: Proposed
 created: 2026-10-01
 substrate:
   - maistro-engine#SPEC-202
-related:
-  - maistro-engine#24
-  - maistro-engine#450
-implements: []
+related: []
+implements:
+  - maistro-engine#ADR-088
 supersedes: []
 blocks: []
 blocked-by: []
