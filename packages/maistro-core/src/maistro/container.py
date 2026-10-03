@@ -47,6 +47,7 @@ from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
+from maistro.memory.working.manager import WorkingMemoryManager
 from maistro.memory.working_graph.manager import WorkspaceWorkingMemoryManager
 from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
@@ -2298,6 +2299,19 @@ async def create_container(
         workspace_id=config.workspace_id,
         intents=intent_registry,
     )
+    # Per-Workspace working-memory projection (ADR-082226-5104 §5): a lazy,
+    # evictable, disposable hot layer hydrated from the authoritative
+    # episodic store. The manager is bound to this instance's Workspace —
+    # one instance is one Workspace — so the policy's Layer 1/Layer 4 can
+    # never address another Workspace's graph, structurally. Backs Layer 1
+    # indexed recall (BM25 + stored embeddings) and the Layer 4 entity
+    # graph; every failure degrades loudly to the durable path.
+    hot_working_memory = WorkingMemoryManager(
+        workspace_id=config.workspace_id,
+        episodic_store=episodic_store,
+        # The same client #188 wires for durable memory similarity.
+        embedding_client=embeddings,
+    )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
@@ -2305,6 +2319,7 @@ async def create_container(
         # The same client #188 wires for durable memory similarity. Absent, the
         # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
+        working_memory=hot_working_memory,
     )
     # The per-Workspace working-memory projection (#776), over the same
     # durable stores everything else in this container reads: episodic memory
