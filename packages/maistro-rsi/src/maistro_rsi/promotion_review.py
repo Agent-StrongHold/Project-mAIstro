@@ -495,72 +495,25 @@ def resolve_review(
     resolved_at = datetime.now(UTC).isoformat()
 
     if verb == "revise":
-        revise_file = flagged_dir / f"{stem}.revise.json"
-        if review.revision > 0 and revise_file.is_file():
-            return review  # first revise wins — deterministic under retries
-        review.revision += 1
-        review.note = f"revision requested: {reason or 'no reason given'}"
-        meta_file.write_text(review.to_json(), encoding="utf-8")
-        revise_file.write_text(
-            json.dumps(
-                {
-                    "decision": "revise",
-                    "reason": reason,
-                    "recorded_at": resolved_at,
-                    "revision": review.revision,
-                    "policy_snapshot": _policy_snapshot(review),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        return _resolve_revise(
+            flagged_dir,
+            sha,
+            review,
+            reason=reason,
+            resolved_at=resolved_at,
+            records_dir=records_dir,
         )
-        if records_dir is not None:
-            link_review_decision(
-                records_dir,
-                sha,
-                decision={
-                    "outcome": "revise_requested",
-                    "reason": reason,
-                    "revision": review.revision,
-                    "at": resolved_at,
-                    "rlphd_trained": False,
-                },
-            )
-        return review
 
     if verb == "resume":
-        if review.resumed:
-            return review  # idempotent — the candidate is already on the forward path
-        patch_text = _read_patch(flagged_dir, stem)
-        export_path = _export_patch(export_dir, stem, patch_text) if patch_text else None
-        review.resumed = True
-        meta_file.write_text(review.to_json(), encoding="utf-8")
-        (flagged_dir / f"{stem}.resume.json").write_text(
-            json.dumps(
-                {
-                    "decision": "resume",
-                    "reason": reason,
-                    "recorded_at": resolved_at,
-                    "export_patch": export_path.name if export_path else None,
-                    "policy_snapshot": _policy_snapshot(review),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        return _resolve_resume(
+            flagged_dir,
+            export_dir,
+            sha,
+            review,
+            reason=reason,
+            resolved_at=resolved_at,
+            records_dir=records_dir,
         )
-        if records_dir is not None:
-            link_review_decision(
-                records_dir,
-                sha,
-                decision={
-                    "outcome": "resumed",
-                    "reason": reason,
-                    "at": resolved_at,
-                    "rlphd_trained": False,
-                },
-                version={"export_patch": export_path.name} if export_path else None,
-            )
-        return review
 
     return _resolve_verdict(
         flagged_dir,
@@ -573,6 +526,106 @@ def resolve_review(
         resolved_at=resolved_at,
         records_dir=records_dir,
     )
+
+
+def _resolve_revise(
+    flagged_dir: Path,
+    sha: str,
+    review: PendingReview,
+    *,
+    reason: str,
+    resolved_at: str,
+    records_dir: Path | None,
+) -> PendingReview:
+    """revise: send the candidate back for another attempt — NO RLPHD update
+    (a revise is not an approve/deny verdict on the evidence), the patch is
+    NOT exported, and the item STAYS pending with its revision counter bumped
+    so the inbox keeps holding a slot for the revised candidate. First revise
+    wins: a repeated revise is a no-op returning the recorded state."""
+    stem = sha[:12]
+    meta_file = flagged_dir / f"{stem}.json"
+    revise_file = flagged_dir / f"{stem}.revise.json"
+    if review.revision > 0 and revise_file.is_file():
+        return review  # first revise wins — deterministic under retries
+    review.revision += 1
+    review.note = f"revision requested: {reason or 'no reason given'}"
+    meta_file.write_text(review.to_json(), encoding="utf-8")
+    revise_file.write_text(
+        json.dumps(
+            {
+                "decision": "revise",
+                "reason": reason,
+                "recorded_at": resolved_at,
+                "revision": review.revision,
+                "policy_snapshot": _policy_snapshot(review),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    if records_dir is not None:
+        link_review_decision(
+            records_dir,
+            sha,
+            decision={
+                "outcome": "revise_requested",
+                "reason": reason,
+                "revision": review.revision,
+                "at": resolved_at,
+                "rlphd_trained": False,
+            },
+        )
+    return review
+
+
+def _resolve_resume(
+    flagged_dir: Path,
+    export_dir: Path,
+    sha: str,
+    review: PendingReview,
+    *,
+    reason: str,
+    resolved_at: str,
+    records_dir: Path | None,
+) -> PendingReview:
+    """resume: put the reverted candidate back on the forward path (patch
+    exported for harvest) WITHOUT a verdict — the review stays open for a
+    later approve/reject. No RLPHD update. Idempotent: an already-resumed
+    item is returned unchanged."""
+    stem = sha[:12]
+    meta_file = flagged_dir / f"{stem}.json"
+    if review.resumed:
+        return review  # idempotent — the candidate is already on the forward path
+    patch_text = _read_patch(flagged_dir, stem)
+    export_path = _export_patch(export_dir, stem, patch_text) if patch_text else None
+    review.resumed = True
+    meta_file.write_text(review.to_json(), encoding="utf-8")
+    (flagged_dir / f"{stem}.resume.json").write_text(
+        json.dumps(
+            {
+                "decision": "resume",
+                "reason": reason,
+                "recorded_at": resolved_at,
+                "export_patch": export_path.name if export_path else None,
+                "policy_snapshot": _policy_snapshot(review),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    if records_dir is not None:
+        link_review_decision(
+            records_dir,
+            sha,
+            decision={
+                "outcome": "resumed",
+                "reason": reason,
+                "at": resolved_at,
+                "rlphd_trained": False,
+            },
+            version={"export_patch": export_path.name} if export_path else None,
+        )
+    return review
 
 
 def _resolve_verdict(

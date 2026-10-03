@@ -198,3 +198,63 @@ def test_unreadable_metadata_is_refused_not_half_applied(admin_client, tmp_path)
     assert "unreadable" in response.json()["detail"]
     # Nothing settled by the refused request.
     assert not (tmp_path / "kept" / f"{sha[:12]}.decision.json").exists()
+
+
+# ── #110 repair: the route's error mapping is API semantics, not an accident ─
+
+
+def test_an_unknown_sha_is_refused_404_not_500(admin_client, tmp_path):
+    """A decision for a sha the inbox never flagged is a 404, and seeds
+    nothing (the locator's miss path must not half-create state)."""
+    run_id = _seed_run_with_review(tmp_path, "abc123def4567890")
+
+    response = admin_client.post(
+        f"/v1/rsi/runs/{run_id}/reviews/ffffffffffff", json={"decision": "approve"}
+    )
+
+    assert response.status_code == 404
+    assert "no review for sha" in response.json()["detail"]
+    assert not (tmp_path / "rlphd_state.json").exists()
+
+
+def test_core_error_classes_map_onto_their_api_semantics():
+    """The core's exceptions are the route's contract: missing evidence is
+    404, a bad verb is 400, unreadable metadata is 409 (refused, not
+    half-applied) — whatever exception class the core raises."""
+    import routes.rsi as rsi_routes
+
+    sha = "abc123def456"
+    cases = [
+        (FileNotFoundError("no pending review for sha 'abc123def456'"), 404),
+        (ValueError("unknown review decision 'ship-it'"), 400),
+        (TypeError("'str'unsupported for feature 'tests_delta'"), 409),
+    ]
+    for exc, expected_status in cases:
+        http_error = rsi_routes._review_http_error(sha, exc)
+        assert http_error.status_code == expected_status, exc
+    # The 409 mapping is a refusal of THIS sha's metadata, not a generic 500.
+    unreadable = rsi_routes._review_http_error(sha, TypeError("bad metadata"))
+    assert "unreadable" in unreadable.detail
+    assert sha[:12] in unreadable.detail
+
+
+def test_garbage_feature_values_are_refused_409_through_the_route(admin_client, tmp_path):
+    """Metadata whose feature VALUES are not numbers passes the route's
+    key-subset check but cannot reach the RLPHD update — the core raises
+    TypeError and the route must refuse the decision (409), not 500 and not
+    a half-applied verdict."""
+    sha = "garbage01234567"
+    run_id = _seed_run_with_review(tmp_path, sha)
+    meta = json.loads((tmp_path / "kept" / f"{sha[:12]}.json").read_text(encoding="utf-8"))
+    meta["features"] = {"tests_delta": "lots"}
+    (tmp_path / "kept" / f"{sha[:12]}.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    response = admin_client.post(
+        f"/v1/rsi/runs/{run_id}/reviews/{sha}", json={"decision": "approve"}
+    )
+
+    assert response.status_code == 409
+    assert "unreadable" in response.json()["detail"]
+    # Nothing settled by the refused request.
+    assert not (tmp_path / "kept" / f"{sha[:12]}.decision.json").exists()
+    assert not (tmp_path / "rlphd_state.json").exists()

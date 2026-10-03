@@ -406,3 +406,86 @@ def test_resume_links_the_forward_path_into_the_record(tmp_path: Path) -> None:
     assert record is not None
     assert record.decision["outcome"] == "resumed"
     assert "export_patch" in record.version
+
+
+# ── the CLI dispatches the same verbs through the same core ────────────────
+
+
+def test_a_decision_never_leaks_across_candidate_shas(tmp_path: Path) -> None:
+    """Approvals are keyed by the artifact (the content-addressed commit sha):
+    a decision recorded for one candidate must not settle — or substitute for
+    — a review of a different one (#110: re-evaluation after candidate/
+    evidence changes re-runs on the new artifact's own evidence)."""
+    flagged, export, state = _flag(tmp_path, sha="aaaa11111111")
+    other = PendingReview(
+        sha="bbbb22222222",
+        index=3,
+        target="other.py",
+        kind="doc",
+        action_class="rsi_promotion",
+        features={"bias": 1.0},
+        predicted_p=0.4,
+        theta=0.7,
+        flagged_at="2026-07-04T00:00:00+00:00",
+        review_path="judgment",
+        classification_reason="sensitive_surface:maistro_rsi/other.py",
+        sensitive_paths=["maistro_rsi/other.py"],
+    )
+    flag_for_review(flagged, other, "the other candidate's diff\n")
+
+    resolve_review(flagged, export, state, "aaaa11111111", "approve")
+
+    # The approve settled ONLY its own artifact: the other candidate is still
+    # open, on its own evidence.
+    assert [r.sha for r in load_pending_reviews(flagged)] == ["bbbb22222222"]
+    resolved = resolve_review(flagged, export, state, "bbbb22222222", "reject")
+    assert resolved.sha == "bbbb22222222"
+    first = json.loads((flagged / "aaaa11111111.decision.json").read_text(encoding="utf-8"))
+    second = json.loads((flagged / "bbbb22222222.decision.json").read_text(encoding="utf-8"))
+    assert first["decision"] == "approve"
+    assert second["decision"] == "reject"
+
+
+def test_cli_review_resume_dispatches_the_shared_core(tmp_path: Path, capsys: object) -> None:
+    from maistro_rsi.__main__ import main
+
+    flagged, export, state = _flag(tmp_path)
+    code = main(["review", "--report-dir", str(tmp_path), "resume", "abc123def456"])
+
+    assert code == 0
+    exported = list(export.glob("*.patch"))
+    assert len(exported) == 1
+    assert not state.exists()  # resume is not a verdict: nothing trained
+    assert load_pending_reviews(flagged) != []  # the review stays open
+    assert "resumed" in capsys.readouterr().out
+
+
+def test_cli_review_maps_a_core_missing_review_to_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: object
+) -> None:
+    import maistro_rsi.promotion_review as promotion_review
+    from maistro_rsi.__main__ import main
+
+    _flag(tmp_path)
+    # The inbox slot exists when the CLI checks it, then the core cannot resolve
+    # it (a concurrent settle). The CLI maps the core's FileNotFoundError onto
+    # exit 2 + a stderr message — never a traceback and never exit 0.
+
+    def vanish(*args: object, **kwargs: object) -> PendingReview:
+        raise FileNotFoundError("no pending review for sha 'abc123def456'")
+
+    monkeypatch.setattr(promotion_review, "resolve_review", vanish)
+    code = main(["review", "--report-dir", str(tmp_path), "approve", "abc123def456"])
+
+    assert code == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_cli_review_unknown_sha_reports_and_exits_2(tmp_path: Path, capsys: object) -> None:
+    from maistro_rsi.__main__ import main
+
+    _flag(tmp_path)  # a review exists — but not for this sha
+    code = main(["review", "--report-dir", str(tmp_path), "approve", "ffffffffffff"])
+
+    assert code == 2
+    assert "no review found" in capsys.readouterr().err

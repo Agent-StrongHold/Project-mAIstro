@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +18
-  packages/hive-conductor/backend/tests: +5
+  packages/maistro-rsi/tests: +22
+  packages/hive-conductor/backend/tests: +8
 ---
 # Issue #110 (M4-A3): mechanical non-judgment promotion path vs judgment review
 
@@ -70,3 +70,35 @@ state file appears) and `test_mechanical_superseded_promotion_still_needs_no_jud
 making `classify_promotion` fail-open on undeterminable touch surfaces fails
 `test_undeterminable_touch_surface_fails_closed_to_judgment`; dropping the
 `already-decided` guard regression-fails the #262 idempotency case.
+
+## Repair round (CI gate failures at d3c3d41cc)
+
+- **exact-debt-ledger / vulture**: #110's CLI verb refactor removed the local
+  `approve = review_sub.add_parser(...)` binding, whose name-level match was
+  the only thing keeping vulture from flagging `LearningApprovalGate.approve`
+  (an uncalled-in-src admin verb of a Stronghold-ported public gate, sibling
+  of the banked `reject`/`get_pending`/`get_all`). Named in
+  `packages/maistro-core/src/_vulture_whitelist.py` with rationale — the
+  repo's mechanism for retained maistro-core public API — rather than banked
+  as new debt, which the ratchet correctly refuses to let this branch
+  self-authorize (grants must already exist at the merge base). The
+  `trace_notes.py::inventory` ledger row was pruned: #110's governance-override
+  escalation reads `note.inventory` (`local_loop.py`), genuinely fixing that debt.
+- **diff coverage**: the changed CLI dispatch lines (`review
+  approve|reject|revise|resume`) and the conductor route's error mapping
+  (`_locate_review` miss → 404; `_review_http_error` 404/400/409; the
+  apply-verb `except`) had no tests. Added: three CLI dispatch tests (shared
+  core, core-FileNotFoundError → exit 2, unknown sha → exit 2) and three
+  route tests (unknown sha → 404, the error-class → status mapping, and a
+  real TypeError path — garbage feature values pass the key-subset check and
+  must be refused 409 with nothing settled). Also pinned the artifact-keying
+  acceptance criterion: a decision for one candidate sha never settles a
+  different candidate's review
+  (`test_a_decision_never_leaks_across_candidate_shas`).
+- **radon CC ratchet**: `resolve_review` crossed into C(13) with the revise/
+  resume verbs. Grants must already exist at the merge base, so the branch
+  cannot authorize the increase — the verb branches are extracted into
+  `_resolve_revise`/`_resolve_resume` (behavior pinned by the existing tests),
+  bringing `resolve_review` back under C; the `_review` improvement the same
+  CLI work produced (13 → 12) is banked in `quality/radon-baseline.json`, as
+  that ledger's own rationale directs for complexity reductions.
