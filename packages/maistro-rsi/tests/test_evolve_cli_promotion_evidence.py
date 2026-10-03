@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from maistro_evolve.population import PopulationStore
+from maistro_evolve.promotion import objective_version
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 from maistro_rsi import __main__ as entry
 
@@ -66,6 +67,19 @@ def _scored_store() -> tuple[PopulationStore, PipelineGenome]:
         "code_rsi": "patch-test-cycle",
         "proxy_bfcl": "structured-call-match",
     }
+    # #854 selection eligibility: champion_provenance only names champions the
+    # shared eligibility contract would select, so the fixture carries the
+    # complete evidence legs (samples, objective stamp, currency) — same
+    # pattern as test_champion_provenance.py.
+    benchmarks = sorted(champ.eval_scores)
+    champ.harness_params.update(
+        {
+            "eval_samples": {b: 2 for b in benchmarks},
+            "eval_history": {b: [champ.eval_scores[b], champ.eval_scores[b]] for b in benchmarks},
+            "objective_version": objective_version(benchmarks),
+            "evidence_cycle": 1,
+        }
+    )
     store.add(champ)
     return store, champ
 

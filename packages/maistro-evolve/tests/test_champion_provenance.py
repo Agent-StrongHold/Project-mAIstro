@@ -20,6 +20,7 @@ from typing import Any
 from maistro_evolve.cycle import EvolutionCycle
 from maistro_evolve.harness import EvalHarness, evidence_method
 from maistro_evolve.population import PopulationStore
+from maistro_evolve.promotion import objective_version
 from maistro_evolve.types import DAGTopology, EvalResult, EvalWeights, NodeGenome, PipelineGenome
 
 
@@ -144,6 +145,29 @@ class TestCycleFoldsEvidence:
 
 
 class TestChampionProvenance:
+    @staticmethod
+    def _stamp_selection_evidence(genome: PipelineGenome) -> PipelineGenome:
+        """Complete the #854 selection-evidence legs (samples, objective stamp,
+        evidence currency). Since develop's #854 reconciliation,
+        ``get_champion`` only selects ELIGIBLE genomes, so a provenance fixture
+        must carry the evidence that makes it selectable — the same complete-
+        evidence pattern ``test_rsi_safety.py`` uses for the promotion gate.
+        The provenance assertions below stay about #384: per-score evidence
+        naming on the genome that WAS selected.
+        """
+        benchmarks = sorted(genome.eval_scores)
+        genome.harness_params.update(
+            {
+                "eval_samples": {b: 2 for b in benchmarks},
+                "eval_history": {
+                    b: [genome.eval_scores[b], genome.eval_scores[b]] for b in benchmarks
+                },
+                "objective_version": objective_version(benchmarks),
+                "evidence_cycle": 1,
+            }
+        )
+        return genome
+
     def test_none_when_no_scored_genomes(self):
         store = PopulationStore()
         assert store.champion_provenance() is None
@@ -158,13 +182,13 @@ class TestChampionProvenance:
             "proxy_bfcl": "structured-call-match",
             "proxy_gaia": "exact-match+llm-judge",
         }
-        store.add(champion)
+        store.add(self._stamp_selection_evidence(champion))
 
         loser = _genome("loser")
         loser.fitness_score = 10.0
         loser.eval_scores = {"proxy_bfcl": 0.3}
         loser.eval_evidence = {"proxy_bfcl": "structured-call-match"}
-        store.add(loser)
+        store.add(self._stamp_selection_evidence(loser))
 
         provenance = store.champion_provenance()
         assert provenance is not None
@@ -186,6 +210,7 @@ class TestChampionProvenance:
         genome = _genome("legacy")
         genome.fitness_score = 50.0
         genome.eval_scores = {"proxy_ragas": 0.8}
+        self._stamp_selection_evidence(genome)
         # Pre-#384 genome: folded before evidence existed — no record.
         store.add(genome)
 

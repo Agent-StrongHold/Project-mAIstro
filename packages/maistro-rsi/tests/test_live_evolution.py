@@ -503,4 +503,3 @@ def test_same_slot_battle_writes_elo_evidence_for_both_fighters(tmp_path: Path) 
     # battle count, not the raw rating, is what qualifies the term.
     assert store.get("ga").harness_params["avg_elo"] > 1200.0
     assert store.get("gb").harness_params["avg_elo"] < 1200.0
-

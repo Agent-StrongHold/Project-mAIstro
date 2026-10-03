@@ -138,44 +138,6 @@ class FitnessEvidenceRecord(BaseModel):
     component_roles: dict[str, str] = Field(default_factory=dict)
 
 
-class FitnessEvidenceDriftError(RuntimeError):
-    """A genome's fitness moved although its exact evidence did not (#853).
-
-    ``compute_fitness`` is a pure function of (genome evidence, population
-    evidence, objective). If the recorded evidence hash and objective version
-    are unchanged but the total moved, the scoring arithmetic itself changed
-    mid-campaign — exactly the "same evidence, different number" defect the
-    issue forbids. The cycle refuses to continue rather than rank candidates
-    against incomparable numbers.
-    """
-
-
-class FitnessEvidenceRecord(BaseModel):
-    """One genome's fitness evidence as computed in a specific cycle (#853).
-
-    ``EvolutionCycle.fitness_evidence`` keeps the latest record per genome so
-    the determinism contract is enforced in production, not only in tests:
-    recomputing from unchanged evidence (same ``evidence_hash`` under the same
-    ``objective_version``) must reproduce the same ``total`` bit-for-bit, so
-    repeated identical evidence across cycles can never manufacture a fitness
-    gain — any movement is traceable to a recorded evidence or objective
-    change (AC5/AC8).
-    """
-
-    genome_id: str
-    total: float
-    # Gated measured task quality — recorded beside ``total`` so an auditor
-    # can see context terms never entered the capability number.
-    capability_score: float
-    objective_version: str
-    evidence_hash: str
-    # Which components had no measurement, scored pessimistically.
-    missing_evidence: tuple[str, ...] = ()
-    # The objective's component -> role mapping, snapshotting the semantic
-    # split in force when the score was computed.
-    component_roles: dict[str, str] = Field(default_factory=dict)
-
-
 class EvolutionCycle:
     def __init__(
         self,

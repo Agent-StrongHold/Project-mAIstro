@@ -291,7 +291,6 @@ class TestCapabilityPromotionGate:
         g = _genome("donothing", fitness_score=85.262, approved_for_promotion=True, eval_scores={})
         store.add(g)
         with pytest.raises(PermissionError, match="not evaluated"):
-
             asyncio.run(store.promote_audited("donothing", _trail()))
         assert store.get("donothing").is_active is False
 
@@ -316,7 +315,6 @@ class TestCapabilityPromotionGate:
         with pytest.raises(PermissionError, match=r"hard gate: proxy_ifeval score 0\.100"):
             asyncio.run(store.promote_audited("weak", _trail()))
         assert store.get("weak").is_active is False
-
 
     def test_reweighted_objective_cannot_rescue_a_gated_candidate(self, tmp_path):
         # The gate is a constraint, not a tradeable weight: recomputing the
@@ -401,7 +399,6 @@ class TestCapabilityPromotionGate:
         with pytest.raises(PermissionError, match="not been approved"):
             store._promote("unapproved", require_capability=False)
         assert store.get("unapproved").is_active is False
-
 
 
 # --------------------------------------------------------------------------

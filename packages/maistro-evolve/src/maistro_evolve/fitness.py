@@ -68,6 +68,7 @@ def hard_gate_thresholds() -> dict[str, float]:
     """
     return dict(_HARD_GATE_THRESHOLDS)
 
+
 # Semantic role of every fitness component (#853). The two `*_context` roles
 # are population-level terms: they may reorder candidates within a bounded
 # share of fitness, but they are *not* measured task quality and can never
