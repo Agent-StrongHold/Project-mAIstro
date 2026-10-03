@@ -354,8 +354,8 @@ class AttemptResult(BaseModel):
 
     @model_validator(mode="after")
     def _validate_attempt_result(self) -> AttemptResult:
-        _require_non_empty(self.node_run_id, "node_run_id")
         _require_non_empty(self.attempt_id, "attempt_id")
+        _require_non_empty(self.node_run_id, "node_run_id")
         if self.status not in TERMINAL_ATTEMPT_STATUSES:
             raise ValueError("AttemptResult requires a terminal physical Attempt status")
         frozen = _freeze_evidence_value(self.result)
@@ -558,7 +558,7 @@ class RunEvalScore(BaseModel):
     Goal and Rubric revisions that were applied. Records are append-only —
     re-evaluating a dimension appends another record and never rewrites or
     deletes a prior one, so a failed eval stays queryable after the retry that
-    superseded it.
+    supersedes it.
     """
 
     model_config = ConfigDict(extra="forbid", ser_json_inf_nan="constants")
