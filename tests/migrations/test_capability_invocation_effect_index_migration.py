@@ -59,15 +59,18 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # The invariant is one linear head — now `045`, this branch's Run-scoped
     # logical-effect admission revision that continues 043's chain — with the
     # revisions it superseded on its ancestor path, not any fixed parent.
-    # `046_durable_elevation_grants` (#72) now continues the chain after this
-    # `046_durable_elevation_grants` (#72) now continues the chain after this
-    # branch's `045`, `047_capability_binding_revocations` (#1133) after that,
-    # #398's `048_canvas_job_retry_backoff` after that, #792's
-    # `049_canonical_run_eval_scores` after that, #774's
-    # `050_design_creative_briefs` after that, and this branch's
-    # `051_learning_applicability_epistemics` (M4-B3, #119) — renumbered from
-    # "048" onto develop's chain tip after develop claimed the same id on the
-    # same parent — after that, so the single linear head is `051`.
+    # `046_durable_elevation_grants` (#72) continues the chain after this
+    # branch's `045`, and `047_capability_binding_revocations` (#1133) after
+    # that; #398's `048_canvas_job_retry_backoff` continues it, #780's
+    # `049_design_artifact_versions` after that, and #774's
+    # `050_design_creative_briefs` after that. #792's eval-score evidence,
+    # which had taken `049` on develop while this branch's artifact-version
+    # ledger took the same number on the same parent, re-parents onto that
+    # `050` as `051_canonical_run_eval_scores`. This branch's learning
+    # migration (M4-B3, #119) — renumbered from "048" to "051" when develop
+    # claimed 048, then to "052" when this sync brought 051 onto the same
+    # parent — now attaches after that `051`, so the single linear head is
+    # `052`.
     walked = {item.revision for item in directory.walk_revisions("base", "051")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
@@ -78,7 +81,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "048" in walked
     assert "049" in walked
     assert "050" in walked
-    assert directory.get_heads() == ["051"]
+    assert "051" in walked
+    assert "052" in walked
+    assert directory.get_heads() == ["052"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

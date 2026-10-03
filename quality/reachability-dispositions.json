@@ -212,19 +212,6 @@
       ]
     },
     {
-      "id": "ontology",
-      "subsystem": "Ontology",
-      "disposition": "CONNECT",
-      "rationale": "ADR-036's semantic object layer, Accepted with no consumer. OUT-OF-SCOPE.md already excludes its graph-query language, so the registry is the whole of what must be reached.",
-      "root": "a subsystem resolving semantic objects through the registry (#34)",
-      "modules": [
-        "maistro.ontology",
-        "maistro.ontology.protocols",
-        "maistro.ontology.registry",
-        "maistro.ontology.types"
-      ]
-    },
-    {
       "id": "design-node",
       "subsystem": "Open Design integration",
       "disposition": "CONNECT",
