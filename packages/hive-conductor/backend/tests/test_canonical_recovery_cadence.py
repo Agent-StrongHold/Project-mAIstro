@@ -32,6 +32,7 @@ from maistro.graph.nodes.base import (
 from maistro.runs.chat_execution import ChatAttemptExecutor
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
@@ -110,7 +111,9 @@ async def _eventually(check: Callable[[], Any], *, timeout: float = 5.0) -> None
 
 async def _crashed_chat_attempt(container: Container) -> tuple[asyncio.Task[None], str, str]:
     """A chat turn whose worker stopped renewing a millisecond-TTL lease."""
-    run = await container.chat_admitter.admit(MESSAGES)
+    run = await container.chat_admitter.admit(
+        MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
     await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
     executor = ChatAttemptExecutor(container.run_store, lease_ttl=timedelta(milliseconds=50))
@@ -180,6 +183,7 @@ async def _parked_schedule_run(container: Container) -> str:
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert await container.execute_admitted_runs() == 1
     parked = await container.run_store.get_run(run.run_id)
@@ -384,7 +388,9 @@ async def test_cadence_compensates_a_stranded_chat_admission(
     import maistro.container as container_mod
 
     booted(container)
-    run = await container.chat_admitter.admit(MESSAGES)
+    run = await container.chat_admitter.admit(
+        MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
     await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
     monkeypatch.setattr(container_mod, "DEFAULT_STRANDED_ADMISSION_AGE", timedelta(0))

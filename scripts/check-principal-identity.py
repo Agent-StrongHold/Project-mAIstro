@@ -1,31 +1,43 @@
 #!/usr/bin/env python3
-"""Ratchet parallel HTTP principal shapes (Workspace cutover P0.1 / #53 AC-P1).
+"""Ratchet parallel HTTP principal shapes (Workspace cutover P0.1, #53 AC-P1).
 
-Scans production Python under ``packages/*/src`` and flat application backends
-for:
+One principal type, ``maistro.identity.Principal``, is meant to cross every
+service boundary. This scans production Python under ``packages/*/src`` and the
+flat application backends for the two ways that stops being true:
 
-  * subscript or ``.get`` access to ``request.state.user`` (dict-shaped principal)
-  * concrete classes named like ``*Principal`` / ``*User`` / ``*Identity`` that
-    expose ``role`` or ``roles`` outside the canonical owner module
+  * ``state_user_access`` -- a file that reads or writes the dict-shaped
+    ``<request>.state.user``, directly or through ``getattr``/``setattr``.
+    One entry per file; the canonical carrier is ``request.state.principal``.
+  * ``parallel_principal_class`` -- a class named ``*Principal``, ``*User`` or
+    ``*Identity`` that carries ``role``/``roles``, outside the owner modules.
 
-Baseline: ``quality/principal-identity-baseline.json``. A new violation fails CI;
-a fixed violation must drop its baseline row.
+The tolerated set in ``quality/principal-identity-baseline.json`` is read from
+the trusted merge base (docs/ci/RATCHET-PROVENANCE.md). A file or class that is
+new relative to that base fails unless ``quality/ratchet-authorizations.json``
+already granted it at the base. The candidate ledger must match the tree
+exactly, so a fixed entry has to be deleted in the change that fixes it.
 
-Run: ``python scripts/check-principal-identity.py``
-Bank: ``python scripts/check-principal-identity.py --write-baseline``
+Run:  uv run python scripts/check-principal-identity.py
+Bank: uv run python scripts/check-principal-identity.py --write-baseline
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "quality" / "principal-identity-baseline.json"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
+RATCHET = "principal-identity"
+METRIC_DEFINITION_VERSION = "1"
 
 SCAN_ROOTS = (
     ROOT / "packages" / "maistro-core" / "src",
@@ -36,7 +48,8 @@ SCAN_ROOTS = (
     ROOT / "packages" / "maistro-turing" / "backend",
 )
 
-# Modules allowed to define parallel principal-shaped types until migrated.
+# Owners of principal-shaped types that are not HTTP request principals, or are
+# the canonical one. Anything else carrying role/roles is a parallel principal.
 ALLOWED_PARALLEL_CLASS_FILES = frozenset(
     {
         "packages/maistro-core/src/maistro/identity/principal.py",
@@ -46,23 +59,40 @@ ALLOWED_PARALLEL_CLASS_FILES = frozenset(
         "packages/maistro-core/src/maistro/types/agent.py",
         "packages/maistro-core/src/maistro/security/_types.py",
         "packages/maistro-core/src/maistro/memory/episodic/sharing.py",
-        "packages/maistro-server/src/maistro_server/api/principal.py",
         "packages/hive-conductor/backend/services/governed_model.py",
     }
 )
 
 _NAME_PATTERN = re.compile(r"(Principal|User|Identity)$")
+_ROLE_FIELDS = frozenset({"role", "roles"})
 
 
 @dataclass(frozen=True)
 class Violation:
     kind: str
     path: str
-    line: int
+    subject: str
     detail: str
 
     def key(self) -> str:
-        return f"{self.kind}::{self.path}:{self.line}:{self.detail}"
+        return f"{self.kind}::{self.path}" + (f"::{self.subject}" if self.subject else "")
+
+
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
 
 
 def _rel(path: Path) -> str:
@@ -75,8 +105,7 @@ def _iter_python_files() -> list[Path]:
         if not root.is_dir():
             continue
         for path in sorted(root.rglob("*.py")):
-            rel = _rel(path)
-            if "/tests/" in f"/{rel}/" or rel.endswith("/tests/conftest.py"):
+            if "tests" in path.relative_to(root).parts or "__pycache__" in path.parts:
                 continue
             files.append(path)
     return files
@@ -85,121 +114,115 @@ def _iter_python_files() -> list[Path]:
 def _is_state_user(node: ast.AST) -> bool:
     return (
         isinstance(node, ast.Attribute)
+        and node.attr == "user"
         and isinstance(node.value, ast.Attribute)
         and node.value.attr == "state"
-        and isinstance(node.value.value, ast.Name)
-        and node.value.value.id == "request"
-        and node.attr == "user"
     )
 
 
-class _Visitor(ast.NodeVisitor):
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.rel = _rel(path)
-        self.violations: list[Violation] = []
-
-    def visit_Subscript(self, node: ast.Subscript) -> None:
-        if _is_state_user(node.value):
-            self.violations.append(
-                Violation(
-                    "dict_user_subscript",
-                    self.rel,
-                    node.lineno,
-                    "request.state.user[...]",
-                )
-            )
-        self.generic_visit(node)
-
-    def visit_Call(self, node: ast.Call) -> None:
-        if (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr == "get"
-            and _is_state_user(node.func.value)
-        ):
-            self.violations.append(
-                Violation(
-                    "dict_user_get",
-                    self.rel,
-                    node.lineno,
-                    "request.state.user.get(...)",
-                )
-            )
-        self.generic_visit(node)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if self.rel in ALLOWED_PARALLEL_CLASS_FILES:
-            return
-        if not _NAME_PATTERN.search(node.name):
-            return
-        role_fields = _class_role_fields(node)
-        if role_fields:
-            self.violations.append(
-                Violation(
-                    "parallel_principal_class",
-                    self.rel,
-                    node.lineno,
-                    f"class {node.name} defines {', '.join(sorted(role_fields))}",
-                )
-            )
-        self.generic_visit(node)
+def _is_state_attr_call(node: ast.Call) -> bool:
+    """``getattr(x.state, "user", ...)`` / ``setattr(x.state, "user", ...)``."""
+    return (
+        isinstance(node.func, ast.Name)
+        and node.func.id in {"getattr", "setattr", "hasattr"}
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Attribute)
+        and node.args[0].attr == "state"
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "user"
+    )
 
 
-def _class_role_fields(node: ast.ClassDef) -> set[str]:
+def _role_fields(node: ast.ClassDef) -> set[str]:
     fields: set[str] = set()
     for stmt in node.body:
-        if (
-            isinstance(stmt, ast.AnnAssign)
-            and isinstance(stmt.target, ast.Name)
-            and stmt.target.id in {"role", "roles"}
-        ):
-            fields.add(stmt.target.id)
-        if isinstance(stmt, ast.Assign):
-            for target in stmt.targets:
-                if isinstance(target, ast.Name) and target.id in {"role", "roles"}:
-                    fields.add(target.id)
+        targets: list[ast.expr] = []
+        if isinstance(stmt, ast.AnnAssign):
+            targets = [stmt.target]
+        elif isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+        fields.update(t.id for t in targets if isinstance(t, ast.Name) and t.id in _ROLE_FIELDS)
     return fields
 
 
-def collect_violations() -> list[Violation]:
+def scan_source(rel: str, source: str) -> list[Violation]:
+    tree = ast.parse(source, filename=rel)
+    accesses = 0
     found: list[Violation] = []
-    for path in _iter_python_files():
+    for node in ast.walk(tree):
+        if _is_state_user(node) or (isinstance(node, ast.Call) and _is_state_attr_call(node)):
+            accesses += 1
+        elif (
+            isinstance(node, ast.ClassDef)
+            and rel not in ALLOWED_PARALLEL_CLASS_FILES
+            and _NAME_PATTERN.search(node.name)
+            and (fields := _role_fields(node))
+        ):
+            found.append(
+                Violation(
+                    "parallel_principal_class",
+                    rel,
+                    node.name,
+                    f"class {node.name} defines {', '.join(sorted(fields))}",
+                )
+            )
+    if accesses:
+        found.append(
+            Violation("state_user_access", rel, "", f"{accesses} dict-shaped user access(es)")
+        )
+    return found
+
+
+def collect_violations() -> tuple[list[Violation], int]:
+    """Every violation in the tree, and how many files were scanned."""
+    files = _iter_python_files()
+    found: list[Violation] = []
+    for path in files:
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            source = path.read_text(encoding="utf-8")
+            found.extend(scan_source(_rel(path), source))
         except SyntaxError:
             continue
-        visitor = _Visitor(path)
-        visitor.visit(tree)
-        found.extend(visitor.violations)
-    return sorted(found, key=lambda item: (item.kind, item.path, item.line, item.detail))
+    return sorted(found, key=lambda item: item.key()), len(files)
 
 
-def _load_baseline() -> dict[str, str]:
-    if not BASELINE.is_file():
-        return {}
-    loaded = json.loads(BASELINE.read_text(encoding="utf-8"))
-    tolerated = loaded.get("tolerated")
-    if not isinstance(tolerated, dict):
-        return {}
-    return {str(key): str(value) for key, value in tolerated.items()}
+def _tolerated(payload: object) -> dict[str, str]:
+    tolerated = payload.get("tolerated") if isinstance(payload, dict) else None
+    return dict(tolerated) if isinstance(tolerated, dict) else {}
 
 
-def audit() -> tuple[list[Violation], list[str], list[str]]:
-    violations = collect_violations()
-    baseline = _load_baseline()
-    current = {item.key(): item.detail for item in violations}
-    new_keys = sorted(set(current) - set(baseline))
-    stale_keys = sorted(set(baseline) - set(current))
-    new_violations = [item for item in violations if item.key() in new_keys]
-    return new_violations, stale_keys, sorted(baseline.keys())
+def compare(
+    current: set[str], candidate: set[str], trusted: set[str], authorized: set[str]
+) -> list[str]:
+    """Failures for a measurement judged against the trusted and candidate ledgers."""
+    added = current - trusted
+    failures = [
+        f"{key}: NEW parallel principal surface absent from the trusted base and not "
+        "previously authorized"
+        for key in sorted(added - authorized)
+    ]
+    failures.extend(
+        f"{key}: authorized new entry is not recorded in the candidate ledger"
+        for key in sorted((added & authorized) - candidate)
+    )
+    failures.extend(
+        f"{key}: current violation missing from candidate ledger"
+        for key in sorted(current - candidate)
+    )
+    failures.extend(
+        f"{key}: fixed -- delete it from the candidate ledger"
+        for key in sorted(candidate - current)
+    )
+    return failures
 
 
 def write_baseline(violations: list[Violation]) -> None:
     payload = {
         "_comment": (
-            "Parallel HTTP principal debt for P0.1. New violations fail CI; "
-            "fixed violations must delete their row."
+            "Parallel HTTP principal debt for Workspace cutover P0.1 (#53). Judged "
+            "against the trusted merge base; a fixed entry must be deleted here."
         ),
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "tolerated": {item.key(): item.detail for item in violations},
     }
     BASELINE.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -210,37 +233,66 @@ def main() -> int:
     parser.add_argument(
         "--write-baseline",
         action="store_true",
-        help="record the current violation set as the tolerated baseline",
+        help="record the current violation set in the candidate ledger",
     )
     args = parser.parse_args()
 
-    violations = collect_violations()
+    violations, scanned = collect_violations()
     if args.write_baseline:
         write_baseline(violations)
-        print(f"wrote {len(violations)} tolerated violation(s) to {BASELINE.relative_to(ROOT)}")
+        print(f"wrote {len(violations)} violation(s) to {BASELINE.relative_to(ROOT)}")
         return 0
 
-    new_violations, stale_keys, tolerated_keys = audit()
-    print(f"scanned principal identity surface: {len(violations)} current violation(s)")
-    if tolerated_keys:
-        print(f"tolerated (baselined): {len(tolerated_keys)}")
-        for key in tolerated_keys[:10]:
-            print(f"  · {key}")
-        if len(tolerated_keys) > 10:
-            print(f"  · … and {len(tolerated_keys) - 10} more")
+    current = {item.key() for item in violations}
+    candidate_payload = (
+        json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.is_file() else {}
+    )
+    candidate = set(_tolerated(candidate_payload))
 
-    failures: list[str] = []
-    if new_violations:
-        failures.extend(f"NEW  {item.key()}" for item in new_violations)
-    if stale_keys:
-        failures.extend(f"STALE {key} (fixed — delete from baseline)" for key in stale_keys)
-
-    if failures:
-        print(f"\nFAIL: {len(failures)} principal-identity ratchet problem(s):\n")
-        print("\n".join(failures))
+    prov = _provenance()
+    try:
+        prov.require_measurement(scanned, ratchet=RATCHET, what="production Python files")
+        trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
+        trusted_payload = trusted_ref.loads(default={})
+        prov.require_metric_version(
+            METRIC_DEFINITION_VERSION,
+            recorded=trusted_payload.get("metric_definition_version")
+            if isinstance(trusted_payload, dict)
+            else None,
+            ratchet=RATCHET,
+            baseline=trusted_ref,
+        )
+        trusted = set(_tolerated(trusted_payload))
+        authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
-    print("ok: no new principal-identity violations")
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=trusted_ref,
+            tool="python ast",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{len(trusted)} tolerated violations",
+            new_value=f"{len(current)} current violations",
+            candidate_sha=prov.head_sha(ROOT),
+            authorizations=tuple(
+                f"{key}: {authorized[key]}"
+                for key in sorted(current - trusted)
+                if key in authorized
+            ),
+        ).render()
+    )
+    for item in violations:
+        print(f"  tolerated · {item.key()} -- {item.detail}")
+
+    failures = compare(current, candidate, trusted, set(authorized))
+    if failures:
+        print(f"\nFAIL: {len(failures)} principal-identity ratchet problem(s):\n", file=sys.stderr)
+        print("\n".join(f"  - {failure}" for failure in failures), file=sys.stderr)
+        return 1
+    print(f"ok: {len(current)} tolerated principal-identity violation(s), none new")
     return 0
 
 

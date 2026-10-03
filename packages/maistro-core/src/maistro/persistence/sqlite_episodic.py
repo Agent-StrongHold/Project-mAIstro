@@ -270,6 +270,16 @@ class SqliteEpisodicStore:
             )
             clauses.append(f"({predicate})")
             params.extend(scope_params)
+        else:
+            # Project-only recall skips the hierarchy, but still compiles the
+            # no-caller global clause so an org-bound global is not a wildcard
+            # (#1247). Non-global rows stay visible for changelog recall.
+            predicate, scope_params = scope_predicate(
+                build_scope_filter(),
+                itertools.repeat("?"),
+            )
+            clauses.append(f"(scope != 'global' OR {predicate})")
+            params.extend(scope_params)
         clauses.append("weight >= ?")
         params.append(min_weight)
         if project_id:

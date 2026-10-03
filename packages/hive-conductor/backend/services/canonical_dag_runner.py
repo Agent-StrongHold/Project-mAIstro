@@ -22,6 +22,7 @@ from maistro.graph.durable_runs import (
     resume_due_graph_runs,
     run_durable_graph,
 )
+from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
@@ -239,29 +240,71 @@ def _edge_metadata(raw: Mapping[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def _cycle_budget_metadata(dag_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate the declared DAG cycle budget into canonical graph metadata.
+
+    ``DAGFile.max_cycles`` used to be accepted everywhere and read nowhere; it
+    now names the canonical frontier-wave budget the durable executor
+    enforces (``maistro.graph.policies``) — the incumbent ``GraphConfig``
+    cycle semantics. Both the declared and the effective value are recorded so
+    a clamped out-of-policy value is visible, not silent. A DAG that declares
+    nothing gets no budget key — the platform floors alone apply, exactly as
+    for any other canonical Graph.
+    """
+    declared = dag_data.get("max_cycles")
+    if declared is None:
+        return {}
+    return {
+        "max_cycles_declared": declared,
+        "max_cycles_effective": resolve_max_cycles(declared),
+    }
+
+
+def _node_budget(raw: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Lift a legacy node's declared timeout into canonical policy + provenance.
+
+    ``config.timeout_s`` becomes ``Node.policies["timeout_s"]`` — the field the
+    durable walker resolves into the Attempt's canonical ExecutionRuntime
+    deadline. The declared value stays in metadata so a clamp is explainable;
+    nodes that declare nothing keep the incumbent behavior untouched.
+    """
+    config = raw.get("config") if isinstance(raw.get("config"), Mapping) else {}
+    declared = config.get("timeout_s") if config else None
+    if declared is None:
+        return {}, {}
+    return (
+        {"timeout_s": resolve_node_timeout_s(declared)},
+        {"legacy_timeout_s_declared": declared},
+    )
+
+
 def graph_from_legacy_dag(
     dag_data: Mapping[str, Any], *, workspace_id: str, project_id: str
 ) -> Graph:
     """Translate one shipped legacy DAG into an immutable canonical Graph."""
     nodes, raw_edges, entry = _execution_shape(dag_data)
 
-    graph_nodes = [
-        Node(
-            node_id=str(raw["id"]),
-            node_type="hive.legacy_node",
-            name=str(raw.get("name") or raw["id"]),
-            metadata={
-                "role": str(raw.get("role") or "worker"),
-                "legacy_node": dict(raw),
-                **(
-                    {"compat_synthetic": str(raw["compat_synthetic"])}
-                    if raw.get("compat_synthetic")
-                    else {}
-                ),
-            },
+    graph_nodes = []
+    for raw in nodes:
+        policies, budget_metadata = _node_budget(raw)
+        graph_nodes.append(
+            Node(
+                node_id=str(raw["id"]),
+                node_type="hive.legacy_node",
+                name=str(raw.get("name") or raw["id"]),
+                policies=policies,
+                metadata={
+                    "role": str(raw.get("role") or "worker"),
+                    "legacy_node": dict(raw),
+                    **budget_metadata,
+                    **(
+                        {"compat_synthetic": str(raw["compat_synthetic"])}
+                        if raw.get("compat_synthetic")
+                        else {}
+                    ),
+                },
+            )
         )
-        for raw in nodes
-    ]
     graph_edges = [
         Edge(
             edge_id=str(raw["id"]),
@@ -287,6 +330,7 @@ def graph_from_legacy_dag(
             "source": "hive_legacy_dag",
             "legacy_dag_id": str(dag_data.get("id") or ""),
             "legacy_run_scout": bool(dag_data.get("run_scout")),
+            **_cycle_budget_metadata(dag_data),
         },
     }
     legacy_id = str(dag_data.get("id") or "").strip()
@@ -508,6 +552,15 @@ def _project(record: Any, raw_by_id: Mapping[str, dict[str, Any]]) -> dict[str, 
         "workspace_id": record.run.workspace_id,
         "project_id": record.run.project_id,
         "cycles": record.graph_state.cycle,
+        # The cycle budget the Run was admitted under, when the DAG declared
+        # one. Together with `cycles` and any budget error this explains a
+        # stop without re-deriving the policy (#1184).
+        **(
+            {"max_cycles_effective": provenance["max_cycles_effective"]}
+            if "max_cycles_effective"
+            in (provenance := getattr(record.run, "provenance", None) or {})
+            else {}
+        ),
         "node_results": node_results,
         "annotations": dict(record.graph_state.blackboard_snapshot.get("node_annotations") or {}),
         **({"error": str(error)} if error else {}),
@@ -558,11 +611,15 @@ async def execute_dag(
     execution_nodes, _, _ = _execution_shape(dag_data)
     raw_by_id = {str(raw["id"]): raw for raw in execution_nodes}
     task_desc = str(dag_data.get("description") or dag_data.get("name") or "")
+    budget = _cycle_budget_metadata(dag_data)
     provenance = {
         "admission_source": "hive_legacy_dag",
         "legacy_dag_id": str(dag_data.get("id") or ""),
         "executor": "durable_graph",
         "execution_mode": execution_mode,
+        # Effective budgets ride the Run provenance so "why did the work
+        # stop" is answerable from the Run alone (#1184).
+        **budget,
     }
 
     admitted_run_id = None

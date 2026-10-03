@@ -9,11 +9,13 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
-The container composes this service for capability-effect consumers. A
-provider call is admitted, recorded, and reconciled here; no caller may mutate
-Invocation rows directly. Ephemeral contexts still use the in-memory store,
-while configured SQLite/PostgreSQL containers use the durable capability
-Invocation stores.
+The container composes this service for capability-effect consumers, and its
+governed wrapper through :mod:`maistro.capabilities.effect_context`. A provider
+call is admitted, recorded, and reconciled here; no caller may mutate Invocation
+rows directly. Ephemeral contexts still use the in-memory store, while
+configured SQLite/PostgreSQL containers use the durable capability Invocation
+stores, so the effect-key ledger is the retry authority rather than a
+node-local convention.
 """
 
 from __future__ import annotations
@@ -172,6 +174,30 @@ class InvocationReconciliationEvidence(BaseModel):
         return self
 
 
+def _correlate_scope(invocation: Invocation) -> None:
+    """Default scope from the resolved Binding, then enforce correlation.
+
+    Scope correlation is mandatory whenever the resolved Binding carries
+    scope -- which every admission since #1133 does, because Binding itself
+    requires a non-empty workspace. Rows written before scope correlation
+    (empty on both sides) stay deserializable so they can still be reconciled
+    instead of stranding durable evidence.
+    """
+
+    if not invocation.workspace_id:
+        invocation.workspace_id = invocation.binding.workspace_id
+    if not invocation.project_id:
+        invocation.project_id = invocation.binding.project_id
+    if invocation.binding.workspace_id:
+        _require(invocation.workspace_id, "workspace_id")
+        if invocation.workspace_id != invocation.binding.workspace_id:
+            raise ValueError("Invocation workspace_id does not match its resolved Binding")
+    if invocation.binding.project_id:
+        _require(invocation.project_id, "project_id")
+        if invocation.project_id != invocation.binding.project_id:
+            raise ValueError("Invocation project_id does not match its resolved Binding")
+
+
 class Invocation(BaseModel):
     """One actual provider call beneath one physical Attempt."""
 
@@ -214,6 +240,7 @@ class Invocation(BaseModel):
         _require(self.node_run_id, "node_run_id")
         _require(self.attempt_id, "attempt_id")
         _require(self.effect_key, "effect_key")
+        _correlate_scope(self)
         if self.revision < 0:
             raise ValueError("revision cannot be negative")
         terminal = self.status in TERMINAL_INVOCATION_STATUSES
@@ -226,6 +253,39 @@ class Invocation(BaseModel):
             if value is not None and value.tzinfo is None:
                 object.__setattr__(self, field, _utc(value))
         return self
+
+
+def _settled_by_another_admission(
+    candidate: Invocation, admitted: Invocation, effect_key: str
+) -> Invocation | None:
+    """What it means when admission returns a row we did not write.
+
+    `_admit_effect` can hand back a pre-existing canonical row: another
+    worker won the same logical effect. COMPLETED is a replay, returned
+    without touching the provider again. A non-terminal row under a
+    different invocation_id is the unsafe case -- the remote outcome cannot
+    be proven absent, so dispatching again could apply the effect twice.
+    `None` means our own candidate was admitted and dispatch proceeds.
+
+    Extracted from `invoke` rather than left inline: it is one question about
+    the admission result, and folding its two branches into the caller pushed
+    `invoke` from C(13) to C(14) against the complexity ratchet without
+    making either half easier to read.
+    """
+
+    if admitted.status is InvocationStatus.COMPLETED:
+        return admitted
+    non_terminal = {
+        InvocationStatus.CREATED,
+        InvocationStatus.RUNNING,
+        InvocationStatus.UNKNOWN,
+    }
+    if admitted.status in non_terminal and admitted.invocation_id != candidate.invocation_id:
+        raise UnsafeEffectRetry(
+            f"effect {effect_key!r} has outcome {admitted.status.value!r}; "
+            "manual/reconciliation evidence is required before retry"
+        )
+    return None
 
 
 @runtime_checkable
@@ -248,6 +308,13 @@ class InvocationStore(Protocol):
     ) -> list[Invocation]: ...
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]: ...
+
+
+@runtime_checkable
+class EffectClaimStore(Protocol):
+    """Optional atomic claim used by multi-worker durable Invocation stores."""
+
+    async def claim(self, invocation: Invocation) -> Invocation: ...
 
 
 class InMemoryInvocationStore:
@@ -323,6 +390,24 @@ class InMemoryInvocationStore:
                 and (item.started_at or item.created_at) <= stale_before
             )
         ]
+
+    async def claim(self, invocation: Invocation) -> Invocation:
+        """Atomically claim an effect when contexts share this store."""
+        async with self._lock:
+            history = [
+                item
+                for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
+                # develop replaced Invocation.effect_identity with this helper,
+                # which widens the comparison for a logical effect (#1194).
+                if _same_admission_effect(item, invocation)
+            ]
+            if history and history[-1].status is not InvocationStatus.FAILED:
+                return history[-1].model_copy(deep=True)
+            if invocation.invocation_id in self._items:
+                raise ValueError(f"Invocation {invocation.invocation_id!r} already exists")
+            persisted = invocation.model_copy(deep=True)
+            self._items[persisted.invocation_id] = persisted
+            return persisted.model_copy(deep=True)
 
 
 class EffectNotApplied(RuntimeError):
@@ -485,6 +570,39 @@ class InvocationExecutionService:
         )
         return history[-1] if history else None
 
+    async def _admit_effect(self, candidate: Invocation) -> Invocation:
+        """Record one physical effect admission, deduplicating across workers.
+
+        Stores that expose an atomic ``claim`` (``EffectClaimStore``) serialize
+        the logical effect at the ledger itself; plain stores rely on the
+        durable unique-effect constraint in ``create``. Either way, a loser of
+        an admission race re-reads the canonical row so a stale admission
+        returns the accepted result instead of dispatching or surfacing a
+        misleading race error.
+
+        The re-read honours the candidate's own scope: a logical effect reads
+        its whole Run history, so a completed row under a different NodeRun is
+        a replay rather than a race error (#1194).
+        """
+
+        try:
+            return (
+                await self._store.claim(candidate)
+                if isinstance(self._store, EffectClaimStore)
+                else await self._store.create(candidate)
+            )
+        except UnsafeEffectRetry:
+            replay = await self._completed_replay_after_admission_race(
+                run_id=candidate.run_id,
+                node_run_id=candidate.node_run_id,
+                binding_id=candidate.binding.binding_id,
+                effect_key=candidate.effect_key,
+                logical_effect=candidate.logical_effect,
+            )
+            if replay is not None:
+                return replay
+            raise
+
     async def _notify_completion(self, completed: Invocation) -> None:
         """Hand a terminal effect to the composition-root recorder, if any.
 
@@ -518,7 +636,12 @@ class InvocationExecutionService:
         *,
         run_id: str,
         node_run_id: str,
-        binding: Binding,
+        # The id, not the binding. The only caller holds a candidate
+        # Invocation, whose `binding` is the persisted `ResolvedBinding`
+        # snapshot rather than the live `Binding`; annotating this `Binding`
+        # made the one real call site a type error while the body reads
+        # nothing but `binding_id`, which both models carry.
+        binding_id: str,
         effect_key: str,
         logical_effect: bool = False,
     ) -> Invocation | None:
@@ -534,7 +657,7 @@ class InvocationExecutionService:
         latest_history = await self._store.list_effect(
             run_id=run_id,
             node_run_id=None if logical_effect else node_run_id,
-            binding_id=binding.binding_id,
+            binding_id=binding_id,
             effect_key=effect_key,
         )
         if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
@@ -607,41 +730,27 @@ class InvocationExecutionService:
                     f"capability {binding.capability!r} unavailable: {provider.reason}"
                 )
             resolved = ResolvedBinding.from_provider(binding, provider)
-            try:
-                invocation = await self._store.create(
-                    Invocation(
-                        run_id=run_id,
-                        node_run_id=node_run_id,
-                        attempt_id=attempt_id,
-                        workspace_id=binding.workspace_id,
-                        project_id=binding.project_id,
-                        binding=resolved,
-                        effect_key=effect_key,
-                        request=request,
-                        logical_effect=logical_effect,
-                    )
-                )
-            except UnsafeEffectRetry:
-                # Another worker may have completed the effect after our
-                # initial history read. Re-read the canonical row so a stale
-                # admission returns the accepted result instead of dispatching
-                # or surfacing a misleading race error.
-                replay = await self._completed_replay_after_admission_race(
-                    run_id=run_id,
-                    node_run_id=node_run_id,
-                    binding=binding,
-                    effect_key=effect_key,
-                    logical_effect=logical_effect,
-                )
-                if replay is not None:
-                    # A deduplicated hand-out re-confirms ledger evidence
-                    # (#718): the recorder and the durable tracker are
-                    # idempotent on Invocation identity, so a healthy ledger
-                    # sees a no-op and one that missed the original
-                    # terminalization is repaired.
-                    await self._notify_completion(replay)
-                    return replay
-                raise
+            candidate = Invocation(
+                run_id=run_id,
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                workspace_id=binding.workspace_id,
+                project_id=binding.project_id,
+                binding=resolved,
+                effect_key=effect_key,
+                request=request,
+                logical_effect=logical_effect,
+            )
+            invocation = await self._admit_effect(candidate)
+            settled = _settled_by_another_admission(candidate, invocation, effect_key)
+            if settled is not None:
+                # The ledger already holds this effect's accepted outcome,
+                # written by whichever worker won admission. Re-notify (#718):
+                # the recorder and the durable tracker are idempotent on
+                # Invocation identity, so a healthy ledger sees a no-op and one
+                # that missed the original terminalization is repaired.
+                await self._notify_completion(settled)
+                return settled
             running = invocation.model_copy(
                 update={
                     "status": InvocationStatus.RUNNING,
@@ -946,6 +1055,7 @@ class InvocationExecutionService:
 
 __all__ = [
     "CapabilityUnavailable",
+    "EffectClaimStore",
     "EffectNotApplied",
     "InMemoryInvocationStore",
     "Invocation",

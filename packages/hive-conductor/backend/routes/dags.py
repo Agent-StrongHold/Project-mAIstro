@@ -7,12 +7,13 @@ from uuid import uuid4
 
 import stores
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from services.dag_execution_scope import (
     DagWorkspaceSelectionError,
     authorize_hive_dag_scope,
 )
 from services.edit_lock import diff_dag_snapshots, mark_edited
+from services.request_principal import optional_actor_id
 
 from routes.audit import log_audit
 
@@ -82,8 +83,7 @@ def _now() -> datetime:
 
 
 def _actor(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    return str(user.get("id") or "system")
+    return optional_actor_id(request, default="system")
 
 
 async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str, Any]) -> None:
@@ -194,7 +194,12 @@ class UpdateDAGBody(BaseModel):
     nodes: list[DAGNode] | None = None
     edges: list[DAGEdge] | None = None
     entry_node: str | None = None
-    max_cycles: int | None = None
+    # New writes are validated against the same envelope execution clamps to
+    # (maistro.graph.policies), so an out-of-policy budget is refused at edit
+    # time instead of being silently reinterpreted at run time. Stored DAGs
+    # that predate the envelope stay readable: DAGFile remains tolerant and
+    # execution records the declared/effective pair (#1184).
+    max_cycles: int | None = Field(default=None, ge=1, le=20)
     run_scout: bool | None = None
     status: Literal["draft", "active", "archived"] | None = None
 

@@ -82,19 +82,18 @@ def rsi_status() -> dict:
 
 @router.get("/models")
 def available_models() -> dict:
-    """Models the operator can pick from in the UI."""
-    return {
-        "models": [
-            {"id": "glm-4.7", "label": "GLM-4.7 (Sonnet-level, 1x quota)", "tier": "open"},
-            {"id": "glm-5.2", "label": "GLM-5.2 (Opus-level, 2x quota)", "tier": "premium"},
-            {
-                "id": "oss120-cerebras",
-                "label": "Cerebras gpt-oss-120b (free, daily cap)",
-                "tier": "free",
-            },
-            {"id": "gemini-flash", "label": "Gemini Flash (free, 5 RPM)", "tier": "free"},
-        ]
-    }
+    """Explicitly unsupported (#389).
+
+    This returned a hard-coded catalog baked into the handler — labels and
+    quota tiers nothing updated and no deployment configured. The live model
+    catalog's owner is the LiteLLM gateway, surfaced at
+    `GET /v1/quotas/models`; this route now refuses with `501` rather than
+    serve a catalog that drifts from what the gateway actually registers.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="static model catalog removed; the live catalog is GET /v1/quotas/models",
+    )
 
 
 @router.get("/test-profiles")
@@ -137,8 +136,6 @@ async def start_run(body: StartRunBody) -> dict:
     from services.rsi import get_rsi_service
 
     svc = get_rsi_service()
-    if not svc.available:
-        raise HTTPException(status_code=503, detail="maistro-rsi is not installed in this process")
     if body.mode not in ("cleanup", "greenfield"):
         raise HTTPException(status_code=400, detail="mode must be 'cleanup' or 'greenfield'")
     if body.test_command is not None:
@@ -151,6 +148,14 @@ async def start_run(body: StartRunBody) -> dict:
         )
     if body.mode == "cleanup" and not body.repo_path:
         raise HTTPException(status_code=400, detail="cleanup mode requires repo_path")
+    if body.mode == "greenfield" and not svc.available:
+        # The tournament path still needs the package in this process. A
+        # cleanup run does not: since #509 it is dispatched into an ephemeral
+        # runner container, and its capability gate is `require_isolation()`
+        # below — demanding an in-process maistro-rsi install for it would
+        # keep the Start button broken on every Conductor that ships without
+        # the package it no longer imports.
+        raise HTTPException(status_code=503, detail="maistro-rsi is not installed in this process")
 
     caller_paths = [
         name

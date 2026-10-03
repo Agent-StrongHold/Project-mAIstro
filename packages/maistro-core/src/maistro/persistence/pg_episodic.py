@@ -303,13 +303,18 @@ def _scoped_list_query(
     clauses = ["deleted = FALSE"]
     # No agent/user/team/org filter: `project_id` alone selects, independent of
     # the scope hierarchy. `InMemoryEpisodicStore` does the same, for project
-    # changelog recall.
+    # changelog recall. The no-caller global clause still applies, so an
+    # org-bound global is not visible without org context (#1247).
     if agent_id or user_id or team_id or org_id:
         predicate, scope_params = scope_predicate(
             build_scope_filter(agent_id=agent_id, user_id=user_id, team_id=team_id, org_id=org_id),
             markers,
         )
         clauses.append(f"({predicate})")
+        params.extend(scope_params)
+    else:
+        predicate, scope_params = scope_predicate(build_scope_filter(), markers)
+        clauses.append(f"(scope != 'global' OR {predicate})")
         params.extend(scope_params)
     params.append(min_weight)
     clauses.append(f"weight >= {next(markers)}")

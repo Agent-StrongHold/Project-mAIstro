@@ -1,9 +1,12 @@
-"""Tests for the authenticated route-permission ratchet (Workspace cutover P0.2)."""
+"""Tests for the authenticated route-permission ratchet (Workspace cutover P0.2).
+
+The repo-level run lives in quality.yml beside check_enumerations.py, because
+both import the hive app; these tests pin the registry contract without it.
+"""
 
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -12,8 +15,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-route-permissions.py"
-BASELINE = ROOT / "quality" / "route-permissions-baseline.json"
-REGISTRY = ROOT / "quality" / "route-permissions.json"
+TODAY = date(2026, 10, 1)
+_BASE = {"owner": "@someone", "disposition": "permanent", "reason": "because"}
 
 
 @pytest.fixture(scope="module")
@@ -26,51 +29,43 @@ def gate():
     return module
 
 
-def test_baseline_matches_current_gaps(gate) -> None:
-    gaps, import_error = gate.collect_gaps()
-    assert import_error is None, import_error
-    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))["tolerated"]
-    current = {item.key(): item.detail for item in gaps}
-    assert set(baseline) == set(current)
+def test_prefix_is_the_first_v1_segment(gate) -> None:
+    assert gate._v1_prefix("/v1/dags/{id}/run") == "/v1/dags"
+    assert gate._v1_prefix("/health") is None
 
 
-def test_no_new_gaps(gate) -> None:
-    new_gaps, stale_keys, _, import_error = gate.audit()
-    assert import_error is None, import_error
-    assert not new_gaps
-    assert not stale_keys
+def test_entry_must_choose_permission_or_exemption(gate) -> None:
+    assert gate.entry_problems("/v1/x", dict(_BASE), TODAY)
+    both = {**_BASE, "permission": "x.write", "exempt_reason": "why"}
+    assert gate.entry_problems("/v1/x", both, TODAY)
+    assert not gate.entry_problems("/v1/x", {**_BASE, "permission": "x.write"}, TODAY)
+    assert not gate.entry_problems("/v1/x", {**_BASE, "exempt_reason": "why"}, TODAY)
 
 
-def test_registry_entry_requires_permission_or_exempt(
-    gate, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    registry = tmp_path / "route-permissions.json"
-    registry.write_text(
-        json.dumps(
-            {
-                "prefixes": {
-                    "/v1/example": {
-                        "owner": "@someone",
-                        "disposition": "permanent",
-                        "reason": "because",
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(gate, "REGISTRY", registry)
-    problems = gate._entry_problems(
-        "/v1/example", json.loads(registry.read_text())["prefixes"]["/v1/example"], date(2099, 1, 1)
-    )
-    assert problems
+def test_temporary_exemption_needs_an_unexpired_date(gate) -> None:
+    entry = {**_BASE, "exempt_reason": "why", "disposition": "temporary", "issue": 53}
+    assert gate.entry_problems("/v1/x", entry, TODAY)
+    assert gate.entry_problems("/v1/x", {**entry, "expires": "2026-09-30"}, TODAY)
+    assert not gate.entry_problems("/v1/x", {**entry, "expires": "2026-12-31"}, TODAY)
 
 
-def test_registry_accepts_permission_entry(gate) -> None:
-    entry = {
-        "permission": "tasks.write",
-        "owner": "@someone",
-        "disposition": "permanent",
-        "reason": "because",
-    }
-    assert not gate._entry_problems("/v1/tasks", entry, date.today())
+def test_stale_or_public_registry_entries_fail_hard(gate) -> None:
+    registry = {"/v1/gone": {**_BASE, "permission": "x"}, "/v1/open": {**_BASE, "permission": "x"}}
+    problems = gate.registry_problems({"/v1/open"}, registry, {"/v1/open"}, TODAY)
+    assert len(problems) == 2
+
+
+def test_new_exemption_needs_a_grant_landed_at_the_base(gate) -> None:
+    candidate = {"/v1/x": {**_BASE, "exempt_reason": "why"}}
+    exemptions = gate.new_exemptions(candidate, {})
+    assert exemptions == {"exempt::/v1/x"}
+    assert gate.compare(set(), set(), set(), exemptions, set()) == [
+        "exempt::/v1/x: NEW exemption needs an already-landed authorization"
+    ]
+    assert gate.new_exemptions(candidate, candidate) == set()
+
+
+def test_declaring_a_prefix_requires_deleting_its_gap(gate) -> None:
+    assert gate.compare(set(), {"/v1/x"}, {"/v1/x"}, set(), set()) == [
+        "/v1/x: declared now -- delete it from the candidate ledger"
+    ]
