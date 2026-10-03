@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from maistro.memory.learnings.evidence import DEFAULT_MIN_PROMOTION_CONFIDENCE
 from maistro.memory.vectors import require_matching_dimension
 
 if TYPE_CHECKING:
@@ -146,9 +147,15 @@ class DurableHybridLearningStore:
         return await self._store.produced_by(run_id, org_id=org_id)
 
     async def check_auto_promotions(
-        self, threshold: int = 5, *, org_id: str = ""
+        self,
+        threshold: int = 5,
+        *,
+        org_id: str = "",
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
     ) -> list[Learning]:
-        return await self._store.check_auto_promotions(threshold, org_id=org_id)
+        return await self._store.check_auto_promotions(
+            threshold, org_id=org_id, min_confidence=min_confidence
+        )
 
     async def get_promoted(
         self,

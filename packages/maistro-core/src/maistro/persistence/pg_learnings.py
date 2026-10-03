@@ -5,16 +5,22 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.learnings.evidence import (
+    DEFAULT_MIN_PROMOTION_CONFIDENCE,
+    merge_applicability,
+    promotion_blockers,
+)
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
-from maistro.observability.correlation import observed_provenance
+from maistro.observability.correlation import ExecutionProvenance, observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
-from maistro.types.memory import Learning, MemoryScope
+from maistro.types.memory import EPISTEMIC_BONUS, EpistemicType, Learning, MemoryScope
 
 if TYPE_CHECKING:
     import asyncpg
@@ -51,6 +57,25 @@ _PG_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "epistemic_type",
+    "works_when",
+    "avoid_in",
+    "confidence",
+    "evidence_run_ids",
+    "evaluation_ids",
+)
+
+#: The belt-and-braces upgrade adds these in `ensure_schema`, mirroring what
+#: migration 048 declares. `confidence` is the only nullable one: an unmeasured
+#: row must read back as unmeasured, because promotion treats NULL as a blocker
+#: and a fabricated default would read as measured (M4-B3).
+_EPISTEMIC_COLUMNS = (
+    ("epistemic_type", "TEXT NOT NULL DEFAULT 'observed'"),
+    ("works_when", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("avoid_in", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("confidence", "DOUBLE PRECISION"),
+    ("evidence_run_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("evaluation_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
 )
 
 
@@ -122,6 +147,10 @@ class PgLearningStore:
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''"
             )
+            for column, column_type in _EPISTEMIC_COLUMNS:
+                await conn.execute(
+                    f"ALTER TABLE learnings ADD COLUMN IF NOT EXISTS {column} {column_type}"
+                )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope "
                 "ON learnings (org_id, agent_id, status)"
@@ -136,7 +165,10 @@ class PgLearningStore:
 
         Resolved before the dedup read, not after: the deduplicating branch
         returns early, and a provenance read that only happens on the insert
-        path would be a second place for the rule to live (#709).
+        path would be a second place for the rule to live (#709). The resolved
+        record (not just the insert) carries it: a learning that relies on the
+        ambient `bind_execution_context` for its ids must still contribute the
+        current Run to the surviving row's evidence when it dedupes.
         """
         provenance = observed_provenance(
             run_id=learning.run_id,
@@ -144,7 +176,7 @@ class PgLearningStore:
             attempt_id=learning.attempt_id,
         )
         async with self._pool.acquire() as conn:
-            dedup_id = await self._bump_dedup_hit(conn, learning)
+            dedup_id = await self._bump_dedup_hit(conn, learning, provenance)
             if dedup_id is not None:
                 return dedup_id
 
@@ -160,9 +192,12 @@ class PgLearningStore:
                     agent_id, user_id, org_id, team_id, scope, hit_count, status,
                     rca_category, rca_prevention,
                     success_after_use, failure_after_use,
-                    run_id, node_run_id, attempt_id)
+                    run_id, node_run_id, attempt_id,
+                    epistemic_type, works_when, avoid_in, confidence,
+                    evidence_run_ids, evaluation_ids)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                           $13, $14, $15, $16, $17, $18, $19)
+                           $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+                           $23, $24, $25)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -183,6 +218,12 @@ class PgLearningStore:
                 # `as_columns` owns the "blank means absent" rule for every
                 # store that writes it (#709).
                 *provenance.as_columns(),
+                learning.epistemic_type,
+                _dump_keys(learning.works_when),
+                _dump_keys(learning.avoid_in),
+                learning.confidence,
+                _dump_keys(learning.evidence_run_ids),
+                _dump_keys(learning.evaluation_ids),
             )
             return int(row["id"]) if row else 0
 
@@ -190,6 +231,7 @@ class PgLearningStore:
         self,
         conn: asyncpg.pool.PoolConnectionProxy,
         learning: Learning,
+        provenance: ExecutionProvenance,
     ) -> int | None:
         """Return the id of the same-scope active row this learning dedupes into.
 
@@ -201,7 +243,8 @@ class PgLearningStore:
         probe-then-insert.
         """
         existing = await conn.fetch(
-            """SELECT id, trigger_keys FROM learnings
+            """SELECT id, trigger_keys, works_when, avoid_in, confidence,
+                      evidence_run_ids, evaluation_ids FROM learnings
                WHERE tool_name = $1 AND org_id = $2
                  AND team_id = $3 AND user_id IS NOT DISTINCT FROM $4
                  AND agent_id = $5 AND status = 'active'""",
@@ -217,6 +260,40 @@ class PgLearningStore:
             if new_keys and existing_keys:
                 overlap = len(new_keys & existing_keys) / len(new_keys)
                 if overlap >= 0.5:
+                    # Dedup consolidates: the reworded claim replaces the text,
+                    # never the evidence or applicability beneath it (M4-B3).
+                    # `merge_applicability` stays the one rule; a throwaway
+                    # Learning carries the row's current values through it.
+                    prior = Learning(
+                        works_when=_load_keys(row["works_when"]),
+                        avoid_in=_load_keys(row["avoid_in"]),
+                        confidence=row["confidence"],
+                        evidence_run_ids=_load_keys(row["evidence_run_ids"]),
+                        evaluation_ids=_load_keys(row["evaluation_ids"]),
+                    )
+                    # The merge folds `incoming.run_id` into the evidence list,
+                    # so it must see the ids `store` resolved, not the blank
+                    # fields of a learning that leaned on the ambient context
+                    # — otherwise a deduplicated write silently drops the
+                    # very execution the consolidation should retain.
+                    incoming = replace(
+                        learning,
+                        run_id=provenance.run_id,
+                        node_run_id=provenance.node_run_id,
+                        attempt_id=provenance.attempt_id,
+                    )
+                    merge_applicability(prior, incoming)
+                    await conn.execute(
+                        """UPDATE learnings SET works_when = $1, avoid_in = $2,
+                           confidence = $3, evidence_run_ids = $4,
+                           evaluation_ids = $5 WHERE id = $6""",
+                        _dump_keys(prior.works_when),
+                        _dump_keys(prior.avoid_in),
+                        prior.confidence,
+                        _dump_keys(prior.evidence_run_ids),
+                        _dump_keys(prior.evaluation_ids),
+                        row["id"],
+                    )
                     await conn.execute(
                         "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
                         row["id"],
@@ -373,9 +450,12 @@ class PgLearningStore:
             # was injected into the agent's system prompt. The annotation said
             # list[str] and the value was a str, which is why it type-checked.
             keys = _load_keys(row["trigger_keys"])
-            score = sum(1 for k in keys if k.lower() in text_lower)
+            score: float = sum(1 for k in keys if k.lower() in text_lower)
             if score > 0:
-                scored.append((float(score), _row_to_learning(row)))
+                # Same tie-break as the in-memory twin: the epistemic bonus
+                # reorders keyword ties, never overrides relevance (M4-B3).
+                score += EPISTEMIC_BONUS.get(_row_to_learning(row).epistemic_type, 0.0)
+                scored.append((score, _row_to_learning(row)))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [lr for _, lr in scored[:max_results]]
@@ -413,7 +493,13 @@ class PgLearningStore:
     async def mark_outcome(
         self, learning_ids: list[int], success: bool, *, org_id: str = ""
     ) -> None:
-        """Increment success/failure counters per id."""
+        """Increment success/failure counters per id, and re-measure confidence.
+
+        The confidence expression is the SQL restatement of
+        `evidence.outcome_confidence` — once an outcome exists, confidence IS
+        the success ratio; a surviving NULL is a row never measured, which is
+        exactly the fact promotion treats as a blocker (M4-B3).
+        """
         if not learning_ids:
             return
         async with self._pool.acquire() as conn:
@@ -422,28 +508,72 @@ class PgLearningStore:
             # unscoped update accepted a guessed id from any scope.
             column = "success_after_use" if success else "failure_after_use"
             await conn.execute(
-                f"UPDATE learnings SET {column} = {column} + 1 "  # nosec B608
+                f"UPDATE learnings SET {column} = {column} + 1, "  # nosec B608
+                # SET expressions see the pre-update row in PostgreSQL, so the
+                # ratio is written in terms of (old value + this outcome)
+                # explicitly rather than assuming the increment landed first.
+                "confidence = (success_after_use + $3::int)::float / "
+                "(success_after_use + failure_after_use + 1) "
                 "WHERE id = ANY($1::int[]) AND org_id = $2",
                 learning_ids,
                 org_id,
+                1 if success else 0,
             )
 
     async def check_auto_promotions(
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
     ) -> list[Learning]:
-        """Promote learnings with hit_count >= threshold."""
+        """Promote learnings at threshold that also carry validation evidence.
+
+        The evidence verdict is the shared `promotion_blockers`, not a second
+        SQL predicate — one rule for all three backends. A learning missing
+        source Run/evaluation ids or measured confidence stays `active`
+        however often it is hit (M4-B3).
+        """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """UPDATE learnings SET status = 'promoted'
-                   WHERE status = 'active' AND hit_count >= $1
-                     AND org_id = $2
-                   RETURNING *""",
+                "SELECT * FROM learnings "
+                "WHERE status = 'active' AND hit_count >= $1 AND org_id = $2",
                 threshold,
                 org_id,
             )
-            return [_row_to_learning(r) for r in rows]
+            candidates = [_row_to_learning(r) for r in rows]
+            promoted = [
+                lr for lr in candidates if not promotion_blockers(lr, min_confidence=min_confidence)
+            ]
+            if not promoted:
+                return []
+            return await self._claim_promoted(conn, promoted)
+
+    async def _claim_promoted(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy,
+        promoted: list[Learning],
+    ) -> list[Learning]:
+        """Flip the promoted rows durably and report the ones this caller won.
+
+        Atomic claim: flip only rows still `active` and take RETURNING as the
+        truth for what this caller promoted. Two workers racing here can both
+        select the same candidate before either UPDATE; an unconditional WHERE
+        let both succeed, so both callers reported a fresh promotion and the
+        skill mutation ran twice.
+        """
+        ids = [lr.id for lr in promoted if lr.id is not None]
+        claimed = await conn.fetch(
+            "UPDATE learnings SET status = 'promoted' "
+            "WHERE id = ANY($1::int[]) AND status = 'active' RETURNING id",
+            ids,
+        )
+        claimed_ids = {r["id"] for r in claimed}
+        # The candidates were mapped before the UPDATE; the returned objects
+        # must report the state the rows now hold.
+        for lr in promoted:
+            lr.status = "promoted"
+        return [lr for lr in promoted if lr.id in claimed_ids]
 
     async def get_promoted(
         self,
@@ -548,4 +678,10 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         run_id=row.get("run_id") or "",
         node_run_id=row.get("node_run_id") or "",
         attempt_id=row.get("attempt_id") or "",
+        epistemic_type=EpistemicType(row.get("epistemic_type") or "observed"),
+        works_when=_load_keys(row.get("works_when")),
+        avoid_in=_load_keys(row.get("avoid_in")),
+        confidence=row.get("confidence"),
+        evidence_run_ids=_load_keys(row.get("evidence_run_ids")),
+        evaluation_ids=_load_keys(row.get("evaluation_ids")),
     )

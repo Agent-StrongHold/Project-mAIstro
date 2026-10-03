@@ -13,7 +13,11 @@ def _lr(
     agent: str | None = "agent-1",
     status: str = "active",
     learning: str = "do X not Y",
+    *,
+    evidence: bool = False,
 ) -> Learning:
+    """A learning; `evidence=True` adds the validation evidence M4-B3 promotion
+    requires (source Run id + measured confidence from a recorded outcome)."""
     return Learning(
         tool_name=tool,
         trigger_keys=keys or ["foo", "bar"],
@@ -22,6 +26,9 @@ def _lr(
         agent_id=agent,
         scope=MemoryScope.AGENT,
         status=status,
+        run_id="run-1" if evidence else "",
+        confidence=1.0 if evidence else None,
+        evaluation_ids=["eval-1"] if evidence else [],
     )
 
 
@@ -173,17 +180,28 @@ class TestListIneffective:
 class TestPromotion:
     async def test_auto_promotion_at_threshold(self) -> None:
         store = InMemoryLearningStore()
-        id_ = await store.store(_lr(keys=["key"]))
+        id_ = await store.store(_lr(keys=["key"], evidence=True))
         for _ in range(5):
             await store.mark_used([id_])
         promoted = await store.check_auto_promotions(threshold=5, org_id="org-1")
         assert len(promoted) == 1
         assert promoted[0].status == "promoted"
 
+    async def test_promotion_blocked_without_evidence(self) -> None:
+        """M4-B3: hits alone no longer promote — evidence is required too."""
+        store = InMemoryLearningStore()
+        id_ = await store.store(_lr(keys=["key"]))
+        for _ in range(5):
+            await store.mark_used([id_])
+        promoted = await store.check_auto_promotions(threshold=5, org_id="org-1")
+        assert promoted == []
+        stored = (await store.list_all(org_id="org-1"))[0]
+        assert stored.status == "active"
+
     async def test_get_promoted_returns_only_promoted(self) -> None:
         store = InMemoryLearningStore()
         await store.store(_lr(keys=["active"]))
-        id2 = await store.store(_lr(keys=["will-promote"], tool="t2"))
+        id2 = await store.store(_lr(keys=["will-promote"], tool="t2", evidence=True))
         for _ in range(5):
             await store.mark_used([id2])
         await store.check_auto_promotions(threshold=5, org_id="org-1")

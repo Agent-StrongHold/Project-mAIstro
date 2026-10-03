@@ -60,6 +60,47 @@ WISDOM_PROMOTE_THRESHOLD: int = 5  # reinforcement_count to promote -> WISDOM
 REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
 
 
+class EpistemicType(StrEnum):
+    """How a learning claims to know what it says (M4-B3).
+
+    A learning is a *claim*, not a truth: two learnings with identical text can
+    deserve different treatment depending on where the claim came from. The
+    type is explicit on the record so retrieval and ranking can weight a
+    measured correction above a plausible-sounding distillation instead of
+    treating them as interchangeable strings.
+
+    Correspondence with the episodic tiers (MEMORY_TIER -> epistemic reading):
+    OBSERVATION/HYPOTHESIS -> OBSERVED/INFERRED, LESSON -> TESTED,
+    WISDOM -> REPORTED. The tiers grade confidence *weight* for episodic
+    memory; this enum grades *justification* for learnings. They answer
+    different questions and neither derives from the other.
+    """
+
+    #: Measured from an actual run or outcome (fail->succeed correction, tool telemetry).
+    OBSERVED = "observed"
+    #: Validated by an evaluation against a real execution.
+    TESTED = "tested"
+    #: Derived by reasoning or LLM distillation — plausible, not yet validated.
+    INFERRED = "inferred"
+    #: A claim about what *would* have happened; true only if an evaluation later confirms it.
+    COUNTERFACTUAL = "counterfactual"
+    #: Imported/asserted from an external source (e.g. CoinSwarm wisdom JSON).
+    REPORTED = "reported"
+
+
+#: Retrieval bonus added to the keyword score in `find_relevant` (M4-B3). All
+#: values are < 1.0 so the epistemic type reorders *ties* — it can never let a
+#: less relevant learning outrank a more relevant one, which keeps the
+#: established keyword-count ordering intact.
+EPISTEMIC_BONUS: dict[EpistemicType, float] = {
+    EpistemicType.TESTED: 0.4,
+    EpistemicType.OBSERVED: 0.3,
+    EpistemicType.REPORTED: 0.2,
+    EpistemicType.INFERRED: 0.1,
+    EpistemicType.COUNTERFACTUAL: 0.0,
+}
+
+
 class MemoryScope(StrEnum):
     """Memory visibility scopes — hierarchical from broadest to narrowest."""
 
@@ -126,6 +167,25 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
+    # Epistemic qualification (M4-B3 / ADR-100126-b3c7). `run_id` above names
+    # the one Run that *produced* the text; `evidence_run_ids` names every Run
+    # whose outcome *supports* the claim — a list, because consolidation and
+    # rewording merge rows while their supporting executions accumulate. A
+    # learning with neither list nor producer has no validation evidence and
+    # cannot be promoted, no matter how it reads.
+    epistemic_type: EpistemicType = EpistemicType.OBSERVED
+    #: Contexts where the claim is known to hold (CoinSwarm wisdom's `excels_in`).
+    works_when: list[str] = field(default_factory=list)
+    #: Contexts where the claim failed or must not be applied (`avoid_in`).
+    avoid_in: list[str] = field(default_factory=list)
+    #: Evidence strength in [0, 1]; `None` means unmeasured — which blocks
+    #: promotion, because "no one measured" and "perfectly confident" must not
+    # read as the same record (the rule ADR-083026-a91e set for metrics).
+    confidence: float | None = None
+    evidence_run_ids: list[str] = field(default_factory=list)
+    #: Evaluation records that scored the claim; the only evidence a
+    #: COUNTERFACTUAL claim can be promoted on.
+    evaluation_ids: list[str] = field(default_factory=list)
 
 
 @dataclass

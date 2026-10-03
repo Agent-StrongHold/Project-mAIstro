@@ -140,12 +140,42 @@ async def test_mark_outcome_empty_list_is_noop(store: SqliteLearningStore) -> No
 async def test_check_auto_promotions_promotes_above_threshold(
     store: SqliteLearningStore,
 ) -> None:
+    lid = await store.store(make_learning(run_id="run-1"))
+    await store.mark_used([lid])
+    await store.mark_used([lid])
+    await store.mark_outcome([lid], success=True)
+    promoted = await store.check_auto_promotions(threshold=2)
+    assert len(promoted) == 1
+    assert promoted[0].status == "promoted"
+
+
+async def test_check_auto_promotions_refuses_rows_without_evidence(
+    store: SqliteLearningStore,
+) -> None:
+    """M4-B3: hits alone do not promote — a source Run id and measured
+    confidence are required, and an unevidenced row stays active."""
     lid = await store.store(make_learning())
     await store.mark_used([lid])
     await store.mark_used([lid])
     promoted = await store.check_auto_promotions(threshold=2)
-    assert len(promoted) == 1
-    assert promoted[0].status == "promoted"
+    assert promoted == []
+    (row,) = await store.list_all()
+    assert row.status == "active"
+
+
+async def test_check_auto_promotions_refuses_majority_failing_rows(
+    store: SqliteLearningStore,
+) -> None:
+    """M4-B3: measured confidence below the floor blocks promotion too."""
+    lid = await store.store(make_learning(run_id="run-1"))
+    await store.mark_used([lid])
+    await store.mark_used([lid])
+    await store.mark_outcome([lid], success=False)
+    await store.mark_outcome([lid], success=False)
+    await store.mark_outcome([lid], success=True)
+    assert (await store.list_all())[0].confidence == pytest.approx(1 / 3)
+    promoted = await store.check_auto_promotions(threshold=2)
+    assert promoted == []
 
 
 @pytest.mark.asyncio
@@ -159,9 +189,10 @@ async def test_check_auto_promotions_none_above_threshold_returns_empty(
 
 @pytest.mark.asyncio
 async def test_get_promoted_returns_only_promoted_status(store: SqliteLearningStore) -> None:
-    lid = await store.store(make_learning())
+    lid = await store.store(make_learning(run_id="run-1"))
     await store.store(make_learning(tool_name="other"))
     await store.mark_used([lid])
+    await store.mark_outcome([lid], success=True)
     await store.check_auto_promotions(threshold=1)
     promoted = await store.get_promoted()
     assert len(promoted) == 1
@@ -169,8 +200,9 @@ async def test_get_promoted_returns_only_promoted_status(store: SqliteLearningSt
 
 @pytest.mark.asyncio
 async def test_get_promoted_filters_by_task_type(store: SqliteLearningStore) -> None:
-    lid1 = await store.store(make_learning(category="chat"))
-    lid2 = await store.store(make_learning(tool_name="other", category="code"))
+    lid1 = await store.store(make_learning(category="chat", run_id="run-1"))
+    lid2 = await store.store(make_learning(tool_name="other", category="code", run_id="run-2"))
+    await store.mark_outcome([lid1, lid2], success=True)
     await store.check_auto_promotions(threshold=0)
     assert lid1 and lid2
     promoted = await store.get_promoted(task_type="chat")

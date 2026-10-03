@@ -30,6 +30,8 @@ async def test_gate_queues_eligible_learning_for_approval() -> None:
         learning="Always snapshot before deploy",
         hit_count=7,
         status="active",
+        run_id="run-1",
+        confidence=1.0,
     )
     await store.store(learning)
 
@@ -71,6 +73,8 @@ async def test_approved_learning_gets_promoted_on_next_pass() -> None:
         learning="snapshot first",
         hit_count=10,
         status="active",
+        run_id="run-1",
+        confidence=1.0,
     )
     lid = await store.store(learning)
 
@@ -91,11 +95,67 @@ async def test_approved_learning_gets_promoted_on_next_pass() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_approval_not_promoted_after_confidence_drops() -> None:
+    """An approval must not bypass the evidence rule at consumption time.
+
+    Outcomes recorded while a request sat pending can sink measured confidence
+    below the promotion floor; the approved-processing pass re-runs the
+    candidate rule, so the stale approval is not promoted or mutated.
+    """
+    store = InMemoryLearningStore()
+    learning = Learning(
+        trigger_keys=["deploy"],
+        learning="snapshot first",
+        hit_count=10,
+        status="active",
+        run_id="run-1",
+        confidence=1.0,
+    )
+    lid = await store.store(learning)
+
+    gate = LearningApprovalGate()
+    promoter = LearningPromoter(store, threshold=5, approval_gate=gate)
+
+    # First pass: queue it; admin approves while the evidence still passes.
+    await promoter.check_and_promote()
+    gate.approve(lid, reviewer="admin")
+
+    # While pending, real outcomes measure the claim as unreliable.
+    await store.mark_outcome([lid], success=False)
+    await store.mark_outcome([lid], success=False)
+    await store.mark_outcome([lid], success=True)
+    assert (await store.list_all())[0].confidence < promoter._min_confidence
+
+    # Second pass: the approval exists, but promotion must not fire.
+    promoted = await promoter.check_and_promote()
+    assert promoted == []
+    assert gate.get_approved_ids() == [lid]  # still approved, just not consumable
+
+
+@pytest.mark.asyncio
 async def test_org_scoped_candidates_only() -> None:
     """Gate enumeration respects org scoping when an org_id is supplied."""
     store = InMemoryLearningStore()
-    await store.store(Learning(trigger_keys=["a"], learning="org-a", hit_count=9, org_id="org-a"))
-    await store.store(Learning(trigger_keys=["b"], learning="org-b", hit_count=9, org_id="org-b"))
+    await store.store(
+        Learning(
+            trigger_keys=["a"],
+            learning="org-a",
+            hit_count=9,
+            org_id="org-a",
+            run_id="run-a",
+            confidence=1.0,
+        )
+    )
+    await store.store(
+        Learning(
+            trigger_keys=["b"],
+            learning="org-b",
+            hit_count=9,
+            org_id="org-b",
+            run_id="run-b",
+            confidence=1.0,
+        )
+    )
 
     gate = LearningApprovalGate()
     promoter = LearningPromoter(store, threshold=5, approval_gate=gate)

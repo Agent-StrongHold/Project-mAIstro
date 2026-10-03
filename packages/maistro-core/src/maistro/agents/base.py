@@ -442,9 +442,6 @@ class Agent:
 
         await self._extract_learnings(result, user_text, user_id, org_id, team_id, trace)
 
-        if self._learning_promoter and injected_learning_ids:
-            await self._learning_promoter.check_and_promote(org_id=org_id)
-
         await self._persist_run(
             result,
             auth=auth,
@@ -457,6 +454,14 @@ class Agent:
             injected_learning_ids=injected_learning_ids,
             turn_id=turn_id,
         )
+
+        # Promote only after the current Run's outcome is recorded:
+        # `_persist_run` -> `mark_outcome` updates the confidence counters this
+        # turn just paid for, and checking first would promote on the previous
+        # turn's evidence (e.g. promoting 3/4=0.75 at a 0.7 floor even though
+        # this turn's failure should have dropped it to 3/5).
+        if self._learning_promoter and injected_learning_ids:
+            await self._learning_promoter.check_and_promote(org_id=org_id)
 
         self._finalize_trace_if_present(
             trace, result, model, session_history_count, injected_learning_ids
