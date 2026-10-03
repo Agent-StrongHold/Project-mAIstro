@@ -16,10 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from maistro.capabilities.approval_store import (
-    InMemoryApprovalStore,
-    SqliteApprovalStore,
-)
+from maistro.capabilities.approval_store import SqliteApprovalStore
 from maistro.capabilities.binding_store import InMemoryBindingStore, SqliteBindingStore
 from maistro.capabilities.effect_context import default_effect_context
 from maistro.capabilities.invocation import InMemoryInvocationStore
@@ -33,10 +30,6 @@ from .persistence.conftest import postgres_dsn
 
 KNOWN_GAPS: frozenset[str] = frozenset(
     {
-        # #804: registry-constructed nodes still call the process-wide singleton.
-        "default_effect_context_is_container",
-        # #804 / #1133: GovernedInvocationExecutionService._approvals stays None.
-        "approval_store_wired",
         # #804: capability_effects and container.invocation_store are two instances.
         "single_invocation_authority",
     }
@@ -110,11 +103,7 @@ async def test_postgres_url_selects_durable_effect_stores() -> None:
 async def test_default_effect_context_is_the_container_instance() -> None:
     container = await _container(database_url="memory://")
     try:
-        same = default_effect_context() is container.capability_effects
-        if "default_effect_context_is_container" in KNOWN_GAPS:
-            assert not same, "default_effect_context() is the container now; delete the gap"
-        else:
-            assert same
+        assert default_effect_context() is container.capability_effects
     finally:
         await container.aclose()
 
@@ -124,10 +113,8 @@ async def test_governed_invocations_use_a_durable_approval_store_on_sqlite() -> 
     container = await _container(database_url=f"sqlite:///{db_path}")
     try:
         approvals = container.capability_effects.invocations._approvals
-        if "approval_store_wired" in KNOWN_GAPS:
-            assert approvals is None, "approval store is wired now; delete the gap"
-        else:
-            assert isinstance(approvals, (SqliteApprovalStore, InMemoryApprovalStore))
+        assert isinstance(approvals, SqliteApprovalStore)
+        assert approvals is container.capability_effects.approval_store
     finally:
         await container.aclose()
 
