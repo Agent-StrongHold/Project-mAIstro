@@ -527,6 +527,13 @@ class Container:
             self.schedule_conn = None
             self.holds_db_pool = False
 
+    @staticmethod
+    def _chat_actor_principal(auth: Any) -> str | None:
+        principal = getattr(auth, "user_id", None) or getattr(auth, "username", None) or None
+        if principal is not None:
+            principal = str(principal).strip() or None
+        return principal
+
     def _resolve_chat_auth(self, auth: Any) -> Any:
         """Evaluate an identity-free turn as the role-less anonymous principal.
 
@@ -746,9 +753,7 @@ class Container:
         run: Run | None = None
         try:
             admitter = self.chat_admitter
-            principal = getattr(auth, "user_id", None) or getattr(auth, "username", None) or None
-            if principal is not None:
-                principal = str(principal).strip() or None
+            principal = self._chat_actor_principal(auth)
             try:
                 run = await admitter.admit(
                     messages,

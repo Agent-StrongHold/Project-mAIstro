@@ -330,6 +330,7 @@ async def test_the_container_composed_node_admits_canonical_work(
             node_run_id=parent_node_run.node_run_id,
             workspace_id="ws-composition",
             project_id=root.project_id,
+            user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         ),
     )
 
