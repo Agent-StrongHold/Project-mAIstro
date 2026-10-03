@@ -26,5 +26,7 @@ it does not change Binding policy, approval storage, quota admission, or
 backend selection. This does not establish #1362's remaining acceptance.
 
 Collection was measured with the separate corrections to malformed #1815 and
-#1816 inventory-note front matter temporarily applied; those corrections are
-not included in this change. No inventory baseline or coverage floor changes.
+#1816 inventory-note front matter temporarily applied. The standalone lifecycle
+commit excluded them; follow-up integration includes the independently
+reviewed #1847 hygiene commit without changing this +5 delta. No inventory
+baseline or coverage floor changes.
