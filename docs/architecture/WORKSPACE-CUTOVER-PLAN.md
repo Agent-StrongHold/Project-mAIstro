@@ -564,6 +564,8 @@ and RSI quarantine/provenance rather than flattening them into one generic recor
 
 **Release scope is unchanged here.** Section 9's v1.0 replacement/deletion rules and the
 Evolution UI return in v1.2 remain recorded milestones. They are staged delivery of one
-product, not permission for a separate Evolution product. Whether the owner's near-parity
-requirement advances Evolution UI exposure into v1.0 needs an explicit release-scope decision;
-this clarification does not silently make that change or claim parity is implemented.
+product, not permission for a separate Evolution product. The owner explicitly retained
+v1.2 staging on 2026-10-03: build against canonical shared services directly, without an
+interim compatibility layer, duplicate feature backend or private Agent/tool authority to
+bridge later. This does not remove necessary historical-data migration/import, external-protocol
+adapters, domain algorithms or security boundaries, and it does not claim parity is implemented.

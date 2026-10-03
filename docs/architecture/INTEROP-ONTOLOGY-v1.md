@@ -45,7 +45,11 @@ outcomes, Run/Invocation identity, durable effects and observable state. Present
 be pixel-identical. Builders/Evolve/RSI work must be observable through the same Run browser.
 These are target requirements, not a statement that interface parity or convergence ships today.
 Release milestones remain in [ROADMAP.md](../../ROADMAP.md); this clarification does not move
-the existing v1.0/v1.2 Evolution UI boundary.
+the existing v1.0/v1.2 Evolution UI boundary. The owner explicitly retained that staged UI
+release on 2026-10-03, with no interim compatibility layer or duplicate feature/Agent/tool
+authority built to bridge it later. Implement the eventual interface on the canonical shared
+services directly; retain necessary external-protocol adapters, data migration/import and
+security boundaries.
 
 ## Rule
 

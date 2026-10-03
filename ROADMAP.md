@@ -14,10 +14,12 @@ API/Workspace UI target near parity; CLI exposes the same functionality with pre
 suited to commands and structured output. See the [full authority and proof contract](docs/architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03).
 
 The existing v1.0/v1.2 milestones below are unchanged. In particular, the recorded Evolution
-UI deferral is a temporary delivery gap within one product. Advancing that UI to satisfy
-near-parity in v1.0 requires an explicit release-scope decision; no parity implementation or
-milestone change is implied by this clarification. Package/variant names below describe
-composition and downstream boundaries, not separate UI/CLI/API feature authorities.
+UI deferral remains approved for v1.2. Build its eventual Workspace surface directly against
+the shared canonical services; do not build an interim compatibility layer, duplicate feature
+backend or private Agent/tool registry to bridge later. Necessary historical-data import,
+external-protocol adapters and security boundaries remain. No parity implementation is claimed.
+Package/variant names below describe composition and downstream boundaries, not separate
+UI/CLI/API feature authorities.
 
 ## Item ID convention (per [`engine#ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md))
 
