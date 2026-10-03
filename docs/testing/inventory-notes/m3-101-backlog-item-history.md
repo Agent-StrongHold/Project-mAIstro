@@ -7,6 +7,20 @@ inventory-delta:
 
 New tests only; nothing was removed or moved.
 
+Repair round (pyright gate + develop-sync re-bank): CI at cf01961a failed
+`pyright (type cross-check — ratchet)` — 22 errors vs baseline 21, the one
+over the line being `recording.py`'s `GoalLink` construction, where the
+partial-pair guard's both-or-neither invariant is not expressible as pyright
+narrowing of one variable from the other. Fixed by building `goal_link` in a
+local that tests both sides (behavior-preserving; the guard, and the tests
+pinning it, are unchanged — no test count moved). The develop merge also left
+`design_coverage` measured at 39.896 against a still-banked 34.9711 floor;
+an unbanked improvement fails the acceptance-state ratchet by design, so the
+branch's own note is banked at the measured value (`--bank`, which raises the
+floor — strictly stronger for later branches). Both gates re-run green locally
+with CI's exact arguments (pyright 1.1.414, `--all-extras`; ac-state ratchet
++ mandate against 5765efce8 with pgvector/pg18 up).
+
 Repair round (develop sync): resolved the merge of origin/develop into the
 branch (CHANGELOG, container wiring, workspaces router). The salvage redesign
 of `SqliteBacklogHistoryStore` — its own connection and its own `BEGIN

@@ -386,6 +386,14 @@ async def reconciliation_recorded(
             "reconciliation_recorded needs goal_id and goal_revision together "
             "(the exact Goal identity) or neither — a partial pair is rejected"
         )
+    # The guard above leaves the pair both-set or both-None; testing both
+    # sides narrows the Optional for the type checker without restating the
+    # guard as an assert.
+    goal_link: GoalLink | None = (
+        None
+        if goal_id is None or goal_revision is None
+        else GoalLink(goal_id=goal_id, goal_revision=goal_revision)
+    )
     return await store.append(
         BacklogHistoryEvent(
             workspace_id=subject.workspace_id,
@@ -395,9 +403,7 @@ async def reconciliation_recorded(
             reconciliation=ReconciliationReference(
                 decision_ref=decision_ref, outcome=outcome, reason=reason
             ),
-            goal_link=(
-                None if goal_id is None else GoalLink(goal_id=goal_id, goal_revision=goal_revision)
-            ),
+            goal_link=goal_link,
             run_refs=tuple(run_refs),
             actor_principal_id=actor_principal_id,
             actor_agent_id=actor_agent_id,
