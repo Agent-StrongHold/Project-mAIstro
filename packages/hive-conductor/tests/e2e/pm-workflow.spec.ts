@@ -15,7 +15,7 @@
  */
 
 import { test, expect, Page } from "@playwright/test";
-import { PM_PASS, loginAsPM, setupIfNeeded } from "./session";
+import { ADMIN_PASS, ADMIN_USER, PM_PASS, loginAsPM, setupIfNeeded } from "./session";
 
 async function elevateDagWrites(page: Page, taskId: string) {
   // DAG creation/runs and optimizer mutations are protected operations. The
@@ -177,14 +177,28 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     expect(body).toBeTruthy();
   });
 
-  test("10 — PM can view audit log", async ({ page }) => {
+  test("10 — canonical audit is admin-only and cursor paginated", async ({ page }) => {
     await loginAsPM(page);
-    const auditResp = await page.request.get("/v1/audit");
+    // ADR-073: canonical Sentinel decisions are not a personal legacy trail.
+    expect((await page.request.get("/v1/audit")).status()).toBe(403);
+    expect((await page.request.get("/v1/audit/export")).status()).toBe(403);
+    const login = await page.request.post("/v1/auth/login", {
+      data: { username: ADMIN_USER, password: ADMIN_PASS },
+    });
+    expect(login.status()).toBe(200);
+    const auditResp = await page.request.get("/v1/audit", { params: { limit: 1 } });
     expect(auditResp.status()).toBe(200);
-    // #358: bounded page envelope, not the whole corpus as a bare array.
     const auditPage = await auditResp.json();
-    expect(Array.isArray(auditPage.entries)).toBe(true);
-    expect(auditPage.entries.length).toBeGreaterThan(0);
+    expect(Object.keys(auditPage).sort()).toEqual(["entries", "next_cursor"]);
+    expect(auditPage.entries).toHaveLength(1);
+    expect(auditPage.next_cursor).toBeTruthy();
+    const following = await page.request.get("/v1/audit", {
+      params: { limit: 1, cursor: auditPage.next_cursor },
+    });
+    expect(following.status()).toBe(200);
+    const nextPage = await following.json();
+    expect(nextPage.entries).toHaveLength(1);
+    expect(nextPage.entries[0].id).not.toBe(auditPage.entries[0].id);
   });
 
   // Exercise the routed production component, with deterministic network order.
