@@ -6193,3 +6193,54 @@ condition forbids a Design-Studio-private reconciler. Acceptance criteria 1 and
 7–9 cannot be satisfied without it; 2, 4, 10 lack a Goal-revision writer; 3
 lacks any product consumer of #776; 5, 6, 13 lack the product path entirely.
 Verdict: **BLOCKED**, dependency-blocking.
+
+## Round 90 (job 9041ad29a1f24d62853333d360f9c17a) — re-verify at 58e8f44bd43e; prior job ab84eceb ended BLOCKED with a clean tree (nothing to salvage); driver checks=[] again, battery re-executed fresh
+
+### Inputs
+
+- Lane: develop base `cf4a562b6`, start head `58e8f44bd43e` (== round-89 end head).
+  Working tree clean, so the BLOCKED predecessor left nothing uncommitted to
+  salvage.
+- Driver `checks: []` — no `check-*.log` files in the job directory for the
+  third consecutive round; the battery below was executed directly.
+
+### Sync + blocker re-verification (all fresh at 58e8f44bd43e)
+
+- `git fetch origin` → `origin/develop` still `cf4a562b6` (== lane base ==
+  merge base). No sync, no conflict, no merge needed.
+- `grep -ril GoalReconcil packages/*/src` → exit 1; same over
+  `packages/hive-conductor/backend` → exit 1; no `.py` file in the repo
+  matches. #804/#805/#806 remain unlanded on **both** trees.
+- `design_service.py` consumption tokens (`workspace_agent|CreativeBrief|
+  GoalRevision|reconcil|delegate|subgoal`) → 0 matches.
+- `brief_chat.py:9-11` unchanged: "Nothing here writes a Goal; the draft is
+  what the Goal and CreativeBrief writers (#458, #774) will consume."
+- `subgoal` in hive backend → 0 files; `working_graph` in backend non-test
+  files → 0 consumers. Backend goal_revision hits remain backlog-spec fields.
+- Delegated/mixed-control test grep hits are the same attempt-level
+  DAG/graph-runner/canvas suites as round 89 — no product E2E drives a
+  delegated creative Goal branch under active reconciliation.
+
+### Battery (all EXIT 0 / green at 58e8f44bd43e)
+
+- `uv run ruff check .` EXIT 0; `uv run ruff format --check .` EXIT 0 (2842 files).
+- Vulture CI-args gate: `uv run python scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` EXIT 0,
+  1355 reviewed identities = 1355 findings. No ledger amendment (none needed;
+  this is not an exact-debt-ledger round).
+- Gates: suite-inventory, backlog-consistency, doc-links,
+  cross-package-imports, api-route-contracts, verify-monorepo-layout — all EXIT 0.
+- pytest: `maistro-design` 540 passed / 1 skipped; `maistro-core` ontology +
+  interop 76 passed; `working_graph -k` 35 passed.
+
+### Verdict — unchanged
+
+Both candidate repairs this round are again proven non-actions (develop
+unmoved; vulture green). The sole blocker is unchanged and external: the
+issue's own dependency list (#804/#805/#806 Goal reconciliation, #458 Goal
+writer, #774 CreativeBrief-to-Goal projection, product consumption of #776)
+is unlanded on develop and on this branch, while the stop condition forbids
+building a Design-Studio-private reconciler/Goal owner. Acceptance 1 and 7–9
+cannot exist without #804; 2/4/10 lack a Goal-revision writer; 3 lacks any
+#776 product consumer; 5/6/13 lack the product path. Verdict: **BLOCKED**,
+dependency-blocking (Refs #777).
