@@ -107,18 +107,13 @@ class EmbeddedRuntime(NamedTuple):
     see the read in ``_construct_runtime``). Runtime materialization (#840
     Slice 4) reuses all three so a definition materialized later stands behind
     exactly the construction and safety context the boot roster was seeded
-    with. ``governed_egress`` is the one canonical model-chat authority this
-    composition built over the Container (#718) -- the same authorities the
-    roster's clients cross -- so callers that run conductor work outside the
-    roster (the demo task backend) cross the same Invocation/quota boundary
-    instead of a second, unrecorded HTTP path.
+    with.
     """
 
     container: Any
     agents: dict[str, Any]
     llm: Any
     preamble: str
-    governed_egress: Any
 
 
 async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
@@ -138,7 +133,6 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     from services.tool_executor import dispatch_tool
 
     from maistro.agents.factory import _load_preamble, create_agents
-    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
     from maistro.types.config import AgentConfig, SecurityConfig
@@ -194,12 +188,6 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         api_key=llm_key or "sk-noop",
         model=model,
     )
-    # The deployment's gateway endpoint, built once for both the roster's
-    # model clients and this runtime's governed egress (#718) so the two
-    # doors cannot drift onto different credentials or bases.
-    model_endpoint = GatewayEndpoint(
-        base_url=llm_base or "http://localhost:4000/v1", api_key=llm_key
-    )
     prompt_manager = container.prompt_manager
 
     agents_dir = settings.maistro_agents_dir
@@ -224,11 +212,6 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
         tracer=None,
-        capability_effects=container.capability_effects,
-        provider_registry=container.provider_registry,
-        llm_router=container.llm_router,
-        model_endpoint=model_endpoint,
-        workspace_id=config.workspace_id,
         # The tool seam, closed (#840 Slice 5): an explicit, REAL executor
         # instead of the implicit None the bridge used to pass. The factory
         # still wires it only into agents whose identity declares tools, so
@@ -255,25 +238,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         preamble = _load_preamble(Path(agents_dir))
     except ConfigError:
         preamble = ""
-    # The one governed model-chat boundary this runtime exposes beyond the
-    # roster (#718): the same container authorities and the same deployment
-    # gateway endpoint the agents' clients got, so conductor work started
-    # outside the roster (demo task execution) records Invocation/quota
-    # evidence through the one canonical path instead of a private HTTP call.
-    from maistro.capabilities.model_chat import ModelChatEgress
-
-    governed_egress = ModelChatEgress(
-        container.capability_effects,
-        registry=container.provider_registry,
-        router=container.llm_router,
-        endpoint=model_endpoint,
-    )
     return EmbeddedRuntime(
         container=container,
         agents=agents,
         llm=llm_client,
         preamble=preamble,
-        governed_egress=governed_egress,
     )
 
 
@@ -298,28 +267,15 @@ class MaistroCoreBridge:
 
     def __init__(self) -> None:
         self._container: Any = None
-        self._governed_egress: Any = None
 
     @property
     def container(self) -> Any:
         """The wired maistro-core Container (holds the CapabilityRegistry), or None."""
         return self._container
 
-    @property
-    def governed_egress(self) -> Any:
-        """The runtime's canonical model-chat authority, or None before start.
-
-        The engine's demo task backend runs conductor work outside the agent
-        roster; this is the seam that keeps that work on the same Invocation
-        and quota ledger the roster's clients record on (#718), rather than a
-        second unrecorded HTTP path.
-        """
-        return self._governed_egress
-
     async def start(self, settings: Settings) -> None:
         runtime = await _construct_runtime(settings)
         self._container = runtime.container
-        self._governed_egress = runtime.governed_egress
         # Mutate the dict the container wired; never rebind the attribute.
         # `create_container` initializes an empty `agents` dict and hands that
         # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves

@@ -24,12 +24,6 @@ def _fake_container() -> SimpleNamespace:
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
-        # Governed-egress seams the #718 cutover reads off the Container and
-        # hands to the agent factory (create_agents wires GovernedLLMClient
-        # when all four effect/model authorities are present).
-        capability_effects=object(),
-        provider_registry=object(),
-        llm_router=object(),
         a2a_delegator=object(),
         agents={},
     )
@@ -68,9 +62,6 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
-        capability_effects=object(),
-        provider_registry=object(),
-        llm_router=object(),
         a2a_delegator=object(),
     )
     captured: dict[str, object] = {}
@@ -119,40 +110,6 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     assert captured["a2a_delegator"] is container.a2a_delegator
     assert list(container.agents) == ["wired-agent"]
     assert bridge.container is container
-
-
-@pytest.mark.asyncio
-async def test_start_exposes_governed_egress_over_the_container_authorities(monkeypatch):
-    """The runtime keeps one canonical model-chat authority for off-roster
-    conductor work (#718).
-
-    The demo task backend runs `run_task` outside the agent roster; the
-    egress the bridge exposes must be built over the same Container effect
-    context, provider registry, router and gateway endpoint the roster's
-    model clients got, or that work would cross a second, unrecorded HTTP
-    path while quota rows presented as complete.
-    """
-    container = _fake_container()
-    captured = _capture_runtime_seams(monkeypatch, container)
-
-    bridge = MaistroCoreBridge()
-    await bridge.start(Settings(maistro_agents_dir="agents", litellm_api_base="http://gw.test/v1"))
-
-    egress = bridge.governed_egress
-    assert egress is not None
-    # The same canonical authorities the Container wired.
-    assert egress._effects is container.capability_effects
-    assert egress._registry is container.provider_registry
-    assert egress._router is container.llm_router
-    # One gateway endpoint, shared with the roster's model clients rather
-    # than rebuilt -- the two doors cannot drift onto different credentials.
-    assert egress._endpoint is captured["model_endpoint"]
-
-
-@pytest.mark.asyncio
-async def test_governed_egress_is_none_before_start() -> None:
-    """The seam states its unstarted truth rather than manufacturing one."""
-    assert MaistroCoreBridge().governed_egress is None
 
 
 @pytest.mark.asyncio
@@ -232,9 +189,6 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
-        capability_effects=object(),
-        provider_registry=object(),
-        llm_router=object(),
         a2a_delegator=object(),
         agents=wired_agents,
     )

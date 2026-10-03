@@ -22,17 +22,7 @@ import pytest
 #: Tables the conformance tests write to, truncated between tests. Listed rather
 #: than discovered: truncating everything would take out the alembic version
 #: table and make the migrated database look unmigrated.
-#:
-#: (#718) `quota_invocation_evidence` must be truncated with its aggregate:
-#: `record_invocation` treats an existing evidence row as an already-counted
-#: retry and skips the aggregate projection. With the aggregate truncated but
-#: the evidence left behind, a later test re-recording the same invocation id
-#: (the #718 conformance bodies reuse `inv-reported`/`inv-unreported`) reads a
-#: never-projected aggregate and reports a measured 0% for a cycle that
-#: actually holds an unreported call — the false-complete failure the parent
-#: suite's list (#563 note) already warns about. The two lists must not drift.
 _SCRATCH_TABLES = (
-    "quota_invocation_evidence",
     "quota_usage_events",
     "quota_usage",
     "sessions",

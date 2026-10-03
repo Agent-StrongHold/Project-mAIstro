@@ -34,12 +34,6 @@ class UsageEvent:
     output_tokens: int = 0
     images: int = 0
     cost_usd: float = 0.0
-    # Provenance is populated by the canonical Invocation recorder. Legacy
-    # callback recording leaves these absent, but never invents identity.
-    invocation_id: str | None = None
-    provider: str | None = None
-    billing_cycle: str | None = None
-    usage_reported: bool | None = None
     # Generated once when the event is recorded and retained across restore.
     event_id: str = field(default_factory=lambda: uuid4().hex)
 
@@ -85,10 +79,6 @@ class InMemoryUsageLog:
         output_tokens: int = 0,
         images: int = 0,
         cost_usd: float = 0.0,
-        invocation_id: str | None = None,
-        provider: str | None = None,
-        billing_cycle: str | None = None,
-        usage_reported: bool | None = None,
         now: float | None = None,
         event_id: str | None = None,
     ) -> None:
@@ -101,10 +91,6 @@ class InMemoryUsageLog:
                 output_tokens=output_tokens,
                 images=images,
                 cost_usd=cost_usd,
-                invocation_id=invocation_id,
-                provider=provider,
-                billing_cycle=billing_cycle,
-                usage_reported=usage_reported,
                 event_id=event_id if event_id is not None else uuid4().hex,
             )
         )

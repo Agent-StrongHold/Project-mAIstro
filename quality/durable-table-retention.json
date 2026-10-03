@@ -241,6 +241,83 @@
       "notes": "Deleted only on an explicit DELETE /workspaces/{id}; lives as long as the tenant wants it. Needs an explicit indefinite_by_decision."
     },
     {
+      "table": "campaign_audit",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "audit",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "Campaign decisions (invariant 3, SPEC-092626-1831); purged with their campaign by SqliteCampaignStore.delete_campaign."
+    },
+    {
+      "table": "campaign_controls",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "pin-next / pause / exclude / human-only operator controls (AC-5); cleared controls are records, and every row is purged with its campaign."
+    },
+    {
+      "table": "campaign_item_records",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "Per-item mode override and explicit human priority, keyed by (campaign_id, item_id); never written onto the BacklogItem."
+    },
+    {
+      "table": "campaign_parks",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "user_content",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "Park records with evidence (AC-6); purged with their campaign."
+    },
+    {
+      "table": "campaign_usage",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "runtime_state",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "parent": "campaigns",
+      "notes": "Observed budget consumption per campaign; purged with its campaign."
+    },
+    {
+      "table": "campaigns",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/campaigns/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": "maistro.workspaces.campaigns.sqlite_store:SqliteCampaignStore.delete_campaign",
+      "issue": "#325",
+      "notes": "Versioned operator policy rows (SPEC-092626-1831). Deleted only by explicit operator action via SqliteCampaignStore.delete_campaign, which purges the bounded rows with it; lives as long as the tenant wants it. Needs an explicit indefinite_by_decision."
+    },
+    {
       "table": "canvas_blobs",
       "backends": [
         "postgres"
@@ -285,9 +362,22 @@
       "owner_module": "packages/maistro-core/src/maistro/capabilities/binding_store.py",
       "data_class": "configuration",
       "retention": "undecided",
-      "deletion_path": null,
+      "deletion_path": "maistro.capabilities.binding_store:SqliteBindingStore.revoke",
       "issue": "#325",
-      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+      "notes": "Operator revocation deletes the row (#1133) -- PgBindingStore.revoke does the same on the other backend. There is still no retention sweep, so rows a deployment never revokes accumulate for its life. The delete is a withdrawal of authority, not a purge, which is why this stays 'undecided'."
+    },
+    {
+      "table": "capability_binding_revocations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/capabilities/binding_store.py",
+      "data_class": "configuration",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#1133",
+      "notes": "Tombstones, kept forever on purpose. A revoked binding_id must never become registrable again (#846), so pruning this table re-grants every capability it forgets -- the one row whose deletion is itself the security failure. It holds an id and a timestamp, so it is bounded by how many bindings a deployment has ever revoked."
     },
     {
       "table": "capability_invocations",
@@ -702,19 +792,6 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "One row per provider per billing cycle; raw-vs-aggregate retention is still open on #325."
-    },
-    {
-      "table": "quota_invocation_evidence",
-      "backends": [
-        "postgres",
-        "sqlite"
-      ],
-      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_quota.py",
-      "data_class": "accounting",
-      "retention": "undecided",
-      "deletion_path": null,
-      "issue": "#325",
-      "notes": "One immutable evidence row per canonical physical Invocation (#718): invocation identity, provider, cycle, tokens, usage_reported. Projected into quota_usage aggregates; raw-vs-aggregate retention is the same open question as quota_usage on #325."
     },
     {
       "table": "quota_usage_events",

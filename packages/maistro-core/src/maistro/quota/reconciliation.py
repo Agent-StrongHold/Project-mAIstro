@@ -13,36 +13,16 @@ while the local log records *usage* (it rises as usage occurs) — comparing
 them directly would compare inverses. So reconciliation compares *deltas*
 over the interval between two checks: how much the provider's remaining
 balance dropped vs. how much the local log observed in the same window.
-
-Retirement note (#718): no shipped entry point calls `maybe_reconcile` yet.
-The explicit-verifier wiring is recorded as owed, not wired, in
-``quality/reachability-dispositions.json`` (id ``quota-verification``);
-ambient/header snapshots arrive only through the compatibility hook in
-``recorder.py``. The verifier-error isolation and mismatch surfacing here
-(metric, warning log, policy state transition) are the truthful failure
-semantics any future wiring inherits.
 """
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from maistro.observability.metrics import registry
 from maistro.quota.rate_profile import LimitUnit
 from maistro.quota.usage_log import InMemoryUsageLog
-
-logger = logging.getLogger("maistro.quota.reconciliation")
-reconciliation_mismatches_total = registry.counter(
-    "quota_reconciliation_mismatches_total",
-    "Provider quota deltas that disagree with canonical local usage",
-)
-reconciliation_errors_total = registry.counter(
-    "quota_reconciliation_errors_total",
-    "Provider quota verification attempts that were unavailable",
-)
 
 
 @dataclass(frozen=True)
@@ -145,16 +125,10 @@ class ReconciliationState:
 
 @dataclass(frozen=True)
 class ReconciliationOutcome:
-    matched: bool | None  # None on baseline or unavailable verification.
+    matched: bool | None  # None on the very first check ever — no prior baseline to compare
     local_delta: float
     provider_delta: float
-    snapshot: ProviderQuotaSnapshot | None
-    error: str | None = None
-
-    @property
-    def available(self) -> bool:
-        """Whether this outcome includes provider ground-truth evidence."""
-        return self.snapshot is not None and self.error is None
+    snapshot: ProviderQuotaSnapshot
 
 
 async def maybe_reconcile(
@@ -178,26 +152,7 @@ async def maybe_reconcile(
     if not state.policy.due(now - state.last_explicit_check_at):
         return None
 
-    try:
-        snapshot = await verifier.verify(scope_key)
-    except Exception as exc:
-        # Verification is observability, not the provider call itself. Preserve
-        # the caller's background loop and make the outage inspectable.
-        state.last_explicit_check_at = now
-        reconciliation_errors_total.inc()
-        logger.warning(
-            "quota verification unavailable for scope=%s error=%s",
-            scope_key,
-            type(exc).__name__,
-            exc_info=True,
-        )
-        return ReconciliationOutcome(
-            matched=None,
-            local_delta=0.0,
-            provider_delta=0.0,
-            snapshot=None,
-            error=f"{type(exc).__name__}: {exc}",
-        )
+    snapshot = await verifier.verify(scope_key)
     outcome = _compare_and_update(
         state,
         scope_key,
@@ -261,17 +216,6 @@ def _compare_and_update(
         local_delta = log.sum_between(scope_key, snapshot.unit, state.last_checked_at, now)
         provider_delta = state.last_remaining - snapshot.remaining
         matched = _within_tolerance(local_delta, provider_delta, tolerance, abs_floor)
-        if not matched:
-            reconciliation_mismatches_total.inc()
-            logger.warning(
-                "quota reconciliation mismatch for scope=%s unit=%s "
-                "local_delta=%s provider_delta=%s invocation_usage_is_authoritative=%s",
-                scope_key,
-                snapshot.unit.value,
-                local_delta,
-                provider_delta,
-                True,
-            )
         if update_policy:
             if matched:
                 state.policy.record_match()

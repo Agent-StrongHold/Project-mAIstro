@@ -222,59 +222,6 @@ async def test_unused_provider_reports_zero(quota_tracker: Any) -> None:
     assert await quota_tracker.get_usage_pct("never-called", "monthly", free_tokens=100) == 0.0
 
 
-async def test_incomplete_evidence_reports_no_percentage(quota_tracker: Any) -> None:
-    """#718's false-complete fix, pinned identically across all three
-    backends: a provider/cycle whose calls could not report usage must not
-    present a measured percentage. The old behavior returned ``0.0`` —
-    full headroom — for evidence that is explicitly incomplete, which read
-    as complete accounting while omitting spend. ``None`` is the truthful
-    answer: the ratio over the reported remainder is unknowable."""
-    await quota_tracker.record_invocation(
-        invocation_id="inv-unreported",
-        provider="anthropic",
-        billing_cycle="monthly",
-        input_tokens=0,
-        output_tokens=0,
-        usage_reported=False,
-    )
-
-    assert await quota_tracker.get_usage_pct("anthropic", "monthly", free_tokens=100) is None
-
-
-async def test_one_unreported_call_keeps_the_whole_cycle_unknown(quota_tracker: Any) -> None:
-    """Reported neighbours do not repair completeness: the unreported call's
-    tokens are still missing, so a ratio would understate spend while
-    presenting as complete."""
-    await quota_tracker.record_invocation(
-        invocation_id="inv-reported",
-        provider="anthropic",
-        billing_cycle="monthly",
-        input_tokens=25,
-        output_tokens=25,
-        usage_reported=True,
-    )
-    await quota_tracker.record_invocation(
-        invocation_id="inv-unreported",
-        provider="anthropic",
-        billing_cycle="monthly",
-        input_tokens=0,
-        output_tokens=0,
-        usage_reported=False,
-    )
-
-    assert await quota_tracker.get_usage_pct("anthropic", "monthly", free_tokens=200) is None
-
-
-async def test_read_path_does_not_fabricate_usage_rows(quota_tracker: Any) -> None:
-    """Reading a percentage for a provider that was never called is a
-    measured zero and must not materialize a zero usage row — dashboards
-    would list providers nobody ever called."""
-    await quota_tracker.get_usage_pct("never-called", "monthly", free_tokens=100)
-
-    rows = [r for r in await quota_tracker.get_all_usage() if r["provider"] == "never-called"]
-    assert rows == []
-
-
 # ── sessions ──────────────────────────────────────────────────────
 
 

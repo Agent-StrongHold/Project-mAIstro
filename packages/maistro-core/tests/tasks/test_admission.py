@@ -1212,7 +1212,10 @@ async def test_terminal_task_states_are_terminal_run_states(scoped, path, expect
 
 async def test_a_run_that_refuses_refuses_the_task_too(scoped) -> None:
     """The point of "the Run is authoritative": the receipt cannot record a
-    state the execution identity rejected."""
+    state the execution identity rejected — and since #849 it does not strand
+    there either. The refused *request* changes nothing on the Run; the
+    receipt then reconciles to the Run's actual terminal state instead of
+    staying QUEUED behind finished work forever."""
     _projects, runs, _root, project = scoped
     queue = TaskQueue(
         admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
@@ -1223,7 +1226,12 @@ async def test_a_run_that_refuses_refuses_the_task_too(scoped) -> None:
     await runs.transition_run(task.run_id or "", RunStatus.CANCELLED)
 
     assert await queue.update_status(task.task_id, TaskStatus.PLANNING) is False
-    assert queue.get(task.task_id).status is TaskStatus.QUEUED  # type: ignore[union-attr]
+    # The refusal itself held: the Run was not advanced by the refused request.
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None and run.status is RunStatus.CANCELLED
+    # And the receipt is a projection of that refusal, not a stranded QUEUED
+    # row (#849): it now reads the state its Run actually settled in.
+    assert queue.get(task.task_id).status is TaskStatus.CANCELLED  # type: ignore[union-attr]
 
 
 async def test_an_unwired_queue_transitions_as_before() -> None:

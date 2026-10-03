@@ -19,21 +19,6 @@ logger = logging.getLogger(__name__)
 _service: _EvolutionService | None = None
 
 
-def _default_chat_model() -> str:
-    """The deployment's default chat model alias, or "" (router selects).
-
-    The raw egress read ``settings.chat_default_model``; the governed path
-    keeps the same default so cutover does not change which model Evolve
-    selects — only whose authority the call crosses.
-    """
-    try:
-        from config import get_settings
-
-        return str(get_settings().chat_default_model or "")
-    except Exception:
-        return ""
-
-
 class EvolutionServiceNotStarted(RuntimeError):
     """The Evolve service has not been installed by application lifespan."""
 
@@ -357,98 +342,7 @@ class _EvolutionService:
         """
         return self._build_llm_call()
 
-    def _governed_llm_seam(self) -> tuple[Any, str] | None:
-        """The engine bridge's canonical model-chat authority + Workspace (#718).
-
-        Evolve's model calls were the last production egress still posting to
-        the gateway directly: no Binding, no Invocation, no quota evidence,
-        while per-provider ledger rows presented as complete. The seam mirrors
-        the demo task backend's rule: when the engine's bridge exposes
-        ``governed_egress`` over its Container, Evolve's llm_call crosses that
-        one authority — the authority itself, never a per-caller recording
-        callback. Only a process with no canonical authority at all (engine
-        absent, stub port, no Container) keeps the raw call, exactly like
-        ``LocalTaskBackend``'s executor fallback.
-        """
-        try:
-            from services.engine import get_engine
-
-            engine = get_engine()
-        except RuntimeError:
-            return None
-        port = getattr(engine, "agent_port", None) or getattr(engine, "_agent_port", None)
-        egress = getattr(port, "governed_egress", None)
-        container = getattr(port, "container", None)
-        workspace_id = getattr(getattr(container, "config", None), "workspace_id", None)
-        if egress is None or not workspace_id:
-            return None
-        return egress, str(workspace_id)
-
     def _build_llm_call(self):
-        seam = self._governed_llm_seam()
-        if seam is not None:
-            return self._build_governed_llm_call(*seam)
-        return self._build_raw_llm_call()
-
-    def _build_governed_llm_call(self, egress: Any, workspace_id: str):
-        """One Evolve model call across Binding -> Invocation -> quota (#718).
-
-        The durable Evolve Run's identity lives in the canonical Run store
-        (``run_canonical_evolution_cycle`` admits it); the Invocation
-        correlation ids here name the cycle and each physical call, so every
-        completed effect records exactly once on the quota ledger through the
-        same terminalization hook the roster and the conductor use.
-        """
-        from uuid import uuid4
-
-        from maistro.capabilities.binding import Binding
-        from maistro.capabilities.model_chat import ModelChatRequest
-        from maistro.capabilities.providers.llm_gateway import (
-            DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            MODEL_CHAT_CAPABILITY,
-        )
-
-        cycle_number = self._cycle_count + 1
-
-        async def _llm_call(messages: list[dict] | str, **kwargs: Any) -> str:
-            if isinstance(messages, str):
-                messages = [{"role": "user", "content": messages}]
-            result = await egress.complete(
-                binding=Binding(
-                    workspace_id=workspace_id,
-                    # The same Project the roster's clients and the conductor
-                    # executor authorize under: the deployment's bootstrapped
-                    # gateway credential is registered in that scope, and
-                    # acquire fails closed outside it.
-                    project_id="agent-runtime",
-                    capability=MODEL_CHAT_CAPABILITY,
-                    credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
-                ),
-                run_id=f"evolve-cycle-{cycle_number}",
-                node_run_id=f"evolve-node-{cycle_number}",
-                attempt_id=f"evolve-attempt-{uuid4().hex}",
-                effect_key=f"evolve-llm-{uuid4().hex}",
-                request=ModelChatRequest(
-                    model=kwargs.get("model") or _default_chat_model(),
-                    messages=[dict(message) for message in messages],
-                    temperature=kwargs.get("temperature", 0.3),
-                    max_tokens=kwargs.get("max_tokens", 4096),
-                ),
-            )
-            body = result.body
-            choices = body.get("choices") if isinstance(body, dict) else None
-            if not isinstance(choices, list) or not choices:
-                raise RuntimeError("evolve: governed gateway returned no choices")
-            message = choices[0].get("message") if isinstance(choices[0], dict) else None
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, str):
-                raise RuntimeError("evolve: governed gateway returned no content")
-            return content
-
-        return _llm_call
-
-    @staticmethod
-    def _build_raw_llm_call():
         try:
             from config import get_settings
 

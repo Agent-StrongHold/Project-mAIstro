@@ -72,54 +72,6 @@ class TestRankModelsByHeadroom:
         assert mq.used_pct == pytest.approx(0.5)
         assert mq.headroom_tokens == 500_000
 
-    @pytest.mark.asyncio
-    async def test_unreported_usage_is_unknown_not_zero_with_full_headroom(self):
-        """#718 false-complete fix: the verifier's executed reproduction — after
-        ``record_invocation(..., usage_reported=False)`` the model presented
-        ``used_pct=0.0`` and full ``headroom_tokens`` (100 free tokens, 0
-        used). Incomplete evidence must instead present ``used_pct=None`` and
-        no assertable headroom, and rank behind every model whose evidence is
-        complete."""
-        tracker = InMemoryQuotaTracker()
-        # One governed call whose provider reported no usage evidence.
-        await tracker.record_invocation("inv-unreported", "openai", CYCLE, 0, 0, False)
-        # A busy-but-complete provider: 90% of its budget measurably used.
-        await tracker.record_usage("anthropic", CYCLE, 450_000, 0)
-
-        ranked = await rank_models_by_headroom(
-            ["openai/unknown", "anthropic/busy"],
-            tracker,
-            billing_cycle=CYCLE,
-            free_tokens_per_provider={"openai": 100, "anthropic": 500_000},
-        )
-
-        unknown = next(m for m in ranked if m.model == "openai/unknown")
-        assert unknown.used_pct is None
-        assert unknown.headroom_tokens == 0
-        # The measurably-busy provider still wins: unknown evidence must never
-        # be scheduled ahead of a known budget state.
-        assert ranked[0].model == "anthropic/busy"
-        assert ranked[-1].model == "openai/unknown"
-
-    @pytest.mark.asyncio
-    async def test_one_unreported_call_keeps_used_pct_unknown(self):
-        """Reported neighbours do not repair completeness: the unreported
-        call's tokens are still missing, so the provider's ratio stays
-        unknown rather than understating spend as a measured value."""
-        tracker = InMemoryQuotaTracker()
-        await tracker.record_invocation("inv-reported", "openai", CYCLE, 40, 40, True)
-        await tracker.record_invocation("inv-unreported", "openai", CYCLE, 0, 0, False)
-
-        (mq,) = await rank_models_by_headroom(
-            ["openai/mixed"],
-            tracker,
-            billing_cycle=CYCLE,
-            free_tokens_per_provider={"openai": 1_000_000},
-        )
-
-        assert mq.used_pct is None
-        assert mq.headroom_tokens == 0
-
 
 class TestQuotaBurnScheduler:
     @pytest.mark.asyncio
@@ -150,24 +102,6 @@ class TestQuotaBurnScheduler:
         )
 
         assert chosen == ranked[0].model == "anthropic/idle"
-
-    @pytest.mark.asyncio
-    async def test_next_model_avoids_provider_with_incomplete_evidence(self):
-        """quota-burn must not route free-tier burn toward a provider whose
-        budget state is unknown (#718): the scheduler picks the complete-
-        evidence provider even when the incomplete one would have shown more
-        idle headroom under the old false-complete behavior."""
-        tracker = InMemoryQuotaTracker()
-        await tracker.record_invocation("inv-unreported", "openai", CYCLE, 0, 0, False)
-        await tracker.record_usage("anthropic", CYCLE, 450_000, 0)  # 90% used
-
-        scheduler = QuotaBurnScheduler(
-            tracker,
-            billing_cycle=CYCLE,
-            free_tokens_per_provider=FREE_TOKENS,
-        )
-
-        assert await scheduler.next_model(["openai/unknown", "anthropic/busy"]) == "anthropic/busy"
 
     @pytest.mark.asyncio
     async def test_record_attempt_attributes_usage_to_models_provider(self):

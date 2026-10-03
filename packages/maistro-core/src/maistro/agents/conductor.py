@@ -25,12 +25,6 @@ from pydantic import ValidationError
 from maistro.agents.circuit_breaker import CircuitOpenError, llm_circuit
 from maistro.agents.prompts import CONDUCTOR_SYSTEM
 from maistro.agents.types import ConductorOutput, LLMProviderError, PlanOutput, SubTask
-from maistro.capabilities.binding import Binding
-from maistro.capabilities.model_chat import ModelChatEgress, ModelChatRequest
-from maistro.capabilities.providers.llm_gateway import (
-    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-    MODEL_CHAT_CAPABILITY,
-)
 from maistro.config.model_resolver import resolve_model
 from maistro.config.models import DEFAULT_TIERS, Tier, TierConfig
 from maistro.config.settings import get_settings
@@ -38,9 +32,6 @@ from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.http import shared_client
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
-from maistro.quota.default_tracker import get_default_quota_tracker
-from maistro.quota.usage_log import get_default_usage_log
-from maistro.quota.usage_report import reported_usage
 from maistro.tasks.models import TaskCreate
 
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
@@ -102,145 +93,21 @@ def build_conductor(
     )
 
 
-async def _governed_completion(
-    call: ConductorCall,
-    user_prompt: str,
-    max_tokens: int,
-    governed_egress: ModelChatEgress,
-    invocation_identity: tuple[str, str, str] | None,
-    invocation_number: int,
-    workspace_id: str,
-    project_id: str,
-) -> str:
-    """Run one conductor completion across canonical Binding -> Invocation (#718).
-
-    The Binding names the deployment's registered default gateway key:
-    Binding-scoped credential routing (#1091) refuses a Binding that names no
-    credential, and acquire still fails closed unless that ref exists in
-    exactly this Workspace/Project scope, so naming it widens nothing.
-    """
-    run_id, node_run_id, attempt_id = invocation_identity or (
-        f"conductor-run-{id(call)}",
-        "conductor-node",
-        "conductor-attempt",
-    )
-    result = await governed_egress.complete(
-        binding=Binding(
-            workspace_id=workspace_id,
-            project_id=project_id,
-            capability=MODEL_CHAT_CAPABILITY,
-            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
-        ),
-        run_id=run_id,
-        node_run_id=node_run_id,
-        attempt_id=attempt_id,
-        effect_key=f"conductor-llm-{invocation_number}",
-        request=ModelChatRequest(
-            model=call.model,
-            messages=[
-                {"role": "system", "content": call.system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"},
-        ),
-    )
-    body = result.body
-    choices = body.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise LLMProviderError("conductor: governed gateway returned no choices")
-    message = choices[0].get("message") if isinstance(choices[0], dict) else None
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, str):
-        raise LLMProviderError("conductor: governed gateway returned no content")
-    return content
-
-
-async def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
-    """Record one raw-gateway call's usage evidence on the process usage log.
-
-    #718: the canonical recording path is Invocation terminalization, and the
-    production server crosses it via ``governed_egress``. A composition that
-    crosses no canonical authority (e.g. a demo bridge with no egress) still
-    leaves evidence here — actual tokens when the gateway reported usage, an
-    explicit ``usage_reported=False`` marker when it did not. Never a silent
-    zero, and never a fabricated Invocation identity: the event carries
-    provider provenance only.
-
-    When the process registered a quota ledger (the Container composition
-    root sets the process default), the same evidence also reaches that
-    ledger — reported tokens as usage, a missing report as an unreported
-    marker — so a process that carries a ledger can never present complete
-    quota percentages while omitting this call class. The ledger write is
-    isolated: a failing ledger must not take down a call that already
-    succeeded.
-
-    Returns whether the gateway reported usage, for the caller's log line.
-    """
-    reported = reported_usage(data)
-    input_tokens, output_tokens = reported or (0, 0)
-    get_default_usage_log().record(
-        model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        provider=model,
-        usage_reported=reported is not None,
-    )
-    tracker = get_default_quota_tracker()
-    if tracker is not None:
-        # Same billing-cycle default as CanonicalInvocationUsageRecorder, so
-        # ungoverned evidence lands in the provider/cycle rows the ledger's
-        # readers already reconcile. This call has no Invocation identity by
-        # construction (egress was None), so it never charges through
-        # ``record_invocation`` — usage tokens via the event-log path, a
-        # missing report via the unreported marker.
-        try:
-            if reported is not None:
-                await tracker.record_usage(model, "monthly", input_tokens, output_tokens)
-            else:
-                record_unreported = getattr(tracker, "record_unreported", None)
-                if record_unreported is not None:
-                    await record_unreported(model, "monthly")
-        except Exception:
-            await logger.awarning(
-                "conductor_ungoverned_quota_ledger_write_failed", model=model, exc_info=True
-            )
-    return reported is not None
-
-
 async def _call_gateway(
     call: ConductorCall,
     user_prompt: str,
     max_tokens: int,
     timeout: float,
     on_response: OnResponseHook | None = None,
-    governed_egress: ModelChatEgress | None = None,
-    invocation_identity: tuple[str, str, str] | None = None,
-    invocation_number: int = 0,
-    workspace_id: str = "default",
-    project_id: str = "agent-runtime",
 ) -> str:
     """POST one chat-completion to the OpenAI-compatible gateway; return the message content.
 
-    The production server supplies ``governed_egress`` so this call crosses
-    canonical Binding -> Invocation. Without it, the raw HTTP fallback below
-    still records usage evidence on the process usage log (#718) — an
-    explicitly marked ungoverned call, never invisible usage. ``on_response``
-    is retained only for legacy callers that have not migrated to that
-    authority.
+    `on_response`, if given, is invoked with the parsed body and the raw response
+    right before `content` is returned — the same seam `pm_llm_call.maistro_llm_call`
+    exposes for `maistro.quota.recorder` to hook into. Optional and additive; a
+    failing hook is logged and swallowed since instrumentation on an already-
+    successful call must never turn into a failure the caller has to handle.
     """
-    if governed_egress is not None:
-        return await _governed_completion(
-            call,
-            user_prompt,
-            max_tokens,
-            governed_egress,
-            invocation_identity,
-            invocation_number,
-            workspace_id,
-            project_id,
-        )
-
     if not call.base_url:
         raise LLMProviderError(
             "conductor: no gateway base_url configured (set MAISTRO_LLM_BASE_URL)"
@@ -260,17 +127,6 @@ async def _call_gateway(
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-    # This physical call crossed no canonical Invocation authority, so the
-    # canonical recorder never sees it. Record its usage evidence on the
-    # process usage log and the process default quota ledger (when one is
-    # registered) and say so loudly: an ungoverned call class must stay
-    # visible instead of silently shrinking the quota ledger (#718).
-    usage_reported = await _record_ungoverned_fallback_usage(call.model, data)
-    await logger.awarning(
-        "conductor_ungoverned_llm_call",
-        model=call.model,
-        usage_reported=usage_reported,
-    )
     if on_response is not None:
         try:
             on_response(data, resp)
@@ -303,10 +159,6 @@ async def _run_with_retry(
     tier_config: TierConfig,
     max_tokens: int,
     on_response: OnResponseHook | None = None,
-    governed_egress: ModelChatEgress | None = None,
-    invocation_identity: tuple[str, str, str] | None = None,
-    workspace_id: str = "default",
-    project_id: str = "agent-runtime",
 ) -> ConductorOutput:
     """Call the gateway with timeout and retry logic for transient failures."""
     if not llm_circuit.allow_request():
@@ -318,18 +170,7 @@ async def _run_with_retry(
         try:
             llm_requests_total.inc()
             raw = await asyncio.wait_for(
-                _call_gateway(
-                    call,
-                    prompt,
-                    max_tokens,
-                    tier_config.timeout,
-                    on_response,
-                    governed_egress,
-                    invocation_identity,
-                    attempt,
-                    workspace_id,
-                    project_id,
-                ),
+                _call_gateway(call, prompt, max_tokens, tier_config.timeout, on_response),
                 timeout=tier_config.timeout,
             )
             result = _parse_json_output(raw)
@@ -371,15 +212,7 @@ async def _run_with_retry(
 
 
 @trace_agent("conductor")
-async def run_task(
-    task: TaskCreate,
-    on_response: OnResponseHook | None = None,
-    *,
-    governed_egress: ModelChatEgress | None = None,
-    invocation_identity: tuple[str, str, str] | None = None,
-    workspace_id: str = "default",
-    project_id: str = "agent-runtime",
-) -> ConductorOutput:
+async def run_task(task: TaskCreate, on_response: OnResponseHook | None = None) -> ConductorOutput:
     """Execute a full engineering task through the conductor pipeline.
 
     This is the main entry point for task execution. It:
@@ -388,9 +221,8 @@ async def run_task(
     3. Runs the agent with timeout and retry logic
     4. Returns structured output
 
-    ``governed_egress`` is forwarded on every physical retry, and each retry
-    gets its own canonical Invocation effect key. ``on_response`` remains a
-    compatibility hook for legacy callers only.
+    `on_response`, if given, is forwarded to `_call_gateway` on every retry attempt —
+    the same additive quota-recording seam `pm_llm_call.maistro_llm_call` exposes.
 
     If maistro_dry_run is set in settings, returns a mock result without calling any LLM.
     """
@@ -438,15 +270,7 @@ async def run_task(
     )
 
     result = await _run_with_retry(
-        call,
-        prompt,
-        tier_config,
-        max_tokens=max_tokens,
-        on_response=on_response,
-        governed_egress=governed_egress,
-        invocation_identity=invocation_identity,
-        workspace_id=workspace_id,
-        project_id=project_id,
+        call, prompt, tier_config, max_tokens=max_tokens, on_response=on_response
     )
     await logger.ainfo("conductor_complete", success=result.success)
     return result

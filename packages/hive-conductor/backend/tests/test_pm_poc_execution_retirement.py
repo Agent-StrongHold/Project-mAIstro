@@ -24,7 +24,4 @@ def test_demo_engine_has_one_executor_regardless_of_retired_poc_env() -> None:
 def test_engine_keeps_canonical_demo_executor() -> None:
     source = _ENGINE.read_text(encoding="utf-8")
     assert "from maistro.agents.conductor import run_task" in source
-    # Since #718 the executor is the governed closure over that same
-    # canonical `run_task`: it supplies the bridge's canonical effect
-    # authority (#718), never a product-specific or POC executor.
-    assert "return await run_task(" in source
+    assert "executor=run_task" in source
