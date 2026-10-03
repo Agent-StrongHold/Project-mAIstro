@@ -29,6 +29,7 @@ from maistro.graph.durable_runs import (
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
 from maistro.runs.model import ExecutionLease
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _Empty(BaseModel):
@@ -74,6 +75,7 @@ def _crashed_record(
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.RUNNING,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     node_run = NodeRun(
         node_run_id=f"{run_id}-node",

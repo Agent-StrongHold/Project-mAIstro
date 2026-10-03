@@ -38,6 +38,7 @@ from maistro.runs.chat_execution import DEFAULT_CHAT_LEASE_TTL
 from maistro.runs.model import TERMINAL_RUN_STATUSES, AttemptStatus, Run, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.security._types import GateResult
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 from maistro_server.api import chat_completions as chat_api
 from maistro_server.conductor_agent import CONDUCTOR_AGENT_NAME, ConductorAgent
@@ -930,8 +931,11 @@ async def test_a_turn_over_the_active_run_ceiling_is_a_429_not_an_unrecorded_ans
 ) -> None:
     """Backpressure is the one admission failure this door does not answer
     through (#1182): answering would run the turn unbounded and unrecorded."""
-    for _ in range(32):
-        await container.chat_admitter.admit([{"role": "user", "content": "busy"}])  # type: ignore[attr-defined]
+    for index in range(32):
+        await container.chat_admitter.admit(  # type: ignore[attr-defined]
+            [{"role": "user", "content": "busy"}],
+            actor_principal_id=f"{DEFAULT_TEST_ACTOR_PRINCIPAL_ID}-{index}",
+        )
 
     with patch(RUN_TASK, AsyncMock(return_value=_output("42"))) as run_task:
         response = client.post(
