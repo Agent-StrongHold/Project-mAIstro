@@ -28,6 +28,7 @@ import pytest
 import services.chat_completion as service
 from models.schemas import ChatCompletionRequest
 from pydantic import ValidationError
+from maistro.identity import Principal
 from routes import chat, voice
 
 # Model-reaching turns are admitted as canonical chat Runs (#1037).
@@ -45,8 +46,8 @@ class RecordingLLM:
 
 
 class FakeRequest:
-    def __init__(self) -> None:
-        self.state = SimpleNamespace(user={"id": "user-1"})
+    def __init__(self, user_id: str = "user-1") -> None:
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id))
 
 
 def _utterance(**kw: str) -> voice.VoiceIntentBody:

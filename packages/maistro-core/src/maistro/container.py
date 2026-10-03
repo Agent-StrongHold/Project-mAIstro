@@ -746,7 +746,11 @@ class Container:
         run: Run | None = None
         try:
             admitter = self.chat_admitter
-            principal = getattr(auth, "user_id", None) or None
+            principal = (
+                getattr(auth, "user_id", None) or getattr(auth, "username", None) or None
+            )
+            if principal is not None:
+                principal = str(principal).strip() or None
             try:
                 run = await admitter.admit(
                     messages,

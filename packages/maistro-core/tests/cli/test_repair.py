@@ -15,6 +15,7 @@ import aiosqlite
 import pytest
 
 from maistro.cli._repair import _open_store, _report, attempt_outputs
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.graph import Graph, Node
 from maistro.runs.model import (
     AcceptedNodeOutcome,
@@ -68,7 +69,8 @@ class TestTheStoreItOpens:
                     project_id=project.project_id,
                     name="G",
                     nodes=[Node(node_id="node-1", node_type="agent")],
-                )
+                ),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
             assert len(await store.list_by_status(RunStatus.CREATED)) == 1
         finally:
@@ -152,7 +154,8 @@ class TestApplyIsTheOnlyThingThatWrites:
                     project_id=project.project_id,
                     name="G",
                     nodes=[Node(node_id="node-1", node_type="agent")],
-                )
+                ),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
             node_run = await store.create_node_run(run.run_id, node_id="node-1")
             await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)

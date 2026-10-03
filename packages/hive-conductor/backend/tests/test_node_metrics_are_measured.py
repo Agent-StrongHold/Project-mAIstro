@@ -539,7 +539,7 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
             patch.setattr(
                 "services.dag_agents.record_run_completion", lambda r: seen.append(r) or 1
             )
-            await run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+            await run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id='test-user')
         assert len(seen) == 1
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
@@ -559,8 +559,8 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
         with pytest.MonkeyPatch.context() as patch, caplog.at_level(logging.WARNING):
             patch.setattr("services.dag_agents.record_run_completion", _boom)
             _graph, record = await run_registered_dag(
-                synth_dag_id, workspace_id="w1", project_id="p1"
-            )
+                synth_dag_id, workspace_id="w1", project_id="p1",
+                user_id='test-user')
         assert record is not None, "the run still returns its record"
         assert "node_metrics_not_recorded" in caplog.text
 
@@ -585,7 +585,7 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
         with pytest.MonkeyPatch.context() as patch, caplog.at_level(logging.INFO):
             patch.setattr(dag_agents, "run_durable_graph", _paused)
             patch.setattr(dag_agents, "record_run_completion", lambda r: seen.append(r) or 1)
-            await dag_agents.run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+            await dag_agents.run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id='test-user')
         assert seen == [], "a partial record must not enter the aggregate"
         assert "node_metrics_deferred" in caplog.text
 

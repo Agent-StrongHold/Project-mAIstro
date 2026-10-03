@@ -48,7 +48,7 @@ def test_get_registry_is_shared_and_seeded() -> None:
 
 def test_run_registered_dag_unknown_id_raises_key_error() -> None:
     with pytest.raises(KeyError):
-        asyncio.run(run_registered_dag("no-such-dag", workspace_id="w1", project_id="p1"))
+        asyncio.run(run_registered_dag("no-such-dag", workspace_id="w1", project_id="p1", user_id='test-user'))
 
 
 def test_standalone_registered_human_work_is_refused() -> None:
@@ -64,7 +64,7 @@ def test_standalone_registered_human_work_is_refused() -> None:
     )
     try:
         with pytest.raises(RuntimeError, match="canonical graph execution spine"):
-            asyncio.run(run_registered_dag("synth-human", workspace_id="w1", project_id="p1"))
+            asyncio.run(run_registered_dag("synth-human", workspace_id="w1", project_id="p1", user_id='test-user'))
     finally:
         registry.deregister("synth-human")
 
@@ -87,13 +87,13 @@ def test_configure_hook_touches_the_instantiated_graph_only(synth_dag_id: str) -
         graph.nodes[0].inputs["extra"] = "value"
 
     graph, record = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", configure=configure)
+        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", configure=configure, user_id='test-user')
     )
     assert graph.nodes[0].inputs["extra"] == "value"
     assert record.run.status is RunStatus.COMPLETED
     # The registered snapshot is untouched — a later run starts clean.
     graph_again, _ = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id='test-user')
     )
     assert "extra" not in graph_again.nodes[0].inputs
 
@@ -329,7 +329,7 @@ def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_
     assert dag_agents.get_run_store() is container.graph_run_store
 
     _graph, record = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w-spine", project_id=root.project_id)
+        run_registered_dag(synth_dag_id, workspace_id="w-spine", project_id=root.project_id, user_id='test-user')
     )
 
     canonical = asyncio.run(run_store.get_run(record.run_id))
