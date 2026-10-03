@@ -52,6 +52,19 @@ def _rev_parse(cwd: Path, ref: str) -> str:
     return result.stdout.strip()
 
 
+def _rename_base_branch(workspace_ref: Path, name: str) -> None:
+    """Rename the initial branch to `name`, whatever `init.defaultBranch` says.
+
+    `create_shadow_workspace` runs a bare `git init`, so the initial branch is
+    host configuration: `master` on a default install, `main` wherever the
+    developer (or CI image) has set `init.defaultBranch`. A plain
+    `git branch main` therefore dies with "a branch named 'main' already
+    exists" on the latter. `branch -M` is idempotent either way, so the test
+    owns the base branch name instead of inheriting it.
+    """
+    _git(["branch", "-M", name], cwd=workspace_ref)
+
+
 def _make_wave_branch(
     workspace_ref: Path, base_branch: str, wave_id: str, files: dict[str, str]
 ) -> str:
@@ -69,7 +82,7 @@ class TestFanIn:
     def test_disjoint_waves_merge_cleanly(self, tmp_path: Path) -> None:
         workspace = create_shadow_workspace(tmp_path, "task1")
         workspace_ref = workspace.workspace_ref
-        _git(["branch", "main"], cwd=workspace_ref)
+        _rename_base_branch(workspace_ref, "main")
 
         sha1 = _make_wave_branch(workspace_ref, "main", "w1", {"a.txt": "a"})
         sha2 = _make_wave_branch(workspace_ref, "main", "w2", {"b.txt": "b"})
@@ -88,7 +101,7 @@ class TestFanIn:
     def test_conflicting_waves_produce_conflict_record(self, tmp_path: Path) -> None:
         workspace = create_shadow_workspace(tmp_path, "task2")
         workspace_ref = workspace.workspace_ref
-        _git(["branch", "main"], cwd=workspace_ref)
+        _rename_base_branch(workspace_ref, "main")
 
         sha1 = _make_wave_branch(workspace_ref, "main", "w1", {"shared.txt": "from-w1"})
         sha2 = _make_wave_branch(workspace_ref, "main", "w2", {"shared.txt": "from-w2"})
@@ -109,7 +122,7 @@ class TestFanIn:
     def test_failed_wave_excluded_and_listed(self, tmp_path: Path) -> None:
         workspace = create_shadow_workspace(tmp_path, "task3")
         workspace_ref = workspace.workspace_ref
-        _git(["branch", "main"], cwd=workspace_ref)
+        _rename_base_branch(workspace_ref, "main")
 
         sha1 = _make_wave_branch(workspace_ref, "main", "w1", {"a.txt": "a"})
 
@@ -126,7 +139,7 @@ class TestFanIn:
     def test_zero_succeeded_waves_returns_base_sha(self, tmp_path: Path) -> None:
         workspace = create_shadow_workspace(tmp_path, "task4")
         workspace_ref = workspace.workspace_ref
-        _git(["branch", "main"], cwd=workspace_ref)
+        _rename_base_branch(workspace_ref, "main")
         base_sha = _rev_parse(workspace_ref, "main")
 
         waves = (WaveHandle(wave_id="w1", branch="nope", status="running", head_sha=None),)
