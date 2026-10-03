@@ -26,6 +26,7 @@ from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.model import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class TagsOutput(RootModel[list[str]]):
@@ -54,6 +55,7 @@ def _record_with_attempt(result: object) -> DurableRunRecord:
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     node_run = NodeRun(run_id=run.run_id, node_id="node-1", ordinal=1)
     attempt = Attempt(
