@@ -57,13 +57,15 @@ PERMANENT_FAILURE_CLASSES = frozenset({JobFailureClass.AUTH})
 def classify_failure(exc: BaseException) -> JobFailureClass:
     """Classify a job failure from the single keyword match ``_sanitise_error`` uses.
 
-    Order matters and mirrors the sanitiser: rate-limit and availability
+    A typed ``TimeoutError`` takes precedence, matching the sanitiser; opaque
+    execution IDs can contain HTTP-like digits without being provider errors.
+    For untyped errors, order matters: rate-limit and availability
     markers are checked before the authentication markers because a provider
     body may legitimately contain both (a 503 page behind an authenticated
-    gateway is an availability fault, not an auth one). ``TimeoutError`` —
-    including the canonical Runtime's deadline error, whose text is an
-    execution id the keyword match cannot see — is classified structurally.
+    gateway is an availability fault, not an auth one).
     """
+    if isinstance(exc, TimeoutError):
+        return JobFailureClass.TIMEOUT
     raw = str(exc)
     lower = raw.lower()
     if "429" in raw or "rate_limit" in lower or "too many" in lower or "ratelimit" in lower:
@@ -72,7 +74,7 @@ def classify_failure(exc: BaseException) -> JobFailureClass:
         return JobFailureClass.UNAVAILABLE
     if "401" in raw or "403" in raw or "unauthorized" in lower or "forbidden" in lower:
         return JobFailureClass.AUTH
-    if isinstance(exc, TimeoutError) or "timeout" in lower or "timed out" in lower:
+    if "timeout" in lower or "timed out" in lower:
         return JobFailureClass.TIMEOUT
     return JobFailureClass.UNKNOWN
 

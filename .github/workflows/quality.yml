@@ -53,7 +53,7 @@ on:
     # tests/test_branch_policy.py, so a push to any documented branch receives
     # this gate set — a `feature/*` or bare-name branch is not a documented
     # shape and gets its gates at PR time, where pull_request is unfiltered.
-    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, chore/*]
+    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, docs/*, chore/*]
 
 # See the rationale in ci.yml: supersede candidate runs, let protected-branch
 # pushes finish so their pass/fail record survives.
@@ -786,6 +786,36 @@ jobs:
       # for the four findings that motivated it.
       - name: enumeration coverage (derived control lists — ratchet)
         run: uv run python scripts/check_enumerations.py
+
+      # The Workspace cutover only deprecates the old Conductor surfaces if
+      # they can't pick up new consumers while their replacements land, so
+      # quality/workspace-retirement.json only shrinks (#1046, cutover S0.1).
+      # Its importer lists are judged against the merge base, so it needs this
+      # job's full history.
+      - name: workspace retirement (retiring Conductor surfaces gain no importers — ratchet)
+        run: uv run python scripts/check-workspace-retirement.py
+
+      # Default-allow route prefixes are the seam Workspace cutover P0.2 closes:
+      # every authenticated /v1/{segment} mount must declare a permission or a
+      # reviewed exempt_reason before Workspace surfaces land (#53 AC-P2). Same
+      # app introspection as the enumeration check above, so it lives beside it.
+      - name: route permissions (every authenticated prefix declared — ratchet)
+        run: uv run python scripts/check-route-permissions.py
+
+      # Parallel HTTP principal types and dict-shaped request.state.user are
+      # how the last three Conductor attempts kept diverging identity. P0.1
+      # ratchets them to one canonical Principal in maistro-core (#53). Its
+      # baseline is read from the merge base, so it needs this job's history.
+      - name: principal identity (one HTTP principal surface — ratchet)
+        run: uv run python scripts/check-principal-identity.py
+
+      # Workspace cutover P0.3 closes the hand-typed client seam: HTTP must
+      # eventually go through one generated client and entity shapes must come
+      # from types.gen.ts (#1048 AC-P3). Until then this ratchet banks the
+      # current raw-fetch and hand-typed declaration debt and refuses growth.
+      # Its baseline is read from the merge base, so it needs this job's history.
+      - name: frontend typed client (raw fetch + hand-typed entities — ratchet)
+        run: uv run python scripts/check-frontend-typed-client.py
 
       # The vendored IFEval grader and corpus are the *exam* the RSI loop is
       # scored against, so they must stay byte-comparable to what Google

@@ -143,13 +143,16 @@ async def _shutdown_background_services() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    import asyncio
     import logging as _logging
 
+    from services.audit_bridge import bind_audit_event_loop
     from settings_defaults import apply_default_settings_if_needed
 
     from maistro.security.transport import assert_session_transport_is_safe
 
     _lifespan_log = _logging.getLogger("hive.lifespan")
+    bind_audit_event_loop(asyncio.get_running_loop())
 
     # Before anything else, and deliberately NOT inside a try/except (#369).
     # Every other start-up step below degrades on failure, because a Conductor
@@ -377,7 +380,10 @@ def create_app() -> FastAPI:
 
         static_root = STATIC_DIR.resolve()
 
-        @app.get("/{full_path:path}")
+        # Out of the schema: it is not an API, and listing it would make the
+        # OpenAPI document (and `frontend/src/api/types.gen.ts`) depend on
+        # whether the frontend happens to be built.
+        @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str):
             # Do not return the SPA shell for unknown API paths (avoids JSON parse errors in the UI).
             if full_path.startswith("v1/"):
