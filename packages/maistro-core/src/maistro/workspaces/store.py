@@ -49,7 +49,9 @@ class WorkspaceStore(Protocol):
         """Create a Workspace, preserving identity/timestamps only for convergence imports."""
         ...
 
-    async def get(self, workspace_id: str, *, principal_id: str | None = None) -> Workspace | None: ...
+    async def get(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> Workspace | None: ...
 
     async def update(
         self, workspace: Workspace, *, principal_id: str | None = None
@@ -147,9 +149,7 @@ class InMemoryWorkspaceStore:
             await require_workspace_view(self, workspace_id, principal_id)
         return workspace.model_copy(deep=True)
 
-    async def update(
-        self, workspace: Workspace, *, principal_id: str | None = None
-    ) -> Workspace:
+    async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
         from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
         from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
 

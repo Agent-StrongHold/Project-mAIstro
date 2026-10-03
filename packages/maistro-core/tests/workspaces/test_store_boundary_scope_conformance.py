@@ -245,9 +245,7 @@ class _WorkspaceAdapter:
         return scope.workspace_id
 
     async def read_as(self, stores: Stores, record_id: str, outsider: Scope) -> str | None:
-        workspace = await stores.workspaces.get(
-            record_id, principal_id=outsider.principal_id
-        )
+        workspace = await stores.workspaces.get(record_id, principal_id=outsider.principal_id)
         return None if workspace is None else str(workspace.workspace_id)
 
     async def mutate_as(self, stores: Stores, record_id: str, outsider: Scope) -> None:

@@ -185,9 +185,7 @@ class SqliteWorkspaceStore:
             await require_workspace_view(self, workspace_id, principal_id)
         return Workspace.model_validate_json(row[0])
 
-    async def update(
-        self, workspace: Workspace, *, principal_id: str | None = None
-    ) -> Workspace:
+    async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
         """Persist a changed Workspace and stamp ``updated_at``."""
         from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
         from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
