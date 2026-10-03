@@ -20,6 +20,7 @@ from services.request_principal import require_actor_id
 
 from maistro.scheduling.cron import CronParseError, minimum_gap
 from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS, MAX_CATCHUP_WINDOW_SECONDS
+from routes.audit import audit_entries_view
 
 logger = logging.getLogger(__name__)
 
@@ -235,9 +236,9 @@ async def schedule_history(request: Request, limit: int = 100) -> list[dict]:
 
     This route used to `return []` — an empty collection no fire could ever
     change. The canonical owner of fire history is the durable audit log
-    (`stores.audit_log`): every admission path (tick catch-up and manual fire
-    alike) writes `schedule_fire` receipts and `schedule_run` outcomes there
-    keyed by schedule id, including refused fires (`detail.error`) and the
+    every admission path (tick catch-up and manual fire alike) writes
+    `schedule_fire` receipts and `schedule_run` outcomes to, keyed by
+    schedule id, including refused fires (`detail.error`) and the
     Run ids canonical Runs were admitted under (`detail.run_id`). This route
     now reads that log, restricted to schedules in Workspaces the caller is
     authorized to see — the same visibility `GET /v1/schedules` applies — so
@@ -254,8 +255,7 @@ async def schedule_history(request: Request, limit: int = 100) -> list[dict]:
         if row.workspace_id and row.workspace_id in allowed
     }
     events: list[dict] = []
-    for entry in stores.audit_log.values():
-        record = entry.model_dump(mode="json") if hasattr(entry, "model_dump") else dict(entry)
+    for record in await audit_entries_view():
         if record.get("action") not in _FIRE_AUDIT_ACTIONS:
             continue
         if record.get("target") not in visible:

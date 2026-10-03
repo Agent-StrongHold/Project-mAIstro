@@ -470,8 +470,10 @@ async def test_scan_messages_refuses_an_oversized_user_turn_before_the_model() -
     the actual `MAX_SCAN_TEXT` guard — the line that refuses a 64 KiB+ user
     turn before it can reach the model — never executed. This drives the real
     `scan_messages` with an oversized turn and asserts the refusal, naming the
-    offending turn index like the route's error surface does.
+    offending text leaf like the route's error surface does. The hoisted budget
+    walk runs before any message is serialized to the model, so the refusal
+    precedes the per-message scan.
     """
     oversized = "a" * (MAX_SCAN_TEXT + 1)
-    with pytest.raises(ScanBudgetExceeded, match="messages\\[0\\] is longer than"):
+    with pytest.raises(ScanBudgetExceeded, match="\[0\]\.content is longer than"):
         await scan_messages([{"role": "user", "content": oversized}])

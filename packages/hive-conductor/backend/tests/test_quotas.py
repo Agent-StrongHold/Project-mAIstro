@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from routes import quotas
+from services import provider_usage
 
 
 @pytest.fixture(autouse=True)
@@ -196,7 +196,7 @@ def test_providers_aggregates_spend_by_provider(
     # Envelope: provenance first (#380).
     assert data["state"] == "ok"
     assert "spend/report" in data["source"]
-    assert data["window_days"] == quotas.SPEND_WINDOW_DAYS
+    assert data["window_days"] == provider_usage.SPEND_WINDOW_DAYS
     assert data["computed_at"]
     by_provider = {p["provider"].lower(): p for p in data["providers"]}
     assert "openai" in by_provider
@@ -360,7 +360,7 @@ def test_providers_error_when_report_is_malformed(
     assert data["state"] == "error"
     # The reason names the phase, not a fake zeroed page.
     assert "aggregated" in data["reason"]
-    assert data["window_days"] == quotas.SPEND_WINDOW_DAYS
+    assert data["window_days"] == provider_usage.SPEND_WINDOW_DAYS
     assert "providers" not in data
 
 
@@ -458,7 +458,7 @@ def test_no_litellm_config_providers_and_models(
     monkeypatch.delenv("LITELLM_API_BASE", raising=False)
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
     monkeypatch.delenv("CONDUCTOR_ROUTER_URL", raising=False)
-    assert quotas._litellm_base() == ""
+    assert provider_usage._litellm_base() == ""
     providers = authed_client.get("/v1/quotas/providers").json()
     models = authed_client.get("/v1/quotas/models").json()
     assert providers["state"] == "unavailable"

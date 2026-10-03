@@ -28,13 +28,13 @@ import ssl
 from typing import Any, Literal
 
 import httpx
-import stores
 from fastapi import APIRouter, HTTPException
 from models.schemas import CapabilitySetting, SettingsModel
 from pydantic import BaseModel, ConfigDict, ValidationError
 from services import settings_store
+from services.provider_usage import provider_panel
 
-from routes.audit import log_audit
+from routes.audit import audit_entries_view, log_audit
 
 logger = logging.getLogger(__name__)
 
@@ -201,26 +201,25 @@ def reload_settings() -> dict[str, Any]:
 
 
 #: The audit actions this surface owns. `GET /audit` is the settings-scoped
-#: view over the ONE durable audit log (`stores.audit_log`) that `GET /v1/audit`
-#: serves whole — not a second log.
+#: view over the ONE durable audit log that `GET /v1/audit` serves whole --
+#: not a second log.
 _SETTINGS_AUDIT_ACTIONS = frozenset({"settings_update", "settings_patch", "settings_reload"})
 
 
 @router.get("/audit")
-def settings_audit(limit: int = 100) -> list[dict[str, Any]]:
+async def settings_audit(limit: int = 100) -> list[dict[str, Any]]:
     """The settings-change trail, read from the durable audit log (#389).
 
-    Returned newest-first, capped at `limit` (bounded 1..1000). Empty means no
-    settings write has been recorded yet — an empty-valid answer, distinct
-    from a failure (which raises) or an authorization refusal (handled by the
-    `/v1/settings` auth scope in middleware/auth.py).
+    Read through the shared `audit_entries_view` — the same core-store-first
+    read `GET /v1/audit` serves, never a second log. Returned newest-first,
+    capped at `limit` (bounded 1..1000). Empty means no settings write has
+    been recorded yet — an empty-valid answer, distinct from a failure (which
+    raises) or an authorization refusal (handled by the `/v1/settings` auth
+    scope in middleware/auth.py).
     """
     limit = max(1, min(limit, 1000))
     entries = [
-        e.model_dump(mode="json") if hasattr(e, "model_dump") else dict(e)
-        for e in stores.audit_log.values()
-        if (e.get("action") if isinstance(e, dict) else getattr(e, "action", ""))
-        in _SETTINGS_AUDIT_ACTIONS
+        e for e in await audit_entries_view() if e.get("action", "") in _SETTINGS_AUDIT_ACTIONS
     ]
     entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
     return entries[:limit]
@@ -234,10 +233,10 @@ def settings_quotas() -> dict[str, Any]:
     The provider panel's canonical owner is the LiteLLM proxy aggregation
     behind `GET /v1/quotas/providers`; this route delegates to it (same
     envelope — `state` distinguishes ok / no_data / unavailable / error)
-    rather than maintaining a second source that would drift.
+    rather than maintaining a second source that would drift. The panel
+    lives in `services.provider_usage`, so this delegation imports a service
+    module, not another router file.
     """
-    from routes.quotas import provider_panel
-
     return provider_panel()
 
 
