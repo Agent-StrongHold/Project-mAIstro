@@ -32,7 +32,7 @@ from maistro.memory.learnings.lifecycle import (
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import Learning, MemoryScope
 
-# The whole module is the behavioral-contract evidence SPEC-282's `contracts:`
+# The whole module is the behavioral-contract evidence SPEC-283's `contracts:`
 # declaration names (ADR-032): every test below pins behavior, not wiring.
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -90,6 +90,7 @@ def _kinds(lifecycle: InMemoryLearningLifecycle, learning_id: int) -> list[Learn
 # ── AC-1: evidence links to exact Runs/evaluations ───────────────────────
 
 
+@pytest.mark.ac("SPEC-283/AC-1")
 class TestEvidenceLinks:
     async def test_reinforcement_evidence_names_the_exact_run(self) -> None:
         lifecycle, _, _ = _lifecycle()
@@ -175,6 +176,7 @@ class TestEvidenceLinks:
 # ── AC-2: updates never erase prior versions/evidence ────────────────────
 
 
+@pytest.mark.ac("SPEC-283/AC-2")
 class TestHistoryPreserved:
     async def test_reinforce_preserves_the_prior_version(self) -> None:
         lifecycle, _, _ = _lifecycle()
@@ -248,6 +250,7 @@ class TestHistoryPreserved:
 # ── AC-3: decay and supersession ─────────────────────────────────────────
 
 
+@pytest.mark.ac("SPEC-283/AC-3")
 class TestDecayAndSupersession:
     async def test_stale_learning_decays_with_silence(self) -> None:
         lifecycle, _, clock = _lifecycle()
@@ -334,6 +337,7 @@ class TestDecayAndSupersession:
 # ── AC-4: consolidation with provenance to sources ───────────────────────
 
 
+@pytest.mark.ac("SPEC-283/AC-4")
 class TestConsolidation:
     async def test_consolidation_creates_a_derived_record_with_provenance(self) -> None:
         lifecycle, store, _ = _lifecycle()
@@ -401,6 +405,7 @@ class TestConsolidation:
 # ── AC-5: conflicts detectable and surfaced ──────────────────────────────
 
 
+@pytest.mark.ac("SPEC-283/AC-5")
 class TestConflictDetectionAndSurfacing:
     async def test_contradicting_active_learnings_are_detectable(self) -> None:
         lifecycle, _, _ = _lifecycle()

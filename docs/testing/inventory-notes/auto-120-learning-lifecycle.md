@@ -3,7 +3,7 @@ inventory-delta:
   packages/maistro-core/tests: +50
 ---
 
-Issue #120 (M4-B4, SPEC-282) adds the learning lifecycle: contradiction,
+Issue #120 (M4-B4, SPEC-283) adds the learning lifecycle: contradiction,
 reinforcement, decay, supersession and consolidation for institutional knowledge,
 preserving every prior version and evidence event.
 
@@ -39,3 +39,10 @@ duplicated-id dedup in reinforce/retire, decay's naive-timestamp refusal, the
 per-side org filter on conflict reads, a second distinct pair getting its own
 conflict record, retrieval not surfacing conflicts outside the retrieved set, and
 `InMemoryLearningStore.get` returning None for an unknown id.
+
+Second CI-repair round: the spec was renumbered SPEC-282 → SPEC-283 (SPEC-282 was
+already taken by the self-generated-curriculum spec, which the registry duplicate-ID
+lint caught), its five acceptance bullets gained **AC-N** ids plus `ac-modules:`
+anchors, and the five AC test classes gained matching `@pytest.mark.ac` markers so
+the ac-state mandate proves each criterion. No tests were added or removed in this
+round — the suite delta above is unchanged.

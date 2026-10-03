@@ -1,5 +1,5 @@
 ---
-id: SPEC-282
+id: SPEC-283
 title: "Learning lifecycle — contradiction, reinforcement, decay, supersession, consolidation (issue #120 / M4-B4)"
 repo: maistro-engine
 kind: spec
@@ -24,6 +24,12 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/memory/learnings/test_lifecycle.py
+ac-modules:
+  AC-1: maistro.memory.learnings.lifecycle
+  AC-2: maistro.memory.learnings.lifecycle
+  AC-3: maistro.memory.learnings.lifecycle
+  AC-4: maistro.memory.learnings.lifecycle
+  AC-5: maistro.memory.learnings.lifecycle
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -34,7 +40,7 @@ history:
     date: 2026-10-01
 ---
 
-# SPEC-282: Learning lifecycle — contradiction, reinforcement, decay, supersession, consolidation
+# SPEC-283: Learning lifecycle — contradiction, reinforcement, decay, supersession, consolidation
 
 ## Context
 
@@ -93,17 +99,20 @@ and states so; durable twins follow, as they did for the episodic store.
 
 ## Acceptance criteria
 
-- [ ] Reinforcement and contradiction evidence name the exact Run (or evaluation) that
-      drove them; updates without any link are refused and leave no trace.
-- [ ] Confidence and status updates snapshot the prior version first; superseded,
-      retired and consolidated records stay in the store and in the revision history.
-- [ ] Silent learnings lose confidence over time (floor-limited, optionally retired);
-      a superseded learning drops out of retrieval while its record and history remain.
-- [ ] Consolidation stores a new derived record whose provenance names the exact source
-      ids, and preserves the deactivated sources.
-- [ ] Conflicting active learnings are enumerable (`find_conflicts`) and surfaced to
-      retrieval (`LearningRetrieval.conflicts`, both sides attached); resolution is
-      explicit and review-driven.
+- [x] **AC-1**: Reinforcement and contradiction evidence name the exact Run (or
+      evaluation) that drove them; updates without any link are refused and leave no
+      trace.
+- [x] **AC-2**: Confidence and status updates snapshot the prior version first;
+      superseded, retired and consolidated records stay in the store and in the
+      revision history.
+- [x] **AC-3**: Silent learnings lose confidence over time (floor-limited, optionally
+      retired); a superseded learning drops out of retrieval while its record and
+      history remain.
+- [x] **AC-4**: Consolidation stores a new derived record whose provenance names the
+      exact source ids, and preserves the deactivated sources.
+- [x] **AC-5**: Conflicting active learnings are enumerable (`find_conflicts`) and
+      surfaced to retrieval (`LearningRetrieval.conflicts`, both sides attached);
+      resolution is explicit and review-driven.
 
 ## Out of scope
 
