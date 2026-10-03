@@ -87,6 +87,10 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Ratchet steps in this job resolve origin/develop; shallow checkout
+          # leaves that ref unresolvable and fails with "Needed a single revision".
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
