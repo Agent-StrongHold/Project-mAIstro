@@ -1095,6 +1095,33 @@
       "notes": "No DELETE, and restore full-scans the table. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity; retention itself stays open on #325."
     },
     {
+      "table": "canonical_goals",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Durable desired-outcome and accountability state (#1572). No deletion path by design so far: a Goal is the provenance a Run cites for why it ran, and `BacklogItem.goal_id` and `design_creative_briefs.goal_id` reference it, so removing one would strand the records that name it. Terminal Goals are closed rather than deleted, which is also what makes SUPERSEDED distinguishable from CANCELLED when a reconciler walks lineage for prior evidence. Whether a closed Goal ages out, and with what parent scope, is #325's decision and not this store's."
+    },
+    {
+      "table": "canonical_goal_revisions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "parent": "canonical_goals",
+      "notes": "Append-only statements of what a Goal wanted (#1572). Identity is (goal_id, goal_revision) and the table has no update or delete path: a Run admitted against revision 3 must still be able to read revision 3 after the Goal has moved to 7, which is what makes 'what were we trying to do when this ran' answerable. Bounded by its Goal through a RESTRICT foreign key, so it cannot outlive one; it inherits whatever #325 decides for the parent."
+    },
+    {
       "table": "workspace_backlog_history",
       "backends": [
         "sqlite"

@@ -83,6 +83,10 @@ EXPECTED_TABLES = frozenset(
         # exist to refuse.
         "canonical_attempts",
         "canonical_event_log",
+        # The canonical Goal store (052, #1572): a desired outcome and its
+        # append-only revision history.
+        "canonical_goals",
+        "canonical_goal_revisions",
         "canonical_node_runs",
         "canonical_project_memberships",
         "canonical_project_resources",

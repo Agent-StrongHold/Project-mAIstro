@@ -67,9 +67,11 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # #780 claimed them — continues after that. #792's eval-score evidence,
     # which had taken `049` on develop while this branch's artifact-version
     # ledger took the same number on the same parent, re-parents onto that
-    # `050` as `051_canonical_run_eval_scores`, so the single linear head is
-    # `051`.
-    walked = {item.revision for item in directory.walk_revisions("base", "051")}
+    # `050` as `051_canonical_run_eval_scores`. #1572's canonical Goal
+    # tables took `051` on that same `050` parent while eval-score evidence
+    # claimed it on develop, so they re-parent onto `051` as `052`, the
+    # single linear head.
+    walked = {item.revision for item in directory.walk_revisions("base", "052")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -79,7 +81,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "048" in walked
     assert "049" in walked
     assert "050" in walked
-    assert directory.get_heads() == ["051"]
+    assert "051" in walked
+    assert directory.get_heads() == ["052"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
