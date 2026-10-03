@@ -221,6 +221,10 @@ class IndependentTrialsGauntlet:
       for an evaluation set to be independent *of*.
     - `frozen_content` — the record was produced for exactly the frozen
       candidate (content hashes match).
+    - `evaluator_identity` — the record self-identifies the evaluator and
+      version that actually ran the trials, and they match the evaluator
+      this Gauntlet dispatched to. A wrapper that delegated to a different
+      runtime must not lend its own name to the promoted provenance.
     - `canonical_runs` — every trial names a Run id, and no two trials share
       one: one Run cannot be two independent trials.
     - `independence` — the evaluation set does not include the producing Run.
@@ -273,6 +277,11 @@ class IndependentTrialsGauntlet:
 
         if record.content_hash != candidate.content_hash:
             failed.append("frozen_content")
+        if (
+            record.evaluator != self._evaluator.name
+            or record.evaluator_version != self._evaluator.version
+        ):
+            failed.append("evaluator_identity")
         failed.extend(self._run_checks(candidate, record))
         failed.extend(self._coverage_checks(candidate, record))
         failed.extend(self._efficacy_checks(record))
