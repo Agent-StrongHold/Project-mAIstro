@@ -38,6 +38,7 @@ from services.hitl_authorization import (
     authorize_project,
     authorized_project_ids,
 )
+from services.request_principal import request_principal, require_actor_id
 from services.workspace_authority import (
     hitl_membership_mutation_lock,
     is_member,
@@ -45,6 +46,7 @@ from services.workspace_authority import (
 )
 
 from maistro.graph.durable_runs import HitlAuthorization, cursor_time, expire_hitl_pauses
+from maistro.identity import Principal
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
@@ -103,11 +105,7 @@ def _store() -> Any:
 
 
 def _request_user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user_id
+    return require_actor_id(request)
 
 
 def _intended_reviewer(record: Any, node_id: str) -> str | None:
@@ -216,7 +214,7 @@ def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthor
 def _session_principal(request: Request) -> str:
     """The verified session principal behind this request, never "system".
 
-    AuthMiddleware stamps ``request.state.user`` for every authenticated
+    AuthMiddleware stamps ``request.state.principal`` for every authenticated
     ``/v1/`` request after resolving the live session; reading that back keeps
     one resolver and one revocation check (ADR-077) per request. The fallback
     re-resolves from the cookie in case a caller reaches the handler without
@@ -226,12 +224,13 @@ def _session_principal(request: Request) -> str:
     crypto-bound approval record (#329 / ADR-090726-9a4e) exists to prevent —
     a human decision must name a verified human, not a convenient default.
     """
-    user = getattr(request.state, "user", None) or resolve_principal(
-        request.cookies, request.headers.get("Authorization")
-    )
+    principal = request_principal(request)
+    if principal is not None:
+        return principal.audit_label()
+    user = resolve_principal(request.cookies, request.headers.get("Authorization"))
     if user is None:
         return "unauthenticated"
-    return str(user.get("username") or user.get("id") or "unverified")
+    return Principal.from_legacy_dict(user).audit_label()
 
 
 def _pending_items(record: Any) -> list[PendingHumanWork]:

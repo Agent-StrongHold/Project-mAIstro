@@ -14,6 +14,11 @@ on:
   # worse than none: the green tick means different things depending on the base
   # and nothing on the PR says which. #161.
   pull_request:
+    # `edited` is load-bearing for the closure guard below: a `Closes #N` added
+    # by editing the body after the last push must re-run check-closure-targets
+    # against the payload's current body, or a green check vouching for the old
+    # body lets the keyword close an epic at merge time (#56 review on #1773).
+    types: [opened, reopened, synchronize, edited]
   # A merge queue evaluates a synthetic commit containing the current base plus
   # the queued candidate(s). Every required CI job must report on that SHA, not
   # merely on the feature-branch head that was green before it entered the queue.
@@ -75,8 +80,18 @@ jobs:
 
   lint-and-type-check:
     runs-on: ubuntu-latest
+    # The workflow defaults plus `issues: read` for check-closure-targets.py.
+    permissions:
+      contents: read
+      actions: read
+      issues: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Ratchet steps resolve origin/develop and the typed-client ratchet
+          # resolves the event's trusted base; shallow checkout leaves that ref
+          # unresolvable and fails with "Needed a single revision".
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -121,6 +136,20 @@ jobs:
       # own route table, not a list of prefixes someone maintains by hand.
       - name: Frontend calls reach registered backend routes
         run: uv run python3 scripts/check-frontend-api-routes.py
+      # Workspace cutover P0.3 banks raw fetch outside src/lib/ and hand-typed
+      # declarations in pages/components until the generated client owns HTTP
+      # (#1048 AC-P3). Static scan only; the blocking ratchet also runs in
+      # quality.yml beside the other Phase 0 debt gates.
+      - name: Frontend typed-client debt (raw fetch + hand-typed — ratchet)
+        run: uv run python scripts/check-frontend-typed-client.py
+      # One lie further: a route that answers 200 without doing the operation
+      # it names. `/v1/settings/reload` said "reloaded" for years without
+      # reloading anything, and `fetch` never rejects on a canned payload
+      # (#389). This refuses any handler whose every return is a pure literal
+      # with no operation behind it, and holds the audited inventory
+      # (quality/api-route-contracts.json) against the live route table.
+      - name: No canned no-op route handlers ship
+        run: python3 scripts/check-api-route-contracts.py
       # The same failure mode one layer out: a document naming a component that
       # does not exist. DEPLOYMENT-STANCE.md listed a `maistro-sandbox-worker`
       # in all four supported profiles and offered Kata and gVisor as backends;
@@ -205,6 +234,15 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # #56 was an epic closed by one PR's `Closes` keyword: the PR delivered
+      # a slice, the keyword closed the whole thing, and every acceptance
+      # criterion it never touched read as done. An issue titled [EPIC],
+      # [MILESTONE] or [INITIATIVE], or one with sub-issues, closes by hand
+      # once check-ac-state reports every criterion reachable (cutover S0.2).
+      - name: No PR closes an epic by keyword
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-closure-targets.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it
@@ -299,6 +337,20 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      # The #851 Canvas supported-path E2E lives under maistro-server/tests,
+      # whose only CI invocations (`test` here, the coverage combine job in
+      # quality.yml) have no PostgreSQL service — so without this step the
+      # migration, real-store and lease assertions all skipped and CI stayed
+      # green having run none of them. The module builds its own throwaway
+      # database and walks the chain from empty, so it neither depends on nor
+      # disturbs the migrated `maistro_test` above. Same contract as the step
+      # above: MAISTRO_REQUIRE_PG_LEGS here turns a silent skip — a dead
+      # service container, a renamed env — into a red job, because for this
+      # module a skip and a pass are the same green tick.
+      - name: Canvas supported path end to end over the migrated chain
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-server/tests/api/test_canvas_supported_path.py -v --tb=short
 
   object-storage:
     needs: workflow-lint
@@ -504,6 +556,16 @@ jobs:
             packages/maistro-canvas/frontend/package-lock.json
       - run: npm ci && npm run lint && npm run build
         working-directory: packages/hive-conductor/frontend
+      # Frontend entity types are generated from the backend's OpenAPI document
+      # and committed (#1048). Regenerating both and diffing makes a backend
+      # schema change the frontend has not picked up a red build here, rather
+      # than an `undefined` in the browser. Fix: run the same two commands
+      # locally and commit types.gen.ts.
+      - name: Generated API types match the backend's OpenAPI document (#1048)
+        run: |
+          uv run python scripts/dump-hive-openapi.py
+          npm --prefix packages/hive-conductor/frontend run gen:api
+          git diff --exit-code -- packages/hive-conductor/frontend/src/api/types.gen.ts
       - run: npm ci && npm run test:ci
         working-directory: packages/maistro-canvas/frontend
       - run: npm run lint
@@ -775,7 +837,27 @@ jobs:
       - run: uv sync --locked --extra dev
       - run: uv pip install pip-audit
       - run: uv pip freeze --exclude-editable > /tmp/deps.txt
-      - run: uv run pip-audit --strict --format=json -r /tmp/deps.txt > /tmp/pip-audit.json || true
+      # Same retry contract as security.yml's supply-chain job (single gate
+      # script, same failure mode): retry only an unusable report — a crashed
+      # audit leaves the redirected file empty — never a finding-bearing one,
+      # whose verdict belongs to the gate's allowlist.
+      - name: pip-audit (retry transient registry outages)
+        run: |
+          for attempt in 1 2 3; do
+            status=0
+            uv run pip-audit --strict --format=json -r /tmp/deps.txt > /tmp/pip-audit.json || status=$?
+            if [ -s /tmp/pip-audit.json ] && \
+               uv run python -c "import json,sys; json.load(open(sys.argv[1]))" /tmp/pip-audit.json 2>/dev/null; then
+              echo "pip-audit attempt ${attempt}: report complete (audit exit ${status})"
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::pip-audit produced no usable report after 3 attempts (last exit ${status}) — registry/network outage; retry the job"
+              exit 1
+            fi
+            echo "::warning::pip-audit attempt ${attempt} produced no usable report (exit ${status}); retrying in 15s"
+            sleep 15
+          done
       - run: python scripts/pip_audit_gate.py /tmp/pip-audit.json
 
   docker-build:
@@ -839,7 +921,7 @@ jobs:
       # daemon's retried pull never reaches -- so they carry their own retry
       # via buildx-build-retry.sh instead (Codex, #683).
       - name: Pre-pull base images (retry transient registry faults)
-        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
+        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile Dockerfile.rsi-runner
 
       - name: Build maistro-engine (cached)
         run: >-
@@ -1196,6 +1278,11 @@ jobs:
           python-version: "3.12"
       - name: Install PyYAML
         run: pip install pyyaml
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Integration scope judges the newest check attempt
+        run: node --test tests/ci/integration-scope.test.cjs
       # The check-name contract #162 pins branch protection against. It lives
       # in this job because it is a check about workflow shape, next to the
       # other one — and because a rename is only caught if the gate runs on the

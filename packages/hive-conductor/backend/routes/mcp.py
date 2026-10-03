@@ -10,6 +10,7 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from models.schemas import MCPServer, MCPTool
 from pydantic import BaseModel, ConfigDict
+from services.request_principal import request_principal
 
 from maistro.http import shared_client
 from maistro.security.outbound import OutboundBlockedError, outbound_origin
@@ -29,9 +30,10 @@ HEALTH_TIMEOUT_SECONDS = 3.0
 
 
 def _user_id(request: Request) -> str | None:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    return str(uid) if uid else None
+    principal = request_principal(request)
+    if principal is None or not principal.user_id:
+        return None
+    return principal.user_id
 
 
 async def _health_check(server: MCPServer, *, user_id: str | None = None) -> MCPServer:
@@ -181,9 +183,19 @@ def delete_server(server_id: str) -> None:
 
 @router.post("/servers/{server_id}/scan")
 def scan_server(server_id: str) -> dict:
+    """Explicitly unsupported (#389).
+
+    This used to return `{"findings": [], "status": "clean"}` for any real
+    server — a security scan result nothing scanned. A fabricated "clean" is
+    worse than a refusal, so with no scanner wired the route now says so:
+    `501`, the distinct status for unimplemented.
+    """
     if server_id not in stores.mcp_servers:
         raise HTTPException(status_code=404, detail="server not found")
-    return {"findings": [], "status": "clean"}
+    raise HTTPException(
+        status_code=501,
+        detail="MCP server security scanning is not implemented in this deployment",
+    )
 
 
 class McpTestBody(BaseModel):
@@ -223,4 +235,16 @@ class DiscoverBody(BaseModel):
 
 @router.post("/discover")
 def discover_tools(body: DiscoverBody) -> dict:
-    return {"tools": [], "status": "scanning"}
+    """Explicitly unsupported (#389).
+
+    This used to return `{"tools": [], "status": "scanning"}` — a scan that
+    was neither running nor ever produced anything. With no discovery behind
+    it, the route now refuses with `501` instead of a fake in-progress
+    status. The wired alternative is `POST /v1/mcp/test`, which performs a
+    real headless connectivity test.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="MCP tool discovery is not implemented in this deployment; "
+        "use POST /v1/mcp/test for a real connectivity check",
+    )

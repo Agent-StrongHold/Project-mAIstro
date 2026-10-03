@@ -125,6 +125,7 @@ class _EvolutionService:
         self._last_run_status: RunStatus | None = None
         self.task: asyncio.Task[None] | None = None
         self._tournament: Any = None
+        self._archive: Any = None
         # Manual requests and the cadence task share one admission lock. This
         # serializes cycle planning/finalization without making the population
         # store a second execution authority.
@@ -183,11 +184,17 @@ class _EvolutionService:
             self._refresh_execution_availability()
             return
         try:
+            from maistro_evolve.archive import CandidateArchive
             from maistro_evolve.population import PopulationStore
             from maistro_evolve.tournament import EloTournament
 
             self._population = PopulationStore()
             self._tournament = EloTournament()
+            # M4-A6: the candidate archive is Evolve domain state alongside the
+            # population/tournament — immutable candidate lineage snapshots,
+            # surviving cull/retirement for provenance, branching, and
+            # retention evaluation.
+            self._archive = CandidateArchive()
         except Exception as exc:
             self._last_cycle_error = str(exc)
             logger.warning("Evolution population init failed: %s", exc)
@@ -207,6 +214,12 @@ class _EvolutionService:
     @property
     def tournament(self) -> Any:
         return self._tournament
+
+    @property
+    def archive(self) -> Any:
+        """The candidate archive (M4-A6) — may be ``None`` before init, like
+        ``population``/``tournament``."""
+        return self._archive
 
     @property
     def last_run_id(self) -> str | None:
@@ -327,6 +340,7 @@ class _EvolutionService:
             llm_call=self._build_llm_call(),
             actor_principal_id=actor_principal_id,
             cycle_number=self._cycle_count + 1,
+            archive=self._archive,
         )
         self._last_run_id = record.run_id
         self._last_run_status = record.run.status
@@ -495,6 +509,7 @@ class _EvolutionService:
             "domain_state_only": not self._execution_available,
             "cycle_count": self._cycle_count,
             "population_size": len(self._population.list_all()) if self._population else 0,
+            "archive_size": len(self._archive) if self._archive is not None else 0,
             "last_error": self._last_cycle_error,
             "last_run_id": self._last_run_id,
             "last_run_status": self._last_run_status.value if self._last_run_status else None,

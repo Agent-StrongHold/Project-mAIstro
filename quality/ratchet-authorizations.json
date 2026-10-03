@@ -279,6 +279,96 @@
       "owner": "repair lane auto-1194 (maistro-implementer)",
       "issue": "#1194",
       "reason": "GET /a2a/tasks/by-idempotency-key/{idempotency_key} is the receipt-recovery half of #1194's transport idempotency: a dispatching worker that lost its lease after an ambiguous POST polls this endpoint with the same key and receives the original receipt (find_run_by_effect), distinguishing 'never accepted' (404) from 'accepted, receipt lost' - so the same logical delegation cannot be filed twice after a lease loss without explicit new-work semantics. Vulture reports it as an unused function at 60% confidence because FastAPI registers route handlers through the @router.get decorator; already banked under fastapi-route-handler in quality/vulture-baseline.json on this branch. Trusted-base note: same two-merge rule as the create_a2a_task grant above - effective from the next base, per the #1310 post-merge reconciliation precedent."
+    },
+    "packages/maistro-core/src/maistro/quota/__init__.py::unused function '__getattr__'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "The quota package's lazy re-export hook. Python calls it, nothing in this repository does, so a static scan cannot see a caller -- which is what `core-public-api-surface` exists to record. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/quota/pg_invocation_quota.py::unused method 'register_budget'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "Operator-facing API on the PostgreSQL quota door: a deployment registers its budgets through it, and the tests exercise it. No in-repository production call site, by design -- budgets are configuration, not code. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py::unused method 'register_budget'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "The SQLite half of the same operator-facing budget API. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py::unused method 'balance'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "Reads a budget's remaining allowance for operators and tests. Admission reads balances through its own locked path, so this public reader has no production caller. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py::unused attribute 'row_factory'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "`sqlite3.Connection.row_factory` is assigned, never read by this code: the driver reads it to shape every row the store fetches. `graph/durable_runs/stores.py` carries the identical row for the identical reason. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::unused variable 'all_match'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "A declared field on `WaitForSubtasksOut`, read through pydantic validation and serialization rather than by a Python attribute access -- exactly the case `pydantic-declarative-field` records. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/goals/types.py::unused variable 'desired_state'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1572",
+      "reason": "A declared field on GoalRevision, read through pydantic validation and serialization rather than by a Python attribute access in-repo: the Goal's wording at this revision, read by whatever judges satisfaction against it. No in-package reader exists yet because the store's own consumers (#805's reconciliation loop, #806's durable wakeups) are explicitly out of #1572's scope; the field round-trips through the three-backend conformance suite (packages/maistro-core/tests/goals/test_goal_store_conformance.py) today. This grant authorizes this one Vulture identity only."
+    },
+    "packages/maistro-core/src/maistro/goals/types.py::unused variable 'success_conditions'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1572",
+      "reason": "A declared field on GoalRevision, read through pydantic validation and serialization rather than by a Python attribute access in-repo: what #805's reconciliation evaluates a Goal against to call it satisfied; this module stores the list and judges none of it. No in-package reader exists yet because the store's own consumers (#805's reconciliation loop, #806's durable wakeups) are explicitly out of #1572's scope; the field round-trips through the three-backend conformance suite (packages/maistro-core/tests/goals/test_goal_store_conformance.py) today. This grant authorizes this one Vulture identity only."
+    },
+    "packages/maistro-core/src/maistro/goals/types.py::unused variable 'stop_conditions'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1572",
+      "reason": "A declared field on GoalRevision, read through pydantic validation and serialization rather than by a Python attribute access in-repo: the companion list to success_conditions, for a Goal that should stop without being satisfied. No in-package reader exists yet because the store's own consumers (#805's reconciliation loop, #806's durable wakeups) are explicitly out of #1572's scope; the field round-trips through the three-backend conformance suite (packages/maistro-core/tests/goals/test_goal_store_conformance.py) today. This grant authorizes this one Vulture identity only."
+    },
+    "packages/maistro-core/src/maistro/goals/types.py::unused variable 'author_id'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1572",
+      "reason": "A declared field on GoalRevision, read through pydantic validation and serialization rather than by a Python attribute access in-repo: who authored this revision, part of the append-only audit trail a Goal's history is. No in-package reader exists yet because the store's own consumers (#805's reconciliation loop, #806's durable wakeups) are explicitly out of #1572's scope; the field round-trips through the three-backend conformance suite (packages/maistro-core/tests/goals/test_goal_store_conformance.py) today. This grant authorizes this one Vulture identity only."
+    },
+    "packages/maistro-core/src/maistro/container.py::unused variable 'goal_service'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1572",
+      "reason": "Container.goal_service is the Workspace-authorization seam over goal_store (#1150), exposed ahead of its readers -- #805, #806 and #773/#774, which consume it and must not define it -- the same precedent as schedule_admitter (#231) and goal_store itself. packages/maistro-core/tests/test_container_goal_store.py proves the shipped Container exposes it and that it wraps the same store. This grant authorizes this one Vulture identity only."
+    },
+    "packages/maistro-core/src/maistro/goals/types.py::unused method '_non_blank'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1572",
+      "reason": "A pydantic @field_validator on GoalRevision and Goal, invoked by the validation machinery on every construction and never called by name -- the same shape Vulture cannot see through on every other validator method already banked in this ledger. Two distinct classes each declare their own _non_blank; this one grant covers both occurrences, since Vulture's identity key does not carry a line number. This grant authorizes this one Vulture identity only."
+    },
+    "packages/maistro-core/src/maistro/goals/types.py::unused method '_parent_non_blank'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1572",
+      "reason": "Goal's @field_validator on parent_goal_id, invoked by pydantic and never called by name, the same shape as _non_blank above. This grant authorizes this one Vulture identity only."
+    },
+    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'audit_label'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1816",
+      "reason": "Principal.audit_label is the canonical human-readable audit actor label added in Wave 2 Lane A (#1816 / P0.1). Hive routes (e.g. hitl.py) and the audit bridge call it across package boundaries; vulture scans packages/*/src in isolation and cannot see hive-conductor consumers. This grant authorizes only this exact identity until cross-package reachability tooling catches up."
+    },
+    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'has_permission'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1816",
+      "reason": "Principal.has_permission is the task-scoped elevation check added in Wave 2 Lane A (#1816 / P0.1). Hive middleware and routes delegate to it via principal_has_permission; vulture scans packages/*/src in isolation and cannot see hive-conductor consumers. This grant authorizes only this exact identity until cross-package reachability tooling catches up."
+    },
+    "packages/maistro-core/src/maistro/projects/pg_scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "PgScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
+    },
+    "packages/maistro-core/src/maistro/projects/scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "InMemoryScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
+    },
+    "packages/maistro-core/src/maistro/projects/sqlite_scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "SQLiteScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
     }
   },
   "model-egress": {
@@ -713,6 +803,61 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. Re-keyed from @15, which this change deletes: develop has taken this block down to 14, and a grant names the complexity it authorizes. Keeping @15 would not be inert -- the checker consults grants exactly when a regression makes that value reachable again, so the stale key would pre-authorize raising this function back to 15 (Codex, #1761)."
+    },
+    "packages/maistro-design/src/maistro_design/consistency.py::_build_refinement@17": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-design/src/maistro_design/consistency.py::_check_sibling_contradictions@16": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-design/src/maistro_design/consistency.py::evaluate_project_snapshot@15": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/fail_first.py::_has_related_failure@14": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1730 (fail-first evidence for RSI code-improvement objectives), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the fail-first evidence gate: related-failure matching, evidence collection and the gate decision itself. Refactoring is cheapest now, while the code is days old, and #1792 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/fail_first.py::collect_fail_first_evidence@12": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1730 (fail-first evidence for RSI code-improvement objectives), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the fail-first evidence gate: related-failure matching, evidence collection and the gate decision itself. Refactoring is cheapest now, while the code is days old, and #1792 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/fail_first.py::fail_first_gate@11": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1730 (fail-first evidence for RSI code-improvement objectives), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the fail-first evidence gate: related-failure matching, evidence collection and the gate decision itself. Refactoring is cheapest now, while the code is days old, and #1792 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::evaluate_candidate@30": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Complexity #1730 added, in a package the ratchet does not yet watch (#1682). This block is not new -- it dates from the 2026-08-21 initial release -- but its complexity is: #1730 wired the fail-first evidence gate through it on 2026-10-02 and took it from 25 to 30. That is a regression, not a surfacing, and the ledger says so rather than reusing the 'newly visible, not newly complex' wording the other #1682 grants carry; the file being old would have made that wording look right and it would have been false. It went unmeasured only because the radon scan still covers packages/maistro-core/src alone, so maistro-rsi was never in scope -- had it been, #1730 would have had to answer for this before merging. At D (30) this is the most complex block in the nine, and it decides whether an RSI candidate is fit to promote. This grant admits the current value so #1684 can land and pins it there; #1792 tracks bringing it back down, together with the three blocks #1730 added outright."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::compose_scorecard@23": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Complexity #1730 added, in a package the ratchet does not yet watch (#1682). This block is not new -- it dates from the 2026-08-21 initial release -- but its complexity is: #1730 wired the fail-first evidence gate through it on 2026-10-02 and took it from 21 to 23. That is a regression, not a surfacing, and the ledger says so rather than reusing the 'newly visible, not newly complex' wording the other #1682 grants carry; the file being old would have made that wording look right and it would have been false. It went unmeasured only because the radon scan still covers packages/maistro-core/src alone, so maistro-rsi was never in scope -- had it been, #1730 would have had to answer for this before merging. It assembles the scorecard that evaluate_candidate then judges. This grant admits the current value so #1684 can land and pins it there; #1792 tracks bringing it back down, together with the three blocks #1730 added outright."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._fitness_decision@19": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1682",
+      "reason": "Complexity #1730 added, in a package the ratchet does not yet watch (#1682). This block is not new -- it dates from the 2026-08-21 initial release -- but its complexity is: #1730 wired the fail-first evidence gate through it on 2026-10-02 and took it from 16 to 19. That is a regression, not a surfacing, and the ledger says so rather than reusing the 'newly visible, not newly complex' wording the other #1682 grants carry; the file being old would have made that wording look right and it would have been false. It went unmeasured only because the radon scan still covers packages/maistro-core/src alone, so maistro-rsi was never in scope -- had it been, #1730 would have had to answer for this before merging. It is the local RSI loop's fitness decision point. This grant admits the current value so #1684 can land and pins it there; #1792 tracks bringing it back down, together with the three blocks #1730 added outright."
+    },
+    "packages/maistro-core/src/maistro/container.py::Container._reconcile_unreconciled_terminal_attempts@17": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1817",
+      "reason": "Post-merge reconciliation: #1817 (\"close P0.7 crash windows and P0.9 chat-gate gaps\") merged this block to develop without a radon grant, which reds the trusted-base comparison for every candidate and merge group behind it on the queue -- not a regression this PR introduced. The function replays reconciliation for terminal Attempts a crash interrupted (#804): it pages RUNNING Runs, and for each one walks its NodeRuns and Attempts to decide, per NodeRun, whether every Attempt already settled, a lease is still live, or the lease lapsed -- three outcomes the loop must tell apart before it can call the Reconciler. Author already marked it `# noqa: C901`, the generic linter's opt-out; this is the repo's separate, stricter ledger that needs its own grant. This grant authorizes this one complexity identity only, at its already-merged value."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::CanonicalDurableRunStore._has_stalled_active_frontier@12": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1817",
+      "reason": "Post-merge reconciliation, the same #1817 gap as the grant above: this block landed in the same commit with no radon grant. Decides whether a durable Run's active NodeRuns have gone quiet with no Attempt still holding them -- short-circuiting on no active NodeRuns, then per NodeRun checking for zero Attempts (stalled) or a live, unexpired lease (not stalled) before concluding every active NodeRun is abandoned. This grant authorizes this one complexity identity only, at its already-merged value."
     }
   },
   "contract-markers": {
@@ -979,6 +1124,854 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#55",
       "reason": "M1 effect door (#55 / #1362), second pass. The first grant covered the modules the door pulled onto the promotion path when it was wired; these are the ones the import closure reaches through them -- the Provider registry and its types, the usage/quota ledger, the resilience helpers, and the image egress. None of them decides whether a candidate is promoted or what score it receives: they choose which provider serves an already-authorized call, count what it spent, or decide how long to wait before retrying it. The modules that do make a containment decision -- effect_context.py, credential_routing.py and all of maistro/credentials/ -- are protected in sensitive_paths.py instead of appearing here, on the rule Codex set in #1758: a module that enforces the gate belongs on the protected surface, not the tolerated one. This grant lands first so #1362 cannot approve its own closure."
+    },
+    "packages/maistro-core/src/maistro/events/pg_envelope.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#55",
+      "reason": "The PostgreSQL EventEnvelope store joins the promotion path for the same reason its 48 neighbours did: the M1 effect door (#55 / #1362) composes Invocation, quota and the canonical event envelope onto the container promotion path, and this module is the durable half of the envelope already granted beside it (events/envelope.py, events/durable_log.py, events/bus.py). It became reachable specifically when #1362 merged #1321: the reconciled durable PostgreSQL builder imports PgEventStore, where before only the SQLite store was composed on that path. It writes and reads event rows -- an append-only record of what happened, read by nothing that decides what happens next. It scores no candidate, gates no merge, and installs no promotion authority, which is the question this ratchet asks. This grant lands first so #1362 cannot approve its own promotion-surface expansion."
+    }
+  },
+  "principal-identity": {
+    "parallel_principal_class::packages/hive-conductor/backend/models/schemas.py::HiveUser": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
+    "parallel_principal_class::packages/maistro-canvas/src/maistro_canvas/auth.py::CurrentUser": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
+    "parallel_principal_class::packages/maistro-core/src/maistro/privilege.py::_SubsystemIdentity": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
+    "parallel_principal_class::packages/maistro-server/src/maistro_server/api/principal.py::AuthenticatedPrincipal": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
+    "state_user_access::packages/hive-conductor/backend/middleware/auth.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/agents.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/attention.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/backlog.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/canvas.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/chat.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/credentials.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/dag_runs.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/dags.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/dashboard_layout.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/eval_judge.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/evolution.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/feedback.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/hitl.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/mcp.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/missions.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/optimizer.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/profile.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/schedules.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/setup_checklist.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/voice.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/widgets.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/work_items.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/workspaces.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/services/owned_records.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/services/program_hyperagent.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/maistro-turing/backend/middleware/auth.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/maistro-turing/backend/security.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    }
+  },
+  "route-permissions": {
+    "/v1/agents": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/audit": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/auth": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/backlog": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/canvas": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/capabilities": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/chat": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/cli": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/containers": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/credentials": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/dag-metrics": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/dag-runs": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/dags": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/dashboard": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/design": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/eval-judge": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/evolution": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/harness": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/hitl": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/install": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/mcp": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/memory": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/messages": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/optimizer": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/profile": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/program": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/providers": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/quotas": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/rsi": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/schedules": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/settings": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/setup": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/setup-checklist": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/skills": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/tasks": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/topology": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/voice": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/widgets": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/work-items": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/workspaces": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "exempt::/v1/auth": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (identity bootstrap); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/backlog": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal planning board); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/canvas": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (canvas evaluation); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/chat": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (primary product surface); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/cli": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (CLI session record only); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/dag-metrics": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (read-only node metrics); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/dag-runs": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (in-route scoped run inspection); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/dashboard": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal UI layout); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/design": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (design content authoring); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/eval-judge": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (in-route scoped verdict reads); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/install": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (bootstrap installer); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/memory": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal memory surface); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/messages": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal notification inbox); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/profile": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (caller profile); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/program": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (onboarding coaching); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/quotas": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (read-only quota telemetry); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/setup": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (first-run bootstrap); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/setup-checklist": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal setup checklist); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/tasks": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal missions); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/topology": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (read-only topology inspection); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/voice": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (device-credential voice intent); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/widgets": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (dashboard widgets); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/work-items": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal work-item drafts); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    }
+  },
+  "principal-identity": {
+    "parallel_principal_class::packages/hive-conductor/backend/models/schemas.py::HiveUser": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
+    "parallel_principal_class::packages/maistro-canvas/src/maistro_canvas/auth.py::CurrentUser": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
+    "parallel_principal_class::packages/maistro-core/src/maistro/privilege.py::_SubsystemIdentity": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
+    "parallel_principal_class::packages/maistro-server/src/maistro_server/api/principal.py::AuthenticatedPrincipal": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing parallel principal type carrying role/roles, measured when Workspace cutover P0.1 landed its ratchet. Granted as starting debt only; it converges onto maistro.identity.Principal under cutover lane P0.1."
+    },
+    "state_user_access::packages/hive-conductor/backend/middleware/auth.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/agents.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/attention.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/backlog.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/canvas.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/chat.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/credentials.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/dag_runs.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/dags.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/dashboard_layout.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/eval_judge.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/evolution.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/feedback.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/hitl.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/mcp.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/missions.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/optimizer.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/profile.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/schedules.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/setup_checklist.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/voice.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/widgets.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/work_items.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/routes/workspaces.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/services/owned_records.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/hive-conductor/backend/services/program_hyperagent.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/maistro-turing/backend/middleware/auth.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    },
+    "state_user_access::packages/maistro-turing/backend/security.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing dict-shaped principal access, measured when Workspace cutover P0.1 landed its ratchet (docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Granted so the ratchet can start at today's debt instead of failing its own introduction; the file migrates to request.state.principal under cutover lane P0.1 and its baseline row is deleted then."
+    }
+  },
+  "route-permissions": {
+    "/v1/agents": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/audit": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/auth": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/backlog": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/canvas": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/capabilities": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/chat": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/cli": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/containers": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/credentials": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/dag-metrics": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/dag-runs": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/dags": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/dashboard": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/design": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/eval-judge": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/evolution": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/harness": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/hitl": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/install": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/mcp": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/memory": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/messages": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/optimizer": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/profile": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/program": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/providers": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/quotas": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/rsi": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/schedules": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/settings": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/setup": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/setup-checklist": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/skills": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/tasks": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/topology": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/voice": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/widgets": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/work-items": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "/v1/workspaces": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
     }
   }
 }

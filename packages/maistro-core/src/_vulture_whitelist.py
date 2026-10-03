@@ -10,7 +10,24 @@ Invocation execution API.
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
+from maistro.identity import __getattr__ as identity_getattr
+from maistro.identity._crypto import ConductorSeed, DerivedKey
+from maistro.identity.principal import Principal
+from maistro.ontology.rubric import (
+    PassFailScale,
+    RubricDimension,
+    RubricGate,
+    RubricProvenance,
+    RubricScale,
+    RubricSemantic,
+)
+from maistro.projects.rubric_store import RubricStore
+from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
+from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
+from maistro.runs.sqlite_store import SqliteRunStore
+from maistro.runs.store import InMemoryRunStore, RunStore
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -36,7 +53,24 @@ set_status_on_exception = "set_status_on_exception"
 
 _VULTURE_REFERENCES = (record_exception, set_status_on_exception)
 
+# EvalSummary's projection field (#792). A frozen-dataclass instance attribute:
+# a class-object reference would not typecheck, so the whitelist below names it
+# through this module variable instead. The name is distinctive enough to be
+# safe at name level.
+latest_by_dimension = "latest_by_dimension"
+
 _VULTURE_WHITELIST = (
+    # P0.1 identity split (#53): Principal is always importable; crypto and lifecycle
+    # symbols load through __getattr__ and ConductorSeed's public API.
+    identity_getattr,
+    Principal.from_legacy_dict,
+    Principal.to_legacy_dict,
+    ConductorSeed.from_mnemonic,
+    ConductorSeed.derive_named,
+    ConductorSeed.did_key,
+    ConductorSeed.mnemonic_words,
+    ConductorSeed.zero,
+    DerivedKey.curve,
     Binding._validate_binding,
     ResolvedBinding._validate_resolved,
     ResolvedBinding.provider_trust_tier,
@@ -80,4 +114,69 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
+    # EPIC M4-E (#25): the closed evolvable-harness-component vocabulary and
+    # the proposal's Pydantic model validators. Members are the serialized
+    # values an optimizer's proposal carries (the same posture as the ledger's
+    # schema-enum-member rule: enum members are serialized values that need
+    # not appear as direct reads in package-local static analysis); the
+    # validators run at proposal construction. Their in-tree consumers are the
+    # #783/#822 child streams, outside this scan until those issues land.
+    HarnessTargetKind.PROMPT,
+    HarnessTargetKind.TOOL_SELECTION,
+    HarnessTargetKind.SKILLS,
+    HarnessTargetKind.MEMORY_RETRIEVAL_POLICY,
+    HarnessTargetKind.PLANNING_STRATEGY,
+    HarnessTargetKind.SUBAGENT_DEFINITIONS,
+    HarnessTargetKind.GRAPH_TOPOLOGY,
+    HarnessTargetKind.AUTHORIZED_CODE,
+    HarnessEvolutionProposal._identifier_fields_are_not_blank,
+    HarnessEvolutionProposal._candidate_edges_reference_candidate_nodes,
+    # Eval scores as Run evidence on the canonical spine (M7-A3, #792).
+    # The store write/read seam is reached by the scoring caller inside the
+    # producing execution and by the #779 family-consistency reader, both
+    # outside this `packages/*/src` scan; the contract ships first by design,
+    # like CampaignSelector above. The Pydantic validators are invoked
+    # implicitly; the enum members and fields are serialization surface
+    # written through model_dump_json — `HUMAN` waits on the HITL fence
+    # (M7-A5) and `MODEL_JUDGE` rides Capability → Provider → Binding.
+    RunStore.record_eval_score,
+    RunStore.get_eval_score,
+    InMemoryRunStore.record_eval_score,
+    InMemoryRunStore.get_eval_score,
+    SqliteRunStore.record_eval_score,
+    SqliteRunStore.get_eval_score,
+    PgRunStore.record_eval_score,
+    PgRunStore.get_eval_score,
+    EvalMethod.MODEL_JUDGE,
+    EvalMethod.HUMAN,
+    EvalJudge._validate_judge,
+    RunEvalScore._validate_eval_score,
+    RunEvalScore.raw_score,
+    RunEvalScore.evidence_pointers,
+    # A frozen-dataclass instance attribute (#792): named via the module
+    # variable above rather than a class-object reference, which would not
+    # typecheck.
+    latest_by_dimension,
+    # Goal `Rubric` as a first-class ontology kind (M7-A2, #791). The issue
+    # ships persistence + ontology only — its stop condition ("Do not score
+    # anything in this PR") defers the consumers to later M7 work, so the
+    # store methods' callers (eval scoring, the acceptance fence) are outside
+    # this `packages/*/src` scan; the contract ships first by design, like
+    # CampaignSelector above. The Pydantic validators are invoked implicitly
+    # at validation time; the fields are contract vocabulary (id, name,
+    # weight, scale, method, evidence_required; pass/fail gate; authorship
+    # provenance) serialized through model_dump_json and read by those
+    # deferred consumers.
+    RubricScale._at_least_one,
+    RubricProvenance._pack_shape,
+    RubricSemantic._dimension_consistency,
+    PassFailScale.pass_value,
+    PassFailScale.fail_value,
+    RubricDimension.evidence_required,
+    RubricGate.pass_threshold,
+    RubricProvenance.authored_by,
+    RubricStore.update_dimensions,
+    RubricStore.instantiate_from_catalog,
+    RubricStore.record_run_binding,
+    RubricStore.binding_for_run,
 )

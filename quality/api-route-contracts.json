@@ -1,0 +1,149 @@
+{
+  "_comment": "Route-contract inventory for the #389 audit (machine-checked half; the human-readable contract table is docs/api/route-contract-inventory.md). Every entry must resolve to a live handler (file + method + decorator path), so the inventory cannot rot when a route moves or dies. Dispositions: 'implemented' (real operation against a named canonical owner), 'unsupported-501' (explicit refusal — the operation is not implemented and says so), 'preview' (deliberately non-durable surface, marked in the OpenAPI schema), 'temporary' (a canned handler that must carry an issue and an expires date; the gate refuses it once expired). A canned handler that is NOT registered fails scripts/check-api-route-contracts.py outright.",
+  "routes": [
+    {
+      "route": "/v1/settings/reload",
+      "method": "post",
+      "path": "/reload",
+      "file": "settings.py",
+      "handler": "reload_settings",
+      "disposition": "implemented",
+      "contract": "Re-read the settings record from its durable store and return the fresh revision; 503 when the store read fails.",
+      "owner": "services.settings_store"
+    },
+    {
+      "route": "/v1/settings/audit",
+      "method": "get",
+      "path": "/audit",
+      "file": "settings.py",
+      "handler": "settings_audit",
+      "disposition": "implemented",
+      "contract": "The settings-change trail: entries whose action concerns /v1/settings writes, newest first, from the one durable audit log. Empty means none recorded.",
+      "owner": "stores.audit_log"
+    },
+    {
+      "route": "/v1/settings/quotas",
+      "method": "get",
+      "path": "/quotas",
+      "file": "settings.py",
+      "handler": "settings_quotas",
+      "disposition": "implemented",
+      "contract": "The provider usage panel, served by the same LiteLLM-backed aggregation as GET /v1/quotas/providers (same envelope; state distinguishes ok / no_data / unavailable / error).",
+      "owner": "LiteLLM proxy via routes.quotas.provider_panel"
+    },
+    {
+      "route": "/v1/settings/volatile",
+      "method": "get",
+      "path": "/volatile",
+      "file": "settings.py",
+      "handler": "get_volatile_settings",
+      "disposition": "preview",
+      "contract": "Preview overrides: deliberately non-durable, never written to the record, marked 'Preview' in the OpenAPI summary."
+    },
+    {
+      "route": "/v1/schedules/history",
+      "method": "get",
+      "path": "/history",
+      "file": "schedules.py",
+      "handler": "schedule_history",
+      "disposition": "implemented",
+      "contract": "Fire receipts (schedule_fire/schedule_run audit entries incl. run ids and refusals) for schedules in Workspaces the caller can see, newest first. Empty means no fire recorded.",
+      "owner": "stores.audit_log + stores.schedules"
+    },
+    {
+      "route": "/v1/memory/namespaces",
+      "method": "get",
+      "path": "/namespaces",
+      "file": "memory.py",
+      "handler": "list_namespaces",
+      "disposition": "implemented",
+      "contract": "The caller's namespaces derived from their own durable entries with real counts and byte sizes. Empty means no entries.",
+      "owner": "stores.memory_entries (owned view)"
+    },
+    {
+      "route": "/v1/memory/entries/{entry_id}/contradict",
+      "method": "post",
+      "path": "/entries/{entry_id}/contradict",
+      "file": "memory.py",
+      "handler": "contradict_entry",
+      "disposition": "implemented",
+      "contract": "Record a contradiction: increments the entry's durable contradictions count and returns the updated entry. 404 for missing/foreign entries.",
+      "owner": "stores.memory_entries (owned view)"
+    },
+    {
+      "route": "/v1/quotas/providers",
+      "method": "get",
+      "path": "/providers",
+      "file": "quotas.py",
+      "handler": "list_providers",
+      "disposition": "implemented",
+      "contract": "Per-provider token usage and request counts aggregated from the LiteLLM spend report, in an envelope whose state distinguishes ok / no_data / unavailable / error; request_count is None when no source reports one.",
+      "owner": "LiteLLM proxy /global/spend/report"
+    },
+    {
+      "route": "/v1/quotas/outcomes",
+      "method": "get",
+      "path": "/outcomes",
+      "file": "quotas.py",
+      "handler": "list_outcomes",
+      "disposition": "implemented",
+      "contract": "Success/failure outcome stats for the last 7 days from the canonical outcome store (the same store thumbs feedback writes), in an envelope: ok measured, no_data genuinely empty, error on store failure.",
+      "owner": "services.feedback_service outcome store"
+    },
+    {
+      "route": "/v1/quotas/models",
+      "method": "get",
+      "path": "/models",
+      "file": "quotas.py",
+      "handler": "list_models",
+      "disposition": "implemented",
+      "contract": "Registered models + metadata from LiteLLM /model/info, in an envelope whose state distinguishes ok / no_data / unavailable / error; unprovided tier/quality/speed stay None.",
+      "owner": "LiteLLM proxy /model/info"
+    },
+    {
+      "route": "/v1/containers/build",
+      "method": "post",
+      "path": "/build",
+      "file": "containers.py",
+      "handler": "build_container",
+      "disposition": "unsupported-501",
+      "contract": "Refuses with 501: no image build is wired, and the route no longer reports a build that never started."
+    },
+    {
+      "route": "/v1/containers/suggest",
+      "method": "post",
+      "path": "/suggest",
+      "file": "containers.py",
+      "handler": "suggest_dockerfile",
+      "disposition": "unsupported-501",
+      "contract": "Refuses with 501: there is no generator; the hard-coded Dockerfile advice was removed."
+    },
+    {
+      "route": "/v1/mcp/servers/{server_id}/scan",
+      "method": "post",
+      "path": "/servers/{server_id}/scan",
+      "file": "mcp.py",
+      "handler": "scan_server",
+      "disposition": "unsupported-501",
+      "contract": "404 for an unknown server; 501 for a real one — a fabricated 'clean' scan result was removed."
+    },
+    {
+      "route": "/v1/mcp/discover",
+      "method": "post",
+      "path": "/discover",
+      "file": "mcp.py",
+      "handler": "discover_tools",
+      "disposition": "unsupported-501",
+      "contract": "Refuses with 501 and points at POST /v1/mcp/test, the wired connectivity check; the fake 'scanning' status was removed."
+    },
+    {
+      "route": "/v1/rsi/models",
+      "method": "get",
+      "path": "/models",
+      "file": "rsi.py",
+      "handler": "available_models",
+      "disposition": "unsupported-501",
+      "contract": "Refuses with 501 and points at GET /v1/quotas/models; the baked-in catalog drifted from what the gateway actually registers."
+    }
+  ]
+}

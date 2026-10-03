@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .fixer_genome import FixerGenome
 
@@ -81,6 +81,27 @@ class EvalWeights(BaseModel):
     bfcl: float = 0.15
 
 
+class CandidateProvenance(BaseModel):
+    """Immutable lineage/identity record for one candidate genome (M4-A6).
+
+    Every proposed improvement carries the full answer to "where did this
+    candidate come from": its parent(s), the mutation/operator that produced
+    it, the source objective it was optimized under, a content version of its
+    evolvable prompt/template material, and the canonical evaluation Runs that
+    scored it. Producers stamp it at creation (see ``archive.stamp_provenance``);
+    the promotion gate refuses a candidate whose record is incomplete.
+    """
+
+    parents: list[str] = Field(default_factory=list)
+    operator: str = ""
+    objective: str = ""
+    prompt_version: str = ""
+    evaluation_run_ids: list[str] = Field(default_factory=list)
+    # Free-form operator context (e.g. "crossover+mutate_all") that refines
+    # ``operator`` without multiplying enum values.
+    detail: str = ""
+
+
 class PipelineGenome(BaseModel):
     id: str
     name: str
@@ -91,11 +112,23 @@ class PipelineGenome(BaseModel):
     harness_params: dict[str, Any] = {}
     fitness_score: float | None = None
     eval_scores: dict[str, float] = {}
+    # Per-benchmark verification provenance (#384): for each entry in
+    # ``eval_scores``, the verified method the score came from (the
+    # ``method`` of the runner's ``metadata["evidence"]`` — e.g.
+    # "structured-call-match", "llm-judge", "exact-match+llm-judge"), or
+    # "unverified" when a result carried no evidence record. Champion
+    # selection must be able to name the evidence behind every score; this
+    # is that record, folded alongside the score it describes.
+    eval_evidence: dict[str, str] = {}
     generation: int = 0
     parent_a_id: str | None = None
     parent_b_id: str | None = None
     created_at: str
     updated_at: str
+    # M4-A6 candidate lineage record. Optional so genomes/tests predating it
+    # stay valid (pydantic default None); ``archive.complete_provenance`` is
+    # the fail-closed completeness check the promotion gate enforces.
+    provenance: CandidateProvenance | None = None
     # RSI safety: promotion to live traffic requires an explicit human
     # approval gate (set externally, e.g. via human.approve_draft) — winning
     # tournament/fitness evaluation alone never sets this. Defaults closed.
