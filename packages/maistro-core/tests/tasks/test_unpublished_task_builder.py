@@ -11,7 +11,6 @@ import pytest
 import maistro.tasks.queue as queue_mod
 from maistro.tasks.lanes import Lane
 from maistro.tasks.models import TaskCreate
-from maistro.tasks.queue import TaskQueue
 
 
 _FIXED_TIME = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
@@ -235,7 +234,7 @@ async def test_submit_once_uses_builder_before_existing_admission(
     monkeypatch.setattr(queue_mod, "active_tasks", active_counter)
 
     admitter = _BlockingAdmitter()
-    queue = TaskQueue(admitter=admitter)
+    queue = queue_mod.TaskQueue(admitter=admitter)
     persisted_run_ids: list[str | None] = []
     monkeypatch.setattr(queue, "_persist", lambda task: persisted_run_ids.append(task.run_id))
 
@@ -275,7 +274,7 @@ async def test_submit_once_uses_builder_before_existing_admission(
     assert active_counter.calls == 1
 
     builder_calls.clear()
-    failed = TaskQueue(admitter=_FailingAdmitter())
+    failed = queue_mod.TaskQueue(admitter=_FailingAdmitter())
     failed_persisted: list[str | None] = []
     monkeypatch.setattr(failed, "_persist", lambda task: failed_persisted.append(task.run_id))
     submitted_before = submitted_counter.calls
