@@ -14,6 +14,14 @@ from .hyper_mutator import entry_node, hyper_mutate, slot_lineage
 from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
 from .optimizer import extract_signal, optimize_topology
 from .population import IslandPopulation, PopulationStore, migrate_islands
+from .promotion import (
+    BEST_OF_N_KEY,
+    EVIDENCE_CYCLE_KEY,
+    HISTORY_KEY,
+    OBJECTIVE_VERSION_KEY,
+    SAMPLES_KEY,
+    objective_version,
+)
 from .reflect import reflective_improve
 from .tournament import EloTournament
 from .types import FitnessComponents, PipelineGenome
@@ -83,6 +91,51 @@ class EvolutionConfig(BaseModel):
     # agent-nondeterminism noise on repeat sampling (a genome scored 0.76 then
     # 0.0 across two identical evals in a live run).
     eval_ema_alpha: float = Field(default=0.5, gt=0.0, le=1.0)
+    # How many already-evaluated genomes get a FRESH independent sample per
+    # cycle (#854). The cycle used to evaluate every genome exactly once —
+    # a lucky first sample became permanent and the EMA never ran through the
+    # real cycle. Each cycle now re-samples the genomes whose evidence is
+    # weakest/oldest (best-of-N-pending confirmations first), producing the
+    # repeated independent evidence the promotion policy requires.
+    reconfirm_per_cycle: int = Field(default=2, ge=0, le=MAX_EVAL_BATCH_SIZE)
+
+
+class FitnessEvidenceDriftError(RuntimeError):
+    """A genome's fitness moved although its exact evidence did not (#853).
+
+    ``compute_fitness`` is a pure function of (genome evidence, population
+    evidence, objective). If the recorded evidence hash and objective version
+    are unchanged but the total moved, the scoring arithmetic itself changed
+    mid-campaign — exactly the "same evidence, different number" defect the
+    issue forbids. The cycle refuses to continue rather than rank candidates
+    against incomparable numbers.
+    """
+
+
+class FitnessEvidenceRecord(BaseModel):
+    """One genome's fitness evidence as computed in a specific cycle (#853).
+
+    ``EvolutionCycle.fitness_evidence`` keeps the latest record per genome so
+    the determinism contract is enforced in production, not only in tests:
+    recomputing from unchanged evidence (same ``evidence_hash`` under the same
+    ``objective_version``) must reproduce the same ``total`` bit-for-bit, so
+    repeated identical evidence across cycles can never manufacture a fitness
+    gain — any movement is traceable to a recorded evidence or objective
+    change (AC5/AC8).
+    """
+
+    genome_id: str
+    total: float
+    # Gated measured task quality — recorded beside ``total`` so an auditor
+    # can see context terms never entered the capability number.
+    capability_score: float
+    objective_version: str
+    evidence_hash: str
+    # Which components had no measurement, scored pessimistically.
+    missing_evidence: tuple[str, ...] = ()
+    # The objective's component -> role mapping, snapshotting the semantic
+    # split in force when the score was computed.
+    component_roles: dict[str, str] = Field(default_factory=dict)
 
 
 class FitnessEvidenceDriftError(RuntimeError):
@@ -168,6 +221,51 @@ class EvolutionCycle:
             genome.eval_scores[benchmark] = round(alpha * score + (1 - alpha) * prior, 4)
         samples: dict[str, int] = genome.harness_params.setdefault("eval_samples", {})
         samples[benchmark] = samples.get(benchmark, 0) + 1
+        # Full sample history per benchmark — the raw material for the
+        # uncertainty bound (sample std) in the #854 governed-promotion policy.
+        history: list[float] = genome.harness_params.setdefault(HISTORY_KEY, {}).setdefault(
+            benchmark, []
+        )
+        history.append(score)
+
+    def _stamp_evidence(self, genome: PipelineGenome, cfg: EvolutionConfig) -> None:
+        """Stamp freshly-folded evidence with the objective it was measured
+        under and the cycle that measured it (#854 evidence currency)."""
+        genome.harness_params[OBJECTIVE_VERSION_KEY] = objective_version(cfg.target_benchmarks)
+        genome.harness_params[EVIDENCE_CYCLE_KEY] = self._cycle_count
+
+    async def _eval_and_fold(
+        self,
+        genome: PipelineGenome,
+        cfg: EvolutionConfig,
+        llm_call: Any,
+    ) -> None:
+        """Evaluate one genome across the config's benchmarks, EMA-folding each
+        result into its evidence (shared by first-eval and reconfirmation)."""
+        results = await self.harness.evaluate_genome(genome, cfg.target_benchmarks, llm_call)
+        for r in results:
+            self._fold_score(
+                genome,
+                r.benchmark,
+                r.score,
+                bool(r.metadata.get("stub")),
+                cfg.eval_ema_alpha,
+            )
+            # Fold the score's verification provenance alongside it
+            # (#384): champion selection must be able to name the
+            # evidence behind every number in ``eval_scores``. A result
+            # without an evidence record is recorded as "unverified"
+            # rather than silently dropped — the absence itself is the
+            # provenance.
+            genome.eval_evidence[r.benchmark] = evidence_method(r)
+            genome.harness_params["total_cost_usd"] = (
+                genome.harness_params.get("total_cost_usd", 0.0) + r.cost_usd
+            )
+            genome.harness_params["avg_latency_seconds"] = (
+                genome.harness_params.get("avg_latency_seconds", 0.0) + r.duration_seconds
+            ) / max(len(genome.eval_scores), 1)
+        self._stamp_evidence(genome, cfg)
+        genome.updated_at = datetime.now(UTC).isoformat()
 
     async def _evaluate_unevaluated(
         self,
@@ -179,29 +277,42 @@ class EvolutionCycle:
         unevaluated = [g for g in all_genomes if g.fitness_score is None or not g.eval_scores]
         batch = unevaluated[: config.eval_batch_size]
         for genome in batch:
-            results = await self.harness.evaluate_genome(genome, config.target_benchmarks, llm_call)
-            for r in results:
-                self._fold_score(
-                    genome,
-                    r.benchmark,
-                    r.score,
-                    bool(r.metadata.get("stub")),
-                    config.eval_ema_alpha,
-                )
-                # Fold the score's verification provenance alongside it
-                # (#384): champion selection must be able to name the
-                # evidence behind every number in ``eval_scores``. A result
-                # without an evidence record is recorded as "unverified"
-                # rather than silently dropped — the absence itself is the
-                # provenance.
-                genome.eval_evidence[r.benchmark] = evidence_method(r)
-                genome.harness_params["total_cost_usd"] = (
-                    genome.harness_params.get("total_cost_usd", 0.0) + r.cost_usd
-                )
-                genome.harness_params["avg_latency_seconds"] = (
-                    genome.harness_params.get("avg_latency_seconds", 0.0) + r.duration_seconds
-                ) / max(len(genome.eval_scores), 1)
-            genome.updated_at = datetime.now(UTC).isoformat()
+            await self._eval_and_fold(genome, config, llm_call)
+            population.add(genome)
+
+    async def _reconfirm_candidates(
+        self,
+        population: PopulationStore,
+        config: EvolutionConfig,
+        llm_call: Any = None,
+    ) -> None:
+        """Take fresh independent samples of already-evaluated genomes (#854).
+
+        Priority: genomes still pending fresh confirmation after a best-of-N
+        acceptance (the winner's-curse guard needs post-acceptance evidence),
+        then the fewest-sampled, then the stalest evidence. This is the
+        production step that makes repeated evaluation/EMA actually run
+        through the cycle instead of leaving every genome with one permanent
+        lucky (or unlucky) sample.
+        """
+        if config.reconfirm_per_cycle <= 0:
+            return
+        candidates = [g for g in population.list_all() if g.eval_scores]
+        if not candidates:
+            return
+
+        def _priority(g: PipelineGenome) -> tuple[int, int, int]:
+            params = g.harness_params
+            samples: dict[str, int] = params.get(SAMPLES_KEY, {})
+            pending: dict[str, Any] | None = params.get(BEST_OF_N_KEY)
+            confirmed = 1 if pending is None else 0
+            min_samples = min(samples.values()) if samples else 0
+            evidence_cycle = int(params.get(EVIDENCE_CYCLE_KEY, -1))
+            return (confirmed, min_samples, evidence_cycle)
+
+        candidates.sort(key=_priority)
+        for genome in candidates[: config.reconfirm_per_cycle]:
+            await self._eval_and_fold(genome, config, llm_call)
             population.add(genome)
 
     async def _run_tournament_battles(
@@ -384,6 +495,19 @@ class EvolutionCycle:
         if outcome is None:
             return
         if outcome.accepted and outcome.challenger is not None:
+            # Winner's-curse provenance (#854): this challenger was selected as
+            # the max of N siblings — exactly the genome most likely to be a
+            # lucky sample. It stays promotion-ineligible (best-of-N guard in
+            # promotion.selection_eligibility) until it gathers fresh samples
+            # beyond the round that selected it.
+            outcome.challenger.harness_params[BEST_OF_N_KEY] = {
+                "benchmark": outcome.benchmark,
+                "claimed_score": outcome.best_candidate_score,
+                "candidates": outcome.candidate_count,
+                "samples_at_acceptance": dict(
+                    outcome.challenger.harness_params.get(SAMPLES_KEY, {})
+                ),
+            }
             population.add(outcome.challenger)
         if window > 0 and outcome.best_candidate_slots and outcome.best_candidate_score is not None:
             import json as _json
@@ -462,6 +586,16 @@ class EvolutionCycle:
                 node_attribution=config.node_attribution,
             )
             if outcome is not None and outcome.accepted and outcome.challenger is not None:
+                # Winner's-curse provenance (#854) — same guard as the
+                # hyper-mutator path above.
+                outcome.challenger.harness_params[BEST_OF_N_KEY] = {
+                    "benchmark": outcome.benchmark,
+                    "claimed_score": outcome.best_candidate_score,
+                    "candidates": outcome.candidate_count,
+                    "samples_at_acceptance": dict(
+                        outcome.challenger.harness_params.get(SAMPLES_KEY, {})
+                    ),
+                }
                 population.add(outcome.challenger)
 
             # Persist new (benchmark, excerpt, score) entry so future cycles have a
@@ -511,6 +645,11 @@ class EvolutionCycle:
             )
 
         await self._evaluate_unevaluated(population, cfg, llm_call)
+
+        # Fresh independent samples for already-evaluated genomes: this is what
+        # turns the EMA estimator and the promotion policy's independent-
+        # evidence floor into behavior the real cycle actually exercises (#854).
+        await self._reconfirm_candidates(population, cfg, llm_call)
 
         await self._run_tournament_battles(population, cfg)
 

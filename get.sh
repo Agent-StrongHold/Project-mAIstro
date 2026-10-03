@@ -337,6 +337,9 @@ bootstrap_source() {
     # download_with_git and the missing-marker guard in download_with_archive,
     # blocking legacy users from installing/updating. Copy the .env afterward,
     # once the checkout exists.
+    # Tag the install as the curl bootstrapper's responsibility so install.sh
+    # records install_surface=curl in the upgrade manifest (#353).
+    export MAISTRO_INSTALL_SURFACE=curl
     if command -v git >/dev/null 2>&1; then
         download_with_git
     else
@@ -409,6 +412,10 @@ run_installer() {
     # the archive path has no git metadata to derive it from, so pass it
     # explicitly and let one decision cover both download paths.
     export MAISTRO_IMAGE_TAG="${MAISTRO_IMAGE_TAG:-$IMAGE_TAG}"
+    # Same delegation for the install manifest: an archive checkout has no
+    # `git remote` for install.sh to read, and `maistro upgrade` refuses an
+    # archive whose manifest has no source_url.
+    export MAISTRO_SOURCE_URL="${MAISTRO_SOURCE_URL:-${REPO_URL%.git}}"
 
     if [[ -t 0 ]]; then
         exec bash ./install.sh "$@"

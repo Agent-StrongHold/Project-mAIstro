@@ -15,7 +15,11 @@ first, deliberately small increment underneath it:
   - **Tests gate every promotion.** A cycle's candidate is promoted to the new
     baseline only if it (a) actually changed something and (b) the repo's own
     test command passes. This is the recursive ratchet — each accepted cycle
-    becomes the base the next cycle builds on.
+    becomes the base the next cycle builds on. Since #392, a source-touching
+    candidate must additionally prove fail-first: a changed test that fails on
+    the exact base revision for the intended reason and passes on the candidate
+    (see ``maistro_rsi.fail_first``); declared refactors/docs owe their explicit
+    alternative evidence instead.
   - **Fixed cap.** The loop runs at most ``max_cycles`` cycles, so a first run
     is observable and can't run away. (Quota-headroom pacing via
     `maistro_rsi.quota_burn` is the next increment, not this one.)
@@ -86,15 +90,21 @@ def _prompt_cache_enabled() -> bool:
 
 _DEFAULT_OBJECTIVE = (
     "Make exactly one small, safe, self-contained improvement to this codebase, "
-    "in priority order: fix a real bug (test-first: add the failing test, then the "
-    "fix), add a focused unit test for currently-untested behavior, strengthen a "
-    "weak test assertion — and only if the code is already well-tested, improve a "
-    "type hint or docstring. Read files before you edit them, keep the diff "
-    "minimal, and do not break existing behavior. "
-    "Use only the read_file, write_file and search tools — do NOT run git, "
-    "commit, or shell commands: the harness stages, commits, and runs the tests "
-    "for you after you finish. If you cannot find a safe improvement, make no "
-    "changes and stop."
+    "in priority order: fix a real bug, or strengthen a weak test assertion — "
+    "both test-first: add or extend a test that FAILS against the current code "
+    "for the exact reason your change cures, then make it pass; alternatively add "
+    "a focused unit test for currently-untested behavior WITHOUT touching source "
+    "code. Every source change REQUIRES that failing-first proof: the harness "
+    "reverts your source change and re-runs your test to verify it fails on the "
+    "base revision — a test that already passes before your change (a behavior "
+    "snapshot) is NOT improvement evidence, and a source change without such a "
+    "failing test is rejected, docstring/type-hint polish included. If the code "
+    "is already well-tested and correct, make no changes and stop. Read files "
+    "before you edit them, keep the diff minimal, and do not break existing "
+    "behavior. Use only the read_file, write_file and search tools — do NOT run "
+    "git, commit, or shell commands: the harness stages, commits, and runs the "
+    "tests for you after you finish. If you cannot find a safe improvement, make "
+    "no changes and stop."
 )
 
 
@@ -103,22 +113,34 @@ def _targeted_objective(path: str) -> str:
 
     Naming the file removes the discovery step that weak models fail at (they
     can't reliably search for a target), so each cycle is a concrete, bounded
-    edit of a known file. Test-first by default: substantive verification work
-    (a new test, a stronger assertion, a bug-fix) outranks docstring/type
-    polish, which is a fallback only — mirroring the fitness signals
-    (new_test/coverage-delta reward, doc-regression veto).
+    edit of a known file. Test-first with an enforced fail-first proof (#392):
+    every source change must be justified by a test that fails on the current
+    code and passes after — the harness reverts the source change and re-runs
+    the test to verify. Test-only work (new cases, stronger assertions on
+    correct code) stays welcome and is judged by coverage/assertion strength;
+    docstring/type polish is no longer offered as a source-editing fallback,
+    because it cannot carry that proof — if the module needs none of the
+    above, the agent makes no changes. Mirrors the fitness contract enforced
+    by ``fail_first_gate``.
     """
     return (
-        f"Improve the module `{path}`, in priority order: (1) add ONE focused unit test for "
-        f"currently-untested behavior in it — create or extend its test file — and make sure it "
-        f"passes; (2) fix a real bug if you find one, test-first (add the failing test, then the "
-        f"fix); (3) strengthen a test assertion that checks too little. Only if the module is "
-        f"already well-tested and correct, improve a type hint or docstring instead. First read "
-        f"`{path}` with the read_file tool; use edit_file for targeted exact-string changes and "
-        f"write_file only to create a new test file — do NOT rewrite existing files wholesale, "
-        f"and do not reformat or touch lines unrelated to your change. Keep the diff minimal and "
-        f"do not alter runtime behavior except to fix a bug. Edit only this module and its test "
-        f"file. Do not run git or shell commands."
+        f"Improve the module `{path}`, in priority order: (1) fix a real bug in it "
+        f"test-first — add or extend its test with a case that FAILS against the "
+        f"current code for the reason your fix cures, then make it pass; (2) "
+        f"strengthen a test assertion that checks too little, so it fails against "
+        f"the current code and passes after your strengthening; (3) add ONE focused "
+        f"unit test for currently-untested behavior — create or extend its test "
+        f"file — without changing any source file. Every change to source code "
+        f"REQUIRES that failing-first test: the harness reverts your source change "
+        f"and re-runs your test to prove it fails on the base revision; a test that "
+        f"already passes before your change does not count as evidence, and source "
+        f"edits without that proof (docstring or type-hint polish included) are "
+        f"rejected. First read `{path}` with the read_file tool; use edit_file for "
+        f"targeted exact-string changes and write_file only to create a new test "
+        f"file — do NOT rewrite existing files wholesale, and do not reformat or "
+        f"touch lines unrelated to your change. Keep the diff minimal and do not "
+        f"alter runtime behavior except to fix a bug. Edit only this module and its "
+        f"test file. Do not run git or shell commands."
     )
 
 
@@ -330,10 +352,32 @@ def _fixer_objective(path: str, kind: ImprovementKind, instruction: str) -> str:
             "compatibility unless the enhancement explicitly supersedes it. Use read_file, "
             "edit_file and write_file across the files involved. Do not run git or shell commands."
         )
+    if kind in (ImprovementKind.REFACTOR, ImprovementKind.DOC):
+        # Declared behavior-preserving polish (#392): the explicit ALTERNATIVE
+        # evidence contract — no failing test wanted (behavior must not move,
+        # so there is nothing to turn red), acceptance rides a measured
+        # code-quality improvement against the baseline plus the universal
+        # gates (all tests green, coverage not dropped).
+        return (
+            f"Improve this module WITHOUT changing behavior (`{path}`):\n  {instruction}\n"
+            "This is a declared refactor/polish: do NOT change what the code does, and "
+            "do not manufacture a failing test — none is wanted, because behavior must "
+            "not move and every existing test must stay green. Make the improvement "
+            "measurable: clearer names, less duplication, lower complexity, or more "
+            "precise docstrings/type hints — the harness accepts it only if the "
+            "module's static code-quality score measurably improves against the "
+            "baseline. Keep the diff minimal and focused on this one item — do not "
+            "reformat or touch unrelated lines. Edit only this module and its test "
+            "file, using read_file, edit_file and write_file. Do not run git or shell "
+            "commands."
+        )
     return (
         f"Implement this specific improvement to `{path}`:\n  {instruction}\n"
         "Work test-first: add or extend the test for this module (create or extend its test file) "
-        "so it fails against the current code, then change the code until it passes. Keep the diff "
+        "so it fails against the current code FOR THE REASON your change cures, then change the "
+        "code until it passes. The harness verifies the proof by reverting your source change "
+        "and re-running your test — a test that already passes before your change does not "
+        "count. Keep the diff "
         "minimal and focused on this one item — do not reformat or touch unrelated lines, and all "
         "existing tests must stay green. Edit only this module and its test file, using read_file, "
         "edit_file and write_file. Do not run git or shell commands."
@@ -1357,7 +1401,15 @@ class LocalRsiLoop:
         """
         self._last_scout_model = None
         target = self._target_for_cycle(index)
-        fallback = [(self._objective_for_cycle(index), BudgetTier.BOUNDED, ImprovementKind.DOC)]
+        # The generic slot is declared NEW_TEST, not DOC (#392): the targeted/
+        # generic objective's ladder is verification work (bug-fix → assertion →
+        # new test), and NEW_TEST resolves to the BEHAVIOR evidence contract, so
+        # a source-touching candidate under the default objective owes the same
+        # fail-first proof as the scout-typed fixer slots. DOC would resolve to
+        # the refactor contract and let the default objective dodge fail-first.
+        fallback = [
+            (self._objective_for_cycle(index), BudgetTier.BOUNDED, ImprovementKind.NEW_TEST)
+        ]
         if not (self._config.scout and target):
             return fallback
         try:
@@ -1735,7 +1787,7 @@ class LocalRsiLoop:
         competitor: Competitor,
         objective: str,
         budget: BudgetTier = BudgetTier.BOUNDED,
-        kind: ImprovementKind = ImprovementKind.DOC,
+        kind: ImprovementKind = ImprovementKind.NEW_TEST,
     ) -> _VariantResult:
         """Run one competitor in its own worktree off the baseline and score it.
 
@@ -1782,7 +1834,9 @@ class LocalRsiLoop:
                     r.tests_passed,
                     r.regression_judge_score,
                     r.trace,
-                ) = self._fitness_decision(index, cdir, r.changed_files, target=objective)
+                ) = self._fitness_decision(
+                    index, cdir, r.changed_files, target=objective, kind=kind
+                )
             else:
                 r.tests_passed = self._run_tests(cdir)
                 r.accepted = r.tests_passed
@@ -2065,14 +2119,15 @@ class LocalRsiLoop:
         for v in fought:
             # Battle-evidence gate (#853): fitness's Elo term needs elo_battles.
             battles = self._elo.get_total_battles(v.genome_id)
-            genome = by_id[v.genome_id]
             if battles > 0:
+                genome = by_id[v.genome_id]
                 genome.harness_params["avg_elo"] = self._elo.get_avg_elo(v.genome_id)
                 genome.harness_params["elo_battles"] = battles
-                # list_all() hands back fresh copies when the store is
-                # sqlite-backed (the live mode's population.db), so the
-                # mutation must be written back or fitness never sees it —
-                # same discipline as _fold_cycle_scores above.
+                # Write-back is mandatory: a DB-backed store's list_all()
+                # deserializes fresh objects, so without add() the evidence
+                # above lands on a throwaway copy — invisible to every later
+                # get()/fitness reader and lost on restart. Same write-back
+                # _fold_cycle_scores performs for the same reason.
                 self._population.add(genome)
 
     def _refit_cull_breed(self) -> list[Any]:
@@ -2287,7 +2342,7 @@ class LocalRsiLoop:
         )
         if self._config.use_fitness:
             m_ok, m_comp, reason, _tp, m_judge, m_trace = self._fitness_decision(
-                index, merge_dir, changed_files
+                index, merge_dir, changed_files, kind=kept[0].kind
             )
             if not m_ok:
                 logger.info("rsi_local_merge_regressed", index=index, reason=reason)
@@ -2364,14 +2419,23 @@ class LocalRsiLoop:
         return verdict
 
     def _fitness_decision(
-        self, index: int, cycle_dir: Path, changed_files: list[str], *, target: str = ""
+        self,
+        index: int,
+        cycle_dir: Path,
+        changed_files: list[str],
+        *,
+        target: str = "",
+        kind: ImprovementKind | None = None,
     ) -> tuple[bool, float, str, bool, float | None, dict[str, Any]]:
         """Build the multi-signal Scorecard for the candidate and return
         (accepted, composite, reject_reason, tests_passed, regression_judge_score,
         trace). Logs explain(). The judge score (None if the judge never ran)
         survives past its pass/fail gate so the checkpoint-time RLPHD reviewer can
         use it as prediction evidence, not just the boolean veto. ``trace`` is a
-        compact per-gate/reward bundle for the commit's git-notes record."""
+        compact per-gate/reward bundle for the commit's git-notes record.
+        ``kind`` is the slot's declared ImprovementKind — the fail-first contract's
+        declaration input (#392); None keeps the strict default (source-touching
+        ⇒ behavior contract)."""
         from maistro_rsi.candidate_fitness import evaluate_candidate
 
         scorecard = evaluate_candidate(
@@ -2388,6 +2452,7 @@ class LocalRsiLoop:
             target=target,
             baseline_inventory=self._baseline_test_inventory(),
             allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
+            declared_kind=kind,
         )
         logger.info(
             "rsi_local_scorecard",
@@ -2423,6 +2488,14 @@ class LocalRsiLoop:
         )
         if inv_detail:
             trace["inventory"] = dict(inv_detail)
+        # Fail-first evidence rides the promotion record (#392): the contract,
+        # probe SHAs, failing identities, digest, and passing result — the
+        # replayable proof behind a behavior-changing promotion.
+        ff_detail = next(
+            (g.detail for g in scorecard.gates if g.name == "fail_first_evidence"), None
+        )
+        if ff_detail:
+            trace["fail_first"] = dict(ff_detail)
         return (
             scorecard.accepted,
             scorecard.composite,
@@ -2479,6 +2552,7 @@ class LocalRsiLoop:
             gates={str(k): bool(v) for k, v in gates.items()},
             note=summary,
             inventory=source.get("inventory"),
+            fail_first=source.get("fail_first"),
         )
         return write_trace_note(self._baseline, sha, trace_note)
 

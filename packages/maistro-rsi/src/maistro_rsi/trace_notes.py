@@ -88,6 +88,12 @@ class TraceNote:
     # governance-authorized shrink passed. Present on fitness promotions;
     # older notes (and non-fitness runs) simply omit it.
     inventory: dict[str, object] | None = None
+    # Fail-first evidence record (#392): the base SHA, failing test identities,
+    # failure-output digest, candidate SHA, and passing result behind a
+    # behavior-changing promotion — the replayable proof the change was
+    # test-first. Optional so older notes (and non-behavioral contracts:
+    # refactor/characterization/documentation) simply omit it.
+    fail_first: dict[str, object] | None = None
     note: str = ""
     version: int = NOTE_VERSION
 

@@ -6,6 +6,7 @@ import pytest
 
 from maistro_evolve.audit import GenomeAuditTrail
 from maistro_evolve.population import PopulationStore
+from maistro_evolve.promotion import PromotionPolicy, PromotionRecord
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 
 
@@ -43,6 +44,25 @@ def _genome(name: str, approved: bool = True) -> PipelineGenome:
     )
 
 
+def _stamped(
+    name: str,
+    score: float = 0.8,
+    fitness: float | None = None,
+    approved: bool = True,
+    cycle: int = 1,
+) -> PipelineGenome:
+    """A genome carrying governed-promotion-eligible evidence (#854): repeated
+    independent samples, stable spread, objective-stamped and current."""
+    g = _genome(name, approved=approved)
+    g.eval_scores = {"proxy_ifeval": score}
+    g.fitness_score = fitness if fitness is not None else score
+    g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+    g.harness_params["eval_history"] = {"proxy_ifeval": [score - 0.01, score + 0.01]}
+    g.harness_params["objective_version"] = "objective-test"
+    g.harness_params["evidence_cycle"] = cycle
+    return g
+
+
 class _RecordingSink:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
@@ -71,7 +91,7 @@ class TestPromoteAudited:
     @pytest.mark.asyncio
     async def test_promote_audited_logs_attempt_then_commit(self):
         store = PopulationStore()
-        store.add(_genome("a"))
+        store.add(_stamped("a"))
         trail = GenomeAuditTrail(_RecordingSink())
 
         genome = await store.promote_audited("g-a", trail)
@@ -80,24 +100,43 @@ class TestPromoteAudited:
         events = [(e.event, e.genome_id) for e in trail.entries]
         assert events == [("promotion_attempt", "g-a"), ("promotion_committed", "g-a")]
         assert [e.sequence for e in trail.entries] == [1, 2]
+        # The committed entry carries the full immutable decision record (#854):
+        # exact candidate/incumbent ids, objective version, evidence, decision
+        # rule, approval, resulting active version.
+        record = PromotionRecord.model_validate_json(trail.entries[-1].detail)
+        assert record.candidate_id == "g-a"
+        assert record.incumbent_id is None
+        assert record.resulting_active_id == "g-a"
+        assert record.approved is True
+        assert record.objective_version == "objective-test"
+        assert record.candidate_evidence["eval_samples"] == {"proxy_ifeval": 2}
+        assert record.decision_rule["min_promotion_margin"] == (
+            PromotionPolicy().min_promotion_margin
+        )
+        assert store.last_promotion_record is not None
+        assert store.last_promotion_record.candidate_id == "g-a"
 
     @pytest.mark.asyncio
-    async def test_promote_audited_failing_promotion_logs_only_attempt(self):
+    async def test_promote_audited_rejection_is_recorded(self):
+        """Unapproved AND unevaluated: the governed gate refuses, records the
+        rejection (with reasons) after the attempt, and activates nothing."""
         store = PopulationStore()
         store.add(_genome("a", approved=False))
         trail = GenomeAuditTrail(_RecordingSink())
 
-        with pytest.raises(PermissionError):
+        with pytest.raises(PermissionError, match="governed promotion policy"):
             await store.promote_audited("g-a", trail)
 
         events = [e.event for e in trail.entries]
-        assert events == ["promotion_attempt"]
+        assert events == ["promotion_attempt", "promotion_rejected"]
+        assert "not approved for promotion" in trail.entries[-1].detail
+        assert "not evaluated" in trail.entries[-1].detail
         assert store.get_active() is None
 
     @pytest.mark.asyncio
     async def test_promote_audited_failing_sink_blocks_state_mutation(self):
         store = PopulationStore()
-        store.add(_genome("a"))
+        store.add(_stamped("a"))
         trail = GenomeAuditTrail(_FailingSink())
 
         with pytest.raises(RuntimeError, match="sink unavailable"):
@@ -109,7 +148,7 @@ class TestPromoteAudited:
     @pytest.mark.asyncio
     async def test_promote_audited_failing_commit_log_compensates_to_no_active(self):
         store = PopulationStore()
-        store.add(_genome("a"))
+        store.add(_stamped("a"))
         trail = GenomeAuditTrail(_FailOnNthCallSink(fail_on=2))
 
         with pytest.raises(RuntimeError, match="sink failed on commit"):
@@ -121,8 +160,8 @@ class TestPromoteAudited:
     @pytest.mark.asyncio
     async def test_promote_audited_failing_commit_log_compensates_to_prior_active(self):
         store = PopulationStore()
-        store.add(_genome("a"))
-        store.add(_genome("b"))
+        store.add(_stamped("a", score=0.3, fitness=0.5))
+        store.add(_stamped("b", score=0.8, fitness=0.9))  # beats incumbent a by margin
         good_trail = GenomeAuditTrail(_RecordingSink())
         await store.promote_audited("g-a", good_trail)
 
@@ -141,8 +180,8 @@ class TestRollbackAudited:
     async def test_rollback_audited_logs_attempt_then_commit(self):
         store = PopulationStore()
         trail = GenomeAuditTrail(_RecordingSink())
-        store.add(_genome("a"))
-        store.add(_genome("b"))
+        store.add(_stamped("a", score=0.3, fitness=0.5))
+        store.add(_stamped("b", score=0.8, fitness=0.9))
         await store.promote_audited("g-a", trail)
         await store.promote_audited("g-b", trail)
 
@@ -158,7 +197,7 @@ class TestRollbackAudited:
     async def test_rollback_audited_with_nothing_to_roll_back_to_logs_none(self):
         store = PopulationStore()
         trail = GenomeAuditTrail(_RecordingSink())
-        store.add(_genome("a"))
+        store.add(_stamped("a"))
         await store.promote_audited("g-a", trail)
 
         restored = await store.rollback_audited(trail)
@@ -171,8 +210,8 @@ class TestRollbackAudited:
     async def test_rollback_audited_failing_sink_blocks_state_mutation(self):
         store = PopulationStore()
         good_trail = GenomeAuditTrail(_RecordingSink())
-        store.add(_genome("a"))
-        store.add(_genome("b"))
+        store.add(_stamped("a", score=0.3, fitness=0.5))
+        store.add(_stamped("b", score=0.8, fitness=0.9))
         await store.promote_audited("g-a", good_trail)
         await store.promote_audited("g-b", good_trail)
 
@@ -188,8 +227,8 @@ class TestRollbackAudited:
     async def test_rollback_audited_failing_commit_log_compensates_active_genome(self):
         store = PopulationStore()
         good_trail = GenomeAuditTrail(_RecordingSink())
-        store.add(_genome("a"))
-        store.add(_genome("b"))
+        store.add(_stamped("a", score=0.3, fitness=0.5))
+        store.add(_stamped("b", score=0.8, fitness=0.9))
         await store.promote_audited("g-a", good_trail)
         await store.promote_audited("g-b", good_trail)
 
