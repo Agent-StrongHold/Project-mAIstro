@@ -11,7 +11,7 @@ import pytest
 import maistro.tasks.queue as queue_mod
 from maistro.tasks.lanes import Lane
 from maistro.tasks.models import TaskCreate
-from maistro.tasks.queue import TaskQueue, _build_unpublished_task
+from maistro.tasks.queue import _build_unpublished_task, TaskQueue
 
 
 _FIXED_TIME = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
