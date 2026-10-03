@@ -91,7 +91,7 @@ async def _long_running_canonical_run(
         name="Long-running DAG",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=_USER_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
 
     provider_exits: list[str] = []
@@ -275,7 +275,7 @@ async def test_list_overlays_only_canonical_runs_the_caller_may_read(
             name="listed",
             nodes=[Node(node_id="n", node_type="agent")],
         )
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=_USER_ID)
         await store.transition_run(run.run_id, RunStatus.CANCELLED)
         return run.run_id
 
