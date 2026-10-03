@@ -14,9 +14,11 @@ import logging
 import sqlite3
 from datetime import UTC, datetime
 from typing import Any, Literal
-from uuid import uuid4
 
+from maistro.persistence.audit_pages import decode_cursor
+from maistro.protocols.memory import AuditLog
 from maistro.types.security import AuditEntry as CoreAuditEntry
+from services.audit_query import AuditPage
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _engine_container() -> Any | None:
     return getattr(getattr(engine, "_agent_port", None), "container", None)
 
 
-def _core_audit_log() -> Any | None:
+def core_audit_log() -> Any | None:
     container = _engine_container()
     if container is None:
         return None
@@ -114,7 +116,7 @@ def _sync_in_memory_audit_insert(audit_log: Any, entry: CoreAuditEntry) -> None:
 
 def write_core_audit_sync(entry: CoreAuditEntry) -> None:
     """Persist one row to the core audit store from Hive's sync ``log_audit`` seam."""
-    audit_log = _core_audit_log()
+    audit_log = core_audit_log()
     if audit_log is None:
         return
     container = _engine_container()
@@ -141,7 +143,7 @@ def write_core_audit_sync(entry: CoreAuditEntry) -> None:
         logger.exception("core audit write failed for boundary=%s", entry.boundary)
 
 
-def core_entry_to_hive(entry: CoreAuditEntry) -> dict[str, Any]:
+def core_entry_to_hive(entry: CoreAuditEntry, row_id: int) -> dict[str, Any]:
     """Project a core audit row into Hive's HTTP ``/v1/audit`` response shape."""
     detail_raw = entry.detail or ""
     try:
@@ -152,7 +154,7 @@ def core_entry_to_hive(entry: CoreAuditEntry) -> dict[str, Any]:
         detail = {"message": detail_raw}
     severity = "warning" if entry.verdict == "denied" else "info"
     return {
-        "id": entry.request_id or uuid4().hex,
+        "id": f"core-{row_id}",
         "action": entry.boundary,
         "actor": entry.user_id,
         "target": entry.tool_name,
@@ -162,23 +164,34 @@ def core_entry_to_hive(entry: CoreAuditEntry) -> dict[str, Any]:
     }
 
 
-async def list_core_audit_entries(
+async def page_core_audit_entries(
+    audit_log: AuditLog,
     *,
     action: str | None = None,
     severity: str | None = None,
     actor: str | None = None,
-    limit: int = 10_000,
-) -> list[dict[str, Any]] | None:
-    """Read the core audit store when the Container exposes one."""
-    audit_log = _core_audit_log()
-    if audit_log is None or not hasattr(audit_log, "get_entries"):
-        return None
-    rows: list[CoreAuditEntry] = await audit_log.get_entries(limit=limit)
-    entries = [core_entry_to_hive(row) for row in rows]
-    if action is not None:
-        entries = [entry for entry in entries if entry.get("action") == action]
-    if severity is not None:
-        entries = [entry for entry in entries if entry.get("severity") == severity]
-    if actor is not None:
-        entries = [entry for entry in entries if entry.get("actor") == actor]
-    return entries
+    limit: int = 50,
+    cursor: str | None = None,
+) -> AuditPage:
+    """Page the bound authority; never fall back to a replica or list-and-slice.
+
+    Conductor currently reads the explicit system org scope, just as its old
+    core read did. Callers enforce ADR-073 admin authorization before this seam.
+    """
+    # Validate even a filter that cannot match (core has no critical severity).
+    if cursor is not None:
+        decode_cursor(cursor)
+    if severity and severity not in {"info", "warning"}:
+        return AuditPage([], None)
+    page = await audit_log.get_page(
+        org_id="",
+        user_id=actor,
+        boundary=action,
+        denied=None if not severity else severity == "warning",
+        limit=limit,
+        cursor=cursor,
+    )
+    return AuditPage(
+        [core_entry_to_hive(entry, row_id) for row_id, entry in page.records],
+        page.next_cursor,
+    )

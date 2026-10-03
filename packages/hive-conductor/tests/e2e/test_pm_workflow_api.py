@@ -250,21 +250,35 @@ class TestDAGLifecycle:
 
 class TestAuditTrail:
     def test_audit_log_has_entries(self, client: httpx.Client, session):
-        r = client.get("/v1/audit")
-        assert r.status_code == 200
-        # #358: GET /v1/audit answers a bounded page envelope
-        # ``{entries, next_cursor}`` — keyset pagination, clamped limit — not
-        # the whole corpus as a bare array.
-        body = r.json()
-        assert set(body) >= {"entries", "next_cursor"}
-        entries = body["entries"]
-        assert isinstance(entries, list)
-        # #358 also scopes a non-admin read to the entries naming this
-        # principal, so pmuser sees their own ``login`` from the session
-        # fixture above; ``dag_create`` is actor "system" and correctly stays
-        # out of this scope.
-        actions = [e.get("action") for e in entries]
-        assert "login" in actions or len(entries) > 0
+        # Canonical Sentinel decisions are admin-only (ADR-073), not personal
+        # legacy JsonStore events. Keep the shared PM session untouched.
+        assert client.get("/v1/audit").status_code == 403
+        assert client.get("/v1/audit/export").status_code == 403
+        with httpx.Client(base_url=BASE, timeout=30.0) as admin:
+            login = admin.post(
+                "/v1/auth/login",
+                json={
+                    "username": "admin",
+                    "password": "adminpass123",
+                },
+            )
+            assert login.status_code == 200, login.text
+            response = admin.get("/v1/audit", params={"limit": 1})
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert set(body) == {"entries", "next_cursor"}
+            assert len(body["entries"]) == 1
+            assert body["next_cursor"]
+            following = admin.get(
+                "/v1/audit",
+                params={
+                    "limit": 1,
+                    "cursor": body["next_cursor"],
+                },
+            )
+            assert following.status_code == 200
+            assert len(following.json()["entries"]) == 1
+            assert following.json()["entries"][0]["id"] != body["entries"][0]["id"]
 
 
 class TestDashboardAPIs:

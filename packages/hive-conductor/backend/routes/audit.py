@@ -10,9 +10,15 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from services.audit_bridge import hive_entry_to_core, list_core_audit_entries, write_core_audit_sync
+from services.audit_bridge import (
+    core_audit_log,
+    hive_entry_to_core,
+    page_core_audit_entries,
+    write_core_audit_sync,
+)
 from services.audit_query import (
     DEFAULT_AUDIT_PAGE_SIZE,
+    EXPORT_MAX_ENTRIES,
     AuditPage,
     actor_of,
     iter_export_entries,
@@ -107,29 +113,22 @@ async def list_entries(
     actor: str | None = None,
     limit: int = DEFAULT_AUDIT_PAGE_SIZE,
     cursor: str | None = None,
-) -> AuditPage | list[dict]:
-    """Read canonical audit events when bound; page the legacy fallback.
+) -> AuditPage:
+    """Bounded pages from the bound authority, with authorization before I/O.
 
-    The core store still has its pre-#358 list contract. Do not hide core-only
-    events by routing around that authority. Core cursor pagination remains an
-    unresolved cutover prerequisite; the UI must not be declared merge-ready.
-
-    In the legacy fallback the envelope replaced a bare array: a page says there is
-    more (`next_cursor`) without the client guessing. `limit` is clamped to
-    [1, MAX_AUDIT_PAGE_SIZE]; a malformed cursor is a 400, not a silent page
-    one — a client that echoes a cursor it did not get from this API is
-    broken, and pretending otherwise would hide that.
+    Core decision audit is admin-only (ADR-073). Only deployments without a
+    core binding use the scoped legacy store; never switch corpora mid-query.
     """
     scope = _actor_scope(request)
-    core_entries = await list_core_audit_entries(action=action, severity=severity, actor=actor)
-    if core_entries is not None:
-        # Sentinel decision records are admin-scoped (ADR-073). Personal
-        # legacy events must not become a way to read the core decision audit.
-        if scope is not None:
-            raise HTTPException(status_code=403, detail="Audit administrator required")
-        return core_entries
-
+    audit_log = _authorized_core_audit(scope)
     try:
+        if audit_log is not None:
+            return await page_core_audit_entries(
+                audit_log,
+                **_query_args(action, severity, actor),
+                limit=limit,
+                cursor=cursor or None,
+            )
         return page_entries(
             stores.audit_log,
             **_query_args(action, severity, actor),
@@ -140,6 +139,13 @@ async def list_entries(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _authorized_core_audit(scope: frozenset[str] | None) -> Any | None:
+    audit_log = core_audit_log()
+    if audit_log is not None and scope is not None:
+        raise HTTPException(status_code=403, detail="Audit administrator required")
+    return audit_log
 
 
 @router.get("/export")
@@ -154,10 +160,29 @@ def export_entries(
     Server-side this walks bounded pages through the same query seam as the
     list route — at most EXPORT_MAX_ENTRIES entries, a few hundred rows of
     memory at a time — so an export never materialises the corpus. Same scope
-    contract as the list route: a non-admin exports their own entries only.
+    contract as the list route: canonical decisions require admin; only the
+    unbound legacy fallback permits a non-admin's own entries.
     """
 
     scope = _actor_scope(request)
+    audit_log = _authorized_core_audit(scope)
+
+    async def generate_core():
+        cursor = None
+        emitted = 0
+        while emitted < EXPORT_MAX_ENTRIES:
+            page = await page_core_audit_entries(
+                audit_log,
+                **_query_args(action, severity, actor),
+                limit=min(DEFAULT_AUDIT_PAGE_SIZE, EXPORT_MAX_ENTRIES - emitted),
+                cursor=cursor,
+            )
+            for entry in page.entries:
+                yield json.dumps(entry, default=str) + "\n"
+            emitted += len(page.entries)
+            if not page.entries or page.next_cursor is None:
+                return
+            cursor = page.next_cursor
 
     def generate():
         for entry in iter_export_entries(
@@ -169,7 +194,7 @@ def export_entries(
             yield json.dumps(entry, default=str) + "\n"
 
     return StreamingResponse(
-        generate(),
+        generate_core() if audit_log is not None else generate(),
         media_type="application/x-ndjson",
         headers={"Content-Disposition": 'attachment; filename="audit-log.ndjson"'},
     )

@@ -264,3 +264,90 @@ async def test_audit_route_reads_the_core_audit_log(
         assert served == 0, "GET /v1/audit now serves the core AuditLog; delete it from KNOWN_GAPS"
         return
     assert served >= 1
+    assert set(response.json()) == {"entries", "next_cursor"}
+    assert len(response.json()["entries"]) <= 50
+
+
+async def test_core_cursor_route_filters_before_page_and_streams_same_corpus(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _login(client, _ADMIN[1], _ADMIN[2])
+    assert booted.audit_log is not None
+    stamp = datetime.now(UTC)
+    for index in range(5):
+        await booted.audit_log.log(
+            AuditEntry(
+                timestamp=stamp,
+                boundary="cursor-test",
+                user_id="alice",
+                verdict="denied",
+                detail=f"entry-{index}",
+                request_id="",  # absent correlation must not randomize IDs
+            )
+        )
+
+    async def forbidden_list(**kwargs):
+        pytest.fail("canonical HTTP pagination must not list-and-slice")
+
+    monkeypatch.setattr(booted.audit_log, "get_entries", forbidden_list)
+    first = await client.get("/v1/audit", params={"action": "cursor-test", "limit": 2})
+    assert first.status_code == 200
+    page = first.json()
+    assert len(page["entries"]) == 2
+    assert page["next_cursor"]
+    assert (
+        await client.get("/v1/audit", params={"action": "cursor-test", "limit": 2})
+    ).json() == page
+    await booted.audit_log.log(AuditEntry(boundary="unrelated", user_id="bob"))
+    second = await client.get(
+        "/v1/audit",
+        params={
+            "action": "cursor-test",
+            "limit": 2,
+            "cursor": page["next_cursor"],
+        },
+    )
+    assert second.status_code == 200
+    assert len(second.json()["entries"]) == 2
+    assert {entry["id"] for entry in page["entries"]}.isdisjoint(
+        entry["id"] for entry in second.json()["entries"]
+    )
+    export = await client.get(
+        "/v1/audit/export",
+        params={
+            "action": "cursor-test",
+            "actor": "alice",
+            "severity": "warning",
+        },
+    )
+    assert export.status_code == 200
+    import json
+
+    rows = [json.loads(line) for line in export.text.splitlines()]
+    assert len(rows) == 5
+    assert {row["detail"]["message"] for row in rows} == {f"entry-{i}" for i in range(5)}
+    monkeypatch.setattr("routes.audit.EXPORT_MAX_ENTRIES", 3)
+    capped = await client.get("/v1/audit/export", params={"action": "cursor-test"})
+    assert capped.status_code == 200
+    assert len(capped.text.splitlines()) == 3
+    assert (await client.get("/v1/audit", params={"cursor": "invalid"})).status_code == 400
+
+
+@pytest.mark.parametrize("path", ["/v1/audit", "/v1/audit/export"])
+async def test_core_authorization_precedes_any_query(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    await _login(client, _USER[1], _USER[2])
+
+    async def forbidden_query(**kwargs):
+        pytest.fail("unauthorized audit read reached the store")
+
+    monkeypatch.setattr(booted.audit_log, "get_page", forbidden_query)
+    monkeypatch.setattr(booted.audit_log, "get_entries", forbidden_query)
+    response = await client.get(path)
+    assert response.status_code == 403
