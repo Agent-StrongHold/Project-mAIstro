@@ -57,6 +57,11 @@ from maistro_turing.self_model import (
     facet_node_id,
     guess_node_kind,
 )
+from maistro_turing.sync_runner import (
+    ReentrantSyncCallError,
+    SyncLoopClosedError,
+    SyncLoopRunner,
+)
 from maistro_turing.tiers import (
     INHERITANCE_PRIORITY,
     WEIGHT_BOUNDS,
@@ -97,12 +102,15 @@ __all__ = [
     "PreferenceKind",
     "ProvenanceViolation",
     "Reactor",
+    "ReentrantSyncCallError",
     "RepoError",
     "SelfTodo",
     "SelfTodoRevision",
     "Skill",
     "SkillKind",
     "SourceKind",
+    "SyncLoopClosedError",
+    "SyncLoopRunner",
     "TodoStatus",
     "Trait",
     "TuringClassifierBridge",
