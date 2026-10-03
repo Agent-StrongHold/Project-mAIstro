@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +57
+  packages/maistro-core/tests: +58
   packages/maistro-server/tests: +6
 ---
 # m3-101-backlog-item-history
@@ -13,7 +13,11 @@ over the line being `recording.py`'s `GoalLink` construction, where the
 partial-pair guard's both-or-neither invariant is not expressible as pyright
 narrowing of one variable from the other. Fixed by building `goal_link` in a
 local that tests both sides (behavior-preserving; the guard, and the tests
-pinning it, are unchanged — no test count moved). The develop merge also left
+pinning it, are unchanged). The link-less arm of that local had no test
+through the recording helper, so `test_reconciliation_without_a_goal_keeps_
+the_pointer_only` now pins it (+1 core): a reconciliation decision recorded
+away from any Goal carries the decision pointer alone, `goal_link is None`.
+The develop merge also left
 `design_coverage` measured at 39.896 against a still-banked 34.9711 floor;
 an unbanked improvement fails the acceptance-state ratchet by design, so the
 branch's own note is banked at the measured value (`--bank`, which raises the
@@ -32,7 +36,7 @@ old `project_store=` coupling, and concurrent appends for one item serialize
 into distinct gap-free sequences inside the journal's own critical section
 (net +1 in the wiring suite).
 
-- `packages/maistro-core/tests` (+52): `workspaces/backlog_history/test_backlog_history_model.py`
+- `packages/maistro-core/tests` (+53): `workspaces/backlog_history/test_backlog_history_model.py`
   pins the event contract — journal kinds that are deliberately not work-state tokens, UTC
   normalisation, the per-kind required payloads (status moves carry both ends, closure carries
   evidence refs, discovered work is pinned to a PROPOSED initial status, reconciliation carries

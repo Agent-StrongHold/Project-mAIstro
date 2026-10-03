@@ -244,6 +244,24 @@ async def test_reconciliation_records_the_pointer_not_the_decision(
     assert event.goal_link is not None and event.goal_link.goal_revision == "r8"
 
 
+async def test_reconciliation_without_a_goal_keeps_the_pointer_only(
+    store: BacklogHistoryStore,
+) -> None:
+    """A reconciliation decision recorded away from any Goal carries the
+    decision pointer alone — no Goal link is manufactured."""
+    event = await recording.reconciliation_recorded(
+        store,
+        _subject(),
+        decision_ref="reconciliation:rec-44",
+        outcome="item_absorbed_into_goal",
+        reason="no Goal revision applied; the decision itself is the record",
+    )
+    assert event.goal_link is None
+    assert event.reconciliation is not None
+    assert event.reconciliation.decision_ref == "reconciliation:rec-44"
+    assert event.run_refs == ()
+
+
 @pytest.mark.parametrize(("goal_id", "goal_revision"), [("g-1", None), (None, "r8")])
 async def test_reconciliation_rejects_a_partial_goal_identity(
     store: BacklogHistoryStore,
