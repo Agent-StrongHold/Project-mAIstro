@@ -578,14 +578,19 @@ class CanonicalDurableRunStore:
             ]
             if not attempts:
                 return True
-            if any(
-                attempt.status not in TERMINAL_ATTEMPT_STATUSES
-                and attempt.execution_lease is not None
-                and not lease_is_expired(attempt, moment)
-                for attempt in attempts
-            ):
+            if self._frontier_has_live_attempt(attempts, moment):
                 return False
         return True
+
+    @staticmethod
+    def _frontier_has_live_attempt(attempts: list[Attempt], moment: datetime) -> bool:
+        """Whether any frontier Attempt still holds a live execution lease."""
+        return any(
+            attempt.status not in TERMINAL_ATTEMPT_STATUSES
+            and attempt.execution_lease is not None
+            and not lease_is_expired(attempt, moment)
+            for attempt in attempts
+        )
 
     def _terminal_long_observed(self, continuation: GraphContinuation, moment: datetime) -> bool:
         """Whether this terminal continuation version has been seen for the quiet period.

@@ -30,6 +30,7 @@ from services.evolution_graph import (
 )
 
 from maistro.graph.nodes.base import NodeContext
+from maistro.identity import Principal
 
 
 def _evolution_test_app():
@@ -44,9 +45,18 @@ def _evolution_test_app():
 def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.MonkeyPatch) -> None:
     requests = [
         (SimpleNamespace(state=SimpleNamespace(user_id="principal-1", user={})), "principal-1"),
-        (SimpleNamespace(state=SimpleNamespace(user_id=None, user={"id": "user-1"})), "user-1"),
         (
-            SimpleNamespace(state=SimpleNamespace(user_id=None, user={"username": "alice"})),
+            SimpleNamespace(
+                state=SimpleNamespace(user_id=None, principal=Principal(user_id="user-1"))
+            ),
+            "user-1",
+        ),
+        (
+            SimpleNamespace(
+                state=SimpleNamespace(
+                    user_id=None, principal=Principal(user_id="", username="alice")
+                )
+            ),
             "alice",
         ),
         (SimpleNamespace(state=SimpleNamespace(user_id=None, user="not-a-dict")), None),
