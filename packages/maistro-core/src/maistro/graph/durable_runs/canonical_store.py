@@ -20,13 +20,12 @@ from typing import Any
 from maistro.runs.aggregation import terminal_run_payload
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
-    lease_is_expired,
+    has_live_execution_lease,
     settle_open_node_run,
     transition_node_run,
     transition_run,
 )
 from maistro.runs.model import (
-    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     Attempt,
     NodeRun,
@@ -505,9 +504,9 @@ class CanonicalDurableRunStore:
         record = await self.get(run_id)
         if record is None or not self._spine_is_quiet(record, moment):
             return False
-        if not self._continuation_ahead_of_spine(record, continuation) and not self._terminal_long_observed(
-            continuation, moment
-        ):
+        if not self._continuation_ahead_of_spine(
+            record, continuation
+        ) and not self._terminal_long_observed(continuation, moment):
             return False
         if target is RunStatus.COMPLETED:
             result, error = terminal_run_payload(record.node_runs, target)
@@ -542,7 +541,10 @@ class CanonicalDurableRunStore:
         moment: datetime,
     ) -> bool:
         """Re-queue graph work after a frontier NodeRun landed without its checkpoint."""
-        if continuation.status is not RunStatus.RUNNING or canonical.status is not RunStatus.RUNNING:
+        if (
+            continuation.status is not RunStatus.RUNNING
+            or canonical.status is not RunStatus.RUNNING
+        ):
             return False
         if continuation.resume_at is not None:
             return False
@@ -565,8 +567,6 @@ class CanonicalDurableRunStore:
             for node_run in record.node_runs
             if node_run.status in {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING}
         ]
-        if not active_node_runs:
-            return False
         for node_run in active_node_runs:
             attempts = [
                 attempt
@@ -575,12 +575,7 @@ class CanonicalDurableRunStore:
             ]
             if not attempts:
                 return True
-            if any(
-                attempt.status not in TERMINAL_ATTEMPT_STATUSES
-                and attempt.execution_lease is not None
-                and not lease_is_expired(attempt, moment)
-                for attempt in attempts
-            ):
+            if has_live_execution_lease(attempts, moment):
                 return False
         return True
 

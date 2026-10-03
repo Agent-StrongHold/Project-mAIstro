@@ -153,7 +153,9 @@ async def scan_messages(
     message = messages[latest_user]
     content = message_to_scan_text(message)
     if len(content) > MAX_SCAN_TEXT:
-        raise ScanBudgetExceeded(f"messages[{latest_user}] is longer than {MAX_SCAN_TEXT} characters")
+        raise ScanBudgetExceeded(
+            f"messages[{latest_user}] is longer than {MAX_SCAN_TEXT} characters"
+        )
     context = prior_message_context(messages[: latest_user + 1])
     if len(context) > MAX_SCAN_NODES:
         raise ScanBudgetExceeded(f"conversation holds more than {MAX_SCAN_NODES} context items")
