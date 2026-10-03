@@ -73,6 +73,12 @@ async def create_workspace(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> Workspace:
+    """Create a Workspace owned by the authenticated caller.
+
+    The creator becomes its owner in the same call: a Workspace with no owner
+    could never be administered, so ownership is not a separate step that can
+    fail on its own.
+    """
     return await store.create(
         creator_user_id=authenticated_user_id(auth),
         name=body.name,
@@ -85,6 +91,11 @@ async def list_workspaces(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> list[Workspace]:
+    """List the Workspaces the caller is a member of.
+
+    Scoped to the caller rather than filtered after the fact: membership is the
+    read boundary, so a Workspace the caller cannot see is never fetched.
+    """
     return await store.list_for_user(authenticated_user_id(auth))
 
 
@@ -94,6 +105,11 @@ async def get_workspace(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> Workspace:
+    """Return one Workspace, for any member of it.
+
+    Membership is checked before the fetch, so a non-member gets the access
+    error rather than a 404 that would confirm the Workspace exists.
+    """
     await require_workspace_membership(store, workspace_id, authenticated_user_id(auth))
     workspace = await store.get(workspace_id)
     if workspace is None:
@@ -108,6 +124,11 @@ async def update_workspace(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> Workspace:
+    """Update a Workspace's name or description. Owner only.
+
+    Absent fields are left alone rather than cleared, so a caller sending one
+    field does not blank the other.
+    """
     await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
     workspace = await store.get(workspace_id)
     if workspace is None:
@@ -126,6 +147,11 @@ async def delete_workspace(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> None:
+    """Delete a Workspace. Owner only.
+
+    Refuses with 409 when the store reports the Workspace still owns something
+    that would be orphaned by removing it.
+    """
     await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
     try:
         await store.delete(workspace_id)
@@ -139,6 +165,10 @@ async def list_members(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> list[WorkspaceMembership]:
+    """List a Workspace's memberships, for any member of it.
+
+    Members can see who else belongs; changing membership is owner-only.
+    """
     await require_workspace_membership(store, workspace_id, authenticated_user_id(auth))
     return await store.list_memberships(workspace_id)
 
@@ -151,6 +181,12 @@ async def set_member(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> WorkspaceMembership:
+    """Add a member or change their role. Owner only.
+
+    Idempotent on the pair: setting an existing member's current role is not an
+    error. 409 when the store refuses the change -- removing the last owner
+    through a role downgrade is the case that matters.
+    """
     await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
     try:
         return await store.set_membership(workspace_id, user_id=user_id, role=body.role)
@@ -165,6 +201,12 @@ async def remove_member(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> None:
+    """Remove a member. Owner only, except that anyone may remove themselves.
+
+    The self-removal exception is deliberate: leaving a Workspace should not
+    require the permission to administer it. 409 when the store refuses --
+    the last owner cannot leave, because that would strand the Workspace.
+    """
     requester = authenticated_user_id(auth)
     requester_membership = await require_workspace_membership(store, workspace_id, requester)
     if requester != user_id and not requester_membership.can_administer:

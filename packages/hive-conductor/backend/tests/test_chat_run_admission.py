@@ -21,6 +21,7 @@ from services import chat_runs, default_workspace, workspace_agent, workspace_au
 
 from maistro.container import Container, create_container
 from maistro.http import override_transport
+from maistro.identity import Principal
 from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatchUnrecorded
 from maistro.runs.model import AttemptStatus, RunStatus
@@ -390,7 +391,7 @@ def test_an_answer_the_spine_could_not_record_is_returned_once_with_the_run_left
 
 
 def _principal() -> Any:
-    return SimpleNamespace(state=SimpleNamespace(user={"id": USER}))
+    return SimpleNamespace(state=SimpleNamespace(principal=Principal(user_id=USER)))
 
 
 @pytest.mark.contract("behavioral")
@@ -563,7 +564,9 @@ def test_a_running_hive_turn_is_not_swept_before_its_attempt(
 def test_hive_admission_records_the_request_id(container: Container) -> None:
     from maistro.runs.chat_admission import REQUEST_ID_KEY
 
-    principal = SimpleNamespace(state=SimpleNamespace(user={"id": USER}, request_id="req-hive-1"))
+    principal = SimpleNamespace(
+        state=SimpleNamespace(principal=Principal(user_id=USER), request_id="req-hive-1")
+    )
 
     async def _turn() -> str:
         turn = await chat_runs.admit_turn(  # type: ignore[arg-type]
