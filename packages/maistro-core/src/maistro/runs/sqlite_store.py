@@ -73,6 +73,8 @@ if TYPE_CHECKING:
 
     import aiosqlite
 
+    from maistro.workspaces.store import WorkspaceStore
+
 _TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
 
 
@@ -398,7 +400,7 @@ class SqliteRunStore:
         conn: aiosqlite.Connection,
         *,
         project_store: ProjectScopeStore,
-        workspace_store: object | None = None,
+        workspace_store: WorkspaceStore | None = None,
         concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         self._conn = conn

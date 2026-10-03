@@ -67,6 +67,14 @@ _CANDIDATE_PAGES = 6
 logger = logging.getLogger(__name__)
 
 
+def _attempt_holds_active_lease(attempt: Attempt, moment: datetime) -> bool:
+    return (
+        attempt.status not in TERMINAL_ATTEMPT_STATUSES
+        and attempt.execution_lease is not None
+        and not lease_is_expired(attempt, moment)
+    )
+
+
 def _matching_hitl_settlement(
     continuation: GraphContinuation,
     target: RunStatus,
@@ -578,12 +586,7 @@ class CanonicalDurableRunStore:
             ]
             if not attempts:
                 return True
-            if any(
-                attempt.status not in TERMINAL_ATTEMPT_STATUSES
-                and attempt.execution_lease is not None
-                and not lease_is_expired(attempt, moment)
-                for attempt in attempts
-            ):
+            if any(_attempt_holds_active_lease(attempt, moment) for attempt in attempts):
                 return False
         return True
 

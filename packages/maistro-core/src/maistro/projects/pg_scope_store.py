@@ -59,9 +59,9 @@ class PgProjectScopeStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
-        self._workspace_store: WorkspaceStore | None = None  # type: ignore[name-defined]
+        self._workspace_store: WorkspaceStore | None = None
 
-    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:  # type: ignore[name-defined]
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
         self._workspace_store = workspace_store
 
     async def _require_project_view(self, project: Project, principal_id: str) -> None:

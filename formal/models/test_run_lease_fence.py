@@ -151,7 +151,12 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
             )
         )
         self.store = PgRunStore(server.pool, project_store=projects)
-        run = server.run(self.store.create_run(_graph(workspace, project.project_id)))
+        run = server.run(
+            self.store.create_run(
+                _graph(workspace, project.project_id),
+                actor_principal_id="formal-i29-principal",
+            )
+        )
         self.node_run = server.run(self.store.create_node_run(run.run_id, node_id="node-1"))
 
         # Model state, deliberately independent of the store's.

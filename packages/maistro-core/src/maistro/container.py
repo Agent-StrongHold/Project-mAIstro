@@ -363,7 +363,7 @@ class Container:
     event_bus: EventBus = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
-    invocation_store: Any = None  # type: ignore[assignment]
+    invocation_store: Any = None
     handler_invocation_store: InvocationStore = None  # type: ignore[assignment]
     handler_caller: HandlerCaller = None  # type: ignore[assignment]
     # Durable replay cursor for the legacy-event bridge (#1163): a claim
@@ -1135,14 +1135,58 @@ class Container:
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
         return len(reclaimed)
 
-    async def _reconcile_unreconciled_terminal_attempts(  # noqa: C901
+    @staticmethod
+    def _node_run_has_active_lease(attempts: list[Any], moment: datetime) -> bool:
+        from maistro.runs.lifecycle import lease_is_expired
+        from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES
+
+        return any(
+            attempt.status not in TERMINAL_ATTEMPT_STATUSES
+            and attempt.execution_lease is not None
+            and not lease_is_expired(attempt, moment)
+            for attempt in attempts
+        )
+
+    @staticmethod
+    def _latest_completed_attempt(attempts: list[Any]) -> Any | None:
+        from maistro.runs.model import AttemptStatus
+
+        for attempt in reversed(attempts):
+            if attempt.status is AttemptStatus.COMPLETED:
+                return attempt
+        return None
+
+    async def _reconcile_completed_attempt(
+        self,
+        reconciler: Any,
+        attempts: list[Any],
+        moment: datetime,
+    ) -> bool:
+        from maistro.runs.store import RunIntegrityError
+
+        if self._node_run_has_active_lease(attempts, moment):
+            return False
+        completed = self._latest_completed_attempt(attempts)
+        if completed is None:
+            return False
+        try:
+            await reconciler.reconcile(completed)
+        except RunIntegrityError:
+            logger.warning(
+                "terminal Attempt %s could not be reconciled",
+                completed.attempt_id,
+                exc_info=True,
+            )
+            return False
+        return True
+
+    async def _reconcile_unreconciled_terminal_attempts(
         self, *, now: datetime | None, limit: int
     ) -> int:
         """Replay reconciliation for terminal Attempts a crash interrupted (#804)."""
-        from maistro.runs.lifecycle import lease_is_expired
-        from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus, RunStatus
+        from maistro.runs.model import RunStatus
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
-        from maistro.runs.store import RunIntegrityError, run_cursor_key
+        from maistro.runs.store import run_cursor_key
 
         moment = now if now is not None else datetime.now(UTC)
         reconciler = AttemptLifecycleReconciler(
@@ -1166,33 +1210,8 @@ class Container:
                     if reconciled >= limit:
                         break
                     attempts = await self.run_store.list_attempts(node_run.node_run_id)
-                    if any(
-                        attempt.status not in TERMINAL_ATTEMPT_STATUSES
-                        and attempt.execution_lease is not None
-                        and not lease_is_expired(attempt, moment)
-                        for attempt in attempts
-                    ):
-                        continue
-                    completed = next(
-                        (
-                            attempt
-                            for attempt in reversed(attempts)
-                            if attempt.status is AttemptStatus.COMPLETED
-                        ),
-                        None,
-                    )
-                    if completed is None:
-                        continue
-                    try:
-                        await reconciler.reconcile(completed)
-                    except RunIntegrityError:
-                        logger.warning(
-                            "terminal Attempt %s could not be reconciled",
-                            completed.attempt_id,
-                            exc_info=True,
-                        )
-                        continue
-                    reconciled += 1
+                    if await self._reconcile_completed_attempt(reconciler, attempts, moment):
+                        reconciled += 1
             if len(page) < min(limit - reconciled, limit):
                 break
         if reconciled:

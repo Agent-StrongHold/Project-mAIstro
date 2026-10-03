@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from maistro.projects.scope_store import ProjectScopeStore
     from maistro.runs.model import Attempt, NodeRun, Run
+    from maistro.runs.scoped_reads import ScopedRunReader
     from maistro.runs.store import RunStore
     from maistro.workspaces.store import WorkspaceStore
 
@@ -22,7 +23,7 @@ class RunStoreBoundary:
         self._workspace_store = workspace_store
         self._project_store = project_store
 
-    def _reader(self):
+    def _reader(self) -> ScopedRunReader:
         from maistro.runs.scoped_reads import ScopedRunReader
 
         return ScopedRunReader(self._run_store, self._workspace_store, self._project_store)

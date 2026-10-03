@@ -256,9 +256,9 @@ class InMemoryProjectScopeStore:
         # PostgreSQL enforces the same rule with a foreign key, which needs no
         # equivalent because the database can see both tables.
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
-        self._workspace_store: WorkspaceStore | None = None  # type: ignore[name-defined]
+        self._workspace_store: WorkspaceStore | None = None
 
-    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:  # type: ignore[name-defined]
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
         self._workspace_store = workspace_store
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:

@@ -102,7 +102,7 @@ class SqliteProjectScopeStore:
 
         self._conn = conn
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
-        self._workspace_store: WorkspaceStore | None = None  # type: ignore[name-defined]
+        self._workspace_store: WorkspaceStore | None = None
         # One connection, so this orders same-process writers; `BEGIN
         # IMMEDIATE` is what protects a second process sharing this file.
         # Every writer takes it through `_serialized_write` (#1147, #1148,
@@ -113,7 +113,7 @@ class SqliteProjectScopeStore:
         # transaction" the moment their awaits interleaved.
         self._write_lock = asyncio.Lock()
 
-    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:  # type: ignore[name-defined]
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
         self._workspace_store = workspace_store
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
