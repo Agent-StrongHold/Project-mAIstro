@@ -57,6 +57,7 @@ its floor, both pinning the two promotion/battle-evidence refusal paths the
 diff introduced but no public path reaches:
 
 - `tests/test_fitness_ownership.py` (new, 30): objective ownership (genome
+
   reweighting attack is dead; frozen objective; mutation/crossover cannot move
   the ruler; cycle scores one campaign objective), missing-data pessimism
   arithmetic, degenerate/malformed evidence boundaries (zero avg_elo with
@@ -73,6 +74,7 @@ diff introduced but no public path reaches:
   (`None`), Elo requires battle evidence, capability immunity to context
   terms; weight-sum pin moved to the objective.
 - `tests/test_rsi_safety.py` (+3 → +5): `TestCapabilityPromotionGate` — never-
+
   evaluated and gate-failing genomes refuse promotion even with padded
   harness evidence; a reweighted objective cannot rescue a gated candidate.
 - `tests/test_cycle.py` (+4): `TestFitnessEvidenceLedger` — identical
@@ -169,3 +171,4 @@ Post-fix local gate evidence: `scripts/check-diff-coverage.py coverage.xml
 all under the CI producers' exact `--source` flags); suite-inventory
 re-recorded via `--update --note 853-evolve-fitness-ownership` (+43 evolve,
 +2 rsi); vulture ratchet clean at 1380 banked findings; ruff clean.
+
