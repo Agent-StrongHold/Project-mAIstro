@@ -36,6 +36,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
+
 from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
@@ -93,6 +96,7 @@ from maistro.runs.store import (
     validate_effect_claim_parent,
     validate_eval_score_spine,
 )
+from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 
 #: The unique index migration 015 creates. Compared against
 #: `UniqueViolationError.constraint_name` so a violation on any *other*
@@ -179,17 +183,26 @@ class PgRunStore:
         pool: asyncpg.Pool,
         *,
         project_store: ProjectScopeStore,
+        workspace_store: WorkspaceStore | None = None,
         archive_store: ArchiveStore | None = None,
         concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         self._pool = pool
         self._project_store = project_store
+        self._workspace_store = workspace_store
         self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # None means the tier is off (f436 decision 9). A store with archived
         # rows and no archive configured still reads correctly for everything
         # resident and raises `ArchivedPayloadUnavailable` -- never an empty
         # result -- for what moved.
         self._archive_store = archive_store
+
+    def _run_boundary(self) -> RunStoreBoundary:
+        if self._workspace_store is None:
+            from maistro.runs.scoped_reads import RunNotVisible
+
+            raise RunNotVisible
+        return RunStoreBoundary(self, self._workspace_store, self._project_store)
 
     # ── Run ───────────────────────────────────────────────────────
 
@@ -233,7 +246,7 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
         )
@@ -676,11 +689,15 @@ class PgRunStore:
             )
         return model_of(RunEvalScore, row["payload"]) if row is not None else None
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         payload = await self._payload(
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
         )
-        return Run.model_validate(payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
+        return Run.model_validate(payload)
 
     async def claim_run_by_effect(
         self,
@@ -707,7 +724,7 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance={**dict(provenance or {}), "effect_key": effect_key},
             retention_expires_at=retention_expires_at,
         )
@@ -978,7 +995,10 @@ class PgRunStore:
         at: datetime | None = None,
         result: object | None = None,
         error: str | None = None,
+        principal_id: str | None = None,
     ) -> Run:
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._pool.acquire() as conn, conn.transaction():
             run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
             # Read inside the Run's transaction, with its row already locked:
@@ -1055,12 +1075,18 @@ class PgRunStore:
             )
         return node_run
 
-    async def get_node_run(self, node_run_id: str) -> NodeRun | None:
+    async def get_node_run(
+        self, node_run_id: str, *, principal_id: str | None = None
+    ) -> NodeRun | None:
         payload = await self._payload(
             "SELECT node_run_id, payload, archive_key FROM canonical_node_runs WHERE node_run_id = $1",
             node_run_id,
         )
-        return NodeRun.model_validate(payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_node_run(node_run_id, principal_id=principal_id)
+        return NodeRun.model_validate(payload)
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]:
         await self._require_run(run_id)
@@ -1184,12 +1210,18 @@ class PgRunStore:
                 raise _integrity_failure(exc, node_run_id) from exc
         return attempt
 
-    async def get_attempt(self, attempt_id: str) -> Attempt | None:
+    async def get_attempt(
+        self, attempt_id: str, *, principal_id: str | None = None
+    ) -> Attempt | None:
         payload = await self._payload(
             "SELECT attempt_id, payload, archive_key FROM canonical_attempts WHERE attempt_id = $1",
             attempt_id,
         )
-        return Attempt.model_validate(payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_attempt(attempt_id, principal_id=principal_id)
+        return Attempt.model_validate(payload)
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]:
         await self._require_node_run(node_run_id)

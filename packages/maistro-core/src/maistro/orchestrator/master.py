@@ -630,6 +630,7 @@ class MasterOrchestrator:
         graph = self._build_graph(project_id=project_id)
         admitted = await self._run_store.create_run(
             graph,
+            actor_principal_id=f"orchestrator:{self._workspace_id}",
             initial_status=RunStatus.QUEUED,
             provenance={"admission_source": "master_orchestrator"},
         )

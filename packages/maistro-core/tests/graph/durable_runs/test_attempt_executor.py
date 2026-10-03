@@ -26,6 +26,7 @@ from maistro.graph.nodes import (
 )
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _Empty(BaseModel):
@@ -340,6 +341,7 @@ def _single_recovery_record(
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.RUNNING,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     node_run = NodeRun(
         node_run_id="recover-node-run",
@@ -387,6 +389,7 @@ async def test_public_durable_executor_routes_each_node_run_through_attempt_runt
         store=store,
         node_resolver=_resolver,
         runtime=runtime,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED
@@ -432,6 +435,7 @@ async def test_effect_key_contract_requires_a_recorded_key_before_retry() -> Non
         _unbound_effect_graph(),
         store=store,
         node_resolver=_unbound_effect_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
@@ -448,6 +452,7 @@ async def test_non_retryable_contract_overrides_a_graph_retry_budget() -> None:
         _hard_non_retryable_graph(),
         store=store,
         node_resolver=_hard_non_retryable_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
@@ -473,6 +478,7 @@ async def test_production_remote_work_kind_is_not_retried_under_a_retry_budget()
         _remote_work_graph(),
         store=store,
         node_resolver=_remote_work_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
@@ -490,6 +496,7 @@ async def test_outer_cancellation_terminalizes_attempt_node_run_and_run() -> Non
             store=store,
             node_resolver=_blocking_resolver,
             run_id="cancel-run",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     )
 
@@ -673,6 +680,7 @@ async def test_a_timed_pause_needs_a_fresh_try_only_once_its_deadline_elapses(
                 )
             ),
             status=RunStatus.WAITING,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         ),
         graph_state=GraphExecutionState(run_id="redispatch-run"),
         version=1,

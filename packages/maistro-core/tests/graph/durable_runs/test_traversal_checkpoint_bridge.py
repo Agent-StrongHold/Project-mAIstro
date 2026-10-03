@@ -23,6 +23,7 @@ from maistro.runs import (
     Run,
     RunStatus,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _outcome(node_run_id: str, attempt_id: str, result: object) -> AcceptedNodeOutcome:
@@ -64,6 +65,7 @@ def _history() -> tuple[
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.RUNNING,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     first_outcome = _outcome("node-run-a", "attempt-a", {"value": "a"})

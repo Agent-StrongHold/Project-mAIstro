@@ -5,7 +5,10 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 
 from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
@@ -54,6 +57,7 @@ from maistro.runs.sources import (
     EPHEMERAL_ADMISSION_SOURCES,
     occurrence_key,
 )
+from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 
 #: How many lapsed Attempts one reclaim sweep settles. Bounded for the same
 #: reason the retention sweep is: a recovery pass must not become a long
@@ -513,7 +517,7 @@ class RunStore(Protocol):
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
-    async def get_run(self, run_id: str) -> Run | None: ...
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
 
     async def find_run_by_effect(self, effect_key: str) -> Run | None: ...
 
@@ -585,11 +589,14 @@ class RunStore(Protocol):
         at: datetime | None = None,
         result: object | None = None,
         error: str | None = None,
+        principal_id: str | None = None,
     ) -> Run: ...
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun: ...
 
-    async def get_node_run(self, node_run_id: str) -> NodeRun | None: ...
+    async def get_node_run(
+        self, node_run_id: str, *, principal_id: str | None = None
+    ) -> NodeRun | None: ...
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]: ...
 
@@ -632,7 +639,9 @@ class RunStore(Protocol):
         limit: int = DEFAULT_RECLAIM_BATCH,
     ) -> list[Attempt]: ...
 
-    async def get_attempt(self, attempt_id: str) -> Attempt | None: ...
+    async def get_attempt(
+        self, attempt_id: str, *, principal_id: str | None = None
+    ) -> Attempt | None: ...
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]: ...
 
@@ -685,6 +694,7 @@ class InMemoryRunStore:
         self,
         *,
         project_store: ProjectScopeStore,
+        workspace_store: WorkspaceStore | None = None,
         max_runs: int = MAX_IN_MEMORY_RUNS,
         prune_target: int = RUN_PRUNE_TARGET,
         archive_store: ArchiveStore | None = None,
@@ -694,6 +704,7 @@ class InMemoryRunStore:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
+        self._workspace_store = workspace_store
         self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # The same seam `archive_store` is: a capability the reference store
         # may be wired with, so a retention sweep reclaims Graph continuation
@@ -734,6 +745,13 @@ class InMemoryRunStore:
         # the volume is the scored dimensions of the Runs held here, and the
         # spine maps run_id -> node_run_ids already.
         self._eval_scores: dict[str, RunEvalScore] = {}
+
+    def _run_boundary(self) -> RunStoreBoundary:
+        if self._workspace_store is None:
+            from maistro.runs.scoped_reads import RunNotVisible
+
+            raise RunNotVisible
+        return RunStoreBoundary(self, self._workspace_store, self._project_store)
 
     def _prune_terminal_runs(self) -> None:
         """Evict the oldest terminal Runs once the store exceeds its bound.
@@ -865,7 +883,7 @@ class InMemoryRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
         )
@@ -1193,9 +1211,13 @@ class InMemoryRunStore:
             matching = [run for run in matching if run_cursor_key(run) > after]
         return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         run = self._runs.get(run_id)
-        return run.model_copy(deep=True) if run is not None else None
+        if run is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
+        return run.model_copy(deep=True)
 
     async def find_run_by_effect(self, effect_key: str) -> Run | None:
         for run in self._runs.values():
@@ -1253,7 +1275,7 @@ class InMemoryRunStore:
                 parent_run_id=parent_run_id,
                 parent_node_run_id=parent_node_run_id,
                 persona_id=persona_id,
-                actor_principal_id=actor_principal_id,
+                actor_principal_id=require_admitted_actor(actor_principal_id),
                 provenance={**dict(provenance or {}), "effect_key": effect_key},
                 retention_expires_at=retention_expires_at,
             ),
@@ -1321,6 +1343,7 @@ class InMemoryRunStore:
         at: datetime | None = None,
         result: object | None = None,
         error: str | None = None,
+        principal_id: str | None = None,
     ) -> Run:
         """Advance one Run, settling its open NodeRuns when it terminalizes.
 
@@ -1332,6 +1355,8 @@ class InMemoryRunStore:
         Every write lands together. The Run's own transition is validated
         first, so an illegal one settles nothing.
         """
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
         run = self._require_run(run_id)
         check_completion_is_earned(target, self._node_runs_of(run_id))
         updated = transition_run(run, target, at=at, result=result, error=error)
@@ -1428,9 +1453,15 @@ class InMemoryRunStore:
         self._node_runs[node_run.node_run_id] = node_run
         return node_run.model_copy(deep=True)
 
-    async def get_node_run(self, node_run_id: str) -> NodeRun | None:
+    async def get_node_run(
+        self, node_run_id: str, *, principal_id: str | None = None
+    ) -> NodeRun | None:
         node_run = self._node_runs.get(node_run_id)
-        return node_run.model_copy(deep=True) if node_run is not None else None
+        if node_run is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_node_run(node_run_id, principal_id=principal_id)
+        return node_run.model_copy(deep=True)
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]:
         self._require_run(run_id)
@@ -1568,9 +1599,15 @@ class InMemoryRunStore:
             reclaimed.append(settled.model_copy(deep=True))
         return reclaimed
 
-    async def get_attempt(self, attempt_id: str) -> Attempt | None:
+    async def get_attempt(
+        self, attempt_id: str, *, principal_id: str | None = None
+    ) -> Attempt | None:
         attempt = self._attempts.get(attempt_id)
-        return attempt.model_copy(deep=True) if attempt is not None else None
+        if attempt is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_attempt(attempt_id, principal_id=principal_id)
+        return attempt.model_copy(deep=True)
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]:
         self._require_node_run(node_run_id)
