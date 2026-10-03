@@ -27,15 +27,15 @@ the owner actually answered.
 | Route              | Before (#389 audit)                    | Now                                                                                                                                 |
 | ------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /reload`     | `{"status": "reloaded"}` — nothing reloaded | Drops the settings cache and re-reads `services.settings_store`; returns the fresh record (revision included). Store read failure → `503`. Owner: `services.settings_store`. |
-| `GET /audit`       | `return []` forever                    | The settings-change trail (`settings_update` / `settings_patch` / `settings_reload` actions), newest first, from the one durable audit log `GET /v1/audit` serves. Empty = no settings write recorded. Owner: `stores.audit_log`. |
-| `GET /quotas`      | `{"providers": []}` forever            | Delegates to the LiteLLM-backed provider aggregation behind `GET /v1/quotas/providers` — same envelope, one owner. Owner: `routes.quotas.provider_panel`. |
+| `GET /audit`       | `return []` forever                    | The settings-change trail (`settings_update` / `settings_patch` / `settings_reload` actions), newest first, from the one durable audit log `GET /v1/audit` serves (read through the shared `routes.audit.audit_entries_view`). Empty = no settings write recorded. Owner: `routes.audit.audit_entries_view` (core store first, hive dict fallback). |
+| `GET /quotas`      | `{"providers": []}` forever            | Delegates to the LiteLLM-backed provider aggregation behind `GET /v1/quotas/providers` — same envelope, one owner. Owner: `services.provider_usage.provider_panel` (a service module, so this route imports no router file). |
 | `GET/PUT/DELETE /volatile` | real, but unlabelled           | Marked **Preview** in the OpenAPI summary + description: deliberately non-durable overlay values, never written to the record. |
 
 ## Schedules (`routes/schedules.py`, prefix `/v1/schedules`)
 
 | Route          | Before            | Now                                                                                                                                                                                                         |
 | -------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /history` | `return []` forever | Fire receipts from the durable audit log (`schedule_fire` occurrence receipts and `schedule_run` outcomes — run ids, refusals with `detail.error`), restricted to schedules in Workspaces the caller is authorized to see, newest first, `limit`-capped. Empty = no fire recorded; foreign-Workspace entries are absent, not an error. Owner: `stores.audit_log` + `stores.schedules`. |
+| `GET /history` | `return []` forever | Fire receipts from the durable audit log (`schedule_fire` occurrence receipts and `schedule_run` outcomes — run ids, refusals with `detail.error`), restricted to schedules in Workspaces the caller is authorized to see, newest first, `limit`-capped. Empty = no fire recorded; foreign-Workspace entries are absent, not an error. Owner: `routes.audit.audit_entries_view` + `stores.schedules`. |
 
 ## Memory (`routes/memory.py`, prefix `/v1/memory`)
 
