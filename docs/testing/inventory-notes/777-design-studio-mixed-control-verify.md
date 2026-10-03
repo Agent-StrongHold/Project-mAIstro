@@ -4567,3 +4567,97 @@ brief half (#774 brief + #775 graph suites inside the 502P package run).
 #775 landing advances a dependency without making any #804-dependent
 criterion provable. Verdict: **BLOCKED** on unlanded canonical owners, same
 as rounds 1-63; no closure keywords (`Refs #777` only).
+
+## Round 66 — re-verify at merge `cb13006bd` (base `5765efce8` == origin/develop, unmoved)
+
+Driver ran no deterministic checks (job dir
+`00c03051ff3f4c06a134e3b68ab6435c` has no `check-*.log`); every result below
+was executed fresh in the worktree.
+
+### Previous block re-read
+
+Round-65 result artifact (`87ed178c…`): clean dependency-block BLOCKED (not a
+sync conflict), tree clean at the exact expected head `cb13006bdfc1`, nothing
+to salvage. `origin/develop` fetched this round and **unmoved** at
+`5765efce8` == the declared lane base == already merged as HEAD `cb13006bd`
+(`git rev-list --count HEAD..origin/develop` = 0). No sync was needed or
+possible; the BLOCK cannot be a develop-sync conflict.
+
+### Dependency audit — fresh at `cb13006bd`
+
+- **#774 CreativeBrief — landed** (unchanged): `maistro-design/brief.py`
+  versioned brief bound to caller-supplied `goal_id`/`goal_revision` + Persona
+  + Design System as references.
+- **#775 creative Graph — landed** (unchanged from round 64):
+  `creative_graph.py`/`creative_nodes.py` plan/instantiate/run over canonical
+  GraphTemplate + `run_durable_graph`.
+- **#458 canonical Goal — still absent in-tree; first observed movement
+  elsewhere.** 0 `GoalRevision` matches under `packages/`; no
+  `maistro/goals` module at HEAD (`ls` fails);
+  `interop/contract.py` still declares `maistro.goals` as the Goal owner
+  without an implementation; `workspaces/campaigns/policy.py` `GoalReader`
+  remains deliberately read-only ("the Goal's owner stays wherever the Goal
+  owner put it", `campaigns/store.py:522`). NEW this round: remote
+  `feat/canonical-goal-store-1572` advanced to `3f17d3a0a` (adds the `goals`
+  module: types/store/sqlite_store/service, ~1175 insertions over base, plus
+  migration-chain self-check) — the #458 store is being prepared in its own
+  lane but is **unmerged into develop**, so nothing is consumable here. This
+  lane does not merge another lane's unmerged feature branch; integration
+  order is not ours to decide.
+- **#804/#805/#806 Goal reconciliation — still absent**: 0 matches for
+  `GoalReconciler|goal_reconcil` in `packages/`; `runs/reconciliation.py`
+  remains physical Attempt/NodeRun lifecycle bookkeeping only.
+- **#776 Workspace Ladybug memory — still absent**: 0 non-book-title
+  `ladybug` matches in `packages/`.
+- **#53 front door — exists** (`workspace_agent.py`), 0 goal/reconcil
+  matches inside it.
+- **E2E**: the Design-Studio-adjacent specs (`design-studio-keyboard.spec.ts`,
+  `design-studio-truthfulness.spec.ts`, `deck-sanitization.spec.ts`) contain
+  0 `pause|cancel|reclaim|reassign|mixed-control|reconcil` references; no
+  #777 mixed-control spec exists (23 specs, matching the recorded inventory).
+
+### Gates (fresh at `cb13006bd`)
+
+- `uv run ruff check .` — **PASS**; `uv run ruff format --check .` —
+  **PASS, 2779 files**.
+- Vulture CI gate, exact args (`scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) —
+  **EXIT=0, 1359/1359 reviewed identities banked, 0 unbanked**. Round 65's
+  CI-repair (eliminating the production-dead seam accessors and pruning their
+  2 eliminated identities from `quality/vulture-baseline.json`) resolved the
+  round-58..64 trusted-half EXIT=1; no ledger amendment was needed or made
+  this round.
+- `scripts/check-suite-inventory.py` — **ok: 14 suites match**.
+- `scripts/check-doc-links.py` — **PASS**; `scripts/check-adr-index.py` —
+  **PASS**.
+
+### Tests (fresh)
+
+- `uv run pytest packages/maistro-design/tests -q` — **501 passed, 1
+  skipped**.
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **3259 passed,
+  6 skipped, 0 failed in 122s**. Round 64's 62 develop-inherited #1816
+  principal-migration failures are **resolved at this head**: develop's
+  `f7d1fe5f3` (#1846, "consolidate shared integration repairs") arrived via
+  the round-65 sync and no lane production code has changed since (the
+  branch's only package delta vs develop is a one-character comment fix in
+  `design_service.py`). The develop-side test debt recorded in round 64 is
+  burned.
+- `uv run pytest packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_design_service_startup.py -q` —
+  **42 passed**.
+- `uv run pytest packages/hive-conductor/backend/tests/test_chat_brief_interview.py
+  packages/hive-conductor/backend/tests/test_program_brief_routes.py
+  packages/maistro-core/tests/interop -q` — **32 passed**.
+
+### Acceptance — unchanged
+
+13/13 acceptance criteria remain unprovable as stated: the 11
+reconciliation/mixed-control/E2E criteria need #804/#805/#806/#458/#776
+behavior, none of which is reachable at this head; AC1's seam half is now
+smaller than round 64 (the uninjected-seam scaffolding was removed as dead in
+round 65 — there is no Design-Studio-private runtime to remove, which is the
+correct state under the stop condition), and AC2's brief half stays green
+inside the 501P package run. The #458 feature-branch movement is progress but
+lands nothing consumable. Verdict: **BLOCKED** on unlanded canonical owners,
+same as rounds 1-65; no closure keywords (`Refs #777` only).
