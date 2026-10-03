@@ -13,6 +13,7 @@ Attempt.
 
 from __future__ import annotations
 
+from maistro.goals.service import GoalNotVisible, GoalService
 from maistro.goals.store import GoalStore, InMemoryGoalStore
 from maistro.goals.types import (
     TERMINAL_GOAL_STATES,
@@ -30,8 +31,10 @@ __all__ = [
     "Goal",
     "GoalLineageError",
     "GoalNotFound",
+    "GoalNotVisible",
     "GoalRevision",
     "GoalRevisionConflict",
+    "GoalService",
     "GoalState",
     "GoalStateConflict",
     "GoalStore",

@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from maistro.container import create_container
+from maistro.goals.service import GoalService
 from maistro.goals.store import GoalStore
 from maistro.goals.types import Goal, GoalRevision, GoalState
 from maistro.persistence import close_pool
@@ -70,6 +71,14 @@ class TestTheBackendChoosesTheGoalStore:
         container = await create_container(_config("memory://"))
 
         assert isinstance(container.goal_store, GoalStore)
+
+    async def test_the_goal_service_wraps_the_same_store(self) -> None:
+        """`goal_service` is the authorization seam (#1150) a principal-facing
+        caller goes through; `goal_store` alone trusts whoever holds it."""
+        container = await create_container(_config("memory://"))
+
+        assert isinstance(container.goal_service, GoalService)
+        assert container.goal_service.goal_store is container.goal_store
 
 
 async def test_the_sqlite_store_is_usable_as_wired(tmp_path) -> None:  # type: ignore[no-untyped-def]

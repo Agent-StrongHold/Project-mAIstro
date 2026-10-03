@@ -38,6 +38,7 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.service import GoalService
 from maistro.goals.store import GoalStore
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
@@ -236,6 +237,10 @@ class Container:
     #: Runs, and a Run's outcome is evidence for the next decision rather than
     #: a Goal transition.
     goal_store: GoalStore = None  # type: ignore[assignment]
+    #: The product authorization seam over `goal_store` (#1150, #1572): the
+    #: same Workspace-membership decision `run_reader` makes for Runs, so a
+    #: foreign or missing Goal answer the same way.
+    goal_service: GoalService = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     #: The product read seam over `run_store` (#1152): Workspace membership
     #: decides who may read a Run tree, and foreign ids answer like missing ones.
@@ -2310,6 +2315,7 @@ async def create_container(
         session_store=session_store,
         prompt_manager=prompt_manager,
         goal_store=goal_store,
+        goal_service=GoalService(goal_store, workspace_store),
         warden=warden,
         gate=gate,
         strike_tracker=strike_tracker,
