@@ -5843,3 +5843,83 @@ consume and the stop condition forbids a Design-Studio-private reconciler,
 Goal owner, or Agent runtime. Remaining blocker is exactly **#804/#805/#806**
 (plus the product wiring and E2Es that consume it). Verdict: **BLOCKED**,
 dependency-blocking.
+
+## Re-verification at lane head 99efdd463 (round 85 — develop sync + battery re-green)
+
+Lane round 85: `origin/develop` advanced `55a647059` → `4fd7801fb` (single
+commit: "WIP: M4-A6 — Preserve candidate lineage/archive and enforce
+historical-retention evaluation (#1752)" — maistro-evolve candidate archive +
+retention gate + hive EvolutionService archive ownership). Merged conflict-free
+into `auto-777` at merge commit `99efdd463` (working tree clean). No overlap
+with any #777 surface.
+
+**Ledger integrity post-merge:** `git diff --numstat origin/develop --
+quality/` → empty (byte-identical, no auto-resolve row loss);
+`quality/vulture-baseline.json` rules 15 with 1355 reviewed identities — the
+develop delta itself removed 4 rows (`| 4 -` in the merge stat) together with
+the dead code their fix eliminated, so the CI-args gate still matches.
+
+### Blocker re-audit at 99efdd463 (sole blocker unchanged)
+
+- `grep -rli GoalReconcil packages/*/src` → **empty**; also empty against
+  `origin/develop` itself (`git grep -l -i GoalReconcil origin/develop --
+  'packages/*/src'` → no matches; no `maistro/goals/` tree on develop).
+- `maistro/runs/reconciliation.py:1-3` self-describes as "policy-neutral
+  reconciliation between physical Attempts and logical execution … owns
+  universal lifecycle bookkeeping only" — Attempt-level crash recovery, not
+  #804 Goal reconciliation.
+- #53 front door present at
+  `packages/hive-conductor/backend/services/workspace_agent.py` (149 lines:
+  one persistent Agent row per Workspace, persona-swap, id namespace) —
+  identity seam only, no reconciliation consumption.
+- `design_service.py` and `routes/design.py`: still **0** tokens of
+  workspace_agent/CreativeBrief/GoalRevision/reconcil/delegat/subgoal.
+- `brief_chat.py:9` still defers: "the draft is what the Goal and
+  CreativeBrief writers (#458, #774) will consume" — chat commit writes no
+  Goal.
+- #776 working graph: consumed by `maistro/container.py:50-51`
+  (WorkspaceWorkingMemoryManager + wiring) but **zero hive-backend
+  consumers** (`grep -rln working_graph packages/hive-conductor/backend`
+  excluding tests → empty).
+- #774 `maistro_design/brief.py` unchanged: versioned CreativeBrief bound to
+  `goal_revision` (line 283) with persona/design-system references — library
+  contract green, product wiring still absent.
+- e2e specs: platform/app/setup/degraded-mode/api-error-copy/widget-capabilities/
+  route-code-splitting/credential-labels/modal-a11y — no mixed-control,
+  Canvas-under-Goal-lineage, Builders, or media-branch spec.
+
+### Validation battery (worker-executed at 99efdd463)
+
+- `uv run ruff check .` → EXIT 0, All checks passed!
+- `uv run ruff format --check .` → EXIT 0, 2840 files already formatted.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → **EXIT=0**, 1355 = 1355
+  identities. No CI-gate repair, no ledger amendment (not a repair round).
+- `uv run pytest packages/maistro-evolve/tests -x -q` → **915 passed, 6
+  skipped** (develop's new archive code green post-merge).
+- `uv run pytest packages/maistro-design/tests -x -q` → **540 passed, 1
+  skipped** (matches round 84).
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/memory/working_graph/
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py
+  packages/maistro-core/tests/runtime/test_public_cancellation_fence.py -q`
+  → **73 passed**.
+- Gates: check-suite-inventory, check-backlog-consistency, check-doc-links,
+  check-cross-package-imports, verify-monorepo-layout → all **EXIT 0**.
+- mypy on `packages/maistro-evolve/src` (not a documented gate root): 4
+  pre-existing `import-untyped` findings in `benchmarks/sandbox_exec.py:240`
+  and `providers/openai_compatible.py:10-11` — both files byte-identical to
+  `origin/develop` (`git diff origin/develop HEAD -- <files>` empty), i.e.
+  present on develop before this lane's merge and outside the documented
+  typecheck roots (`maistro-core/server/turing/canvas/bootstrap/registry`).
+  No repair; fixing develop's pre-existing typing debt is out of this lane's
+  scope.
+
+### Verdict — unchanged
+
+#804/#805/#806 persistent Goal reconciliation remains unlanded on develop,
+so acceptance criteria 1, 3 (product wiring), 4–9, 11–13 remain unmet and 10
+stays partial (CreativeBrief versioning landed; canonical Goal writer absent).
+The stop condition still forbids a Design-Studio-private reconciler, Goal
+owner, or Agent runtime. Verdict: **BLOCKED**, dependency-blocking.
