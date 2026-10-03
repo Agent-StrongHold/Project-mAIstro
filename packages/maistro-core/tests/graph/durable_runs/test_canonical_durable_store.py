@@ -34,6 +34,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import hitl_authorization
 
@@ -94,7 +95,7 @@ def _resolve(node: BaseNode[Any, Any]) -> Any:
 
 async def _admit(run_store: InMemoryRunStore, graph: Graph) -> str:
     """Admit the Run, the way a producer does, then hand traversal its id."""
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     return run.run_id
 
 
@@ -256,7 +257,7 @@ async def _continued_run(
     run_status: RunStatus | None = None,
 ) -> str:
     """Admit a Run, drive it to `run_status`, and persist a continuation."""
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     if run_status is not None and run_status is not RunStatus.QUEUED:
         await run_store.transition_run(run.run_id, RunStatus.RUNNING)
         if run_status is not RunStatus.RUNNING:

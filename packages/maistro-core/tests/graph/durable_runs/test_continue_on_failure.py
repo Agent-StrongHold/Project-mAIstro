@@ -12,6 +12,7 @@ from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _In(BaseModel):
@@ -59,7 +60,7 @@ async def test_exhausted_failure_completes_logically_without_rewriting_attempt()
             )
         ],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     record = await run_durable_graph(
         graph,

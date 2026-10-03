@@ -22,6 +22,7 @@ from maistro.graph.nodes import get_node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import hitl_authorization
 
@@ -165,6 +166,7 @@ async def test_canonical_spine_preserves_malformed_verdict_deadline(
         graph,
         initial_status=RunStatus.QUEUED,
         provenance=durable_graph_launch_provenance(inputs=launch_inputs),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     paused = await run_durable_graph(

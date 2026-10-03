@@ -26,6 +26,7 @@ from maistro.graph.nodes import (
 )
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _Empty(BaseModel):
@@ -292,6 +293,7 @@ def _single_recovery_record(
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.RUNNING,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     node_run = NodeRun(
         node_run_id="recover-node-run",
@@ -607,6 +609,7 @@ async def test_a_timed_pause_needs_a_fresh_try_only_once_its_deadline_elapses(
                 )
             ),
             status=RunStatus.WAITING,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         ),
         graph_state=GraphExecutionState(run_id="redispatch-run"),
         version=1,

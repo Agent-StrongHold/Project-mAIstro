@@ -18,6 +18,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _spine() -> tuple[InMemoryRunStore, Graph]:
@@ -41,7 +42,7 @@ async def _spine() -> tuple[InMemoryRunStore, Graph]:
 async def test_nonempty_launch_state_must_be_durable_before_checkpoint_one() -> None:
     """A crash after admission must never make recovery invent empty inputs."""
     run_store, graph = await _spine()
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     durable = InMemoryDurableRunStore()
 
     with pytest.raises(RunIntegrityError, match="durable_graph_launch snapshot"):
@@ -74,6 +75,7 @@ async def test_bootstrap_recovery_rehydrates_exact_admitted_launch_snapshot() ->
                 blackboard_metadata=blackboard,
             ),
         },
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     # Simulate process death after Run admission and before checkpoint 1.

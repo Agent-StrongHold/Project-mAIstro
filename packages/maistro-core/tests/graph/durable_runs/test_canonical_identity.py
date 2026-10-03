@@ -28,6 +28,7 @@ from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import durable_record, hitl_authorization
 
@@ -57,7 +58,7 @@ async def _admit(run_store: InMemoryRunStore, graph: Graph) -> str:
     the first traversal checkpoint are writes to two stores, and a crash
     between them would leave a canonical Run RUNNING with nothing to resume it.
     """
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     return run.run_id
 
 
@@ -137,7 +138,7 @@ async def test_a_workspace_scoped_listing_walks_the_spine_first() -> None:
     store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
 
     graph = _graph(workspace_id, project_id)
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await store.create(
         durable_record(
             {"id": "d1", "nodes": [{"id": "n1"}], "edges": []},

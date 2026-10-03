@@ -50,6 +50,7 @@ from maistro.runs.lifecycle import (
     transition_node_run,
 )
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import durable_record
 
@@ -653,7 +654,7 @@ async def _canonical_two_workspace_fixture() -> tuple[Any, Any, Any, Any]:
                 )
             ],
         )
-        admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+        admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         paused[workspace_id] = await run_durable_graph(
             graph,
             store=store,
@@ -741,7 +742,7 @@ async def _canonical_two_project_fixture() -> tuple[Any, Any, Any]:
                 )
             ],
         )
-        admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+        admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         paused[name] = await run_durable_graph(
             graph,
             store=store,
@@ -976,7 +977,7 @@ async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
         name="crash after timeout evidence",
         nodes=[Node(node_id="ask", node_type=_CanonicalAsk.kind)],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     paused = await run_durable_graph(
         graph,
         store=store,
@@ -1044,7 +1045,7 @@ async def test_reconcile_repairs_crash_after_answer_before_run_mirror(
         name="crash after answer evidence",
         nodes=[Node(node_id="ask", node_type=_AnswerThenComplete.kind)],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     paused = await run_durable_graph(
         graph,
         store=store,
@@ -1120,7 +1121,7 @@ async def _paused_hitl_run(
         name="answered but interrupted",
         nodes=[Node(node_id="ask", node_type=_AnswerThenComplete.kind)],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     paused = await run_durable_graph(
         graph,
         store=store,
@@ -1384,7 +1385,7 @@ async def _canonical_pause(
         name="human pause",
         nodes=[Node(node_id="ask", node_type=_CanonicalAsk.kind)],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     return await run_durable_graph(
         graph,
         store=store,
@@ -1575,7 +1576,7 @@ async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() 
         name="canonical timeout",
         nodes=[Node(node_id="ask", node_type=_CanonicalAsk.kind)],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     paused = await run_durable_graph(
         graph,
@@ -1602,7 +1603,7 @@ async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() 
     [canonical_node_run] = await run_store.list_node_runs(paused.run_id)
     assert canonical_node_run.status is RunStatus.TIMED_OUT
 
-    cancel_run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    cancel_run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     cancel_paused = await run_durable_graph(
         graph,
         store=store,
@@ -2342,7 +2343,7 @@ async def _canonical_hitl_fixture() -> tuple[Any, Any, Any]:
             )
         ],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     paused = await run_durable_graph(
         graph,
         store=store,
