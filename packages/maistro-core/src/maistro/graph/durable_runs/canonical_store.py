@@ -505,9 +505,9 @@ class CanonicalDurableRunStore:
         record = await self.get(run_id)
         if record is None or not self._spine_is_quiet(record, moment):
             return False
-        if not self._continuation_ahead_of_spine(record, continuation) and not self._terminal_long_observed(
-            continuation, moment
-        ):
+        if not self._continuation_ahead_of_spine(
+            record, continuation
+        ) and not self._terminal_long_observed(continuation, moment):
             return False
         if target is RunStatus.COMPLETED:
             result, error = terminal_run_payload(record.node_runs, target)
@@ -542,7 +542,10 @@ class CanonicalDurableRunStore:
         moment: datetime,
     ) -> bool:
         """Re-queue graph work after a frontier NodeRun landed without its checkpoint."""
-        if continuation.status is not RunStatus.RUNNING or canonical.status is not RunStatus.RUNNING:
+        if (
+            continuation.status is not RunStatus.RUNNING
+            or canonical.status is not RunStatus.RUNNING
+        ):
             return False
         if continuation.resume_at is not None:
             return False
@@ -575,14 +578,19 @@ class CanonicalDurableRunStore:
             ]
             if not attempts:
                 return True
-            if any(
-                attempt.status not in TERMINAL_ATTEMPT_STATUSES
-                and attempt.execution_lease is not None
-                and not lease_is_expired(attempt, moment)
-                for attempt in attempts
-            ):
+            if self._frontier_has_live_attempt(attempts, moment):
                 return False
         return True
+
+    @staticmethod
+    def _frontier_has_live_attempt(attempts: list[Attempt], moment: datetime) -> bool:
+        """Whether any frontier Attempt still holds a live execution lease."""
+        return any(
+            attempt.status not in TERMINAL_ATTEMPT_STATUSES
+            and attempt.execution_lease is not None
+            and not lease_is_expired(attempt, moment)
+            for attempt in attempts
+        )
 
     def _terminal_long_observed(self, continuation: GraphContinuation, moment: datetime) -> bool:
         """Whether this terminal continuation version has been seen for the quiet period.
