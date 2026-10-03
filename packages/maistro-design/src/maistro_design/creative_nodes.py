@@ -495,6 +495,21 @@ class CreativeArtifactPlan(BaseNode[CreativeGenerateInput, ArtifactPlanOutput]):
         return output
 
 
+def _require_artifact_decisions(
+    request_id: Any,
+    context: dict[str, Any],
+    message_decision_id: str,
+    visual_decision_id: str,
+) -> None:
+    """Refuse generation without the persisted shared context and both decisions."""
+    if not context:
+        raise ValueError(f"branch {request_id!r} consumed no persisted shared context")
+    if not message_decision_id:
+        raise ValueError(f"branch {request_id!r} consumed no message decision")
+    if not visual_decision_id:
+        raise ValueError(f"branch {request_id!r} consumed no visual decision")
+
+
 class CreativeArtifactGenerate(BaseNode[CreativeGenerateInput, ArtifactGenerateOutput]):
     """One artifact branch: generates against the shared decisions it consumed.
 
@@ -529,12 +544,7 @@ class CreativeArtifactGenerate(BaseNode[CreativeGenerateInput, ArtifactGenerateO
             "message.architecture", ""
         )
         visual_decision_id = inputs.visual_decision_id or decisions.get("visual.direction", "")
-        if not context:
-            raise ValueError(f"branch {request_id!r} consumed no persisted shared context")
-        if not message_decision_id:
-            raise ValueError(f"branch {request_id!r} consumed no message decision")
-        if not visual_decision_id:
-            raise ValueError(f"branch {request_id!r} consumed no visual decision")
+        _require_artifact_decisions(request_id, context, message_decision_id, visual_decision_id)
 
         content = self._compose(request, context)
         artifact_id = _digest(
