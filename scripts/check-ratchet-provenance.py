@@ -101,6 +101,12 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "against a prior-tree oracle would compare against a matrix that predates the "
         "surfaces this tree ships"
     ),
+    ("check-api-route-contracts.py", "quality/api-route-contracts.json"): (
+        "the route-contract inventory is the reviewed per-route specification being "
+        "changed: every entry must resolve to a live handler in this tree's route table, "
+        "so a prior-tree oracle would predate the routes this tree ships; a changed "
+        "disposition or contract is the substantive change reviewers read"
+    ),
 }
 
 # Adapter values are tooling identities (filename stems), not paths. Keeping the
