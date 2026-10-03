@@ -154,8 +154,9 @@ versus a cold full re-read per compaction.
   never includes a message older than the window except via explicit re-hydration."
 
 ## Open questions
-- Persistence backend for the transcript (SQLite via the existing store pattern vs. the SPEC-186
-  pgvector store doubling as transcript home).
+- Resolved storage scope (2026-10-03, ADR-082226-5104): the canonical PostgreSQL
+  SessionStore owns the transcript; pgvector may index it for retrieval. SQLite historical
+  readers/imports and explicit fixtures do not establish another production transcript owner.
 - Whether folds run synchronously on the triggering turn (latency) or async between turns (staleness
   window).
 - Re-hydration eviction: when does re-hydrated detail leave the tail again (TTL? next fold?).

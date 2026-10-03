@@ -14,6 +14,7 @@ history:
   - status: AC Defined
     date: 2026-08-30
 substrate:
+  - maistro-engine#ADR-082226-5104
   - maistro-engine#ADR-083026-a322
 implements:
   - maistro-engine#ADR-083026-a322
@@ -53,6 +54,16 @@ owners:
 
 # SPEC-083026-ba26: Episodic memory survives a restart, and its scope rule is written once
 
+## Storage scope amendment — 2026-10-03
+
+[ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) is the governing storage decision. PostgreSQL is the sole
+canonical durable production backend, including local installs. SQLite references below cover
+existing test infrastructure and historical-data compatibility, not a requirement to implement
+or perpetuate another production backend. The original AC identifiers and evidence links are
+retained; no runtime retirement or test completion is asserted. Real PostgreSQL evidence remains
+required for durable, concurrent and replica behavior. Existing user records and all non-storage
+behavioral guarantees must survive any later migration.
+
 ## Context
 
 `episodic_memories` was created by migration 001 and maintained by 006 and 008.
@@ -65,9 +76,9 @@ ADR-083026-a322 records the decisions. This spec states what has to be true.
 
 ## Decision
 
-Two durable stores — `PgEpisodicStore` and `SqliteEpisodicStore` — implement
-`EpisodicStore` and `DecayableEpisodicStore`. `_wire_episodic_store` selects one
-from the configured backend. Migration 026 adds the four record fields the table
+`PgEpisodicStore` is the canonical durable implementation of `EpisodicStore` and
+`DecayableEpisodicStore`. The existing `SqliteEpisodicStore` and backend selector
+record the original implementation and are subject to the storage scope amendment above. Migration 026 adds the four record fields the table
 never had.
 
 Three rules carry the weight.
@@ -159,18 +170,18 @@ Feature: Episodic memory survives a restart, and its scope rule is written once
     And the decayed weights are still there when a new store reads them
 
   @AC-6
-  Scenario: The three stores agree
-    Given the same memories in the in-memory, SQLite and PostgreSQL stores
+  Scenario: The retained conformance fixtures agree
+    Given the same memories in the explicit in-memory and SQLite test fixtures and PostgreSQL store
     When each is asked to retrieve, list by scope and reinforce
     Then all three return the same memories in the same order
 
   @AC-7
-  Scenario: The backend chooses the store
+  Scenario: Canonical production wiring and retained legacy wiring are distinguished
     Given a container configured with a PostgreSQL URL
     When it is built
     Then its episodic store is the PostgreSQL one
-    And a SQLite URL selects the SQLite store
-    And a memory:// URL still selects the in-memory store
+    And the existing SQLite selector remains covered as legacy/test wiring until safely retired
+    And a memory:// URL selects an explicitly ephemeral in-memory store
 
   @AC-8
   Scenario: No document claims a durability that is not there

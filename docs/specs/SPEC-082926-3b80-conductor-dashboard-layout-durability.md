@@ -75,9 +75,10 @@ One entry per principal in the `dashboard_layouts` store:
 ## Where it lives
 
 `stores.dashboard_layouts`, a `JsonStore` like `sessions` and `dags`, so it is
-written through whatever `PersistedStore` the deployment configured — SQLite
-under `CONDUCTOR_STATE_DB`, or PostgreSQL. One key per principal, one upsert per
-save.
+currently written through the configured `PersistedStore`, including existing SQLite
+under `CONDUCTOR_STATE_DB`. The canonical durable target is PostgreSQL at every deployment
+size (ADR-082226-5104). Existing SQLite layouts require verified preservation/import before
+retirement, not ongoing production-backend parity. One key per principal, one upsert per save.
 
 ## Acceptance Criteria
 

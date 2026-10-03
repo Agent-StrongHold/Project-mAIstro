@@ -67,9 +67,10 @@ unidentified append behaving exactly as it does today, and AC-5, which stops
 the marker from outliving the messages it admits and silently swallowing a
 later turn.
 
-Every criterion below is stated against both durable stores. The PostgreSQL
-legs run against a real server; the SQLite twin is held to the same conformance
-suite, because a twin that is merely similar is a twin nobody can rely on.
+Every production criterion below requires real PostgreSQL evidence (ADR-082226-5104).
+The existing SQLite conformance leg remains an explicit regression fixture and protects
+historical data handling; it is not a requirement for another canonical production backend.
+The idempotency, expiry, retention and data-preservation guarantees do not change.
 
 ## Acceptance Criteria
 

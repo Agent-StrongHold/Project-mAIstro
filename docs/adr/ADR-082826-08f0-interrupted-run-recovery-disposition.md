@@ -111,10 +111,11 @@ Three rules bind every row:
 - **AC-3**: Running orphan reconciliation twice over the same interrupted
   record reaches the same state: one cancelled Attempt, a parked NodeRun, a
   parked Run — nothing duplicated, nothing rewritten.
-- **AC-4**: A restart mid-Attempt against a durable (SQLite) store, across a
-  real store reopen, produces the documented disposition: the interrupted
-  Attempt's history preserved as `CANCELLED`, a fresh Attempt with the next
-  ordinal, and a `COMPLETED` Run.
+- **AC-4**: The retained historical SQLite fixture, across a real store reopen,
+  produces the documented disposition: the interrupted Attempt's history is
+  preserved as `CANCELLED`, a fresh Attempt has the next ordinal, and the Run is
+  `COMPLETED`. This is fixture/legacy-record evidence only; it does not establish
+  canonical PostgreSQL production restart or worker-death safety.
 - **AC-5**: The lease-recovery tick completes reclaim through the
   `AttemptLifecycleReconciler` — the reclaimed Attempt's NodeRun parks
   `WAITING` and its Run parks — and refreshes the non-terminal-Run count and
@@ -128,6 +129,34 @@ Three rules bind every row:
   settled and which row it took — so a parked NodeRun can be told apart from a
   paused one, and the two meanings of a cancelled Attempt can be told apart
   from each other. A caller with no sink wired reconciles unchanged.
+
+<!-- ac-state: unproven AC-8 - real PostgreSQL crash/restart and independent-owner proof remains with #1151 and #232; the existing AC-4 SQLite fixture is not this evidence and no PostgreSQL test binding is claimed -->
+- **AC-8**: For canonical PostgreSQL production storage, interrupt work after
+  its Attempt is durably `RUNNING`, then recover through fresh process/store
+  owners over the same persisted Run/NodeRun/Attempt and Graph-continuation
+  lineage. Prove the legal disposition under the table above, retained
+  chronological Attempt history, a new ordinal on retry, no duplicate physical
+  effect, live-lease refusal, and idempotent/fencing-safe competing recovery.
+  A SQLite reopen, an in-memory authority paired with a PostgreSQL continuation,
+  or a direct test-only sweep cannot satisfy this production criterion.
+
+### Evidence separation amendment, 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md)
+makes PostgreSQL the sole canonical durable production backend. AC-4 retains
+its actual historical fixture contract and its existing marker in
+[`test_recovery_disposition.py`](../../packages/maistro-core/tests/graph/durable_runs/test_recovery_disposition.py);
+that marker must never be cited as AC-8 proof. AC-8 is explicitly unproven and
+has no invented test binding or completion claim in this amendment.
+
+Open [#1151](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1151)
+owns persisted Graph crash-window/replica proof; open
+[#232](https://github.com/Agent-StrongHold/Project-mAIstro/issues/232) owns the
+production task-worker kill/cadence boundary. They must supply exact test-node
+and production-path evidence before binding AC-8 as proven. Closed #62 is
+historical parentage, not evidence that these residuals are complete. The
+liveness, fencing, cancellation and disposition table is unchanged; this docs
+slice neither implements runtime recovery nor changes quality floors/grants.
 
 ### Amendment, 2026-08-29
 

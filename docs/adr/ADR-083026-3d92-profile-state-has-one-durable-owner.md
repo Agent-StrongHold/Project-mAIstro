@@ -30,6 +30,15 @@ owners:
 
 # ADR-083026-3d92: Profile state has one durable owner, and no acknowledged write reaches nothing
 
+## Storage amendment — 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) supersedes the original SQLite production backing below. The profile
+service remains the common owner consumed by routes and chat tools; canonical durable profile
+facts belong in PostgreSQL through core stores and Alembic. Retire any existing SQLite writer
+only after verified preservation/import of profiles, ownership, prompt/preferences and deletion
+semantics. Small bootstrap settings and explicit tests are separate. No-cache/read-back/write-
+failure guarantees remain binding, and this amendment does not claim the runtime cutover done.
+
 ## Context
 
 The Conductor kept user profiles in a module global,
@@ -68,9 +77,10 @@ to dashboard layouts. This is the same shape, one family later.
 
 **One owner: `services/profile_store.py`.** The HTTP route and all five
 chat-tool paths call the same module; none of them touches a dict of its own.
-It stores through `PersistedStore` under the namespace `user_profiles` —
-the Conductor's own SQLite state, needing no service this repo does not
-provision.
+The original implementation stores through `PersistedStore` under `user_profiles` in
+Conductor SQLite. That remains implementation history, not canonical production storage
+guidance after the 2026-10-03 amendment; the service and data-preservation contract survive
+the move to the canonical PostgreSQL owner.
 
 It follows `settings_store` (#334) rather than the `stores.py` registry that
 #340 used for dashboard layouts, and the reason is the read-back below: the

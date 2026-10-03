@@ -29,6 +29,14 @@ owners:
 
 # ADR-082926-3b80: A dashboard layout is saved to the Conductor's data boundary, or the save fails
 
+## Storage clarification — 2026-10-03
+
+The Context below records the earlier `PersistedStore` selection. Under
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md), PostgreSQL owns canonical durable layouts at every deployment size;
+SQLite is not an alternate homelab backend. The single-owner, per-principal write, durability
+and deletion guarantees remain binding. Existing SQLite layouts require verified preservation
+and import before a writer is retired; this clarification does not claim that cutover is done.
+
 ## Context
 
 `routes/dashboard_layout.py` kept every user's layout in a module-level dict and

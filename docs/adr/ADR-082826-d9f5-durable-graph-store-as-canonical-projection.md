@@ -89,9 +89,12 @@ universe that looks supported because a test uses it.
 4. `dag_agents.py`'s module-level `InMemoryDurableRunStore` is **retired**, not converted. A
    process-local store for durable work is the defect, not an implementation of it.
 
-Deliberately not decided here: the physical schema for traversal state, and whether
-`SqliteDurableRunStore` keeps a homelab twin. Both are implementation questions for the spec this
-ADR will carry, and neither changes the boundary above.
+**Storage clarification — 2026-10-03.** The physical schema for traversal state remains an
+implementation question. The former open question about a `SqliteDurableRunStore` homelab
+twin is resolved by [ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md): PostgreSQL is the sole canonical durable owner.
+Existing SQLite records/readers and explicit tests remain protected; no new production twin
+or alternate execution authority is authorized. This does not change the projection boundary
+above or claim runtime retirement is complete.
 
 ## How: the executor obtains identity, rather than an adapter replaying it
 

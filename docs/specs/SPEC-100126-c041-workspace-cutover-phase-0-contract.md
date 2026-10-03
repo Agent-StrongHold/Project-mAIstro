@@ -30,6 +30,23 @@ owners:
 
 # SPEC-100126-c041: Workspace cutover Phase 0 contract
 
+## Interface-wide interpretation — 2026-10-03
+
+The owner's [unified product contract](../architecture/PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03)
+applies to this Phase 0 foundation: Workspace UI, CLI and API access the same Agent, tools
+and canonical application services. Builders, Evolve and RSI are unified feature families.
+P0 principal, authorization, typed-contract, audit, durable-effect, crash-recovery and scope
+requirements cannot be implemented differently by each interface. Equivalent operations
+must reach the same service authority and produce the same governed canonical outcomes;
+type/DTO agreement alone is insufficient.
+
+The existing AC identifiers and unproven markers below are unchanged. Interface parity still
+needs feature-by-feature behavior evidence and a named owner for temporary gaps; this spec
+update neither claims that evidence nor adds a separate execution or business-rule owner.
+Near API/Workspace parity and CLI functional parity permit interface-appropriate presentation,
+not weaker security or independent Agent/tool registries. Release sequencing remains in the
+roadmap and cutover plan.
+
 - **Status:** Proposed
 - **Date:** 2026-10-01
 - **Plan:** [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](../architecture/WORKSPACE-CUTOVER-PLAN.md), Phase 0 (P0.1–P0.9)
@@ -142,7 +159,7 @@ its marker (per `check-ac-state.py --mandate`).
 - **AC-7** (AC-P7, #804): a process killed at any of the four named
   points leaves a Run that the next recovery tick settles or resumes; no Run is
   RUNNING with no live Attempt after one tick.
-<!-- ac-state: unproven AC-8 - proven by #364 (P0.8 store-boundary scope conformance per store, on all three backends) -->
+<!-- ac-state: unproven AC-8 - proven by #364 (P0.8 store-boundary scope conformance per store on real PostgreSQL; retained SQLite/in-memory legs are explicit fixtures) -->
 - **AC-8** (AC-P8, #364): workspaces, projects, runs and audit each have a
   store-boundary scope test; `actor_principal_id` is required and validated at
   admission; audit rows carry and filter by `org_id`.

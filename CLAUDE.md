@@ -67,7 +67,7 @@ Every subsystem is importable. Consumers add `maistro-core` to their requirement
 | **Builders** | `maistro.builders` | Pipeline: spec → tests → code → review |
 | **A2A** | `maistro.a2a` | Agent-to-agent delegation + lifecycle |
 | **Skills** | `maistro.skills` | Marketplace, Forge, parser, canary |
-| **Persistence** | `maistro.persistence` | PostgreSQL stores (learnings, outcomes, sessions, agents, audit, quota, prompts) + SQLite twins for homelab. `postgresql://` selects PG, `sqlite:` SQLite, `memory://` neither |
+| **Persistence** | `maistro.persistence` | PostgreSQL canonical stores (learnings, outcomes, sessions, agents, audit, quota, prompts), core asyncpg + Alembic. Existing SQLite selectors are transitional/test or historical-data support, not a homelab production alternative (ADR-082226-5104); `memory://` is ephemeral |
 | **Protocols** | `maistro.protocols` | Abstract interfaces for DI |
 | **Types** | `maistro.types` | Shared dataclasses |
 | **Orchestrator** | `maistro.orchestrator` | Super Planner + Master Orchestrator |
@@ -221,7 +221,7 @@ maistro-engine/
 │   │       ├── memory/          # learnings, episodic, scopes, outcomes
 │   │       ├── observability/   # logging, metrics, tracing
 │   │       ├── orchestrator/    # Super Planner, Master Orchestrator
-│   │       ├── persistence/     # PostgreSQL stores + SQLite twins (same protocols)
+│   │       ├── persistence/     # PostgreSQL canonical stores; retained SQLite test/import adapters
 │   │       ├── protocols/       # abstract interfaces
 │   │       ├── quota/           # billing, tracker
 │   │       ├── router/          # scorer, selector, filter, scarcity, speed

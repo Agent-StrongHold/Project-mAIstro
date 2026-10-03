@@ -8,6 +8,12 @@
 
 This document is the named cross-product contract for MAIstro. It does not introduce a parallel domain model. It packages the accepted architecture into one versioned language that Builders, Conductor, Evolve, Canvas/Design Studio, schedules, the persistent Workspace Agent, and later RSI must use when exchanging shared concepts.
 
+Product interface/service authority and its outstanding UI/API/CLI gaps are specified in the
+separate [product access policy](PRODUCT-ACCESS-POLICY.md). Those product requirements are
+outside this versioned machine ontology; the `1.1.0` schema, serialized principles and
+executable registry below are unchanged. No new ontology capability or interface-parity
+validation is claimed by that policy.
+
 ## Rule
 
 A shared concept has one canonical identity, one canonical semantic owner, and one versioned meaning. Product-local DTOs and views may project that concept for presentation or transport, but they may not redefine its identity, lifecycle, ownership, or lineage.

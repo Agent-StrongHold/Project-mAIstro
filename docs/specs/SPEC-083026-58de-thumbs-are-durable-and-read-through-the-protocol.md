@@ -108,7 +108,7 @@ runs.
 ### Positive
 - A thumb survives a restart, which the feedback endpoint always implied.
 - One aggregation, so the optimizer and the topology comparison cannot disagree.
-- A SQLite deployment can hold feedback at all.
+- Historical SQLite feedback remains readable and preserved by its compatibility fixture.
 - Every time-windowed read means the same thing on every backend.
 
 ### Negative / Trade-offs
@@ -140,7 +140,7 @@ Feature: The thumbs signal is durable, and is read through the store protocol
     And the unattributed one is included, on every store
 
   @AC-3
-  Scenario: A SQLite deployment can hold a thumb
+  Scenario: Historical SQLite feedback remains intact in the compatibility fixture
     Given a SQLite outcomes table created before the feedback columns existed
     When the schema is ensured and a thumb is recorded
     Then the thumb is readable, with every attribution field it was given

@@ -43,6 +43,16 @@ history:
 
 # ADR-082126-f69c: Recurrence produces Runs
 
+## Storage amendment — 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) supersedes §6's original SQLite single-Conductor/homelab deployment
+choice. PostgreSQL is the sole canonical durable schedule store at every deployment size.
+The recurrence, cursor, catch-up, overlap and Run-admission guarantees remain unchanged;
+SQLite/in-memory implementations listed in the historical delivery table are retained only
+for explicit tests or necessary historical-data handling, not production parity. Preserve
+existing schedule definitions/cursors and producer identity through verified import before
+retiring a writer. This amendment does not claim runtime retirement is complete.
+
 **Status:** Accepted
 **Date:** 2026-08-21
 **Supersedes:** [ADR-046](ADR-046-scheduler.md)
@@ -177,11 +187,11 @@ carries a reason it was not — nothing vanishes silently.
 
 ### 6. Durability behind a protocol
 
-Schedules persist. The store is a protocol with an in-memory implementation
-for tests and a **SQLite** implementation for the single-conductor deployment
-ADR-046 targeted; a Postgres implementation satisfies the same protocol where
-a server already exists. Requiring Postgres for a homelab conductor was
-heavier than the problem.
+Schedules persist through the canonical PostgreSQL implementation of the store protocol.
+The original decision selected SQLite for single-Conductor/homelab deployment and optional
+PostgreSQL where a server existed; that deployment choice is superseded by the dated storage
+amendment above. Retained in-memory/SQLite fixtures do not replace real PostgreSQL
+restart, concurrency and replica evidence.
 
 There is deliberately no schedule-side execution table. A fire advances a
 cursor on the schedule (`last_fired_at`, `last_run_id`, `runs_so_far`) and the

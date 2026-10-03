@@ -32,6 +32,16 @@ owners:
 
 # ADR-083026-6e2a: Graph continuation, not events.checkpoints, is the canonical graph recovery checkpoint
 
+## Storage scope clarification — 2026-10-03
+
+The Context's list of in-memory, SQLite and PostgreSQL persistence describes the existing
+resume implementations, not three supported production backends. Under
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md), PostgreSQL is the sole canonical durable owner; SQLite/in-memory
+legs are explicitly scoped test or historical-data support. The Run/Graph-continuation
+ownership boundary and checkpoint-retirement decision below are unchanged. Preserve necessary
+historical readers and actual user data; this note neither deletes them nor claims new runtime
+retirement or crash/restart proof.
+
 ## Context
 
 M1 recovery convergence has accumulated three records that use the word checkpoint but do not own the same thing.

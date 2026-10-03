@@ -77,7 +77,7 @@ Persistent layer (outside instances):
 ### Failover and recovery
 
 - **Primary PostgreSQL fails**: Sentinel/etcd promotes replica automatically (< 1s downtime).
-- **Instance fails**: load balancer removes it; no data loss (state is in PostgreSQL/Redis).
+- **Instance fails**: load balancer removes it; no data loss (canonical durable application state is in PostgreSQL; Redis holds operational state).
 - **Data corruption**: restore from backup (point-in-time recovery using WAL + RDB).
 - **Full disaster**: restore PostgreSQL from backup, Redis from snapshot, reboot all instances.
 
@@ -103,11 +103,14 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
 
 ## Acceptance criteria
 
-- [x] All persistent state (agents, sessions, memory, audit logs) is in PostgreSQL or Redis
+- [x] Canonical durable application state (agents, sessions, memory, audit logs) is in PostgreSQL; Redis is operational queue/cache state, not a parallel canonical owner (ADR-082226-5104). This existing acceptance mark is not proof of alternate-writer retirement.
       (no local files except config). *(Topology enforces this; instances are stateless.)*
 - [ ] PostgreSQL replicas are catching up (replication lag < 1s). *(Live-infra check.)*
-- [x] Backup test: restore yesterday's backup, verify data is present and consistent.
-      *(`deploy/scripts/verify-restore.sh` — pg_dump hash + row-count check.)*
+- [ ] Backup test: restore the authoritative backup snapshot and verify required schema/data,
+      IDs and relationships are present and consistent. **Unproven:** [#1881](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1881)
+      owns the replacement verification design/implementation under [#88](https://github.com/Agent-StrongHold/Project-mAIstro/issues/88).
+      The former checked claim relied on separate-snapshot raw `pg_dump` hashes and row
+      estimates; neither establishes this proof. No new restore evidence is claimed here.
 - [ ] Instance failure: one instance goes down, remaining handle traffic without data loss.
       *(Chaos test at deploy time; LB passive checks configured.)*
 - [ ] Monitoring alerts on replication lag > 5s or backup failure. *(Wired at deploy time;
@@ -117,7 +120,9 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
 
 - Chaos test: kill one instance, verify failover and no lost requests.
 - Restore test: simulate data corruption, restore from backup, verify consistency.
-- Property: "backup restore always produces bit-for-bit identical PostgreSQL state" (via pg_dump hash).
+- Property to prove under #1881/#88: the restored authoritative snapshot preserves the required
+  schema/data, canonical IDs and relationships. Verification must be safe and snapshot-consistent;
+  raw `pg_dump` byte equality is not a valid state oracle. Its replacement design remains under review.
 
 ## References
 

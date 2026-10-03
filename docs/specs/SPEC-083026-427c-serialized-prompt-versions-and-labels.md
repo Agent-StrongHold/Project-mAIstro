@@ -14,6 +14,7 @@ history:
   - status: AC Defined
     date: 2026-08-30
 substrate:
+  - maistro-engine#ADR-082226-5104
   - maistro-engine#ADR-083026-427c
 implements:
   - maistro-engine#ADR-083026-427c
@@ -44,6 +45,16 @@ owners:
 ---
 
 # SPEC-083026-427c: Prompt version creation and label promotion are one serialized, idempotent write
+
+## Storage scope amendment — 2026-10-03
+
+[ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) is the governing storage decision. PostgreSQL is the sole
+canonical durable production backend, including local installs. SQLite references below cover
+existing test infrastructure and historical-data compatibility, not a requirement to implement
+or perpetuate another production backend. The original AC identifiers and evidence links are
+retained; no runtime retirement or test completion is asserted. Real PostgreSQL evidence remains
+required for durable, concurrent and replica behavior. Existing user records and all non-storage
+behavioral guarantees must survive any later migration.
 
 ## Context
 
@@ -110,8 +121,8 @@ Feature: Prompt versions and labels are written once, together, and only forward
     And it rejects a label naming a version that does not exist
 
   @AC-8
-  Scenario: The SQLite twin stores the same shape
-    Given the same sequence of upserts run against SQLite and PostgreSQL
+  Scenario: The retained SQLite test fixture preserves prompt shape
+    Given the same sequence of upserts run against an explicit SQLite test fixture and PostgreSQL
     When each store is read back
     Then the versions, labels and contents agree
 ```

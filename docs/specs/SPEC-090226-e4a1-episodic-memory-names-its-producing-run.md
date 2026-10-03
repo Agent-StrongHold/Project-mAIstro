@@ -43,6 +43,16 @@ owners:
 
 # SPEC-090226-e4a1: An episodic memory names the execution that stored it
 
+## Storage scope clarification — 2026-10-03
+
+[ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) governs production persistence: PostgreSQL is the sole canonical
+durable backend, with Alembic-owned schema. References below to SQLite twins, three-store
+conformance or legacy schema upgrades record existing implementations/fixtures and historical
+compatibility, not new production-backend parity or runtime canonical-DDL requirements.
+Retained test/import paths must preserve producer identity, scope, attribution, idempotency
+and legacy-unknown semantics; all PostgreSQL provenance guarantees remain required. Existing
+data cannot be discarded to complete cutover, and no runtime retirement is claimed here.
+
 ## Context
 
 ADR-090226-9c3f records the decision. This spec states what has to be true for
@@ -60,8 +70,10 @@ the record kind whose recall now builds the prompt (#622).
 - `EpisodicMemory` carries `run_id`, `node_run_id`, `attempt_id`.
 - Every `EpisodicStore` implementation fills them at write time from
   `observed_provenance` and reads them back.
-- Migration `031` adds the nullable columns and the `run_id` index; both
-  stores' `ensure_schema` upgrades pre-`031` state in place.
+- Migration `031` owns the PostgreSQL nullable columns and `run_id` index. Existing
+  `ensure_schema` upgrade paths below are historical implementation/test evidence; canonical
+  production schema changes belong to Alembic. Preserve pre-`031` SQLite records through
+  necessary import/fixture handling, without making a production twin mandatory.
 - `EpisodicStore.produced_by(run_id, *, org_id="")` on the protocol and all
   three implementations.
 

@@ -32,6 +32,15 @@ owners:
 
 # ADR-083026-e602: A record names the execution that produced it, filled from the ambient context
 
+## Storage scope clarification — 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md)
+governs production persistence. PostgreSQL is the sole canonical durable backend. “Both twins”
+below records the original implementation and preservation of historical SQLite records;
+it does not require new SQLite production parity. Retained SQLite conformance/import fixtures
+must keep producer identity, attribution and legacy-unknown semantics intact. No provenance
+requirement is waived, no historical record is discarded, and no runtime retirement is claimed.
+
 ## Context
 
 Three tables record what the system learned, measured or made, and until this

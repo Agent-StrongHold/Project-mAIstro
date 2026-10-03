@@ -62,8 +62,8 @@ SQLite FTS5, in-memory) supplies the rows.
 - The `GET /v1/sessions` FastAPI route, profile-middleware auth/scoping enforcement, and the
   cross-tenant-leak boundary test — follow-up once a maistro-server route exists to host this
   logic (this SPEC is the pure function the route would call).
-- Postgres `pg_trgm`/`ts_headline`/GIN index, SQLite FTS5 — production storage/ranking
-  backends; this SPEC's `make_snippet`/`search_sessions` are deliberately simple
+- Postgres `pg_trgm`/`ts_headline`/GIN index — canonical production storage/ranking
+  (ADR-082226-5104); SQLite FTS5, if retained, is only historical/test infrastructure; this SPEC's `make_snippet`/`search_sessions` are deliberately simple
   substring-based reference implementations a real backend's SQL query would approximate.
 - OTel `sessions.search` span instrumentation (ADR-037) — added at the route boundary, not here.
 - Title derivation/caching, soft-delete filtering, `mode=semantic` vector search — explicitly

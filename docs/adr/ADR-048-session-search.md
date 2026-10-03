@@ -75,7 +75,10 @@ GET /v1/sessions?q=<query>&profile_id=<id>&since=<iso>&limit=50&cursor=<opaque>
 1. Request hits `api/sessions.py` router.
 2. Profile middleware injects `profile_id` from the auth context; any client-supplied `profile_id` must match or 403.
 3. Repository call against `EpisodicStore.search(query, profile_id, since, limit, cursor)`.
-4. Adapter implementations: Postgres (production) + in-memory (tests). Sqlite path uses FTS5; Postgres path uses pg_trgm + GIN.
+4. Adapter implementations: PostgreSQL (canonical production) + in-memory (explicit tests).
+   Storage scope clarified 2026-10-03 under ADR-082226-5104: a retained SQLite FTS5 path is
+   test/historical-data support, not another production backend. PostgreSQL uses pg_trgm + GIN;
+   search/scope semantics remain unchanged.
 
 ## Acceptance criteria
 
