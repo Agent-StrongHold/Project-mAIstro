@@ -18,6 +18,7 @@ import logging
 import sqlite3
 import traceback
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -44,9 +45,18 @@ from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
+_CHAT_AUTH = SimpleNamespace(user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+
+
+async def _route_request(
+    container: Container, messages: list[dict[str, Any]], **kwargs: Any
+) -> dict[str, Any]:
+    kwargs.setdefault("auth", _CHAT_AUTH)
+    return await container.route_request(messages, **kwargs)
 
 
 async def _container() -> Container:
@@ -103,7 +113,7 @@ class TestATurnLeavesAPhysicalRecord:
         container = await _container()
         container.conduit = _Conduit()
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         node_run, attempts = await _spine(container, result["run_id"])
         assert node_run.status is RunStatus.COMPLETED
@@ -116,7 +126,7 @@ class TestATurnLeavesAPhysicalRecord:
         container = await _container()
         container.conduit = _Conduit()
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         _, attempts = await _spine(container, result["run_id"])
         assert attempts[0].executor_id == CHAT_EXECUTOR_ID
@@ -131,7 +141,7 @@ class TestATurnLeavesAPhysicalRecord:
         container = await _container()
         container.conduit = _Conduit(agent="researcher")
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         _, attempts = await _spine(container, result["run_id"])
         assert attempts[0].result[ATTEMPT_AGENT_KEY] == "researcher"
@@ -154,7 +164,7 @@ class TestATurnLeavesAPhysicalRecord:
         container = await _container()
         container.conduit = _Conduit(agent="researcher")
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         run = await container.run_store.get_run(result["run_id"])
         assert run is not None
@@ -172,7 +182,7 @@ class TestATurnLeavesAPhysicalRecord:
         container = await _container()
         container.conduit = _Conduit(content="42")
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         assert result["choices"][0]["message"]["content"] == "42"
 
@@ -189,7 +199,7 @@ class TestARefusalIsACompletion:
             content="Request blocked: prompt injection", finish_reason="content_filter"
         )
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         node_run, attempts = await _spine(container, result["run_id"])
         assert attempts[0].status is AttemptStatus.COMPLETED
@@ -203,7 +213,7 @@ class TestARefusalIsACompletion:
             content="Request blocked: prompt injection", finish_reason="content_filter"
         )
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         _, attempts = await _spine(container, result["run_id"])
         assert attempts[0].result["finish_reason"] == "content_filter"
@@ -215,7 +225,7 @@ class TestARefusalIsACompletion:
         container = await _container()
         container.conduit = _Conduit(content="No agents available.", agent=None)
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         _, attempts = await _spine(container, result["run_id"])
         assert attempts[0].status is AttemptStatus.COMPLETED
@@ -228,7 +238,7 @@ class TestAFailureIsRecordedAndKeepsTravelling:
         container.conduit = _Conduit(raises=RuntimeError("upstream exploded"))
 
         with pytest.raises(RuntimeError, match="upstream exploded"):
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
         _, attempts = await _spine(container, runs[0].run_id)
@@ -246,7 +256,7 @@ class TestAFailureIsRecordedAndKeepsTravelling:
         container.conduit = _Conduit(raises=RuntimeError("upstream exploded"))
 
         with pytest.raises(RuntimeError):
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
         assert runs[0].status is RunStatus.FAILED
@@ -260,7 +270,7 @@ class TestAFailureIsRecordedAndKeepsTravelling:
         container.conduit = _Conduit(raises=TimeoutError("deadline"))
 
         with pytest.raises(TimeoutError):
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
 
 class TestATurnWithoutARecordIsRefused:
@@ -273,7 +283,7 @@ class TestATurnWithoutARecordIsRefused:
         container.chat_admitter = None  # type: ignore[assignment]
 
         with pytest.raises(ChatTurnRefused):
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         assert conduit.calls == 0
 
@@ -291,7 +301,7 @@ class TestATurnWithoutARecordIsRefused:
         container.run_store.get_run = _vanished  # type: ignore[method-assign]
 
         with pytest.raises(ChatTurnRefused) as refused:
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         assert isinstance(refused.value.__cause__, RunIntegrityError)
         assert conduit.calls == 0
@@ -402,7 +412,7 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         )
 
         with caplog.at_level(logging.WARNING, logger="maistro.container"):
-            result = await container.route_request(MESSAGES)
+            result = await _route_request(container, MESSAGES)
 
         assert result["choices"][0]["message"]["content"] == "42"
         assert conduit.calls == 1
@@ -440,7 +450,7 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
             error=error,
         )
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         assert result["choices"][0]["message"]["content"] == "42"
         assert conduit.calls == 1
@@ -479,7 +489,7 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         )
 
         with pytest.raises(LLMProviderError, match="upstream exploded") as failed:
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         assert type(failed.value.__cause__) is error
         assert conduit.calls == 1
@@ -490,7 +500,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         """The signal the container reads: a post-dispatch failure carries the
         answer and the store error behind it."""
         container = await _container()
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         store = _RecordingVeto(
@@ -523,7 +535,7 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         )
 
         with pytest.raises(ChatTurnRefused):
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         assert conduit.calls == 0
 
@@ -534,7 +546,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         cancels it. That is not the dispatch's own failure, so it must not be
         substituted for the `RuntimeDeadlineExceeded` the spine raises."""
         container = await _container()
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -573,11 +587,13 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         container.run_store = _RecordingVeto(  # type: ignore[assignment]
             real, method="transition_attempt", target=AttemptStatus.CANCELLED
         )
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await real.transition_run(run.run_id, RunStatus.QUEUED)
         run = await real.transition_run(run.run_id, RunStatus.RUNNING)
 
-        turn = asyncio.create_task(container.route_request(MESSAGES, run=run))
+        turn = asyncio.create_task(_route_request(container, MESSAGES, run=run))
         await started.wait()
         await RunExecutionService(store=real, runtime=PythonExecutionRuntime()).cancel_run(
             run.run_id
@@ -595,7 +611,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         a bare `RunIntegrityError` its pre-dispatch fallback would answer
         again. The store's failure stays visible behind it."""
         container = await _container()
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         store = _RecordingVeto(
@@ -622,7 +640,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         anyway. The runtime refuses to call that success, and the late answer
         must not be handed back as one that merely went unrecorded."""
         container = await _container()
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -647,7 +667,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         deadline only in its context; the late answer must still not be
         handed back as one that merely went unrecorded."""
         container = await _container()
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         store = _RecordingVeto(
@@ -677,7 +699,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         in its `__context__`. Following the cause alone would miss it and hand
         the late answer back as merely unrecorded."""
         container = await _container()
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         store = _RecordingVeto(
@@ -708,7 +732,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         success."""
         container = await _container()
         real = container.run_store
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await real.transition_run(run.run_id, RunStatus.QUEUED)
         await real.transition_run(run.run_id, RunStatus.RUNNING)
         store = _FlakyFenceRead(real)
@@ -732,7 +758,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         again."""
         container = await _container()
         real = container.run_store
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await real.transition_run(run.run_id, RunStatus.QUEUED)
         await real.transition_run(run.run_id, RunStatus.RUNNING)
         store = _FlakyFenceRead(real, persistent=True)
@@ -768,7 +796,7 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         container.run_store.get_run = _unreachable  # type: ignore[method-assign]
 
         with pytest.raises(ChatTurnRefused) as refused:
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         assert isinstance(refused.value.__cause__, OSError)
         assert conduit.calls == 0
@@ -812,7 +840,9 @@ class TestARetryIsASecondAttemptNotASecondNodeRun:
 
     @staticmethod
     async def _open_run(container: Container) -> str:
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         return run.run_id
@@ -868,7 +898,7 @@ class TestTheTurnNamesItselfToTheSessionStore:
         container = await _container()
         container.conduit = conduit = _Conduit()
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         assert conduit.turn_ids == [result["run_id"]]
 
@@ -877,7 +907,9 @@ class TestTheTurnNamesItselfToTheSessionStore:
         """What makes the identity a *retry* identity. Two Attempts under one
         Run must name the same turn, or the retry writes a second copy."""
         container = await _container()
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         container.conduit = conduit = _Conduit()
         executor = ChatAttemptExecutor(container.run_store)
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
@@ -904,7 +936,7 @@ class TestTheTurnNamesItselfToTheSessionStore:
         container.conduit = conduit = _Conduit()
 
         with pytest.raises(ChatTurnRefused):
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         assert conduit.turn_ids == []
 
@@ -961,7 +993,7 @@ class TestChatAttemptStoreConformance:
             name="chat conformance",
             nodes=[Node(node_id="chat-node", node_type="agent")],
         )
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         await store.transition_run(run.run_id, RunStatus.QUEUED)
         await store.transition_run(run.run_id, RunStatus.RUNNING)
         return store, run
@@ -1177,7 +1209,7 @@ class TestInAgentDelegationCreatesNoNodeRun:
         conduit = self._delegating_conduit()
         container.conduit = conduit
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         assert conduit.answer.delegation_chain == ("coordinator",), (
             "the turn must really have delegated, or this proves nothing"
@@ -1194,7 +1226,7 @@ class TestInAgentDelegationCreatesNoNodeRun:
         container = await _container()
         container.conduit = self._delegating_conduit()
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         _, attempts = await _spine(container, result["run_id"])
         assert attempts[0].result[ATTEMPT_AGENT_KEY] == "mason"

@@ -21,6 +21,7 @@ from maistro.graph.definitions import Graph, Node
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +77,7 @@ def _paused_record(
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=reviewer_id or DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     if created_at is not None:
         run = run.model_copy(update={"created_at": created_at})
