@@ -10,7 +10,11 @@ from uuid import uuid4
 import pytest
 
 from maistro.events.envelope import EventEnvelope
-from maistro.events.pg_envelope import PgEventStore, ensure_canonical_event_schema
+from maistro.events.pg_envelope import (
+    _EVENT_COLUMN_TYPES,
+    PgEventStore,
+    ensure_canonical_event_schema,
+)
 
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
@@ -186,6 +190,15 @@ async def test_ensure_schema_checks_the_canonical_table_without_ddl() -> None:
     assert any(sql.startswith("SELECT *, ") for sql in pool.statements)
     assert any("FROM canonical_event_log LIMIT 0" in sql for sql in pool.statements)
     assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)
+    projection = pool.statements[0].removeprefix("SELECT *, ").split(" FROM ", 1)[0]
+    assert projection.split(", ") == list(_EVENT_COLUMN_TYPES)
+
+    await PgEventStore(pool).append(EventEnvelope(type="run.started", workspace_id="ws-contract"))
+    insert = next(
+        sql for sql in pool.statements if sql.startswith("INSERT INTO canonical_event_log")
+    )
+    written = insert.split("(", 1)[1].split(")", 1)[0]
+    assert {column.strip() for column in written.split(",")} == set(_EVENT_COLUMN_TYPES)
 
 
 async def test_append_refuses_an_envelope_that_already_carries_a_sequence() -> None:

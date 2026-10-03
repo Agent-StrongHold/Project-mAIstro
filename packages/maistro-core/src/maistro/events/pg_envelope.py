@@ -62,7 +62,10 @@ async def ensure_canonical_event_schema(pool: asyncpg.Pool) -> None:
         # Runtime reads use SELECT *, including additive columns. Also name
         # consumed columns explicitly so a missing one fails even with no rows.
         await conn.execute(
-            f"SELECT *, {', '.join(_EVENT_COLUMN_TYPES)} FROM canonical_event_log LIMIT 0"
+            "SELECT *, event_id, stream_id, sequence, type, timestamp, "
+            "workspace_id, stream_scope, project_id, run_id, node_run_id, "
+            "attempt_id, invocation_id, session_id, correlation_id, causation_id, "
+            "source, actor_id, payload, provenance FROM canonical_event_log LIMIT 0"
         )
         columns = await conn.fetch(
             """SELECT a.attname, a.atttypid::regtype::text AS data_type,
