@@ -31,16 +31,7 @@ from maistro.types.config import AgentConfig
 
 from .persistence.conftest import postgres_dsn
 
-KNOWN_GAPS: frozenset[str] = frozenset(
-    {
-        # #804: registry-constructed nodes still call the process-wide singleton.
-        "default_effect_context_is_container",
-        # #804 / #1133: GovernedInvocationExecutionService._approvals stays None.
-        "approval_store_wired",
-        # #804: capability_effects and container.invocation_store are two instances.
-        "single_invocation_authority",
-    }
-)
+KNOWN_GAPS: frozenset[str] = frozenset()
 
 requires_postgres = pytest.mark.skipif(
     not postgres_dsn(),
