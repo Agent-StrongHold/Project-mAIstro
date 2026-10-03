@@ -165,3 +165,56 @@ The remaining failure surface at `RATCHET_BASE_REV=origin/develop` is exactly:
 Each of these rows needs the already-written grants to exist at the merge base
 (grants-only PR on develop, then rebase) — no further change to this branch is
 required for `exact-debt-ledger` to pass.
+
+## Round 5 (c5d57d8b5 develop-sync head): base-relative re-proof on the new develop tip
+
+The lane base moved to develop `15157c6f2` (WIP M3-B7, #1738 squash), so this
+round merged `origin/develop` into the branch (merge `c5d57d8b5`, conflict
+free). Per the monorepo quality-ledger hazard note, the merge was audited for
+silent row loss: `git diff HEAD^1 HEAD -- quality/vulture-baseline.json`,
+`... ratchet-authorizations.json`, `... reachability-baseline.json`, and
+`... reachability-dispositions.json` are all empty (branch-owned rows intact,
+vulture ledger still 1372 = 1359 base + 13 rubric), and the only quality file
+develop touched (`frontend-typed-client-baseline.json`) merged to exactly
+develop's version (`git diff HEAD^2 HEAD` on it is empty; this branch never
+edited it).
+
+New evidence this round — the trusted base itself is clean, so the red is
+attributable to this branch alone:
+
+- A throwaway worktree at develop `15157c6f2`, judged against its own parent
+  `5765efce8` (push-event semantics for the develop tip):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → exit 0 with `1359 reviewed identities -> 1359 findings`
+  (no delta), and `check-ratchet-provenance.py` → exit 0 (all ratchets OK,
+  181 unreachable / 181 dispositioned). Develop carries no pre-existing
+  ledger drift; every `exact-debt-ledger` finding in this lane's evaluation is
+  one of this branch's two-merge identities.
+- Post-merge, at `RATCHET_BASE_REV=origin/develop` (merge base now
+  `15157c6f2`): `check-vulture-baseline.py` → exit 1 on exactly the 13
+  identities listed in Round 4; `check-ratchet-provenance.py` → exit 1 on
+  exactly the 2 NEW unreachable modules + 2 NEW dispositions;
+  `check-shipped-surface-truth.py` → exit 0. The candidate ledger still
+  matches the live scan with zero bookkeeping deltas.
+- Re-ran the dead-identity sweep the CI-repair brief asks for: of the 13, ten
+  are referenced by name in the rubric tests and the 3 pydantic validators are
+  pinned behaviorally (`test_scale_requires_numeric_or_pass_fail` →
+  `_at_least_one`, `test_pack_provenance_requires_pack_id` → `_pack_shape`,
+  `test_dimension_ids_must_be_unique` + `test_veto_ids_must_reference_dimensions`
+  → `_dimension_consistency`). Nothing else is genuinely dead; there was
+  nothing left to delete or prune this round.
+
+Post-sync validation at this head: `ruff check .` clean, `ruff format --check .`
+clean (2776 files), rubric suites 44 passed
+(test_rubric_contracts.py + test_rubric_model.py + test_rubric_store.py),
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok (12173).
+
+The unblock is unchanged and now has a direct in-repo precedent: develop
+commit `d7f7f6f81` ("chore(#1572): authorize the canonical Goal store's new
+vulture identities (#1833)") is the grants-first authorization commit that
+unblocked the Goal store — this issue's own #458 parent dependency — through
+the identical two-merge situation. Landing the equivalent authorization for
+the 13 rubric identities + 2 reachability modules + 2 dispositions (the
+content already reviewed in this branch's `quality/` edits) on develop, then
+re-evaluating this branch, is the driver-side action that turns
+`exact-debt-ledger` green.
