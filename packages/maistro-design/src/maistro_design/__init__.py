@@ -93,19 +93,52 @@ from maistro_design.types import (
     TrustUpgradeRequiredError,
     TypographyToken,
 )
+from maistro_design.versions import (
+    AgentWorkInputs,
+    ArtifactLock,
+    ArtifactLockConflict,
+    ArtifactVersion,
+    ArtifactVersionError,
+    ArtifactVersionExistsError,
+    ArtifactVersionNotFoundError,
+    BranchControl,
+    BranchStateView,
+    ChangeKind,
+    ChangeOrigin,
+    ControlMode,
+    CreativeArtifactService,
+    GuidanceRecord,
+    LockScope,
+    LockStateError,
+    VersionState,
+    VersionStateError,
+)
 
 __all__ = [
     "NATIVE_SLOTS",
+    "AgentWorkInputs",
     "ArtifactKind",
+    "ArtifactLock",
+    "ArtifactLockConflict",
     "ArtifactNode",
     "ArtifactProjection",
     "ArtifactRequest",
     "ArtifactRequestNotFoundError",
+    "ArtifactVersion",
+    "ArtifactVersionError",
+    "ArtifactVersionExistsError",
+    "ArtifactVersionNotFoundError",
+    "BranchControl",
+    "BranchStateView",
     "BriefContractError",
     "BriefReference",
     "BriefVersionConflictError",
     "CatalogImportPolicyError",
+    "ChangeKind",
+    "ChangeOrigin",
     "ColorToken",
+    "ControlMode",
+    "CreativeArtifactService",
     "CreativeBrief",
     "CreativeBriefError",
     "CreativeBriefStore",
@@ -128,12 +161,15 @@ __all__ = [
     "DiscoveryIncompleteError",
     "DiscoveryResult",
     "EvidenceReference",
+    "GuidanceRecord",
     "HTMLRenderer",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
     "InMemoryTrustBanishList",
     "InMemoryTrustReviewQueue",
     "IncompatibleDesignSystemError",
+    "LockScope",
+    "LockStateError",
     "OpenDesignConfig",
     "OpenDesignProvider",
     "OutputFormat",
@@ -160,6 +196,8 @@ __all__ = [
     "TrustUpgradeRequiredError",
     "TypographyRenderer",
     "TypographyToken",
+    "VersionState",
+    "VersionStateError",
     "__version__",
     "available_skills",
     "import_from_catalog",
@@ -174,11 +212,15 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Lazy-load PG stores to avoid requiring sqlalchemy at import time."""
+    """Lazy-load the SQLAlchemy-backed PG stores to avoid importing sqlalchemy eagerly."""
     if name == "PgDesignProjectStore":
         from maistro_design.stores import PgDesignProjectStore
 
         return PgDesignProjectStore
+    if name == "PgArtifactVersionStore":
+        from maistro_design.version_store import PgArtifactVersionStore
+
+        return PgArtifactVersionStore
     if name == "PgCreativeBriefStore":
         from maistro_design.brief_store import PgCreativeBriefStore
 
