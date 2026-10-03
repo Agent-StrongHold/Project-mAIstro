@@ -69,6 +69,7 @@ from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
+    Attempt,
     AttemptStatus,
     Run,
     RunStatus,
@@ -92,6 +93,8 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.tasks.idempotency import TaskIdempotencyStore, wire_task_idempotency
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.backlog_history.store import BacklogHistoryStore
+from maistro.workspaces.backlog_history.wiring import wire_backlog_history_store
 from maistro.workspaces.campaigns.store import CampaignStore
 from maistro.workspaces.campaigns.wiring import (
     wire_campaign_store,
@@ -147,6 +150,8 @@ if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
     from maistro.runs.consumption import ParkedPause, TickAccounting
+    from maistro.runs.model import Attempt
+    from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
@@ -221,6 +226,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: Append-only BacklogItem history (#101), on the Project store's backend.
+    #: References canonical Goals/Runs; never an execution authority itself.
+    backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
     #: Durable home for Workspace work campaigns and their operator controls
     #: (#103, SPEC-092626-1831). SQLite-backed when the deployment selected
     #: SQLite, so pin-next / pause / exclude / human-only survive a restart
@@ -300,6 +308,14 @@ class Container:
     #: spine stores without colliding with, or rolling back, their open
     #: transactions.
     schedule_conn: Any = None
+    #: The BacklogItem history journal's own SQLite connection (#101), on the
+    #: same terms as `session_conn` and `schedule_conn`: the journal holds a
+    #: `BEGIN IMMEDIATE` across its sequence read and its insert, and the
+    #: spine stores sharing `db_pool` — `ClaimingSqliteRunStore` foremost —
+    #: commit and roll back on their own locks' cadence, so a journal
+    #: transaction paused between read and insert would be committed or
+    #: discarded by a sibling while `append` reported success.
+    history_conn: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -363,7 +379,8 @@ class Container:
     event_bus: EventBus = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
-    invocation_store: InvocationStore = None  # type: ignore[assignment]
+    invocation_store: Any = None
+    handler_invocation_store: InvocationStore = None  # type: ignore[assignment]
     handler_caller: HandlerCaller = None  # type: ignore[assignment]
     # Durable replay cursor for the legacy-event bridge (#1163): a claim
     # lease + fencing token so of several replicas that might tick
@@ -460,10 +477,11 @@ class Container:
         when the last holder lets go (Codex, #335).
 
         SQLite follows the same ownership rule (#1161): the connections this
-        container opened -- `db_pool`, the session store's `session_conn` and
-        the schedule store's `schedule_conn`, all from one
-        `_wire_sqlite_backend` call -- are closed here, each exactly once, and
-        a connection the caller supplied stays the caller's.
+        container opened -- `db_pool`, the session store's `session_conn`, the
+        schedule store's `schedule_conn` and the history journal's
+        `history_conn`, all from one `_wire_sqlite_backend` call -- are closed
+        here, each exactly once, and a connection the caller supplied stays
+        the caller's.
         aiosqlite's `close()` drains the operations still queued on its worker
         thread before releasing the database, so a durable write a store has
         already issued completes rather than being dropped by the shutdown;
@@ -476,6 +494,10 @@ class Container:
         """
         if self.closed:
             return
+        if self.capability_effects is not None:
+            from maistro.capabilities.effect_context import unbind_container_effect_context
+
+            unbind_container_effect_context(self.capability_effects)
         # Marked closed before the await, so a release that raises does not
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
@@ -497,15 +519,20 @@ class Container:
                 self.pg_pool = None
                 self.holds_pg_pool = False
         if self.holds_db_pool:
-            # Three connections, one ownership decision (#327, #1199): the
-            # session and schedule stores' connections were opened by the same
-            # `_wire_sqlite_backend` call, so the same flag governs all of
-            # them. A close that raises must not strand the others -- the pg
+            # Four connections, one ownership decision (#327, #1199, #101): the
+            # session, schedule and history stores' connections were opened by
+            # the same `_wire_sqlite_backend` call, so the same flag governs
+            # all of them. A close that raises must not strand the others -- the pg
             # block above exists because a shutdown that stops at the first
             # failure leaves the rest unreleased -- and must not leave the
             # container looking open, though `closed` is already True, so no
             # retry re-enters here.
-            for connection in (self.db_pool, self.session_conn, self.schedule_conn):
+            for connection in (
+                self.db_pool,
+                self.session_conn,
+                self.schedule_conn,
+                self.history_conn,
+            ):
                 if connection is None:
                     continue
                 try:
@@ -520,7 +547,15 @@ class Container:
             self.db_pool = None
             self.session_conn = None
             self.schedule_conn = None
+            self.history_conn = None
             self.holds_db_pool = False
+
+    @staticmethod
+    def _chat_actor_principal(auth: Any) -> str | None:
+        principal = getattr(auth, "user_id", None) or getattr(auth, "username", None) or None
+        if principal is not None:
+            principal = str(principal).strip() or None
+        return principal
 
     def _resolve_chat_auth(self, auth: Any) -> Any:
         """Evaluate an identity-free turn as the role-less anonymous principal.
@@ -738,10 +773,11 @@ class Container:
         """
         if self.chat_admitter is None:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
+        auth = self._resolve_chat_auth(auth)
         run: Run | None = None
         try:
             admitter = self.chat_admitter
-            principal = getattr(auth, "user_id", None) or None
+            principal = self._chat_actor_principal(auth)
             try:
                 run = await admitter.admit(
                     messages,
@@ -999,7 +1035,7 @@ class Container:
         batch = await process_events_batch(
             self.durable_event_log,
             self.trigger_store,
-            self.invocation_store,
+            self.handler_invocation_store,
             self.handler_caller,
             after_id=lease.position,
             limit=limit,
@@ -1091,12 +1127,13 @@ class Container:
         )
 
         reclaimed = await self._reclaim_abandoned_attempts(now=now, limit=limit)
+        reconciled = await self._reconcile_unreconciled_terminal_attempts(now=now, limit=limit)
         open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
         non_terminal_runs.set(open_runs)
         moment = now if now is not None else datetime.now(UTC)
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
-        return reclaimed
+        return reclaimed + reconciled
 
     async def _reclaim_abandoned_attempts(self, *, now: datetime | None, limit: int) -> int:
         """Settle Attempts whose lease lapsed; the recovery half of the tick."""
@@ -1128,6 +1165,132 @@ class Container:
             recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
         return len(reclaimed)
+
+    async def _latest_reconcilable_completed_attempt(
+        self, node_run_id: str, *, moment: datetime
+    ) -> Attempt | None:
+        """The latest COMPLETED Attempt of this NodeRun, if recovery may settle it.
+
+        A terminal Attempt a crash interrupted is recoverable only when no
+        sibling Attempt still executes the NodeRun under an unexpired lease --
+        otherwise this sweep would overwrite an outcome a live walker is about
+        to write itself.
+        """
+        from maistro.runs.lifecycle import has_live_execution_lease
+
+        attempts = await self.run_store.list_attempts(node_run_id)
+        if has_live_execution_lease(attempts, moment):
+            return None
+        return next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.status is AttemptStatus.COMPLETED
+            ),
+            None,
+        )
+
+    async def _reconcile_run_terminal_attempts(
+        self,
+        run_id: str,
+        *,
+        reconciler: AttemptLifecycleReconciler,
+        moment: datetime,
+        remaining: int,
+    ) -> int:
+        """Replay interrupted terminal Attempts of one RUNNING Run; returns the count.
+
+        ``remaining`` bounds this Run's share of the sweep's ``limit``: the
+        caller passes the room it has left, so a Run early in the page cannot
+        spend the whole budget a second time. Only observed persisted progress
+        (an accepted outcome or a Run settlement) charges the budget (#1850).
+        """
+        from maistro.runs.store import RunIntegrityError
+
+        done = 0
+        for node_run in await self.run_store.list_node_runs(run_id):
+            if done >= remaining:
+                break
+            completed = await self._latest_reconcilable_completed_attempt(
+                node_run.node_run_id, moment=moment
+            )
+            if completed is None:
+                continue
+            try:
+                if await self._reconcile_terminal_attempt_progress(completed, reconciler):
+                    done += 1
+            except RunIntegrityError:
+                logger.warning(
+                    "terminal Attempt %s could not be reconciled",
+                    completed.attempt_id,
+                    exc_info=True,
+                )
+                continue
+        return done
+
+    async def _reconcile_unreconciled_terminal_attempts(
+        self, *, now: datetime | None, limit: int
+    ) -> int:
+        """Replay reconciliation for terminal Attempts a crash interrupted (#804)."""
+        from maistro.runs.model import RunStatus
+        from maistro.runs.reconciliation import AttemptLifecycleReconciler
+        from maistro.runs.store import run_cursor_key
+
+        moment = now if now is not None else datetime.now(UTC)
+        reconciler = AttemptLifecycleReconciler(
+            self.run_store,
+            events=self.event_bus,
+            source="maistro.container.recover_abandoned_attempts",
+        )
+        reconciled = 0
+        after = None
+        while reconciled < limit:
+            page = await self.run_store.list_by_status(
+                RunStatus.RUNNING,
+                limit=limit - reconciled,
+                after=after,
+            )
+            if not page:
+                break
+            for run in page:
+                after = run_cursor_key(run)
+                reconciled += await self._reconcile_run_terminal_attempts(
+                    run.run_id,
+                    reconciler=reconciler,
+                    moment=moment,
+                    remaining=limit - reconciled,
+                )
+            if len(page) < limit - reconciled:
+                break
+        if reconciled:
+            logger.info("reconciled %d unreconciled terminal Attempt(s)", reconciled)
+        return reconciled
+
+    async def _reconcile_terminal_attempt_progress(
+        self, attempt: Attempt, reconciler: AttemptLifecycleReconciler
+    ) -> bool:
+        """Observe acceptance/settlement, not exclusive ownership of a repair.
+
+        Store transitions return records, not a won-write flag. A peer may make
+        progress between these reads; counting that observation is conservative
+        for this tick's budget. Replaying unchanged facts on the next tick must
+        not charge again. Timestamps and other incidental changes do not count.
+        """
+        before_node = await self.run_store.get_node_run(attempt.node_run_id)
+        if before_node is None:
+            raise RunIntegrityError("terminal replay is missing its NodeRun")
+        before_run = await self.run_store.get_run(before_node.run_id)
+        if before_run is None:
+            raise RunIntegrityError("terminal replay is missing its Run")
+        reconciled = await reconciler.reconcile(attempt)
+        after_run = await self.run_store.get_run(before_node.run_id)
+        accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
+        settled = (
+            before_run.status not in TERMINAL_RUN_STATUSES
+            and after_run is not None
+            and after_run.status in TERMINAL_RUN_STATUSES
+        )
+        return accepted or settled
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100
@@ -1651,7 +1814,7 @@ class Container:
 
     async def durable_invocations_for(self, event_id: int) -> list[Any]:
         """Handler invocations recorded for one durable event (delivery audit)."""
-        return list(await self.invocation_store.list_for_event(event_id))
+        return list(await self.handler_invocation_store.list_for_event(event_id))
 
     async def select_model(self, task: Any, budget: Any = None) -> Any:
         """Budget-constrained model selection via the wired cost-aware router."""
@@ -1836,17 +1999,21 @@ async def _wire_capability_effects(
     # every branch. `new_effect_context` now defaults to a DENY evaluator --
     # an omitted policy is an unavailable dependency, not an authorization --
     # and the in-memory builder is an alias for it.
-    if db_pool is not None:
-        context = await new_sqlite_effect_context(
-            db_pool,
+    # PostgreSQL first: durable events already prefer a supplied pool over
+    # SQLite when both are wired (#135); capability effects must follow or a
+    # caller with `pg_pool` + `sqlite://` gets PG event durability and SQLite
+    # effect stores that share one closed connection after teardown.
+    if pg_pool is not None:
+        context = await new_postgres_effect_context(
+            pg_pool,
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
             usage_log=usage_log,
             quota_tracker=quota_tracker,
         )
-    elif pg_pool is not None:
-        context = await new_postgres_effect_context(
-            pg_pool,
+    elif db_pool is not None:
+        context = await new_sqlite_effect_context(
+            db_pool,
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
             usage_log=usage_log,
@@ -1971,6 +2138,7 @@ async def create_container(
     db_pool: Any = None
     session_conn: Any = None
     schedule_conn: Any = None
+    history_conn: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
@@ -1992,12 +2160,13 @@ async def create_container(
             db_pool,
             session_conn,
             schedule_conn,
+            history_conn,
             quota_tracker,
             learning_store,
             outcome_store,
             session_store,
         ) = await _wire_sqlite_backend(config.database_url)
-        # All three connections were opened for this container (#1161);
+        # All four connections were opened for this container (#1161);
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
         holds_db_pool = True
@@ -2075,6 +2244,11 @@ async def create_container(
     # filed in another database is a Workspace whose Runs cannot be filed.
     workspace_store = await wire_workspace_store(
         db_pool,
+        project_store=project_scope_store,
+        pg_pool=pg_pool,
+    )
+    backlog_history_store = await wire_backlog_history_store(
+        history_conn,
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
@@ -2175,7 +2349,7 @@ async def create_container(
 
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
-    invocation_store: InvocationStore
+    handler_invocation_store: InvocationStore
     consumer_cursor_store: ConsumerCursorStore
     # PostgreSQL first: a caller who supplied a pool asked for the durable
     # backend, and `db_pool` (SQLite) may be set at the same time because the
@@ -2186,20 +2360,20 @@ async def create_container(
         (
             durable_event_log,
             trigger_store,
-            invocation_store,
+            handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_pg_durable_events(pg_pool)
     elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
-            invocation_store,
+            handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_sqlite_durable_events(db_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
-        invocation_store = InMemoryInvocationStore()
+        handler_invocation_store = InMemoryInvocationStore()
         consumer_cursor_store = InMemoryConsumerCursorStore()
     handler_caller = HTTPHandlerCaller()
 
@@ -2312,6 +2486,7 @@ async def create_container(
         project_store=project_scope_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
+        backlog_history_store=backlog_history_store,
         campaign_store=campaign_store,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
@@ -2329,6 +2504,7 @@ async def create_container(
         db_pool=db_pool,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
+        history_conn=history_conn,
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
         holds_db_pool=holds_db_pool,
@@ -2339,7 +2515,8 @@ async def create_container(
         event_bus=event_bus,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
-        invocation_store=invocation_store,
+        invocation_store=capability_effects.invocation_store,
+        handler_invocation_store=handler_invocation_store,
         handler_caller=handler_caller,
         consumer_cursor_store=consumer_cursor_store,
         provider_registry=provider_registry,
@@ -2382,6 +2559,9 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
+    from maistro.capabilities.effect_context import bind_container_effect_context
+
+    bind_container_effect_context(capability_effects)
     logger.info("Container wired (%s stores)", backend)
     return container
 
@@ -2859,6 +3039,7 @@ async def _wire_sqlite_backend(
     Any,
     Any,
     Any,
+    Any,
     QuotaTracker,
     LearningStore,
     OutcomeStore,
@@ -2870,9 +3051,11 @@ async def _wire_sqlite_backend(
     ``sqlite://`` for an in-memory DB) selects this backend instead of the
     default in-memory stores — no Postgres server required.
 
-    Returns the shared connection first and the session store's own connection
-    second (#327), so `create_container` can hold both and record ownership of
-    them: `aclose` closes what this function opened (#1161).
+    Returns the shared connection first, the session store's own connection
+    second (#327), the schedule store's third (#1199) and the history
+    journal's fourth (#101), so `create_container` can hold them all and
+    record ownership of them: `aclose` closes what this function opened
+    (#1161).
     """
     import aiosqlite  # type: ignore[import-not-found, unused-ignore]
 
@@ -2917,6 +3100,15 @@ async def _wire_sqlite_backend(
     # on their own cadence. Same pathless-`sqlite://` caveat as above: only
     # the schedule store reads `schedules`.
     schedule_conn = await aiosqlite.connect(path)
+    # The BacklogItem history journal's, for the same reason (#101): its
+    # `append` holds `BEGIN IMMEDIATE` across its sequence read and its
+    # insert, and the spine stores it would otherwise share `conn` with --
+    # `ClaimingSqliteRunStore` foremost -- hold transactions of their own
+    # under their own locks, so a sibling's commit or rollback would land
+    # inside the journal's while `append` reported success. Same
+    # pathless-`sqlite://` caveat as above: only the journal reads
+    # `workspace_backlog_history`.
+    history_conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn)
@@ -2936,6 +3128,7 @@ async def _wire_sqlite_backend(
         conn,
         session_conn,
         schedule_conn,
+        history_conn,
         quota_tracker,
         learning_store,
         outcome_store,

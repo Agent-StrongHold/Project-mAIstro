@@ -31,6 +31,22 @@ from maistro.runs.store import InMemoryRunStore
 
 pytestmark = pytest.mark.contract("behavioral")
 
+_EVOLUTION_TEST_ACTOR = "evolve-user"
+
+
+def _evolution_route_app(router: Any) -> Any:
+    from fastapi import FastAPI
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _stamp_test_actor(request, call_next):
+        request.state.user_id = _EVOLUTION_TEST_ACTOR
+        return await call_next(request)
+
+    app.include_router(router, prefix="/v1/evolution")
+    return app
+
 
 class _Genome:
     def __init__(
@@ -217,6 +233,7 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
         harness=_Harness(),
         cycle_number=1,
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.COMPLETED
@@ -295,6 +312,7 @@ async def test_battle_and_finalization_failures_are_canonical_run_failures(
         config=_config(population_size=2, eval_batch_size=2),
         harness=_Harness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.FAILED
@@ -488,6 +506,7 @@ async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
         config=_config(population_size=3, eval_batch_size=2),
         harness=_SeedingHarness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     stored = await owner.run_store.get_run(record.run_id)
@@ -510,7 +529,6 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     import maistro_evolve.harness as harness_module
@@ -560,8 +578,7 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -599,7 +616,6 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     import httpx
     import services.evolution as evolution_service
     import services.evolution_graph as evolution_graph
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     battle_started = asyncio.Event()
@@ -647,8 +663,7 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -696,7 +711,6 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     evaluation_started = asyncio.Event()
@@ -742,8 +756,7 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             first = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -815,6 +828,7 @@ async def test_missing_has_more_successor_fails_before_recording_unroutable_batt
         config=_config(population_size=5, eval_batch_size=4),
         harness=_Harness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.FAILED
@@ -849,6 +863,7 @@ async def test_multiple_battle_nodes_finish_before_finalization(
         config=_config(population_size=5, eval_batch_size=4),
         harness=_Harness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.COMPLETED
@@ -889,6 +904,7 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
         config=_config(population_size=2, eval_batch_size=2),
         harness=_NoResultHarness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     battle_runs = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
@@ -953,6 +969,7 @@ async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
         ),
         harness=_TwoResultHarness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.FAILED

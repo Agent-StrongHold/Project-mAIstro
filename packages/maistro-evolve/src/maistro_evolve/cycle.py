@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from .crossover import crossover_and_mutate
 from .fitness import compute_fitness
-from .harness import EvalHarness
+from .harness import EvalHarness, evidence_method
 from .hyper_mutator import entry_node, hyper_mutate, slot_lineage
 from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
 from .optimizer import extract_signal, optimize_topology
@@ -213,6 +213,15 @@ class EvolutionCycle:
                 bool(r.metadata.get("stub")),
                 cfg.eval_ema_alpha,
             )
+            # Fold the score's verification provenance alongside it
+            # (#384): champion selection must be able to name the
+            # evidence behind every number in ``eval_scores``. A result
+            # without an evidence record is recorded as "unverified"
+            # rather than silently dropped — the absence itself is the
+            # provenance. Shared by first-eval and reconfirmation, so a
+            # fresh #854 sample refreshes the evidence it was measured
+            # with instead of leaving stale provenance behind.
+            genome.eval_evidence[r.benchmark] = evidence_method(r)
             genome.harness_params["total_cost_usd"] = (
                 genome.harness_params.get("total_cost_usd", 0.0) + r.cost_usd
             )

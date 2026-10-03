@@ -227,6 +227,7 @@ async def _admit_then_die(
                 workspace_id="ws-rdr",
                 project_id=container.project_id,
                 provenance=provenance if provenance is not None else _SCHEDULE,
+                user_id="test-user",
             )
     return admitted["run_id"]
 
@@ -313,10 +314,18 @@ async def test_an_elapsed_timer_wait_wakes_and_a_human_pause_does_not(
     from services.registered_dag_recovery import wake_due_registered_dag_runs
 
     _graph, waiting = await run_registered_dag(
-        "rdr-poll", workspace_id="ws-rdr", project_id=container.project_id, provenance=_SCHEDULE
+        "rdr-poll",
+        workspace_id="ws-rdr",
+        project_id=container.project_id,
+        provenance=_SCHEDULE,
+        user_id="test-user",
     )
     _graph, asking = await run_registered_dag(
-        "rdr-ask", workspace_id="ws-rdr", project_id=container.project_id, provenance=_SCHEDULE
+        "rdr-ask",
+        workspace_id="ws-rdr",
+        project_id=container.project_id,
+        provenance=_SCHEDULE,
+        user_id="test-user",
     )
     assert await _status(container, waiting.run_id) is RunStatus.WAITING
     assert await _status(container, asking.run_id) is RunStatus.PAUSED
@@ -341,6 +350,7 @@ async def test_a_single_node_timer_wait_is_woken_here_not_left_to_the_consumer(
         workspace_id="ws-rdr",
         project_id=container.project_id,
         provenance=_SCHEDULE,
+        user_id="test-user",
     )
     assert await _status(container, waiting.run_id) is RunStatus.WAITING
 
@@ -355,7 +365,11 @@ async def test_an_answered_scheduled_hitl_pause_resumes_on_the_next_tick(
     from services.registered_dag_recovery import recover_stranded_registered_dag_runs
 
     _graph, asking = await run_registered_dag(
-        "rdr-ask", workspace_id="ws-rdr", project_id=container.project_id, provenance=_SCHEDULE
+        "rdr-ask",
+        workspace_id="ws-rdr",
+        project_id=container.project_id,
+        provenance=_SCHEDULE,
+        user_id="test-user",
     )
     assert await _status(container, asking.run_id) is RunStatus.PAUSED
     (paused_node,) = asking.graph_state.active_node_ids
@@ -399,6 +413,7 @@ async def test_other_owners_runs_are_never_touched(
             two_steps,
             initial_status=RunStatus.QUEUED,
             provenance={**_SCHEDULE, "executor": "someone_else"},
+            actor_principal_id="test-user",
         )
     ).run_id
     with_inputs = (
@@ -406,6 +421,7 @@ async def test_other_owners_runs_are_never_touched(
             two_steps,
             initial_status=RunStatus.QUEUED,
             provenance={**_SCHEDULE, "schedule_inputs": {"marker": "configured"}},
+            actor_principal_id="test-user",
         )
     ).run_id
     _graph, legacy_waiting = await run_registered_dag(
@@ -413,6 +429,7 @@ async def test_other_owners_runs_are_never_touched(
         workspace_id="ws-rdr",
         project_id=container.project_id,
         provenance={"admission_source": "hive_legacy_dag"},
+        user_id="test-user",
     )
 
     assert await recover_stranded_registered_dag_runs() == 0
@@ -438,11 +455,12 @@ async def test_a_foreign_prefix_longer_than_one_tick_is_crossed_across_ticks(
         name="consumer-owned",
         nodes=[Node(node_id="only", node_type=_StepNode.kind)],
     )
-    for _ in range(DEFAULT_MAX_INSPECTED + 1):
+    for index in range(DEFAULT_MAX_INSPECTED + 1):
         await container.run_store.create_run(
             single,
             initial_status=RunStatus.QUEUED,
             provenance={**_SCHEDULE, "executor": "durable_graph"},
+            actor_principal_id=f"test-user-{index}",
         )
     run_id = await _admit_then_die(container, monkeypatch, "rdr-steps")
 
