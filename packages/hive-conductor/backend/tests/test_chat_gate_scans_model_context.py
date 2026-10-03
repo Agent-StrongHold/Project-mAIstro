@@ -29,17 +29,7 @@ from maistro.security.warden.detector import Warden, WardenContext
 
 pytestmark = pytest.mark.usefixtures("chat_run_spine")
 
-KNOWN_GAPS: frozenset[str] = frozenset(
-    {
-        # Refs #66 (Warden on every real path); inherited by #804's Workspace Agent.
-        "turn_context_scanned",
-        # Refs #66; the consequence of the entry above.
-        "split_payload_refused",
-        # Refs #66: the role value "assistant" is scanned as a string leaf and
-        # flagged high_instruction_density, so any turn with history is refused.
-        "benign_history_reaches_model",
-    }
-)
+KNOWN_GAPS: frozenset[str] = frozenset()
 
 SPLIT_FIRST_TURN = (
     "Thanks for the summary of the quarterly report. "
