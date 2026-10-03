@@ -93,10 +93,13 @@ class PgInvocationQuota:
 
     async def register_budget(self, budget: QuotaBudget) -> None:
         definition = json.dumps(budget.__dict__, sort_keys=True)
+        # Bind serialized JSON as text before PostgreSQL parses it. Production
+        # pools install a json.dumps JSONB codec; binding JSON text directly as
+        # jsonb would encode it again, breaking immutable/replay comparisons.
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 """INSERT INTO invocation_quota_budgets (budget_id, definition)
-                   VALUES ($1, $2::jsonb)
+                   VALUES ($1, $2::text::jsonb)
                    ON CONFLICT (budget_id) DO NOTHING""",
                 budget.budget_id,
                 definition,
@@ -336,7 +339,7 @@ async def _write_reservation(
 
     await conn.execute(
         """INSERT INTO invocation_quota_reservations
-           (invocation_id, identity, state, reason) VALUES ($1,$2::jsonb,$3,$4)""",
+           (invocation_id, identity, state, reason) VALUES ($1,$2::text::jsonb,$3,$4)""",
         invocation_id,
         json.dumps(identity, sort_keys=True),
         "denied" if reason else "held",
@@ -404,7 +407,7 @@ async def _record_evidence(conn: Any, observation: QuotaObservation, payload: st
         return True
     await conn.execute(
         "INSERT INTO invocation_quota_evidence "
-        "(invocation_id, revision, evidence_id, payload) VALUES ($1,$2,$3,$4::jsonb)",
+        "(invocation_id, revision, evidence_id, payload) VALUES ($1,$2,$3,$4::text::jsonb)",
         observation.invocation_id,
         observation.revision,
         observation.evidence_id,

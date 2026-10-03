@@ -47,6 +47,15 @@ or placeholder-only section.
 
 ### Security
 
+- **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
+  (#1362).** Serialized budget definitions, reservation identities, and usage
+  evidence are bound as text before PostgreSQL parses JSONB, preventing a
+  configured JSON encoder from double-encoding them. Immutable budget checks
+  and idempotent evidence comparisons retain their existing semantics. This
+  repairs new writes only: existing double-encoded JSONB evidence is not
+  migrated and its replay limitation remains. This does not supply missing
+  provider-enforced numeric usage bounds (#1196).
+
 - **Default Invocation quota wiring refuses unknown token and monetary bounds
   before provider dispatch (#1362).** Character-count guesses omit byte-level
   tokenization, full message fields, tool and response schemas, and multimodal
