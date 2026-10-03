@@ -882,7 +882,7 @@ jobs:
       # daemon's retried pull never reaches -- so they carry their own retry
       # via buildx-build-retry.sh instead (Codex, #683).
       - name: Pre-pull base images (retry transient registry faults)
-        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
+        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile Dockerfile.rsi-runner
 
       - name: Build maistro-engine (cached)
         run: >-
