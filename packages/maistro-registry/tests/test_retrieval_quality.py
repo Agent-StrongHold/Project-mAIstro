@@ -47,9 +47,11 @@ GOLDEN_FILE = (
 )
 
 # The quality floor this change records (issue #26's "measured retrieval
-# quality"). Measured at authoring time: MRR 1.0, recall@10 1.0, nDCG@10
-# 0.971 over the 20 golden queries. Headroom is deliberate headroom, not
-# slack to burn: a drop below these numbers is a regression to explain.
+# quality"). Measured at authoring time: MRR 0.9583, recall@10 0.9583,
+# nDCG@10 0.930 over the 24 golden queries — the only below-1.0 mass is
+# the declared no-answer case, which contributes 0 by design. Headroom
+# is deliberate headroom, not slack to burn: a drop below these numbers
+# is a regression to explain.
 MIN_MEAN_MRR = 0.90
 MIN_MEAN_RECALL = 0.90
 
@@ -170,9 +172,15 @@ def test_shipped_golden_set_is_wellformed() -> None:
     golden = load_golden(GOLDEN_FILE)
     assert len(golden) >= 20
     for g in golden:
-        assert g.query and g.relevant
-        assert all(1 <= grade <= 3 for grade in g.relevant.values())
-        assert g.note, "every golden query must say what it exercises"
+        assert g.query and g.note, "every golden query must say what it exercises"
+        if not g.relevant:
+            # The no-answer case is load-bearing: an empty relevance set
+            # must be a declared unanswerable query, not a typo.
+            assert "no-answer" in g.note, (
+                "an empty relevance set must declare itself the no-answer case"
+            )
+        else:
+            assert all(1 <= grade <= 3 for grade in g.relevant.values())
 
 
 def test_real_corpus_meets_the_recorded_quality_floor() -> None:

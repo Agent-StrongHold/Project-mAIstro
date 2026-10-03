@@ -28,6 +28,17 @@ leg of "corpus refresh/removal invalidates stale indexed content" — a
 deleted source's id is gone from the rebuilt index and the fingerprint
 returns to the pre-addition value.
 
+Also extended (no node-count change): the shipped golden set grows from
+20 to 24 queries so it covers the issue's named case list — a
+supersession pair (ADR-046 [Superseded] with its successor
+ADR-082126-f69c), a linked-acceptance-criteria query hitting SPEC-256
+through its AC heading stream, and one declared no-answer case (empty
+relevance, contributing 0 by design). The floor test's authoring-time
+numbers move to MRR 0.9583 / recall 0.9583 (still ≥ 0.90), and the
+README's measured-comparison table was re-measured on the same 24-query
+set. `test_shipped_golden_set_is_wellformed` now requires an empty
+relevance set to declare itself the no-answer case in its note.
+
 Corpus sizes in the new tests use five documents because the measured
 df-share ceiling (0.5) correctly rejects every term of a tiny corpus —
 the same reason `test_retrieval_expansion.py` builds four.

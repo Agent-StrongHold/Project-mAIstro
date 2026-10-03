@@ -61,14 +61,17 @@ endpoint only, never in the request payload.
 `eval` without `--golden` uses the shipped golden set
 (`maistro_registry/retrieval/golden_queries.json`), which encodes which
 documents of *this* repository answer *this* repository's architectural
-questions. Measured at authoring time over that set at k=10:
-**MRR 1.00, recall@10 1.00, nDCG@10 0.97**. The same floor is asserted
-by `packages/maistro-registry/tests/test_retrieval_quality.py`; if it
+questions — exact ids, terminology, paraphrases, decision/spec linkage,
+supersession pairs, and one declared no-answer case. Measured at
+authoring time over that set at k=10: **MRR 0.958, recall@10 0.958,
+nDCG@10 0.930** (the only misses belong to the no-answer case, by
+design). The same floor is asserted by
+`packages/maistro-registry/tests/test_retrieval_quality.py`; if it
 fails, read the per-query report (`maistro-registry eval .`) before
 touching anything — the report names the missed documents.
 
 ### Measured comparison on the one golden set (corpus @ 2026-10-03,
-432 documents)
+432 documents, 24 queries)
 
 Each intervention measured separately against the same golden set and
 the same corpus state — the numbers a regression has to beat, not
@@ -76,22 +79,22 @@ examples:
 
 | Variant | MRR | recall@10 | nDCG@10 |
 |---|---|---|---|
-| shipped baseline (enrichment + term filtering, no expansion) | 1.000 | 1.000 | 0.971 |
-| term filtering disabled (`--max-df-share 1.0`) | 1.000 | 1.000 | 0.972 |
-| offline enrichment disabled (body terms only) | 0.975 | 1.000 | 0.954 |
-| + static expansion candidates (untopicalized) | 0.702 | 0.875 | 0.713 |
+| shipped baseline (enrichment + term filtering, no expansion) | 0.958 | 0.958 | 0.930 |
+| term filtering disabled (`--max-df-share 1.0`) | 0.958 | 0.958 | 0.931 |
+| offline enrichment disabled (body terms only) | 0.938 | 0.958 | 0.916 |
+| + static expansion candidates (untopicalized) | 0.689 | 0.854 | 0.701 |
 
 Reading, honestly: the corpus-statistical filter is *neutral* on this
-golden set (−0.002 nDCG) — its value is robustness to glue terms the
-set does not stress ("the", "run", "spec"), not a measured gain here.
-Enrichment is worth +0.025 MRR: two queries fall off rank 1 without
-it. Expansion candidates help only when they name the right synonyms —
-broad candidates *cost* 0.30 MRR even though every one of them was a
-corpus word the statistics could not veto, which is why expansion is
-opt-in and off by default.
+golden set (+0.001 nDCG without it) — its value is robustness to glue
+terms the set only partly stresses ("the", "run", "by"), not a measured
+gain here. Enrichment is worth +0.021 MRR: one more query finds its
+document at rank 1 with it. Expansion candidates help only when they
+name the right synonyms — broad candidates *cost* 0.27 MRR even though
+every one of them was a corpus word the statistics could not veto,
+which is why expansion is opt-in and off by default.
 
 Latency/cost on the same machine: index build ≈ 0.3 s for 432
-documents, ≈ 2.6 ms per query, zero network. Expansion adds one
+documents, ≈ 2 ms per query, zero network. Expansion adds one
 governed chat call per query (temperature 0, `max_tokens` 200) and one
 network round trip; its latency is whatever the gateway's is and is
 *not* measured offline — the `expansion_skipped` discipline exists so

@@ -157,5 +157,33 @@
       "SPEC-228": 2
     },
     "note": "the taxonomy ADR plus the baseline-gaps spec measuring against it"
+  },
+  {
+    "query": "recurring agent task scheduler",
+    "relevant": {
+      "ADR-046": 3,
+      "ADR-082126-f69c": 2
+    },
+    "note": "supersession: rank 1 is the Superseded scheduler ADR and its successor grades 2 — historical material must be findable carrying its status, never posing as active authority"
+  },
+  {
+    "query": "recurrence produces runs schedule definition",
+    "relevant": {
+      "ADR-082126-f69c": 3,
+      "ADR-046": 1
+    },
+    "note": "the successor decision first; the superseded ADR-046 stays reachable as related context (grade 1), so a reader lands on the governing answer and still sees the history"
+  },
+  {
+    "query": "pure function claims verified by checkpoint replay test",
+    "relevant": {
+      "SPEC-256": 3
+    },
+    "note": "linked acceptance criteria: the hit comes through SPEC-256's '## Acceptance criteria' heading stream; 'by' and 'test' are corpus-glue the measured filter must reject without losing the hit"
+  },
+  {
+    "query": "quantum consciousness module for the orchestrator",
+    "relevant": {},
+    "note": "no-answer case: nothing in this corpus is relevant, so the query contributes 0 to recall and MRR and the report must show the MISS instead of a fabricated governing citation"
   }
 ]
