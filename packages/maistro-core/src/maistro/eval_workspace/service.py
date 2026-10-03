@@ -31,7 +31,10 @@ logger = logging.getLogger("maistro.eval_workspace.service")
 
 
 class WorkspaceStateError(RuntimeError):
-    """A transition the workspace's current state does not allow."""
+    """A transition the workspace's current state does not allow.
+
+    M1 product-local projection: Workspace
+    """
 
 
 class EnvironmentMismatchError(RuntimeError):
@@ -74,7 +77,14 @@ def _provenance_kwargs(
 
 
 class EvalWorkspaceService:
-    """All record-level workspace operations; the pool is a thin client."""
+    """All record-level workspace operations; the pool is a thin client.
+
+    M1 product-local projection: Workspace
+
+    Retained environments are provider/workspace state under canonical
+    Run/Attempt ownership (#107), never a second execution lifecycle or a
+    redefinition of ``maistro.workspaces``.
+    """
 
     def __init__(self, store: EvalWorkspaceStore) -> None:
         self._store = store

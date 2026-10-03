@@ -32,7 +32,15 @@ class DuplicateWorkspaceError(RuntimeError):
 
 @runtime_checkable
 class EvalWorkspaceStore(Protocol):
-    """Reads and writes workspace and snapshot records."""
+    """Reads and writes workspace and snapshot records.
+
+    M1 product-local projection: Workspace
+
+    The records here project provider/workspace state bound to the canonical
+    Run/Attempt lineage (#107); they never redefine or replace the canonical
+    ``maistro.workspaces`` Workspace, whose ownership and isolation floor stay
+    authoritative.
+    """
 
     def add_workspace(self, workspace: EvalWorkspace) -> None: ...
 
@@ -60,7 +68,10 @@ class EvalWorkspaceStore(Protocol):
 
 
 class InMemoryEvalWorkspaceStore:
-    """In-memory `EvalWorkspaceStore`; process-local, dev and test backend."""
+    """In-memory `EvalWorkspaceStore`; process-local, dev and test backend.
+
+    M1 product-local projection: Workspace
+    """
 
     def __init__(self) -> None:
         self._workspaces: dict[str, EvalWorkspace] = {}
