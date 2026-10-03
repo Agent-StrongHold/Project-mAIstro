@@ -15,17 +15,26 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from maistro.memory.learnings.lifecycle import (
+    DEFAULT_CONFIDENCE,
+    REINFORCE_DELTA,
     ConflictRecord,
+    ConsolidationRecord,
     EvidenceLink,
     EvidenceLinkRequiredError,
     InactiveLearningError,
     InMemoryLearningLifecycle,
     LearningEvidence,
     LearningEvidenceKind,
+    LearningRevision,
+    LearningStanding,
     UnknownLearningError,
 )
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import Learning, MemoryScope
+
+# The whole module is the behavioral-contract evidence SPEC-282's `contracts:`
+# declaration names (ADR-032): every test below pins behavior, not wiring.
+pytestmark = [pytest.mark.contract("behavioral")]
 
 T0 = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
@@ -541,3 +550,160 @@ class TestBookkeeping:
                 kind=LearningEvidenceKind.DECAYED,
                 at=datetime(2026, 9, 1, 12),
             )
+
+
+class TestRecordInvariants:
+    """The frozen records enforce the lifecycle's own acceptance claims (AC-1/2/4).
+
+    A revision, evidence event, conflict or consolidation record that could be
+    constructed with a naive timestamp, an unattributed link or a self-referential
+    source list would let history and provenance silently rot; the constructors
+    refuse, and these tests pin each refusal at the record level, independent of
+    the lifecycle methods that happen to produce well-formed arguments.
+    """
+
+    def test_revision_refuses_a_naive_timestamp(self) -> None:
+        learning = _lr(["deploy"], "x")
+        with pytest.raises(ValueError, match="timezone-aware"):
+            LearningRevision(
+                learning_id=1,
+                revision=1,
+                at=datetime(2026, 9, 1, 12),
+                cause=LearningEvidenceKind.CREATED,
+                snapshot=learning,
+            )
+
+    def test_conflict_record_refuses_a_naive_timestamp(self) -> None:
+        with pytest.raises(ValueError, match="timezone-aware"):
+            ConflictRecord(
+                conflict_id="c1",
+                a_id=1,
+                b_id=2,
+                detected_at=datetime(2026, 9, 1, 12),
+                link=_run_link(),
+            )
+
+    def test_conflict_record_refuses_self_contradiction(self) -> None:
+        with pytest.raises(ValueError, match="itself"):
+            ConflictRecord(
+                conflict_id="c1",
+                a_id=7,
+                b_id=7,
+                detected_at=T0,
+                link=_run_link(),
+            )
+
+    def test_consolidation_record_refuses_a_naive_timestamp(self) -> None:
+        with pytest.raises(ValueError, match="timezone-aware"):
+            ConsolidationRecord(
+                derived_id=3,
+                source_ids=(1, 2),
+                at=datetime(2026, 9, 1, 12),
+                link=_run_link(),
+            )
+
+    def test_consolidation_record_refuses_a_single_source(self) -> None:
+        with pytest.raises(ValueError, match="two distinct source"):
+            ConsolidationRecord(derived_id=3, source_ids=(1, 1), at=T0, link=_run_link())
+
+    def test_consolidation_record_refuses_a_derived_source(self) -> None:
+        with pytest.raises(ValueError, match="cannot be one of its own sources"):
+            ConsolidationRecord(derived_id=1, source_ids=(1, 2), at=T0, link=_run_link())
+
+    def test_consolidation_record_refuses_an_unattributed_merge(self) -> None:
+        with pytest.raises(EvidenceLinkRequiredError):
+            ConsolidationRecord(derived_id=3, source_ids=(1, 2), at=T0, link=EvidenceLink())
+
+    def test_standing_refuses_an_out_of_range_confidence(self) -> None:
+        with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+            LearningStanding(learning_id=1, confidence=1.5, last_touched_at=T0)
+        with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+            LearningStanding(learning_id=1, confidence=-0.1, last_touched_at=T0)
+
+    def test_standing_refuses_a_naive_timestamp(self) -> None:
+        with pytest.raises(ValueError, match="timezone-aware"):
+            LearningStanding(
+                learning_id=1, confidence=0.5, last_touched_at=datetime(2026, 9, 1, 12)
+            )
+
+    def test_evidence_of_an_evidence_driven_kind_requires_a_link(self) -> None:
+        with pytest.raises(EvidenceLinkRequiredError, match="reinforced"):
+            LearningEvidence(
+                sequence=1,
+                learning_id=1,
+                kind=LearningEvidenceKind.REINFORCED,
+                at=T0,
+                link=EvidenceLink(),
+            )
+
+
+class TestDegenerateLifecyclePaths:
+    """The branch guards behind the happy paths, pinned for real."""
+
+    async def test_reinforcing_a_duplicated_id_records_once(self) -> None:
+        lifecycle, _, _ = _lifecycle()
+        lid = await lifecycle.observe(_lr(["deploy"], "x"))
+
+        updated = await lifecycle.reinforce([lid, lid], link=_run_link())
+
+        assert len(updated) == 1
+        standing = await lifecycle.standing(lid)
+        assert standing.confidence == pytest.approx(DEFAULT_CONFIDENCE + REINFORCE_DELTA)
+        assert _kinds(lifecycle, lid).count(LearningEvidenceKind.REINFORCED) == 1
+
+    async def test_retiring_a_duplicated_id_records_once(self) -> None:
+        lifecycle, _, _ = _lifecycle()
+        lid = await lifecycle.observe(_lr(["deploy"], "x"))
+
+        retired = await lifecycle.retire([lid, lid], reason="stale")
+
+        assert len(retired) == 1
+        assert _kinds(lifecycle, lid).count(LearningEvidenceKind.RETIRED) == 1
+
+    async def test_decay_refuses_a_naive_timestamp(self) -> None:
+        lifecycle, _, _ = _lifecycle()
+        with pytest.raises(ValueError, match="timezone-aware"):
+            await lifecycle.decay(now=datetime(2026, 9, 1, 12))
+
+    async def test_a_pair_with_one_foreign_side_is_not_returned_for_either_org(
+        self,
+    ) -> None:
+        lifecycle, _, _ = _lifecycle()
+        a = await lifecycle.observe(_lr(["cache"], "one", org="org-1"))
+        b = await lifecycle.observe(_lr(["ttl"], "two", org="org-2"))
+        await lifecycle.record_contradiction(a, b, link=_run_link())
+
+        assert await lifecycle.find_conflicts(org_id="org-1") == []
+        assert await lifecycle.find_conflicts(org_id="org-2") == []
+        # Scope-blind reads still see the pair: the mismatch is per-side, not
+        # a registration refusal, so a reviewer can find it either way.
+        assert len(await lifecycle.find_conflicts()) == 1
+
+    async def test_a_distinct_pair_gets_its_own_conflict_record(self) -> None:
+        lifecycle, _, _ = _lifecycle()
+        a = await lifecycle.observe(_lr(["cache"], "one"))
+        b = await lifecycle.observe(_lr(["ttl"], "two"))
+        c = await lifecycle.observe(_lr(["deploy"], "three"))
+        first = await lifecycle.record_contradiction(a, b, link=_run_link())
+        second = await lifecycle.record_contradiction(a, c, link=_run_link())
+
+        assert first.conflict_id != second.conflict_id
+        records = await lifecycle.find_conflicts()
+        assert {r.conflict_id for r in records} == {first.conflict_id, second.conflict_id}
+
+    async def test_retrieval_does_not_surface_conflicts_outside_the_result(
+        self,
+    ) -> None:
+        lifecycle, _, _ = _lifecycle()
+        a = await lifecycle.observe(_lr(["cache", "http"], "cache is always safe"))
+        b = await lifecycle.observe(_lr(["cache", "ttl"], "cache needs a ttl"))
+        await lifecycle.record_contradiction(a, b, link=_run_link())
+        c = await lifecycle.observe(_lr(["deploy"], "unrelated"))
+        d = await lifecycle.observe(_lr(["rollback"], "also unrelated"))
+        await lifecycle.record_contradiction(c, d, link=_run_link())
+
+        result = await lifecycle.find_relevant("the http cache ttl", org_id="org-1")
+
+        assert {lr.id for lr in result.learnings} == {a, b}
+        assert len(result.conflicts) == 1
+        assert {result.conflicts[0].a.id, result.conflicts[0].b.id} == {a, b}

@@ -5,6 +5,7 @@ repo: maistro-engine
 kind: spec
 status: Accepted
 created: 2026-10-01
+accepted: 2026-10-01
 substrate:
   - maistro-engine#ADR-015
   - maistro-engine#ADR-080

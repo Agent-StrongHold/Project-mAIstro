@@ -14,6 +14,7 @@ from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTarge
 from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
+from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
@@ -148,4 +149,17 @@ _VULTURE_WHITELIST = (
     # variable above rather than a class-object reference, which would not
     # typecheck.
     latest_by_dimension,
+    # Learning lifecycle (M4-B4, #120, SPEC-282). The revisable-learning
+    # contract ships first: its in-tree consumers are its tests, and the
+    # durable ledger twins plus the orchestrator/retrieval wiring that calls
+    # these follow, as they did for the episodic store's dynamics. Same
+    # "contract ships first by design" posture as CampaignSelector and the
+    # eval-score seam above.
+    InMemoryLearningLifecycle.weaken,
+    InMemoryLearningLifecycle.record_contradiction,
+    InMemoryLearningLifecycle.resolve_conflict,
+    InMemoryLearningLifecycle.supersede,
+    InMemoryLearningLifecycle.retire,
+    InMemoryLearningLifecycle.evidence_for,
+    InMemoryLearningLifecycle.revisions_for,
 )

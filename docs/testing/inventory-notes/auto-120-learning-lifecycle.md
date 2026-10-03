@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +33
+  packages/maistro-core/tests: +50
 ---
 
 Issue #120 (M4-B4, SPEC-282) adds the learning lifecycle: contradiction,
@@ -21,7 +21,7 @@ retrieval (AC-5). `InMemoryLearningStore.get` is the id lookup the lifecycle
 uses to track the store's canonical instance after a dedup hit; the store's dedup
 probe, statuses and contracts are otherwise untouched.
 
-`packages/maistro-core/tests/memory/learnings/test_lifecycle.py` (33 tests) pins each
+`packages/maistro-core/tests/memory/learnings/test_lifecycle.py` (49 tests) pins each
 acceptance axis behaviorally with a deterministic clock: exact Run/eval ids on
 evidence and refusal of unattributed updates, revision chains and append-only
 evidence ordering, silence-proportional decay with floor/retire-below and no
@@ -29,3 +29,13 @@ double-charging, supersession keeping the old row reachable in `list_all` but ou
 retrieval, consolidation provenance and source preservation (including the
 ordering trap where storing first would let the store's dedup overwrite a source in
 place), and conflict registration/resolution/re-surfacing through retrieval.
+
+The CI-repair round (#120) adds 16 lifecycle tests and 1 store test pinning the
+degenerate paths the diff-coverage gate counted as partial arcs: the frozen
+records' own constructor refusals (naive timestamps on revisions/conflicts/
+consolidations/standing, out-of-range confidence, single-source and derived-as-source
+consolidation records, evidence-driven evidence without a Run/evaluation link),
+duplicated-id dedup in reinforce/retire, decay's naive-timestamp refusal, the
+per-side org filter on conflict reads, a second distinct pair getting its own
+conflict record, retrieval not surfacing conflicts outside the retrieved set, and
+`InMemoryLearningStore.get` returning None for an unknown id.

@@ -455,6 +455,16 @@ class InMemoryLearningLifecycle:
                 return record
         return None
 
+    def _active_tracked_sides(self, record: ConflictRecord) -> tuple[Learning, Learning] | None:
+        """Both tracked, active sides of a conflict, or None if it no longer applies."""
+        side_a = self._tracked.get(record.a_id)
+        side_b = self._tracked.get(record.b_id)
+        if side_a is None or side_b is None:
+            return None
+        if side_a.status != "active" or side_b.status != "active":
+            return None
+        return side_a, side_b
+
     async def find_conflicts(
         self, *, org_id: str = "", include_resolved: bool = False
     ) -> list[ConflictRecord]:
@@ -470,12 +480,10 @@ class InMemoryLearningLifecycle:
         for record in self._conflicts.values():
             if record.resolved and not include_resolved:
                 continue
-            side_a = self._tracked.get(record.a_id)
-            side_b = self._tracked.get(record.b_id)
-            if side_a is None or side_b is None:
+            sides = self._active_tracked_sides(record)
+            if sides is None:
                 continue
-            if side_a.status != "active" or side_b.status != "active":
-                continue
+            side_a, side_b = sides
             if org_id and (side_a.org_id != org_id or side_b.org_id != org_id):
                 continue
             results.append(record)
@@ -574,6 +582,47 @@ class InMemoryLearningLifecycle:
 
     # ── consolidation ────────────────────────────────────────────────
 
+    def _validated_consolidation_sources(self, source_ids: Sequence[int]) -> list[Learning]:
+        """Deduplicated, tracked, active sources — at least two of them."""
+        sources = [self._require(source_id) for source_id in dict.fromkeys(source_ids)]
+        if len(sources) < 2:
+            raise ValueError("consolidation combines at least two distinct source learnings")
+        for source in sources:
+            self._require_active(source)
+        return sources
+
+    def _mark_sources_consolidated(self, sources: list[Learning], *, at: datetime) -> None:
+        """Take every source out of the active set, snapshotting each first.
+
+        Runs before the derived row is stored — same ordering as `supersede` —
+        so the store's dedup probe cannot land the merged content on a source
+        and erase it in place.
+        """
+        for source in sources:
+            source.status = "consolidated"
+            assert source.id is not None
+            self._snapshot(source.id, LearningEvidenceKind.CONSOLIDATED, at)
+
+    def _record_source_consolidations(
+        self,
+        source_ids: list[int],
+        *,
+        derived_id: int,
+        link: EvidenceLink,
+        at: datetime,
+        note: str,
+    ) -> None:
+        """Give each source CONSOLIDATED evidence pointing at the derived row."""
+        for source_id in source_ids:
+            self._record(
+                source_id,
+                LearningEvidenceKind.CONSOLIDATED,
+                link,
+                at=at,
+                note=note,
+                related_learning_id=derived_id,
+            )
+
     async def consolidate(
         self,
         source_ids: Sequence[int],
@@ -594,41 +643,23 @@ class InMemoryLearningLifecycle:
             raise EvidenceLinkRequiredError(
                 "consolidation must name the Run or evaluation that asked for it"
             )
-        sources = [self._require(source_id) for source_id in dict.fromkeys(source_ids)]
-        if len(sources) < 2:
-            raise ValueError("consolidation combines at least two distinct source learnings")
+        sources = self._validated_consolidation_sources(source_ids)
+        resolved_ids: list[int] = []
         for source in sources:
-            self._require_active(source)
-        resolved_ids = [source.id for source in sources]
-        assert all(sid is not None for sid in resolved_ids)
-        now = self._clock()
-        # Same ordering as `supersede`: sources leave the `active` set before
-        # the derived row is stored, so the store's dedup probe cannot land the
-        # merged content on a source and erase it in place.
-        for source in sources:
-            source.status = "consolidated"
             assert source.id is not None
-            self._snapshot(source.id, LearningEvidenceKind.CONSOLIDATED, now)
+            resolved_ids.append(source.id)
+        now = self._clock()
+        self._mark_sources_consolidated(sources, at=now)
         derived_id = await self._store.store(merged)
         derived = self._store.get(derived_id) or merged
         self._tracked[derived_id] = derived
         self._standing[derived_id] = _MutableStanding(
-            confidence=max(
-                self._standing[sid].confidence for sid in resolved_ids if sid is not None
-            ),
+            confidence=max(self._standing[sid].confidence for sid in resolved_ids),
             last_touched_at=now,
         )
-        for sid in resolved_ids:
-            if sid is None:  # pragma: no cover - asserted above
-                continue
-            self._record(
-                sid,
-                LearningEvidenceKind.CONSOLIDATED,
-                link,
-                at=now,
-                note=note,
-                related_learning_id=derived_id,
-            )
+        self._record_source_consolidations(
+            resolved_ids, derived_id=derived_id, link=link, at=now, note=note
+        )
         self._record(
             derived_id,
             LearningEvidenceKind.CONSOLIDATED,
@@ -753,9 +784,6 @@ class InMemoryLearningLifecycle:
 
     # ── reads ────────────────────────────────────────────────────────
 
-    def tracked_ids(self) -> list[int]:
-        return sorted(self._tracked)
-
     async def standing(self, learning_id: int) -> LearningStanding:
         mutable = self._standing.get(learning_id)
         if mutable is None:
@@ -778,9 +806,6 @@ class InMemoryLearningLifecycle:
         """Every preserved prior state of one learning, oldest first."""
         self._require(learning_id)
         return list(self._revisions.get(learning_id, ()))
-
-    async def consolidations(self) -> list[ConsolidationRecord]:
-        return list(self._consolidations)
 
     # ── internals ────────────────────────────────────────────────────
 
