@@ -188,13 +188,22 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Publish gates-ran on the exact candidate head
-        if: always() && steps.target.outputs.head_sha != ''
+        if: "!cancelled() && steps.target.outputs.head_sha != ''"
         uses: actions/github-script@v9
         env:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           EVALUATION_EXIT_CODE: ${{ steps.evaluate.outputs.exit_code }}
+          JOB_STATUS: ${{ job.status }}
         with:
           script: |
+            // Cancellation is not an evaluator verdict. Leave the candidate's
+            // status untouched, whether cancelled manually or by concurrency.
+            if (process.env.JOB_STATUS === 'cancelled') {
+              core.info('publisher cancelled; leaving gates-ran unchanged');
+              return;
+            }
+
+            // Non-cancelled missing/error output still fails closed.
             const code = Number(process.env.EVALUATION_EXIT_CODE || '1');
             const state = code === 0 ? 'success' : code === 2 ? 'pending' : 'failure';
             const description = code === 0
