@@ -25,10 +25,17 @@ no parallel runtime: fields + lifecycle functions + durable transitions.
   <from>` + append-only `learning_stage_transitions` ledger row in one
   transaction), pass-through on `DurableHybridLearningStore`, and the two
   methods on the `LearningStore` protocol.
-- Durability: migration `048_learning_stage_ladder.py` (stage columns +
+- Durability: migration `051_learning_stage_ladder.py` (stage columns +
   ledger table, `IF NOT EXISTS` posture like 046/047); SQLite twin upgrades
   existing files in place. No backfill: pre-ladder rows read `memory` with
-  blank actors — absence preserved, nothing fabricated.
+  blank actors — absence preserved, nothing fabricated. Numbered 048 when
+  written; develop claimed 048 for #398 and then 049/050 for #792/#774 while
+  this branch was open, so per the chain's collision convention (039/043/045
+  precedents) the revision re-parented onto the `050` chain tip as 051 — one
+  linear head, no duplicate revision ids (`tests/migrations/`
+  `test_capability_invocation_effect_index_migration.py` pins head `051`;
+  `test_migration_chain.py`'s exact-table-set assertion gained
+  `learning_stage_transitions`).
 - Authority invariant: nothing on the authorization path reads knowledge
   state; pinned by test.
 
@@ -56,11 +63,13 @@ no parallel runtime: fields + lifecycle functions + durable transitions.
   FakeConnection twin: transaction ordering (transaction → select → guarded
   update → ledger insert), `UPDATE 0` raises instead of half-applying,
   scoped reads/writes, stage columns on the INSERT contract.
-- `tests/migrations/test_learning_stage_ladder_migration.py` — migration 048
+- `tests/migrations/test_learning_stage_ladder_migration.py` — migration 051
   upgrade/downgrade/re-upgrade round trip against a real PostgreSQL
-  (executed live: chain 001→048 applies cleanly; ledger table and NOT NULL
+  (executed live this round on pgvector:pg18; ledger table and NOT NULL
   stage columns land, downgrade un-lands the whole ladder, re-upgrade
-  restores). Skips without `MAISTRO_TEST_DATABASE_URL`, per house pattern.
+  restores; `alembic downgrade base && alembic upgrade head` re-lands on
+  the chain tip with the ledger table present). Skips without
+  `MAISTRO_TEST_DATABASE_URL`, per house pattern.
 - `packages/maistro-core/tests/persistence/test_pg_learnings.py` — the exact
   INSERT-args pin gained the three new column values (the pin's job).
 - `packages/maistro-core/tests/persistence/test_learning_contract.py` —
