@@ -8,7 +8,14 @@ from datetime import UTC, datetime
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.graph.definitions import Graph
@@ -347,8 +354,8 @@ class AttemptResult(BaseModel):
 
     @model_validator(mode="after")
     def _validate_attempt_result(self) -> AttemptResult:
-        _require_non_empty(self.attempt_id, "attempt_id")
         _require_non_empty(self.node_run_id, "node_run_id")
+        _require_non_empty(self.attempt_id, "attempt_id")
         if self.status not in TERMINAL_ATTEMPT_STATUSES:
             raise ValueError("AttemptResult requires a terminal physical Attempt status")
         frozen = _freeze_evidence_value(self.result)
@@ -462,6 +469,8 @@ class Attempt(BaseModel):
     node_run_id: str
     ordinal: int = Field(ge=1)
     status: AttemptStatus = AttemptStatus.CREATED
+    # Staged evidence only: existing writers continue to leave the cause unknown.
+    cancellation_cause: CancellationCause | None = Field(default=None, frozen=True)
     runtime_id: str = "python"
     executor_id: str = ""
     execution_lease: ExecutionLease | None = None
@@ -477,6 +486,8 @@ class Attempt(BaseModel):
     @model_validator(mode="after")
     def _validate_attempt(self) -> Attempt:
         _require_non_empty(self.node_run_id, "node_run_id")
+        if self.cancellation_cause is not None and self.status is not AttemptStatus.CANCELLED:
+            raise ValueError("cancellation_cause requires a CANCELLED Attempt")
         if self.execution_lease is not None:
             if self.execution_lease.attempt_id != self.attempt_id:
                 raise ValueError("ExecutionLease.attempt_id must match Attempt.attempt_id")
@@ -488,6 +499,16 @@ class Attempt(BaseModel):
             subject="Attempt",
         )
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_cancellation_cause(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Keep unknown causes off the wire without dropping other null evidence."""
+        payload: dict[str, Any] = handler(self)
+        if self.cancellation_cause is None:
+            payload.pop("cancellation_cause", None)
+        return payload
 
 
 class EvalMethod(StrEnum):
@@ -537,7 +558,7 @@ class RunEvalScore(BaseModel):
     Goal and Rubric revisions that were applied. Records are append-only —
     re-evaluating a dimension appends another record and never rewrites or
     deletes a prior one, so a failed eval stays queryable after the retry that
-    supersedes it.
+    superseded it.
     """
 
     model_config = ConfigDict(extra="forbid", ser_json_inf_nan="constants")
