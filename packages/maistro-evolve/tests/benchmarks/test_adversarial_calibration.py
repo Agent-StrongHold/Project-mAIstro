@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from maistro_evolve.benchmarks import calibration as calibration_module
 from maistro_evolve.benchmarks.bfcl import _score_tool_call
 from maistro_evolve.benchmarks.calibration import (
     _bfcl_narration,
@@ -33,7 +34,12 @@ from maistro_evolve.benchmarks.calibration import (
     calibrate_proxy_scorers,
     strict_judge,
 )
-from maistro_evolve.benchmarks.datasets import BFCL_SAMPLES, GAIA_SAMPLES
+from maistro_evolve.benchmarks.datasets import (
+    BFCL_SAMPLES,
+    GAIA_SAMPLES,
+    RAGAS_SAMPLES,
+    TAU_BENCH_SAMPLES,
+)
 from maistro_evolve.benchmarks.gaia import _exact_match_score
 from maistro_evolve.benchmarks.tau_bench import _score_tool_usage
 
@@ -233,3 +239,82 @@ class TestTauNarrationZeroAtUnitLevel:
         sample = {"expected_tool_calls": ["refund_order"]}
         response = '{"name": "refund_order", "parameters": {"order_id": "1"}}'
         assert _score_tool_usage(response, sample) == 1.0
+
+
+#: Every query the calibration responders match on, across all four runners.
+#: A message carrying none of these is what the responder fallbacks exist for.
+_KNOWN_QUERIES = frozenset(
+    [s["query"] for s in BFCL_SAMPLES]
+    + [s["conversation"][-1]["content"] for s in TAU_BENCH_SAMPLES]
+    + [s["question"] for s in GAIA_SAMPLES]
+    + [s["question"] for s in RAGAS_SAMPLES]
+)
+
+#: An unmatched message exercises the closures' total-function fallback.
+_UNMATCHED = "follow-up: also email me a carrier pigeon"
+
+
+def _scrub_fixture_queries(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rewrite every known fixture query out of the outgoing user turns.
+
+    The calibration responders substring-match fixture queries in the
+    conversation; scrubbing them is what sends a runner's real message
+    stream down the fallback arc, without guessing runner internals.
+    """
+    return [
+        {
+            **message,
+            "content": _UNMATCHED,
+        }
+        if message.get("role") == "user"
+        and any(query in (message.get("content") or "") for query in _KNOWN_QUERIES)
+        else message
+        for message in messages
+    ]
+
+
+class TestResponderFallbacksAreTotal:
+    """A runner message matching no fixture query gets the safe default
+    reply — not a KeyError and not a partial match — and the calibration
+    report still completes over the real runners."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("scorer", "runner_name"),
+        [
+            ("proxy_bfcl", "run_bfcl"),
+            ("proxy_tau_bench", "run_tau_bench"),
+            ("proxy_gaia", "run_gaia"),
+            ("proxy_ragas", "run_ragas"),
+        ],
+    )
+    async def test_unmatched_message_earns_the_fallback_reply(
+        self, monkeypatch: pytest.MonkeyPatch, scorer: str, runner_name: str
+    ) -> None:
+        genome = make_genome()
+        replies: list[str] = []
+
+        real_runner = getattr(calibration_module, runner_name)
+
+        async def scrubbing_runner(genome: Any, llm_call: Any, **kwargs: Any) -> Any:
+            async def probing(messages: list[dict[str, Any]], **kw: Any) -> str:
+                reply = await llm_call(_scrub_fixture_queries(messages), **kw)
+                replies.append(reply)
+                return reply
+
+            return await real_runner(genome, probing, **kwargs)
+
+        monkeypatch.setattr(
+            f"maistro_evolve.benchmarks.calibration.{runner_name}", scrubbing_runner
+        )
+        report = await calibrate_proxy_scorers(genome, None)
+
+        # The fallback arc really executed: at least one reply came back as
+        # the closure's safe default rather than a fixture response.
+        assert replies, f"{runner_name} never invoked its candidate"
+        assert any("not sure" in reply or "cannot proceed" in reply for reply in replies), (
+            f"{runner_name} answered every scrubbed message without its fallback"
+        )
+        # A fallback answer is not a verified outcome: the scorer still
+        # completes and reports over the whole sample set.
+        assert report["scorers"][scorer]["narration_fixtures"] > 0

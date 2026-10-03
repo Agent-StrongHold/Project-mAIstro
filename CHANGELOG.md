@@ -704,7 +704,12 @@ or placeholder-only section.
   `eval_evidence` field (defaults to `{`). New `benchmarks/calibration.py`
   measures each scorer's narration false-positive rate against held-out
   adversarial fixtures (`calibrate_proxy_scorers`). Serialized-genome consumers
-  that rejected unknown fields must tolerate the new key.
+  that rejected unknown fields must tolerate the new key. Both acceptance
+  surfaces are operator-reachable: `python -m maistro_rsi evolve` prints the
+  champion's per-benchmark score→evidence provenance, and a new
+  `python -m maistro_rsi calibrate` runs the harness offline against a stored
+  genome and reports each scorer's narration false-positive rate (reporting
+  only — the fitness hard gates stay the only scoring authority).
 
 - **Terminal BACKLOG.md items must carry closure evidence (#101, partial).**
   `scripts/check-backlog-consistency.py` now fails an `Implemented` item with
