@@ -118,6 +118,12 @@ class _Tournament:
     def get_avg_elo(self, genome_id: str) -> float:
         return 1000.0
 
+    def get_total_battles(self, genome_id: str) -> int:
+        # Mirrors EloTournament's real surface (#853): _publish_tournament_elos
+        # gates Elo publication on battle evidence and records the battle
+        # count beside the rating.
+        return sum(1 for _b, a, b in self.battles if genome_id in (a, b))
+
 
 class _Cycle:
     """Small domain double; the test is about the execution mapping, not Evolve math."""
@@ -448,6 +454,12 @@ async def test_successful_cycle_route_projects_completed_canonical_run(
     stored = await owner.run_store.get_run(response["run_id"])
     assert stored is not None
     assert stored.status is RunStatus.COMPLETED
+    # #853: Elo publication is gated on battle evidence — a genome that fought
+    # gets the rating AND the battle count (fitness's Elo term fires only on
+    # recorded battles), published together or not at all.
+    published = {g.id: dict(g.harness_params) for g in service._population.list_all()}
+    assert published["g1"].get("avg_elo") == 1000.0
+    assert published["g1"].get("elo_battles", 0) > 0
 
 
 @pytest.mark.asyncio

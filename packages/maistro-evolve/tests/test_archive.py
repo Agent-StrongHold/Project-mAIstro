@@ -118,13 +118,11 @@ def _audit() -> GenomeAuditTrail:
         ("topology", OperatorKind.TOPOLOGY_MUTATION),
         ("node", OperatorKind.NODE_MUTATION),
         ("prompt", OperatorKind.PROMPT_MUTATION),
-        ("weights", OperatorKind.EVAL_WEIGHTS_MUTATION),
         ("fixer", OperatorKind.FIXER_MUTATION),
     ],
 )
 def test_mutation_operators_stamp_provenance(mutator: str, operator: OperatorKind) -> None:
     from maistro_evolve.mutate import (
-        mutate_eval_weights,
         mutate_fixer_genome,
         mutate_node,
         mutate_prompt,
@@ -136,7 +134,6 @@ def test_mutation_operators_stamp_provenance(mutator: str, operator: OperatorKin
         "topology": lambda g: mutate_topology(g, 1.0),
         "node": lambda g: mutate_node(g, 1.0),
         "prompt": lambda g: mutate_prompt(g, 1.0),
-        "weights": lambda g: mutate_eval_weights(g, 1.0),
         "fixer": lambda g: mutate_fixer_genome(g, 1.0),
     }
     child = fns[mutator](parent)
@@ -290,8 +287,9 @@ def test_cull_bottom_archives_retired_candidates() -> None:
     removed = population.cull_bottom(0.5, archive=archive)
     assert removed == 1
     assert population.get("weak") is None
-    # retired, yet inspectable
-    assert [g.id for g in archive.list_retired()] == ["weak"]
+    # retired, yet inspectable: the graveyard is queryable through the archive's
+    # recorded lifecycle — latest recorded event is the cull's "retired"
+    assert archive.latest_event("weak") == "retired"
     snapshot = archive.get("weak")
     assert snapshot is not None
     assert snapshot.eval_scores["proxy_ifeval"] == 0.1
@@ -323,6 +321,69 @@ def test_resolve_lineage_survives_retirement() -> None:
     assert [g.id for g in chain] == ["c", "p", "gp"]
 
 
+def test_resolve_lineage_walks_both_crossover_parents() -> None:
+    """A crossover child names TWO parents; the lineage walk must follow both
+    sides (A-lineage first, then B), even when a parent survives only in the
+    archive — an A-only walk would erase half the recorded ancestry."""
+    from maistro_evolve.crossover import crossover_and_mutate
+
+    population = PopulationStore()
+    archive = CandidateArchive()
+    side_a = _stamped("a-root", scores={"proxy_ifeval": 0.9})
+    side_b = _stamped("b-root", scores={"proxy_ifeval": 0.8})
+    side_b.fitness_score = 0.8
+    for g in (side_a, side_b):
+        population.add(g)
+    child = crossover_and_mutate(side_a, side_b, mutation_rate=0.0)
+    child.fitness_score = 0.95
+    population.add(child)
+    # the B-side parent is culled into the archive before the walk
+    population.cull_bottom(0.34, archive=archive)
+    assert population.get("b-root") is None
+
+    chain = resolve_lineage(population, archive, child.id)
+    assert chain[0].id == child.id
+    chain_ids = {g.id for g in chain}
+    # BOTH parents are in the resolved ancestry — the archived one included
+    assert "a-root" in chain_ids
+    assert "b-root" in chain_ids
+    # the child's record itself names both
+    assert child.provenance is not None
+    assert child.provenance.parents == ["a-root", "b-root"]
+    assert child.parent_b_id == "b-root"
+
+
+async def test_blocked_promotion_summary_carries_regression_evidence() -> None:
+    """The blocked-promotion audit record states WHY: candidate score against
+    the historical best it regressed from, plus WHO governed an override."""
+    population, archive = _retention_env()
+    challenger = _challenger("new", scores={"ifeval": 0.85, "bfcl": 0.75})
+    population.add(challenger)
+    with pytest.raises(HistoricalRegressionBlocked) as excinfo:
+        await promote_with_retention(
+            population, archive, "new", _audit(), RetentionGate(RetentionPolicy())
+        )
+    summary = excinfo.value.report.summary()
+    assert "regressed ifeval: candidate 0.8500 < proven 0.9500" in summary
+
+
+async def test_promotion_record_carries_lineage_depth_and_prior_event() -> None:
+    population, archive = _retention_env()
+    challenger = _challenger("new", scores={"ifeval": 0.99, "bfcl": 0.8})
+    population.add(challenger)
+    archive.record(challenger, event="created")
+    promoted = await promote_with_retention(
+        population, archive, "new", _audit(), RetentionGate(RetentionPolicy())
+    )
+    assert promoted.id == "new"
+    entry = archive._latest("new")
+    assert entry is not None and entry.event == "promoted"
+    # the promotion record itself is provenance-analysis material: how deep
+    # the recorded lineage runs, and which archive event preceded it
+    assert "lineage_depth=" in entry.detail
+    assert "prior_archive_event=created" in entry.detail
+
+
 def test_archive_branch_from_non_champion() -> None:
     archive = CandidateArchive()
     champion = _stamped("champ", scores={"proxy_ifeval": 0.95})
@@ -341,6 +402,12 @@ def test_archive_branch_from_non_champion() -> None:
     assert child.fitness_score is None
     # the branch event itself is recorded
     assert archive.latest_event(child.id) == "branched"
+    # the default detail pins WHICH snapshot was branched from, and that it
+    # was a retired stepping stone — the DGM stepping-stone move, on the record
+    branched_entry = archive._latest(child.id)
+    assert branched_entry is not None
+    assert "branched from stone snapshot" in branched_entry.detail
+    assert "(retired)" in branched_entry.detail
 
 
 def test_archive_branch_from_unknown_candidate_raises() -> None:
@@ -424,6 +491,10 @@ def _retention_env() -> tuple[PopulationStore, CandidateArchive]:
     champ = _stamped("champ", objective="obj", scores={"ifeval": 0.8, "bfcl": 0.7})
     champ.fitness_score = 0.8
     champ.approved_for_promotion = False
+    # the incumbent's evidence carries the #854 stamps too: compare_with_incumbent
+    # refuses a promotion whose two sides were not measured under the same
+    # stamped objective version.
+    champ.harness_params["objective_version"] = "objective-test"
     population.add(champ)
     stone = _stamped("stone", objective="obj", scores={"ifeval": 0.95}, parents=["champ"])
     archive.record(stone, event="retired")
@@ -434,6 +505,13 @@ def _challenger(genome_id: str, scores: dict[str, float]) -> PipelineGenome:
     challenger = _stamped(genome_id, objective="obj", parents=["champ"], scores=scores)
     challenger.fitness_score = max(scores.values())
     challenger.approved_for_promotion = True
+    # #854 governed-promotion evidence contract: enough independent samples per
+    # scored benchmark plus objective/cycle stamps, so these tests exercise the
+    # retention gate against the REAL promotion policy rather than a policy
+    # bypass. Two identical samples ⇒ std 0.0, inside the uncertainty bound.
+    challenger.harness_params["eval_samples"] = dict.fromkeys(scores, 2)
+    challenger.harness_params["objective_version"] = "objective-test"
+    challenger.harness_params["evidence_cycle"] = 3
     return challenger
 
 
@@ -502,8 +580,13 @@ async def test_governance_override_requires_objective_change() -> None:
             ),
         )
 
-    # an explicit decision that CHANGES the objective unlocks the promotion
-    challenger2 = _challenger("new-obj", scores={"ifeval": 0.5, "bfcl": 0.5})
+    # an explicit decision that CHANGES the objective unlocks the promotion.
+    # The challenger still has to clear the #854 governed-promotion policy on
+    # its own (beat the incumbent by the margin) — the governance override
+    # unlocks the RETENTION block only, it is not a promotion-policy bypass.
+    # 0.9 beats champ's 0.8 yet still regresses against the stepping stone's
+    # proven 0.95, which is exactly the block the decision unlocks.
+    challenger2 = _challenger("new-obj", scores={"ifeval": 0.9, "bfcl": 0.9})
     population.add(challenger2)
     promoted = await promote_with_retention(
         population,
@@ -536,7 +619,7 @@ async def test_promotion_requires_complete_provenance() -> None:
 async def test_first_candidate_under_objective_has_nothing_to_defend() -> None:
     population = PopulationStore()
     archive = CandidateArchive()
-    first = _challenger("first", scores={"ifeval": 0.1})
+    first = _challenger("first", scores={"ifeval": 0.5})
     population.add(first)
     # no archived/other candidates: no prior proven set, promotion proceeds
     promoted = await promote_with_retention(
@@ -606,7 +689,7 @@ async def test_run_cycle_archives_retired_candidates_and_created_children() -> N
     evolved = await cycle.run_cycle(population, llm_call=None, config=config)
     # cull archived the retired candidate; it stays inspectable
     assert "weak" not in {g.id for g in evolved.list_all()}
-    assert "weak" in {g.id for g in archive.list_retired()}
+    assert archive.latest_event("weak") == "retired"
     # children bred this cycle were snapshotted as created candidates
     created = [
         e.candidate.id

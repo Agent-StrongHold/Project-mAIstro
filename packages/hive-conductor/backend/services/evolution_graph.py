@@ -451,9 +451,12 @@ def _publish_tournament_elos(cycle: Any, population: Any) -> None:
     for genome in population.list_all():
         if not genome.eval_scores:
             continue
-        avg_elo = cycle.tournament.get_avg_elo(genome.id)
-        if avg_elo > 0:
-            genome.harness_params["avg_elo"] = avg_elo
+        battles = cycle.tournament.get_total_battles(genome.id)
+        # Gate on battle evidence (#853): fitness's Elo term fires only when
+        # elo_battles > 0, so publish both together or not at all.
+        if battles > 0:
+            genome.harness_params["avg_elo"] = cycle.tournament.get_avg_elo(genome.id)
+            genome.harness_params["elo_battles"] = battles
             population.add(genome)
 
 

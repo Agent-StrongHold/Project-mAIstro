@@ -29,12 +29,19 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .population import PopulationStore
 from .types import CandidateProvenance, PipelineGenome
+
+if TYPE_CHECKING:
+    # Import-time cycle guard: population → fitness → diversity → mutate →
+    # archive (M4-A6 provenance stamping) forms a loop once #853 made the
+    # population own the objective. PopulationStore is only needed here for
+    # type annotations, which are strings under `from __future__ import
+    # annotations` — the runtime import stays lazy.
+    from .population import PopulationStore
 
 
 class OperatorKind(StrEnum):
@@ -45,14 +52,12 @@ class OperatorKind(StrEnum):
     TOPOLOGY_MUTATION = "topology_mutation"
     NODE_MUTATION = "node_mutation"
     PROMPT_MUTATION = "prompt_mutation"
-    EVAL_WEIGHTS_MUTATION = "eval_weights_mutation"
     FIXER_MUTATION = "fixer_mutation"
     ALL_MUTATION = "all_mutation"
     CROSSOVER = "crossover"
     REFLECTION = "reflection"
     HYPER_MUTATION = "hyper_mutation"
     ARCHIVE_BRANCH = "archive_branch"
-    EXTERNAL = "external"
 
 
 class ProvenanceIncomplete(RuntimeError):
@@ -135,12 +140,23 @@ class RetentionReport(BaseModel):
 
     def summary(self) -> str:
         parts = [f"mode={self.policy_mode}", f"blocked={self.blocked}"]
+        # Regressions render with their evidence — the candidate score against
+        # the historical best it fell short of — so the blocked-promotion audit
+        # record (archive detail, exception message) states WHY, not just WHICH.
         if self.regressed:
-            parts.append(f"regressed={','.join(self.regressed)}")
+            parts.extend(
+                f"regressed {outcome.scenario}: candidate "
+                f"{outcome.candidate_score:.4f} < proven "
+                f"{outcome.historical_score:.4f}"
+                for outcome in self.scenarios
+                if outcome.status == "regressed"
+            )
         if self.not_evaluated:
             parts.append(f"not_evaluated={','.join(self.not_evaluated)}")
         if self.governance is not None:
-            parts.append(f"governance={self.governance.decision_id}")
+            parts.append(
+                f"governance={self.governance.decision_id} by {self.governance.decided_by}"
+            )
         return "; ".join(parts)
 
 
@@ -199,11 +215,20 @@ def stamp_provenance(
     mutated); pass it explicitly to record a new one. ``prompt_version`` is
     always recomputed from the candidate's actual content — never inherited —
     so it cannot drift from what the candidate really carries.
+
+    The legacy ``parent_a_id``/``parent_b_id`` fields are derived here from the
+    authoritative ``parents`` record, so the two lineage encodings cannot
+    drift apart: every producer gets both for free, and a composite producer
+    (crossover + mutate) does not have to remember to re-point them at the
+    stored parents after re-stamping.
     """
     inherited = base.provenance if base is not None else None
     resolved_objective = (
         objective if objective is not None else (inherited.objective if inherited else "")
     )
+    if parents:
+        genome.parent_a_id = parents[0]
+    genome.parent_b_id = parents[1] if len(parents) > 1 else None
     genome.provenance = CandidateProvenance(
         parents=list(parents),
         operator=operator.value if isinstance(operator, OperatorKind) else operator,
@@ -365,13 +390,15 @@ class CandidateArchive:
         full recorded lifecycle."""
         return [e for e in self._entries if e.candidate.id == candidate_id]
 
+    def _latest(self, candidate_id: str) -> ArchiveEntry | None:
+        entries = self.entries_for(candidate_id)
+        return entries[-1] if entries else None
+
     def get(self, candidate_id: str) -> PipelineGenome | None:
         """Latest snapshot of a candidate, or ``None`` — even after it has
         been retired from the live population."""
-        for entry in reversed(self._entries):
-            if entry.candidate.id == candidate_id:
-                return entry.candidate
-        return None
+        entry = self._latest(candidate_id)
+        return entry.candidate if entry is not None else None
 
     def candidates(self) -> list[str]:
         """Every candidate id ever recorded, in first-seen order."""
@@ -382,25 +409,8 @@ class CandidateArchive:
         return seen
 
     def latest_event(self, candidate_id: str) -> str | None:
-        for entry in reversed(self._entries):
-            if entry.candidate.id == candidate_id:
-                return entry.event
-        return None
-
-    def list_retired(self) -> list[PipelineGenome]:
-        """Candidates whose latest recorded event is ``retired`` — the
-        inspectable graveyard (promising and failed stepping stones alike)."""
-        return [
-            entry.candidate
-            for candidate_id in self.candidates()
-            if (entry := self._latest(candidate_id)) is not None and entry.event == "retired"
-        ]
-
-    def _latest(self, candidate_id: str) -> ArchiveEntry | None:
-        for entry in reversed(self._entries):
-            if entry.candidate.id == candidate_id:
-                return entry
-        return None
+        entry = self._latest(candidate_id)
+        return entry.event if entry is not None else None
 
     def branch(
         self,
@@ -420,16 +430,15 @@ class CandidateArchive:
         starts with a clean evaluation slate — its evaluation evidence must be
         its own.
         """
-        source = self.get(candidate_id)
-        if source is None:
+        source_entry = self._latest(candidate_id)
+        if source_entry is None:
             raise KeyError(f"cannot branch: candidate {candidate_id!r} is not in the archive")
+        source = source_entry.candidate
         now = datetime.now(UTC).isoformat()
         child = source.model_copy(deep=True)
         child.id = uuid.uuid4().hex[:12]
         child.name = f"branch-{source.id[:6]}"
         child.generation = source.generation + 1
-        child.parent_a_id = source.id
-        child.parent_b_id = None
         child.fitness_score = None
         child.eval_scores = {}
         child.harness_params = {"origin": "archive_branch"}
@@ -445,7 +454,19 @@ class CandidateArchive:
             objective=objective,
             detail=detail,
         )
-        self.record(child, event="branched", detail=detail or f"branched from {source.id}")
+        # The default detail pins WHICH snapshot was branched from (a candidate
+        # accumulates several over its lifecycle) and whether it was retired —
+        # branching from a retired stepping stone is the DGM stepping-stone
+        # move, and the provenance of that move is the point.
+        self.record(
+            child,
+            event="branched",
+            detail=detail
+            or (
+                f"branched from {source.id} snapshot {source_entry.recorded_at}"
+                f" ({source_entry.event})"
+            ),
+        )
         return child
 
     def __len__(self) -> int:
@@ -463,21 +484,29 @@ def resolve_lineage(
     parent truncates a candidate's history exactly when history matters most.
     This walks the same chain but falls back to the archive's latest snapshot
     when a parent is no longer live, so recorded lineage is immutable evidence
-    rather than an artifact of current population state. Guarded against
-    lineage cycles; stops (without raising) at the first unrecorded ancestor.
+    rather than an artifact of current population state. BOTH recorded parents
+    are walked (A-lineage first, then B-lineage — crossover children name two
+    parents), guarded against lineage cycles; unrecorded ancestors are
+    dropped without raising.
     """
     chain: list[PipelineGenome] = []
     visited: set[str] = set()
-    current_id: str | None = genome_id
-    while current_id is not None and current_id not in visited:
+    frontier: list[str] = [genome_id]
+    while frontier:
+        current_id = frontier.pop(0)
+        if current_id in visited:
+            continue
         visited.add(current_id)
         current: PipelineGenome | None = population.get(current_id)
         if current is None:
             current = archive.get(current_id)
         if current is None:
-            break
+            continue
         chain.append(current)
-        current_id = current.parent_a_id
+        if current.parent_a_id:
+            frontier.append(current.parent_a_id)
+        if current.parent_b_id:
+            frontier.append(current.parent_b_id)
     return chain
 
 
@@ -652,9 +681,15 @@ async def promote_with_retention(
             )
             raise HistoricalRegressionBlocked(report)
     promoted = await population.promote_audited(genome_id, audit)
-    archive.record(
-        promoted,
-        event="promoted",
-        detail=(f"retention: {report.summary()}" if report is not None else "no prior proven set"),
-    )
+    # The promoted record carries its own provenance analysis: how deep the
+    # recorded lineage runs (across retirement) and which archive event
+    # preceded this promotion — a retry after a "blocked" entry is exactly the
+    # history an auditor needs to see on the promotion record itself.
+    lineage_depth = len(resolve_lineage(population, archive, genome_id))
+    prior_event = archive.latest_event(genome_id)
+    detail = f"retention: {report.summary()}" if report is not None else "no prior proven set"
+    detail += f"; lineage_depth={lineage_depth}"
+    if prior_event is not None:
+        detail += f"; prior_archive_event={prior_event}"
+    archive.record(promoted, event="promoted", detail=detail)
     return promoted

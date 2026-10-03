@@ -283,9 +283,14 @@ def _route_is_scoped(path: str, method: str, protected: dict[str, dict[str, str]
     The _PROTECTED_OPS match stays raw startswith ON PURPOSE: that is exactly
     how middleware._required_permission matches at runtime, and this checker
     must model enforcement as it is, not as it ought to be.
+
+    No URL-suffix shortcut here either (#403): the former
+    ``path.endswith("/invoke")`` blanket exemption mirrored the middleware
+    carve-out it modeled and inherited its flaw — any future route with the
+    suffix would skip classification. A route is scoped only through a
+    registered capability prefix or an explicit ROUTE_EXEMPT entry with a
+    named reason.
     """
-    if path.endswith("/invoke"):
-        return True  # documented exemption in _required_permission
     if _route_is_exempt(path):
         return True
     return any(path.startswith(prefix) for prefix in protected.get(method, {}))

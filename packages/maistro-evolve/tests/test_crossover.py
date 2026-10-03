@@ -158,7 +158,11 @@ def test_crossover_drops_edges_whose_to_node_was_not_mapped() -> None:
     assert edge.to_node != "a-other"
 
 
-def test_crossover_averages_eval_weights_and_takes_max_topology_settings() -> None:
+def test_crossover_does_not_mix_eval_weights_and_takes_max_topology_settings() -> None:
+    """#853: eval_weights is an inert legacy field — scoring reads the
+    population-owned objective, so crossover must NOT average the parents'
+    weight vectors (that would advertise a dead field as meaningful). The
+    child inherits parent_a's verbatim; topology settings still combine."""
     parent_a = _genome("a", [_node("a-entry")], [], entry_node="a-entry", generation=1)
     parent_a.eval_weights = EvalWeights(proxy_ifeval=0.1)
     parent_a.topology.max_cycles = 2
@@ -173,7 +177,8 @@ def test_crossover_averages_eval_weights_and_takes_max_topology_settings() -> No
 
     child = crossover(parent_a, parent_b)
 
-    assert child.eval_weights.proxy_ifeval == 0.2
+    assert child.eval_weights == parent_a.eval_weights
+    assert child.eval_weights != parent_b.eval_weights
     assert child.topology.max_cycles == 5
     assert child.topology.beam_width == 4
     assert child.topology.use_scout is True
