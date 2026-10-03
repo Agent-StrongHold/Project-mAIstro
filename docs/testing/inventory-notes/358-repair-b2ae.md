@@ -134,5 +134,13 @@ authorization for retained get_page methods via the separate grant process;
 then validate PostgreSQL/browser and resolve the retention/non-durable envelope
 limitations before claiming all #358 acceptance criteria.
 
+Merge committed locally as `e22d1fab5` (parents `cf26060d1`, `045cfdfbe`).
+After the regression injection process exited, the normal convergence and
+noop-route tests passed again: **30 passed**. Post-commit exact vulture rerun
+now resolves the correct merged trusted base `045cfdfbe3ea`: **still fails on
+exactly the four retained get_page identities**, zero unclassified findings.
+The obsolete samples_evaluated report disappears with the base reconciliation.
+Post-commit ruff lint/format pass; merge leaves a clean worktree.
+
 Progress: checked 1, done 0, skipped 0, errors 1 (blocked); repair committed as
 handoff, not completion of the issue.
