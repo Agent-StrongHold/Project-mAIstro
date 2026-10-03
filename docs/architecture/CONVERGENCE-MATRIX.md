@@ -153,7 +153,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Local state writer | `maistro.reactor`, CLI | `none` | KEEP | — | single-writer concurrency tests | — |
 | Ontology | `maistro.ontology` public API via `maistro.projects` exports | `none` | CONNECT — accepted design; the registry's first process consumer is still owed. The M7-A2 Rubric kind/store made the modules import-reachable (`maistro.projects` exports the store beside `InMemoryProjectStore`), so the CONNECT baseline rows were pruned per the disposition gate's own rule while the #34 wiring debt stays recorded here | ADR-036 | subsystem resolves semantic object through registry | #34, #791 |
 | Portability / backup | none | `all` | CONNECT | — | backup/restore preserves canonical correlated records | #62, #34 |
-| Events and checkpoints | `maistro.container`, `events.durable_log` | `some` | KEEP — canonical envelope, incompletely adopted | ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
+| Events and checkpoints | `maistro.container`, `events.durable_log` | `few` | KEEP — canonical envelope, incompletely adopted | ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `none` | KEEP | ADR-037, ADR-082 | one trace spans request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `some` | KEEP | ADR-038 | circuit/SLO primitives wired to real producers | #63 |
 | Collaboration | none | `all` | CONNECT | — | collaborative edit correlated to Run | #34 |
