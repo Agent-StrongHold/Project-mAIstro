@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from routes import quotas
+from services import provider_usage
 
 
 @pytest.fixture(autouse=True)
@@ -196,7 +196,7 @@ def test_providers_aggregates_spend_by_provider(
     # Envelope: provenance first (#380).
     assert data["state"] == "ok"
     assert "spend/report" in data["source"]
-    assert data["window_days"] == quotas.SPEND_WINDOW_DAYS
+    assert data["window_days"] == provider_usage.SPEND_WINDOW_DAYS
     assert data["computed_at"]
     by_provider = {p["provider"].lower(): p for p in data["providers"]}
     assert "openai" in by_provider
@@ -258,6 +258,52 @@ def test_providers_counts_requests_when_reported(
     assert p["request_count"] == 3
 
 
+def test_providers_request_count_aggregated_from_usage(authed_client, monkeypatch) -> None:
+    """request_count also comes from each model's usage.api_requests (#389).
+
+    The field used to be initialized to 0 and never incremented — a column
+    of zeros no traffic could change. Proxies report per-model request counts
+    in different fields; `usage.api_requests` counts exactly like
+    `num_requests`, and an entry read from neither source stays None.
+    """
+    spend = [
+        {
+            "model_details": [
+                {
+                    "model": "gpt-4",
+                    "total_input_tokens": 80,
+                    "total_output_tokens": 150,
+                    "usage": {"api_requests": 7},
+                },
+                {
+                    "model": "claude-3",
+                    "total_input_tokens": 20,
+                    "total_output_tokens": 50,
+                    "usage": {"api_requests": 3},
+                },
+            ]
+        }
+    ]
+    models_info = {
+        "data": [
+            {"model_name": "gpt-4", "model_info": {"litellm_provider": "openai"}},
+            {"model_name": "claude-3", "model_info": {"litellm_provider": "anthropic"}},
+        ]
+    }
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _fake_get({"/global/spend/report": spend, "/model/info": models_info}),
+    )
+    r = authed_client.get("/v1/quotas/providers")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "ok"
+    by_provider = {p["provider"].lower(): p for p in body["providers"]}
+    assert by_provider["openai"]["request_count"] == 7
+    assert by_provider["anthropic"]["request_count"] == 3
+
+
 def test_providers_empty_spend(authed_client, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         httpx,
@@ -314,7 +360,7 @@ def test_providers_error_when_report_is_malformed(
     assert data["state"] == "error"
     # The reason names the phase, not a fake zeroed page.
     assert "aggregated" in data["reason"]
-    assert data["window_days"] == quotas.SPEND_WINDOW_DAYS
+    assert data["window_days"] == provider_usage.SPEND_WINDOW_DAYS
     assert "providers" not in data
 
 
@@ -344,40 +390,65 @@ def test_providers_unknown_model_provider(authed_client, monkeypatch: pytest.Mon
 # --------------------------------------------------------------------------- #
 
 
-def test_outcomes_unavailable_even_with_litellm(
+def test_outcomes_reads_canonical_store_empty_is_valid(
     authed_client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """LiteLLM has no aggregated success/failure endpoint.
+    """No recorded outcomes is `no_data`, empty-valid — not canned (#389).
 
-    The handler used to answer with a zeroed dict, which rendered "0 requests,
-    everything failing" on every deployment (#380). It must say the
-    measurement does not exist instead of showing invented zeros.
+    The handler used to return a hard-coded zeroed structure regardless of
+    any event; the zeros now come from the canonical outcome store, which is
+    genuinely empty here (no LiteLLM config needed — the owner is the
+    outcome store, not the gateway).
     """
-    monkeypatch.setattr(
-        httpx,
-        "get",
-        _fake_get({"/spend/logs": RuntimeError("no logs")}),
+    r = authed_client.get("/v1/quotas/outcomes")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["state"] == "no_data"
+    assert data["source"]
+    assert data["total"] == 0
+    assert isinstance(data["by_model"], dict)
+
+
+async def test_outcomes_returns_seeded_non_empty_data(
+    authed_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recorded outcome changes the panel: seeded query proves it (#389)."""
+    from services import feedback_service
+
+    from maistro.memory.outcomes import InMemoryOutcomeStore
+
+    # A fresh store, so this proof is self-contained and leaks nothing.
+    monkeypatch.setattr(feedback_service, "_store", InMemoryOutcomeStore())
+    await feedback_service.record_thumb(
+        user_id="u1",
+        project_id="p1",
+        run_id="r1",
+        thumb="up",
     )
     r = authed_client.get("/v1/quotas/outcomes")
     assert r.status_code == 200
     data = r.json()
-    assert data["state"] == "unavailable"
-    assert data["reason"]
-    assert data["source"]
-    # No zeroed scoreboard fields survive.
-    for banned in ("total", "succeeded", "failed", "rate", "by_model"):
-        assert banned not in data
+    assert data["state"] == "ok"
+    assert data["total"] == 1
+    assert data["succeeded"] == 1
+    assert data["failed"] == 0
+    assert data["rate"] == 1.0
 
 
-def test_outcomes_no_litellm_config(authed_client, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LITELLM_API_BASE", raising=False)
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
-    monkeypatch.delenv("CONDUCTOR_ROUTER_URL", raising=False)
+async def test_outcomes_store_failure_is_error(authed_client, monkeypatch) -> None:
+    """A store failure is an explicit `error`, never a zeroed success (#389)."""
+    from services import feedback_service
+
+    class _Broken:
+        async def get_task_completion_rate(self, *, days: int) -> dict:
+            raise RuntimeError("store down")
+
+    monkeypatch.setattr(feedback_service, "_store", _Broken())
     r = authed_client.get("/v1/quotas/outcomes")
     assert r.status_code == 200
     data = r.json()
-    assert data["state"] == "unavailable"
-    assert "not configured" in data["reason"]
+    assert data["state"] == "error"
+    assert "outcome store" in data["reason"]
 
 
 def test_no_litellm_config_providers_and_models(
@@ -387,7 +458,7 @@ def test_no_litellm_config_providers_and_models(
     monkeypatch.delenv("LITELLM_API_BASE", raising=False)
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
     monkeypatch.delenv("CONDUCTOR_ROUTER_URL", raising=False)
-    assert quotas._litellm_base() == ""
+    assert provider_usage._litellm_base() == ""
     providers = authed_client.get("/v1/quotas/providers").json()
     models = authed_client.get("/v1/quotas/models").json()
     assert providers["state"] == "unavailable"
