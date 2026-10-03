@@ -5,14 +5,15 @@ from datetime import UTC, datetime
 import pytest
 
 from maistro_evolve.fitness import (
-    _FITNESS_WEIGHTS,
     _HARD_GATE_THRESHOLDS,
     _check_hard_gate,
     _cost_efficiency,
+    _elo_bonus,
     _latency_efficiency,
     _weighted_eval_score,
     compute_fitness,
 )
+from maistro_evolve.objective import DEFAULT_OBJECTIVE
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 
 
@@ -186,9 +187,15 @@ class TestWeightedEvalScore:
 
 
 class TestCostEfficiency:
-    def test_zero_cost(self):
+    def test_missing_cost_is_unknown_not_perfect(self):
+        # #853: absence of a cost measurement is scored pessimistically
+        # (None -> missing-evidence credit), never as a perfect free run.
         g = _genome(harness_params={})
-        assert _cost_efficiency(g) == 1.0
+        assert _cost_efficiency(g) is None
+
+    def test_zero_cost_is_not_evidence_of_a_measured_free_run(self):
+        g = _genome(harness_params={"total_cost_usd": 0.0})
+        assert _cost_efficiency(g) is None
 
     def test_high_cost(self):
         g = _genome(harness_params={"total_cost_usd": 10.0})
@@ -202,9 +209,10 @@ class TestCostEfficiency:
 
 
 class TestLatencyEfficiency:
-    def test_zero_latency(self):
+    def test_missing_latency_is_unknown_not_perfect(self):
+        # #853: same missing-data policy as cost.
         g = _genome(harness_params={})
-        assert _latency_efficiency(g) == 1.0
+        assert _latency_efficiency(g) is None
 
     def test_inversely_proportional(self):
         g1 = _genome(harness_params={"avg_latency_seconds": 1.0})
@@ -226,8 +234,9 @@ class TestComputeFitness:
         assert fitness.passed_hard_gate
         assert fitness.total > 0.0
 
-    def test_fitness_weights_sum_to_one(self):
-        total = sum(_FITNESS_WEIGHTS.values())
+    def test_fitness_term_weights_sum_to_one(self):
+        # Weights live on the population-owned objective since #853.
+        total = sum(DEFAULT_OBJECTIVE.fitness_term_weights.model_dump().values())
         assert abs(total - 1.0) < 0.001
 
     def test_higher_eval_scores_higher_fitness(self):
@@ -239,10 +248,20 @@ class TestComputeFitness:
         f_high = compute_fitness(g_high, [g_high])
         assert f_high.total > f_low.total
 
+    def test_elo_bonus_requires_battle_evidence(self):
+        # #853: a never-battled genome (no elo_battles evidence) earns nothing
+        # from the Elo term — existence is not head-to-head evidence.
+        scores = dict.fromkeys(_HARD_GATE_THRESHOLDS, 0.8)
+        g = _genome(eval_scores=scores, harness_params={"avg_elo": 1400.0})
+        assert _elo_bonus(g) is None
+
     def test_elo_bonus_increases_fitness(self):
         scores = dict.fromkeys(_HARD_GATE_THRESHOLDS, 0.8)
         g_no_elo = _genome(eval_scores=scores, harness_params={})
-        g_with_elo = _genome(eval_scores=scores, harness_params={"avg_elo": 1400.0})
+        g_with_elo = _genome(
+            eval_scores=scores,
+            harness_params={"avg_elo": 1400.0, "elo_battles": 12},
+        )
         f_no = compute_fitness(g_no_elo, [g_no_elo])
         f_yes = compute_fitness(g_with_elo, [g_with_elo])
         assert f_yes.total > f_no.total
@@ -263,3 +282,21 @@ class TestComputeFitness:
         other.topology.nodes[0].temperature = 0.9
         fitness = compute_fitness(g, [g, other])
         assert fitness.diversity_bonus > 0.0
+
+    def test_capability_score_is_immune_to_context_terms(self):
+        # #853: Elo/diversity are context terms with explicit roles; they may
+        # reorder candidates within their bounded share but can never move the
+        # measured capability score.
+        scores = dict.fromkeys(_HARD_GATE_THRESHOLDS, 0.8)
+        plain = _genome(eval_scores=scores)
+        padded = _genome(
+            eval_scores=scores,
+            harness_params={"avg_elo": 1400.0, "elo_battles": 50},
+        )
+        other = _genome(eval_scores=scores)
+        other.id = "other-genome"
+        other.topology.nodes[0].temperature = 0.95
+        f_plain = compute_fitness(plain, [plain, other])
+        f_padded = compute_fitness(padded, [padded, other])
+        assert f_padded.capability_score == pytest.approx(f_plain.capability_score)
+        assert f_padded.total > f_plain.total

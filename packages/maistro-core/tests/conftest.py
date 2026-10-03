@@ -45,6 +45,13 @@ def _reset_singletons() -> Iterator[None]:
     tracing_module._langfuse = None
     tracing_module._langfuse_checked = False
 
+    # Process default quota ledger: container-creating tests register it via
+    # the composition root, and a leaked registration would route a later
+    # test's ungoverned-fallback evidence into an unrelated tracker (#718).
+    from maistro.quota.default_tracker import set_default_quota_tracker
+
+    set_default_quota_tracker(None)
+
     pass
 
 
@@ -106,6 +113,7 @@ def _reset_shared_http() -> Iterator[None]:
 #: discovered: truncating everything would take out the alembic version table
 #: and make a migrated database look unmigrated.
 _PG_SCRATCH_TABLES = (
+    "quota_invocation_evidence",
     "quota_usage_events",
     "quota_usage",
     "sessions",

@@ -299,6 +299,20 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      # The #851 Canvas supported-path E2E lives under maistro-server/tests,
+      # whose only CI invocations (`test` here, the coverage combine job in
+      # quality.yml) have no PostgreSQL service — so without this step the
+      # migration, real-store and lease assertions all skipped and CI stayed
+      # green having run none of them. The module builds its own throwaway
+      # database and walks the chain from empty, so it neither depends on nor
+      # disturbs the migrated `maistro_test` above. Same contract as the step
+      # above: MAISTRO_REQUIRE_PG_LEGS here turns a silent skip — a dead
+      # service container, a renamed env — into a red job, because for this
+      # module a skip and a pass are the same green tick.
+      - name: Canvas supported path end to end over the migrated chain
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-server/tests/api/test_canvas_supported_path.py -v --tb=short
 
   object-storage:
     needs: workflow-lint
@@ -785,7 +799,19 @@ jobs:
       github.event.merge_group.base_ref != 'refs/heads/develop' ||
       needs.workflow-lint.outputs.docker_build == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Sized for the COLD path, not the warm one. Every image below COPYs
+    # maistro-core (or all of packages/) BEFORE its dependency-install layer,
+    # so a candidate that touches maistro-core src invalidates the install
+    # layers of ALL FOUR builds (engine, hive-conductor, engine-research,
+    # rsi-runner) and legitimately rebuilds them from scratch. Warm-cache runs
+    # finish in 8-12 min, but run 36831116132 (auto-133, 2026-10-01) measured
+    # the cold path on a slow runner: 25m42s consumed and still mid-way
+    # through engine-research, with rsi-runner not started (hive-conductor's
+    # uncached install chain alone ran ~15m there; apt took 294s). Extrapolated
+    # cold total on that runner: ~38-46m. 45 covers that with margin while
+    # staying a real bound; warm runs are untouched (the job ends long before
+    # this ceiling). Precedent for >25m jobs: `test` (uncapped) runs 31m.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
