@@ -73,8 +73,6 @@ class WorkspaceLogStore(Protocol):
         """
         ...
 
-    async def count_entries(self, workspace_id: str) -> int: ...
-
     async def put_result(self, result: WorkingResult) -> bool:
         """Store a full result under its content address.
 
@@ -85,10 +83,6 @@ class WorkspaceLogStore(Protocol):
         ...
 
     async def get_result(self, workspace_id: str, result_id: str) -> WorkingResult | None: ...
-
-    async def list_results(
-        self, workspace_id: str, *, result_ids: tuple[str, ...] | None = None
-    ) -> list[WorkingResult]: ...
 
     async def purge_workspace(self, workspace_id: str) -> int:
         """Delete every log entry and result for a Workspace.
@@ -156,9 +150,6 @@ class InMemoryWorkspaceLogStore:
                 return entry
         return None
 
-    async def count_entries(self, workspace_id: str) -> int:
-        return len(self._entries.get(workspace_id, []))
-
     async def put_result(self, result: WorkingResult) -> bool:
         bucket = self._results.setdefault(result.workspace_id, {})
         if result.result_id in bucket:
@@ -168,14 +159,6 @@ class InMemoryWorkspaceLogStore:
 
     async def get_result(self, workspace_id: str, result_id: str) -> WorkingResult | None:
         return self._results.get(workspace_id, {}).get(result_id)
-
-    async def list_results(
-        self, workspace_id: str, *, result_ids: tuple[str, ...] | None = None
-    ) -> list[WorkingResult]:
-        bucket = self._results.get(workspace_id, {})
-        if result_ids is None:
-            return list(bucket.values())
-        return [bucket[r] for r in result_ids if r in bucket]
 
     async def purge_workspace(self, workspace_id: str) -> int:
         purged = len(self._entries.get(workspace_id, []))

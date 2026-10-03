@@ -162,20 +162,21 @@ def render_working_context(
     set does not, and the reference is how the model gets them back.
     """
     active = projection.active_entries()
-    working_text = render_working(active, budget_tokens=working_budget_tokens)
+    working = render_working(active, budget_tokens=working_budget_tokens)
     everything = projection.all_entries()
     sizes = {
         result.result_id: len(result.content.encode("utf-8")) for result in projection.all_results()
     }
-    guide_text = render_guide(everything, sizes, budget_tokens=guide_budget_tokens)
-    entries_rendered = sum(1 for line in working_text.splitlines() if line.startswith("- "))
-    pinned_rendered = sum(1 for line in working_text.splitlines() if "*pinned*" in line)
-    results_listed = sum(1 for line in guide_text.splitlines() if line.startswith("- "))
+    guide = render_guide(everything, sizes, budget_tokens=guide_budget_tokens)
+    entries_rendered = sum(1 for line in working.splitlines() if line.startswith("- "))
+    pinned_rendered = sum(1 for line in working.splitlines() if "*pinned*" in line)
+    results_listed = sum(1 for line in guide.splitlines() if line.startswith("- "))
+    tokens_spent = _estimate_tokens(working) + _estimate_tokens(guide)
     return RenderedWorkingContext(
-        working=working_text,
-        guide=guide_text,
+        working=working,
+        guide=guide,
         entries_rendered=max(entries_rendered, 0),
         results_listed=results_listed,
         pinned_rendered=pinned_rendered,
-        tokens_spent=_estimate_tokens(working_text) + _estimate_tokens(guide_text),
+        tokens_spent=tokens_spent,
     )

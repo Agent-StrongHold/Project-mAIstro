@@ -73,12 +73,14 @@ def measure_redundant_hypotheses(
         )
     digests = {e.digest for e in held if e.digest}
     unique = len(digests)
-    redundant = len(held) - unique
+    hypotheses_total = len(held)
+    redundant = hypotheses_total - unique
+    collapse_ratio = redundant / hypotheses_total
     return RedundantHypothesisMeasurement(
-        hypotheses_total=len(held),
+        hypotheses_total=hypotheses_total,
         unique=unique,
         redundant=redundant,
-        collapse_ratio=redundant / len(held),
+        collapse_ratio=collapse_ratio,
     )
 
 
@@ -122,29 +124,29 @@ def measure_fresh_vs_lineage(
     not an absence — but the ratios stay ``None`` because a division by zero
     is not a finding.
     """
-    fresh_total = 0
-    reach_total = 0
+    fresh_hits = 0
+    lineage_hits = 0
     overlap_total = 0
     for query in queries:
         fresh = _fresh_hits(projection, query)
         neighborhood = _lineage_hits(projection, fresh)
         fresh_ids = {e.entry_id for e in fresh}
         neighborhood_ids = {e.entry_id for e in neighborhood}
-        fresh_total += len(fresh_ids)
-        reach_total += len(fresh_ids | neighborhood_ids)
+        fresh_hits += len(fresh_ids)
+        lineage_hits += len(fresh_ids | neighborhood_ids)
         # A fresh hit "overlaps" when it has edges at all: its lineage was
         # reachable the moment it matched, even though neighbors() never
         # returns the entry itself.
         overlap_total += sum(1 for entry in fresh if projection.neighbors(entry.entry_id))
     overlap_ratio: float | None = None
     lineage_gain: float | None = None
-    if fresh_total > 0:
-        overlap_ratio = overlap_total / fresh_total
-        lineage_gain = (reach_total - fresh_total) / fresh_total
+    if fresh_hits > 0:
+        overlap_ratio = overlap_total / fresh_hits
+        lineage_gain = (lineage_hits - fresh_hits) / fresh_hits
     return FreshVsLineageMeasurement(
         queries=len(queries),
-        fresh_hits=fresh_total,
-        lineage_hits=reach_total,
+        fresh_hits=fresh_hits,
+        lineage_hits=lineage_hits,
         overlap_ratio=overlap_ratio,
         lineage_gain=lineage_gain,
     )

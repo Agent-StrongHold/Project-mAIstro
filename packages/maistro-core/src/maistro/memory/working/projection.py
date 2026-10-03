@@ -49,7 +49,6 @@ class ProjectionStats:
     active: int
     folded: int
     results: int
-    last_reset_seq: int | None
 
 
 class WorkspaceWorkingMemory:
@@ -167,11 +166,6 @@ class WorkspaceWorkingMemory:
     def result(self, result_id: str) -> WorkingResult | None:
         return self._results.get(result_id)
 
-    def entries_by_digest(self, digest: str) -> list[WorkspaceObservation]:
-        """Every held entry with this content digest — the redundant-
-        hypothesis lookup that needs no vector retrieval."""
-        return [e for e in self._entries.values() if e.digest == digest]
-
     def neighbors(self, entry_id: str) -> list[WorkspaceObservation]:
         """Graph traversal: the entries *associated* with this one.
 
@@ -201,19 +195,15 @@ class WorkspaceWorkingMemory:
         )
         return sorted(found.values(), key=lambda e: e.seq if e.seq is not None else 0)
 
-    @property
-    def last_reset_seq(self) -> int | None:
-        return self._last_reset_seq
-
     def stats(self) -> ProjectionStats:
         if self._dirty:
             self._recompute()
+        results = len(self._results)
         return ProjectionStats(
             entries=len(self._entries),
             active=len(self._active),
             folded=len(self._entries) - len(self._active),
-            results=len(self._results),
-            last_reset_seq=self._last_reset_seq,
+            results=results,
         )
 
     def drop(self) -> None:
@@ -308,69 +298,50 @@ class WorkingMemoryManager:
         run_id: str = "",
         survive_reset: bool = False,
         meta: dict[str, object] | None = None,
+        source: str = "",
+        content: str = "",
     ) -> WorkspaceObservation:
-        """Append an observation through the store, keeping a hot projection
+        """Append one observation through the store, keeping a hot projection
         coherent. The store is the authority; the projection never invents
-        log positions."""
+        log positions.
+
+        Pass ``source`` and ``content`` to record a full tool result the
+        reference-addressable way — this is the write path of the "log
+        entries carry compact lines, never payloads" rule: the payload is
+        stored once under its content address (identical payloads in one
+        Workspace collapse to one stored result, and the content address is
+        what makes that collapse happen without any similarity model), and
+        the appended entry carries the compact line plus the reference. The
+        entry kind is ``TOOL_RESULT`` whenever a payload is given.
+        """
+        result: WorkingResult | None = None
+        if content:
+            result = WorkingResult(
+                workspace_id=workspace_id,
+                result_id=make_result_id(workspace_id, source, content),
+                source=source,
+                content=content,
+                meta=dict(meta or {}),
+            )
+            await self.store.put_result(result)
         entry = observation(
             workspace_id=workspace_id,
             cycle=cycle,
+            kind=ObservationKind.TOOL_RESULT if result is not None else kind,
             text=text,
-            kind=kind,
             run_id=run_id,
+            result_ref=result.result_id if result is not None else None,
+            digest=result.digest if result is not None else None,
             survive_reset=survive_reset,
             meta=meta,
         )
         stored = await self.store.append(entry)
         hot = self._projections.get(workspace_id)
         if hot is not None:
+            if result is not None:
+                hot.attach_result(result)
             hot.apply(stored)
         return stored
-
-    async def record_tool_result(
-        self,
-        workspace_id: str,
-        *,
-        cycle: int,
-        source: str,
-        content: str,
-        text: str,
-        run_id: str = "",
-        survive_reset: bool = False,
-        meta: dict[str, object] | None = None,
-    ) -> tuple[WorkingResult, WorkspaceObservation]:
-        """Store a full result once, then log the compact pointer to it.
-
-        This is the "reference-addressable" write path: identical payloads in
-        one Workspace collapse to one stored result (content-addressed), and
-        the log entry carries the compact line plus the reference — never the
-        payload.
-        """
-        result = WorkingResult(
-            workspace_id=workspace_id,
-            result_id=make_result_id(workspace_id, source, content),
-            source=source,
-            content=content,
-            meta=dict(meta or {}),
-        )
-        await self.store.put_result(result)
-        entry = observation(
-            workspace_id=workspace_id,
-            cycle=cycle,
-            kind=ObservationKind.TOOL_RESULT,
-            text=text,
-            run_id=run_id,
-            result_ref=result.result_id,
-            digest=result.digest,
-            survive_reset=survive_reset,
-            meta=dict(meta or {}),
-        )
-        stored = await self.store.append(entry)
-        hot = self._projections.get(workspace_id)
-        if hot is not None:
-            hot.attach_result(result)
-            hot.apply(stored)
-        return result, stored
 
     def evict(self) -> int:
         """Enforce idle TTL and capacity. Returns projections evicted.
@@ -389,20 +360,21 @@ class WorkingMemoryManager:
             evicted += 1
         return evicted
 
-    def live_workspaces(self) -> list[str]:
-        return sorted(self._projections)
-
     def hot(self, workspace_id: str) -> WorkspaceWorkingMemory | None:
         """The live projection, if one is loaded — without hydrating."""
         return self._projections.get(workspace_id)
 
+    def release_projections(self) -> int:
+        """Drop every live projection — the container-shutdown release.
+
+        Graphs are process-local caches over the durable log, so releasing
+        them loses nothing: a later use re-hydrates from the store. Returns
+        how many live projections were released.
+        """
+        released = len(self._projections)
+        self._projections.clear()
+        return released
+
     async def dispose(self, workspace_id: str) -> None:
         """Drop one projection. Log untouched (it is the system of record)."""
         self._projections.pop(workspace_id, None)
-
-    async def rebuild(self, workspace_id: str) -> WorkspaceWorkingMemory:
-        """Discard and rehydrate — the corruption recovery path. Because the
-        log is authoritative, rebuild is always exactly `dispose` + hydrate;
-        there is nothing to reconcile."""
-        await self.dispose(workspace_id)
-        return await self.projection(workspace_id)

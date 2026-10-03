@@ -498,6 +498,13 @@ class Container:
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
+        if self.working_memory is not None:
+            # Release the working-memory graphs the container took (#301):
+            # they are process-local caches over the durable observation log,
+            # so shutdown drops the graphs and never the log they were
+            # hydrated from — the same lossless-by-construction rule eviction
+            # follows.
+            self.working_memory.release_projections()
         await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool

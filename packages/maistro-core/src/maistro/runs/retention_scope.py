@@ -33,6 +33,7 @@ learnings/outcomes/design_outputs/episodic_memories .run_id, .node_run_id, .atte
 capability_invocations .run_id, .node_run_id, .attempt_id   none — logical (035)   Preserve. The capability-invocation ledger is an effect receipt ("this Attempt invoked this binding with this effect key"): attribution history, the same class as a task receipt, and it outlives the execution identity it names.
 capability_approvals.run_id (+ node_run_id)       none — logical (runtime DDL)  Preserve. A durable approval request for one effect of one execution is receipt history like the invocation ledger and is never selected by the purge.
 task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key, bounded by its own replay window rather than by the Run's retention. `_ClaimFlow.claim` (#325, #1577) drives `purge_expired` on every claim, so the window is swept in production; `quality/durable-table-retention.json` records it as `ttl_purge`. The Run purge does not stand in for it.
+workspace_working_log.run_id                      none — logical (runtime DDL)   Preserve. The per-Workspace observation log (#301, M4-H) records *which run observed something* — attribution history on an append-only log whose only driven deletion is `purge_workspace` when the Workspace itself goes away. A Run purge deleting observations would break the losslessness the log exists for; the residue policy is the same class as Events and task receipts.
 durable_graph_runs.run_id                         PK only, separate store       Not touched, and not yet decided. `SqliteDurableRunStore`'s checkpoint table belongs to a store the canonical purge does not reach; its retention is recorded as `undecided` in `quality/durable-table-retention.json` rather than claimed here.
 ================================================  ============================  ====================================================
 
@@ -82,6 +83,9 @@ RUN_REFERENCING_TABLES: tuple[str, ...] = (
     "capability_invocations",
     "capability_approvals",
     "task_idempotency",
+    # Runtime SQLite DDL (working-memory observation log, #301): run_id names
+    # the Run that produced the observation — provenance, not execution state.
+    "workspace_working_log",
     "durable_graph_runs",
 )
 

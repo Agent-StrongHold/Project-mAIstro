@@ -148,7 +148,7 @@ class TestWorkingSetDerivation:
         ]
         assert folded_kinds == [ObservationKind.SUMMARY]
         # The folded entries are still in the log: lossless.
-        assert await store.count_entries(WS) == 5
+        assert len(await store.list_entries(WS)) == 5
         assert await store.get_entry(WS, seeded["deploy"].entry_id) is not None
 
     async def test_hard_reset_keeps_only_the_survival_set(self, env: Any) -> None:
@@ -160,7 +160,7 @@ class TestWorkingSetDerivation:
         active = projection.active_entries()
         assert [e.entry_id for e in active] == [seeded["deploy"].entry_id]
         # The log holds everything: the reset appended, it did not delete.
-        assert await store.count_entries(WS) == 5
+        assert len(await store.list_entries(WS)) == 5
 
     async def test_survive_reset_flag_survives_from_any_position(self, env: Any) -> None:
         store, manager = env
@@ -195,7 +195,7 @@ class TestWorkingSetDerivation:
         assert "read the deploy pipeline output" not in texts
         assert "hypothesis: the healthcheck is flaky" not in texts
         # Lossless: 4 seed entries + 2 cycle-4 entries + 1 summary marker.
-        assert await store.count_entries(WS) == 7
+        assert len(await store.list_entries(WS)) == 7
 
     async def test_append_cycle_summary_skips_empty_cycles(self, env: Any) -> None:
         store, manager = env
@@ -219,7 +219,10 @@ class TestRebuildEquivalence:
             survival_ids=[seeded["deploy"].entry_id, seeded["current"].entry_id],
         )
         before = [(e.seq, e.entry_id) for e in projection.active_entries()]
-        rebuilt = await manager.rebuild(WS)
+        # A rebuild is dispose + hydrate: the projection is disposable exactly
+        # because the log is authoritative.
+        await manager.dispose(WS)
+        rebuilt = await manager.projection(WS)
         after = [(e.seq, e.entry_id) for e in rebuilt.active_entries()]
         assert after == before
         # Full results referenced by surviving entries hydrate too.
@@ -237,43 +240,49 @@ class TestRebuildEquivalence:
         await hard_reset(store, projection, survival_ids=[fresh.entry_id])
         assert [e.entry_id for e in projection.active_entries()] == [fresh.entry_id]
         # And a rebuild agrees: the newest marker wins.
-        rebuilt = await manager.rebuild(WS)
+        await manager.dispose(WS)
+        rebuilt = await manager.projection(WS)
         assert [e.entry_id for e in rebuilt.active_entries()] == [fresh.entry_id]
 
 
 class TestManagerLifecycle:
-    async def test_observe_and_record_tool_result_keep_hot_projection_coherent(
+    async def test_observe_records_tool_results_and_keeps_hot_projection_coherent(
         self, env: Any
     ) -> None:
         store, manager = env
         projection = await manager.projection(WS)
         observed = await manager.observe(WS, cycle=1, text="hot observation")
         assert projection.entry(observed.entry_id) is not None
-        result, entry = await manager.record_tool_result(
+        entry = await manager.observe(
             WS,
             cycle=1,
+            text="ran the tool",
             source="tool",
             content="payload",
-            text="ran the tool",
         )
-        assert entry.result_ref == result.result_id
-        assert projection.result(result.result_id) is not None
-        assert await store.get_result(WS, result.result_id) is not None
+        assert entry.kind is ObservationKind.TOOL_RESULT
+        assert entry.result_ref is not None
+        assert projection.result(entry.result_ref) is not None
+        stored = await store.get_result(WS, entry.result_ref)
+        assert stored is not None and stored.content == "payload"
 
     async def test_identical_payloads_collapse_to_one_stored_result(self, env: Any) -> None:
         store, manager = env
         await manager.projection(WS)
-        first, entry1 = await manager.record_tool_result(
-            WS, cycle=1, source="tool", content="same bytes", text="first call"
+        entry1 = await manager.observe(
+            WS, cycle=1, text="first call", source="tool", content="same bytes"
         )
-        second, entry2 = await manager.record_tool_result(
-            WS, cycle=2, source="tool", content="same bytes", text="second call"
+        entry2 = await manager.observe(
+            WS, cycle=2, text="second call", source="tool", content="same bytes"
         )
-        assert first.result_id == second.result_id
-        assert entry1.result_ref == entry2.result_ref
-        assert len(await store.list_results(WS)) == 1
+        assert entry1.result_ref is not None
+        # Same payload, same Workspace: one content address, one stored row.
+        assert entry2.result_ref == entry1.result_ref
+        stored = await store.get_result(WS, entry1.result_ref)
+        assert stored is not None and stored.content == "same bytes"
+        # And the stored-once record survives rehydration.
         projection = await manager.projection(WS)
-        assert projection.result(first.result_id) is not None
+        assert projection.result(entry1.result_ref) is not None
 
     async def test_eviction_by_capacity_and_ttl(self, env: Any) -> None:
         _, manager = env
@@ -282,12 +291,15 @@ class TestManagerLifecycle:
         await manager.projection("ws-b")
         await manager.projection("ws-c")
         # Capacity: three live graphs with a bound of two evicts the oldest.
-        assert manager.live_workspaces() == ["ws-b", "ws-c"]
+        assert manager.hot("ws-a") is None
+        assert manager.hot("ws-b") is not None
+        assert manager.hot("ws-c") is not None
         # TTL: a zero TTL makes every live graph stale on the next pass.
         manager.ttl_seconds = 0.0
         evicted = manager.evict()
         assert evicted == 2
-        assert manager.live_workspaces() == []
+        assert manager.hot("ws-b") is None
+        assert manager.hot("ws-c") is None
 
     async def test_dispose_keeps_the_log(self, env: Any) -> None:
         store, manager = env
@@ -295,7 +307,7 @@ class TestManagerLifecycle:
         await manager.observe(WS, cycle=1, text="durable")
         await manager.dispose(WS)
         assert manager.hot(WS) is None
-        assert await store.count_entries(WS) == 1
+        assert len(await store.list_entries(WS)) == 1
 
 
 # --------------------------------------------------------------------------
@@ -343,11 +355,11 @@ class TestRecall:
         await manager.projection(WS)
         # Two entries address the SAME result but share no vocabulary, so
         # only one is reachable fresh; the other must arrive by traversal.
-        _, first = await manager.record_tool_result(
-            WS, cycle=1, source="tool", content="PAYLOAD", text="alpha analysis unique"
+        first = await manager.observe(
+            WS, cycle=1, text="alpha analysis unique", source="tool", content="PAYLOAD"
         )
-        _, second = await manager.record_tool_result(
-            WS, cycle=2, source="tool", content="PAYLOAD", text="totally other words"
+        second = await manager.observe(
+            WS, cycle=2, text="totally other words", source="tool", content="PAYLOAD"
         )
         recall = WorkingMemoryRecall(manager)
         # Default: digest-equal entries collapse (same payload re-observed),
@@ -498,11 +510,11 @@ class TestMeasurement:
         _, manager = env
         await manager.projection(WS)
         # Two entries address one result; only one's text matches the probe.
-        await manager.record_tool_result(
-            WS, cycle=1, source="tool", content="P", text="quarterly report analysis"
+        await manager.observe(
+            WS, cycle=1, text="quarterly report analysis", source="tool", content="P"
         )
-        await manager.record_tool_result(
-            WS, cycle=2, source="tool", content="P", text="distinct wording entirely"
+        await manager.observe(
+            WS, cycle=2, text="distinct wording entirely", source="tool", content="P"
         )
         projection = await manager.projection(WS)
         measurement = measure_fresh_vs_lineage(projection, ["quarterly report"])
@@ -549,7 +561,7 @@ class TestWiring:
             manager = await wire_working_memory(conn)
             assert isinstance(manager.store, SqliteWorkspaceLogStore)
             await manager.observe("ws-wired", cycle=1, text="durable via wiring")
-            assert await manager.store.count_entries("ws-wired") == 1
+            assert len(await manager.store.list_entries("ws-wired")) == 1
         finally:
             await conn.close()
 

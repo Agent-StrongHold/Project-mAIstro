@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +84
+  packages/maistro-core/tests: +85
 ---
 
 # 105 working memory: durable log-as-context
@@ -14,7 +14,8 @@ ephemeral Ladybug-role projection rebuilt from it (ADR-082226-5104 §5-6),
 structural recall, GUIDE/WORKING rendering, simplification/hard resets, and
 the redundancy and fresh-vs-lineage measurements.
 
-What moved (84 node IDs in two files under `packages/maistro-core/tests/memory/`):
+What moved (85 node IDs in two files under `packages/maistro-core/tests/memory/`
+plus the container-shutdown release test):
 
 - `test_working_log_store_conformance.py` (+23): the store contract runs
   **both legs** — the in-memory reference and the SQLite twin — over the same
@@ -33,6 +34,19 @@ What moved (84 node IDs in two files under `packages/maistro-core/tests/memory/`
   behind references), the two measurements (redundant hypotheses without any
   embedding model; fresh-vs-lineage scoring), and container wiring (SQLite pool
   -> durable twin, no pool -> loud in-memory fallback).
+
+Repair round (CI-repair for the merge-queue failures): the reference-
+addressable write path folded into `observe(source=, content=)` so the
+content-addressing and the append share one coherence point; the store's
+test-only batch reads (`count_entries`, `list_results`) replaced by the
+production read paths in tests; the manager's caller-less conveniences
+(`record_tool_result`, `rebuild`, `live_workspaces`) removed — rebuild
+equivalence is asserted through `dispose` + `projection`, the primitives it
+composed. `workspace_working_log.run_id` joined the Run purge inventory as
+Preserve (observation provenance; the log's lifetime is the Workspace's), and
+`Container.aclose()` now releases the live projection graphs — the field's
+first production reader — asserted by a new test in
+`test_container_wiring.py` (+1).
 
 Coverage intent: the losslessness invariant (nothing ever edits or deletes an
 entry except the driven `purge_workspace`) is asserted both directly (append +

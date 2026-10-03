@@ -178,15 +178,6 @@ class SqliteWorkspaceLogStore:
             row = await cursor.fetchone()
         return _entry_from_row(row) if row is not None else None
 
-    async def count_entries(self, workspace_id: str) -> int:
-        async with self._lock:
-            cursor = await self._conn.execute(
-                "SELECT COUNT(*) FROM workspace_working_log WHERE workspace_id = ?",
-                (workspace_id,),
-            )
-            row = await cursor.fetchone()
-        return int(row[0]) if row is not None else 0
-
     async def put_result(self, result: WorkingResult) -> bool:
         async with self._lock:
             cursor = await self._conn.execute(
@@ -224,46 +215,6 @@ class SqliteWorkspaceLogStore:
             created_at=datetime.fromisoformat(str(row[2])),
             meta=json.loads(str(row[4])),
         )
-
-    async def list_results(
-        self, workspace_id: str, *, result_ids: tuple[str, ...] | None = None
-    ) -> list[WorkingResult]:
-        if result_ids is None:
-            sql = (
-                "SELECT result_id, source, digest, created_at, content, meta"
-                " FROM workspace_working_results WHERE workspace_id = ? ORDER BY created_at"
-            )
-            params: list[Any] = [workspace_id]
-        else:
-            if not result_ids:
-                return []
-            sql = (
-                "SELECT result_id, source, digest, created_at, content, meta"
-                " FROM workspace_working_results WHERE workspace_id = ?"
-                f" AND result_id IN ({', '.join('?' for _ in result_ids)})"
-            )
-            params = [workspace_id, *result_ids]
-        async with self._lock:
-            cursor = await self._conn.execute(sql, params)
-            rows = await cursor.fetchall()
-        found = {str(r[0]): r for r in rows}
-        ordered = result_ids if result_ids is not None else [str(r[0]) for r in rows]
-        results = []
-        for rid in ordered:
-            row = found.get(rid)
-            if row is None:
-                continue
-            results.append(
-                WorkingResult(
-                    workspace_id=workspace_id,
-                    result_id=rid,
-                    source=str(row[1]),
-                    content=str(row[4]),
-                    created_at=datetime.fromisoformat(str(row[3])),
-                    meta=json.loads(str(row[5])),
-                )
-            )
-        return results
 
     async def purge_workspace(self, workspace_id: str) -> int:
         async with self._lock:

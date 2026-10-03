@@ -125,8 +125,8 @@ class TestAppendAndOrder:
     async def test_workspaces_are_isolated(self, store: WorkspaceLogStore) -> None:
         await _append_three(store)
         await store.append(observation(workspace_id=OTHER_WS, cycle=1, text="other workspace"))
-        assert await store.count_entries(WS) == 3
-        assert await store.count_entries(OTHER_WS) == 1
+        assert len(await store.list_entries(WS)) == 3
+        assert len(await store.list_entries(OTHER_WS)) == 1
         assert all(e.workspace_id == WS for e in await store.list_entries(WS))
 
 
@@ -194,15 +194,16 @@ class TestAddressableResults:
         # content address mixes the Workspace in.
         assert await store.get_result(OTHER_WS, result.result_id) is None
 
-    async def test_list_results_with_and_without_ids(self, store: WorkspaceLogStore) -> None:
+    async def test_results_are_addressable_by_id(self, store: WorkspaceLogStore) -> None:
         one = WorkingResult(workspace_id=WS, result_id="res-one", source="a", content="one")
         two = WorkingResult(workspace_id=WS, result_id="res-two", source="b", content="two")
         await store.put_result(one)
         await store.put_result(two)
-        by_id = await store.list_results(WS, result_ids=("res-two", "res-one", "res-missing"))
-        assert [r.result_id for r in by_id] == ["res-two", "res-one"]
-        assert {r.result_id for r in await store.list_results(WS)} == {"res-one", "res-two"}
-        assert await store.list_results(WS, result_ids=()) == []
+        got = await store.get_result(WS, "res-two")
+        assert got is not None and got.content == "two"
+        # The id decides: same Workspace, unknown id, other Workspace — none.
+        assert await store.get_result(WS, "res-missing") is None
+        assert await store.get_result(OTHER_WS, "res-one") is None
 
 
 class TestMarkerEntries:
@@ -235,10 +236,10 @@ class TestPurge:
         )
         await store.append(observation(workspace_id=OTHER_WS, cycle=1, text="kept"))
         assert await store.purge_workspace(WS) == 3
-        assert await store.count_entries(WS) == 0
+        assert len(await store.list_entries(WS)) == 0
         assert await store.get_result(WS, "res-x") is None
         # The other Workspace is untouched.
-        assert await store.count_entries(OTHER_WS) == 1
+        assert len(await store.list_entries(OTHER_WS)) == 1
         assert await store.purge_workspace(WS) == 0
 
 
@@ -257,7 +258,7 @@ class TestSqliteRestart:
         await leg.stop()
 
         reopened = await leg.restart()
-        assert await reopened.count_entries(WS) == 4
+        assert len(await reopened.list_entries(WS)) == 4
         latest = await reopened.latest_entry(WS, kinds=(ObservationKind.RESET,))
         assert latest is not None
         assert latest.meta["survival"] == [appended[2].entry_id]
@@ -268,4 +269,4 @@ class TestSqliteRestart:
 
         assert isinstance(reopened, SqliteWorkspaceLogStore)
         await reopened.ensure_schema()
-        assert await reopened.count_entries(WS) == 4
+        assert len(await reopened.list_entries(WS)) == 4
