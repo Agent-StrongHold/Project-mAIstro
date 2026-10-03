@@ -20,6 +20,8 @@ from services import voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
+from maistro.identity import Principal
+
 logger = logging.getLogger("hive.auth_middleware")
 
 _PUBLIC_PREFIXES = (
@@ -233,7 +235,9 @@ def resolve_principal(
         return None
 
 
-def principal_has_permission(user: dict[str, Any], perm: str) -> bool:
+def principal_has_permission(user: Principal | Mapping[str, Any], perm: str) -> bool:
+    if isinstance(user, Principal):
+        return user.has_permission(perm)
     if user.get("role") == "admin":
         return True
     user_perms = user.get("permissions", [])
@@ -311,9 +315,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     content={"detail": "Authentication required"},
                 )
 
-            request.state.user = user
+            principal = Principal.from_legacy_dict(user)
+            request.state.principal = principal
 
-            if user["role"] == "admin" and self._is_chat(path):
+            if principal.is_admin and self._is_chat(path):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -329,7 +334,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.method == "GET"
                 and path.startswith("/v1/workspaces/persona-templates/")
                 and path.endswith("/feedback")
-                and user.get("role") != "admin"
+                and not principal.is_admin
             ):
                 return JSONResponse(
                     status_code=403,
@@ -337,7 +342,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
             required_perm = self._required_permission(request)
-            if required_perm and not self._check_permission(user, required_perm):
+            if required_perm and not self._check_permission(principal, required_perm):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -463,5 +468,5 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return perm
         return None
 
-    def _check_permission(self, user: dict[str, Any], perm: str) -> bool:
+    def _check_permission(self, user: Principal | Mapping[str, Any], perm: str) -> bool:
         return principal_has_permission(user, perm)
