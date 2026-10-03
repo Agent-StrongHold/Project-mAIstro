@@ -36,6 +36,7 @@ from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,11 @@ async def test_an_ambiguous_effect_is_never_physically_re_dispatched_by_a_graph_
     node = _AmbiguousCharge(service)
     graph = _graph(workspace_id, project_id)
 
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     record = await run_durable_graph(
         graph,
         store=InMemoryDurableRunStore(),

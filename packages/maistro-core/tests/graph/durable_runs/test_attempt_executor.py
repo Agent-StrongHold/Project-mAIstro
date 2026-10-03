@@ -418,6 +418,7 @@ async def test_unkeyed_effect_contract_overrides_a_graph_retry_budget() -> None:
         _never_retry_graph(),
         store=store,
         node_resolver=_never_retry_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED

@@ -230,10 +230,13 @@ async def test_effect_claim_refuses_an_unanchored_parent_node_reference(spine: A
             _graph(workspace, project_id),
             effect_key="effect-with-unanchored-parent",
             parent_node_run_id="node-run-without-parent",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     retry = await store.claim_run_by_effect(
-        _graph(workspace, project_id), effect_key="effect-with-unanchored-parent"
+        _graph(workspace, project_id),
+        effect_key="effect-with-unanchored-parent",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert retry.claimed is True
 
@@ -253,11 +256,13 @@ async def test_effect_claim_recovery_returns_the_same_run_without_readmission(
     first = await store.claim_run_by_effect(
         _graph(workspace, project_id),
         effect_key="agent.delegate_remote:recover-me",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         provenance={"admission_source": "a2a_delegation"},
     )
     second = await store.claim_run_by_effect(
         _graph(workspace, project_id),
         effect_key="agent.delegate_remote:recover-me",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         provenance={"admission_source": "a2a_delegation"},
     )
 
@@ -280,6 +285,7 @@ async def test_effect_claim_anchors_parent_lineage(spine: Any) -> None:
         effect_key="delegation:anchored",
         parent_run_id=parent_run.run_id,
         parent_node_run_id=parent_node_run.node_run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert claim.claimed is True
@@ -303,6 +309,7 @@ async def test_effect_claim_refuses_a_parent_node_run_from_another_run(
             effect_key="delegation:mismatched-parent",
             parent_run_id=parent_run.run_id,
             parent_node_run_id=foreign_node_run.node_run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -326,7 +333,9 @@ async def test_a_durable_store_resolves_a_claimed_effect_key(spine: Any) -> None
     assert unclaimed is None
 
     claim = await store.claim_run_by_effect(
-        _graph(workspace, project_id), effect_key="durable:findable"
+        _graph(workspace, project_id),
+        effect_key="durable:findable",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert claim.claimed is True
 

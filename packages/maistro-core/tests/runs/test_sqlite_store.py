@@ -102,7 +102,11 @@ async def test_find_run_by_effect_resolves_the_claim_and_none_when_unclaimed(
     try:
         assert await store.find_run_by_effect("remote-effect-find") is None
 
-        claim = await store.claim_run_by_effect(_graph(project_id), effect_key="remote-effect-find")
+        claim = await store.claim_run_by_effect(
+            _graph(project_id),
+            effect_key="remote-effect-find",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         assert claim.claimed is True
 
         found = await store.find_run_by_effect("remote-effect-find")
