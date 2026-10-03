@@ -69,6 +69,11 @@ EXPECTED_TABLES = frozenset(
         # after a collision with 032_asset_instance_org_scope; #1079).
         # Bindings and Invocations are separate tables: Bindings are immutable
         # authorization records, Invocations the logical effect ledger.
+        # The tombstone half of the same authority (047). Separate from
+        # `capability_bindings` because revoking deletes the binding row,
+        # so a `revoked_at` column would be deleted along with the thing
+        # it forbids and the id could be registered again (#846).
+        "capability_binding_revocations",
         "capability_bindings",
         "capability_invocations",
         "consumer_cursors",
@@ -96,6 +101,9 @@ EXPECTED_TABLES = frozenset(
         # database upgraded through the chain alone must not be expected to
         # hold them.
         "child_profiles",
+        # Versioned CreativeBrief lineages (#774) — the immutable creative
+        # provenance Runs/artifacts cite; append-only by contract.
+        "design_creative_briefs",
         "design_outputs",
         "design_projects",
         # Short-lived elevation grants (#72): durable so a grant issued before
@@ -122,6 +130,12 @@ EXPECTED_TABLES = frozenset(
         "prompt_labels",
         "prompts",
         "quota_usage",
+        # One immutable evidence row per canonical physical Invocation (041,
+        # #718): at-most-once quota accounting and explicit unreported usage
+        # evidence, projected into `quota_usage`.
+        "quota_invocation_evidence",
+        # Durable per-event identities that make `record_usage` retries and
+        # crash-ambiguous commits harmless (#1204).
         "quota_usage_events",
         # Schedule definitions and their fire cursors (016). Durable so that a
         # cursor survives a restart and two scheduler replicas share one rather

@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from maistro.observability.correlation import current_execution_context
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.task_kinds import resolve_direct_work
 from maistro.tasks.idempotency import IDEMPOTENCY_KEY_PROVENANCE
 from maistro.tasks.models import TaskStatus
@@ -114,6 +114,18 @@ class TaskAdmitter(Protocol):
         previous_status: TaskStatus | None = None,
     ) -> bool:
         """Advance the Run to match a task transition. False if it refused."""
+        ...
+
+    async def lookup_run(self, run_id: str) -> Run | None:
+        """The canonical Run behind a receipt, or None when it does not exist.
+
+        The projection half of the receipt contract (#849): when the Run
+        refuses a transition the queue reads the Run's actual state here and
+        reconciles the receipt to it, so a refusal can never leave a receipt
+        telling a story its execution identity has already superseded. Returns
+        None for a missing Run — which is itself a fact the queue must record
+        on the receipt rather than leave stranded.
+        """
         ...
 
     async def cancel_run(self, run_id: str) -> bool:
@@ -366,6 +378,10 @@ class TaskRunAdmitter:
         run = await self._runs.find_run_by_task_receipt(task_id)
         return run.run_id if run is not None else None
 
+    async def lookup_run(self, run_id: str) -> Run | None:
+        """The canonical Run behind a receipt, or None when it does not exist."""
+        return await self._runs.get_run(run_id)
+
     def _is_phase_only_transition(self, current: RunStatus, target: RunStatus) -> bool:
         """Whether a RUNNING target is only a phase of an in-flight execution.
 
@@ -514,6 +530,17 @@ class WorkspaceRoutingAdmitter:
         """
         admitter = await self.admitter_for(None)
         return await admitter.run_for_task_receipt(task_id)
+
+    async def lookup_run(self, run_id: str) -> Run | None:
+        """Read the Run through the default admitter's store.
+
+        Workspace-independent for the same reason `record_transition` is: by
+        the time a receipt names a run_id, the Run exists and knows its own
+        Project, so delegating keeps one read path rather than a second store
+        handle here.
+        """
+        admitter = await self.admitter_for(None)
+        return await admitter.lookup_run(run_id)
 
 
 __all__ = [

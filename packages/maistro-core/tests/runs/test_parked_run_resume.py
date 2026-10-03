@@ -809,6 +809,31 @@ class TestTheTickUnderStress:
         attempts = await container.run_store.list_attempts(node_run.node_run_id)
         assert len(attempts) == 2
 
+    async def test_a_caught_resume_failure_is_failed_accounting_not_resumed(
+        self, monkeypatch
+    ) -> None:
+        """#849: the tick counted a caught resume failure as a resumed Run, so
+        a tick that re-entered three polls and blew up on all three reported
+        three resumed. The breakdown is the honest answer now; the int return
+        keeps its attempted meaning, documented as such."""
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        await _parked_run(container, _PollingPauseNode.kind, workspace="accounting-ws")
+
+        async def _boom(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("the resolver blew up before any Attempt existed")
+
+        monkeypatch.setattr("maistro.runs.consumption.ScheduleAttemptExecutor.resume", _boom)
+
+        accounting = await container.resume_parked_runs_accounting()
+
+        assert accounting.attempted == 1
+        assert accounting.succeeded == 0, "a caught failure is not a resumed Run"
+        assert accounting.failed == 1
+        assert accounting.skipped == 0
+        # The compatibility return: attempted, as its docstring now states.
+        assert await container.resume_parked_runs() == 1
+
     async def test_a_resume_that_fails_outright_leaves_the_run_parked(self, monkeypatch) -> None:
         """Not RUNNING over a parked NodeRun. Nothing about the pause has
         changed, so the honest record is the one the resume found, and the next

@@ -211,3 +211,24 @@ async def test_the_router_reports_a_run_that_never_existed(spine) -> None:
     _projects, _runs, router = spine
 
     assert await router.cancel_run("run-never-was") is False
+
+
+# --- run lookup routed through the shared seam ------------------------------
+
+
+async def test_the_router_reads_a_run_through_the_default_admitter(spine) -> None:
+    _projects, runs, router = spine
+    queue = TaskQueue(admitter=router)
+    task = await queue.submit(TaskCreate(description="Routed work"), workspace_id="w-lookup")
+
+    found = await router.lookup_run(task.run_id or "")
+    assert found is not None
+    assert found == await runs.get_run(task.run_id or "")
+    assert found.workspace_id == "w-lookup"
+    assert found.status is RunStatus.QUEUED
+
+
+async def test_the_router_reports_a_lookup_of_a_run_that_never_existed(spine) -> None:
+    _projects, _runs, router = spine
+
+    assert await router.lookup_run("run-never-was") is None

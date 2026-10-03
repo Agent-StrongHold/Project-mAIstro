@@ -19,6 +19,7 @@ from maistro.security.resource_policy import (
     BASELINE_MAX_WEBHOOK_BODY_BYTES,
     BASELINE_RATE_LIMIT_BURST,
     BASELINE_RATE_LIMIT_PER_MINUTE,
+    MAX_CIRCUIT_DOMAINS,
     EffectiveResourcePolicy,
     validate_resource_policy,
 )
@@ -83,6 +84,21 @@ def validate_cors_origins(origins: list[str]) -> list[str]:
             logger.warning("CORS origin %r is not HTTPS — use HTTPS in production", origin)
         cleaned.append(origin)
     return cleaned
+
+
+def validate_circuit_max_domains(value: int) -> int:
+    """Bound the LLM circuit bank's failure-domain cardinality (#1203).
+
+    ``MAX_CIRCUIT_DOMAINS`` caps breaker bookkeeping for dynamically
+    discovered providers, not exposure — so unlike the resource floors this
+    needs no unsafe override to tune. Validated at the Settings boundary so
+    a bad value fails at config load, before any breaker exists.
+    """
+    if isinstance(value, bool) or not 0 < value <= MAX_CIRCUIT_DOMAINS:
+        raise ValueError(
+            f"circuit_breaker_max_domains must be a positive integer <= {MAX_CIRCUIT_DOMAINS}"
+        )
+    return value
 
 
 class RateConstraintConfig(BaseModel):
@@ -250,6 +266,10 @@ class Settings(BaseSettings):
 
     _check_cors_origins = field_validator("cors_origins")(validate_cors_origins)
 
+    _check_circuit_max_domains = field_validator("circuit_breaker_max_domains")(
+        validate_circuit_max_domains
+    )
+
     default_model: str = "anthropic/claude-sonnet-4-20250514"
 
     max_tokens_per_task: int = Field(default=100_000, description="Max LLM tokens per task")
@@ -278,6 +298,11 @@ class Settings(BaseSettings):
     rate_limit_burst: int = BASELINE_RATE_LIMIT_BURST
     circuit_breaker_failure_threshold: int = BASELINE_CIRCUIT_FAILURE_THRESHOLD
     circuit_breaker_recovery_timeout_s: float = BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S
+    # Upper bound on distinct LLM failure domains tracked by the per-provider
+    # circuit bank (#1203): memory stays bounded for dynamically discovered
+    # providers. Not a resource-security floor — it bounds breaker bookkeeping,
+    # not exposure — so it needs no unsafe override to tune.
+    circuit_breaker_max_domains: int = 64
     # Governed ceilings on concurrently active root Runs (#1182), enforced by
     # every RunStore at admission. Tighten freely; loosening needs the override.
     max_active_root_runs_per_principal: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL
