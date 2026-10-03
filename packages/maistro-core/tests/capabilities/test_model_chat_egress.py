@@ -46,6 +46,7 @@ from maistro.capabilities.providers.llm_gateway import (
 from maistro.capabilities.types import Unavailable
 from maistro.credentials.router import CredentialRouter
 from maistro.credentials.types import CredentialRecord
+from maistro.observability.correlation import bind_execution_context, detached_execution_context
 from maistro.providers.errors import NoEligibleModelError
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -56,6 +57,7 @@ from maistro.providers.types import (
 )
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.runs.store import RunIntegrityError
 
 
 def _meta(
@@ -1129,16 +1131,10 @@ async def test_chat_payload_carries_structured_output_shape(
     assert "response_format" not in captured["json"]
 
 
-async def test_client_complete_without_prior_turn_mints_one(
+async def test_client_complete_without_prior_turn_requires_bound_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A caller that never set a turn still gets canonical identity.
-
-    `Agent.handle` always calls `set_turn` first, but the client is also the
-    factory's LLMClient for strategies driven outside that seam. `complete`
-    must mint a turn itself rather than refuse -- the Invocation lands under
-    that minted identity either way (#718: no ungoverned side door).
-    """
+    """An adapter call must refuse missing admission, then preserve bound IDs."""
     tracker = InMemoryQuotaTracker()
     effects = new_in_memory_effect_context(
         usage_log=InMemoryUsageLog(),
@@ -1165,10 +1161,24 @@ async def test_client_complete_without_prior_turn_mints_one(
         project_id="p1",
     )
 
-    body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
+    with detached_execution_context():
+        with pytest.raises(RunIntegrityError):
+            await client.complete([{"role": "user", "content": "hello"}], "fast-model")
+        assert await tracker.get_all_usage() == []
+        with bind_execution_context(run_id="run-A", node_run_id="node-A", attempt_id="attempt-A"):
+            body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
 
+    (event,) = effects.usage_log.events_for("fast-model")
+    assert event.invocation_id is not None
+    stored = await effects.invocation_store.get(event.invocation_id)
+    assert stored is not None
+    assert (stored.run_id, stored.node_run_id, stored.attempt_id) == (
+        "run-A",
+        "node-A",
+        "attempt-A",
+    )
     assert body["choices"][0]["message"]["content"] == "hi"
-    # The minted turn still routed the call through the canonical egress: the
+    # The bound turn routed the call through the canonical egress: the
     # usage the fake gateway reported reached the quota ledger.
     (entry,) = await tracker.get_all_usage()
     assert entry["request_count"] == 1

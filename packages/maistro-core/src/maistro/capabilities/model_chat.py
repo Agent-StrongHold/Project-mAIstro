@@ -22,7 +22,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
@@ -42,6 +41,7 @@ from maistro.capabilities.providers.llm_gateway import (
     execute_model_chat,
 )
 from maistro.capabilities.types import Unavailable
+from maistro.observability.correlation import current_execution_context
 from maistro.providers.errors import ModelNotFoundError, NoEligibleModelError
 from maistro.providers.types import (
     ModelMetadata,
@@ -150,15 +150,18 @@ class GovernedLLMClient:
         self._sequence: ContextVar[int] = ContextVar("governed_llm_sequence", default=0)
 
     def set_turn(self, run_id: str | None = None, *, agent_name: str = "") -> None:
-        """Set correlation identity for the next Agent turn."""
-        self._turn.set(
-            (
-                run_id or f"agent-turn-{uuid4().hex}",
-                f"agent-node-{agent_name or 'model'}",
-                f"agent-attempt-{uuid4().hex}",
-            )
-        )
-        self._sequence.set(0)
+        """Use canonical execution correlation; these IDs do not grant authority."""
+        from maistro.runs.store import RunIntegrityError
+
+        del agent_name
+        self.clear_turn()
+        context = current_execution_context()
+        turn = (context.run_id, context.node_run_id, context.attempt_id)
+        if not all(value.strip() for value in turn):
+            raise RunIntegrityError("model completion requires Run/NodeRun/Attempt context")
+        if run_id and run_id != context.run_id:
+            raise RunIntegrityError("model turn run_id conflicts with execution context")
+        self._turn.set(turn)
 
     def clear_turn(self) -> None:
         self._turn.set(None)
@@ -176,12 +179,17 @@ class GovernedLLMClient:
         temperature: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        from maistro.runs.store import RunIntegrityError
+
         del tool_choice, stream, metadata
         if self._turn.get() is None:
             self.set_turn()
-        self._sequence.set(self._sequence.get() + 1)
         turn = self._turn.get()
         assert turn is not None
+        context = current_execution_context()
+        if (context.run_id, context.node_run_id, context.attempt_id) != turn:
+            raise RunIntegrityError("model turn no longer matches execution context")
+        self._sequence.set(self._sequence.get() + 1)
         run_id, node_run_id, attempt_id = turn
         request = ModelChatRequest(
             model=model,
