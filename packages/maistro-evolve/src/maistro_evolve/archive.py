@@ -23,7 +23,6 @@ re-asserts the same objective overrides nothing.
 from __future__ import annotations
 
 import hashlib
-import random
 import sqlite3
 import uuid
 from datetime import UTC, datetime
@@ -521,18 +520,25 @@ class RetentionGate:
         """The scenarios this policy re-checks, deterministically.
 
         ``replay`` is every proven scenario. ``sample`` draws the declared
-        sample size with a seed derived from the scenario set itself, so the
-        same proven set always samples the same scenarios (two evaluations of
-        one population state must be comparable — an arbitrary sample would
-        make "no regression" a coin flip).
+        sample size by ranking the scenarios on a digest keyed to the whole
+        proven set, so the same proven set always samples the same scenarios
+        (two evaluations of one population state must be comparable — an
+        arbitrary sample would make "no regression" a coin flip). The digest
+        is a pure function of the scenario set: no clock, no process-level
+        RNG state, hence reproducible across runs and hosts.
         """
         names = sorted(proven_scores)
         if self.policy.mode == "replay" or len(names) <= self.policy.sample_size:
             return names
         seed_material = "\n".join(names).encode("utf-8")
-        seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")
-        rng = random.Random(seed)
-        return sorted(rng.sample(names, self.policy.sample_size))
+        ranked = sorted(
+            names,
+            key=lambda name: (
+                hashlib.sha256(seed_material + b"\x00" + name.encode("utf-8")).digest(),
+                name,
+            ),
+        )
+        return sorted(ranked[: self.policy.sample_size])
 
     def evaluate(
         self,

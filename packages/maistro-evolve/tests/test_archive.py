@@ -455,6 +455,15 @@ def test_sample_policy_is_deterministic_and_honors_declared_size() -> None:
     assert gate_big.select_scenarios(proven) == sorted(proven)
 
 
+def test_sample_policy_does_not_degenerate_to_prefix_truncation() -> None:
+    # The keyed-digest sampler spreads over the whole name space; replacing it
+    # with plain ``sorted(names)[:k]`` would bias every retention check toward
+    # the early-alphabet scenarios and quietly stop sampling the rest.
+    proven = {f"s{i}": 0.5 for i in range(10)}
+    gate = RetentionGate(RetentionPolicy(mode="sample", sample_size=4))
+    assert gate.select_scenarios(proven) != sorted(proven)[:4]
+
+
 def test_retention_report_flags_regression_and_coverage() -> None:
     gate = RetentionGate(RetentionPolicy())
     candidate = _stamped("c", scores={"ifeval": 0.5})
