@@ -24,6 +24,7 @@ import services.agent_materialization as agent_materialization
 from models.schemas import ChatCompletionRequest
 from routes import chat
 
+from maistro.identity import Principal
 from maistro.security._types import WardenVerdict
 from maistro.security.warden.detector import Warden, WardenContext
 
@@ -106,7 +107,7 @@ class _FakeLLM:
 
 class _FakeRequest:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(user={"id": "user-1"})
+        self.state = SimpleNamespace(principal=Principal(user_id="user-1"))
 
 
 @pytest.fixture

@@ -152,6 +152,8 @@ if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
     from maistro.runs.consumption import ParkedPause, TickAccounting
+    from maistro.runs.model import Attempt
+    from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
@@ -1170,7 +1172,6 @@ class Container:
         self, *, now: datetime | None, limit: int
     ) -> int:
         """Replay reconciliation for terminal Attempts a crash interrupted (#804)."""
-        from maistro.runs.model import RunStatus
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
         from maistro.runs.store import run_cursor_key
 
@@ -1192,65 +1193,83 @@ class Container:
                 break
             for run in page:
                 after = run_cursor_key(run)
-                reconciled += await self._reconcile_run_terminal_attempts(
-                    run,
-                    reconciler,
-                    moment=moment,
-                    budget=limit - reconciled,
-                )
+                for node_run in await self.run_store.list_node_runs(run.run_id):
+                    if reconciled >= limit:
+                        break
+                    if await self._reconcile_terminal_attempt_for_node(
+                        node_run.node_run_id, reconciler=reconciler, moment=moment
+                    ):
+                        reconciled += 1
             if len(page) < min(limit - reconciled, limit):
                 break
         if reconciled:
             logger.info("reconciled %d unreconciled terminal Attempt(s)", reconciled)
         return reconciled
 
-    async def _reconcile_run_terminal_attempts(
+    async def _reconcile_terminal_attempt_for_node(
         self,
-        run: Any,
-        reconciler: Any,
+        node_run_id: str,
         *,
+        reconciler: AttemptLifecycleReconciler,
         moment: datetime,
-        budget: int,
-    ) -> int:
-        """Reconcile one RUNNING Run's crash-interrupted terminal Attempts.
+    ) -> bool:
+        """Replay a completed Attempt, charging only observed persisted progress."""
+        from maistro.runs.lifecycle import lease_is_expired
+        from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES
 
-        A terminal Attempt whose NodeRun shows no live lease anywhere is work a
-        crash separated from its reconciliation; the latest COMPLETED Attempt
-        is the one whose outcome replays. Returns how many Attempts were
-        reconciled, never more than ``budget``.
-        """
-        from maistro.runs.lifecycle import attempt_lease_is_live
-        from maistro.runs.model import AttemptStatus
-        from maistro.runs.store import RunIntegrityError
-
-        reconciled = 0
-        for node_run in await self.run_store.list_node_runs(run.run_id):
-            if reconciled >= budget:
-                break
-            attempts = await self.run_store.list_attempts(node_run.node_run_id)
-            if any(attempt_lease_is_live(attempt, moment) for attempt in attempts):
-                continue
-            completed = next(
-                (
-                    attempt
-                    for attempt in reversed(attempts)
-                    if attempt.status is AttemptStatus.COMPLETED
-                ),
-                None,
+        attempts = await self.run_store.list_attempts(node_run_id)
+        if any(
+            attempt.status not in TERMINAL_ATTEMPT_STATUSES
+            and attempt.execution_lease is not None
+            and not lease_is_expired(attempt, moment)
+            for attempt in attempts
+        ):
+            return False
+        completed = next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.status is AttemptStatus.COMPLETED
+            ),
+            None,
+        )
+        if completed is None:
+            return False
+        try:
+            return await self._reconcile_terminal_attempt_progress(completed, reconciler)
+        except RunIntegrityError:
+            logger.warning(
+                "terminal Attempt %s could not be reconciled",
+                completed.attempt_id,
+                exc_info=True,
             )
-            if completed is None:
-                continue
-            try:
-                await reconciler.reconcile(completed)
-            except RunIntegrityError:
-                logger.warning(
-                    "terminal Attempt %s could not be reconciled",
-                    completed.attempt_id,
-                    exc_info=True,
-                )
-                continue
-            reconciled += 1
-        return reconciled
+            return False
+
+    async def _reconcile_terminal_attempt_progress(
+        self, attempt: Attempt, reconciler: AttemptLifecycleReconciler
+    ) -> bool:
+        """Observe acceptance/settlement, not exclusive ownership of a repair.
+
+        Store transitions return records, not a won-write flag. A peer may make
+        progress between these reads; counting that observation is conservative
+        for this tick's budget. Replaying unchanged facts on the next tick must
+        not charge again. Timestamps and other incidental changes do not count.
+        """
+        before_node = await self.run_store.get_node_run(attempt.node_run_id)
+        if before_node is None:
+            raise RunIntegrityError("terminal replay is missing its NodeRun")
+        before_run = await self.run_store.get_run(before_node.run_id)
+        if before_run is None:
+            raise RunIntegrityError("terminal replay is missing its Run")
+        reconciled = await reconciler.reconcile(attempt)
+        after_run = await self.run_store.get_run(before_node.run_id)
+        accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
+        settled = (
+            before_run.status not in TERMINAL_RUN_STATUSES
+            and after_run is not None
+            and after_run.status in TERMINAL_RUN_STATUSES
+        )
+        return accepted or settled
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100
