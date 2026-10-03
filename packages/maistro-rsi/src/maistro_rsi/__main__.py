@@ -20,7 +20,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from maistro_rsi.competitors import parse_competitors
 from maistro_rsi.export_policy import (
@@ -394,6 +394,61 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_promotion_evidence(store: Any, champ: Any) -> None:
+    """Print the champion's verified-evidence trail and proxy-scorer calibration.
+
+    The live loop's promotion evidence (#384/#853), for the operator reading
+    the run summary. ``PopulationStore.champion_provenance()`` names, for
+    every benchmark score the champion's fitness rests on, the verified
+    method that produced it — a score with no evidence record reads
+    "unverified" instead of passing silently. The offline adversarial
+    calibration (``calibrate_proxy_scorers``) then measures how much
+    narration-only output leaks through the proxy scorers that shaped this
+    run's fitness. Both surfaces report; neither gates (#853: promotion
+    semantics stay in fitness.py), so an evidence-collection failure is
+    printed and the run still exits 0.
+    """
+    provenance = store.champion_provenance()
+    if provenance is not None:
+        print("champion evidence:")
+        _print_champion_provenance(store)
+
+    import asyncio
+
+    from maistro_evolve.benchmarks.calibration import calibrate_proxy_scorers
+
+    try:
+        # The calibration fixtures play the candidate themselves (deterministic
+        # narration/verified responders), so no live model is contacted and
+        # ``llm_call`` is None exactly as in the calibration suite.
+        report = asyncio.run(calibrate_proxy_scorers(champ, None))
+    except Exception as exc:  # evidence, not gate: never fail the run over it
+        print(f"calibration evidence: unavailable ({exc})")
+        return
+    print(f"proxy-scorer calibration ({report['calibration']}):")
+    for scorer, rates in report["scorers"].items():
+        print(
+            f"  {scorer}: narration_fpr={rates['narration_false_positive_rate']} "
+            f"verified_rate={rates['verified_positive_rate']}"
+        )
+
+
+def _print_champion_provenance(store: PopulationStore) -> None:
+    """Print the verified-evidence trail behind champion selection (#384).
+
+    The champion's fitness is a weighted fold of benchmark scores; this names,
+    for every scored benchmark, the verified method that produced the score
+    (``exact_match``, ``llm_judge``, ... — or the explicit ``unverified``). A
+    champion that got there by narrating shows up here instead of being
+    silently trusted.
+    """
+    provenance = store.champion_provenance()
+    if provenance is None:
+        return
+    for bench, record in provenance["benchmarks"].items():
+        print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
+
+
 def _evolve(args: argparse.Namespace) -> int:
     import asyncio
     import tempfile
@@ -518,24 +573,8 @@ def _evolve(args: argparse.Namespace) -> int:
     champ = store.get_champion()
     if champ is not None:
         print(f"champion: {champ.name} (fitness={champ.fitness_score})")
-        _print_champion_provenance(store)
+        _print_promotion_evidence(store, champ)
     return 0
-
-
-def _print_champion_provenance(store: PopulationStore) -> None:
-    """Print the verified-evidence trail behind champion selection (#384).
-
-    The champion's fitness is a weighted fold of benchmark scores; this names,
-    for every scored benchmark, the verified method that produced the score
-    (``exact_match``, ``llm_judge``, ... — or the explicit ``unverified``). A
-    champion that got there by narrating shows up here instead of being
-    silently trusted.
-    """
-    provenance = store.champion_provenance()
-    if provenance is None:
-        return
-    for bench, record in provenance["benchmarks"].items():
-        print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
 
 
 def _calibrate(args: argparse.Namespace) -> int:
