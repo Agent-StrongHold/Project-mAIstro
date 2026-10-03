@@ -15,9 +15,10 @@ def _default_task_submit_actor(monkeypatch: pytest.MonkeyPatch) -> None:
     original = queue_mod.TaskQueue.submit
 
     async def submit(self, task, **kwargs):  # type: ignore[no-untyped-def]
-        if getattr(task, "user_id", None) is None and getattr(
-            task, "service_principal_id", None
-        ) is None:
+        if (
+            getattr(task, "user_id", None) is None
+            and getattr(task, "service_principal_id", None) is None
+        ):
             task = task.model_copy(update={"user_id": DEFAULT_TEST_ACTOR_PRINCIPAL_ID})
         return await original(self, task, **kwargs)
 
