@@ -93,3 +93,27 @@ the `#1767` precedent that preceded `#1321`) or once this branch's merge is
 itself the base (post-merge reconciliation, the in-file `#1310`/`#1194`
 precedent notes). This lane is prohibited from GitHub mutations, so the
 grants-first PR is a driver-side action.
+
+## Round 3 (956c95932 develop-sync head): stale-grant pruning
+
+The develop sync that brought M7-A3's `EvalMethod` consumers eliminated the
+debt behind 3 of the 18 vulture grants this branch carried
+(`ScoringMethod.DETERMINISTIC` / `_MODEL_JUDGE` / `_HUMAN` — vulture's
+name-based usage matching now sees those member names as used, so the
+identities no longer appear in the scan). Commit 5f06b8ca9 pruned the
+matching ledger rows; this round prunes the now-stale **grant** rows from
+`quality/ratchet-authorizations.json` (18 → 15 vulture grants), edited
+textually — a JSON round-trip of this file silently drops rows because it
+carries duplicate top-level keys (`principal-identity`, `route-permissions`
+×2), the same lossy-merge hazard the monorepo guide documents for
+`quality/*.json`.
+
+Verified against the live scan at this head: the candidate
+`quality/vulture-baseline.json` rubric rows (15), the branch's vulture grants
+(15), and the scan identities (15) are now three views of the same exact set —
+no stale grants, no ungranted identities, candidate bookkeeping green. The
+remaining gate failures at `RATCHET_BASE_REV=origin/develop` are exactly the
+structural two-merge set documented above: 15 unauthorized vulture identities,
+2 new unreachable modules, 2 new dispositions — each waiting on the same
+driver-side grants-first PR, for which this branch's `quality/` edits are the
+ready-made, scan-verified content.

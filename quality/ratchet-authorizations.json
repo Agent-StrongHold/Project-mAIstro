@@ -296,21 +296,6 @@
       "issue": "#1194",
       "reason": "GET /a2a/tasks/by-idempotency-key/{idempotency_key} is the receipt-recovery half of #1194's transport idempotency: a dispatching worker that lost its lease after an ambiguous POST polls this endpoint with the same key and receives the original receipt (find_run_by_effect), distinguishing 'never accepted' (404) from 'accepted, receipt lost' - so the same logical delegation cannot be filed twice after a lease loss without explicit new-work semantics. Vulture reports it as an unused function at 60% confidence because FastAPI registers route handlers through the @router.get decorator; already banked under fastapi-route-handler in quality/vulture-baseline.json on this branch. Trusted-base note: same two-merge rule as the create_a2a_task grant above - effective from the next base, per the #1310 post-merge reconciliation precedent."
     },
-    "packages/maistro-core/src/maistro/ontology/rubric.py::unused variable 'DETERMINISTIC'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#791",
-      "reason": "ScoringMethod.DETERMINISTIC is one of the three `method` values the #791 Rubric contract mandates per dimension (`deterministic` | `model_judge` | `human`); the StrEnum member is consumed via pydantic validation/serialization and asserted in test_rubric_model.py; M7-A2 (#791) registers the Goal `Rubric` as a first-class ontology kind: a versioned scored-acceptance object bound to one Goal revision. The identity is declarative Pydantic surface or store API consumed by packages/maistro-core/tests (ontology/test_rubric_model.py, ontology/test_rubric_contracts.py, projects/test_rubric_store.py) and reserved for Run scoring and fence gating, which the issue's stop condition explicitly defers (\"Do not score anything in this PR\"), so a src-only vulture scan cannot see in-package consumption yet. This grant authorizes only the exact Vulture identity named by the key; it does not approve scoring behavior or close #791."
-    },
-    "packages/maistro-core/src/maistro/ontology/rubric.py::unused variable 'MODEL_JUDGE'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#791",
-      "reason": "ScoringMethod.MODEL_JUDGE is one of the three `method` values the #791 Rubric contract mandates per dimension; enum member consumed via validation/serialization; M7-A2 (#791) registers the Goal `Rubric` as a first-class ontology kind: a versioned scored-acceptance object bound to one Goal revision. The identity is declarative Pydantic surface or store API consumed by packages/maistro-core/tests (ontology/test_rubric_model.py, ontology/test_rubric_contracts.py, projects/test_rubric_store.py) and reserved for Run scoring and fence gating, which the issue's stop condition explicitly defers (\"Do not score anything in this PR\"), so a src-only vulture scan cannot see in-package consumption yet. This grant authorizes only the exact Vulture identity named by the key; it does not approve scoring behavior or close #791."
-    },
-    "packages/maistro-core/src/maistro/ontology/rubric.py::unused variable 'HUMAN'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#791",
-      "reason": "ScoringMethod.HUMAN is one of the three `method` values the #791 Rubric contract mandates per dimension; enum member consumed via validation/serialization; M7-A2 (#791) registers the Goal `Rubric` as a first-class ontology kind: a versioned scored-acceptance object bound to one Goal revision. The identity is declarative Pydantic surface or store API consumed by packages/maistro-core/tests (ontology/test_rubric_model.py, ontology/test_rubric_contracts.py, projects/test_rubric_store.py) and reserved for Run scoring and fence gating, which the issue's stop condition explicitly defers (\"Do not score anything in this PR\"), so a src-only vulture scan cannot see in-package consumption yet. This grant authorizes only the exact Vulture identity named by the key; it does not approve scoring behavior or close #791."
-    },
     "packages/maistro-core/src/maistro/ontology/rubric.py::unused variable 'pass_value'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#791",
