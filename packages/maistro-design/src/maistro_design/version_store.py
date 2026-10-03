@@ -54,6 +54,16 @@ def _as_datetime(value: Any) -> datetime:
     return datetime.fromisoformat(str(value))
 
 
+def _as_str(value: Any) -> str:
+    """Column value -> str, treating NULL as the empty string."""
+    return value if value else ""
+
+
+def _as_datetime_or_now(value: Any) -> datetime:
+    """Column value -> timestamp, falling back to now when the column is NULL."""
+    return _as_datetime(value) if value else _utcnow()
+
+
 def _as_int(value: Any) -> int | None:
     return None if value is None else int(value)
 
@@ -102,9 +112,9 @@ def _coerce_version(row: Any) -> ArtifactVersion:
         version=int(d["version"]),
         kind=ChangeKind(d["kind"]),
         origin=ChangeOrigin(d["origin"]),
-        title=d.get("title") or "",
+        title=_as_str(d.get("title")),
         format=d.get("format"),
-        content=d.get("content") or "",
+        content=_as_str(d.get("content")),
         url=d.get("url"),
         trust_tier=d.get("trust_tier") or "t3",
         state=VersionState(d.get("state") or VersionState.DRAFT.value),
@@ -113,12 +123,12 @@ def _coerce_version(row: Any) -> ArtifactVersion:
         fork_version=_as_int(d.get("fork_version")),
         brief_ref=d.get("brief_ref"),
         decision_inputs=_as_json_dict(d.get("decision_inputs_json")),
-        author=d.get("author") or "",
-        run_id=d.get("run_id") or "",
-        node_run_id=d.get("node_run_id") or "",
-        attempt_id=d.get("attempt_id") or "",
-        content_sha=d.get("content_sha") or "",
-        created_at=_as_datetime(d["created_at"]) if d.get("created_at") else _utcnow(),
+        author=_as_str(d.get("author")),
+        run_id=_as_str(d.get("run_id")),
+        node_run_id=_as_str(d.get("node_run_id")),
+        attempt_id=_as_str(d.get("attempt_id")),
+        content_sha=_as_str(d.get("content_sha")),
+        created_at=_as_datetime_or_now(d.get("created_at")),
     )
 
 

@@ -465,6 +465,51 @@ def _address_conflict(lock: ArtifactLock, addresses: tuple[str, ...] | None) -> 
     return any(lock.covers_address(address) for address in addresses)
 
 
+def _decision_locked(lock: ArtifactLock, decision_inputs: dict[str, str] | None) -> bool:
+    """Whether a decision lock binds this change's shared-decision inputs.
+
+    A locked decision constrains the descendants that reference it: same
+    content digest as when it was locked, or no reference at all — never a
+    quiet contradiction.
+    """
+    if lock.scope is not LockScope.DECISION or lock.decision_ref is None:
+        return False
+    cited = (decision_inputs or {}).get(lock.decision_ref)
+    return cited is not None and cited != lock.decision_digest
+
+
+def _lock_blocks_change(
+    lock: ArtifactLock,
+    *,
+    origin: ChangeOrigin,
+    parent: ArtifactVersion | None,
+    changed_addresses: tuple[str, ...] | None = None,
+    decision_inputs: dict[str, str] | None = None,
+) -> bool:
+    """Whether one active lock refuses this change.
+
+    The single definition of lock semantics every write path goes through:
+    - a branch lock freezes the whole lineage;
+    - a version lock makes an accepted version irreplaceable for autonomous
+      refinement (a person editing creates an explicit new version below it
+      and is allowed — the lock still protects the accepted version's
+      content, which nothing can overwrite);
+    - a region lock binds the declared change set;
+    - a decision lock binds the descendants that cite its decision.
+    """
+    if lock.scope is LockScope.BRANCH:
+        return True
+    if lock.scope is LockScope.VERSION:
+        if parent is None:
+            # Generation writes v1; no version lock can pre-date the version
+            # it names, so there is nothing here to freeze yet.
+            return False
+        return origin is ChangeOrigin.AGENT and lock.version == parent.version
+    if lock.scope is LockScope.REGION:
+        return _address_conflict(lock, changed_addresses)
+    return _decision_locked(lock, decision_inputs)
+
+
 class CreativeArtifactService:
     """Lock-checked, provenance-bearing writes over an `ArtifactVersionStore`.
 
@@ -520,24 +565,21 @@ class CreativeArtifactService:
             brief_ref=brief_ref,
             decision_inputs=dict(decision_inputs or {}),
         )
-        # Get active locks for lock checking
-        locks = await self._store.active_locks(org_id, project_id, lineage_id)
-
-        # For generation (version 1), check branch and decision locks
-        # Version and region locks can't exist yet (version 1 doesn't exist)
-
+        # Get active locks for lock checking. For generation (version 1) only
+        # branch and decision locks can bind: version and region locks name a
+        # version that does not exist yet.
+        inputs = dict(decision_inputs or {})
         conflicts: list[tuple[str, str]] = []
         details: list[str] = []
-
-        for lock in locks:
-            blocked = False
-            if lock.scope is LockScope.BRANCH:
-                blocked = True
-            elif lock.scope is LockScope.DECISION and lock.decision_ref is not None:
-                cited = (decision_inputs or {}).get(lock.decision_ref)
-                blocked = cited is not None and cited != lock.decision_digest
-
-            if blocked:
+        for lock in await self._store.active_locks(org_id, project_id, lineage_id):
+            if lock.scope in (LockScope.VERSION, LockScope.REGION):
+                continue
+            if _lock_blocks_change(
+                lock,
+                origin=ChangeOrigin.AGENT,
+                parent=None,
+                decision_inputs=inputs,
+            ):
                 conflicts.append((lock.lock_id, lock.scope.value))
                 details.append(f"{lock.scope.value} lock {lock.lock_id}")
 
@@ -979,25 +1021,13 @@ class CreativeArtifactService:
         conflicts: list[tuple[str, str]] = []
         details: list[str] = []
         for lock in locks:
-            blocked = False
-            if lock.scope is LockScope.BRANCH:
-                blocked = True
-            elif lock.scope is LockScope.VERSION:
-                # An accepted version is frozen: an autonomous refinement
-                # aimed at it is replacement and is refused. A person editing
-                # creates an explicit new version below it and is allowed —
-                # the lock still protects the accepted version's content,
-                # which nothing can overwrite.
-                blocked = origin is ChangeOrigin.AGENT and lock.version == parent.version
-            elif lock.scope is LockScope.REGION:
-                blocked = _address_conflict(lock, changed_addresses)
-            elif lock.scope is LockScope.DECISION and lock.decision_ref is not None:
-                cited = (decision_inputs or {}).get(lock.decision_ref)
-                # A locked decision constrains the descendants that reference
-                # it: same content digest as when it was locked, or no
-                # reference at all — never a quiet contradiction.
-                blocked = cited is not None and cited != lock.decision_digest
-            if blocked:
+            if _lock_blocks_change(
+                lock,
+                origin=origin,
+                parent=parent,
+                changed_addresses=changed_addresses,
+                decision_inputs=decision_inputs,
+            ):
                 conflicts.append((lock.lock_id, lock.scope.value))
                 details.append(f"{lock.scope.value} lock {lock.lock_id}")
         if conflicts:
