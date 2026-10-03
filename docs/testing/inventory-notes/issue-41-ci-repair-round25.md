@@ -1,0 +1,18 @@
+---
+inventory-delta:
+  packages/maistro-core/tests: +1
+  packages/hive-conductor/backend/tests: +0
+---
+
+# Issue #41 CI-repair round 25: coverage and startup-double repair
+
+Adds a `runs/test_wiring.py` regression that drives both outcomes of
+`wire_node_template_store`'s canonical-spine probe: a migrated caller-owned
+PostgreSQL pool selects `PgNodeTemplateStore`; without a durable spine it uses
+`InMemoryNodeTemplateStore`.
+
+Also updates the engine-startup atomicity test double to accept the
+`idempotency_store` keyword that `LocalTaskBackend` now passes to every
+`TaskQueue`. The test therefore again reaches the intended runner-startup
+failure and verifies recovery cadences are unwound, instead of failing at the
+mock constructor.

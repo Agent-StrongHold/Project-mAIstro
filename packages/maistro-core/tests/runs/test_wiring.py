@@ -15,7 +15,7 @@ import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.store import InMemoryRunStore
-from maistro.runs.wiring import wire_execution_spine
+from maistro.runs.wiring import wire_execution_spine, wire_node_template_store
 from maistro.tasks.models import TaskCreate
 from maistro.tasks.queue import TaskQueue
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
@@ -120,6 +120,25 @@ async def test_the_workspace_is_the_one_asked_for() -> None:
 
 
 # --- selecting the PostgreSQL spine (#132) ---------------------------------
+
+
+async def test_node_template_wiring_uses_postgres_only_with_a_durable_spine() -> None:
+    """The node-template registry follows the same durable-spine probe.
+
+    A caller-owned pool with no canonical tables must not make a durable-looking
+    side registry; a migrated pool selects the PostgreSQL registry instead.
+    """
+    from maistro.graph.pg_templates import PgNodeTemplateStore
+    from maistro.graph.templates import InMemoryNodeTemplateStore
+
+    class _MigratedPool:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return True
+
+    assert isinstance(
+        await wire_node_template_store(None, pg_pool=_MigratedPool()), PgNodeTemplateStore
+    )
+    assert isinstance(await wire_node_template_store(None), InMemoryNodeTemplateStore)
 
 
 async def test_a_pool_without_the_spine_tables_falls_back_and_says_so(caplog) -> None:
