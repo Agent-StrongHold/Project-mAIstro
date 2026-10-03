@@ -416,12 +416,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # here made the first-run daily account's workspace UI unusable.
         if request.method == "POST" and path.rstrip("/") == "/v1/workspaces":
             return None
-        # Agent invoke (POST /v1/agents/{id}/invoke) is autonomous read — don't
-        # gate behind elevation. Match the trailing segment, not a bare
-        # substring: "in path" would also exempt any future route that merely
-        # contains "/invoke" elsewhere (e.g. "/v1/agents/invoke-history").
-        if path.endswith("/invoke"):
-            return None
+        # No URL-suffix carve-outs (#403): the former endswith("/invoke")
+        # exemption — written for POST /v1/agents/{id}/invoke, a route that
+        # no longer exists — would have granted any future route with that
+        # suffix a silent elevation bypass decided purely by URL naming.
+        # Elevation binds only to the capability identifiers registered in
+        # _PROTECTED_OPS (prefix -> permission) plus the named, reviewed
+        # exceptions in this method; a path's spelling grants no authority.
+        # A new mutating route that needs no elevation is a conscious,
+        # documented decision in ROUTE_EXEMPT — scripts/check_enumerations.py
+        # fails the build until it is classified (#403).
         # Thumbs +/- feedback (POST /v1/dag-runs/{id}/feedback,
         # POST /v1/workspaces/{id}/feedback) is a low-stakes reaction, not a
         # mutating operation on the thing itself — any authenticated member

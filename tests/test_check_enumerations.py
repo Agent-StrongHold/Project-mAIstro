@@ -98,3 +98,31 @@ def test_committed_baseline_is_well_formed(module):
     for key in tolerated:
         check = key.split("::", 1)[0]
         assert check in known, f"baseline entry {key!r} names unknown check {check!r}"
+
+
+class TestInvokeSuffixCarveOutRemoved:
+    """#403: ``_route_is_scoped`` no longer blesses a path for ending in
+    "/invoke". The old shortcut mirrored the middleware carve-out it modeled
+    and inherited its flaw: any future route choosing the suffix skipped
+    classification — an unclassified mutation waved through by URL naming.
+    A route is now scoped only through a registered capability prefix or an
+    explicit ROUTE_EXEMPT entry with a named reason."""
+
+    def test_unclassified_future_invoke_route_is_a_gap(self, module):
+        """An .../invoke route with no policy resolution is NOT scoped —
+        check A reports it and the build fails."""
+        protected = {"POST": {"/v1/agents": "agents.write"}}
+        assert not module._route_is_scoped("/v1/future-thing/invoke", "POST", protected)
+
+    def test_invoke_route_scopes_only_through_registered_capability(self, module):
+        """The same route IS scoped when its prefix carries a registered
+        capability — the identifier binds, the suffix is irrelevant."""
+        protected = {"POST": {"/v1/agents": "agents.write"}}
+        assert module._route_is_scoped("/v1/agents/x/invoke", "POST", protected)
+
+    def test_invoke_route_unscoped_only_via_explicit_reviewed_exemption(self, module):
+        """The one legitimate way a future .../invoke route skips a scope
+        entry is a documented ROUTE_EXEMPT decision, same as any other
+        route — /v1/chat is exempt-by-declaration, /v1/containers is not."""
+        assert module._route_is_scoped("/v1/chat/foo/invoke", "POST", {})
+        assert not module._route_is_scoped("/v1/containers/x/invoke", "POST", {})

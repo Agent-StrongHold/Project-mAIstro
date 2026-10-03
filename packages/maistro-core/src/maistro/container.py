@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -24,13 +24,16 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
+from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     binding_scope_policy,
-    new_effect_context,
+    new_in_memory_effect_context,
+    new_postgres_effect_context,
+    new_sqlite_effect_context,
 )
-from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
+from maistro.credentials.router import CredentialRouter
 from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
@@ -45,6 +48,7 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -1804,6 +1808,62 @@ def _wire_schedule_admission(
     return ScheduleRunAdmitter(run_store, template_store, schedule_store)
 
 
+# Retained from develop: `_wire_capability_effects` below selects the whole
+# effect context per backend and is what composition calls, but this selector
+# is the invocation-store half on its own and has its own conformance test
+# (tests/capabilities/test_pg_invocation_store.py). Collapsing the two is a
+# follow-up, not a merge decision.
+async def _wire_capability_effects(
+    *,
+    effect_context: CapabilityEffectContext | None,
+    db_pool: Any,
+    pg_pool: Any,
+    capability_bindings: Iterable[Binding],
+    capability_credentials: CredentialRouter | None,
+    usage_log: Any = None,
+    quota_tracker: Any = None,
+) -> CapabilityEffectContext:
+    """Select the durable canonical effect stores for this container.
+
+    The usage ledger and quota tracker (#718) are passed into whichever
+    backend is selected rather than attached to a second context built beside
+    this one: two contexts would mean two Invocation authorities, and the one
+    the container handed out would be the one recording nothing.
+    """
+    if effect_context is not None:
+        return effect_context
+    # The Container is an explicit composition root, so it names its policy on
+    # every branch. `new_effect_context` now defaults to a DENY evaluator --
+    # an omitted policy is an unavailable dependency, not an authorization --
+    # and the in-memory builder is an alias for it.
+    if db_pool is not None:
+        context = await new_sqlite_effect_context(
+            db_pool,
+            credentials=capability_credentials,
+            policy_evaluator=binding_scope_policy,
+            usage_log=usage_log,
+            quota_tracker=quota_tracker,
+        )
+    elif pg_pool is not None:
+        context = await new_postgres_effect_context(
+            pg_pool,
+            credentials=capability_credentials,
+            policy_evaluator=binding_scope_policy,
+            usage_log=usage_log,
+            quota_tracker=quota_tracker,
+        )
+    else:
+        context = new_in_memory_effect_context(
+            credentials=capability_credentials,
+            policy_evaluator=binding_scope_policy,
+            usage_log=usage_log,
+            quota_tracker=quota_tracker,
+        )
+    for binding in capability_bindings:
+        await context.bindings.put(binding)
+    return context
+
+
 def _identity_lifecycle_stores() -> tuple[
     IdentityStore | None, TokenStore | None, SecretStore | None
 ]:
@@ -1842,6 +1902,9 @@ async def create_container(
     harness_adapters: dict[str, HarnessAdapter] | None = None,
     embeddings: EmbeddingClient | None = None,
     pg_pool: Any = None,
+    effect_context: CapabilityEffectContext | None = None,
+    capability_bindings: Iterable[Binding] = (),
+    capability_credentials: CredentialRouter | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -1878,6 +1941,11 @@ async def create_container(
     more specific than a string saying which server to reach, and silently
     opening a second pool while the given one sat unused is the shape of bug
     that reads as "PostgreSQL is configured and nothing is durable".
+
+    `capability_bindings` and `capability_credentials` are the explicit
+    Workspace provisioning seam for retained external-effect nodes. They never
+    accept secret values in Graph input; omitted provisioning leaves the
+    canonical Binding authority empty and therefore fails closed.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -1956,6 +2024,16 @@ async def create_container(
         outcome_store = InMemoryOutcomeStore()
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
+
+    # The Container is the process's one composition root, so its ledger is
+    # the process default (#718): the conductor's raw-gateway fallback — the
+    # single call class that crosses no canonical Invocation authority —
+    # marks its ungoverned evidence there instead of leaving a
+    # ledger-carrying process presenting complete quota percentages while
+    # omitting that call. Authoritative recording stays on the canonical
+    # effect path above; this default only receives the fallback's
+    # non-Invocation evidence.
+    set_default_quota_tracker(quota_tracker)
 
     usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
 
@@ -2123,17 +2201,6 @@ async def create_container(
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
         consumer_cursor_store = InMemoryConsumerCursorStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -2180,17 +2247,25 @@ async def create_container(
     # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
 
+    # --- Canonical capability effects (#55/#1133) --------------------------
+    # Use the same database authority as the Container so a recovered Attempt
+    # cannot repeat an effect merely because this process restarted. A caller
+    # may inject a fully composed context when its deployment owns the stores.
+    capability_effects = await _wire_capability_effects(
+        effect_context=effect_context,
+        db_pool=db_pool,
+        pg_pool=pg_pool,
+        capability_bindings=capability_bindings,
+        capability_credentials=capability_credentials,
+        usage_log=get_default_usage_log(),
+        quota_tracker=quota_tracker,
+    )
+
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_invocation_store = await _wire_capability_invocations(
-        pg_pool=pg_pool, db_pool=db_pool
-    )
-    capability_effects = new_effect_context(
-        invocation_store=capability_invocation_store,
-        # The container is an explicit composition root. Bare contexts remain
-        # read-only until an application supplies policy authority.
-        policy_evaluator=binding_scope_policy,
-    )
+    # Operator-declared model.chat Bindings (#1079/#1522) load into the same
+    # canonical Binding authority the provisioning seam above built, so model
+    # egress and PM polling egress share one fail-closed door.
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
@@ -2508,6 +2583,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_invocation_evidence",
     "quota_usage_events",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
@@ -2865,33 +2941,6 @@ async def _wire_sqlite_backend(
         outcome_store,
         session_store,
     )
-
-
-async def _wire_capability_invocations(
-    *,
-    pg_pool: Any,
-    db_pool: Any,
-) -> CapabilityInvocationStore:
-    """Select the canonical effect ledger from the container's durable backend."""
-    # Each branch binds its concrete store first: ``ensure_schema`` is a
-    # wiring concern the ``InvocationStore`` protocol deliberately does not
-    # carry, so it must be called on the concrete class before returning the
-    # store as the protocol type.
-    if pg_pool is not None:
-        from maistro.capabilities.pg_invocation_store import PgInvocationStore
-
-        pg_store = PgInvocationStore(pg_pool)
-        await pg_store.ensure_schema()
-        return pg_store
-    if db_pool is not None:
-        from maistro.capabilities.invocation_store import SqliteInvocationStore
-
-        sqlite_store = SqliteInvocationStore(db_pool)
-        await sqlite_store.ensure_schema()
-        return sqlite_store
-    from maistro.capabilities.invocation import InMemoryInvocationStore
-
-    return InMemoryInvocationStore()
 
 
 async def _wire_sqlite_durable_events(
