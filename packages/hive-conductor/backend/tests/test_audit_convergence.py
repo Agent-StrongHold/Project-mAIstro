@@ -273,6 +273,42 @@ async def test_audit_route_reads_the_core_audit_log(
     assert len(response.json()["entries"]) <= 50
 
 
+async def test_settings_projection_uses_bounded_core_pages(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The develop projection must not reintroduce a full-corpus audit read."""
+    await _login(client, _ADMIN[1], _ADMIN[2])
+    audit_log = booted.audit_log
+    assert audit_log is not None
+    for index in range(75):
+        await audit_log.log(
+            AuditEntry(boundary="settings_patch", user_id="system", detail=str(index))
+        )
+    await audit_log.log(AuditEntry(boundary="unrelated", user_id="system"))
+    original_page = audit_log.get_page
+    calls = []
+
+    async def bounded_page(**kwargs):
+        assert kwargs["limit"] == 50
+        assert kwargs["boundary"] in {"settings_patch", "settings_reload", "settings_update"}
+        calls.append(kwargs)
+        return await original_page(**kwargs)
+
+    async def forbidden_list(**kwargs):
+        pytest.fail("projection must not materialize the corpus")
+
+    monkeypatch.setattr(audit_log, "get_page", bounded_page)
+    monkeypatch.setattr(audit_log, "get_entries", forbidden_list)
+    response = await client.get("/v1/settings/audit", params={"limit": 60})
+    assert response.status_code == 200, response.text
+    assert len(response.json()) == 60
+    assert [e["detail"]["message"] for e in response.json()] == [str(i) for i in range(74, 14, -1)]
+    assert len(calls) == 4  # two matching pages, one empty page per other action
+    assert sum(call["cursor"] is not None for call in calls) == 1
+
+
 async def test_core_cursor_route_filters_before_page_and_streams_same_corpus(
     client: httpx.AsyncClient,
     booted: Container,
@@ -340,7 +376,9 @@ async def test_core_cursor_route_filters_before_page_and_streams_same_corpus(
     assert (await client.get("/v1/audit", params={"cursor": "invalid"})).status_code == 400
 
 
-@pytest.mark.parametrize("path", ["/v1/audit", "/v1/audit/export"])
+@pytest.mark.parametrize(
+    "path", ["/v1/audit", "/v1/audit/export", "/v1/settings/audit", "/v1/schedules/history"]
+)
 async def test_core_authorization_precedes_any_query(
     client: httpx.AsyncClient,
     booted: Container,

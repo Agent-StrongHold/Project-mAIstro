@@ -24,6 +24,11 @@ prose rather than numeric `inventory-delta` entries.
 
 ## What changed
 
+No collected test count moved: this wave migrated production modules and
+reduced the principal-identity tolerance ledger (32 → 4); the per-suite test
+counts are unchanged, so no `inventory-delta:` block is recorded (the file
+paths below are the migration surface, not suite deltas).
+
 - Extended `maistro.identity.Principal` with `username`, `permissions`,
   `elevated_permissions`, and helpers (`actor_id`, `audit_label`,
   `has_permission`, `is_admin`).

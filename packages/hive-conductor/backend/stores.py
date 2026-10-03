@@ -30,7 +30,6 @@ from models.schemas import (
     MCPServer,
     MCPTool,
     MemoryEntry,
-    MemoryNamespace,
     Mission,
     MissionStep,
     Schedule,
@@ -84,9 +83,6 @@ mcp_servers: ModelStore = ModelStore("mcp_servers", MCPServer)
 mcp_tools: ModelStore = ModelStore("mcp_tools", MCPTool)
 containers: ModelStore = ModelStore("containers", Container)
 memory_entries: ModelStore = ModelStore("memory_entries", MemoryEntry)
-memory_namespaces: dict[str, MemoryNamespace] = {
-    "default": MemoryNamespace(name="default", entry_count=1, size_bytes=1024)
-}
 # Persona/Workspace system — a user's live instantiations of adopted personas.
 workspaces: ModelStore = ModelStore("workspaces", Workspace)
 # Phase I: thumbs +/- + comment feedback, persisted per-persona (see

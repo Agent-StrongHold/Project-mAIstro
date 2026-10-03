@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -146,6 +147,38 @@ def _authorized_core_audit(scope: frozenset[str] | None) -> Any | None:
     if audit_log is not None and scope is not None:
         raise HTTPException(status_code=403, detail="Audit administrator required")
     return audit_log
+
+
+async def audit_entries_view(request: Request, *, action: str) -> AsyncIterator[dict[str, Any]]:
+    """Stream a projection's action from the same authority, one bounded page at a time.
+
+    Settings and schedule-history callers enforce their existing settings/workspace
+    permissions on legacy records. These are not personal actor-scoped views:
+    scheduler receipts name the system actor. A bound Sentinel authority still
+    requires admin (ADR-073), before any query, even on these secondary surfaces.
+    Callers cap their output and never accumulate the whole stream.
+    """
+    audit_log = _authorized_core_audit(_actor_scope(request))
+    backend = stores.persistence_backend()
+    cursor = None
+    while True:
+        if audit_log is not None:
+            page = await page_core_audit_entries(
+                audit_log, action=action, limit=DEFAULT_AUDIT_PAGE_SIZE, cursor=cursor
+            )
+        else:
+            page = page_entries(
+                stores.audit_log,
+                action=action,
+                limit=DEFAULT_AUDIT_PAGE_SIZE,
+                cursor=cursor,
+                backend=backend,
+            )
+        for entry in page.entries:
+            yield entry
+        if not page.entries or page.next_cursor is None:
+            return
+        cursor = page.next_cursor
 
 
 @router.get("/export")
