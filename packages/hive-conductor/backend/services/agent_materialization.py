@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -49,7 +49,7 @@ from models.schemas import Agent
 
 from maistro.personas.expander import expand_persona
 from maistro.personas.schema import PersonaTemplate
-from maistro.security.warden.detector import Warden
+from maistro.security.warden.detector import Warden, message_to_scan_text, prior_message_context
 
 from .model_store import register_pop_hook
 
@@ -126,13 +126,57 @@ def _warden() -> Warden:
 _warden_instance: Warden | None = None
 
 
+def _looks_like_chat_messages(payload: object) -> bool:
+    if not isinstance(payload, list) or not payload:
+        return False
+    return all(isinstance(item, Mapping) and "role" in item for item in payload)
+
+
+async def scan_messages(
+    messages: Sequence[Mapping[str, object]],
+    *,
+    boundary: str = "user_input",
+) -> dict:
+    """Scan the latest user turn with the conversation context the model receives."""
+    warden = _warden()
+    findings: list[str] = []
+    latest_user = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if messages[index].get("role") == "user"
+        ),
+        None,
+    )
+    if latest_user is None:
+        return {"findings": findings, "status": "clean"}
+    message = messages[latest_user]
+    content = message_to_scan_text(message)
+    if len(content) > MAX_SCAN_TEXT:
+        raise ScanBudgetExceeded(
+            f"messages[{latest_user}] is longer than {MAX_SCAN_TEXT} characters"
+        )
+    context = prior_message_context(messages[: latest_user + 1])
+    if len(context) > MAX_SCAN_NODES:
+        raise ScanBudgetExceeded(f"conversation holds more than {MAX_SCAN_NODES} context items")
+    verdict = await warden.scan(content, boundary, context=context)
+    if not verdict.clean:
+        findings.extend(f"messages[{latest_user}]: {flag}" for flag in verdict.flags)
+    return {"findings": findings, "status": "clean" if not findings else "flagged"}
+
+
 async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
     """Scan every string in a configuration at a Warden boundary.
 
     The default boundary is the one inbound configurations cross; `tool_result`
     selects the detector's second boundary (#315) so tool outputs that will be
     re-fed to a model are judged by the same detector, not a second check.
+
+    OpenAI-shaped chat message lists scan the latest user turn with prior
+    conversation context instead of walking structural fields such as ``role``.
     """
+    if _looks_like_chat_messages(config):
+        return await scan_messages(config, boundary=boundary)
     warden = _warden()
     findings: list[str] = []
     for scanned, (path, text) in enumerate(_text_leaves(config), start=1):
