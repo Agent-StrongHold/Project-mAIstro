@@ -52,6 +52,11 @@ from maistro.memory.working.wiring import (
     wire_in_memory_working_memory,
     wire_working_memory,
 )
+from maistro.memory.working_graph.manager import WorkspaceWorkingMemoryManager
+from maistro.memory.working_graph.wiring import (
+    build_workspace_working_memory,
+    working_memory_context_message,
+)
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -245,7 +250,10 @@ class Container:
     #: graphs projected over it (ADR-082226-5104 §5-6). Rides the SQLite pool
     #: like campaigns; in-memory with a loud warning otherwise, because a log
     #: that dies with the process is not the durable context the epic asks for.
-    working_memory: WorkingMemoryManager | None = None
+    #: Distinct from `working_memory` below (#776): that seam projects chat
+    #: context from the episodic/Run stores; this one owns the durable
+    #: observation log itself. Same ADR, not the same substrate.
+    working_log: WorkingMemoryManager | None = None
     run_store: RunStore = None  # type: ignore[assignment]
     #: The product read seam over `run_store` (#1152): Workspace membership
     #: decides who may read a Run tree, and foreign ids answer like missing ones.
@@ -302,6 +310,15 @@ class Container:
     a2a_delegator: Any = None
     guest_peers: Any = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
+    #: Per-Workspace working-memory projection (#776, ADR-082226-5104): the
+    #: disposable graph the persistent Workspace Agent's chat turns read
+    #: graph-backed context from. Never authoritative and never an
+    #: authorization path — the block a turn receives is projected from the
+    #: turn's Run's own Workspace and carries canonical durable references;
+    #: degradation arrives as an explicit health state, not silence.
+    #: ``None`` for a Container built by hand: those dispatch exactly as
+    #: before, the seam adds context, it never gates a turn.
+    working_memory: WorkspaceWorkingMemoryManager | None = None
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
     conduit: Any = None
@@ -513,13 +530,13 @@ class Container:
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
-        if self.working_memory is not None:
+        if self.working_log is not None:
             # Release the working-memory graphs the container took (#301):
             # they are process-local caches over the durable observation log,
             # so shutdown drops the graphs and never the log they were
             # hydrated from — the same lossless-by-construction rule eviction
             # follows.
-            self.working_memory.release_projections()
+            self.working_log.release_projections()
         await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool
@@ -627,12 +644,29 @@ class Container:
                 dispatch_pending=True,
             )
 
+        # Working memory (#776): the turn's Run names its Workspace, so the
+        # graph-backed context block is projected from that Workspace's own
+        # projection and from nowhere else. It rides in as a system message
+        # ahead of the turn — never a user turn, so it is not Warden-scanned
+        # as input, not session-transcribed, and never replaces the client's
+        # message shape. It is context for the answering agent only: the
+        # Conduit passes it around the gate scan and the classifier, so
+        # projected memory neither becomes scanned input nor reclassifies the
+        # turn (#142). Degradation is rendered into the block, so the agent
+        # sees the state of its working memory instead of a confident blank;
+        # durable truth is untouched either way.
+        working_block = await working_memory_context_message(
+            self.working_memory, run.workspace_id, messages
+        )
+        context_messages = (working_block,) if working_block is not None else ()
+
         async def _dispatch() -> dict[str, Any]:
             dispatched: dict[str, Any] = await self.conduit.route_request(
                 messages,
                 auth=auth,
                 session_id=session_id,
                 intent_hint=intent_hint,
+                context_messages=context_messages,
                 # The Run names this turn for the session store, so a second
                 # Attempt under the same Run appends nothing rather than
                 # writing the user's message again (#327, ADR-083026-5fab).
@@ -2283,7 +2317,7 @@ async def create_container(
     # deployment gets the in-memory fallback plus a startup warning naming
     # the cost, rather than a silent durability lie (#103, AC-5).
     campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
-    working_memory = await _wire_working_memory_backend(db_pool)
+    working_log = await _wire_working_memory_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
     # reconcile, or the tiers cannot answer a restart the same way.
@@ -2302,6 +2336,16 @@ async def create_container(
         # The same client #188 wires for durable memory similarity. Absent, the
         # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
+    )
+    # The per-Workspace working-memory projection (#776), over the same
+    # durable stores everything else in this container reads: episodic memory
+    # through each Workspace's own Project tree, Run provenance through the
+    # Run store's workspace axis. The projection is disposable process-local
+    # state and holds no durable truth, so it needs no shutdown write.
+    working_memory = build_workspace_working_memory(
+        episodic=episodic_store,
+        projects=project_scope_store,
+        runs=run_store,
     )
 
     router = RouterEngine()
@@ -2516,7 +2560,7 @@ async def create_container(
         workspace_store=workspace_store,
         backlog_history_store=backlog_history_store,
         campaign_store=campaign_store,
-        working_memory=working_memory,
+        working_log=working_log,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
         task_admitter=task_admitter,
@@ -2528,6 +2572,7 @@ async def create_container(
         schedule_admitter=schedule_admitter,
         task_idempotency=task_idempotency,
         context_assembly_policy=context_assembly_policy,
+        working_memory=working_memory,
         agents=agents,
         audit_log=audit_log,
         db_pool=db_pool,

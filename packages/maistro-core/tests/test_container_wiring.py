@@ -107,7 +107,7 @@ async def test_aclose_releases_working_memory_projections_but_never_the_log() ->
     the observation log they were hydrated from stays exactly where it is.
     """
     container = await _container(database_url="sqlite://")
-    manager = container.working_memory
+    manager = container.working_log
     assert manager is not None
     await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
     await manager.projection("ws-shutdown")
