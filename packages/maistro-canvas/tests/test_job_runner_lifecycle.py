@@ -678,24 +678,29 @@ class _AuthFailureExecutor:
     """Fails every call with a provider authentication fault — the one
     failure class retrying can never turn into a success."""
 
-    def __init__(self) -> None:
+    def __init__(self, message: str = "provider 401 unauthorized: bad credentials") -> None:
         self.reconciled: list[str] = []
+        self.message = message
 
     async def _execute_claimed(self, job: GenerationJobRecord) -> None:
-        raise RuntimeError("provider 401 unauthorized: bad credentials")
+        raise RuntimeError(self.message)
 
     async def fail_job_execution(self, job: GenerationJobRecord, exc: Exception) -> str:
         self.reconciled.append(job.id)
         return f"Generation failed: {exc}"
 
 
-async def test_poison_failure_terminalizes_without_spending_the_budget() -> None:
+@pytest.mark.parametrize(
+    "message",
+    ["provider 401 unauthorized: bad credentials", "provider 403 unauthorized after timeout"],
+)
+async def test_poison_failure_terminalizes_without_spending_the_budget(message: str) -> None:
     """An authentication fault is permanent: the receipt terminalizes on the
     first failure instead of burning the remaining attempts on retries that
     cannot succeed. Terminal exhaustion and poison handling share one
     canonical reconciliation path (``fail_job_execution``)."""
     store = InMemoryJobStore(retry_backoff=ZERO_BACKOFF)
-    executor = _AuthFailureExecutor()
+    executor = _AuthFailureExecutor(message)
     await _seed_pending_job(store, job_id="job1", max_attempts=3)
 
     runner = _runner(store, executor)

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-frontend-typed-client.py"
@@ -60,3 +61,27 @@ def test_fixed_debt_must_leave_the_candidate_ledger(gate) -> None:
     assert gate.compare(set(), {key}, {key}, set()) == [
         f"{key}: fixed -- delete it from the candidate ledger"
     ]
+
+
+def test_ci_typed_client_ratchet_has_full_candidate_history() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["lint-and-type-check"]["steps"]
+    ratchets = [
+        index
+        for index, step in enumerate(steps)
+        if "scripts/check-frontend-typed-client.py" in step.get("run", "")
+    ]
+    assert len(ratchets) == 1, "the lint job must run the typed-client ratchet"
+    checkouts = [
+        step
+        for step in steps[: ratchets[0]]
+        if step.get("uses", "").startswith("actions/checkout@")
+    ]
+    assert len(checkouts) == 1, "the ratchet needs one candidate checkout before it runs"
+    checkout = checkouts[0]
+    assert "if" not in checkout, "the trusted history must be available on every event"
+    options = checkout.get("with", {})
+    assert options.get("fetch-depth") == 0, "the ratchet needs its trusted base and ancestry"
+    assert not {"ref", "path", "filter", "sparse-checkout"} & options.keys(), (
+        "check the complete event candidate in the workspace, with its history"
+    )
