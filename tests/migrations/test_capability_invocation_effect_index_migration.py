@@ -60,15 +60,25 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # logical-effect admission revision that continues 043's chain — with the
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) now continues the chain after this
+    # `046_durable_elevation_grants` (#72) now continues the chain after this
     # branch's `045`, `047_capability_binding_revocations` (#1133) after that,
-    # and `048_learning_applicability_epistemics` (M4-B3, #119) after that, so
-    # the single linear head is `048`.
-    walked = {item.revision for item in directory.walk_revisions("base", "048")}
+    # #398's `048_canvas_job_retry_backoff` after that, #792's
+    # `049_canonical_run_eval_scores` after that, #774's
+    # `050_design_creative_briefs` after that, and this branch's
+    # `051_learning_applicability_epistemics` (M4-B3, #119) — renumbered from
+    # "048" onto develop's chain tip after develop claimed the same id on the
+    # same parent — after that, so the single linear head is `051`.
+    walked = {item.revision for item in directory.walk_revisions("base", "051")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
     assert "045" in walked
-    assert directory.get_heads() == ["048"]
+    assert "046" in walked
+    assert "047" in walked
+    assert "048" in walked
+    assert "049" in walked
+    assert "050" in walked
+    assert directory.get_heads() == ["051"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

@@ -1,0 +1,113 @@
+{
+  "$comment": [
+    "Authenticated /v1/{segment} prefixes for hive-conductor (#53 AC-P2).",
+    "scripts/check-route-permissions.py requires every mounted prefix to appear",
+    "here with either permission (scope.verb) or exempt_reason + owner.",
+    "Undeclared prefixes are tolerated only while listed in",
+    "quality/route-permissions-baseline.json; ratchet that file to zero."
+  ],
+  "prefixes": {
+    "/v1/agents": {
+      "permission": "agents.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "POST/PUT/DELETE and forge/scan mutations gate on agents.write or agents.delete in middleware/auth.py _PROTECTED_OPS; GET listing is authenticated-only."
+    },
+    "/v1/audit": {
+      "permission": "audit.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "POST appends audit rows with an arbitrary actor field; middleware requires audit.write so unscoped callers cannot forge the log."
+    },
+    "/v1/capabilities": {
+      "permission": "config.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Capability discovery and provider configuration POST/PATCH gate on config.write; POST /approvals/* additionally requires approvals.resolve in _PROTECTED_OPS."
+    },
+    "/v1/containers": {
+      "permission": "containers.control",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Talks to the Docker socket; POST and DELETE require containers.control in _PROTECTED_OPS."
+    },
+    "/v1/credentials": {
+      "permission": "credentials.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "PUT and DELETE mutate stored integration secrets; middleware gates those methods on credentials.write."
+    },
+    "/v1/dags": {
+      "permission": "dags.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Creating, editing, and running DAGs executes graph nodes including harness kinds; POST/PUT/DELETE gate on dags.write."
+    },
+    "/v1/evolution": {
+      "permission": "rsi.execute",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "The evolution tournament is the self-improvement loop's other door; GET and POST require rsi.execute."
+    },
+    "/v1/harness": {
+      "permission": "harness.execute",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Starts and steers a coding agent against an operator workdir; GET stream, POST, and DELETE require harness.execute."
+    },
+    "/v1/hitl": {
+      "permission": "dags.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "The pending-work queue and answer route resume graph execution; GET and POST require dags.write (#244)."
+    },
+    "/v1/mcp": {
+      "permission": "mcp.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Discover, test, register and mutate MCP servers; POST/PUT/PATCH gate on mcp.write and DELETE on mcp.delete."
+    },
+    "/v1/optimizer": {
+      "permission": "dags.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Accepting an optimizer proposal rewrites a DAG; POST requires dags.write."
+    },
+    "/v1/providers": {
+      "permission": "config.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Provider activation stores deployment-wide LLM keys and mutates the global model registry; POST and PUT require config.write."
+    },
+    "/v1/rsi": {
+      "permission": "rsi.execute",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "RSI runs push branches and can open PRs; GET and POST require rsi.execute."
+    },
+    "/v1/schedules": {
+      "permission": "schedules.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "A schedule is recurring autonomous execution; POST/PUT/DELETE require schedules.write."
+    },
+    "/v1/settings": {
+      "permission": "config.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Deployment configuration POST/PUT/PATCH gate on config.write and DELETE on config.delete; GET reads are authenticated-only."
+    },
+    "/v1/skills": {
+      "permission": "skills.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Skill registration and PATCH toggles change what future agent runs may do; POST/PATCH gate on skills.write and DELETE on skills.delete."
+    },
+    "/v1/workspaces": {
+      "permission": "workspaces.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Membership, persona authoring, tool bindings and archive/delete gate on workspaces.write; POST /v1/workspaces tab creation is explicitly exempt in middleware."
+    }
+  }
+}

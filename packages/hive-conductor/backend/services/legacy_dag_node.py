@@ -24,6 +24,7 @@ from maistro.capabilities.effect_context import (
     default_effect_context,
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext
+from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,9 @@ model = os.environ.get("DAG_NODE_MODEL", "gemini-3.5-flash")
 system = os.environ.get("DAG_NODE_SYSTEM", "")
 task = os.environ.get("DAG_NODE_TASK", "")
 context = os.environ.get("DAG_NODE_CONTEXT", "")
+# Fallback mirrors the policy default for a bare sandbox run; canonical
+# execution always passes DAG_NODE_TIMEOUT_S (resolved by maistro.graph.policies).
+timeout = float(os.environ.get("DAG_NODE_TIMEOUT_S", "120"))
 user = "Task: " + task + "\\n\\nContext:\\n" + context
 r = httpx.post(
     base + "/chat/completions",
@@ -94,12 +98,29 @@ r = httpx.post(
         ],
         "response_format": {"type": "json_object"},
     },
-    timeout=120,
+    timeout=timeout,
 )
 r.raise_for_status()
 data = r.json()
 print(json.dumps({"content": data["choices"][0]["message"]["content"], "usage": data.get("usage")}))
 """
+
+
+def declared_raw_node_timeout_s(node: Mapping[str, Any]) -> float:
+    """The effective per-node timeout for one legacy raw node.
+
+    ``config.timeout_s`` resolves through the canonical bounded policy
+    (``maistro.graph.policies``); a node that declares nothing keeps the
+    incumbent default. This replaces the hard-coded 120-second constants this
+    module used to carry: the policy module is the only place the default
+    lives, so a declared value reaches the sandbox script, the isolation
+    executor, and the HTTP client as one number, and none of them can extend
+    work past the canonical Attempt deadline the durable walker enforces from
+    the same declaration (#1184).
+    """
+    config = node.get("config")
+    declared = config.get("timeout_s") if isinstance(config, Mapping) else None
+    return resolve_node_timeout_s(declared)
 
 
 def _parse_node_script_output(raw_output: str) -> tuple[str, dict[str, Any] | None]:
@@ -123,12 +144,17 @@ def _run_node_subprocess(
     from services.hyperlight_executor import get_executor
 
     model = node.get("model", "gemini-3.5-flash")
+    timeout_s = declared_raw_node_timeout_s(node)
     node_env = {
         **base_env,
         "DAG_NODE_MODEL": model,
         "DAG_NODE_SYSTEM": node.get("prompt", "") or "",
         "DAG_NODE_TASK": task_desc,
         "DAG_NODE_CONTEXT": context[:2000],
+        # Same resolved policy value the walker enforces at the Attempt
+        # boundary; the in-sandbox HTTP read cannot outwait the canonical
+        # deadline that is actually in charge (#1184).
+        "DAG_NODE_TIMEOUT_S": str(timeout_s),
     }
     try:
         executor = get_executor()
@@ -136,7 +162,7 @@ def _run_node_subprocess(
             executor.execute_node(
                 _NODE_SCRIPT,
                 env=node_env,
-                timeout_s=120,
+                timeout_s=int(timeout_s),
                 allow_network=True,
                 mode=execution_mode,
             )
@@ -414,6 +440,7 @@ async def _run_llm_node(
     *,
     effect_context: CapabilityEffectContext | None = None,
     ctx: NodeContext | None = None,
+    governed_runtime: Any | None = None,
 ) -> None:
     role = node.get("role", "worker")
     if node.get("tool"):
@@ -438,14 +465,41 @@ async def _run_llm_node(
     if parent_outputs:
         user_content += "\n\nContext from previous steps:\n" + "\n---\n".join(parent_outputs[-3:])
     try:
-        builder = llm_builder or _build_llm_call
-        response = await builder(on_response)(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
-            model=model,
-        )
+        if governed_runtime is not None and ctx is not None and ctx.attempt_id:
+            # Canonical cutover (#718): the physical model call crosses the
+            # governed Binding -> Invocation egress, so its usage evidence is
+            # recorded once by the Invocation authority's terminalization
+            # recorder. This node supplies no callback of its own; the raw
+            # builder below is the compatibility fallback for callers with no
+            # canonical effect authority (standalone tests, direct calls).
+            from services.governed_model import dag_node_completion
+
+            response = await dag_node_completion(
+                governed_runtime,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                node_id=nid,
+                workspace_id=ctx.workspace_id or "default",
+                project_id=ctx.project_id or "agent-runtime",
+                system=system,
+                user=user_content,
+                model=model,
+            )
+        else:
+            builder = llm_builder or _build_llm_call
+            response = await builder(on_response)(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ],
+                model=model,
+                # The node's declared (resolved) timeout reaches the transport
+                # as data. The durable walker enforces the same resolved value
+                # as the Attempt's canonical deadline; a node-level transport
+                # timeout can only agree with it or lose the race (#1184).
+                timeout=declared_raw_node_timeout_s(node),
+            )
         results[nid] = {"role": role, "response": response, "success": True, "model": model}
     except Exception as exc:
         results[nid] = {"role": role, "response": str(exc), "success": False, "model": model}
@@ -529,7 +583,12 @@ def _build_llm_call(on_response: OnResponseHook | None = None):
             else {"type": "json_object"}
         )
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {raw_key}"}
-        async with shared_client(timeout=120.0) as client:
+        # The declared per-node timeout when the caller resolved one; the
+        # incumbent default otherwise. Never a local constant: the value comes
+        # from the shared budget policy so the transport cannot disagree with
+        # the canonical Attempt deadline (#1184).
+        timeout_s = float(kwargs.get("timeout") or DEFAULT_NODE_TIMEOUT_S)
+        async with shared_client(timeout=timeout_s) as client:
             response = await client.post(f"{base}/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -601,6 +660,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         on_response: OnResponseHook | None,
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
         effect_context: CapabilityEffectContext | None = None,
+        governed_runtime: Any | None = None,
         progress: RunProgressHook | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
@@ -610,6 +670,10 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._on_response = on_response
         self._llm_builder = llm_builder
         self._effect_context = effect_context
+        # GovernedModelRuntime composed from the live Container; when present
+        # the node's model call crosses the canonical Invocation egress (#718)
+        # and ``_llm_builder``/``_on_response`` stay compatibility fallbacks.
+        self._governed_runtime = governed_runtime
         self._progress = progress
 
     async def _emit_progress(self, event: dict[str, Any]) -> None:
@@ -719,6 +783,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 llm_builder=self._llm_builder,
                 effect_context=self._effect_context,
                 ctx=ctx,
+                governed_runtime=self._governed_runtime,
             )
             result = scratch[node_id]
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from maistro.capabilities.binding_store import (
     RevocableBindingStore,
     SqliteBindingStore,
     _scope_checked,
+    register_boot_binding,
 )
 from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.governed_invocation import InvocationDenied
@@ -136,6 +138,106 @@ async def test_completed_effect_is_deduplicated_across_attempt_recovery() -> Non
     assert first.status is InvocationStatus.COMPLETED
     assert replay.invocation_id == first.invocation_id
     assert replay.attempt_id == "attempt-1"
+
+
+@pytest.mark.asyncio
+async def test_deduplicated_handout_repairs_quota_evidence_after_ledger_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#718 at-least-once evidence at the Invocation authority.
+
+    A transient quota-ledger failure must not fail a physical effect that
+    already completed (its outcome would be misreported and an attempt-level
+    retry could duplicate the provider call), and it must not permanently
+    omit the evidence either: the next deduplicated hand-out of the same
+    completed effect re-confirms recording, and the identity-keyed ledger
+    ends up charged exactly once.
+    """
+
+    class FlakyLedger:
+        def __init__(self) -> None:
+            from maistro.quota.tracker import InMemoryQuotaTracker
+
+            self.inner = InMemoryQuotaTracker()
+            self.calls = 0
+
+        async def record_invocation(
+            self,
+            invocation_id: str,
+            provider: str,
+            billing_cycle: str,
+            input_tokens: int,
+            output_tokens: int,
+            usage_reported: bool,
+        ) -> dict[str, object]:
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("ledger down")
+            return await self.inner.record_invocation(
+                invocation_id,
+                provider,
+                billing_cycle,
+                input_tokens,
+                output_tokens,
+                usage_reported,
+            )
+
+        async def get_all_usage(self) -> list[dict[str, object]]:
+            return await self.inner.get_all_usage()
+
+    from maistro.quota.recorder import CanonicalInvocationUsageRecorder
+    from maistro.quota.usage_log import InMemoryUsageLog
+
+    usage_log = InMemoryUsageLog()
+    ledger = FlakyLedger()
+    recorder = CanonicalInvocationUsageRecorder(usage_log, ledger)
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store, on_completed=recorder.record)
+    calls = 0
+
+    async def execute(_provider: _Provider, request: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"committed": request}
+
+    with caplog.at_level(logging.ERROR, logger="maistro.capabilities.invocation"):
+        first = await service.invoke(
+            binding=_binding(),
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            effect_key="ticket:create:789",
+            request={"title": "one"},
+            resolver=_resolver,
+            executor=execute,
+        )
+
+    # The physical effect completed and the caller saw success, not a crash.
+    assert first.status is InvocationStatus.COMPLETED
+    # The ledger failure was surfaced, not swallowed.
+    assert any("quota evidence recording failed" in r.getMessage() for r in caplog.records)
+    assert ledger.calls == 1  # failed once, recorded nothing
+
+    replay = await service.invoke(
+        binding=_binding(),
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-2",
+        effect_key="ticket:create:789",
+        request={"title": "one"},
+        resolver=_resolver,
+        executor=execute,
+    )
+
+    assert calls == 1  # no second provider call
+    assert replay.invocation_id == first.invocation_id
+    # The deduplicated hand-out repaired the evidence, charged exactly once.
+    assert ledger.calls == 2
+    rows = [r for r in await ledger.get_all_usage() if r["provider"] == "provider-a"]
+    assert rows and rows[0]["request_count"] == 1
+    events = usage_log.events_for("provider-a")
+    assert len(events) == 1
+    assert events[0].invocation_id == first.invocation_id
 
 
 @pytest.mark.asyncio
@@ -721,3 +823,70 @@ async def test_pg_revocation_forbids_the_identity_for_every_replica() -> None:
         )
     with pytest.raises(BindingNotFound, match="has been revoked"):
         await store.put(_binding())
+
+
+class TestBootRegistrationSurvivesRestart:
+    """`register_boot_binding` is what a composition root calls on every start.
+
+    The property that matters is that the second start behaves like the first.
+    """
+
+    @staticmethod
+    def _boot() -> Binding:
+        """A freshly constructed boot Binding, as a new process would build it."""
+
+        return Binding(
+            binding_id="builtin:self-repair:infra-action",
+            workspace_id="default",
+            project_id="default",
+            node_id="self-repair",
+            capability="infra_action",
+        )
+
+    async def test_a_second_boot_reuses_the_stored_record(self) -> None:
+        """Re-registering an identical definition is a no-op, not a conflict.
+
+        A durable store compares the whole Binding, and two processes build
+        theirs with different `created_at`. A plain `put` therefore succeeded
+        on the first boot and raised `ValueError` on every one after, which
+        disabled the capability exactly on deployments that persist anything.
+        """
+
+        async with aiosqlite.connect(":memory:") as conn:
+            store = SqliteBindingStore(conn)
+            await store.ensure_schema()
+
+            first = await register_boot_binding(store, self._boot())
+            second = await register_boot_binding(store, self._boot())
+
+            assert second == first
+            # The real first-registration time survives; it is not restamped.
+            assert second.created_at == first.created_at
+
+    async def test_a_redefined_boot_binding_is_still_refused(self) -> None:
+        """Only `created_at` is forgiven; a changed definition is a conflict.
+
+        Otherwise the reuse that fixes restarts would also silently accept an
+        identity whose capability or scope had been changed under it.
+        """
+
+        async with aiosqlite.connect(":memory:") as conn:
+            store = SqliteBindingStore(conn)
+            await store.ensure_schema()
+            await register_boot_binding(store, self._boot())
+
+            redefined = self._boot().model_copy(update={"capability": "model.chat"})
+            with pytest.raises(ValueError, match="different definition"):
+                await register_boot_binding(store, redefined)
+
+    async def test_a_revocation_still_refuses_the_identity_on_a_later_boot(self) -> None:
+        """Reuse must not become a way to re-grant what an operator withdrew."""
+
+        async with aiosqlite.connect(":memory:") as conn:
+            store = SqliteBindingStore(conn)
+            await store.ensure_schema()
+            await register_boot_binding(store, self._boot())
+            await store.revoke("builtin:self-repair:infra-action")
+
+            with pytest.raises(BindingNotFound):
+                await register_boot_binding(store, self._boot())

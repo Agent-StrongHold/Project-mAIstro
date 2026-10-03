@@ -38,9 +38,12 @@ def _reset_singleton():
     import services.engine as e
 
     prev = e._singleton
+    prev_failed = e._failed_startup
     e._singleton = None
+    e._failed_startup = None
     yield
     e._singleton = prev
+    e._failed_startup = prev_failed
 
 
 # --- TaskRecord properties ----------------------------------------------
@@ -271,6 +274,97 @@ async def test_start_in_demo_mode_uses_local_backend(
     svc = EngineService()
     await svc.start(_Settings())  # type: ignore[arg-type]
     assert type(svc._backend).__name__ == "LocalTaskBackend"
+
+
+async def test_demo_mode_task_backend_executes_through_the_governed_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Demo task execution crosses the bridge's canonical authority (#718).
+
+    A bare `run_task` executor left every demo task completion off the
+    Invocation/quota ledger while per-provider rows presented as complete.
+    The executor the backend installs must hand `run_task` the bridge's
+    governed egress and the deployment's Workspace, exactly as the
+    maistro-server `/tasks` worker does — the authority, not a per-caller
+    recording callback.
+    """
+    from services.engine import EngineService
+
+    class _Settings:
+        maistro_router_api_key = "router-key"
+        maistro_base_url = "http://localhost:8000"
+        hive_mode = "demo"
+        hive_default_workspace_id = "ws-hive"
+
+    sentinel_egress = object()
+
+    class _FakeBridge:
+        """Stands in for a started MaistroCoreBridge (an AgentPort)."""
+
+        container = object()
+        governed_egress = sentinel_egress
+
+        async def start(self, settings: Any) -> None:
+            del settings
+
+        async def route(
+            self,
+            messages: list[dict[str, Any]],
+            *,
+            session_id: str | None = None,
+            intent_hint: str = "",
+        ) -> dict[str, Any]:
+            del messages, session_id, intent_hint
+            return {"choices": []}
+
+    monkeypatch.setattr("adapters.maistro_core.MaistroCoreBridge", _FakeBridge, raising=True)
+
+    captured: dict[str, Any] = {}
+
+    class _Q:
+        def __init__(self, *, admitter: Any = None) -> None:
+            self.admitter = admitter
+
+    class _R:
+        def __init__(self, q: Any, executor: Any, attempts: Any = None) -> None:
+            captured["executor"] = executor
+
+        async def start(self) -> None:
+            pass
+
+    import types
+
+    queue_mod = types.ModuleType("maistro.tasks.queue")
+    queue_mod.TaskQueue = _Q  # type: ignore[attr-defined]
+    runner_mod = types.ModuleType("maistro.tasks.runner")
+    runner_mod.TaskRunner = _R  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "maistro.tasks.queue", queue_mod)
+    monkeypatch.setitem(sys.modules, "maistro.tasks.runner", runner_mod)
+
+    conductor_mod = types.ModuleType("maistro.agents.conductor")
+    run_task_calls: list[dict[str, Any]] = []
+
+    async def _capturing_run_task(task: Any, *args: Any, **kwargs: Any) -> Any:
+        del args
+        run_task_calls.append({"task": task, "kwargs": kwargs})
+        return "conductor-output"
+
+    conductor_mod.run_task = _capturing_run_task  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "maistro.agents.conductor", conductor_mod)
+
+    svc = EngineService()
+    await svc.start(_Settings())  # type: ignore[arg-type]
+    assert type(svc._backend).__name__ == "LocalTaskBackend"
+
+    task = SimpleNamespace(description="demo task")
+    result = await captured["executor"](task)
+    assert result == "conductor-output"
+    assert len(run_task_calls) == 1
+    assert run_task_calls[0]["task"] is task
+    assert run_task_calls[0]["kwargs"] == {
+        "governed_egress": sentinel_egress,
+        "workspace_id": "ws-hive",
+    }
 
 
 async def test_stop_with_no_backend_is_safe() -> None:
