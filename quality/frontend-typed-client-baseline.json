@@ -3,7 +3,7 @@
   "metric_definition_version": "1",
   "summary": {
     "hand_typed": 142,
-    "raw_fetch": 64
+    "raw_fetch": 60
   },
   "tolerated": {
     "hand_typed::packages/hive-conductor/frontend/src/components/ErrorBoundary.tsx:3:Props": "local interface/type in pages/ or components/",
@@ -152,7 +152,6 @@
     "raw_fetch::packages/hive-conductor/frontend/src/App.tsx:115": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/App.tsx:99": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/components/AccountBanner.tsx:51": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/components/AppShell.tsx:60": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/components/LlmProviders.tsx:31": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/components/LlmProviders.tsx:46": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/components/LlmProviders.tsx:68": "bare fetch outside src/lib/",
@@ -160,9 +159,6 @@
     "raw_fetch::packages/hive-conductor/frontend/src/pages/CLI.tsx:10": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/CLI.tsx:11": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/CLI.tsx:12": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/CLI.tsx:44": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/CLI.tsx:47": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/CLI.tsx:51": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Chat.tsx:260": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Chat.tsx:333": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Dashboard.tsx:1006": "bare fetch outside src/lib/",
