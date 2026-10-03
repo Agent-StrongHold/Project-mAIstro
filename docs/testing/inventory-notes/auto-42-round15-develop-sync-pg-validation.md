@@ -68,6 +68,20 @@ the quota/session store legs):
   `check_direct_effects.py` (59 sites dispositioned), `check-reachability.py`
   — all pass. (`check-enumerations.py` no longer exists in scripts/.)
 
+## Diff-coverage repair evidence (PR 1326's red gate)
+
+PR 1326's only red check, "Coverage gate (publish-set floor + diff
+  coverage)" (run 36517261670, 2026-09-29), failed its diff leg with exactly
+  one file: `capabilities/invocation.py: 75.0% of 4 changed branch arcs
+  (need 80%); partial at 508`. Repaired at the merged head and proven with
+  the gate's own script: branch coverage collected over the five lane suites
+  plus a2a/graph-nodes/orchestrator/server-api (2800 + 1056 passed, PG legs
+  included), then `uv run python scripts/check-diff-coverage.py coverage.xml
+  --base origin/develop` -> "ok: every measured file this change touches is
+  at or above 90% lines / 80% branch arcs", exit 0. The publish-set floor
+  (87% aggregate over CI's full producer matrix) is not reproducible
+  locally and remains for CI to measure.
+
 ## External acceptance status (read-only gh, 2026-10-03)
 
 - #1169 CLOSED (2026-09-13), #1170 CLOSED (2026-09-10), **#1194 CLOSED
@@ -76,3 +90,12 @@ the quota/session store legs):
   children: #143/#223/#225/#566 CLOSED; #232 still OPEN (task-worker
   RUNNING-Attempt reconciliation), tracked separately from #42's named
   closure gates.
+
+## Local PostgreSQL isolation note
+
+The host PostgreSQL 18 server is shared with sibling campaign workers; one
+rotated the shared `maistro` role password mid-run, which surfaced as
+`asyncpg.InvalidPasswordError` in a first coverage pass. This round used a
+dedicated `l42r15` role and fresh migrated databases (`maistro_l42_r15`,
+`maistro_l42_r15b`, alembic head 050) so lane validation cannot be raced by
+sibling writers. Both remain on the host for verifier re-runs.
