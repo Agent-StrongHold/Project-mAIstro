@@ -239,7 +239,6 @@ def health(request: Request) -> dict:
     memory_decay = _memory_decay_state()
     memory_decay_enabled = _memory_decay_running(memory_decay)
     log_redaction = _log_redaction_active()
-<<<<<<< HEAD
     optional_routers = _optional_routers_state(request.app)
     degraded_services = _degraded_services(
         llm_configured=llm_configured,
@@ -250,9 +249,7 @@ def health(request: Request) -> dict:
         identity_required=identity_required,
         optional_routers=optional_routers,
     )
-=======
     engine = _engine_state()
->>>>>>> b4b9e187e29b44cc9f567fe9c15c14cb514844cb
 
     return {
         "status": "ok",
@@ -285,24 +282,23 @@ def health(request: Request) -> dict:
         # #333/#1179: the durability/ack mode per store family — whether a
         # 2xx from a mutation route means the State writer committed it.
         "persistence": _persistence_status(),
-<<<<<<< HEAD
         # M3-B7 (#97): a user-facing operating state names what is degraded.
         # `optional_routers` is the raw mount outcome per feature router;
         # `degraded_services` is the human-readable rendering of every
         # degraded capability, which the UI banner and `hctl status` show.
         "optional_routers": optional_routers,
         "degraded_services": degraded_services,
-        "degraded": bool(degraded_services),
-=======
         # #1181: engine lifecycle visibility. Liveness stays 200 "ok" — it is
         # the readiness probe that takes a failed engine out of rotation.
         "engine": engine,
-        "degraded": (not llm_configured)
-        or (not memory_decay_enabled)
-        or (not log_redaction)
-        or identity_required
+        # Degraded iff any capability is diminished: the rendered #97 list
+        # covers llm/decay/redaction/identity/optional routers, and the #1181
+        # engine lifecycle closes the union (a failed boot or an unreadable
+        # engine probe is a degraded operating state even when every check
+        # above is green). A clean engine that never booted (`not_started`, as
+        # in tests and scripts) is not by itself a degraded operating state.
+        "degraded": bool(degraded_services)
         or engine["state"] in {"degraded", "startup_failed", "unknown"},
->>>>>>> b4b9e187e29b44cc9f567fe9c15c14cb514844cb
     }
 
 
