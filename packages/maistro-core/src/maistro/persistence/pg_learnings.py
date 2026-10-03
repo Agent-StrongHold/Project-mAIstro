@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
@@ -51,6 +52,11 @@ _PG_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "validated_by",
+    "validated_evaluator_version",
+    "validated_at",
+    "validation_run_ids",
+    "validation_content_hash",
 )
 
 
@@ -116,11 +122,32 @@ class PgLearningStore:
         before `org_id` existed: idempotent, cheap, and safe to run at startup.
         Failing loudly on a missing scope column is the right direction for a
         filter whose absence is a cross-scope read — but the migration is what
-        should be relied on, not this.
+        should be relied on, not this. The Gauntlet provenance columns (M4-B2,
+        migration 048) ride along on the same idempotent pattern.
         """
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validated_by TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validated_evaluator_version TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validated_at DOUBLE PRECISION NOT NULL DEFAULT 0"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validation_run_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validation_content_hash TEXT NOT NULL DEFAULT ''"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope "
@@ -160,9 +187,11 @@ class PgLearningStore:
                     agent_id, user_id, org_id, team_id, scope, hit_count, status,
                     rca_category, rca_prevention,
                     success_after_use, failure_after_use,
-                    run_id, node_run_id, attempt_id)
+                    run_id, node_run_id, attempt_id,
+                    validated_by, validated_evaluator_version, validated_at,
+                    validation_run_ids, validation_content_hash)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                           $13, $14, $15, $16, $17, $18, $19)
+                           $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -183,6 +212,11 @@ class PgLearningStore:
                 # `as_columns` owns the "blank means absent" rule for every
                 # store that writes it (#709).
                 *provenance.as_columns(),
+                learning.validated_by,
+                learning.validated_evaluator_version,
+                learning.validated_at,
+                _dump_keys(learning.validation_run_ids),
+                learning.validation_content_hash,
             )
             return int(row["id"]) if row else 0
 
@@ -445,6 +479,46 @@ class PgLearningStore:
             )
             return [_row_to_learning(r) for r in rows]
 
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: float = 0.0,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Flip one active learning to promoted, writing its validation provenance.
+
+        The per-candidate promotion seam the Gauntlet path needs: `check_auto_promotions`
+        promotes every threshold-crossing row in scope, but an independent validator
+        decides per candidate, so the store must be able to promote exactly one. Only
+        an `active`, in-scope row flips — an already-promoted, already-rejected or
+        out-of-scope row returns None rather than being touched, and a rejected
+        candidate's row (its evidence, its anti-learning) is never modified here.
+        Scoped like `mark_outcome`: an unscoped caller must not promote another
+        org's id.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE learnings
+                   SET status = 'promoted', validated_by = $2,
+                       validated_evaluator_version = $3, validated_at = $4,
+                       validation_run_ids = $5, validation_content_hash = $6
+                   WHERE id = $1 AND org_id = $7 AND status = 'active'
+                   RETURNING *""",
+                learning_id,
+                validated_by,
+                evaluator_version,
+                validated_at,
+                _dump_keys(list(validation_run_ids)),
+                validation_content_hash,
+                org_id,
+            )
+        return _row_to_learning(row) if row else None
+
     async def get_promoted(
         self,
         task_type: str | None = None,
@@ -521,10 +595,20 @@ def _load_keys(raw: object) -> list[str]:
     return []
 
 
+def _text_or(row: asyncpg.Record, key: str, default: str = "") -> str:
+    """A nullable text column read as the not-null default the contract wants.
+
+    The columns are nullable and the dataclass fields are not: a row with no
+    producer comes back as a Learning naming none, which is the same fact in
+    the shape the caller expects (#709).
+    """
+    return row.get(key) or default
+
+
 def _row_to_learning(row: asyncpg.Record) -> Learning:
     return Learning(
         id=row["id"],
-        category=row.get("category") or "",
+        category=_text_or(row, "category"),
         trigger_keys=_load_keys(row.get("trigger_keys")),
         learning=row["learning"],
         tool_name=row.get("tool_name", ""),
@@ -533,19 +617,23 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         source_query=row.get("source_query", ""),
         agent_id=row.get("agent_id") or None,
         user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=row.get("team_id") or "",
-        scope=MemoryScope(row.get("scope") or "agent"),
+        org_id=_text_or(row, "org_id"),
+        team_id=_text_or(row, "team_id"),
+        scope=MemoryScope(_text_or(row, "scope", "agent")),
         hit_count=row.get("hit_count", 0),
         status=row.get("status", "active"),
         rca_category=row.get("rca_category"),
         rca_prevention=row.get("rca_prevention", ""),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
-        # `or ""` because the columns are nullable and the dataclass fields are
-        # not: a row with no producer comes back as a Learning naming none,
-        # which is the same fact in the shape the caller expects (#709).
-        run_id=row.get("run_id") or "",
-        node_run_id=row.get("node_run_id") or "",
-        attempt_id=row.get("attempt_id") or "",
+        run_id=_text_or(row, "run_id"),
+        node_run_id=_text_or(row, "node_run_id"),
+        attempt_id=_text_or(row, "attempt_id"),
+        validated_by=_text_or(row, "validated_by"),
+        validated_evaluator_version=_text_or(row, "validated_evaluator_version"),
+        # The one numeric nullable: `or` so a stored NULL reads as "never
+        # validated" (0) rather than failing the not-null dataclass field.
+        validated_at=row.get("validated_at") or 0.0,
+        validation_run_ids=_load_keys(row.get("validation_run_ids")),
+        validation_content_hash=_text_or(row, "validation_content_hash"),
     )

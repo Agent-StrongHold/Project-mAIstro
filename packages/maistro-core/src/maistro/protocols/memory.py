@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
@@ -67,6 +68,27 @@ class LearningStore(Protocol):
         self, threshold: int = 5, *, org_id: str = ""
     ) -> list[Learning]:
         """Promote learnings that have been hit enough times."""
+        ...
+
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: float = 0.0,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Promote exactly one active learning, recording validation provenance.
+
+        The per-candidate promotion seam the Gauntlet path needs (M4-B2): an
+        independent validator decides per candidate, so the store must be able
+        to promote one learning with the exact evaluation Runs, evaluator
+        version and frozen-content hash that justified it. Only an `active`,
+        in-scope row flips; anything else returns None untouched.
+        """
         ...
 
     async def get_promoted(

@@ -126,6 +126,18 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
+    # Validation provenance (M4-B2 Gauntlet). Blank/empty until an independent
+    # Gauntlet accepts the learning for collective promotion; the exact
+    # canonical evaluation Runs, the evaluator version and the content hash of
+    # the frozen candidate that was validated are recorded together, so
+    # institutional knowledge carries its own audit trail. A row with these
+    # defaults was never validated — which, unlike producer provenance, is a
+    # *known* absence, so the columns default rather than nullable.
+    validated_by: str = ""
+    validated_evaluator_version: str = ""
+    validated_at: float = 0.0
+    validation_run_ids: list[str] = field(default_factory=list)
+    validation_content_hash: str = ""
 
 
 @dataclass

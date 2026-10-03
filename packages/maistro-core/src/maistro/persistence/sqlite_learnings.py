@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import observed_provenance
@@ -39,7 +40,12 @@ CREATE TABLE IF NOT EXISTS learnings (
     failure_after_use INTEGER NOT NULL DEFAULT 0,
     run_id TEXT,
     node_run_id TEXT,
-    attempt_id TEXT
+    attempt_id TEXT,
+    validated_by TEXT NOT NULL DEFAULT '',
+    validated_evaluator_version TEXT NOT NULL DEFAULT '',
+    validated_at REAL NOT NULL DEFAULT 0,
+    validation_run_ids TEXT NOT NULL DEFAULT '[]',
+    validation_content_hash TEXT NOT NULL DEFAULT ''
 )
 """
 
@@ -55,6 +61,18 @@ _LEGACY_UPGRADE_COLUMNS = {
 #: nullable in PostgreSQL: a row written with no execution in scope names none,
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
+
+#: Gauntlet validation columns (M4-B2). Unlike provenance, a pre-Gauntlet row's
+#: absence of validation is *known*: it was never validated, so the defaults
+#: are the honest values rather than a fabricated one, and these upgrade with
+#: defaults.
+_VALIDATION_COLUMNS = {
+    "validated_by": "TEXT NOT NULL DEFAULT ''",
+    "validated_evaluator_version": "TEXT NOT NULL DEFAULT ''",
+    "validated_at": "REAL NOT NULL DEFAULT 0",
+    "validation_run_ids": "TEXT NOT NULL DEFAULT '[]'",
+    "validation_content_hash": "TEXT NOT NULL DEFAULT ''",
+}
 
 # Kept next to the SQL so the conformance test can detect a new Learning field
 # that is not represented by both persistence twins.
@@ -80,6 +98,11 @@ _SQLITE_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "validated_by",
+    "validated_evaluator_version",
+    "validated_at",
+    "validation_run_ids",
+    "validation_content_hash",
 )
 
 
@@ -118,6 +141,11 @@ class SqliteLearningStore:
             for column in _PROVENANCE_COLUMNS:
                 if column not in columns:
                     await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
+            for column, column_type in _VALIDATION_COLUMNS.items():
+                if column not in columns:
+                    await self._conn.execute(
+                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
+                    )
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
             )
@@ -150,8 +178,10 @@ class SqliteLearningStore:
                 agent_id, user_id, org_id, team_id, scope, hit_count, status,
                 rca_category, rca_prevention,
                 success_after_use, failure_after_use,
-                run_id, node_run_id, attempt_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                run_id, node_run_id, attempt_id,
+                validated_by, validated_evaluator_version, validated_at,
+                validation_run_ids, validation_content_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -170,6 +200,11 @@ class SqliteLearningStore:
                 learning.success_after_use,
                 learning.failure_after_use,
                 *provenance.as_columns(),
+                learning.validated_by,
+                learning.validated_evaluator_version,
+                learning.validated_at,
+                json.dumps(list(learning.validation_run_ids)),
+                learning.validation_content_hash,
             ),
         )
         await self._conn.commit()
@@ -334,6 +369,56 @@ class SqliteLearningStore:
         rows = await select_cursor.fetchall()
         return [_row_to_learning(dict(zip(columns, r, strict=True))) for r in rows]
 
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: float = 0.0,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Flip one active learning to promoted, writing its validation provenance.
+
+        The per-candidate promotion seam the Gauntlet path needs: `check_auto_promotions`
+        promotes every threshold-crossing row in scope, but an independent validator
+        decides per candidate, so the store must be able to promote exactly one. Only
+        an `active`, in-scope row flips — an already-promoted, already-rejected or
+        out-of-scope row returns None rather than being touched, and a rejected
+        candidate's row (its evidence, its anti-learning) is never modified here.
+        """
+        cursor = await self._conn.execute(
+            """UPDATE learnings
+               SET status = 'promoted', validated_by = ?,
+                   validated_evaluator_version = ?, validated_at = ?,
+                   validation_run_ids = ?, validation_content_hash = ?
+               WHERE id = ? AND org_id = ? AND status = 'active'""",
+            (
+                validated_by,
+                evaluator_version,
+                validated_at,
+                json.dumps(list(validation_run_ids)),
+                validation_content_hash,
+                learning_id,
+                org_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            await self._conn.commit()
+            return None
+        await self._conn.commit()
+        select_cursor = await self._conn.execute(
+            "SELECT * FROM learnings WHERE id = ?",
+            (learning_id,),
+        )
+        columns = [d[0] for d in select_cursor.description]
+        row = await select_cursor.fetchone()
+        if row is None:
+            return None
+        return _row_to_learning(dict(zip(columns, row, strict=True)))
+
     async def get_promoted(
         self,
         task_type: str | None = None,
@@ -404,4 +489,28 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         attempt_id=_text(row, "attempt_id"),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
+        validated_by=_text(row, "validated_by"),
+        validated_evaluator_version=_text(row, "validated_evaluator_version"),
+        validated_at=row.get("validated_at") or 0.0,
+        validation_run_ids=_load_validation_run_ids(row.get("validation_run_ids")),
+        validation_content_hash=_text(row, "validation_content_hash"),
     )
+
+
+def _load_validation_run_ids(raw: object) -> list[str]:
+    """Decode the `validation_run_ids` JSON column, tolerating legacy rows.
+
+    Returns `[]` for NULL or malformed text rather than raising: a row that
+    predates the Gauntlet has no evaluation Runs, and a corrupted one should
+    cost its provenance, not the read.
+    """
+    if isinstance(raw, list):
+        return [str(item) for item in raw]
+    if isinstance(raw, str | bytes | bytearray):
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(decoded, list):
+            return [str(item) for item in decoded]
+    return []

@@ -32,5 +32,13 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "run_id",
         "node_run_id",
         "attempt_id",
+        # Gauntlet validation provenance (M4-B2): durable like every other
+        # Learning field, so a restart cannot strip a promoted learning of the
+        # evidence that promoted it.
+        "validated_by",
+        "validated_evaluator_version",
+        "validated_at",
+        "validation_run_ids",
+        "validation_content_hash",
     }
 )
