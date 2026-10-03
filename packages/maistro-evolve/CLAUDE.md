@@ -34,6 +34,16 @@ PYTHONPATH=packages/maistro-core/src:packages/maistro-evolve/src pytest packages
 - `reflective_improve()` (reflect.py) — GEPA/MIPROv2-inspired self-improve step: re-runs the weakest benchmark
   for failure traces, proposes K prompt candidates via grounded meta-prompts with randomized tips, re-evaluates
   each, and only an improving candidate enters the population — as a child genome, never overwriting the parent.
+- `Curriculum` / `generate_curriculum()` (curriculum.py, SPEC-282) — self-generated practice challenges:
+  a proposer drafts, but admission requires every host-owned gate (well-formed, reference-solves,
+  independent-solver-solves, baseline-fails) to affirm — fail closed throughout. Practice signal stays
+  out of evaluation: `self_generated/…` benchmark names are refused by the hard gate, the weighted
+  eval score, and `EvalHarness.register_benchmark`.
+- `compare_lanes()` (lane_comparison.py, SPEC-282 AC-10) — the measured curriculum-vs-external lane
+  comparison: identical external evidence on both lanes, bounded generation budget behind the gates,
+  measured capability delta (reported honestly, zero difference included), cost probe counts, per-gate
+  refusals, and each accepted challenge's provenance record. The recorded reference run lives in the
+  spec's "Measured lane comparison" section and is pinned by test_lane_comparison.py.
 
 ## Benchmark fidelity — stability statement (SPEC-202)
 

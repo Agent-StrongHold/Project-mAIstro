@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro_design.consistency import (
     AccessibilityConstraint,
     BriefSnapshot,
@@ -803,7 +804,12 @@ async def test_evaluation_runs_as_canonical_graph_node_with_provenance() -> None
     store = InMemoryDurableRunStore()
     graph = _eval_graph(_snapshot())
 
-    record = await run_durable_graph(graph, store=store, node_resolver=_resolver)
+    record = await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     # The run itself succeeded: a failing *evaluation* is a successful
     # evaluation run. The verdict failure lives in the evaluation result.
@@ -848,7 +854,12 @@ async def test_foreign_project_snapshot_is_rejected_not_misfiled() -> None:
     foreign = _snapshot().model_copy(update={"project_id": "proj-other"})
     store = InMemoryDurableRunStore()
 
-    record = await run_durable_graph(_eval_graph(foreign), store=store, node_resolver=_resolver)
+    record = await run_durable_graph(
+        _eval_graph(foreign),
+        store=store,
+        node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     assert record.run.status is RunStatus.FAILED
     assert record.node_runs[0].status is RunStatus.FAILED
@@ -872,7 +883,12 @@ async def test_retry_after_refinement_preserves_failed_evaluation_record() -> No
     store = InMemoryDurableRunStore()
 
     # First pass: evaluation fails on the shared contradiction.
-    first = await run_durable_graph(_eval_graph(_snapshot()), store=store, node_resolver=_resolver)
+    first = await run_durable_graph(
+        _eval_graph(_snapshot()),
+        store=store,
+        node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     assert first.run.status is RunStatus.COMPLETED
     failed_evaluation = first.attempts[0].result["output"]["evaluation"]
     assert failed_evaluation["passed"] is False
@@ -930,7 +946,12 @@ async def test_retry_after_refinement_preserves_failed_evaluation_record() -> No
             base.artifacts[4],
         ),
     )
-    second = await run_durable_graph(_eval_graph(fixed), store=store, node_resolver=_resolver)
+    second = await run_durable_graph(
+        _eval_graph(fixed),
+        store=store,
+        node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     # Fresh execution identity for the retry — never a replay of the old one.
     assert second.run.run_id != first_run_id
