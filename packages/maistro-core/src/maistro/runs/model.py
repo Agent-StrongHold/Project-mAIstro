@@ -67,7 +67,7 @@ class _FrozenDict(dict[Any, Any]):
 
 
 class _FrozenList(list[Any]):
-    """List-shaped immutable-by-value evidence that remains JSON serializable."""
+    """List-shaped immutable-by-value evidence that preserves list equality/JSON shape."""
 
     @staticmethod
     def _deny(*_args: object, **_kwargs: object) -> None:
