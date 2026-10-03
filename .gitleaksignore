@@ -49,3 +49,13 @@ ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test
 cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:276
 cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:319
 43d02d6398a465e92321d241a2d237ec7428e017:packages/maistro-core/tests/tasks/test_idempotency.py:generic-api-key:754
+# ---- #860 soak-harness synthetic keys (fixed in the same lane) ----
+# Commit 8185c1d0 introduced two synthetic soak credentials with hex-padded
+# shapes ("soak-{delegation,router}-key-0123456789abcdef"). They are harness
+# fixtures the script itself passes to its own throwaway dockerized stack —
+# TASK_DELEGATION_KEY is opaque to the server and ROUTER_API_KEY only needs to
+# clear the >=32-char Settings warning; there is no secret content. The tree
+# no longer carries the shapes (de-shaped in this lane), but the introducing
+# commit's blob is immutable and every `BASE..HEAD` range scan that contains
+# 8185c1d0 re-reports it. Fingerprint is keyed to that commit SHA.
+8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
