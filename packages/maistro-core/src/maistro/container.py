@@ -750,6 +750,7 @@ class Container:
         """
         if self.chat_admitter is None:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
+        auth = self._resolve_chat_auth(auth)
         run: Run | None = None
         try:
             admitter = self.chat_admitter
