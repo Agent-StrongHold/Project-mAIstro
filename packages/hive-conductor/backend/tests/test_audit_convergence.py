@@ -41,21 +41,7 @@ from maistro.types.security import AuditEntry
 
 pytestmark = [pytest.mark.contract("cross-service")]
 
-KNOWN_GAPS = frozenset(
-    {
-        # #53: routes/auth.py login() records login_failed via log_audit -> stores.audit_log only.
-        "failed_login",
-        # #53: routes/auth.py elevate() records elevate via log_audit -> stores.audit_log only.
-        "elevation",
-        # #325: routes/hitl.py cancel_human_work() records hitl_cancel via log_audit only.
-        "hitl_cancel",
-        # #325: services/chat_gate.py gate_tool_dispatch() logs chat_tool_privilege_blocked
-        # via log_audit only; the core Sentinel never sees Hive's chat tool dispatch.
-        "denied_tool_call",
-        # #53: routes/audit.py list_entries() reads stores.audit_log, never the core AuditLog.
-        "audit_read_path",
-    }
-)
+KNOWN_GAPS: frozenset[str] = frozenset()
 
 # Seeded by conftest._seed_test_user.
 _USER = ("user", "testuser", "testpass")

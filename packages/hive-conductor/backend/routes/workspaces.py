@@ -30,6 +30,7 @@ from services.persona_authoring import (
     create_persona_template,
 )
 from services.persona_feedback import PersonaFeedbackSummary, summarize
+from services.request_principal import optional_actor_id, require_actor_id
 from services.themes import THEME_CATALOG, ThemeOption, is_valid_theme_id
 from services.workspace_agent import (
     WorkspaceAgentConflict,
@@ -60,8 +61,7 @@ def _now() -> datetime:
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    return str(user.get("id") or user.get("username") or "dev")
+    return optional_actor_id(request, default="dev")
 
 
 class PersonaChecklistResponse(BaseModel):
@@ -230,8 +230,7 @@ class DefaultWorkspaceResponse(BaseModel):
 @router.post("/default", response_model=DefaultWorkspaceResponse)
 async def ensure_default_workspace(request: Request) -> DefaultWorkspaceResponse:
     """The caller's default Workspace and its Workspace Agent, created on first need (#1037)."""
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
+    user_id = require_actor_id(request)
     if not user_id:
         raise HTTPException(status_code=401, detail="a default workspace needs a known principal")
     try:
