@@ -158,6 +158,19 @@ class DefaultContextAssemblyPolicy:
         wisdom_memories = await self.episodic_store.list_by_scope(
             project_id=project_id, min_weight=WISDOM_WEIGHT, limit=n
         )
+        if org_id:
+            # Keep project-only non-global history, then add the caller's
+            # authorized GLOBAL wisdom through the same store scope rule.
+            # Passing org_id to the first read alone would drop its AGENT,
+            # USER and TEAM changelog rows. Both bounded reads retain the
+            # existing protocol and scope authority; union before ranking.
+            scoped_memories = await self.episodic_store.list_by_scope(
+                org_id=org_id, project_id=project_id, min_weight=WISDOM_WEIGHT, limit=n
+            )
+            unique = {memory.memory_id: memory for memory in wisdom_memories + scoped_memories}
+            wisdom_memories = sorted(
+                unique.values(), key=lambda memory: (-memory.weight, memory.memory_id)
+            )[:n]
         remaining = budget_tokens
         parts: list[str] = []
         # The experience text is one unit, not a list, so it is included whole

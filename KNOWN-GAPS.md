@@ -66,11 +66,29 @@ under #773 (Design Studio cutover #95 wires the exporter in deployed stacks).
 
 ### Conductor degraded modes
 
-The Conductor can continue in a degraded state when optional services are
-unavailable. Startup now makes optional-router failures observable, but the
-degraded state is not yet a complete user-facing operating mode.
+Updated by #97 (M3-B7): degradation is now a complete user-facing operating
+state, not only startup logging. `/health` answers *what* is degraded and
+*why*: `degraded_services` names every diminished capability (LLM gateway,
+memory decay, ADR-064 log redaction, identity, and each optional feature
+router that failed to mount) with an actionable reason, alongside the raw
+`optional_routers` mount outcomes; `degraded` remains the boolean liveness
+signal. A degraded router entry is also written to the `/v1/audit` trail as a
+warning, so entry is queryable next to the capability changes it resembles.
+The UI surfaces the same facts: an app-shell banner (rendered from
+`degraded_services`, disappearing on its own when `/health` recomputes clean)
+and `hctl status` on the CLI page print the degraded list verbatim.
+Unsupported actions still refuse honestly rather than fake success: an
+unmounted route family answers 404, the LLM refusal names both fixes
+(`StubLLMNotAllowedError`), capability routes degrade with cause, and
+`/health`'s `task_clear_supported` gates the missions bulk-clear UI.
+Recovery is defined on the same surfaces: `/health` recomputes per request
+(so the banner and CLI follow on the next poll when a service returns),
+capability providers re-enter via `/v1/capabilities/discover` without a
+restart, and an optional router recovers by the restart re-running its mount.
 
-Tracking: finish the visible degraded-mode behavior in F3 (#302).
+Tracking: close this entry when the degraded-mode product E2E
+(`frontend/e2e/degraded-mode.spec.ts`, banner + `hctl status` halves) passes
+in a deployed stack under F3 (#302).
 
 ### Design Studio production availability and Canvas boundary
 

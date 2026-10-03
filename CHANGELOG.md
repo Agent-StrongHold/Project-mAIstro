@@ -47,6 +47,14 @@ or placeholder-only section.
 
 ### Security
 
+- **Project wisdom respects GLOBAL organization boundaries (#1247).**
+  Project-only `list_by_scope` refuses organization-bound GLOBAL rows without
+  caller organization context. Layer 3
+  keeps existing project-only AGENT/USER/TEAM changelog rows while including
+  only public or same-organization GLOBAL memories. Missing organization context
+  cannot expose organization-bound wisdom; authorized same-organization recall
+  remains available across the in-memory, SQLite and PostgreSQL store paths.
+
 - **Every base/tool image in every Dockerfile is pinned by immutable digest
   (#349).** Build stages no longer float on mutable tags and the uv installer
   is no longer copied from a `:latest` image, so a registry tag move cannot

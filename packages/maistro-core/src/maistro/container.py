@@ -148,6 +148,8 @@ if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
     from maistro.runs.consumption import ParkedPause, TickAccounting
+    from maistro.runs.model import Attempt
+    from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
@@ -364,7 +366,8 @@ class Container:
     event_bus: EventBus = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
-    invocation_store: InvocationStore = None  # type: ignore[assignment]
+    invocation_store: Any = None
+    handler_invocation_store: InvocationStore = None  # type: ignore[assignment]
     handler_caller: HandlerCaller = None  # type: ignore[assignment]
     # Durable replay cursor for the legacy-event bridge (#1163): a claim
     # lease + fencing token so of several replicas that might tick
@@ -477,6 +480,10 @@ class Container:
         """
         if self.closed:
             return
+        if self.capability_effects is not None:
+            from maistro.capabilities.effect_context import unbind_container_effect_context
+
+            unbind_container_effect_context(self.capability_effects)
         # Marked closed before the await, so a release that raises does not
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
@@ -1000,7 +1007,7 @@ class Container:
         batch = await process_events_batch(
             self.durable_event_log,
             self.trigger_store,
-            self.invocation_store,
+            self.handler_invocation_store,
             self.handler_caller,
             after_id=lease.position,
             limit=limit,
@@ -1092,12 +1099,13 @@ class Container:
         )
 
         reclaimed = await self._reclaim_abandoned_attempts(now=now, limit=limit)
+        reconciled = await self._reconcile_unreconciled_terminal_attempts(now=now, limit=limit)
         open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
         non_terminal_runs.set(open_runs)
         moment = now if now is not None else datetime.now(UTC)
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
-        return reclaimed
+        return reclaimed + reconciled
 
     async def _reclaim_abandoned_attempts(self, *, now: datetime | None, limit: int) -> int:
         """Settle Attempts whose lease lapsed; the recovery half of the tick."""
@@ -1129,6 +1137,109 @@ class Container:
             recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
         return len(reclaimed)
+
+    async def _reconcile_unreconciled_terminal_attempts(
+        self, *, now: datetime | None, limit: int
+    ) -> int:
+        """Replay reconciliation for terminal Attempts a crash interrupted (#804)."""
+        from maistro.runs.reconciliation import AttemptLifecycleReconciler
+        from maistro.runs.store import run_cursor_key
+
+        moment = now if now is not None else datetime.now(UTC)
+        reconciler = AttemptLifecycleReconciler(
+            self.run_store,
+            events=self.event_bus,
+            source="maistro.container.recover_abandoned_attempts",
+        )
+        reconciled = 0
+        after = None
+        while reconciled < limit:
+            page = await self.run_store.list_by_status(
+                RunStatus.RUNNING,
+                limit=min(limit - reconciled, limit),
+                after=after,
+            )
+            if not page:
+                break
+            for run in page:
+                after = run_cursor_key(run)
+                for node_run in await self.run_store.list_node_runs(run.run_id):
+                    if reconciled >= limit:
+                        break
+                    if await self._reconcile_terminal_attempt_for_node(
+                        node_run.node_run_id, reconciler=reconciler, moment=moment
+                    ):
+                        reconciled += 1
+            if len(page) < min(limit - reconciled, limit):
+                break
+        if reconciled:
+            logger.info("reconciled %d unreconciled terminal Attempt(s)", reconciled)
+        return reconciled
+
+    async def _reconcile_terminal_attempt_for_node(
+        self,
+        node_run_id: str,
+        *,
+        reconciler: AttemptLifecycleReconciler,
+        moment: datetime,
+    ) -> bool:
+        """Replay a completed Attempt, charging only observed persisted progress."""
+        from maistro.runs.lifecycle import lease_is_expired
+        from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES
+
+        attempts = await self.run_store.list_attempts(node_run_id)
+        if any(
+            attempt.status not in TERMINAL_ATTEMPT_STATUSES
+            and attempt.execution_lease is not None
+            and not lease_is_expired(attempt, moment)
+            for attempt in attempts
+        ):
+            return False
+        completed = next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.status is AttemptStatus.COMPLETED
+            ),
+            None,
+        )
+        if completed is None:
+            return False
+        try:
+            return await self._reconcile_terminal_attempt_progress(completed, reconciler)
+        except RunIntegrityError:
+            logger.warning(
+                "terminal Attempt %s could not be reconciled",
+                completed.attempt_id,
+                exc_info=True,
+            )
+            return False
+
+    async def _reconcile_terminal_attempt_progress(
+        self, attempt: Attempt, reconciler: AttemptLifecycleReconciler
+    ) -> bool:
+        """Observe acceptance/settlement, not exclusive ownership of a repair.
+
+        Store transitions return records, not a won-write flag. A peer may make
+        progress between these reads; counting that observation is conservative
+        for this tick's budget. Replaying unchanged facts on the next tick must
+        not charge again. Timestamps and other incidental changes do not count.
+        """
+        before_node = await self.run_store.get_node_run(attempt.node_run_id)
+        if before_node is None:
+            raise RunIntegrityError("terminal replay is missing its NodeRun")
+        before_run = await self.run_store.get_run(before_node.run_id)
+        if before_run is None:
+            raise RunIntegrityError("terminal replay is missing its Run")
+        reconciled = await reconciler.reconcile(attempt)
+        after_run = await self.run_store.get_run(before_node.run_id)
+        accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
+        settled = (
+            before_run.status not in TERMINAL_RUN_STATUSES
+            and after_run is not None
+            and after_run.status in TERMINAL_RUN_STATUSES
+        )
+        return accepted or settled
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100
@@ -1652,7 +1763,7 @@ class Container:
 
     async def durable_invocations_for(self, event_id: int) -> list[Any]:
         """Handler invocations recorded for one durable event (delivery audit)."""
-        return list(await self.invocation_store.list_for_event(event_id))
+        return list(await self.handler_invocation_store.list_for_event(event_id))
 
     async def select_model(self, task: Any, budget: Any = None) -> Any:
         """Budget-constrained model selection via the wired cost-aware router."""
@@ -1837,17 +1948,21 @@ async def _wire_capability_effects(
     # every branch. `new_effect_context` now defaults to a DENY evaluator --
     # an omitted policy is an unavailable dependency, not an authorization --
     # and the in-memory builder is an alias for it.
-    if db_pool is not None:
-        context = await new_sqlite_effect_context(
-            db_pool,
+    # PostgreSQL first: durable events already prefer a supplied pool over
+    # SQLite when both are wired (#135); capability effects must follow or a
+    # caller with `pg_pool` + `sqlite://` gets PG event durability and SQLite
+    # effect stores that share one closed connection after teardown.
+    if pg_pool is not None:
+        context = await new_postgres_effect_context(
+            pg_pool,
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
             usage_log=usage_log,
             quota_tracker=quota_tracker,
         )
-    elif pg_pool is not None:
-        context = await new_postgres_effect_context(
-            pg_pool,
+    elif db_pool is not None:
+        context = await new_sqlite_effect_context(
+            db_pool,
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
             usage_log=usage_log,
@@ -2187,7 +2302,7 @@ async def create_container(
 
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
-    invocation_store: InvocationStore
+    handler_invocation_store: InvocationStore
     consumer_cursor_store: ConsumerCursorStore
     # PostgreSQL first: a caller who supplied a pool asked for the durable
     # backend, and `db_pool` (SQLite) may be set at the same time because the
@@ -2198,20 +2313,20 @@ async def create_container(
         (
             durable_event_log,
             trigger_store,
-            invocation_store,
+            handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_pg_durable_events(pg_pool)
     elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
-            invocation_store,
+            handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_sqlite_durable_events(db_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
-        invocation_store = InMemoryInvocationStore()
+        handler_invocation_store = InMemoryInvocationStore()
         consumer_cursor_store = InMemoryConsumerCursorStore()
     handler_caller = HTTPHandlerCaller()
 
@@ -2351,7 +2466,8 @@ async def create_container(
         event_bus=event_bus,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
-        invocation_store=invocation_store,
+        invocation_store=capability_effects.invocation_store,
+        handler_invocation_store=handler_invocation_store,
         handler_caller=handler_caller,
         consumer_cursor_store=consumer_cursor_store,
         provider_registry=provider_registry,
@@ -2394,6 +2510,9 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
+    from maistro.capabilities.effect_context import bind_container_effect_context
+
+    bind_container_effect_context(capability_effects)
     logger.info("Container wired (%s stores)", backend)
     return container
 

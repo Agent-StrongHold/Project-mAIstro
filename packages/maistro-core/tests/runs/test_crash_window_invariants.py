@@ -65,14 +65,7 @@ WINDOWS = frozenset(
     }
 )
 
-KNOWN_GAPS = frozenset(
-    {
-        "settle_after_last_node_run",  # owner #804
-        "frontier_node_runs_after_resume_at_cleared",  # owner #804
-        "attempt_completion_before_reconcile",  # owner #804
-        "terminal_continuation_before_mirror",  # owner #804
-    }
-)
+KNOWN_GAPS = frozenset()
 
 _WORKSPACE = "ws-crash-windows"
 _LEASE_TTL = timedelta(seconds=30)

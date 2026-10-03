@@ -10,7 +10,7 @@ from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
 from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.scopes import build_scope_filter, matches_scope
-from maistro.memory.types import REINFORCE_DELTA, DecaySweep, EpisodicMemory
+from maistro.memory.types import REINFORCE_DELTA, DecaySweep, EpisodicMemory, MemoryScope
 from maistro.observability.correlation import observed_provenance
 
 
@@ -31,7 +31,13 @@ def _selected(
     """
     if memory.deleted:
         return False
-    if not no_scope_filter and not matches_scope(memory, scope_filters):
+    # No caller identity: project changelog recall keeps non-global rows, but
+    # an org-bound global is still not public. `matches_scope` on the global
+    # filter is that rule; skipping it here was the #1247 leak.
+    if no_scope_filter:
+        if memory.scope == MemoryScope.GLOBAL and not matches_scope(memory, scope_filters):
+            return False
+    elif not matches_scope(memory, scope_filters):
         return False
     if memory.weight < min_weight:
         return False
@@ -148,6 +154,8 @@ class InMemoryEpisodicStore:
         )
         # No agent/user/team/org filter given: project_id alone selects memories
         # (e.g. project changelog recall), independent of scope hierarchy.
+        # Org-bound globals stay on the scope rule anyway (#1247): a missing
+        # caller org must not publish them.
         no_scope_filter = not (agent_id or user_id or team_id or org_id)
         matched = [
             mem
