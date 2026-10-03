@@ -720,7 +720,15 @@ def test_chat_route_handles_a_request_without_middleware_verdict(monkeypatch):
     }
     request = Request(scope)
 
-    response = _await(chat_module.chat(ChatBody(message="hi"), request, {"id": "route-user"}))
+    from maistro.identity import Principal
+
+    response = _await(
+        chat_module.chat(
+            ChatBody(message="hi"),
+            request,
+            Principal.from_legacy_dict({"id": "route-user"}),
+        )
+    )
 
     assert response == {
         "session_id": response["session_id"],

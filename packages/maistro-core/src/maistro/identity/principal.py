@@ -41,6 +41,9 @@ class Principal:
     workspace_ids: frozenset[str] = frozenset()
     org_id: str | None = None
     team_ids: frozenset[str] = frozenset()
+    username: str | None = None
+    permissions: frozenset[str] = frozenset()
+    elevated_permissions: frozenset[str] = frozenset()
 
     @property
     def primary_role(self) -> str | None:
@@ -48,11 +51,32 @@ class Principal:
             return None
         return next(iter(sorted(self.roles)))
 
+    @property
+    def is_admin(self) -> bool:
+        return "admin" in self.roles
+
+    def actor_id(self) -> str:
+        """Stable principal identifier for ownership checks and audit."""
+        return self.user_id or (self.username or "")
+
+    def audit_label(self) -> str:
+        """Human-readable principal label for audit entries."""
+        return self.username or self.user_id or "unverified"
+
+    def has_permission(self, perm: str) -> bool:
+        """Task-scoped elevation: perm must be granted and currently elevated."""
+        if self.is_admin:
+            return True
+        if perm not in self.permissions:
+            return False
+        return perm in self.elevated_permissions
+
     @classmethod
     def from_legacy_dict(cls, user: Mapping[str, Any]) -> Principal:
-        """Bridge hive ``request.state.user`` dicts during cutover migration."""
+        """Bridge hive session dicts during cutover migration."""
         user_id = str(user.get("id") or user.get("user_id") or "")
         org_id = user.get("org_id")
+        username = user.get("username")
         return cls(
             user_id=user_id,
             roles=_roles_from_user(user),
@@ -60,6 +84,9 @@ class Principal:
             workspace_ids=_workspace_ids_from_user(user),
             org_id=str(org_id) if org_id is not None else None,
             team_ids=_frozenset_str(user.get("team_ids")),
+            username=str(username) if username is not None else None,
+            permissions=_frozenset_str(user.get("permissions")),
+            elevated_permissions=_frozenset_str(user.get("elevated_permissions")),
         )
 
     def to_legacy_dict(self) -> dict[str, Any]:
@@ -67,6 +94,8 @@ class Principal:
         payload: dict[str, Any] = {"id": self.user_id, "roles": sorted(self.roles)}
         if self.primary_role is not None:
             payload["role"] = self.primary_role
+        if self.username is not None:
+            payload["username"] = self.username
         if self.scopes:
             payload["scopes"] = sorted(self.scopes)
         if self.workspace_ids:
@@ -75,4 +104,8 @@ class Principal:
             payload["org_id"] = self.org_id
         if self.team_ids:
             payload["team_ids"] = sorted(self.team_ids)
+        if self.permissions:
+            payload["permissions"] = sorted(self.permissions)
+        if self.elevated_permissions:
+            payload["elevated_permissions"] = sorted(self.elevated_permissions)
         return payload
