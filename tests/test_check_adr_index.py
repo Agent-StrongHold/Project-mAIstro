@@ -64,6 +64,14 @@ def test_every_indexed_adr_exists() -> None:
     assert structural == []
 
 
+def test_every_adr_in_the_corpus_is_indexed() -> None:
+    """Completeness gate for [engine-113]: no ADR file without an index row."""
+    _problems, structural = _gate().audit()
+    missing = [item for item in structural if "missing from the index" in item]
+
+    assert missing == []
+
+
 # --- mutate the index --------------------------------------------------------
 
 

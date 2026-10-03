@@ -153,7 +153,6 @@
       "rationale": "The canonical envelope surfaces #61 ships: the PostgreSQL EventEnvelope store (identity and deterministic Workspace sequence, deliberately separate from ADR-086's legacy PgEventLog cursor), the persist-first publisher, the convergence contract for package-local projections, and the backend composition helper. maistro-core is a published library (AGENTS.md) and these are its importable surfaces for downstream products; no process entry point in this repository subscribes the wiring yet, so unreachable is their correct state for the same reason the rest of the published library is baselined. #62 is where a shipped process adopts the envelope.",
       "modules": [
         "maistro.events.convergence",
-        "maistro.events.pg_envelope",
         "maistro.events.publisher",
         "maistro.events.wiring"
       ]
@@ -489,10 +488,9 @@
       "id": "canvas-legacy-layerrecord",
       "subsystem": "Canvas ability",
       "disposition": "RETIRE",
-      "rationale": "ADR-044 (Accepted) names store.py, compositor.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules, with no data migration and new work on AssetInstance. Verified against the ADR body, not inferred. Retired once ADR-045's cutover lands; ADR-045 is still Proposed and routes.py still wires the legacy executor.",
+      "rationale": "ADR-044 (Accepted) names store.py, compositor.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules, with no data migration and new work on AssetInstance. Verified against the ADR body, not inferred. Retired once ADR-045's cutover lands; ADR-045 is still Proposed and routes.py still wires the legacy executor. store.py left this list when the supported server wired it as the /v2/canvas persistence layer (#851): reachable production code is not an unreachable-module disposition.",
       "replaced_by": "maistro_canvas.canvas.asset_store / asset_tool (ADR-044)",
       "modules": [
-        "maistro_canvas.canvas.store",
         "maistro_canvas.canvas.tool"
       ]
     },

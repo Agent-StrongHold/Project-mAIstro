@@ -13,6 +13,7 @@ from services.dag_execution_scope import (
     authorize_hive_dag_scope,
 )
 from services.edit_lock import diff_dag_snapshots, mark_edited
+from services.request_principal import optional_actor_id
 
 from routes.audit import log_audit
 
@@ -82,8 +83,7 @@ def _now() -> datetime:
 
 
 def _actor(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    return str(user.get("id") or "system")
+    return optional_actor_id(request, default="system")
 
 
 async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str, Any]) -> None:
