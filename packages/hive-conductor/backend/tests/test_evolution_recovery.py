@@ -199,6 +199,7 @@ async def _admit_stranded_run(
         graph,
         provenance=provenance,
         initial_status=RunStatus.QUEUED,
+        actor_principal_id="evolve-user",
     )
 
 
