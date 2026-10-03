@@ -12,6 +12,7 @@ description).
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +25,7 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.mark.ac("ADR-076/AC-4")
 def test_ordinary_requests_are_advertised_as_version_1(client: TestClient) -> None:
     response = client.get("/v1/models")
     assert response.status_code == 200
@@ -76,12 +78,35 @@ def test_body_field_selects_the_version_and_the_route_still_gets_its_body(
     assert response.json()["task_id"]
 
 
+@pytest.mark.ac("ADR-076/AC-1")
 def test_selector_forms_agree_on_the_negotiated_version(client: TestClient) -> None:
     accept = client.get("/v1/models", headers={"Accept": "application/vnd.maistro.v1"})
     query = client.get("/v1/models?api_version=1")
     body = client.post("/v1/models", json={"api_version": 1})
     for response in (accept, query, body):
         assert response.headers["maistro-api-version"] == "1"
+
+
+@pytest.mark.ac("ADR-076/AC-2")
+def test_business_routes_have_no_path_version_twins(client: TestClient) -> None:
+    """ADR-076 AC-2: the URL space is not forked per version.
+
+    Read from the client-facing OpenAPI table, not the internal router
+    objects: no path versioned differently from the stable ``/v1`` mount may
+    serve the same resource (a ``/vK`` path whose suffix duplicates a ``/v1``
+    route). The canvas ``/v2/canvas`` mount is that surface's own mechanism
+    with no ``/v1`` twins, so it satisfies this property rather than being
+    special-cased away.
+    """
+
+    paths = client.get("/openapi.json").json()["paths"]
+    v1_suffixes = {p[len("/v1") :] for p in paths if p.startswith("/v1/")}
+    assert v1_suffixes, "the stable /v1 mount is where business routes live"
+    for path in paths:
+        match = re.fullmatch(r"/v(\d+)(/.*)", path)
+        if match is None or match.group(1) == "1":
+            continue
+        assert match.group(2) not in v1_suffixes, f"{path} duplicates a /v1 route"
 
 
 def test_unsupported_version_short_circuits_as_not_acceptable(

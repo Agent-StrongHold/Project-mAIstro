@@ -18,6 +18,7 @@ from starlette.testclient import TestClient
 
 from maistro.api_versioning import (
     API_VERSIONS,
+    DEFAULT_API_VERSION,
     ApiVersion,
     VersionNegotiationMiddleware,
     negotiated_api_version,
@@ -74,6 +75,7 @@ def _client(
     return TestClient(Starlette(routes=[Mount("/", app=wrapped)]))
 
 
+@pytest.mark.ac("ADR-076/AC-4")
 @pytest.mark.contract("boundary")
 def test_no_selector_serves_the_default_and_advertises_it() -> None:
     response = _client().get("/v1/tasks")
@@ -82,6 +84,26 @@ def test_no_selector_serves_the_default_and_advertises_it() -> None:
     assert response.headers["maistro-api-default"] == "1"
     # A silent client keeps plain JSON; the version lives in headers.
     assert response.headers["content-type"] == "application/json"
+
+
+@pytest.mark.ac("ADR-076/AC-3")
+@pytest.mark.contract("boundary")
+def test_additive_change_ships_within_version_1_without_breaking_silent_clients() -> None:
+    """AC-3 exercised by this change itself: negotiation shipped within version 1.
+
+    The version table still advertises exactly one, non-deprecated version, and
+    a client that predates the negotiation layer entirely (no Accept media
+    type, no query/body selector) keeps the exact pre-change response shape:
+    200, plain ``application/json``, no deprecation signalling.
+    """
+
+    assert set(API_VERSIONS) == {1}
+    assert DEFAULT_API_VERSION == 1
+    assert not API_VERSIONS[1].deprecated
+    response = _client().get("/v1/tasks")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert "deprecation" not in response.headers
 
 
 @pytest.mark.contract("boundary")
@@ -123,6 +145,8 @@ def test_body_field_selects_the_version_and_the_handler_still_sees_the_body() ->
     }
 
 
+@pytest.mark.ac("ADR-076/AC-1")
+@pytest.mark.ac("ADR-076/AC-2")
 @pytest.mark.contract("boundary")
 def test_all_selector_forms_resolve_to_the_same_version() -> None:
     client = _client()
@@ -213,6 +237,7 @@ def test_skip_prefix_bypasses_negotiation_entirely() -> None:
     assert "maistro-api-version" not in response.headers
 
 
+@pytest.mark.ac("ADR-076/AC-5")
 @pytest.mark.contract("boundary")
 def test_deprecated_version_signals_deprecation_sunset_and_link() -> None:
     versions = {

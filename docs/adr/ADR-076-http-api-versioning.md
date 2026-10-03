@@ -27,6 +27,12 @@ history:
     date: 2026-06-10
   - status: Implemented
     date: 2026-10-01
+ac-modules:
+  AC-1: maistro.api_versioning
+  AC-2: maistro.api_versioning
+  AC-3: maistro.api_versioning
+  AC-4: maistro.api_versioning
+  AC-5: maistro.api_versioning
 ---
 
 # ADR-076: HTTP API Versioning via content negotiation
@@ -146,29 +152,38 @@ complete and keeps every client at parity.
 
 ## Acceptance criteria
 
-- [x] A client selects an API version via `Accept: application/vnd.maistro.vN` or an `api_version`
-      body/query field; both forms resolve to the same negotiated version.
-      *(Implemented and proven by the test files named above.)*
-- [x] A single endpoint serves all versions; there is no `/vN/.../...` route duplication per version.
-      *(Business routes stayed on their stable `/v1` mounts; the middleware serves the version axis.)*
-- [x] An additive change (new optional field or new route) ships without incrementing the negotiated
-      version and does not break a client requesting the prior version.
-      *(This change itself is the exercised case: new response headers and a new negotiation layer
-      shipped within version 1.)*
-- [ ] A breaking change increments the negotiated version, and the prior version keeps working until
-      its sunset.
-      *(Mechanism in place — a version table with deprecation metadata — but no v2 exists yet to
-      exercise it.)*
-- [x] A request omitting a version selector resolves to the advertised default version, and the
-      response states which version served it.
-      *(Proven: `Maistro-API-Version` / `Maistro-API-Default` on every negotiated response.)*
-- [x] A deprecated version's responses carry `Deprecation` / `Sunset` / `Link` headers naming the
-      migration path.
-      *(Proven against a fixture version; nothing is deprecated today, so no live traffic carries
-      them.)*
-- [ ] Every operation exposed in any UI (TUI, web) is reachable through the HTTP API (parity check).
-      *(A standing property of the canonical-surface principle, not a property the negotiation layer
-      can prove; tracked by that principle, not closed here.)*
+Measured criteria. Each is bound to `maistro.api_versioning` (`ac-modules`)
+and proven by `@pytest.mark.ac("ADR-076/AC-N")` tests in
+`packages/maistro-core/tests/api_versioning/test_middleware.py`,
+`packages/maistro-server/tests/api/test_version_negotiation.py`, and
+`packages/hive-conductor/backend/tests/test_version_negotiation.py`.
+
+- [x] **AC-1** A client selects an API version via `Accept: application/vnd.maistro.vN` or an
+      `api_version` body/query field; both forms resolve to the same negotiated version.
+- [x] **AC-2** A single endpoint serves all versions; there is no `/vN/.../...` route duplication
+      per version. Business routes stay on their stable `/v1` mounts; the middleware serves the
+      version axis.
+- [x] **AC-3** An additive change (new optional field or new route) ships without incrementing the
+      negotiated version and does not break a client requesting the prior version. Exercised by
+      this change itself: the negotiation layer and its response headers shipped within version 1,
+      and a selector-less client is served unchanged.
+- [x] **AC-4** A request omitting a version selector resolves to the advertised default version,
+      and the response states which version served it (`Maistro-API-Version` /
+      `Maistro-API-Default`).
+- [x] **AC-5** A deprecated version's responses carry `Deprecation` / `Sunset` / `Link` headers
+      naming the migration path. Proven against a fixture version; nothing is deprecated today, so
+      no live traffic carries them.
+
+Deliberately unmeasured properties — no **AC-N** id, because a criterion this
+document cannot prove must not sit under an `Implemented` claim (that is
+exactly what the acceptance-state gate refuses; `scripts/check-ac-state.py`):
+
+- A breaking change increments the negotiated version, and the prior version keeps working until
+  its sunset. *Mechanism in place — a version table with deprecation metadata — but no v2 exists
+  yet to exercise it. This gains an AC id when the first v2 ships.*
+- Every operation exposed in any UI (TUI, web) is reachable through the HTTP API (parity check).
+  *A standing property of the canonical-surface principle, not a property the negotiation layer
+  can prove; tracked by that principle, not closed here.*
 
 ## Consequences
 
