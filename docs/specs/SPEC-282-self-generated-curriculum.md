@@ -60,6 +60,15 @@ can admit on its own:
 | `solver_solves` | unsolvable in practice — an independent solver (a separate seam from the proposer) cannot solve it |
 | `baseline_fails` | vacuous — a trivial baseline answer passes the verifier |
 
+Explicitly **unverified by design**: a draft whose *statement leaks the
+answer* is not rejected by any gate. Leakage detection is a difficulty-
+calibration concern, not a solvability/validity one — a leaking challenge is
+trivially solvable, so every gate affirms and it admits. This boundary is
+pinned by test (`test_answer_leaking_draft_admits_and_is_recorded`): the gate
+set must never be described as catching answer leakage, and any future
+leakage check would be a new gate (new validator version), not a silent
+extension of an existing one.
+
 Fail closed throughout: a gate with a missing input (no solver seam, no
 baseline answer, no reference solution) or one whose probe raises is recorded
 as *not executed and not passed*. Admission requires every gate executed **and**
@@ -157,7 +166,10 @@ promote through the #21/#116 candidate/evaluation/promotion contract.
   satisfying every gate is admitted; a missing solver, baseline answer, or
   reference solution is a recorded refusal (gate `executed=False`,
   `passed=False`); a decision with empty or partial gate outcomes never
-  admits.
+  admits. An answer-leaking draft (statement contains the answer) is
+  **explicitly unverified**: it admits, because the gates check
+  solvability/validity, not difficulty — recorded here and pinned by test
+  rather than claimed as a rejection.
 - [ ] **AC-2** The reference-solvability gate refuses a draft whose reference
   solution does not satisfy its own verifier.
 - [ ] **AC-3** The independent-solver gate requires an answer from the

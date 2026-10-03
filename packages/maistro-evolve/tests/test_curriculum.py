@@ -226,6 +226,26 @@ class TestProtectedGates:
         assert well_formed is not None and not well_formed.passed
         assert "not a callable checker" in well_formed.detail
 
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-1")
+    async def test_answer_leaking_draft_admits_and_is_recorded(self):
+        """AC-1: answer leakage is explicitly unverified, not rejected.
+
+        The gates check solvability/validity, not difficulty: a statement that
+        contains its own answer is trivially solvable, so every gate affirms
+        and the draft admits. SPEC-282 records this boundary; this test pins
+        it so the gate set is never *described* as catching leakage, and any
+        future leakage check must arrive as a new gate (new validator
+        version), not a silent extension.
+        """
+        leaking = _draft(
+            statement="What is 2+2? The answer is 4.",
+            acceptance="the answer is 4",
+        )
+        decision = await validate_challenge(leaking, solver=_solver, baseline_answer="")
+        assert decision.admitted
+        assert all(o.executed and o.passed for o in decision.outcomes)
+
 
 class TestCurriculumStore:
     @pytest.mark.asyncio
