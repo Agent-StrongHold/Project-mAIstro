@@ -181,6 +181,67 @@ class TestHydration:
         assert memory.memory_id == "m1"
 
 
+class TestSnapshotReconciliation:
+    """The manager's by-ID reconciliation of the snapshot hydration path.
+
+    Every ``list_by_scope`` implementation filters deleted records, so the
+    snapshot ``ensure_hydrated()`` fetches cannot carry the tombstones
+    ``hydrate`` consumes; records that left the durable store after hydration
+    must be reconciled away by ID, and the explicit-``memories`` path must
+    neither read the store nor reconcile (its caller owns the record set).
+    """
+
+    async def test_explicit_memories_skip_the_durable_read_and_reconciliation(self) -> None:
+        from maistro.memory.episodic.store import InMemoryEpisodicStore
+
+        class CountingStore(InMemoryEpisodicStore):
+            reads = 0
+
+            async def list_by_scope(self, **kwargs: Any) -> list[EpisodicMemory]:
+                CountingStore.reads += 1
+                return await super().list_by_scope(**kwargs)
+
+        store = CountingStore()
+        manager = WorkingMemoryManager(workspace_id="ws-a", episodic_store=store)
+
+        assert (
+            await manager.ensure_hydrated(
+                memories=[_mem("postgres needs pgvector", memory_id="m1")]
+            )
+            is True
+        )
+        assert CountingStore.reads == 0
+        hits = await manager.projection().recall_lexical("postgres")
+        assert [h.memory.memory_id for h in hits] == ["m1"]
+
+    async def test_snapshot_reconciliation_drops_records_missing_from_durable(self) -> None:
+        from maistro.memory.episodic.store import InMemoryEpisodicStore
+
+        store = InMemoryEpisodicStore()
+        await store.store(_mem("postgres needs pgvector", memory_id="m1"))
+        manager = WorkingMemoryManager(workspace_id="ws-a", episodic_store=store)
+        # A record that was hydrated earlier but has since left the durable
+        # store (deleted, or absorbed by a consolidation): the durable snapshot
+        # no longer returns it.
+        assert (
+            await manager.ensure_hydrated(
+                memories=[
+                    _mem("postgres needs pgvector", memory_id="m1"),
+                    _mem("absorbed consolidation note", memory_id="m2"),
+                ]
+            )
+            is True
+        )
+        assert await manager.projection().recall_lexical("absorbed") != []
+
+        # Snapshot hydrate: m2 is absent from the read, so reconciliation
+        # drops it; m1 is unchanged and stays searchable.
+        assert await manager.ensure_hydrated() is True
+        assert await manager.projection().recall_lexical("absorbed") == []
+        hits = await manager.projection().recall_lexical("postgres")
+        assert [h.memory.memory_id for h in hits] == ["m1"]
+
+
 class TestIndexedRecall:
     async def test_bm25_ranks_rare_term_above_common_term(self) -> None:
         projection = _projection()

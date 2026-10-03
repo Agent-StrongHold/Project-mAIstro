@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +50
-  tests/: +4
+  packages/maistro-core/tests: +55
+  tests/: +12
 ---
 # 301 per-Workspace working-memory projection (Ladybug-shaped hot layer)
 
@@ -93,3 +93,35 @@ playbook:
 - The candidate ledger prunes the 6 stale `identity/__init__.py::` rows and
   the 4 cleared `__getattr__` rows (1374 → 1364 findings, all classified,
   none unbanked).
+
+## Coverage-gate repair round (diff coverage, this branch)
+
+The merge-queue evaluation failed `Coverage gate (publish-set floor + diff
+coverage)` on three files; each finding is a real untested behavior, not a
+scanner artifact, so the repair is tests rather than exemptions:
+
+- `scripts/bench_working_memory.py` measured 0%: the root suite is the
+  `scripts` producer and nothing imported the benchmark. New
+  `tests/test_bench_working_memory.py` (+8 `tests/` node IDs) runs the real
+  measurement path offline at small scale and pins the properties the
+  published numbers depend on: deterministic corpus generation with canonical
+  provenance, a deterministic normalised hashed embedder, percentile tails,
+  the report-arithmetic consistency (per-record hydration cost), and the JSON
+  payload shape `working-memory-bench.yml` publishes (both `--output`
+  branches of `main()`).
+- `context_assembly.py` 88.7%: the uncovered lines were the Layer 4 failure
+  and rendering edges — long-memory snippet truncation, `entity_context`
+  raising mid-read (serve none, log loudly, trigger the ADR §6 corruption
+  heal), the corruption-heal rebuild itself failing (logged, durable path
+  keeps answering), and the rebuild throttle that stops a deterministically
+  failing read from re-indexing on every retrieval. Three tests in
+  `test_working_context_layers.py` cover exactly those paths.
+- `manager.py` 75% branch: the `ensure_hydrated` arcs for the explicit
+  `memories=` path (no durable read, no reconciliation) and the by-ID stale
+  reconciliation (a record that left the durable store after hydration is
+  dropped from the projection on the next snapshot hydrate). Two tests in
+  `test_working_memory.py`.
+
+Net +13 node IDs (+5 `packages/maistro-core/tests`, +8 `tests/`).
+`check-diff-coverage.py coverage.xml --base 4fd7801fb` exit 0 over both
+producers (core + root `tests/`); `check-suite-inventory.py` ok.

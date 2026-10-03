@@ -228,6 +228,87 @@ class TestLayer4GraphContext:
         assert manager.degraded_reason() != ""
 
 
+class TestLayer4FailureAndRendering:
+    async def test_long_memory_snippets_are_truncated_not_dumped(self) -> None:
+        store = InMemoryEpisodicStore()
+        filler = "x" * 400
+        await store.store(_mem(f"PostgreSQL note with a long body {filler}", memory_id="m1"))
+        policy = _policy(store, manager=_manager(store))
+
+        text = await policy.layer4(project_id="proj-1")
+        assert "mentioned in" in text
+        # The snippet is capped so one memory cannot flood the layer...
+        assert "..." in text
+        # ...and the untruncated body never renders.
+        assert filler not in text
+
+    async def test_entity_context_failure_heals_for_the_next_call(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A mid-read entity-context failure is the layer4 corruption signal:
+        serve none, log loudly, and run the ADR §6 discard-and-rebuild so the
+        next call is hot again — with no durable write anywhere."""
+        store = InMemoryEpisodicStore()
+        await store.store(_mem("PostgreSQL and LadybugDB split the tiers", memory_id="m1"))
+        manager = _manager(store)
+        policy = _policy(store, manager=manager)
+        assert await manager.ensure_hydrated() is True
+        healthy = manager.projection()
+
+        async def broken_entity_context(self: Any, *, project_id: str | None = None) -> Any:
+            raise RuntimeError("torn entity index")
+
+        monkeypatch.setattr(type(healthy), "entity_context", broken_entity_context)
+
+        with caplog.at_level("ERROR"):
+            assert await policy.layer4(project_id="proj-1") == ""
+        assert any("layer4 graph context failed" in record.message for record in caplog.records)
+        assert manager.projection() is not healthy
+        assert manager.degraded_reason() == ""
+        # The rebuild replaced the graph; the context is servable again once
+        # the failure is lifted.
+        monkeypatch.undo()
+        assert await policy.layer4(project_id="proj-1") != ""
+
+    async def test_rebuild_failure_is_logged_and_retries_are_throttled(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When even the corruption-heal rebuild fails, the policy must say so
+        and keep answering from the durable path — and a deterministically
+        failing read must not turn every retrieval into a re-index attempt."""
+        store = InMemoryEpisodicStore()
+        await store.store(_mem("PostgreSQL and LadybugDB split the tiers", memory_id="m1"))
+        manager = _manager(store)
+        policy = _policy(store, manager=manager)
+        assert await manager.ensure_hydrated() is True
+        healthy = manager.projection()
+
+        async def broken_entity_context(self: Any, *, project_id: str | None = None) -> Any:
+            raise RuntimeError("torn entity index")
+
+        monkeypatch.setattr(type(healthy), "entity_context", broken_entity_context)
+        rebuild_calls = {"count": 0}
+
+        async def failing_rebuild(self: Any, **_kwargs: Any) -> bool:
+            rebuild_calls["count"] += 1
+            raise RuntimeError("backend down during rebuild")
+
+        monkeypatch.setattr(WorkingMemoryManager, "rebuild", failing_rebuild)
+
+        with caplog.at_level("ERROR"):
+            first = await policy.layer4(project_id="proj-1")
+            second = await policy.layer4(project_id="proj-1")
+        # Both reads are honestly empty — never a fabricated graph context.
+        assert first == ""
+        assert second == ""
+        # The rebuild ran once (throttled), its failure is on the record...
+        assert rebuild_calls == {"count": 1}
+        assert any("corruption-heal rebuild failed" in record.message for record in caplog.records)
+        # ...and the graph itself was never discarded by a rebuild that could
+        # not complete.
+        assert manager.projection() is healthy
+
+
 class TestAssembleIntegration:
     async def test_assemble_includes_layer4_when_wired(self) -> None:
         store = InMemoryEpisodicStore()
