@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from services import dashboard_layouts
 from services.dashboard_metrics import build_dashboard_metrics
 from services.dashboard_safety import sanitize_dashboard_layout
+from services.request_principal import require_actor_id
 
 _DEMO_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -40,11 +41,7 @@ def _user_id(request: Request) -> str:
     path. The middleware does cover it today; the refusal is what keeps that
     true if it ever stops.
     """
-    user = getattr(request.state, "user", None) or {}
-    principal = user.get("id") or user.get("username")
-    if not principal:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(principal)
+    return require_actor_id(request)
 
 
 class WidgetConfig(BaseModel):
