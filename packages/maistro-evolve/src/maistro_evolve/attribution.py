@@ -79,13 +79,19 @@ PRODUCER_VERSIONS: dict[str, str] = {
 
 
 class ProducerKind(StrEnum):
-    """What kind of search-process component produced a candidate."""
+    """What kind of search-process component produced a candidate.
+
+    Closed on purpose: a kind with no producing path is dead taxonomy (the
+    former ``SOURCE`` member for external imports was removed exactly that
+    way). Reintroduce a kind only together with the producer that emits it —
+    a kind nothing can produce cannot be credited, and uncreditable taxonomy
+    is noise in an audit surface.
+    """
 
     GENERATOR = "generator"  # creates candidates (seed, crossover)
     MUTATION_OPERATOR = "mutation_operator"  # typed genome mutation operators
     PROMPT_OPERATOR = "prompt_operator"  # free-text prompt evolution (reflect)
     SEARCH_OPERATOR = "search_operator"  # guided meta-search (hyper-mutator)
-    SOURCE = "source"  # external source (scout objective, human, import)
 
 
 class ProducerIdentity(BaseModel):
@@ -257,6 +263,10 @@ class ProducerLedger:
         self._events: list[CreditEvent] = []
         self._origins: dict[str, CandidateOrigin] = {}
         self._stats: dict[tuple[str, str], ProducerStats] = {}
+        # producer key -> the identity that produced it (the audit report
+        # needs the structured identity — kind/name/version — to evaluate the
+        # repeated-regressor flag per row).
+        self._producer_identities: dict[str, ProducerIdentity] = {}
 
     # ------------------------------------------------------------------ audit
 
@@ -323,7 +333,7 @@ class ProducerLedger:
         candidates without an origin — unattributable candidates (e.g. seed
         genomes) are simply outside the credit system, not errors.
         """
-        origin = self._origins.get(genome.id)
+        origin = self.origin_of(genome.id)
         if origin is None:
             if genome.origin is not None:
                 origin = self.register_candidate(genome)
@@ -394,6 +404,7 @@ class ProducerLedger:
     def _record(self, event: CreditEvent) -> CreditEvent:
         self._events.append(event)
         key = (event.producer.key(), event.context_key)
+        self._producer_identities.setdefault(key[0], event.producer)
         stats = self._stats.get(key)
         if stats is None:
             stats = ProducerStats(producer_key=key[0], context_key=key[1])
@@ -426,18 +437,50 @@ class ProducerLedger:
         ``repeated_regression_limit`` regressions AND regression-majority
         signal. The flag never expires — negative credit is retained."""
         stats = self.stats(producer, context_key)
-        if stats is None:
-            return False
-        return stats.regressions >= self._repeated_regression_limit and stats.regression_rate >= 0.5
+        return stats is not None and self._is_repeated_regressor(
+            stats, self._repeated_regression_limit
+        )
 
-    def attribution_report(self, context_key: str | None = None) -> list[dict[str, Any]]:
-        """Auditable dump of the credit log (optionally scoped to one context)."""
+    def attribution_report(self, context_key: str | None = None) -> dict[str, Any]:
+        """Auditable dump of the credit state (optionally scoped to one context).
+
+        Two views of the same append-only log: ``events`` is the strictly
+        sequenced credit history exactly as recorded, ``producers`` the folded
+        per-(producer, context) statistics with the repeated-regressor flag —
+        an auditor can reconcile one from the other because neither view is
+        rewritten. ``schema`` states which record shape a reader got.
+        """
         events = (
             self._events
             if context_key is None
             else [e for e in self._events if e.context_key == context_key]
         )
-        return [e.model_dump() for e in events]
+        producers: list[dict[str, Any]] = []
+        for s in self.all_stats():
+            if context_key is not None and s.context_key != context_key:
+                continue
+            producers.append(
+                {
+                    "producer": s.producer_key,
+                    "context": s.context_key,
+                    "attempts": s.attempts,
+                    "improvements": s.improvements,
+                    "regressions": s.regressions,
+                    "failures": s.failures,
+                    "neutral": s.neutral,
+                    "total_delta": s.total_delta,
+                    "last_delta": s.last_delta,
+                    "success_rate": round(s.success_rate, 4),
+                    "repeated_regressor": self.is_repeated_regressor(
+                        self._producer_identities[s.producer_key], s.context_key
+                    ),
+                }
+            )
+        return {
+            "schema": ATTRIBUTION_SCHEMA_VERSION,
+            "events": [e.model_dump() for e in events],
+            "producers": producers,
+        }
 
     # ---------------------------------------------------- operator favoring
 

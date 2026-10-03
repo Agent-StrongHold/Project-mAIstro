@@ -49,3 +49,13 @@ ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test
 cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:276
 cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:319
 43d02d6398a465e92321d241a2d237ec7428e017:packages/maistro-core/tests/tasks/test_idempotency.py:generic-api-key:754
+# ---- M4-A8 producer-attribution tests (#115) ----
+# gitleaks' generic-api-key rule matches the keyword-argument shape
+# `...context_key, kind=ProducerKind.MUTATION_OPERATOR` in the ledger's
+# operator-weighting tests: the rule reads `key, kind=<Entropyish>` as an
+# assignment of a key-like value. What follows is a class qualifier, not a
+# value — there is no secret on the line (gitleaks' own --redact output shows
+# only the argument text). Fingerprinted to the introducing commit rather
+# than rewording working test code.
+bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:361
+bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:375

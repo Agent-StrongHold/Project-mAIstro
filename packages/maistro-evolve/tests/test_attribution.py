@@ -557,6 +557,10 @@ class TestNegativeCredit:
         assert stats.regressions == 3 and stats.improvements == 0
         assert ledger.is_repeated_regressor(producer, context.key())
         assert all(e.candidate_id == "" for e in ledger.events)
+        # The audit report surfaces the retained flag beside the counters.
+        row = ledger.attribution_report(context.key())["producers"][0]
+        assert row["repeated_regressor"] is True
+        assert row["regressions"] == 3 and row["neutral"] == 0
 
     def test_stub_failures_counted_without_diluting_success_rate(self) -> None:
         ledger = ProducerLedger()
@@ -614,15 +618,24 @@ class TestAuditAndScoping:
         ledger.credit(child, "proxy_ifeval", 0.9, context=proxy)
         ledger.credit(child, "proxy_ifeval", 0.1, context=real)
         report = ledger.attribution_report()
-        assert len(report) == 2
-        assert [e["sequence"] for e in report] == [1, 2]
-        assert report[0]["producer"]["name"] == "mutate_prompt"
-        assert report[0]["producer"]["version"] == PRODUCER_VERSIONS["mutate_prompt"]
-        assert report[0]["context_key"] == proxy.key()
-        # Scoped report: only the requested comparable context.
+        assert report["schema"] == ATTRIBUTION_SCHEMA_VERSION
+        assert len(report["events"]) == 2
+        assert [e["sequence"] for e in report["events"]] == [1, 2]
+        assert report["events"][0]["producer"]["name"] == "mutate_prompt"
+        assert report["events"][0]["producer"]["version"] == PRODUCER_VERSIONS["mutate_prompt"]
+        assert report["events"][0]["context_key"] == proxy.key()
+        # Folded per-producer view beside the raw log, carrying the retained-
+        # negative-credit flag (AC4) so one dump answers both audit questions.
+        assert len(report["producers"]) == 2
+        by_context = {row["context"]: row for row in report["producers"]}
+        assert by_context[proxy.key()]["improvements"] == 1
+        assert by_context[real.key()]["regressions"] == 1
+        assert all(row["repeated_regressor"] is False for row in report["producers"])
+        # Scoped report: only the requested comparable context, in both views.
         scoped = ledger.attribution_report(context_key=real.key())
-        assert len(scoped) == 1
-        assert scoped[0]["outcome"] == "regression"
+        assert len(scoped["events"]) == 1
+        assert scoped["events"][0]["outcome"] == "regression"
+        assert [row["context"] for row in scoped["producers"]] == [real.key()]
 
     def test_eval_context_key_is_scope_sensitive(self) -> None:
         a = EvalContext(fidelity="proxy", benchmarks=("b", "a"), scope="")
