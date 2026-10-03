@@ -12,6 +12,7 @@ UsagePayload = tuple[str, str, int, int]
 
 class InMemoryQuotaTracker:
     def __init__(self) -> None:
+        self._invocations: set[str] = set()
         self._usage: dict[tuple[str, str], dict[str, int]] = defaultdict(
             lambda: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "request_count": 0},
         )
@@ -42,16 +43,64 @@ class InMemoryQuotaTracker:
         entry["request_count"] += 1
         return {"provider": provider, "cycle_key": key[1], **entry}
 
+    async def record_invocation(
+        self,
+        invocation_id: str,
+        provider: str,
+        billing_cycle: str,
+        input_tokens: int,
+        output_tokens: int,
+        usage_reported: bool,
+    ) -> dict[str, object]:
+        """Record one physical Invocation once, including missing evidence."""
+        if invocation_id in self._invocations:
+            key = (provider, cycle_key(billing_cycle))
+            return {"provider": provider, "cycle_key": key[1], **self._usage[key]}
+        self._invocations.add(invocation_id)
+        if usage_reported:
+            return await self.record_usage(provider, billing_cycle, input_tokens, output_tokens)
+        await self.record_unreported(provider, billing_cycle)
+        key = (provider, cycle_key(billing_cycle))
+        return {"provider": provider, "cycle_key": key[1], **self._usage[key]}
+
+    async def record_unreported(self, provider: str, billing_cycle: str) -> None:
+        """Keep missing provider usage visible without charging zero tokens."""
+        key = (provider, cycle_key(billing_cycle))
+        entry = self._usage[key]
+        entry.setdefault("unreported_count", 0)
+        entry["unreported_count"] += 1
+        entry["usage_complete"] = False
+        entry.setdefault("input_tokens", 0)
+        entry.setdefault("output_tokens", 0)
+        entry.setdefault("total_tokens", 0)
+        entry.setdefault("request_count", 0)
+        entry["request_count"] += 1
+
     async def get_usage_pct(
         self,
         provider: str,
         billing_cycle: str,
         free_tokens: int,
-    ) -> float:
+    ) -> float | None:
+        """Usage as a fraction of the free allowance, or ``None`` when unknown.
+
+        #718: a provider/cycle whose evidence is incomplete (at least one call
+        recorded without a provider usage report) must not present a measured
+        percentage. The unreported call's tokens are unknowable, so any ratio
+        computed over the reported remainder would read as complete while
+        understating spend — the false ``0.0``/full-headroom presentation this
+        method used to produce. Callers convey ``None`` as "usage unknown",
+        never as zero.
+        """
         if free_tokens <= 0:
             return 0.0
-        key = (provider, cycle_key(billing_cycle))
-        entry = self._usage[key]
+        entry = self._usage.get((provider, cycle_key(billing_cycle)))
+        if entry is None:
+            # No call was ever recorded for this provider/cycle: vacuously
+            # complete, a measured zero, not missing evidence.
+            return 0.0
+        if entry.get("usage_complete") is False or entry.get("unreported_count"):
+            return None
         return entry["total_tokens"] / free_tokens
 
     async def get_all_usage(self) -> list[dict[str, object]]:

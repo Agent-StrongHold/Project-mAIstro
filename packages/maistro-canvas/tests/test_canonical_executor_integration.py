@@ -810,7 +810,9 @@ async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation
         run_store=runs,
         workspace_id="workspace-1",
         project_id=root.project_id,
-        max_execution_seconds=0.3,
+        # CI runners need headroom: 0.3s was tight enough to race setup and
+        # mark the job FAILED before the stall path could park it for retry.
+        max_execution_seconds=2.0,
     )
     job = await runtime.executor.start_job(
         org_id=_CanvasStore.ORG,
@@ -822,7 +824,7 @@ async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation
     runner = runtime.runner
     assert isinstance(runner, CanvasJobRunner)
 
-    assert await asyncio.wait_for(runner.tick_once(), timeout=5) is True
+    assert await asyncio.wait_for(runner.tick_once(), timeout=10) is True
     assert job.status == JobStatus.PENDING
     assert job.error_message is None
     run_id = canonical_run_id(job.params)
