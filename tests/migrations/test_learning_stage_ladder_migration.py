@@ -1,4 +1,8 @@
-"""Migration 048 lands the knowledge-stage ladder, and un-lands it (M4-B1/ADR-103).
+"""Migration 049 lands the knowledge-stage ladder, and un-lands it (M4-B1/ADR-103).
+
+Numbered 048 when written; develop's #398 claimed that id, so the revision
+re-parents onto `048_canvas_job_retry_backoff` as 049 — the same renumbering
+every develop collision in this chain has gone through.
 
 The upgrade/downgrade round trip against a real PostgreSQL — the same shape
 migration 031's landing demanded for the episodic provenance columns: a
@@ -68,7 +72,7 @@ def _ledger_table() -> str | None:
 
 
 def test_upgrade_lands_the_stage_columns_and_the_ledger() -> None:
-    result = _alembic("upgrade", "048")
+    result = _alembic("upgrade", "049")
     assert result.returncode == 0, result.stderr
 
     columns = _learning_stage_columns()
@@ -82,8 +86,8 @@ def test_upgrade_lands_the_stage_columns_and_the_ledger() -> None:
 
 
 def test_downgrade_unlands_the_whole_ladder() -> None:
-    _alembic("upgrade", "048")
-    result = _alembic("downgrade", "047")
+    _alembic("upgrade", "049")
+    result = _alembic("downgrade", "048")
     assert result.returncode == 0, result.stderr
 
     assert _learning_stage_columns() == {}
@@ -91,8 +95,8 @@ def test_downgrade_unlands_the_whole_ladder() -> None:
 
 
 def test_re_upgrading_over_a_downgraded_schema_restores_the_ladder() -> None:
-    _alembic("downgrade", "047")
-    result = _alembic("upgrade", "048")
+    _alembic("downgrade", "048")
+    result = _alembic("upgrade", "049")
     assert result.returncode == 0, result.stderr
     assert set(_learning_stage_columns()) == set(_STAGE_COLUMNS)
     assert _ledger_table() is not None

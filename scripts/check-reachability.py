@@ -76,6 +76,7 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         "packages/maistro-canvas/frontend/alembic/env.py",
         "packages/maistro-canvas/frontend/alembic/versions/001_initial_schema.py",
         "packages/maistro-canvas/frontend/alembic/versions/003_canvas_job_lease_203.py",
+        "packages/maistro-canvas/frontend/alembic/versions/004_canvas_retry_backoff_398.py",
         # Book-maker POC backend surfaces with no runtime path
         # (packages/maistro-canvas/frontend/server/).
         "packages/maistro-canvas/frontend/server/config.py",

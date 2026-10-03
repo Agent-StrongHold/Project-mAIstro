@@ -14,8 +14,13 @@ reusable institutional knowledge on the one ``Learning`` record:
   accepted transition, written in the same transaction as the row update, so
   provenance is durable and auditable rather than recoverable after the fact.
 
-Revision ID: 048
-Revises: 047
+Numbered 048 when written; develop's #398 took that id first
+(`048_canvas_job_retry_backoff`), so per this chain's collision convention the
+revision re-parents onto it as 049 — the same renumbering 039/043/045 went
+through. One linear head, no duplicate revision ids.
+
+Revision ID: 049
+Revises: 048
 Create Date: 2026-10-01
 """
 
@@ -23,8 +28,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "048"
-down_revision = "047"
+revision = "049"
+down_revision = "048"
 branch_labels = None
 depends_on = None
 

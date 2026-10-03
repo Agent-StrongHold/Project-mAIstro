@@ -107,6 +107,11 @@ EXPECTED_TABLES = frozenset(
         "handler_invocations",
         "knowledge_nodes",
         "learnings",
+        # The append-only provenance ledger for the knowledge-stage ladder
+        # (049, M4-B1/ADR-103): one row per accepted MEMORY → LEARNING →
+        # VALIDATED → REPERTOIRE transition, written in the same transaction
+        # as the stage update itself.
+        "learning_stage_transitions",
         "memory_entries",
         # The NodeTemplate half of the reusable-definition model (020). Its
         # GraphTemplate sibling has been durable since 014; without this one a
@@ -120,6 +125,12 @@ EXPECTED_TABLES = frozenset(
         "prompt_labels",
         "prompts",
         "quota_usage",
+        # One immutable evidence row per canonical physical Invocation (041,
+        # #718): at-most-once quota accounting and explicit unreported usage
+        # evidence, projected into `quota_usage`.
+        "quota_invocation_evidence",
+        # Durable per-event identities that make `record_usage` retries and
+        # crash-ambiguous commits harmless (#1204).
         "quota_usage_events",
         # Schedule definitions and their fire cursors (016). Durable so that a
         # cursor survives a restart and two scheduler replicas share one rather

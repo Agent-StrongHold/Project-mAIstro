@@ -319,9 +319,13 @@ class TestTheChainRunsTheStore:
         )
         _alembic(empty_database, "upgrade", "head")
 
-        assert {"attempts", "max_attempts", "leased_by", "lease_expires_at"} <= _columns(
-            empty_database, "generation_jobs"
-        )
+        assert {
+            "attempts",
+            "max_attempts",
+            "leased_by",
+            "lease_expires_at",
+            "next_retry_at",
+        } <= _columns(empty_database, "generation_jobs")
         assert "canvas_blobs" in _tables(empty_database)
         assert _execute(empty_database, "SELECT id, org_id, layer_count FROM canvases") == [
             ("legacy", "", 0)

@@ -11,6 +11,9 @@ from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineG
 
 
 def _genome(name: str, approved: bool = True) -> PipelineGenome:
+    # Promotion now also requires measured capability evidence (#853), so the
+    # fixture carries a real, gate-passing score; the capability gate itself is
+    # exercised in test_rsi_safety.py's do-nothing promotion tests.
     return PipelineGenome(
         id=f"g-{name}",
         name=name,
@@ -34,6 +37,7 @@ def _genome(name: str, approved: bool = True) -> PipelineGenome:
             use_scout=False,
         ),
         eval_weights=EvalWeights(),
+        eval_scores={"code_rsi": 0.6},
         created_at=datetime.now(UTC).isoformat(),
         updated_at=datetime.now(UTC).isoformat(),
         approved_for_promotion=approved,
