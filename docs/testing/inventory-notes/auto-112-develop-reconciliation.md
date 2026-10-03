@@ -2,9 +2,12 @@
 
 inventory-delta:
   branch: auto-112
-  base: b4b9e187e29b44cc9f567fe9c15c14cb514844cb (origin/develop tip, merged in commit f06f33953)
+  base: b4b9e187e29b44cc9f567fe9c15c14cb514844cb (origin/develop tip, merged in commit f06f33953;
+    second sync of 8c8fc8d6706a merged in commit 3b1af5a52)
   suites:
-    packages/maistro-evolve/tests: 0   # still 799 collected; matches recorded inventory
+    packages/maistro-evolve/tests: 0   # 882 collected after the second develop sync (develop's own
+                                       # curriculum/calibration/lane tests came in with the merge);
+                                       # this branch adds/removes none of them
     tests/: 0                          # untouched by this branch (byte-identical to develop)
   new_notes: []
   notes: no test added or removed; two existing test_retrodiction.py cases were
@@ -86,3 +89,52 @@ gate against evidence:
   the identical 4410 in this environment (files byte-identical), so the drift
   is an environment-collection artifact, deliberately left unrecorded rather
   than baked into the inventory with `--update`.
+
+## Round 2 — second develop sync (8c8fc8d67) and the radon trusted-base move
+
+The lane re-blocked on a preserved in-worktree merge of the new develop tip
+8c8fc8d67 (M4-C fitness de-gaming, P0.8 store-boundary burn, M4-D curriculum).
+This round resolved it and re-proved every gate against the new trusted base:
+
+1. **Merge resolution (3b1af5a52).** Three import-block conflicts, all resolved
+   as the union — both sides' imports are load-bearing in the auto-merged
+   bodies: `cycle.py` keeps `passes_hard_gate` (prefilter
+   `observe_outcome`) and gains `evidence_method`; `hyper_mutator.py` keeps
+   the retrodiction/`EvalResult` imports and gains `evidence_method`;
+   `reflect.py` keeps `hard_gate_threshold` + retrodiction imports and gains
+   `evidence_method`.
+
+2. **radon ratchet (new trusted base made the old shapes regressive).** The
+   base's ledger moved under the branch: develop's M4-C simplification lowered
+   `hyper_mutator.py::hyper_mutate` to 15 while the merged (union) body sat at
+   16, and the branch-only blocks `retrodiction.py::decide` (C 17) and
+   `cycle.py::EvolutionCycle.run_cycle` (C 11) have no rows in the base ledger
+   at all. A candidate-side ledger row or grant cannot authorize this (the
+   ratchet reads the ledger and grants from the merge base), so the fix is
+   behavior-preserving decomposition to rank B or better:
+   - `hyper_mutator.py`: the per-candidate prefilter screen moved into
+     `_prefilter_screen` (returns `(decision, filtered)`); `hyper_mutate`
+     back to C(15), matching its row.
+   - `cycle.py`: mode selection moved into `EvolutionCycle._prefilter_for_mode`;
+     `run_cycle` B(9).
+   - `retrodiction.py`: `decide` (now A(5)) delegates to `_coverage_reason`
+     (A(4)), `_full_coverage_outcome` (B(10)) and `_reject_savings` (A(3));
+     same calls in the same order, same reason codes/details, same savings
+     accounting and `record_verdict` behavior.
+   Behavior proof: the evolve suite result is byte-identical before/after the
+   refactor (873 passed, 6 skipped, 3 Docker-daemon environmental failures in
+   `benchmarks/test_sandbox_exec.py` / `benchmarks/test_swebench.py`),
+   including all 17 `test_retrodiction.py` cases.
+
+3. **Gate proofs at head 3b1af5a52 + this round's edits** (CI-exact args):
+   - `uv run python scripts/check-vulture-baseline.py packages/*/src
+     --min-confidence 60 --exclude '*/third_party/*'` → exit 0 (1361 reviewed
+     identities → 1360 findings, base 8c8fc8d67).
+   - `uv run python scripts/check-radon-baseline.py` → exit 0 (145 → 145).
+   - `uv run mypy <9 src trees>` → 0 issues in 895 files; ruff check + format,
+     merge-marker and cross-package-import checks → all exit 0.
+   - `uv run pytest packages/maistro-evolve/tests/test_retrodiction.py -q` →
+     17 passed; full evolve suite → 873 passed, 6 skipped, 3 environmental.
+   - `uv run python scripts/check-suite-inventory.py --suite
+     packages/maistro-evolve/tests` → ok (882, matches the recorded inventory
+     carried in by the merge).

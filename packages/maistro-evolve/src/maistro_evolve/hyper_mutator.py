@@ -304,6 +304,25 @@ def _reconcile_verification(
     return True
 
 
+def _prefilter_screen(
+    prefilter: RetrodictionPrefilter | None,
+    challenger: PipelineGenome,
+    bench: str,
+) -> tuple[PrefilterDecision | None, bool]:
+    """Replay a proposed challenger against prior traces (M4-A5).
+
+    Returns ``(decision, filtered)``: ``decision`` is None when no prefilter
+    is configured; ``filtered`` is True when the replay verdict says to skip
+    the candidate without spending a verification eval (a byte-identical
+    repeat of a known-total-failure payload).
+    """
+    if prefilter is None:
+        return None, False
+    decision = prefilter.decide(challenger, [bench])
+    challenger.harness_params["retrodiction"] = decision.summary()
+    return decision, prefilter.would_filter(decision)
+
+
 async def hyper_mutate(
     genome: PipelineGenome,
     harness: EvalHarness,
@@ -349,15 +368,9 @@ async def hyper_mutate(
     best_slots: dict[str, Any] | None = None
     for candidate in candidates:
         challenger = spawn_fixer_challenger(genome, candidate)
-        decision: PrefilterDecision | None = None
-        if prefilter is not None:
-            # M4-A5: replay the proposed challenger against prior traces
-            # before its verification eval; a byte-identical repeat of a
-            # known-total-failure payload is skipped without frontier spend.
-            decision = prefilter.decide(challenger, [bench])
-            challenger.harness_params["retrodiction"] = decision.summary()
-            if prefilter.would_filter(decision):
-                continue
+        decision, filtered = _prefilter_screen(prefilter, challenger, bench)
+        if filtered:
+            continue
         results = await harness.evaluate_genome(challenger, [bench], llm_call)
         if not _reconcile_verification(prefilter, decision, challenger, results, bench):
             continue

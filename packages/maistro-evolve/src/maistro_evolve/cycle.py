@@ -702,6 +702,18 @@ class EvolutionCycle:
             genome.updated_at = datetime.now(UTC).isoformat()
             population.add(genome)
 
+    def _prefilter_for_mode(self, cfg: EvolutionConfig) -> RetrodictionPrefilter | None:
+        """Rebuild the M4-A5 prefilter per cycle from config.
+
+        The trace ledger persists across cycles on this EvolutionCycle
+        instance; only the mode wrapper is recreated.
+        """
+        if cfg.retrodiction == "off":
+            return None
+        if cfg.retrodiction == "shadow":
+            return RetrodictionPrefilter(self._ledger, PrefilterConfig(mode="shadow"))
+        return RetrodictionPrefilter(self._ledger, PrefilterConfig(mode="enforce"))
+
     async def run_cycle(
         self,
         population: PopulationStore,
@@ -712,12 +724,7 @@ class EvolutionCycle:
 
         # M4-A5: rebuild the prefilter per cycle from config; the trace ledger
         # persists across cycles on this EvolutionCycle instance.
-        if cfg.retrodiction == "off":
-            self._prefilter = None
-        elif cfg.retrodiction == "shadow":
-            self._prefilter = RetrodictionPrefilter(self._ledger, PrefilterConfig(mode="shadow"))
-        else:
-            self._prefilter = RetrodictionPrefilter(self._ledger, PrefilterConfig(mode="enforce"))
+        self._prefilter = self._prefilter_for_mode(cfg)
 
         if self.harness.fidelity != "real":
             logger.warning(

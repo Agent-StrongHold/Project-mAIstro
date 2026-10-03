@@ -304,82 +304,21 @@ class RetrodictionPrefilter:
         reasons: list[PrefilterReason] = []
         predicted_scores = {b: t.score for b, t in replayed.items()}
 
-        verdict: Verdict = "allow"
-        evals_saved = 0
-        cost_saved_usd = 0.0
-        runtime_saved_seconds = 0.0
-
-        if not replayed:
-            reasons.append(
-                PrefilterReason(
-                    code="no_prior_evidence",
-                    detail="no recorded trace for this fingerprint; full evaluation required",
-                )
-            )
-        elif len(replayed) < len(set(benchmarks)):
-            reasons.append(
-                PrefilterReason(
-                    code="partial_prior_evidence",
-                    detail=(
-                        "evidence covers "
-                        f"{sorted(replayed)}/{sorted(set(benchmarks))}; "
-                        "uncovered benchmarks must run, so the candidate runs"
-                    ),
-                    trace_ids=[t.trace_id for t in replayed.values()],
-                )
-            )
+        gap_reason = self._coverage_reason(replayed, benchmarks)
+        if gap_reason is not None:
+            reasons.append(gap_reason)
+            verdict: Verdict = "allow"
+            evals_saved = 0
+            cost_saved_usd = 0.0
+            runtime_saved_seconds = 0.0
         else:
             # Full evidence coverage for every requested benchmark.
-            traces = list(replayed.values())
-            trace_ids = [t.trace_id for t in traces]
-            below_gate = {b: t.score < hard_gate_threshold(b) for b, t in replayed.items()}
-            if self.config.reject_total_failure and all(below_gate.values()):
-                verdict = "reject"
-                reasons.append(
-                    PrefilterReason(
-                        code="prior_total_failure",
-                        detail=(
-                            "replayed evidence scores below the hard gate on "
-                            "every requested benchmark; skipping a known "
-                            "total-failure repeat"
-                        ),
-                        trace_ids=trace_ids,
-                    )
-                )
-            elif genome.eval_scores and all(b in genome.eval_scores for b in replayed):
-                # Exact repeat of a genome this population already scored.
-                if self.config.deprioritize_repeat:
-                    verdict = "deprioritize"
-                reasons.append(
-                    PrefilterReason(
-                        code="repeat_already_scored",
-                        detail=(
-                            "candidate already carries eval_scores for the "
-                            "requested benchmarks; low re-evaluation value"
-                        ),
-                        trace_ids=trace_ids,
-                    )
-                )
-            elif self.config.deprioritize_repeat:
-                # Unscored duplicate of an already-evaluated payload: the
-                # copy still needs scores to survive culling, but it is a
-                # low-information eval — triage it to the back of the batch.
-                verdict = "deprioritize"
-                reasons.append(
-                    PrefilterReason(
-                        code="duplicate_of_scored_payload",
-                        detail=(
-                            "byte-identical behavioral payload was already "
-                            "evaluated; the copy is triaged behind novel work"
-                        ),
-                        trace_ids=trace_ids,
-                    )
-                )
-
-            if verdict == "reject":
-                evals_saved = len(set(benchmarks))
-                cost_saved_usd = sum(t.cost_usd for t in traces)
-                runtime_saved_seconds = sum(t.duration_seconds for t in traces)
+            trace_ids = [t.trace_id for t in replayed.values()]
+            verdict, reason, evals_saved, cost_saved_usd, runtime_saved_seconds = (
+                self._full_coverage_outcome(genome, replayed, benchmarks, trace_ids)
+            )
+            if reason is not None:
+                reasons.append(reason)
 
         self.stats.record_verdict(
             verdict,
@@ -399,6 +338,91 @@ class RetrodictionPrefilter:
             evals_saved=evals_saved,
             cost_saved_usd=cost_saved_usd,
             runtime_saved_seconds=runtime_saved_seconds,
+        )
+
+    @staticmethod
+    def _coverage_reason(
+        replayed: dict[str, TraceRecord], benchmarks: Sequence[str]
+    ) -> PrefilterReason | None:
+        """Why incomplete replay coverage forces a full evaluation, if it does."""
+        if not replayed:
+            return PrefilterReason(
+                code="no_prior_evidence",
+                detail="no recorded trace for this fingerprint; full evaluation required",
+            )
+        if len(replayed) < len(set(benchmarks)):
+            return PrefilterReason(
+                code="partial_prior_evidence",
+                detail=(
+                    "evidence covers "
+                    f"{sorted(replayed)}/{sorted(set(benchmarks))}; "
+                    "uncovered benchmarks must run, so the candidate runs"
+                ),
+                trace_ids=[t.trace_id for t in replayed.values()],
+            )
+        return None
+
+    def _full_coverage_outcome(
+        self,
+        genome: PipelineGenome,
+        replayed: dict[str, TraceRecord],
+        benchmarks: Sequence[str],
+        trace_ids: list[str],
+    ) -> tuple[Verdict, PrefilterReason | None, int, float, float]:
+        """Verdict, triage reason and saved spend for a fully-covered replay."""
+        below_gate = {b: t.score < hard_gate_threshold(b) for b, t in replayed.items()}
+        verdict: Verdict = "allow"
+        reason: PrefilterReason | None = None
+        if self.config.reject_total_failure and all(below_gate.values()):
+            verdict = "reject"
+            reason = PrefilterReason(
+                code="prior_total_failure",
+                detail=(
+                    "replayed evidence scores below the hard gate on "
+                    "every requested benchmark; skipping a known "
+                    "total-failure repeat"
+                ),
+                trace_ids=trace_ids,
+            )
+        elif genome.eval_scores and all(b in genome.eval_scores for b in replayed):
+            # Exact repeat of a genome this population already scored.
+            if self.config.deprioritize_repeat:
+                verdict = "deprioritize"
+            reason = PrefilterReason(
+                code="repeat_already_scored",
+                detail=(
+                    "candidate already carries eval_scores for the "
+                    "requested benchmarks; low re-evaluation value"
+                ),
+                trace_ids=trace_ids,
+            )
+        elif self.config.deprioritize_repeat:
+            # Unscored duplicate of an already-evaluated payload: the
+            # copy still needs scores to survive culling, but it is a
+            # low-information eval — triage it to the back of the batch.
+            verdict = "deprioritize"
+            reason = PrefilterReason(
+                code="duplicate_of_scored_payload",
+                detail=(
+                    "byte-identical behavioral payload was already "
+                    "evaluated; the copy is triaged behind novel work"
+                ),
+                trace_ids=trace_ids,
+            )
+
+        if verdict != "reject":
+            return verdict, reason, 0, 0.0, 0.0
+        return (verdict, reason, *self._reject_savings(benchmarks, list(replayed.values())))
+
+    @staticmethod
+    def _reject_savings(
+        benchmarks: Sequence[str], traces: list[TraceRecord]
+    ) -> tuple[int, float, float]:
+        """Spend a rejected repeat avoids: one eval per requested benchmark."""
+        return (
+            len(set(benchmarks)),
+            sum(t.cost_usd for t in traces),
+            sum(t.duration_seconds for t in traces),
         )
 
     def would_filter(self, decision: PrefilterDecision) -> bool:
