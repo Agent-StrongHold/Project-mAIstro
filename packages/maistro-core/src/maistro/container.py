@@ -38,6 +38,7 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.store import GoalStore
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -227,6 +228,14 @@ class Container:
     #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
     #: campaign tables are not part of the schema yet.
     campaign_store: CampaignStore | None = None
+    #: Canonical desired-outcome and accountability state (#1572). The store
+    #: `INTEROP_ONTOLOGY_V1` names `maistro.goals` the owner of, and the one a
+    #: persistent Workspace Agent enumerates when it wakes with no chat session
+    #: (#805). Beside `run_store` rather than inside the effect seam because a
+    #: Goal is not an execution lifecycle: one Goal may need zero, one or many
+    #: Runs, and a Run's outcome is evidence for the next decision rather than
+    #: a Goal transition.
+    goal_store: GoalStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     #: The product read seam over `run_store` (#1152): Workspace membership
     #: decides who may read a Run tree, and foreign ids answer like missing ones.
@@ -2045,6 +2054,7 @@ async def create_container(
     episodic_store = await _wire_episodic_store(
         database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
     )
+    goal_store = await _wire_goal_store(pg_pool=pg_pool, db_pool=db_pool)
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
     # separately-constructed default registry would disagree with the one the
@@ -2299,6 +2309,7 @@ async def create_container(
         outcome_store=outcome_store,
         session_store=session_store,
         prompt_manager=prompt_manager,
+        goal_store=goal_store,
         warden=warden,
         gate=gate,
         strike_tracker=strike_tracker,
@@ -2436,6 +2447,34 @@ async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
     from maistro.prompts.store import InMemoryPromptManager
 
     return InMemoryPromptManager()
+
+
+async def _wire_goal_store(*, pg_pool: Any, db_pool: Any) -> GoalStore:
+    """Select the canonical Goal store from the configured relational backend.
+
+    Same backend decision as the rest of the Container, kept in its own
+    function so adding a backend does not grow the orchestration branch count
+    (#122). The in-memory store is the honest fallback rather than a silent
+    one: a deployment with no relational backend has nowhere durable to keep a
+    Goal, and a Goal that forgets itself on restart is not desired-outcome
+    state -- the Agent would re-decide from nothing every boot.
+    """
+    if pg_pool is not None:
+        from maistro.goals.pg_store import PgGoalStore
+
+        store = PgGoalStore(pg_pool)
+        await store.ensure_schema()
+        return store
+    if db_pool is not None:
+        from maistro.goals.sqlite_store import SqliteGoalStore
+
+        sqlite_store = SqliteGoalStore(db_pool)
+        await sqlite_store.ensure_schema()
+        return sqlite_store
+
+    from maistro.goals.store import InMemoryGoalStore
+
+    return InMemoryGoalStore()
 
 
 async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
