@@ -47,7 +47,7 @@ from maistro.graph.definitions import Edge, Graph, GraphTemplate, Node
 from maistro.graph.durable_runs import run_durable_graph
 from maistro.graph.durable_runs.types import DurableRunRecord
 
-from .brief import CreativeBrief
+from .brief import ArtifactRequest, CreativeBrief
 from .creative_nodes import (
     ARTIFACT_ANNOTATION_PREFIX,
     shared_context_from_brief,
@@ -478,63 +478,74 @@ def _shared_signature(brief: CreativeBrief) -> dict[str, Any]:
     }
 
 
+def _shared_change_reason(old: CreativeBrief, new: CreativeBrief) -> str | None:
+    """Explain shared invalidation, giving canonical Goal changes precedence."""
+    if old.goal_revision != new.goal_revision:
+        return (
+            f"canonical Goal revision changed {old.goal_revision} -> {new.goal_revision}; "
+            "work that semantically depends on Goal state is invalidated"
+        )
+    old_shared = _shared_signature(old)
+    new_shared = _shared_signature(new)
+    changed_fields = sorted(field for field in old_shared if old_shared[field] != new_shared[field])
+    if changed_fields:
+        return (
+            f"shared decision changed ({', '.join(changed_fields)}); every descendant "
+            "consuming the shared decisions is invalidated"
+        )
+    return None
+
+
+def _request_change_reason(
+    old: ArtifactRequest | None, new: ArtifactRequest | None, *, shared_changed: bool
+) -> str | None:
+    """Explain branch-local changes without duplicating a shared-change reason."""
+    if old is None:
+        return "artifact request added"
+    if new is None:
+        return "artifact request removed"
+    if shared_changed:
+        return None
+    changed = [
+        field_name
+        for field_name in ("channel", "format", "dimensions", "requirements")
+        if getattr(old, field_name) != getattr(new, field_name)
+    ]
+    if changed:
+        return f"artifact request changed: {', '.join(sorted(changed))}"
+    return None
+
+
 def invalidated_requests(old: CreativeBrief, new: CreativeBrief) -> InvalidationReport:
     """Which branches/shared stages a brief (or Goal revision) change affects."""
     if old.lineage_id != new.lineage_id:
         raise ValueError("invalidation compares versions of one brief lineage")
 
     reasons: dict[str, str] = {}
-    goal_changed = old.goal_revision != new.goal_revision
-    old_shared = _shared_signature(old)
-    new_shared = _shared_signature(new)
-    shared_changed = goal_changed or any(
-        old_shared[field] != new_shared[field] for field in old_shared
-    )
-    if goal_changed:
-        reasons["*"] = (
-            f"canonical Goal revision changed {old.goal_revision} -> {new.goal_revision}; "
-            "work that semantically depends on Goal state is invalidated"
-        )
-    elif shared_changed:
-        changed_fields = sorted(
-            field for field in old_shared if old_shared[field] != new_shared[field]
-        )
-        reasons["*"] = (
-            f"shared decision changed ({', '.join(changed_fields)}); every descendant "
-            "consuming the shared decisions is invalidated"
-        )
+    shared_reason = _shared_change_reason(old, new)
+    shared_changed = shared_reason is not None
+    if shared_reason is not None:
+        reasons["*"] = shared_reason
 
     old_requests = {request.request_id: request for request in old.artifact_requests}
     new_requests = {request.request_id: request for request in new.artifact_requests}
     invalidated: list[str] = []
     unchanged: list[str] = []
     for request_id in sorted(set(old_requests) | set(new_requests)):
-        old_request = old_requests.get(request_id)
-        new_request = new_requests.get(request_id)
-        if old_request is None:
+        reason = _request_change_reason(
+            old_requests.get(request_id),
+            new_requests.get(request_id),
+            shared_changed=shared_changed,
+        )
+        if reason is not None:
+            reasons[request_id] = reason
+        if shared_changed or reason is not None:
             invalidated.append(request_id)
-            reasons[request_id] = "artifact request added"
-            continue
-        if new_request is None:
-            invalidated.append(request_id)
-            reasons[request_id] = "artifact request removed"
-            continue
-        if shared_changed:
-            invalidated.append(request_id)
-            continue
-        changed = [
-            field_name
-            for field_name in ("channel", "format", "dimensions", "requirements")
-            if getattr(old_request, field_name) != getattr(new_request, field_name)
-        ]
-        if changed:
-            invalidated.append(request_id)
-            reasons[request_id] = f"artifact request changed: {', '.join(sorted(changed))}"
         else:
             unchanged.append(request_id)
 
     return InvalidationReport(
-        goal_revision_changed=goal_changed,
+        goal_revision_changed=old.goal_revision != new.goal_revision,
         shared_context_changed=shared_changed,
         invalidated_request_ids=tuple(invalidated),
         unchanged_request_ids=tuple(unchanged),
@@ -586,18 +597,7 @@ def artifact_provenance(record: DurableRunRecord) -> tuple[ArtifactProvenanceRec
         for node in graph_snapshot.nodes
         if node.metadata.get("stage") == "artifact.generate"
     }
-    annotations: dict[str, dict[str, Any]] = {}
-    for key, value in (
-        record.graph_state.blackboard_snapshot.get("node_annotations") or {}
-    ).items():
-        if not str(key).startswith(ARTIFACT_ANNOTATION_PREFIX):
-            continue
-        try:
-            parsed = json.loads(value) if isinstance(value, str) else value
-        except (TypeError, ValueError):
-            continue
-        if isinstance(parsed, dict):
-            annotations[str(key)[len(ARTIFACT_ANNOTATION_PREFIX) :]] = parsed
+    annotations = _provenance_annotations(record)
 
     node_runs_by_node: dict[str, list[Any]] = {}
     attempts_by_node_run: dict[str, list[Any]] = {}
@@ -611,49 +611,85 @@ def artifact_provenance(record: DurableRunRecord) -> tuple[ArtifactProvenanceRec
         annotation = annotations.get(request_id, {})
         node = branch_node_by_request.get(request_id)
         runs = list(node_runs_by_node.get(node.node_id, [])) if node is not None else []
-        if not runs:
-            # A planned branch that never executed (e.g. the run failed before
-            # it): provenance stays explainable as planned-only.
-            status = "planned"
-            attempt_count = 0
-            run_ids: tuple[str, ...] = ()
-        else:
-            status = str(runs[-1].status.value)
-            attempt_count = sum(
-                len(attempts_by_node_run.get(node_run.node_run_id, [])) for node_run in runs
-            )
-            run_ids = tuple(node_run.node_run_id for node_run in runs)
+        status, attempt_count, run_ids = _branch_execution_evidence(runs, attempts_by_node_run)
         records.append(
-            ArtifactProvenanceRecord(
-                request_id=request_id,
-                node_id=node.node_id if node is not None else branch_node_id(request_id),
-                channel=str(
-                    annotation.get("channel") or (node.metadata.get("channel") if node else "")
-                ),
-                artifact_id=str(annotation.get("artifact_id") or ""),
-                content_digest=str(annotation.get("content_digest") or ""),
-                goal_id=str(provenance.get("goal_id") or ""),
-                goal_revision=int(
-                    annotation.get("goal_revision") or provenance.get("goal_revision") or 0
-                ),
-                brief_id=str(provenance.get("brief_id") or ""),
-                brief_version=int(
-                    annotation.get("brief_version") or provenance.get("brief_version") or 0
-                ),
-                goal_owner_agent_id=str(provenance.get("goal_owner_agent_id") or ""),
-                goal_delegation_ref=provenance.get("goal_delegation_ref"),
-                consumed_message_decision_id=str(
-                    annotation.get("consumed_message_decision_id") or ""
-                ),
-                consumed_visual_decision_id=str(
-                    annotation.get("consumed_visual_decision_id") or ""
-                ),
-                status=status,
-                attempt_count=attempt_count,
-                node_run_ids=run_ids,
+            _artifact_provenance_record(
+                request_id, node, annotation, provenance, status, attempt_count, run_ids
             )
         )
     return tuple(records)
+
+
+def _provenance_annotations(record: DurableRunRecord) -> dict[str, dict[str, Any]]:
+    """Read only well-formed artifact annotations from the persisted blackboard."""
+    annotations: dict[str, dict[str, Any]] = {}
+    for key, value in (
+        record.graph_state.blackboard_snapshot.get("node_annotations") or {}
+    ).items():
+        if not str(key).startswith(ARTIFACT_ANNOTATION_PREFIX):
+            continue
+        try:
+            parsed = json.loads(value) if isinstance(value, str) else value
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            annotations[str(key)[len(ARTIFACT_ANNOTATION_PREFIX) :]] = parsed
+
+    return annotations
+
+
+def _branch_execution_evidence(
+    runs: list[Any], attempts_by_node_run: dict[str, list[Any]]
+) -> tuple[str, int, tuple[str, ...]]:
+    """Explain planned-only branches or the latest status and all canonical tries."""
+    if not runs:
+        return "planned", 0, ()
+    return (
+        str(runs[-1].status.value),
+        sum(len(attempts_by_node_run.get(node_run.node_run_id, [])) for node_run in runs),
+        tuple(node_run.node_run_id for node_run in runs),
+    )
+
+
+def _artifact_lineage(provenance: dict[str, Any], annotation: dict[str, Any]) -> dict[str, Any]:
+    """Keep canonical identities and prefer the exact versions a branch recorded."""
+    return {
+        "goal_id": str(provenance.get("goal_id") or ""),
+        "goal_revision": int(
+            annotation.get("goal_revision") or provenance.get("goal_revision") or 0
+        ),
+        "brief_id": str(provenance.get("brief_id") or ""),
+        "brief_version": int(
+            annotation.get("brief_version") or provenance.get("brief_version") or 0
+        ),
+        "goal_owner_agent_id": str(provenance.get("goal_owner_agent_id") or ""),
+        "goal_delegation_ref": provenance.get("goal_delegation_ref"),
+    }
+
+
+def _artifact_provenance_record(
+    request_id: str,
+    node: Node | None,
+    annotation: dict[str, Any],
+    provenance: dict[str, Any],
+    status: str,
+    attempt_count: int,
+    run_ids: tuple[str, ...],
+) -> ArtifactProvenanceRecord:
+    """Combine one branch's artifact, canonical lineage and execution evidence."""
+    return ArtifactProvenanceRecord(
+        request_id=request_id,
+        node_id=node.node_id if node is not None else branch_node_id(request_id),
+        channel=str(annotation.get("channel") or (node.metadata.get("channel") if node else "")),
+        artifact_id=str(annotation.get("artifact_id") or ""),
+        content_digest=str(annotation.get("content_digest") or ""),
+        consumed_message_decision_id=str(annotation.get("consumed_message_decision_id") or ""),
+        consumed_visual_decision_id=str(annotation.get("consumed_visual_decision_id") or ""),
+        status=status,
+        attempt_count=attempt_count,
+        node_run_ids=run_ids,
+        **_artifact_lineage(provenance, annotation),
+    )
 
 
 def artifact_annotation_to_provenance(annotation: dict[str, Any]) -> dict[str, Any]:
