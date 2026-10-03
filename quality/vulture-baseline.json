@@ -460,7 +460,16 @@
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'I_IMAGINED'",
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'I_WAS_TOLD'",
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'immutable'",
-        "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'origin_episode_id'"
+        "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'origin_episode_id'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'POLICY'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'ROUTING_CONFIG'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'CODE'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'rollback_target_version'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'reversible'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'mechanism'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'prior_version'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'prior_content_hash'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused variable 'reversed_at'"
       ]
     },
     {
@@ -1298,7 +1307,11 @@
         "packages/maistro-core/src/maistro/vault.py::unused method 'use'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'",
-        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'"
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused method 'attach_effect'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused method 'mark_reversed'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused class 'PromotionContract'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused method 'promote'"
       ]
     },
     {
