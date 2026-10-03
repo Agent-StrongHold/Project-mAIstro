@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from maistro_registry.retrieval import content_version, load_corpus
+from maistro_registry.retrieval import (
+    RetrievalSearcher,
+    build_index,
+    content_version,
+    load_corpus,
+)
+from maistro_registry.retrieval.index import corpus_fingerprint
 
 
 def _make_repo(tmp_path: Path, make_doc: object) -> Path:
@@ -55,6 +61,170 @@ def test_corpus_documents_carry_full_provenance(tmp_path: Path, make_doc: object
     text = (repo / "docs/adr/ADR-001-queueing.md").read_text(encoding="utf-8")
     assert adr.version == content_version(text)
     assert adr.front_matter is not None and adr.front_matter.id == "ADR-001"
+
+
+def test_renamed_source_keeps_stable_id_but_moves_the_fingerprint(
+    tmp_path: Path,
+    make_doc: object,
+) -> None:
+    """Identity lives in validated front matter, location in the path.
+
+    Renaming the file must not re-address the document (the id is the
+    registry's, not the filename's), must not fake a content change (the
+    bytes are untouched, so the version is too), and must still move the
+    corpus fingerprint — the index knows the corpus state changed.
+    """
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-001-queueing.md",
+        "ADR-001",
+        "Queueing discipline",
+        body="Tasks queue for work.",
+    )
+    before = load_corpus(tmp_path)
+    assert [d.doc_id for d in before] == ["ADR-001"]
+
+    (tmp_path / "docs/adr/ADR-001-queueing.md").rename(tmp_path / "docs/adr/ADR-001-discipline.md")
+    after = load_corpus(tmp_path)
+    assert [d.doc_id for d in after] == ["ADR-001"], "stable id survives the rename"
+    assert after[0].path == "docs/adr/ADR-001-discipline.md"
+    assert after[0].version == before[0].version, "identical bytes, identical version"
+    assert corpus_fingerprint(after) != corpus_fingerprint(before), (
+        "the index must see the moved path as a corpus change"
+    )
+
+
+def test_superseded_decision_is_retrieved_with_its_status(
+    tmp_path: Path,
+    make_doc: object,
+) -> None:
+    """Historical material is findable, and never poses as active authority.
+
+    The result record carries the lifecycle status it was indexed with, so
+    a consumer quoting the hit can see the decision was superseded —
+    provenance is where the status discipline lives, not a caller-side
+    afterthought.
+    """
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-001-retries.md",
+        "ADR-001",
+        "Retry policy",
+        status="Superseded",
+        body="Retries back off exponentially before giving up.",
+    )
+    # Three unrelated documents so the topic terms stay below the 0.5
+    # df-share ceiling — with fewer documents every term is corpus-glue
+    # and the measured rejection would (correctly) reject the query.
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-002-vault.md",
+        "ADR-002",
+        "Vault of secrets",
+        body="Vault prose about keys.",
+    )
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-003-render.md",
+        "ADR-003",
+        "Rendering pipeline",
+        body="Pixels are composited per frame.",
+    )
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-004-network.md",
+        "ADR-004",
+        "Networking substrate",
+        body="Peers exchange envelopes.",
+    )
+    docs = load_corpus(tmp_path)
+    searcher = RetrievalSearcher(build_index(docs))
+    response = searcher.search("retry backoff", k=5)
+    assert [r.doc_id for r in response.results] == ["ADR-001"]
+    # The unseen half of the query is reported as rejected, not swallowed.
+    assert "backoff" in response.rejected_terms
+    superseded = response.results[0]
+    assert superseded.document.document.status == "Superseded"
+    assert "[Superseded]" in superseded.render(), (
+        "the rendered provenance line must name the superseded status"
+    )
+
+
+def test_duplicate_identity_keeps_both_documents_addressable(
+    tmp_path: Path,
+    make_doc: object,
+) -> None:
+    """Two files claiming one registry id must not silently become one.
+
+    The registry validator flags an id collision; retrieval neither hides
+    it nor drops a side. Both documents stay in the corpus under their own
+    paths and content versions, and a search returns both so the caller
+    sees the ambiguity instead of an authoritative-looking single answer.
+    """
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-001-queueing.md",
+        "ADR-001",
+        "Queueing discipline",
+        body="Tasks queue for durable work.",
+    )
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-001-queueing-v2.md",
+        "ADR-001",
+        "Queueing discipline, revisited",
+        body="Tasks queue for durable work, with leases.",
+    )
+    # Three unrelated documents so the claimants' shared vocabulary sits at
+    # 2/5 = 0.4, below the df-share ceiling that (correctly) rejects glue
+    # terms in a tiny corpus.
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-002-vault.md",
+        "ADR-002",
+        "Vault of secrets",
+        body="Vault prose about keys.",
+    )
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-003-render.md",
+        "ADR-003",
+        "Rendering pipeline",
+        body="Pixels are composited per frame.",
+    )
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-004-network.md",
+        "ADR-004",
+        "Networking substrate",
+        body="Peers exchange envelopes.",
+    )
+    docs = load_corpus(tmp_path)
+    assert len(docs) == 5
+    claimants = {d.path for d in docs if d.doc_id == "ADR-001"}
+    assert claimants == {
+        "docs/adr/ADR-001-queueing.md",
+        "docs/adr/ADR-001-queueing-v2.md",
+    }
+    assert len({d.version for d in docs if d.doc_id == "ADR-001"}) == 2, (
+        "distinct bytes, distinct versions"
+    )
+
+    searcher = RetrievalSearcher(build_index(docs))
+    response = searcher.search("durable", k=10)
+    assert {r.path for r in response.results} == claimants, (
+        "the collision surfaces as two provenance-distinct hits, not one"
+    )
 
 
 def test_version_changes_when_bytes_change(tmp_path: Path, make_doc: object) -> None:

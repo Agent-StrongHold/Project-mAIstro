@@ -219,5 +219,14 @@ def test_fingerprint_moves_with_any_corpus_change(tiny_repo: Path, make_doc: obj
         "Extra document",
         body="More prose.",
     )
-    after = build_index(load_corpus(tiny_repo)).fingerprint
-    assert before != after
+    added = build_index(load_corpus(tiny_repo)).fingerprint
+    assert before != added
+
+    # Removal is the same contract from the other side: the refreshed
+    # index must not still carry the deleted document's terms.
+    (tiny_repo / "docs/adr/ADR-004-extra.md").unlink()
+    index_after_removal = build_index(load_corpus(tiny_repo))
+    assert index_after_removal.fingerprint == before
+    assert "ADR-004" not in {d.document.doc_id for d in index_after_removal.documents}, (
+        "a removed source must not survive in a rebuilt index"
+    )
