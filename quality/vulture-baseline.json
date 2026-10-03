@@ -1361,8 +1361,6 @@
         "packages/maistro-core/src/maistro/testing/faux_provider.py::unused property 'call_log'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused property 'can_contribute'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused property 'can_use'",
-        "packages/maistro-design/src/maistro_design/engine.py::unused method 'get_reconciler'",
-        "packages/maistro-design/src/maistro_design/engine.py::unused method 'get_workspace_agent'",
         "packages/maistro-design/src/maistro_design/engine.py::unused method 'run_discovery'",
         "packages/maistro-design/src/maistro_design/engine.py::unused property 'context_trust_tier'",
         "packages/maistro-design/src/maistro_design/engine.py::unused property 'systems'",

@@ -236,21 +236,10 @@ async def start_design_service(settings: Settings) -> None:
             logger.info("Design project store disabled (no DATABASE_URL configured)")
 
         # Initialize design engine with registries and optional store.
-        #
-        # #777: the Workspace Agent seam is the canonical #53 front door
-        # (`services.workspace_agent.resolve_workspace_agent`), so Design Studio
-        # consumes the one persistent Workspace Agent instead of ever
-        # materializing a Design-Studio-private one. The reconciler_factory seam
-        # stays uninjected here: run-store wiring is owned by `maistro.runs.wiring`,
-        # and #804's Goal reconciler (the thing a Design Studio injection would
-        # actually want) has not landed.
-        from services import workspace_agent as workspace_agent_service
-
         _engine_singleton = DesignEngine(
             skill_registry=skill_registry,
             system_registry=system_registry,
             project_store=project_store,
-            workspace_agent_resolver=workspace_agent_service.resolve_workspace_agent,
         )
         _store_singleton = project_store
         logger.info("DesignEngine initialized")
