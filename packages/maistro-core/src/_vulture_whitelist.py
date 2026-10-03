@@ -10,6 +10,11 @@ Invocation execution API.
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
+from maistro.memory.learnings.gauntlet import ChainedGauntlet, OutcomeEvidenceGauntlet
+from maistro.memory.learnings.lifecycle import effectiveness
+from maistro.memory.learnings.promoter import LearningPromoter
+from maistro.protocols.memory import LearningLifecycleStore
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
@@ -80,4 +85,42 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
+    # EPIC M4-E (#25): the closed evolvable-harness-component vocabulary and
+    # the proposal's Pydantic model validators. Members are the serialized
+    # values an optimizer's proposal carries (the same posture as the ledger's
+    # schema-enum-member rule: enum members are serialized values that need
+    # not appear as direct reads in package-local static analysis); the
+    # validators run at proposal construction. Their in-tree consumers are the
+    # #783/#822 child streams, outside this scan until those issues land.
+    HarnessTargetKind.PROMPT,
+    HarnessTargetKind.TOOL_SELECTION,
+    HarnessTargetKind.SKILLS,
+    HarnessTargetKind.MEMORY_RETRIEVAL_POLICY,
+    HarnessTargetKind.PLANNING_STRATEGY,
+    HarnessTargetKind.SUBAGENT_DEFINITIONS,
+    HarnessTargetKind.GRAPH_TOPOLOGY,
+    HarnessTargetKind.AUTHORIZED_CODE,
+    HarnessEvolutionProposal._identifier_fields_are_not_blank,
+    HarnessEvolutionProposal._candidate_edges_reference_candidate_nodes,
+    # EPIC M4-B (#22): the validated collective learning surface. The Gauntlet
+    # classes are the independent validators a downstream product configures
+    # between a learning's promotion threshold and the collective repertoire
+    # (#118): LearningPromoter accepts any LearningGauntlet, so no scanned
+    # call site constructs the concrete classes -- wiring a default Gauntlet
+    # into the promoter's callers is exactly the product decision #450's
+    # initiative leaves to the consuming product. ``effectiveness`` is the
+    # measured-effect metric (#119) the Gauntlet thresholds are expressed
+    # against; LearningLifecycleStore is the runtime_checkable Protocol port
+    # the durable learning stores are held to structurally (same posture as
+    # the ledger's protocol-and-adapter-port rule) and the conformance suite
+    # asserts conformance against by name. ``capture_anti_patterns`` is the
+    # #121 promotion entry point for failure knowledge: an operator- or
+    # pipeline-scheduled call, the same external-scheduler posture as
+    # PersistedStore's username-claim transactions above. Every identity here
+    # is exercised directly by packages/maistro-core/tests/memory/learnings/.
+    OutcomeEvidenceGauntlet,
+    ChainedGauntlet,
+    effectiveness,
+    LearningPromoter.capture_anti_patterns,
+    LearningLifecycleStore,
 )
