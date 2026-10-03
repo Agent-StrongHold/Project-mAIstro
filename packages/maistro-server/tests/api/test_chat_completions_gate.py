@@ -931,10 +931,10 @@ async def test_a_turn_over_the_active_run_ceiling_is_a_429_not_an_unrecorded_ans
 ) -> None:
     """Backpressure is the one admission failure this door does not answer
     through (#1182): answering would run the turn unbounded and unrecorded."""
-    for _ in range(32):
+    for index in range(32):
         await container.chat_admitter.admit(  # type: ignore[attr-defined]
             [{"role": "user", "content": "busy"}],
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            actor_principal_id=f"{DEFAULT_TEST_ACTOR_PRINCIPAL_ID}-{index}",
         )
 
     with patch(RUN_TASK, AsyncMock(return_value=_output("42"))) as run_task:
