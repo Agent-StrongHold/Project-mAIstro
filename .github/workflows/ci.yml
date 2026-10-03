@@ -14,6 +14,11 @@ on:
   # worse than none: the green tick means different things depending on the base
   # and nothing on the PR says which. #161.
   pull_request:
+    # `edited` is load-bearing for the closure guard below: a `Closes #N` added
+    # by editing the body after the last push must re-run check-closure-targets
+    # against the payload's current body, or a green check vouching for the old
+    # body lets the keyword close an epic at merge time (#56 review on #1773).
+    types: [opened, reopened, synchronize, edited]
   # A merge queue evaluates a synthetic commit containing the current base plus
   # the queued candidate(s). Every required CI job must report on that SHA, not
   # merely on the feature-branch head that was green before it entered the queue.
@@ -75,8 +80,16 @@ jobs:
 
   lint-and-type-check:
     runs-on: ubuntu-latest
+    # The workflow defaults plus `issues: read` for check-closure-targets.py.
+    permissions:
+      contents: read
+      actions: read
+      issues: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The typed-client ratchet resolves the event's trusted base and ancestry.
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -121,6 +134,12 @@ jobs:
       # own route table, not a list of prefixes someone maintains by hand.
       - name: Frontend calls reach registered backend routes
         run: uv run python3 scripts/check-frontend-api-routes.py
+      # Workspace cutover P0.3 banks raw fetch outside src/lib/ and hand-typed
+      # declarations in pages/components until the generated client owns HTTP
+      # (#1048 AC-P3). Static scan only; the blocking ratchet also runs in
+      # quality.yml beside the other Phase 0 debt gates.
+      - name: Frontend typed-client debt (raw fetch + hand-typed — ratchet)
+        run: uv run python scripts/check-frontend-typed-client.py
       # The same failure mode one layer out: a document naming a component that
       # does not exist. DEPLOYMENT-STANCE.md listed a `maistro-sandbox-worker`
       # in all four supported profiles and offered Kata and gVisor as backends;
@@ -205,6 +224,15 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # #56 was an epic closed by one PR's `Closes` keyword: the PR delivered
+      # a slice, the keyword closed the whole thing, and every acceptance
+      # criterion it never touched read as done. An issue titled [EPIC],
+      # [MILESTONE] or [INITIATIVE], or one with sub-issues, closes by hand
+      # once check-ac-state reports every criterion reachable (cutover S0.2).
+      - name: No PR closes an epic by keyword
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-closure-targets.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it
@@ -518,6 +546,16 @@ jobs:
             packages/maistro-canvas/frontend/package-lock.json
       - run: npm ci && npm run lint && npm run build
         working-directory: packages/hive-conductor/frontend
+      # Frontend entity types are generated from the backend's OpenAPI document
+      # and committed (#1048). Regenerating both and diffing makes a backend
+      # schema change the frontend has not picked up a red build here, rather
+      # than an `undefined` in the browser. Fix: run the same two commands
+      # locally and commit types.gen.ts.
+      - name: Generated API types match the backend's OpenAPI document (#1048)
+        run: |
+          uv run python scripts/dump-hive-openapi.py
+          npm --prefix packages/hive-conductor/frontend run gen:api
+          git diff --exit-code -- packages/hive-conductor/frontend/src/api/types.gen.ts
       - run: npm ci && npm run test:ci
         working-directory: packages/maistro-canvas/frontend
       - run: npm run lint
@@ -853,7 +891,7 @@ jobs:
       # daemon's retried pull never reaches -- so they carry their own retry
       # via buildx-build-retry.sh instead (Codex, #683).
       - name: Pre-pull base images (retry transient registry faults)
-        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
+        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile Dockerfile.rsi-runner
 
       - name: Build maistro-engine (cached)
         run: >-
@@ -1210,6 +1248,11 @@ jobs:
           python-version: "3.12"
       - name: Install PyYAML
         run: pip install pyyaml
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Integration scope judges the newest check attempt
+        run: node --test tests/ci/integration-scope.test.cjs
       # The check-name contract #162 pins branch protection against. It lives
       # in this job because it is a check about workflow shape, next to the
       # other one — and because a rename is only caught if the gate runs on the
