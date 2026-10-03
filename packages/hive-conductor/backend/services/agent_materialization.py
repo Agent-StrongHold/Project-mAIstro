@@ -49,7 +49,11 @@ from models.schemas import Agent
 
 from maistro.personas.expander import expand_persona
 from maistro.personas.schema import PersonaTemplate
-from maistro.security.warden.detector import Warden, message_to_scan_text, prior_message_context
+from maistro.security.warden.detector import (
+    Warden,
+    context_from_messages,
+    message_to_scan_text,
+)
 
 from .model_store import register_pop_hook
 
@@ -154,28 +158,14 @@ async def scan_messages(
             raise ScanBudgetExceeded(f"{path} is longer than {MAX_SCAN_TEXT} characters")
     warden = _warden()
     findings: list[str] = []
-    latest_user = next(
-        (
-            index
-            for index in range(len(messages) - 1, -1, -1)
-            if messages[index].get("role") == "user"
-        ),
-        None,
-    )
-    if latest_user is None:
-        return {"findings": findings, "status": "clean"}
-    message = messages[latest_user]
-    content = message_to_scan_text(message)
-    if len(content) > MAX_SCAN_TEXT:
-        raise ScanBudgetExceeded(
-            f"messages[{latest_user}] is longer than {MAX_SCAN_TEXT} characters"
-        )
-    context = prior_message_context(messages[: latest_user + 1])
-    if len(context) > MAX_SCAN_NODES:
-        raise ScanBudgetExceeded(f"conversation holds more than {MAX_SCAN_NODES} context items")
-    verdict = await warden.scan(content, boundary, context=context)
-    if not verdict.clean:
-        findings.extend(f"messages[{latest_user}]: {flag}" for flag in verdict.flags)
+    for index, message in enumerate(messages):
+        content = message_to_scan_text(message)
+        if len(content) > MAX_SCAN_TEXT:
+            raise ScanBudgetExceeded(f"messages[{index}] is longer than {MAX_SCAN_TEXT} characters")
+        context = context_from_messages(messages[:index])
+        verdict = await warden.scan(content, boundary, context=context)
+        if not verdict.clean:
+            findings.extend(f"messages[{index}]: {flag}" for flag in verdict.flags)
     return {"findings": findings, "status": "clean" if not findings else "flagged"}
 
 

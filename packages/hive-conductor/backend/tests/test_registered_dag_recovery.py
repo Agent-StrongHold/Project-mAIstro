@@ -413,6 +413,7 @@ async def test_other_owners_runs_are_never_touched(
             two_steps,
             initial_status=RunStatus.QUEUED,
             provenance={**_SCHEDULE, "executor": "someone_else"},
+            actor_principal_id="test-user",
         )
     ).run_id
     with_inputs = (
@@ -420,6 +421,7 @@ async def test_other_owners_runs_are_never_touched(
             two_steps,
             initial_status=RunStatus.QUEUED,
             provenance={**_SCHEDULE, "schedule_inputs": {"marker": "configured"}},
+            actor_principal_id="test-user",
         )
     ).run_id
     _graph, legacy_waiting = await run_registered_dag(
@@ -453,11 +455,12 @@ async def test_a_foreign_prefix_longer_than_one_tick_is_crossed_across_ticks(
         name="consumer-owned",
         nodes=[Node(node_id="only", node_type=_StepNode.kind)],
     )
-    for _ in range(DEFAULT_MAX_INSPECTED + 1):
+    for index in range(DEFAULT_MAX_INSPECTED + 1):
         await container.run_store.create_run(
             single,
             initial_status=RunStatus.QUEUED,
             provenance={**_SCHEDULE, "executor": "durable_graph"},
+            actor_principal_id=f"test-user-{index}",
         )
     run_id = await _admit_then_die(container, monkeypatch, "rdr-steps")
 
