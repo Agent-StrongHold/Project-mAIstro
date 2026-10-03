@@ -85,19 +85,18 @@ def rsi_status() -> dict:
 
 @router.get("/models")
 def available_models() -> dict:
-    """Models the operator can pick from in the UI."""
-    return {
-        "models": [
-            {"id": "glm-4.7", "label": "GLM-4.7 (Sonnet-level, 1x quota)", "tier": "open"},
-            {"id": "glm-5.2", "label": "GLM-5.2 (Opus-level, 2x quota)", "tier": "premium"},
-            {
-                "id": "oss120-cerebras",
-                "label": "Cerebras gpt-oss-120b (free, daily cap)",
-                "tier": "free",
-            },
-            {"id": "gemini-flash", "label": "Gemini Flash (free, 5 RPM)", "tier": "free"},
-        ]
-    }
+    """Explicitly unsupported (#389).
+
+    This returned a hard-coded catalog baked into the handler — labels and
+    quota tiers nothing updated and no deployment configured. The live model
+    catalog's owner is the LiteLLM gateway, surfaced at
+    `GET /v1/quotas/models`; this route now refuses with `501` rather than
+    serve a catalog that drifts from what the gateway actually registers.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="static model catalog removed; the live catalog is GET /v1/quotas/models",
+    )
 
 
 @router.get("/test-profiles")

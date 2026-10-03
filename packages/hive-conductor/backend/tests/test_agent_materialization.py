@@ -15,12 +15,15 @@ import stores
 from models.schemas import Agent
 from services.agent_materialization import (
     MANIFEST_ROSTER_SOURCE,
+    MAX_SCAN_TEXT,
+    ScanBudgetExceeded,
     agent_id_for,
     materialize_boot_roster,
     materialize_manifest_roster,
     materialize_runtime,
     materialize_workspace_agents,
     register_runtime_source,
+    scan_messages,
     workspace_agents,
 )
 
@@ -458,3 +461,19 @@ class TestRuntimeMaterialization:
 
         assert stored.config["dispatchable"] is False
         assert wired == {}  # nothing was fabricated into the runtime map
+
+
+async def test_scan_messages_refuses_an_oversized_user_turn_before_the_model() -> None:
+    """The per-turn scan budget is enforced on the REAL path (#389 coverage debt).
+
+    Every other `ScanBudgetExceeded` test raises the exception from a stub, so
+    the actual `MAX_SCAN_TEXT` guard — the line that refuses a 64 KiB+ user
+    turn before it can reach the model — never executed. This drives the real
+    `scan_messages` with an oversized turn and asserts the refusal, naming the
+    offending text leaf like the route's error surface does. The hoisted budget
+    walk runs before any message is serialized to the model, so the refusal
+    precedes the per-message scan.
+    """
+    oversized = "a" * (MAX_SCAN_TEXT + 1)
+    with pytest.raises(ScanBudgetExceeded, match="\[0\]\.content is longer than"):
+        await scan_messages([{"role": "user", "content": oversized}])
