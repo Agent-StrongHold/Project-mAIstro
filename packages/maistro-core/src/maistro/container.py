@@ -48,6 +48,11 @@ from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
+from maistro.memory.working_graph.manager import WorkspaceWorkingMemoryManager
+from maistro.memory.working_graph.wiring import (
+    build_workspace_working_memory,
+    working_memory_context_message,
+)
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -292,6 +297,15 @@ class Container:
     a2a_delegator: Any = None
     guest_peers: Any = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
+    #: Per-Workspace working-memory projection (#776, ADR-082226-5104): the
+    #: disposable graph the persistent Workspace Agent's chat turns read
+    #: graph-backed context from. Never authoritative and never an
+    #: authorization path — the block a turn receives is projected from the
+    #: turn's Run's own Workspace and carries canonical durable references;
+    #: degradation arrives as an explicit health state, not silence.
+    #: ``None`` for a Container built by hand: those dispatch exactly as
+    #: before, the seam adds context, it never gates a turn.
+    working_memory: WorkspaceWorkingMemoryManager | None = None
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
     conduit: Any = None
@@ -607,12 +621,29 @@ class Container:
                 dispatch_pending=True,
             )
 
+        # Working memory (#776): the turn's Run names its Workspace, so the
+        # graph-backed context block is projected from that Workspace's own
+        # projection and from nowhere else. It rides in as a system message
+        # ahead of the turn — never a user turn, so it is not Warden-scanned
+        # as input, not session-transcribed, and never replaces the client's
+        # message shape. It is context for the answering agent only: the
+        # Conduit passes it around the gate scan and the classifier, so
+        # projected memory neither becomes scanned input nor reclassifies the
+        # turn (#142). Degradation is rendered into the block, so the agent
+        # sees the state of its working memory instead of a confident blank;
+        # durable truth is untouched either way.
+        working_block = await working_memory_context_message(
+            self.working_memory, run.workspace_id, messages
+        )
+        context_messages = (working_block,) if working_block is not None else ()
+
         async def _dispatch() -> dict[str, Any]:
             dispatched: dict[str, Any] = await self.conduit.route_request(
                 messages,
                 auth=auth,
                 session_id=session_id,
                 intent_hint=intent_hint,
+                context_messages=context_messages,
                 # The Run names this turn for the session store, so a second
                 # Attempt under the same Run appends nothing rather than
                 # writing the user's message again (#327, ADR-083026-5fab).
@@ -2213,6 +2244,16 @@ async def create_container(
         # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
     )
+    # The per-Workspace working-memory projection (#776), over the same
+    # durable stores everything else in this container reads: episodic memory
+    # through each Workspace's own Project tree, Run provenance through the
+    # Run store's workspace axis. The projection is disposable process-local
+    # state and holds no durable truth, so it needs no shutdown write.
+    working_memory = build_workspace_working_memory(
+        episodic=episodic_store,
+        projects=project_scope_store,
+        runs=run_store,
+    )
 
     router = RouterEngine()
     classifier = ClassifierEngine()
@@ -2440,6 +2481,7 @@ async def create_container(
         schedule_admitter=schedule_admitter,
         task_idempotency=task_idempotency,
         context_assembly_policy=context_assembly_policy,
+        working_memory=working_memory,
         agents=agents,
         audit_log=audit_log,
         db_pool=db_pool,
