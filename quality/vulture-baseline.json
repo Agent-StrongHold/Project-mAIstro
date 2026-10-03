@@ -979,7 +979,6 @@
         "packages/maistro-core/src/maistro/memory/exposure.py::unused function 'enforce_write'",
         "packages/maistro-core/src/maistro/memory/learnings/approval.py::unused method 'get_all'",
         "packages/maistro-core/src/maistro/memory/learnings/approval.py::unused method 'get_pending'",
-        "packages/maistro-core/src/maistro/memory/learnings/approval.py::unused method 'reject'",
         "packages/maistro-core/src/maistro/memory/learnings/embeddings.py::unused class 'FakeEmbeddingClient'",
         "packages/maistro-core/src/maistro/memory/learnings/embeddings.py::unused class 'HybridLearningStore'",
         "packages/maistro-core/src/maistro/memory/learnings/embeddings.py::unused class 'NoopEmbeddingClient'",
