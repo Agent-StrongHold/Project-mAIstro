@@ -41,6 +41,7 @@ from maistro_rsi.model_identifiers import (
 )
 
 if TYPE_CHECKING:
+    from maistro_evolve.population import PopulationStore
     from maistro_rsi.harvest import PromotedPatch
 
 
@@ -410,8 +411,7 @@ def _print_promotion_evidence(store: Any, champ: Any) -> None:
     provenance = store.champion_provenance()
     if provenance is not None:
         print("champion evidence:")
-        for bench, record in provenance["benchmarks"].items():
-            print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
+        _print_champion_provenance(store)
 
     import asyncio
 
@@ -431,6 +431,22 @@ def _print_promotion_evidence(store: Any, champ: Any) -> None:
             f"  {scorer}: narration_fpr={rates['narration_false_positive_rate']} "
             f"verified_rate={rates['verified_positive_rate']}"
         )
+
+
+def _print_champion_provenance(store: PopulationStore) -> None:
+    """Print the verified-evidence trail behind champion selection (#384).
+
+    The champion's fitness is a weighted fold of benchmark scores; this names,
+    for every scored benchmark, the verified method that produced the score
+    (``exact_match``, ``llm_judge``, ... — or the explicit ``unverified``). A
+    champion that got there by narrating shows up here instead of being
+    silently trusted.
+    """
+    provenance = store.champion_provenance()
+    if provenance is None:
+        return
+    for bench, record in provenance["benchmarks"].items():
+        print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
 
 
 def _evolve(args: argparse.Namespace) -> int:
