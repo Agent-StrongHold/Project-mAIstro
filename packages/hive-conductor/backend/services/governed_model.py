@@ -44,6 +44,7 @@ from maistro.runs.model import (
     AttemptStatus,
     RunStatus,
 )
+from maistro.runs.store_boundary import require_admitted_actor
 
 
 class ProviderActivationError(RuntimeError):
@@ -406,6 +407,7 @@ async def mint_operation_identity(
     workspace_id: str,
     project_id: str,
     parent_run_id: str = "",
+    actor_principal_id: str | None = None,
     provenance: dict[str, Any] | None = None,
 ) -> OperationIdentity:
     """Mint the canonical Run -> NodeRun -> Attempt identity for one operation.
@@ -425,7 +427,9 @@ async def mint_operation_identity(
     parent_run = await store.get_run(parent_run_id) if parent_run_id else None
     if parent_run_id and parent_run is None:
         raise LookupError(f"canonical Run {parent_run_id!r} does not exist")
-    actor_principal_id = parent_run.actor_principal_id if parent_run is not None else None
+    resolved_actor = (
+        parent_run.actor_principal_id if parent_run is not None else actor_principal_id
+    )
     graph = Graph(
         workspace_id=workspace_id,
         project_id=project_id,
@@ -436,7 +440,7 @@ async def mint_operation_identity(
         graph,
         parent_run_id=parent_run_id or None,
         initial_status=RunStatus.QUEUED,
-        actor_principal_id=actor_principal_id,
+        actor_principal_id=require_admitted_actor(resolved_actor),
         provenance={
             "admission_source": "control-plane-operation",
             "operation": operation,

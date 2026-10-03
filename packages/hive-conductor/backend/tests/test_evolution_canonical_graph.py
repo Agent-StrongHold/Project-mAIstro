@@ -31,6 +31,22 @@ from maistro.runs.store import InMemoryRunStore
 
 pytestmark = pytest.mark.contract("behavioral")
 
+_EVOLUTION_TEST_ACTOR = "evolve-user"
+
+
+def _evolution_route_app(router: Any) -> Any:
+    from fastapi import FastAPI
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _stamp_test_actor(request, call_next):
+        request.state.user_id = _EVOLUTION_TEST_ACTOR
+        return await call_next(request)
+
+    app.include_router(router, prefix="/v1/evolution")
+    return app
+
 
 class _Genome:
     def __init__(
@@ -563,8 +579,7 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -650,8 +665,7 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -745,8 +759,7 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             first = asyncio.create_task(client.post("/v1/evolution/cycle"))

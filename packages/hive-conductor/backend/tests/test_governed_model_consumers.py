@@ -379,6 +379,7 @@ async def test_provider_health_with_minted_identity_completes_operation(
         operation="provider-activation:judge",
         workspace_id="ws-1",
         project_id=project_id,
+        actor_principal_id="test-admin",
         provenance={"activation_source": "routes.providers", "provider": "judge"},
     )
 
