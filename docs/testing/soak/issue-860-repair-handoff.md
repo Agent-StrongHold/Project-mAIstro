@@ -102,3 +102,80 @@ The ten-criterion table above remains the disposition after this round's indepen
 **Verdict: BLOCKED.** The requested CI gate is already green and the prior documentation contradiction already repaired. There is no evidence-backed code or ledger repair to make. Completion needs a designated immutable RC/configuration, resolution of the replica-selection rate-limit mismatch, a production-topology workload/telemetry runner and a qualifying soak; a longer host-process preflight cannot supply that proof. No ledger, production, harness, test or inventory files changed. Only this handoff changed.
 
 Progress: checked 1, done 0 (issue acceptance incomplete), skipped 0 issues, errors 0 validation commands; 5 explicitly skipped PostgreSQL test cases. Next: promotion owner supplies RC artifact/configuration and resolves remaining acceptance prerequisites. This checkpoint is committed locally, not integration approval.
+
+---
+
+# Issue #860 focused repair checkpoint — job `a66a3b10`
+
+
+Snapshot: issue #860 only, branch `auto-860`, starting HEAD
+`5aa88c8a8c0c5c11ce4bbe7f815cb74e3cc9b4e7`, assigned base
+`8c8fc8d6706a0837bd991c4e92138bf4d776ac9e`. Initial worktree clean.
+
+Frozen scope: inspect the existing soak profile/evidence, production limiter,
+soak promotion tests, relevant ADRs, vulture checker and CI arguments; repair
+only evidenced #860 documentation or vulture identities in
+`quality/vulture-baseline.json` and directly implicated source. No deployment
+or release approval is implied. No remote mutations.
+
+Assumption: this is the writer/CI-repair role. The assigned job directory
+contained no `check-*.log` files at initial inspection; earlier green claims
+will not be treated as current validation. The exact RC artifact/configuration
+has not been supplied. A short host-based preflight cannot satisfy a four-hour
+production-artifact soak. Missing acceptance evidence will remain explicit.
+
+Progress: confirmed assigned HEAD and clean worktree; repository instructions
+read. Exact CI vulture command passed: 1361 findings / 1361 reviewed identities,
+zero unclassified or forbidden findings, base `8c8fc8d6706a`. No unbanked
+identity exists to repair and no ledger amendment is justified. Reviewed the
+previous result artifact (BLOCKED) and current profile/evidence: earlier H3
+shared-store overclaim is already corrected; exact-RC, duration and physical
+execution acceptance gaps are still explicitly documented. Additional focused
+validation: focused pytest completed (80 passed, 5 skipped; live PostgreSQL
+cases require `MAISTRO_TEST_PG_DSN`). Docker check independently failed:
+`DOCKER_HOST=unix:///var/run/docker.sock timeout 90 docker info` returned 1,
+Cannot connect to the Docker daemon. No production soak can run in this
+current environment. Earlier handoff content is preserved above.
+
+## Current executed validation
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS (1361/1361), matching `.github/workflows/quality.yml:962`.
+- `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q -rs`: 80 passed, 5 skipped in 2.82s. Skips need a migrated PostgreSQL DSN; no live database claim.
+- `uv run ruff check .`: PASS; `uv run ruff format --check .`: PASS, 2802 files.
+- `uv run python scripts/check-deployment-claims.py`: PASS.
+- `uv run python scripts/check-execution-lifecycles.py`: PASS, 19/19 classified lifecycles.
+- `uv run python scripts/check-merge-markers.py`: PASS.
+- `uv run python` imported the current harness and checked the four fixed historical JSON packs: all rejected on `sustain_duration` and `exact_rc_artifact`. This evaluates recorded summaries, not raw execution traces.
+- Executed byte-prefix assertion: historical handoff preserved exactly. Initial `git diff --check` found an extra EOF blank line in this appended section; removed before commit.
+
+Accepted ADR-081426-1f7c identifies physical execution by Attempt; accepted
+ADR-081626-f383 explicitly does not grant lease-expiry takeover authority.
+ADR-081 remains Proposed. Reconciliation: preserve the canonical execution
+spine and do not reinterpret admission deduplication as physical-work fencing
+or invent reclaim authority to satisfy the soak request.
+
+## Acceptance — current independent disposition
+
+| Criterion | Evidence / disposition |
+|---|---|
+| Representative release profile | PARTIAL: profile inspected; its remaining-gaps section explicitly lacks concurrent users/Workspaces, fan-out, successful tools/models, Design/Canvas and sustained Goal/background-worker traffic. RC applicability UNVERIFIED. |
+| Two application replicas | UNVERIFIED for exact RC: Docker daemon unreachable; no deployment executed. |
+| Sustained saturation/reclaim/retry/leak observations | UNVERIFIED: all four historical packs rejected by current duration/artifact gates. |
+| Exactly-once/fenced physical work and Goal reconciliation | UNVERIFIED: admission probes do not establish physical Attempt uniqueness; no new live workload. |
+| Security/degraded behavior and replica-selection non-bypass | NOT MET for aggregate rate allowance: executed production middleware tests grant the same identity another allowance on replica 2. Security/degraded behavior under exact-RC load UNVERIFIED. |
+| Complete telemetry with explicit thresholds | PARTIAL: live subprocess resource regression passes; RC PostgreSQL, application-loop, worker counts, queue and error/timeout threshold observations UNVERIFIED. |
+| Kill/restart during active work with fencing/recovery | UNVERIFIED: no active RC work or restart performed. |
+| Long-running exact-RC soak | BLOCKED: no designated immutable RC/configuration; Docker unavailable; host driver always rejects artifact equivalence. No four-hour run executed. |
+| Findings filed/reclassified | Existing local earliest-invariant classifications reviewed; external filing UNVERIFIED and prohibited in this lane. |
+| Hash-bound machine/human evidence | Historical preflight evidence preserved, not promoted; qualifying exact-RC evidence UNVERIFIED. |
+
+Verdict: **BLOCKED**. Only this handoff changes. No production, harness, ledger,
+grant or test changes; no inventory delta is needed. The prior H3 overclaim is
+already corrected, and the requested vulture repair has no failing identities.
+This is a committed validation checkpoint, not completion or promotion approval.
+
+Progress: checked 1, done 0, skipped 0 issues; 1 environment failure (Docker),
+5 explicitly skipped PostgreSQL tests. Next: provide reachable deployment
+infrastructure and designated immutable RC/configuration, resolve the aggregate
+rate-limit acceptance mismatch, and run a production-topology workload with
+physical Attempt correlation and complete metrics for at least four hours.
