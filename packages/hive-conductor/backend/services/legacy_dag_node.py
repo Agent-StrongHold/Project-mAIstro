@@ -440,6 +440,7 @@ async def _run_llm_node(
     *,
     effect_context: CapabilityEffectContext | None = None,
     ctx: NodeContext | None = None,
+    governed_runtime: Any | None = None,
 ) -> None:
     role = node.get("role", "worker")
     if node.get("tool"):
@@ -464,19 +465,41 @@ async def _run_llm_node(
     if parent_outputs:
         user_content += "\n\nContext from previous steps:\n" + "\n---\n".join(parent_outputs[-3:])
     try:
-        builder = llm_builder or _build_llm_call
-        response = await builder(on_response)(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
-            model=model,
-            # The node's declared (resolved) timeout reaches the transport as
-            # data. The durable walker enforces the same resolved value as the
-            # Attempt's canonical deadline; a node-level transport timeout can
-            # only agree with it or lose the race (#1184).
-            timeout=declared_raw_node_timeout_s(node),
-        )
+        if governed_runtime is not None and ctx is not None and ctx.attempt_id:
+            # Canonical cutover (#718): the physical model call crosses the
+            # governed Binding -> Invocation egress, so its usage evidence is
+            # recorded once by the Invocation authority's terminalization
+            # recorder. This node supplies no callback of its own; the raw
+            # builder below is the compatibility fallback for callers with no
+            # canonical effect authority (standalone tests, direct calls).
+            from services.governed_model import dag_node_completion
+
+            response = await dag_node_completion(
+                governed_runtime,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                node_id=nid,
+                workspace_id=ctx.workspace_id or "default",
+                project_id=ctx.project_id or "agent-runtime",
+                system=system,
+                user=user_content,
+                model=model,
+            )
+        else:
+            builder = llm_builder or _build_llm_call
+            response = await builder(on_response)(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ],
+                model=model,
+                # The node's declared (resolved) timeout reaches the transport
+                # as data. The durable walker enforces the same resolved value
+                # as the Attempt's canonical deadline; a node-level transport
+                # timeout can only agree with it or lose the race (#1184).
+                timeout=declared_raw_node_timeout_s(node),
+            )
         results[nid] = {"role": role, "response": response, "success": True, "model": model}
     except Exception as exc:
         results[nid] = {"role": role, "response": str(exc), "success": False, "model": model}
@@ -637,6 +660,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         on_response: OnResponseHook | None,
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
         effect_context: CapabilityEffectContext | None = None,
+        governed_runtime: Any | None = None,
         progress: RunProgressHook | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
@@ -646,6 +670,10 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._on_response = on_response
         self._llm_builder = llm_builder
         self._effect_context = effect_context
+        # GovernedModelRuntime composed from the live Container; when present
+        # the node's model call crosses the canonical Invocation egress (#718)
+        # and ``_llm_builder``/``_on_response`` stay compatibility fallbacks.
+        self._governed_runtime = governed_runtime
         self._progress = progress
 
     async def _emit_progress(self, event: dict[str, Any]) -> None:
@@ -755,6 +783,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 llm_builder=self._llm_builder,
                 effect_context=self._effect_context,
                 ctx=ctx,
+                governed_runtime=self._governed_runtime,
             )
             result = scratch[node_id]
 
