@@ -38,3 +38,32 @@ the security-headers layer, so the tests pin the contract at three levels:
 No compensating removals: every test here is new coverage for new behavior.
 Ordinary requests without a selector keep their pre-change semantics plus two
 advertisement headers, which is why the pre-existing suites needed no edits.
+
+## Revalidation record (repair round at 64800e22e, 2026-10-03)
+
+Deltas above unchanged; this round moved no test counts. Evidence, run locally
+at head `64800e22e914dc2fc129ac0d13929d7c29431ede`:
+
+- `formal-conformance` (the gate the merge-queue evaluation left
+  `in_progress`), both of its tree steps proven locally:
+  `python scripts/check-formal-oracle-independence.py --base 55a647059` (develop
+  head) and `--base 045cfdfbe` (merge base) — both OK; `pytest formal/models/
+  --timeout=300 --hypothesis-seed=0` against a real pgvector:pg18 with
+  `alembic upgrade head` applied (head 050): **664 passed**.
+- Negotiation suites: `packages/maistro-core/tests/api_versioning` **18 passed**;
+  `packages/maistro-server/tests/api/test_version_negotiation.py` +
+  `test_canvas.py` **53 passed**; `packages/hive-conductor/backend/tests/
+test_version_negotiation.py` **9 passed**.
+- exact-debt-ledger steps with CI's exact arguments: `check-ratchet-provenance.py`
+  OK (all sub-ratchets, base 045cfdfbe -> candidate 64800e22e);
+  `check-shipped-surface-truth.py` OK; `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` OK (1360 reviewed identities ==
+  1360 findings, zero deltas).
+- `check-suite-inventory.py` (CI's no-argument invocation): ok, 14 suites match.
+- `ruff check .` clean; `ruff format --check .` clean (2811 files);
+  `check-m1-convergence-freeze.py --base 55a647059` OK; `check-release-consistency.py`
+  OK; ADR index check OK.
+- `mypy` on the changed module (`api_versioning.py`) clean; the remaining
+  `maistro_bootstrap`/`maistro_canvas` stub errors in the full-tree run are
+  absent from this branch's diff (optional-extra stub resolution in this
+  environment), not introduced by #96.
