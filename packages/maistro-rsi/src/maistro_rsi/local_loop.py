@@ -2065,9 +2065,15 @@ class LocalRsiLoop:
         for v in fought:
             # Battle-evidence gate (#853): fitness's Elo term needs elo_battles.
             battles = self._elo.get_total_battles(v.genome_id)
+            genome = by_id[v.genome_id]
             if battles > 0:
-                by_id[v.genome_id].harness_params["avg_elo"] = self._elo.get_avg_elo(v.genome_id)
-                by_id[v.genome_id].harness_params["elo_battles"] = battles
+                genome.harness_params["avg_elo"] = self._elo.get_avg_elo(v.genome_id)
+                genome.harness_params["elo_battles"] = battles
+                # list_all() hands back fresh copies when the store is
+                # sqlite-backed (the live mode's population.db), so the
+                # mutation must be written back or fitness never sees it —
+                # same discipline as _fold_cycle_scores above.
+                self._population.add(genome)
 
     def _refit_cull_breed(self) -> list[Any]:
         """Fitness (reliability-multiplied) → cull the weakest → breed one child.
