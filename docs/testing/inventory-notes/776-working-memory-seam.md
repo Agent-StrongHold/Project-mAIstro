@@ -5,6 +5,34 @@ inventory-delta:
 
 # 776 — per-Workspace working-memory seam (M3 product floor)
 
+> Round note (CI-repair verification, head 82a80eacf): every gate the last
+> merge-queue evaluation reded was re-run locally against the merged head —
+> no code change was needed this round; the failures at b8a897882 predate the
+> develop-merge defect fix (ed11b3d4f) and the merge itself. Evidence:
+> `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+> '*/third_party/*'` exit 0 (1359 reviewed → 1359 findings); `pytest
+> formal/models/ --timeout=300 --hypothesis-seed=0` → 663 passed, 1 skipped
+> (CI-style editable installs of formal/, maistro-core, maistro-evolve plus
+> alembic upgrade head against a real server); `check-diff-coverage.py
+> coverage-core.xml --base 053f93969` → ok at 90% lines / 80% branch per
+> measured file; full `packages/maistro-core/tests` → 11381 passed, 782
+> skipped, 1 xfailed (REQUIRE_AUTH=false, MAISTRO_DRY_RUN=1); PG-backed
+> `test_container_postgres.py` + `persistence` + `workspaces` → 968 passed
+> (MAISTRO_TEST_PG_DSN against the migrated server);
+> `tests/migrations/test_migration_chain.py` → 13 passed; radon 145 → 145,
+> reachability, wiring-reads, contract-markers, convergence-matrix,
+> promotion-surface, owned-store-access, agent-store-writes,
+> credential-authority, security-inventory, ratchet-provenance, M1 freeze and
+> formal-oracle-independence (base 053f93969) all exit 0; ruff check/format
+> clean; `check-suite-inventory.py` ok (no node IDs changed). One local-only
+> artifact worth recording for the next verifier: under `coverage run`,
+> `test_an_unreachable_server_is_an_error_not_a_fallback` can hit the
+> coverage producer's `--timeout=30` because this WSL environment stalls the
+> port-1 connect ~60s instead of refusing instantly as CI runners do; the
+> same test passes under coverage with `--timeout=120` and standalone, and
+> the branch touches no connection code — environment timing, not a
+> regression.
+
 > Round note (develop-sync repair, this branch): the branch merged
 > `origin/develop` (fa2deb0a4, 28 commits) — no textual conflicts, but one
 > semantic merge defect had to be resolved: develop's `create_container`
