@@ -534,7 +534,6 @@
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'process_cpu_seconds'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'scheduling_wait_seconds_last'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'scheduling_wait_seconds_total'",
-        "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'isolation_tier'",
         "packages/maistro-core/src/maistro/security/auth_throttle.py::unused variable 'delay_seconds'",
         "packages/maistro-core/src/maistro/security/auth_throttle.py::unused variable 'elevate'",
         "packages/maistro-core/src/maistro/security/content_security_policy.py::unused variable 'SELF'",
@@ -781,7 +780,6 @@
         "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::unused method 'allowed_actions'",
         "packages/maistro-core/src/maistro/capabilities/providers/self_repair.py::unused class 'RuleBasedRepair'",
         "packages/maistro-core/src/maistro/capabilities/providers/self_repair.py::unused method 'governor_state'",
-        "packages/maistro-core/src/maistro/capabilities/registry.py::unused method 'activate'",
         "packages/maistro-core/src/maistro/capabilities/registry.py::unused method 'active_name'",
         "packages/maistro-core/src/maistro/capabilities/registry.py::unused method 'installed'",
         "packages/maistro-core/src/maistro/capabilities/registry.py::unused method 'validate_boot'",
@@ -1301,16 +1299,7 @@
         "packages/maistro-core/src/maistro/vault.py::unused method 'use'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'",
-        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'",
-        "packages/maistro-core/src/maistro/eval_workspace/model.py::unused method '_validate_workspace'",
-        "packages/maistro-core/src/maistro/eval_workspace/model.py::unused method '_validate_snapshot'",
-        "packages/maistro-core/src/maistro/eval_workspace/pool.py::unused method 'warm_count'",
-        "packages/maistro-core/src/maistro/eval_workspace/service.py::unused method 'provision'",
-        "packages/maistro-core/src/maistro/eval_workspace/service.py::unused method 'activate'",
-        "packages/maistro-core/src/maistro/eval_workspace/service.py::unused method 'fork_from_workspace'",
-        "packages/maistro-core/src/maistro/eval_workspace/service.py::unused method 'fork_from_snapshot'",
-        "packages/maistro-core/src/maistro/eval_workspace/store.py::unused method 'find_by_owner'",
-        "packages/maistro-core/src/maistro/eval_workspace/store.py::unused method 'find_by_owner'"
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'"
       ]
     },
     {

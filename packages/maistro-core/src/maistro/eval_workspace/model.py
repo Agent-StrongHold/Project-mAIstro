@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Annotated
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -31,9 +32,12 @@ def _new_id() -> str:
     return uuid4().hex
 
 
-def _require_non_empty(value: str | None, field_name: str) -> None:
-    if value is not None and not value.strip():
-        raise ValueError(f"{field_name} must be a non-empty string when provided")
+#: A string that must contain at least one non-whitespace character. Blank
+#: means "no value" throughout this substrate, and a whitespace-only id is a
+#: blank id wearing spaces: `workspace_id=" "` would silently sort, hash and
+#: join like a real one. Declarative (a field constraint) rather than an
+#: after-hook so the rejection names the field, not a loop over fields.
+NonBlankStr = Annotated[str, Field(pattern=r"\S")]
 
 
 class EvalWorkspaceStatus(StrEnum):
@@ -63,7 +67,7 @@ class FixtureEntry(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    name: str = Field(min_length=1)
+    name: NonBlankStr
     content_sha256: str = Field(min_length=64, max_length=64)
 
 
@@ -112,24 +116,24 @@ class EvalWorkspace(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workspace_env_id: str = Field(default_factory=_new_id)
-    workspace_id: str
-    project_id: str
+    workspace_id: NonBlankStr
+    project_id: NonBlankStr
     environment_digest: str = Field(min_length=64, max_length=64)
     status: EvalWorkspaceStatus = EvalWorkspaceStatus.PROVISIONING
 
     #: The execution that produced this workspace (ADR-083026-e602).
     #: None means no execution was in scope, not an empty id.
-    produced_run_id: str | None = None
-    produced_node_run_id: str | None = None
-    produced_attempt_id: str | None = None
+    produced_run_id: NonBlankStr | None = None
+    produced_node_run_id: NonBlankStr | None = None
+    produced_attempt_id: NonBlankStr | None = None
 
     #: The Attempt currently using this workspace. Set iff status is IN_USE.
-    owner_attempt_id: str | None = None
+    owner_attempt_id: NonBlankStr | None = None
 
     #: Lineage. A forked workspace names its parent and the snapshot whose
     #: state it started from; a provisioned workspace has neither.
-    parent_workspace_env_id: str | None = None
-    forked_from_snapshot_id: str | None = None
+    parent_workspace_env_id: NonBlankStr | None = None
+    forked_from_snapshot_id: NonBlankStr | None = None
 
     #: Digest of the recorded start/restored state, when one exists. Two
     #: workspaces with equal `environment_digest` AND equal non-None
@@ -141,33 +145,15 @@ class EvalWorkspace(BaseModel):
     archived_at: datetime | None = None
 
     @model_validator(mode="after")
-    def _validate_workspace(self) -> EvalWorkspace:
-        for name in (
-            "workspace_id",
-            "project_id",
-        ):
-            value = getattr(self, name)
-            if not value.strip():
-                raise ValueError(f"{name} must be a non-empty string")
-        for name in (
-            "produced_run_id",
-            "produced_node_run_id",
-            "produced_attempt_id",
-            "parent_workspace_env_id",
-            "forked_from_snapshot_id",
-        ):
-            _require_non_empty(getattr(self, name), name)
-
-        self.validate_invariants()
-        return self
-
-    def validate_invariants(self) -> None:
+    def validate_invariants(self) -> EvalWorkspace:
         """The paired-field invariants, enforced wherever the record is written.
 
-        These hold only when status and its companion field move together, so
-        they cannot be per-assignment rules -- they are checked at the write
-        door (`EvalWorkspaceStore.save_workspace` re-runs the model
-        validator), the same place the canonical run store checks its fence.
+        Registered as the construction-time validator *and* re-run by the
+        write door (`EvalWorkspaceStore.save_workspace` calls it by name),
+        the same place the canonical run store checks its fence: status and
+        its companion field must move together, so they cannot be per-
+        assignment rules -- a caller mutating both would trip an intermediate
+        state no observer ever sees.
         """
         held = self.status is EvalWorkspaceStatus.IN_USE
         if held != bool(self.owner_attempt_id):
@@ -183,6 +169,7 @@ class EvalWorkspace(BaseModel):
             )
         if self.parent_workspace_env_id is not None and self.forked_from_snapshot_id is None:
             raise ValueError("a forked workspace must name the snapshot it forked from")
+        return self
 
 
 class WorkspaceSnapshot(BaseModel):
@@ -199,24 +186,16 @@ class WorkspaceSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     snapshot_id: str = Field(default_factory=_new_id)
-    workspace_env_id: str
+    workspace_env_id: NonBlankStr
     environment_digest: str = Field(min_length=64, max_length=64)
     #: Digest of the captured state content itself (sha256 of the bytes).
     content_digest: str = Field(min_length=64, max_length=64)
 
-    produced_run_id: str | None = None
-    produced_node_run_id: str | None = None
-    produced_attempt_id: str | None = None
+    produced_run_id: NonBlankStr | None = None
+    produced_node_run_id: NonBlankStr | None = None
+    produced_attempt_id: NonBlankStr | None = None
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
-    @model_validator(mode="after")
-    def _validate_snapshot(self) -> WorkspaceSnapshot:
-        for name in ("workspace_env_id",):
-            _require_non_empty(getattr(self, name), name)
-        for name in ("produced_run_id", "produced_node_run_id", "produced_attempt_id"):
-            _require_non_empty(getattr(self, name), name)
-        return self
 
 
 def start_states_match(a: EvalWorkspace, b: EvalWorkspace) -> bool:

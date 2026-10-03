@@ -91,7 +91,11 @@ class InMemoryEvalWorkspaceStore:
         """
         if workspace.workspace_env_id not in self._workspaces:
             raise EvalWorkspaceNotFound("workspace", workspace.workspace_env_id)
-        workspace.validate_invariants()
+        # The write door re-runs the construction validator by name: pydantic
+        # wraps a @model_validator in a descriptor proxy whose *static* type
+        # is not callable, but the runtime call is the supported in-place
+        # re-validation, and tests pin that it rejects mutated violations.
+        workspace.validate_invariants()  # type: ignore[operator]
         self._workspaces[workspace.workspace_env_id] = workspace
 
     def get_workspace(self, workspace_env_id: str) -> EvalWorkspace:

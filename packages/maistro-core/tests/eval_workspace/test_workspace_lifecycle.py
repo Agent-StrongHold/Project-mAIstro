@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from maistro.eval_workspace import (
     EMPTY_FIXTURES,
@@ -19,6 +20,7 @@ from maistro.eval_workspace import (
     EvalWorkspaceStatus,
     InMemoryEvalWorkspaceStore,
     OwnershipError,
+    WorkspaceSnapshot,
     WorkspaceStateError,
     environment_digest,
 )
@@ -139,6 +141,53 @@ def test_owner_binding_is_a_record_invariant() -> None:
         )
     with pytest.raises(ValueError, match="archived_at"):
         EvalWorkspace(status=EvalWorkspaceStatus.RETIRED, archived_at=None, **common)
+    with pytest.raises(ValueError, match="forked workspace must name the snapshot"):
+        EvalWorkspace(
+            status=EvalWorkspaceStatus.AVAILABLE,
+            parent_workspace_env_id="ws-env-parent",
+            **common,
+        )
+
+
+def test_blank_and_whitespace_ids_are_rejected_declaratively() -> None:
+    """Blank means absent: an id of spaces is a blank id wearing spaces.
+
+    The checks are pydantic field constraints (`NonBlankStr`), so the
+    rejection names the field — enforced at construction, not in a hook.
+    """
+    common = {
+        "project_id": "proj-1",
+        "environment_digest": "a" * 64,
+    }
+    with pytest.raises(ValidationError, match="workspace_id"):
+        EvalWorkspace(workspace_id=" ", **common)
+    with pytest.raises(ValidationError, match="project_id"):
+        EvalWorkspace(workspace_id="ws-1", project_id="", **{"environment_digest": "a" * 64})
+    with pytest.raises(ValidationError, match="produced_run_id"):
+        EvalWorkspace(
+            workspace_id="ws-1",
+            produced_run_id="  ",
+            **common,
+        )
+    # None remains the honest "no execution was in scope".
+    honest = EvalWorkspace(workspace_id="ws-1", produced_run_id=None, **common)
+    assert honest.produced_run_id is None
+
+
+def test_snapshot_records_reject_blank_ids_declaratively() -> None:
+    with pytest.raises(ValidationError, match="workspace_env_id"):
+        WorkspaceSnapshot(
+            workspace_env_id=" ",
+            environment_digest="a" * 64,
+            content_digest="b" * 64,
+        )
+    with pytest.raises(ValidationError, match="produced_attempt_id"):
+        WorkspaceSnapshot(
+            workspace_env_id="ws-env-1",
+            environment_digest="a" * 64,
+            content_digest="b" * 64,
+            produced_attempt_id="",
+        )
 
 
 def test_store_refuses_unknown_ids_and_duplicates() -> None:

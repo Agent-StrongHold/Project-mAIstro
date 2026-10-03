@@ -158,20 +158,6 @@
       ]
     },
     {
-      "id": "eval-workspace-library",
-      "subsystem": "Sandbox isolation",
-      "disposition": "LIBRARY",
-      "rationale": "The #107 persistent-evaluation-workspace substrate: deterministic environment digests, digest-addressed snapshots, fork/park/resume/restore records, and the digest-keyed warm pool, as durable bookkeeping over the M2 sandbox (SandboxProtocol). maistro-core is a published library (AGENTS.md) and this is an importable surface for downstream products (Stronghold evaluation worlds); no process entry point in this repository drives an evaluation workspace yet, so unreachable is its correct state -- the same disposition the Stream 1 Run/Workspace modules hold pending wiring (#373). Contract and conformance tests live in packages/maistro-core/tests/eval_workspace/; production adoption must keep the canonical Goal -> Graph -> Run -> NodeRun -> Attempt lifecycle authoritative.",
-      "modules": [
-        "maistro.eval_workspace",
-        "maistro.eval_workspace.digest",
-        "maistro.eval_workspace.model",
-        "maistro.eval_workspace.pool",
-        "maistro.eval_workspace.service",
-        "maistro.eval_workspace.store"
-      ]
-    },
-    {
       "id": "evolve-unwired",
       "subsystem": "Evolve tournament optimizer",
       "disposition": "CONNECT",
