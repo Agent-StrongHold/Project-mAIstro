@@ -21,6 +21,7 @@ from typing import Any, ClassVar
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.effect_context import new_postgres_effect_context
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationExecutionService,
@@ -28,7 +29,6 @@ from maistro.capabilities.invocation import (
     UnsafeEffectRetry,
 )
 from maistro.capabilities.pg_invocation_store import PgInvocationStore
-from maistro.container import _wire_capability_invocations
 
 
 class _Provider:
@@ -483,9 +483,15 @@ async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired()
         async def __aexit__(self, *args: Any) -> None:
             return None
 
+    executed: list[str] = []
+
     class _SchemaConnection:
         async def execute(self, query: str, *args: Any) -> str:
-            assert "capability_invocations" in query
+            # The live path ensures all three effect schemas, not only the
+            # ledger's, so asserting that every statement names
+            # `capability_invocations` was a property of the helper this test
+            # used to call rather than of the composition it stands for.
+            executed.append(query)
             return "OK"
 
         def transaction(self) -> _Transaction:
@@ -505,7 +511,14 @@ async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired()
         def acquire(self) -> _Acquire:
             return _Acquire()
 
-    store = await _wire_capability_invocations(pg_pool=_SchemaPool(), db_pool=None)
+    # Through the live composition path, not a helper only this test called.
+    # `_wire_capability_invocations` selected the ledger on its own until the
+    # effect context took that job over; keeping the test pointed at it left
+    # a production function whose only caller was this line (vulture, #1195).
+    context = await new_postgres_effect_context(_SchemaPool())
 
-    assert isinstance(store, PgInvocationStore)
-    assert await store.get("inv-absent") is None
+    assert isinstance(context.invocation_store, PgInvocationStore)
+    assert any("capability_invocations" in q for q in executed), (
+        "the ledger's schema was never ensured on the wired pool"
+    )
+    assert await context.invocation_store.get("inv-absent") is None

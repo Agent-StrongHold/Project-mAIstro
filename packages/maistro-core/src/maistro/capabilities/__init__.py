@@ -15,6 +15,7 @@ from maistro.capabilities.authority import (
     verify_approval_authority,
 )
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.binding_store import BindingDisabled, PgBindingStore, SqliteBindingStore
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.discovery import discover_into
 from maistro.capabilities.governed_invocation import (
@@ -93,6 +94,7 @@ __all__ = [
     "ApprovalStatus",
     "AsyncHttp",
     "Binding",
+    "BindingDisabled",
     "CapabilityProvider",
     "CapabilityRegistry",
     "CapabilityUnavailable",
@@ -125,6 +127,7 @@ __all__ = [
     "InvocationReconciliationEvidence",
     "InvocationStatus",
     "OpencodeHarnessRunner",
+    "PgBindingStore",
     "PgInvocationStore",
     "ProviderHealth",
     "ProviderReconciliationAdapter",
@@ -134,6 +137,7 @@ __all__ = [
     "SandboxExec",
     "SlotSpec",
     "SqliteApprovalStore",
+    "SqliteBindingStore",
     "SqliteInvocationStore",
     "StaleInvocationUpdate",
     "SubprocessHarnessRunner",
