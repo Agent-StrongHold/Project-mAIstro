@@ -22,24 +22,72 @@ if TYPE_CHECKING:
     import asyncpg
 
 
+# The columns this store consumes, not a second schema definition: no DDL,
+# defaults, migration stamp or type requirements on additive columns live here.
+_EVENT_COLUMN_TYPES = {
+    "event_id": "text",
+    "stream_id": "text",
+    "sequence": "bigint",
+    "type": "text",
+    "timestamp": "double precision",
+    "workspace_id": "text",
+    "stream_scope": "text",
+    "project_id": "text",
+    "run_id": "text",
+    "node_run_id": "text",
+    "attempt_id": "text",
+    "invocation_id": "text",
+    "session_id": "text",
+    "correlation_id": "text",
+    "causation_id": "text",
+    "source": "text",
+    "actor_id": "text",
+    "payload": "jsonb",
+    "provenance": "jsonb",
+}
+
+
 async def ensure_canonical_event_schema(pool: asyncpg.Pool) -> None:
     """Require migration 030's read/write contract without changing the schema.
 
     The historical name is retained for supplied-pool callers. Alembic alone
     owns DDL; this preflight also runs through CapabilityEffectContext, so an
     unmigrated pool must fail rather than silently creating a second schema.
-    Check the columns used by DML and the two uniqueness guarantees on which
-    event identity and stream ordering depend. Additional columns/indexes from
-    newer migrations are compatible and must not require an exact head stamp.
+    Check consumed column types, SELECT/INSERT privileges and the two uniqueness
+    guarantees on which event identity and stream ordering depend. Additional
+    columns/indexes from newer migrations are compatible and must not require
+    an exact head stamp.
     """
     async with pool.acquire() as conn:
+        # Runtime reads use SELECT *, including additive columns. Also name
+        # consumed columns explicitly so a missing one fails even with no rows.
         await conn.execute(
-            """SELECT event_id, stream_id, sequence, type, timestamp,
-                      workspace_id, stream_scope, project_id, run_id, node_run_id,
-                      attempt_id, invocation_id, session_id, correlation_id, causation_id,
-                      source, actor_id, payload, provenance
-               FROM canonical_event_log LIMIT 0"""
+            f"SELECT *, {', '.join(_EVENT_COLUMN_TYPES)} FROM canonical_event_log LIMIT 0"
         )
+        columns = await conn.fetch(
+            """SELECT a.attname, a.atttypid::regtype::text AS data_type,
+                      has_column_privilege(a.attrelid, a.attnum, 'INSERT') AS can_insert
+               FROM pg_attribute a
+               WHERE a.attrelid = 'canonical_event_log'::regclass
+                 AND a.attname = ANY($1::text[]) AND NOT a.attisdropped""",
+            list(_EVENT_COLUMN_TYPES),
+        )
+        incompatible = [
+            row["attname"]
+            for row in columns
+            if row["data_type"] != _EVENT_COLUMN_TYPES[row["attname"]]
+        ]
+        if incompatible:
+            raise RuntimeError(
+                "PostgreSQL canonical_event_log has incompatible column types: "
+                + ", ".join(incompatible)
+                + "; apply and verify Alembic migrations before starting the application"
+            )
+        if any(not row["can_insert"] for row in columns):
+            raise RuntimeError(
+                "PostgreSQL canonical_event_log requires INSERT privilege on every "
+                "column written by the Event store"
+            )
         indexes = await conn.fetch(
             """SELECT array_agg(a.attname ORDER BY k.ord) AS columns
                FROM pg_index i

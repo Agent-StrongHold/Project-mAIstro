@@ -34,8 +34,10 @@ class _FakeConnection:
     async def execute(self, sql: str, *args: Any) -> None:
         self._statements.append(sql)
 
-    async def fetch(self, sql: str) -> list[dict[str, list[str]]]:
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         self._statements.append(sql)
+        if "FROM pg_attribute a" in sql:
+            return [{"attname": "event_id", "data_type": "text", "can_insert": True}]
         return [{"columns": ["event_id"]}, {"columns": ["stream_id", "sequence"]}]
 
     def transaction(self) -> _FakeTransaction:

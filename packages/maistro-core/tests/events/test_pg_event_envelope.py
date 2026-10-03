@@ -125,8 +125,10 @@ class _FakeConnection:
         self._pool.statements.append(sql)
         return self._pool.next_sequence
 
-    async def fetch(self, sql: str) -> list[dict[str, list[str]]]:
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
         self._pool.statements.append(sql)
+        if "FROM pg_attribute a" in sql:
+            return self._pool.column_contract
         return [{"columns": list(key)} for key in self._pool.unique_keys]
 
     def transaction(self) -> _FakeTransaction:
@@ -157,6 +159,15 @@ class _FakeAsyncpgPool:
         self.rows: dict[str, dict[str, Any]] = rows or {}
         self.next_sequence = 1
         self.unique_keys = [("event_id",), ("stream_id", "sequence")]
+        self.column_contract = [
+            {"attname": name, "data_type": kind, "can_insert": True}
+            for name, kind in (
+                ("event_id", "text"),
+                ("sequence", "bigint"),
+                ("timestamp", "double precision"),
+                ("payload", "jsonb"),
+            )
+        ]
         self._connection = _FakeConnection(self)
 
     def acquire(self) -> _Acquire:
@@ -172,6 +183,7 @@ async def test_ensure_schema_checks_the_canonical_table_without_ddl() -> None:
 
     await PgEventStore(pool).ensure_schema()
 
+    assert any(sql.startswith("SELECT *, ") for sql in pool.statements)
     assert any("FROM canonical_event_log LIMIT 0" in sql for sql in pool.statements)
     assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)
 
@@ -269,3 +281,22 @@ async def test_ensure_schema_accepts_additive_migration_indexes() -> None:
     pool = _FakeAsyncpgPool()
     pool.unique_keys.append(("event_id", "workspace_id"))
     await PgEventStore(pool).ensure_schema()
+
+
+@pytest.mark.parametrize("column", ["event_id", "sequence", "timestamp", "payload"])
+async def test_preflight_rejects_incompatible_consumed_column_types(column: str) -> None:
+    pool = _FakeAsyncpgPool()
+    for row in pool.column_contract:
+        if row["attname"] == column:
+            row["data_type"] = "integer"
+    with pytest.raises(RuntimeError, match=f"incompatible column types: {column}"):
+        await PgEventStore(pool).ensure_schema()
+    assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)
+
+
+async def test_preflight_rejects_missing_insert_privilege() -> None:
+    pool = _FakeAsyncpgPool()
+    pool.column_contract[-1]["can_insert"] = False
+    with pytest.raises(RuntimeError, match="requires INSERT privilege"):
+        await PgEventStore(pool).ensure_schema()
+    assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)

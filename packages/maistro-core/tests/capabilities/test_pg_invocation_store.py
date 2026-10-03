@@ -468,6 +468,13 @@ async def test_pg_invocation_store_logical_invoke_blocks_running_effect_from_ano
         )
 
 
+def _event_schema_catalogue_rows(query: str) -> list[dict[str, Any]]:
+    """Catalogue answers for the composition fixture's migrated Event table."""
+    if "FROM pg_attribute a" in query:
+        return [{"attname": "event_id", "data_type": "text", "can_insert": True}]
+    return [{"columns": ["event_id"]}, {"columns": ["stream_id", "sequence"]}]
+
+
 async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired() -> None:
     """The container's durable-backend precedence picks the canonical ledger.
 
@@ -494,9 +501,9 @@ async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired()
             executed.append(query)
             return "OK"
 
-        async def fetch(self, query: str) -> list[dict[str, list[str]]]:
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
             executed.append(query)
-            return [{"columns": ["event_id"]}, {"columns": ["stream_id", "sequence"]}]
+            return _event_schema_catalogue_rows(query)
 
         def transaction(self) -> _Transaction:
             return _Transaction()
