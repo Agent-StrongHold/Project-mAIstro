@@ -505,9 +505,9 @@ class CanonicalDurableRunStore:
         record = await self.get(run_id)
         if record is None or not self._spine_is_quiet(record, moment):
             return False
-        if not self._continuation_ahead_of_spine(record, continuation) and not self._terminal_long_observed(
-            continuation, moment
-        ):
+        if not self._continuation_ahead_of_spine(
+            record, continuation
+        ) and not self._terminal_long_observed(continuation, moment):
             return False
         if target is RunStatus.COMPLETED:
             result, error = terminal_run_payload(record.node_runs, target)
@@ -542,7 +542,10 @@ class CanonicalDurableRunStore:
         moment: datetime,
     ) -> bool:
         """Re-queue graph work after a frontier NodeRun landed without its checkpoint."""
-        if continuation.status is not RunStatus.RUNNING or canonical.status is not RunStatus.RUNNING:
+        if (
+            continuation.status is not RunStatus.RUNNING
+            or canonical.status is not RunStatus.RUNNING
+        ):
             return False
         if continuation.resume_at is not None:
             return False
