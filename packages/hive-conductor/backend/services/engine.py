@@ -10,9 +10,12 @@ Exposes two surfaces:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
-from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from collections.abc import AsyncIterator, Awaitable, Callable
+from functools import partial
+from typing import TYPE_CHECKING, Any, Literal
 
 from adapters.task_backend import TaskRecord
 from protocols.agent import AgentPort
@@ -26,7 +29,65 @@ DEFAULT_WORKSPACE_ID = "default"
 if TYPE_CHECKING:
     from config import Settings
 
-__all__ = ["EngineService", "TaskRecord", "get_engine", "start_engine", "stop_engine"]
+__all__ = [
+    "EngineService",
+    "EngineState",
+    "TaskRecord",
+    "engine_health",
+    "get_engine",
+    "start_engine",
+    "stop_engine",
+]
+
+#: Lifecycle states the engine moves through (#1181). /health must be able to
+#: tell a successfully stopped engine apart from a boot that failed halfway,
+#: and both apart from one that is serving — possibly with a degraded
+#: optional component.
+EngineState = Literal["not_started", "starting", "ready", "degraded", "startup_failed", "stopped"]
+
+#: Health/JSON surfaces carry a bounded, type-qualified failure cause — never
+#: a raw traceback, and no settings value is ever interpolated into one (#1181).
+#: Text is also passed through the ADR-064 redactor before retention: startup
+#: dependency errors (DSNs, tokens, connection strings) reach the unauthenticated
+#: /health as `cause`/`degradations`, so truncation alone is not enough.
+_CAUSE_MAX_CHARS = 300
+
+
+def _sanitize_cause(exc: BaseException) -> str:
+    """One bounded, redacted, type-qualified line for /health and structured logs."""
+    try:
+        from maistro.security.redact import redact
+
+        text = redact(f"{type(exc).__name__}: {exc}")
+    except Exception:
+        # Fail closed: if the redactor itself is unavailable we cannot vouch
+        # for the message body, so publish the exception type only.
+        text = type(exc).__name__
+    if len(text) > _CAUSE_MAX_CHARS:
+        text = text[:_CAUSE_MAX_CHARS] + "…"
+    return text
+
+
+async def _unwind_agent_port(bridge: Any) -> None:
+    """Unwind a configured bridge after a failed boot (#1181).
+
+    `MaistroCoreBridge.start` has no stop half, but it leaves two things
+    behind. First the module-global runtime source in
+    services.agent_materialization — forgotten first, so nothing can resolve
+    against a container that is being torn down. Then the bridge's Container
+    itself: its `aclose()` releases exactly what that container took — the
+    PostgreSQL pool lease (`holds_pg_pool`) and the SQLite connections it
+    opened — and is idempotent. Clearing `_agent_port` alone would only drop
+    the last reference: each retryable failed boot would take a fresh pool
+    lease until the database runs out of slots, and an aiosqlite worker (a
+    non-daemon thread) left holding queued work could block process exit.
+    """
+    from services.agent_materialization import reset_runtime_source
+
+    reset_runtime_source()
+    container = getattr(bridge, "container", None)
+    if container is not None:
+        await container.aclose()
 
 
 class EngineService:
@@ -41,10 +102,45 @@ class EngineService:
         self._backend: Any = None
         self._configured = False
         self._capabilities: Any = None
+        # Lifecycle state machine (#1181): `start()` runs the whole boot
+        # sequence under one failure/cleanup contract, and `state`/`health()`
+        # are the only externally visible account of where it got to.
+        self._state: EngineState = "not_started"
+        self._startup_error: str | None = None
+        self._degradations: list[str] = []
 
     @property
     def is_configured(self) -> bool:
         return self._configured
+
+    @property
+    def state(self) -> EngineState:
+        """The lifecycle state (#1181) — see `health()`."""
+        return self._state
+
+    def health(self) -> dict[str, Any]:
+        """Lifecycle health snapshot (#1181).
+
+        `state` distinguishes what /health must tell apart: `starting` (boot
+        in flight), `ready` (all required steps succeeded), `degraded`
+        (serving, but a documented optional component failed),
+        `startup_failed` (a required step failed and startup was rolled
+        back), and `stopped`. `cause` is the sanitized startup failure;
+        `degradations` lists the optional-component failures this start
+        absorbed. Component entries are type names only.
+        """
+        return {
+            "state": self._state,
+            "cause": self._startup_error,
+            "degradations": list(self._degradations),
+            "agent_port": type(self._agent_port).__name__ if self._agent_port is not None else None,
+            "task_backend": type(self._backend).__name__ if self._backend is not None else None,
+            "bridge_configured": self._configured,
+        }
+
+    def _record_degradation(self, component: str, exc: BaseException) -> None:
+        """Absorb one optional-component failure as a health-visible degradation."""
+        self._degradations.append(f"{component}: {_sanitize_cause(exc)}")
 
     @property
     def agent_port(self) -> AgentPort | None:
@@ -106,6 +202,18 @@ class EngineService:
         return getattr(container, "run_reader", None)
 
     @property
+    def graph_run_store(self) -> Any:
+        """The core Container's durable graph-continuation store, or None.
+
+        The DurableRunStore the canonical graph executor checkpoints into —
+        Run + GraphExecutionState + NodeRuns + Attempts. None without the
+        bridge, like `run_store`: inspection then answers from the projection
+        alone rather than inventing graph state it cannot read (#775).
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "graph_run_store", None)
+
+    @property
     def schedule_store(self) -> Any:
         """The core Container's canonical Schedule store, or None.
 
@@ -164,112 +272,249 @@ class EngineService:
         feedback_service.set_outcome_store(store)
         logger.info("feedback_outcome_store_bound store=%s", type(store).__name__)
 
+    async def _reset_outcome_store_binding(self) -> None:
+        """Unwind step for `_wire_outcome_store` (#1181).
+
+        The restart hazard its docstring describes applies to a failed boot
+        too: if a later step fails, feedback must not keep pointing at the
+        previous engine's store. Rebind the fresh Hive-local one so the
+        post-failure process is deterministic.
+        """
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+        from services import feedback_service
+
+        feedback_service.set_outcome_store(InMemoryOutcomeStore())
+
     async def start(self, settings: Settings) -> None:
+        """Run the whole boot sequence under one explicit failure/cleanup
+        contract (#1181).
+
+        Every step below is required, except the two documented optional
+        degradations: a configured bridge that cannot start falls back to the
+        stub port, and capability wiring that cannot apply falls back to
+        baselines/SAFE_NOOP — both now recorded as health-visible
+        degradations. A required step that raises — or is cancelled while
+        awaiting — unwinds the steps that did start, in reverse order, marks
+        this instance `startup_failed` with a sanitized cause, clears its
+        component handles, and re-raises — so `start_engine` never publishes a
+        partially-initialized singleton. A failed start is retryable: the next
+        `start()` resets this state and re-runs the sequence from the top once
+        the dependency is restored.
+        There is no path where a failed boot leaves a live-looking engine
+        behind.
+        """
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 
-        if settings.maistro_router_api_key:
-            bridge = MaistroCoreBridge()
-            try:
-                await bridge.start(settings)
-                self._bind_agent_port(bridge)
-                self._configured = True
-            except Exception as exc:
-                # The module logger, not a function-local `import logging`:
-                # that import bound `logging` as a local for the whole
-                # function, so the later handler's `logging.getLogger(...)`
-                # raised UnboundLocalError whenever this branch was not taken —
-                # turning any failure below into a different, wrong error.
-                logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
-                self._bind_agent_port(StubAgentPort())
-        else:
-            self._bind_agent_port(StubAgentPort())
-
-        self._wire_capabilities(settings)
-        self._wire_outcome_store()
-
-        # A fresh metrics buffer per engine start. `set_store` had no
-        # production caller -- the wired-but-unread shape #236 gates -- and a
-        # buffer carried across a restart would mix the previous process's
-        # observations into this one's window (#698).
-        from services.node_metrics_store import reset_store
-
-        reset_store()
-
-        # Recovery is a system reconciliation cadence, not a user schedule.
-        # Start it only after the core bridge has established the canonical Run
-        # and Graph-continuation stores so another replica can recover a process
-        # that died between Run admission and checkpoint 1 (#835/#837).
-        from services.canonical_recovery import start_canonical_recovery
-        from services.dag_recovery import start_dag_recovery
-
-        start_dag_recovery()
-        # The Container's own recovery ticks (lease reclaim, stranded chat
-        # admissions, elapsed-pause resume) are operator-scheduled (ADR-019);
-        # this process is their operator (#62).
-        start_canonical_recovery()
-
-        # Canonical Evolve Run recovery (#1064) is bracketed by the Evolve
-        # service's own lifecycle (`services.evolution.start_evolution`/
-        # `stop_evolution`), not the engine's: `services.evolution_graph`'s
-        # recovery resolver requires the Evolve singleton to exist, and this
-        # engine start runs before `start_evolution()` does in application
-        # startup. Starting the cadence here raced that ordering -- a due
-        # RUNNING Run inspected in the gap terminalized FAILED for no reason
-        # but startup sequencing. See `services.evolution.start_evolution`.
-
+        self._state = "starting"
+        self._startup_error = None
+        self._degradations = []
+        #: Steps that started successfully, in order. The failure path stops
+        #: them in reverse — one cleanup contract for the whole sequence.
+        unwind: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         try:
-            if settings.hive_mode == "demo":
-                from adapters.task_backend import LocalTaskBackend
-
-                from maistro.agents.conductor import run_task
-
-                # Demo mode retains the local backend, but not a product-specific
-                # executor switch. Workspace Persona identity is resolved before
-                # submission through the generic materialized roster; execution
-                # has one authority regardless of legacy POC environment values.
-                backend = LocalTaskBackend(
-                    executor=run_task,
-                    admitter=self.task_admitter,
-                    run_store=self.run_store,
-                )
-                await backend.start()
-                self._backend = backend
-                logger.info("LocalTaskBackend (demo) using canonical conductor executor")
+            # Required: the agent seam. A configured bridge that fails takes
+            # the documented stub path — an optional degradation, not a boot
+            # failure. The module logger, not a function-local `import
+            # logging`: that import bound `logging` as a local for the whole
+            # function, so the later handler's `logging.getLogger(...)` raised
+            # UnboundLocalError whenever this branch was not taken — turning
+            # any failure below into a different, wrong error.
+            if settings.maistro_router_api_key:
+                bridge = MaistroCoreBridge()
+                try:
+                    await bridge.start(settings)
+                    self._bind_agent_port(bridge)
+                    self._configured = True
+                    # If a later step fails, the unwind must forget the
+                    # module-global runtime source the bridge registered in
+                    # services.agent_materialization — no seam may keep
+                    # pointing at a container this engine no longer owns —
+                    # and aclose the container itself, releasing the pool
+                    # lease / SQLite connections it took.
+                    unwind.append(("agent_port", partial(_unwind_agent_port, bridge)))
+                except asyncio.CancelledError:
+                    # A cancelled bridge.start may still have registered the
+                    # runtime source / opened the container; unwind it here
+                    # (it was never appended to `unwind`), then re-raise so
+                    # the outer rollback contract runs unchanged.
+                    with contextlib.suppress(Exception):
+                        await _unwind_agent_port(bridge)
+                    raise
+                except Exception as exc:
+                    logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
+                    self._bind_agent_port(StubAgentPort())
+                    self._record_degradation("agent_port", exc)
             else:
-                from adapters.task_backend import MaistroServerTaskBackend
+                self._bind_agent_port(StubAgentPort())
 
-                configured_delegation_key = getattr(settings, "maistro_delegation_key", None)
-                delegation_key = (
-                    configured_delegation_key.get_secret_value()
-                    if configured_delegation_key is not None
-                    else None
+            # Required to source the registry; its wiring half is the second
+            # documented optional degradation (baselines/SAFE_NOOP).
+            # Awaited: boot registration writes a Binding, and on a durable
+            # store that is I/O (#1133). Called without `await` the coroutine
+            # is created and dropped, so nothing is wired and nothing raises.
+            await self._wire_capabilities(settings)
+
+            # Required: the feedback outcome store.
+            self._wire_outcome_store()
+            unwind.append(("outcome_store", self._reset_outcome_store_binding))
+
+            # A fresh metrics buffer per engine start. `set_store` had no
+            # production caller -- the wired-but-unread shape #236 gates -- and
+            # a buffer carried across a restart would mix the previous
+            # process's observations into this one's window (#698).
+            from services.node_metrics_store import reset_store
+
+            reset_store()
+
+            # Required: recovery. Recovery is a system reconciliation cadence,
+            # not a user schedule. Start it only after the core bridge has
+            # established the canonical Run and Graph-continuation stores so
+            # another replica can recover a process that died between Run
+            # admission and checkpoint 1 (#835/#837).
+            from services.canonical_recovery import (
+                start_canonical_recovery,
+                stop_canonical_recovery,
+            )
+            from services.dag_recovery import start_dag_recovery, stop_dag_recovery
+
+            start_dag_recovery()
+            unwind.append(("dag_recovery", stop_dag_recovery))
+            # The Container's own recovery ticks (lease reclaim, stranded chat
+            # admissions, elapsed-pause resume) are operator-scheduled
+            # (ADR-019); this process is their operator (#62).
+            start_canonical_recovery()
+            unwind.append(("canonical_recovery", stop_canonical_recovery))
+
+            # Canonical Evolve Run recovery (#1064) is bracketed by the Evolve
+            # service's own lifecycle (`services.evolution.start_evolution`/
+            # `stop_evolution`), not the engine's: `services.evolution_graph`'s
+            # recovery resolver requires the Evolve singleton to exist, and this
+            # engine start runs before `start_evolution()` does in application
+            # startup. Starting the cadence here raced that ordering -- a due
+            # RUNNING Run inspected in the gap terminalized FAILED for no reason
+            # but startup sequencing. See `services.evolution.start_evolution`.
+
+            # Required (#1181): the task backend. This was a guarded block
+            # that downgraded to "mission dispatch disabled" on failure,
+            # leaving a running engine whose every submission path fails only
+            # at call time; it now follows the same contract as every other
+            # required step — failure rolls the boot back.
+            await self._start_task_backend(settings)
+            unwind.append(("task_backend", self._stop_backend))
+        except BaseException as exc:
+            # Rollback must cover cancellation (#1181 review): CancelledError
+            # derives from BaseException on every supported Python, so an
+            # `except Exception` guard alone would let a cancelled lifespan
+            # task skip the unwind — leaving the recovery cadences running,
+            # the component handles set, and the instance reading `starting`.
+            # Every abnormal exit rolls back, then re-raises unchanged so the
+            # caller still observes the original exception.
+            self._startup_error = _sanitize_cause(exc)
+            self._state = "startup_failed"
+            for name, stop_step in reversed(unwind):
+                try:
+                    await stop_step()
+                except asyncio.CancelledError:
+                    # A second cancellation during teardown must not abort
+                    # the remaining unwind steps; the original exception is
+                    # re-raised below either way.
+                    logger.warning("engine_start_unwind_cancelled component=%s", name)
+                except Exception:
+                    logger.exception("engine_start_unwind_failed component=%s", name)
+            self._backend = None
+            self._agent_port = None
+            self._capabilities = None
+            self._configured = False
+            logger.error("engine_start_failed cause=%s", self._startup_error)
+            raise
+        self._state = "degraded" if self._degradations else "ready"
+        logger.info("engine_started state=%s", self._state)
+
+    async def _start_task_backend(self, settings: Settings) -> None:
+        """Start the task backend — a required startup step (#1181)."""
+        if settings.hive_mode == "demo":
+            from adapters.task_backend import LocalTaskBackend
+
+            from maistro.agents.conductor import run_task
+
+            # Demo mode retains the local backend, but not a product-specific
+            # executor switch. Workspace Persona identity is resolved before
+            # submission through the generic materialized roster; execution
+            # has one authority regardless of legacy POC environment values.
+            #
+            # #718: that one authority is the bridge's canonical model-chat
+            # egress, not a bare `run_task`. Handing the raw function here
+            # left every demo task completion off the Invocation/quota
+            # ledger while per-provider rows presented as complete — the
+            # same defect the maistro-server `/tasks` worker had before it
+            # supplied its egress. `None` (stub port, no bridge) keeps the
+            # raw call: that process has no canonical authority to cross.
+            bridge_egress = getattr(self._agent_port, "governed_egress", None)
+            bridge_workspace = settings.hive_default_workspace_id
+
+            async def governed_executor(task: Any) -> Any:
+                return await run_task(
+                    task,
+                    governed_egress=bridge_egress,
+                    workspace_id=bridge_workspace,
                 )
-                self._backend = MaistroServerTaskBackend(
-                    base_url=settings.maistro_base_url,
-                    api_key=settings.maistro_router_api_key,
-                    delegation_key=delegation_key,
-                    service_principal=getattr(settings, "maistro_service_principal", "conductor"),
+
+            backend = LocalTaskBackend(
+                executor=governed_executor,
+                admitter=self.task_admitter,
+                run_store=self.run_store,
+            )
+            try:
+                await backend.start()
+            except BaseException:
+                # A cancelled start may also have half-started the runner, so
+                # this rollback must cover BaseException (CancelledError),
+                # not just Exception; the backend's own stop is
+                # exception-suppressed. Either way, re-raise unchanged — the
+                # failure/cleanup contract is applied by `start()`.
+                with contextlib.suppress(Exception):
+                    await backend.stop()
+                raise
+            self._backend = backend
+            logger.info("LocalTaskBackend (demo) using canonical conductor executor")
+        else:
+            from adapters.task_backend import MaistroServerTaskBackend
+
+            configured_delegation_key = getattr(settings, "maistro_delegation_key", None)
+            delegation_key = (
+                configured_delegation_key.get_secret_value()
+                if configured_delegation_key is not None
+                else None
+            )
+            self._backend = MaistroServerTaskBackend(
+                base_url=settings.maistro_base_url,
+                api_key=settings.maistro_router_api_key,
+                delegation_key=delegation_key,
+                service_principal=getattr(settings, "maistro_service_principal", "conductor"),
+            )
+            if settings.hive_default_workspace_id != DEFAULT_WORKSPACE_ID:
+                # This deployment's tasks are admitted by a separate
+                # maistro-server, which reads its own WORKSPACE_ID. A Hive
+                # that customized its default without an identical remote
+                # setting silently files every unscoped submission outside
+                # the Workspace it thinks it configured -- said out loud,
+                # because the symptom is a correct-looking Run in the wrong
+                # Project rather than an error.
+                logger.warning(
+                    "hive_default_workspace_id=%s is not applied to the remote task "
+                    "server; set the same WORKSPACE_ID there or unscoped submissions "
+                    "will land in its own default",
+                    settings.hive_default_workspace_id,
                 )
-                if settings.hive_default_workspace_id != DEFAULT_WORKSPACE_ID:
-                    # This deployment's tasks are admitted by a separate
-                    # maistro-server, which reads its own WORKSPACE_ID. A Hive
-                    # that customized its default without an identical remote
-                    # setting silently files every unscoped submission outside
-                    # the Workspace it thinks it configured -- said out loud,
-                    # because the symptom is a correct-looking Run in the wrong
-                    # Project rather than an error.
-                    logger.warning(
-                        "hive_default_workspace_id=%s is not applied to the remote task "
-                        "server; set the same WORKSPACE_ID there or unscoped submissions "
-                        "will land in its own default",
-                        settings.hive_default_workspace_id,
-                    )
-                logger.info(
-                    "MaistroServerTaskBackend wired — production tasks via %s",
-                    settings.maistro_base_url,
-                )
-        except Exception as exc:
-            logger.warning("TaskBackend setup failed (%s) — mission dispatch disabled", exc)
+            logger.info(
+                "MaistroServerTaskBackend wired — production tasks via %s",
+                settings.maistro_base_url,
+            )
+
+    async def _stop_backend(self) -> None:
+        if self._backend is not None:
+            with contextlib.suppress(Exception):
+                await self._backend.stop()
 
     def _bind_agent_port(self, port: AgentPort) -> None:
         """Assign the one agent seam, checking the port contract as chosen.
@@ -286,9 +531,13 @@ class EngineService:
             )
         self._agent_port = port
 
-    def _wire_capabilities(self, settings: Settings) -> None:
+    async def _wire_capabilities(self, settings: Settings) -> None:
         """Source the registry (Container when configured, else canonical) and
-        register host-health providers + apply activation. Never crashes startup."""
+        register host-health providers + apply activation. Never crashes startup.
+
+        Awaited rather than called: boot registration writes a Binding, and on
+        a durable store that is I/O (#1133).
+        """
         container = getattr(self._agent_port, "container", None)
         if container is not None and getattr(container, "capabilities", None) is not None:
             self._capabilities = container.capabilities
@@ -307,7 +556,7 @@ class EngineService:
             except Exception:
                 vault = None
 
-            wire_capabilities(
+            await wire_capabilities(
                 self._capabilities,
                 settings_model=settings_store.current(),
                 config=settings,
@@ -316,6 +565,7 @@ class EngineService:
             )
         except Exception as exc:
             logger.warning("capability wiring failed (%s) — slots use baselines/SAFE_NOOP", exc)
+            self._record_degradation("capabilities", exc)
 
     async def stop(self) -> None:
         from services.canonical_recovery import stop_canonical_recovery
@@ -325,11 +575,12 @@ class EngineService:
         await stop_canonical_recovery()
         # Evolve recovery cadence stop moved to `services.evolution.stop_evolution`
         # (#1064) -- see the matching note in `start()`.
-        if self._backend is not None:
-            import contextlib
-
-            with contextlib.suppress(Exception):
-                await self._backend.stop()
+        await self._stop_backend()
+        if self._state in ("ready", "degraded", "startup_failed", "starting"):
+            # Truthful terminal state (#1181): a stopped engine reads as
+            # stopped, never as whatever it was while (or before) serving.
+            # A never-attempted engine stays `not_started`.
+            self._state = "stopped"
 
     async def route_request(
         self,
@@ -501,6 +752,16 @@ class EngineService:
 
 
 _singleton: EngineService | None = None
+#: The most recent start attempt that failed, kept for health reporting only:
+#: a failed start is never published, but /health must still show why the
+#: product cannot serve (#1181).
+_failed_startup: EngineService | None = None
+#: The boot attempt currently in flight, if any. Without it, `engine_health()`
+#: could not distinguish "never attempted" from "mid-boot": both have no
+#: singleton and no failed attempt, and a slow dependency (DB reconnect,
+#: recovery cadences) would read as the historical `not_started` 200 on
+#: `/health/ready` that ADR-100126-f9d6 excludes for `starting` (#1181).
+_booting: EngineService | None = None
 
 
 def get_engine() -> EngineService:
@@ -509,15 +770,68 @@ def get_engine() -> EngineService:
     return _singleton
 
 
+def engine_health() -> dict[str, Any]:
+    """Engine lifecycle health, answerable at any point in the process (#1181).
+
+    A start that failed is not published — `get_engine()` keeps raising — but
+    /health must still distinguish a clean not-started engine from one whose
+    boot failed and was rolled back, so the failed attempt's snapshot stays
+    reachable here until the next start succeeds or the engine stops. A boot
+    in flight reports `starting` (not `not_started`), so probes cannot mistake
+    a slow dependency for a process that never tried to boot.
+    """
+    if _singleton is not None:
+        engine = _singleton
+    elif _booting is not None:
+        # The current attempt outranks the retained failure: while a retry is
+        # mid-boot, `starting` is the truthful present state.
+        engine = _booting
+    else:
+        engine = _failed_startup
+    if engine is None:
+        return {
+            "state": "not_started",
+            "cause": None,
+            "degradations": [],
+            "agent_port": None,
+            "task_backend": None,
+            "bridge_configured": False,
+        }
+    return engine.health()
+
+
 async def start_engine(settings: Settings) -> EngineService:
-    global _singleton
-    _singleton = EngineService()
-    await _singleton.start(settings)
-    return _singleton
+    """Build, start, and only then publish the process-global engine (#1181).
+
+    Publication is the last step, so a boot that fails cannot leave
+    `_singleton` installed over half-wired components — the poisoned
+    process-global this module used to expose. Policy: a failed start is
+    retryable. The failed attempt is retained only for `engine_health()`; the
+    next `start_engine()` call runs a fresh boot once the dependency is
+    restored.
+    """
+    global _singleton, _failed_startup, _booting
+    engine = EngineService()
+    _booting = engine
+    try:
+        await engine.start(settings)
+    except BaseException:
+        # Cancellation included: a cancelled boot is still a failed attempt —
+        # retain it for `engine_health()` and re-raise unchanged.
+        _failed_startup = engine
+        raise
+    finally:
+        # The attempt is over: either published below or retained as the
+        # failed one. `starting` must never outlive the boot it described.
+        _booting = None
+    _singleton = engine
+    _failed_startup = None
+    return engine
 
 
 async def stop_engine() -> None:
-    global _singleton
+    global _singleton, _failed_startup
     if _singleton is not None:
         await _singleton.stop()
         _singleton = None
+    _failed_startup = None

@@ -57,6 +57,16 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Shell command that passes (exit 0) iff the repo is healthy.",
     )
+    run.add_argument(
+        "--test-argv",
+        default="",
+        help=(
+            "JSON argument vector that WINS over --test-cmd and runs with no "
+            "shell at all. This is how a policy-resolved test profile (#305) "
+            "crosses a dispatch boundary: the launcher forwards the vector it "
+            "resolved, so no shell parses the command on either side of it."
+        ),
+    )
     run.add_argument("--cycles", type=int, default=3, help="Hard cap on cycles (default: 3).")
     run.add_argument(
         "--objective", default=None, help="Override the improvement objective handed to the agent."
@@ -828,6 +838,27 @@ def _model_arguments(args: argparse.Namespace) -> _ModelArguments:
     )
 
 
+def _test_argv(raw: str) -> tuple[str, ...]:
+    """The `--test-argv` JSON vector, or exit-2 refuse.
+
+    A dispatching caller forwards a vector it already resolved (#305); a
+    malformed one is a launcher bug, and the honest answer is a refusal before
+    any cycle starts rather than a run that quietly fell back to the shell
+    string every dispatching caller just promised not to use.
+    """
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        print(f"error: --test-argv must be a JSON array of strings: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    if not isinstance(parsed, list) or not all(isinstance(t, str) and t for t in parsed):
+        print("error: --test-argv must be a JSON array of non-empty strings", file=sys.stderr)
+        raise SystemExit(2)
+    return tuple(parsed)
+
+
 def _run(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser()
     # `.git` is a dir in a normal checkout, a file in a linked worktree.
@@ -855,6 +886,9 @@ def _run(args: argparse.Namespace) -> int:
     config = LocalRsiConfig(
         repo_path=str(repo),
         test_command=args.test_cmd,
+        # The dispatch form (#509): when a policy-resolved vector is
+        # forwarded, it WINS over the shell string, exactly as in-process.
+        test_argv=_test_argv(args.test_argv),
         work_root=work_root,
         max_cycles=args.cycles,
         # Only override the config's own default objective when one is given.

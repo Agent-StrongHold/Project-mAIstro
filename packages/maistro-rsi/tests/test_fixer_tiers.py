@@ -19,13 +19,31 @@ def test_bounded_tiers_are_test_first_and_minimal() -> None:
         ImprovementKind.BUG_FIX,
         ImprovementKind.NEW_TEST,
         ImprovementKind.ASSERTION,
-        ImprovementKind.REFACTOR,
-        ImprovementKind.DOC,
+        ImprovementKind.EDGE_CASE,
+        ImprovementKind.PERF,
     ):
         obj = _fixer_objective("pkg/mod.py", kind, "do the thing")
         assert "do the thing" in obj
         assert "test-first" in obj.lower()
         assert "minimal" in obj.lower()
+        assert "only this module and its test file" in obj
+        # The enforced fail-first proof (#392): the scaffold must demand a test
+        # that fails for the reason the change cures, and must name the harness
+        # verification that voids already-passing (characterization) evidence.
+        assert "fails against the current code" in obj
+        assert "reverting" in obj or "reverts" in obj
+
+
+def test_refactor_and_doc_tiers_are_behavior_preserving_polish() -> None:
+    # Declared REFACTOR/DOC work owes the ALTERNATIVE evidence contract (#392):
+    # measured code-quality improvement, behavior preserved, no manufactured
+    # failing test.
+    for kind in (ImprovementKind.REFACTOR, ImprovementKind.DOC):
+        obj = _fixer_objective("pkg/mod.py", kind, "do the thing")
+        assert "do the thing" in obj
+        assert "without changing behavior" in obj.lower()
+        assert "do not manufacture a failing test" in obj.lower()
+        assert "code-quality score measurably improves" in obj
         assert "only this module and its test file" in obj
 
 

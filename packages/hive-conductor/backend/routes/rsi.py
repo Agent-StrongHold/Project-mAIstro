@@ -140,8 +140,6 @@ async def start_run(body: StartRunBody) -> dict:
     from services.rsi import get_rsi_service
 
     svc = get_rsi_service()
-    if not svc.available:
-        raise HTTPException(status_code=503, detail="maistro-rsi is not installed in this process")
     if body.mode not in ("cleanup", "greenfield"):
         raise HTTPException(status_code=400, detail="mode must be 'cleanup' or 'greenfield'")
     if body.test_command is not None:
@@ -154,6 +152,14 @@ async def start_run(body: StartRunBody) -> dict:
         )
     if body.mode == "cleanup" and not body.repo_path:
         raise HTTPException(status_code=400, detail="cleanup mode requires repo_path")
+    if body.mode == "greenfield" and not svc.available:
+        # The tournament path still needs the package in this process. A
+        # cleanup run does not: since #509 it is dispatched into an ephemeral
+        # runner container, and its capability gate is `require_isolation()`
+        # below — demanding an in-process maistro-rsi install for it would
+        # keep the Start button broken on every Conductor that ships without
+        # the package it no longer imports.
+        raise HTTPException(status_code=503, detail="maistro-rsi is not installed in this process")
 
     caller_paths = [
         name
