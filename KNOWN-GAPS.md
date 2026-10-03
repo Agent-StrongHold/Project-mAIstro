@@ -9,18 +9,26 @@ inputs, not promises that the capability is complete in v1.
 
 ### Task queue persistence
 
-The live task queue is in memory. When a database is configured, every
-submit and status change now upserts a `TaskRecord` row per
-[ADR-018](docs/adr/ADR-018-task-record-persistence.md) (best-effort,
-fire-and-forget), so task history survives a restart — but the queue does
-not yet *recover* from those rows: queued and active tasks are still
-discarded on restart, and no requeue/fail-over policy for interrupted tasks
-has been decided.
+Updated by #91 (M3-B1): with a database configured, the queue is now durable
+and recoverable. Admission commits a QUEUED canonical Run before the `202`,
+lifespan startup rehydrates those Runs through `queue.recover` (announcing
+each as `task_recovered`), RUNNING residue with no execution evidence is
+failed visibly instead of stranding, terminal receipts the shutdown abandoned
+are reconciled from the Run (#849), and a resubmission under the same
+idempotency key replays the original admission through the durable claim
+store (#1176). The product path across a forced (SIGKILL) restart — recover,
+execute exactly once on the same Run, idempotent replay — is pinned by
+`packages/maistro-server/tests/test_task_restart_recovery.py`.
 
-Tracking: decide and implement the recovery policy (requeue vs. fail
-interrupted tasks; relationship to
-[ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s checkpoint-based
-design).
+What remains limited: the task *receipt* a fresh process serves is still the
+living queue's answer (ADR-018 best-effort rows), so terminal state after a
+restart is read through the canonical Run (`GET /v1/runs/{run_id}`) and
+idempotent resubmission rather than rehydrating every historical receipt
+into memory; and without a database the spine is in-process only, so
+admitted tasks are still lost on restart (`run_store_in_process_only`).
+Wave-level crash recovery (crash-loop quarantine, checkpoint version
+gating) remains [ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s
+orchestrator path.
 
 ### Canvas background job runner
 
