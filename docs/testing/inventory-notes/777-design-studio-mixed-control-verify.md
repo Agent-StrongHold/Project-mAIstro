@@ -4992,3 +4992,53 @@ retrieval) that develop does not carry, and the issue's stop condition
 forbids this lane fabricating a Design-Studio-private Agent runtime,
 Goal owner, or reconciliation loop. Nothing repairable at this head;
 lane stays parked until the dependencies land in develop.
+
+## Round 73 — sync re-verify at merge c649b80ca (2026-06-07)
+
+- origin/develop advanced 15157c6f2 → 05b610bd7 (2 commits: #1741 DAG
+  cycle/node-timeout config, #1706 backlog-history recording). Merged
+  origin/develop into auto-777 → merge commit `c649b80ca`, resolved
+  conflict-free, tree clean. Neither commit touches #777's dependencies.
+
+### Fresh dependency greps at HEAD c649b80ca (no prior-claim reuse)
+
+- 0 `GoalReconciler`/`goal_reconcil` matches under `packages/` →
+  **#804/#805/#806 unlanded**.
+- `packages/maistro-core/src/maistro/goals` absent; 0 `GoalRevision`
+  matches → **#458 unlanded**.
+- 0 `ControlMode`/`control_mode` matches → mixed-control semantics absent.
+- `ladybug` under `packages/` still only the book title in
+  `packages/hive-conductor/dags/author_examples.py` → **#776 unlanded**.
+- `git diff origin/develop..HEAD -- packages/` → still exactly 1 file
+  (+1/-1): the one-character comment-period fix in
+  `packages/hive-conductor/backend/services/design_service.py`.
+
+### Validation battery (worker-executed, fresh, on merged tree)
+
+- `uv run ruff check .` → All checks passed.
+- `uv run ruff format --check .` → 2794 files already formatted (+14
+  from the merge).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → EXIT=0, 1359
+  reviewed identities = 1359 findings, 0 unclassified, base 05b610bd7edf
+  vs candidate c649b80ca148. **No CI-gate repair required; no ledger
+  amendment made.**
+- `uv run pytest packages/hive-conductor/backend/tests -q` →
+  **3274 passed, 6 skipped** in 130.8s (merge added 8 passing tests).
+- `uv run pytest packages/maistro-core/tests/workspaces/backlog_history
+  packages/maistro-core/tests/graph/durable_runs/test_declared_budgets.py
+  packages/maistro-server/tests/api/test_backlog_history_api.py -q` →
+  **79 passed** in 9.3s (merge-introduced modules, green on merged tree).
+- `uv run python scripts/check-suite-inventory.py` → ok, 14/14 suites
+  match the recorded inventory (hive-conductor backend 3280 collected).
+
+### Verdict — unchanged
+
+BLOCKED, dependency-blocking, re-confirmed on fresh evidence at merge
+c649b80ca: all 13 acceptance criteria consume upstream lands (#458
+canonical Goal store/revision, #804/#805/#806 reconciliation, #776
+Workspace retrieval) that develop still does not carry after this sync,
+and the issue's stop condition forbids this lane fabricating a
+Design-Studio-private Agent runtime, Goal owner, or reconciliation loop.
+The named vulture CI-gate repair was checked and is clean — no repair
+exists to perform. Lane stays parked until the dependencies land.
