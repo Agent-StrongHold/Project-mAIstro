@@ -15,6 +15,7 @@ from services.airtable_cache import (
     get_airtable_bases_json,
     get_airtable_records_json,
 )
+from services.request_principal import request_principal
 from services.tool_primitives import (
     AIRTABLE_PROVIDER_IDS,
     JIRA_PROVIDER_IDS,
@@ -42,7 +43,7 @@ def _jira_headers(pat: str) -> dict[str, str]:
 
 
 def _tool_context(request: Request) -> ToolCallContext:
-    return ToolCallContext.from_request_state(getattr(request.state, "user", None))
+    return ToolCallContext.from_request_state(request_principal(request))
 
 
 def _user_id(request: Request) -> str:

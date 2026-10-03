@@ -35,9 +35,11 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from .fitness import hard_gate_threshold
 from .fixer_genome import FixerGenome, render_system_prompt, to_prompt_payload
-from .harness import EvalHarness
-from .types import NodeGenome, PipelineGenome
+from .harness import EvalHarness, evidence_method
+from .retrodiction import PrefilterDecision, RetrodictionPrefilter
+from .types import EvalResult, NodeGenome, PipelineGenome
 
 # Slot-space search tips — one per candidate diversifies the proposals (the
 # MIPROv2 trick reflect.PROPOSAL_TIPS uses for free-text prompts).
@@ -273,6 +275,54 @@ async def propose_fixer_candidates(
     return candidates
 
 
+def _reconcile_verification(
+    prefilter: RetrodictionPrefilter | None,
+    decision: PrefilterDecision | None,
+    challenger: PipelineGenome,
+    results: list[EvalResult],
+    bench: str,
+) -> bool:
+    """Post-verification bookkeeping for a proposed challenger (M4-A5).
+
+    Records real results as replayable evidence in the prefilter's ledger
+    and reconciles the outcome against the earlier verdict (false-negative
+    accounting). Returns False when the result is unusable: empty, or a STUB
+    score (SPEC-202 noise — never verified against, never recorded).
+    """
+    if not results:
+        return False
+    if results[0].metadata.get("stub"):
+        return False
+    if prefilter is not None:
+        prefilter.ledger.record(challenger, results)
+        if decision is not None and decision.verdict != "allow":
+            prefilter.observe_outcome(
+                decision,
+                passed=results[0].score >= hard_gate_threshold(bench),
+                genome_id=challenger.id,
+            )
+    return True
+
+
+def _prefilter_screen(
+    prefilter: RetrodictionPrefilter | None,
+    challenger: PipelineGenome,
+    bench: str,
+) -> tuple[PrefilterDecision | None, bool]:
+    """Replay a proposed challenger against prior traces (M4-A5).
+
+    Returns ``(decision, filtered)``: ``decision`` is None when no prefilter
+    is configured; ``filtered`` is True when the replay verdict says to skip
+    the candidate without spending a verification eval (a byte-identical
+    repeat of a known-total-failure payload).
+    """
+    if prefilter is None:
+        return None, False
+    decision = prefilter.decide(challenger, [bench])
+    challenger.harness_params["retrodiction"] = decision.summary()
+    return decision, prefilter.would_filter(decision)
+
+
 async def hyper_mutate(
     genome: PipelineGenome,
     harness: EvalHarness,
@@ -285,6 +335,7 @@ async def hyper_mutate(
     goal: str = "",
     preferences: str = "",
     history: Sequence[tuple[str, float]] = (),
+    prefilter: RetrodictionPrefilter | None = None,
 ) -> HyperMutationOutcome | None:
     """Propose→verify one round of guided slot mutation for ``genome``.
 
@@ -317,14 +368,15 @@ async def hyper_mutate(
     best_slots: dict[str, Any] | None = None
     for candidate in candidates:
         challenger = spawn_fixer_challenger(genome, candidate)
-        results = await harness.evaluate_genome(challenger, [bench], llm_call)
-        if not results:
+        decision, filtered = _prefilter_screen(prefilter, challenger, bench)
+        if filtered:
             continue
-        if results[0].metadata.get("stub"):
-            # SPEC-202 honesty: a stub score is noise — never verify against it.
+        results = await harness.evaluate_genome(challenger, [bench], llm_call)
+        if not _reconcile_verification(prefilter, decision, challenger, results, bench):
             continue
         score = results[0].score
         challenger.eval_scores[bench] = score
+        challenger.eval_evidence[bench] = evidence_method(results[0])
         if best_score is None or score > best_score:
             best_challenger, best_score, best_slots = (
                 challenger,

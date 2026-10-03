@@ -65,7 +65,8 @@ The analysis identified five gaps in maistro-engine relative to that reference r
 
 ## Acceptance criteria
 
-- [x] `docs/analysis/agent-runtime-gap-analysis.md` present on `integration`
+- [x] Gap analysis captured in this ADR and the downstream ADR corpus (historical
+  `docs/analysis/agent-runtime-gap-analysis.md` removed; provenance in git history)
 - [ ] Orphaned branch `origin/claude/compare-bot-frameworks-tFPdY` deleted after this commit merges (manual step — requires `git push origin --delete claude/compare-bot-frameworks-tFPdY`)
 
 ## Out of scope

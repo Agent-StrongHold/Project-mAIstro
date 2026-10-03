@@ -16,13 +16,21 @@ from services.dag_execution_scope import (
     authorize_hive_dag_scope,
     authorize_hive_dag_workspace,
 )
+from services.request_principal import require_actor_id
 
 from maistro.scheduling.cron import CronParseError, minimum_gap
 from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS, MAX_CATCHUP_WINDOW_SECONDS
+from routes.audit import audit_entries_view
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["schedules"])
+
+#: The audit actions the canonical scheduler writes per fire (#389):
+#: `schedule_fire` is the occurrence receipt, `schedule_run` the outcome
+#: (including refusals — a `detail.error` entry IS the failed state, kept
+#: distinct from a successful fire rather than swallowed).
+_FIRE_AUDIT_ACTIONS = frozenset({"schedule_fire", "schedule_run"})
 
 
 def _now() -> datetime:
@@ -149,8 +157,7 @@ def _check_fire_id(value: str | None) -> str | None:
 
 def _actor(request: Request) -> str:
     """The authenticated principal; a schedule is never owned by "system"."""
-    user = getattr(request.state, "user", None) or {}
-    actor = str(user.get("id") or "").strip()
+    actor = require_actor_id(request).strip()
     if not actor:
         raise HTTPException(status_code=401, detail="authentication required")
     return actor
@@ -224,8 +231,38 @@ async def list_schedules(request: Request) -> list[Schedule]:
 
 
 @router.get("/history")
-def schedule_history() -> list:
-    return []
+async def schedule_history(request: Request, limit: int = 100) -> list[dict]:
+    """Fires the canonical scheduler has recorded, for schedules you can see (#389).
+
+    This route used to `return []` — an empty collection no fire could ever
+    change. The canonical owner of fire history is the durable audit log
+    every admission path (tick catch-up and manual fire alike) writes
+    `schedule_fire` receipts and `schedule_run` outcomes to, keyed by
+    schedule id, including refused fires (`detail.error`) and the
+    Run ids canonical Runs were admitted under (`detail.run_id`). This route
+    now reads that log, restricted to schedules in Workspaces the caller is
+    authorized to see — the same visibility `GET /v1/schedules` applies — so
+    another Workspace's history is not merely hidden but absent. Newest
+    first, capped at `limit` (bounded 1..1000). Empty means no fire has been
+    recorded: empty-valid, distinct from unauthorized (filtered) and from a
+    failure (which raises).
+    """
+    limit = max(1, min(limit, 1000))
+    allowed = await dag_run_inspection.authorized_workspace_ids(_actor(request))
+    visible = {
+        row.id
+        for row in stores.schedules.values()
+        if row.workspace_id and row.workspace_id in allowed
+    }
+    events: list[dict] = []
+    for record in await audit_entries_view():
+        if record.get("action") not in _FIRE_AUDIT_ACTIONS:
+            continue
+        if record.get("target") not in visible:
+            continue
+        events.append(record)
+    events.sort(key=lambda e: str(e.get("created_at", "")), reverse=True)
+    return events[:limit]
 
 
 @router.get("/{schedule_id}", response_model=Schedule)
