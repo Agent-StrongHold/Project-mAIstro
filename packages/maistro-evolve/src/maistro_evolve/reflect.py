@@ -328,9 +328,17 @@ async def _evaluate_candidates(
         if not results:
             return
         stub = bool(results[0].metadata.get("stub"))
-        if decision is not None and decision.verdict != "allow" and not stub:
+        if (
+            prefilter is not None
+            and decision is not None
+            and decision.verdict != "allow"
+            and not stub
+        ):
             # A stub result is SPEC-202 noise: it neither verifies a candidate
             # nor counts as an observed outcome for false-negative accounting.
+            # (decisions is populated only when the prefilter exists, so the
+            # prefilter guard is behavior-preserving — it exists for the
+            # type checker, which cannot narrow through the dict lookup.)
             prefilter.observe_outcome(
                 decision,
                 passed=results[0].score >= hard_gate_threshold(weakest),

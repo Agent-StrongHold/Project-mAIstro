@@ -337,8 +337,9 @@ class EvolutionCycle:
                 continue
             await self._evaluate_one(genome, population, config, llm_call, prefilter, decision)
 
+        prefilter = self._prefilter
         if prefilter is not None and prefilter.stats.candidates_seen:
-            logger.info("retrodiction_prefilter stats: %s", prefilter.stats.summary())
+            logger.info("retrodiction_prefilter stats: %s", self.prefilter_stats)
 
     async def _reconfirm_candidates(
         self,

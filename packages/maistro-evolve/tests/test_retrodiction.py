@@ -367,6 +367,10 @@ def _cycle_config(**overrides: object) -> EvolutionConfig:
         "mutation_rate": 0.0,  # keep bred children byte-identical to parents
         "self_improve": False,
         "target_benchmarks": list(_BENCHES),
+        # These tests isolate prefilter triage semantics; the orthogonal
+        # per-cycle reconfirmation of already-evaluated genomes (#854) adds
+        # fresh samples that would pollute the harness-call accounting.
+        "reconfirm_per_cycle": 0,
     }
     defaults.update(overrides)
     return EvolutionConfig(**defaults)  # type: ignore[arg-type]
@@ -495,7 +499,10 @@ async def test_prefilter_never_grants_promotion_human_gate_still_required() -> N
 
     # Two cycles: the second deprioritizes/replays the bred duplicate — the
     # prefilter is fully exercised — yet nothing may reach live traffic.
-    cfg = _cycle_config()
+    # Reconfirmation stays on here (#854): the champion API only surfaces
+    # genomes with the independent-evidence floor met, and a champion must
+    # exist for the human approval gate to refuse.
+    cfg = _cycle_config(reconfirm_per_cycle=2)
     await cycle.run_cycle(store, llm_call=None, config=cfg)
     await cycle.run_cycle(store, llm_call=None, config=cfg)
 
@@ -508,7 +515,9 @@ async def test_prefilter_never_grants_promotion_human_gate_still_required() -> N
     audit = GenomeAuditTrail(_RecordingSink())
     with pytest.raises(PermissionError):
         await store.promote_audited(champion.id, audit)
-    assert [e.event for e in audit.entries] == ["promotion_attempt"]
+    # The refusal itself is auditable (#854): the attempt is recorded, then
+    # the human-gate rejection with its reasons.
+    assert [e.event for e in audit.entries] == ["promotion_attempt", "promotion_rejected"]
     assert store.get_active() is None
 
 

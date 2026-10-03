@@ -187,7 +187,7 @@ class TraceLedger:
         """
         fingerprint = genome_fingerprint(genome)
         latest: dict[str, TraceRecord] = {}
-        for trace in self._by_fingerprint.get(fingerprint, []):
+        for trace in self.traces_for(fingerprint):
             latest[trace.benchmark] = trace
         return {b: latest[b] for b in benchmarks if b in latest}
 
@@ -256,6 +256,26 @@ class PrefilterStats(BaseModel):
             return None
         return self.false_negatives / self.filtered_outcomes_observed
 
+    def record_verdict(
+        self,
+        verdict: Verdict,
+        *,
+        evals_saved: int = 0,
+        cost_saved_usd: float = 0.0,
+        runtime_saved_seconds: float = 0.0,
+    ) -> None:
+        """Account one decided candidate; savings apply to rejects only."""
+        if verdict == "allow":
+            self.allowed = self.allowed + 1
+            return
+        if verdict == "deprioritize":
+            self.deprioritized = self.deprioritized + 1
+            return
+        self.rejected = self.rejected + 1
+        self.evals_saved = self.evals_saved + evals_saved
+        self.cost_saved_usd = self.cost_saved_usd + cost_saved_usd
+        self.runtime_saved_seconds = self.runtime_saved_seconds + runtime_saved_seconds
+
     def summary(self) -> dict[str, Any]:
         data = self.model_dump()
         data["false_negative_rate"] = self.false_negative_rate
@@ -282,12 +302,12 @@ class RetrodictionPrefilter:
         fingerprint = genome_fingerprint(genome)
         replayed = self.ledger.replay(genome, benchmarks)
         reasons: list[PrefilterReason] = []
-        predicted = {b: t.score for b, t in replayed.items()}
+        predicted_scores = {b: t.score for b, t in replayed.items()}
 
         verdict: Verdict = "allow"
         evals_saved = 0
-        cost_saved = 0.0
-        runtime_saved = 0.0
+        cost_saved_usd = 0.0
+        runtime_saved_seconds = 0.0
 
         if not replayed:
             reasons.append(
@@ -358,18 +378,15 @@ class RetrodictionPrefilter:
 
             if verdict == "reject":
                 evals_saved = len(set(benchmarks))
-                cost_saved = sum(t.cost_usd for t in traces)
-                runtime_saved = sum(t.duration_seconds for t in traces)
+                cost_saved_usd = sum(t.cost_usd for t in traces)
+                runtime_saved_seconds = sum(t.duration_seconds for t in traces)
 
-        if verdict == "allow":
-            self.stats.allowed += 1
-        elif verdict == "deprioritize":
-            self.stats.deprioritized += 1
-        else:
-            self.stats.rejected += 1
-            self.stats.evals_saved += evals_saved
-            self.stats.cost_saved_usd += cost_saved
-            self.stats.runtime_saved_seconds += runtime_saved
+        self.stats.record_verdict(
+            verdict,
+            evals_saved=evals_saved,
+            cost_saved_usd=cost_saved_usd,
+            runtime_saved_seconds=runtime_saved_seconds,
+        )
 
         return PrefilterDecision(
             genome_id=genome.id,
@@ -378,10 +395,10 @@ class RetrodictionPrefilter:
             mode=self.config.mode,
             schema_version=self.ledger.schema_version,
             reasons=reasons,
-            predicted_scores=predicted,
+            predicted_scores=predicted_scores,
             evals_saved=evals_saved,
-            cost_saved_usd=cost_saved,
-            runtime_saved_seconds=runtime_saved,
+            cost_saved_usd=cost_saved_usd,
+            runtime_saved_seconds=runtime_saved_seconds,
         )
 
     def would_filter(self, decision: PrefilterDecision) -> bool:
