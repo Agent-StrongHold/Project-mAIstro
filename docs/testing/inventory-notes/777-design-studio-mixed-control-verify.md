@@ -5042,3 +5042,83 @@ and the issue's stop condition forbids this lane fabricating a
 Design-Studio-private Agent runtime, Goal owner, or reconciliation loop.
 The named vulture CI-gate repair was checked and is clean — no repair
 exists to perform. Lane stays parked until the dependencies land.
+
+## Round 74 — sync re-verify at merge dbad901bd (2026-10-03)
+
+Previous round's block resolved: the round-73 job artifact
+(`47c7aec87ea54174bc546315dea19783/result.json`) shows `failure_kind:
+"provider_error"` ("Request timed out") with `checks: []` — a provider
+timeout, not a develop-sync conflict and not a code finding. Working tree
+was clean at the exact expected head `ef4b47607`; nothing to salvage.
+No driver check-*.log files exist in this round's job directory either
+(only `events.jsonl`, `manifest.json`, `prompt.txt`, `state.json`), so
+all validation below is worker-executed fresh — nothing assumed.
+
+### Develop sync
+
+`git fetch origin` → origin/develop advanced 05b610bd7 → 053f93969
+(2 commits: #1841 P0.8 store-boundary KNOWN_GAPS burn — banks
+`bind_workspace_store` vulture debt and removes `passed_hard_gate`;
+#1745 EPIC M4-D self-generated curriculum SPEC-282). Neither is a #777
+dependency. Merged origin/develop into auto-777 → merge commit
+`dbad901bd`, conflict-free, tree clean. Ledger multiset integrity
+checked per the quality-gates rule: `git diff --numstat origin/develop
+-- quality/` is empty after the merge (merged ledger byte-identical to
+develop's; zero row loss; develop's `bind_workspace_store` rows present,
+removed `passed_hard_gate` row gone).
+
+### Fresh dependency greps at HEAD dbad901bd (no prior-claim reuse)
+
+- 0 `GoalReconciler`/`goal_reconcil` file matches under `packages/` →
+  **#804/#805/#806 unlanded**.
+- `packages/maistro-core/src/maistro/goals` absent; 0 `GoalRevision`
+  matches under `packages/*/src` → **#458 unlanded**.
+- 0 `ControlMode`/`control_mode` matches under `packages/*/src` →
+  mixed-control/delegation semantics absent.
+- `ladybug` under `packages/` still only the book title in
+  `packages/hive-conductor/dags/author_examples.py` → **#776 unlanded**.
+- `services/workspace_agent.py`: 0 goal/reconcil matches; #774
+  `brief_store.py:4-6` disclaim intact ("The interview is chat state,
+  not a Goal").
+- `git diff --stat origin/develop..HEAD -- packages/` → still exactly
+  1 file (+1/-1): the one-character comment-period fix in
+  `packages/hive-conductor/backend/services/design_service.py`.
+- e2e specs: 26 `.spec.ts` files; design-studio specs remain
+  keyboard + truthfulness only; grep hits for pause/resume are
+  DAG-run-button and RSI-polling contexts, not Goal-branch mixed control.
+
+### Validation battery (worker-executed, fresh, on merged tree)
+
+- `uv sync --locked --extra dev` → resolved 246 packages, no changes.
+- `uv run ruff check .` → All checks passed.
+- `uv run ruff format --check .` → 2804 files already formatted (+10
+  from the merge).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → EXIT=0, 1361
+  reviewed identities = 1361 findings, 0 unclassified, base 053f93969b4d
+  vs candidate dbad901bdf28. No CI-gate repair required; no ledger
+  amendment made.
+- `uv run pytest packages/hive-conductor/backend/tests -q` →
+  **3274 passed, 6 skipped** in 149.9s.
+- `uv run pytest packages/maistro-evolve/tests/test_curriculum.py
+  packages/maistro-core/tests/runs/test_store_boundary.py
+  packages/maistro-core/tests/workspaces/test_store_boundary_gates.py
+  packages/maistro-evolve/tests/test_lane_comparison.py -q` →
+  **67 passed** in 1.8s (all merge-introduced modules, green on merged
+  tree).
+- `uv run python scripts/check-suite-inventory.py` → ok, 14/14 suites
+  match the recorded inventory.
+- `uv run python scripts/check-doc-links.py` → every relative markdown
+  link resolves. `uv run python scripts/check-adr-index.py` → OK.
+  `uv run python scripts/check-backlog-consistency.py` → OK, 167 items.
+
+### Verdict — unchanged
+
+BLOCKED, dependency-blocking, re-confirmed on fresh evidence at merge
+dbad901bd: all 13 acceptance criteria consume upstream lands (#458
+canonical Goal store/revision, #804/#805/#806 reconciliation, #776
+Workspace retrieval) that develop still does not carry after this sync,
+and the issue's stop condition forbids this lane fabricating a
+Design-Studio-private Agent runtime, Goal owner, or reconciliation loop.
+Nothing repairable at this head; lane stays parked until the
+dependencies land.
