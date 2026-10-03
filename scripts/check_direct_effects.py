@@ -35,7 +35,40 @@ DISPOSITIONS = frozenset(
 
 # Match model URLs at the HTTP call itself, never endpoint text elsewhere.
 _MODEL_ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
-_HTTP_EFFECT_METHODS = frozenset({"post", "stream", "send", "request"})
+# PM-polling URL boundaries (#1195): every direct HTTP call to a Jira or
+# Airtable endpoint surfaces here as a PM_POLLING_EFFECT and must carry a
+# reviewed disposition. The canonical capability that would have owned these
+# effect classes is deferred, so today's dispositions record the polling
+# nodes as they stand rather than as migrated -- which is the state the gate
+# should make visible, not hide.
+_PM_ENDPOINTS = (
+    "airtable.com",
+    "atlassian.net",
+    "atlassian.com",
+    "/rest/api/2/",
+    "/rest/api/3/",
+)
+_HTTP_EFFECT_METHODS = frozenset({"get", "post", "stream", "send", "request"})
+
+# Constructors whose returned object is a shared external HTTP client. A call
+# to an effect method (``get``/``post``/...) on one of these objects is an
+# outbound HTTP request regardless of how the URL was assembled (#1195):
+# graph nodes must route every such request through canonical capabilities.
+_HTTP_CLIENT_FACTORIES = frozenset(
+    {
+        "maistro.http.shared_client",
+        "maistro.http.get_shared_client",
+        "maistro.http.sync_client",
+        "httpx.AsyncClient",
+        "httpx.Client",
+        "aiohttp.ClientSession",
+    }
+)
+
+# Retained graph nodes own no direct external HTTP: any request that cannot be
+# attributed to a canonical Capability/Invocation must carry a reviewed
+# inventory disposition (the explicit exemption of #1195 AC7).
+_GRAPH_NODE_MARKER = "/graph/nodes/"
 
 # Semantic helpers whose call itself is a model effect.
 # The PM-private helper was retired by #129; future helpers must be reviewed here.
@@ -160,6 +193,7 @@ class Scope:
     aliases: dict[str, str]
     strings: dict[str, ast.expr]
     objects: dict[str, str]
+    http_clients: dict[str, str]
 
 
 _EXCLUDED_PRODUCTION_FILES = frozenset(
@@ -246,12 +280,13 @@ def _resolve_symbol(node: ast.expr, aliases: dict[str, str]) -> str | None:
 
 
 class _ScopeBindingCollector(ast.NodeVisitor):
-    """Collect simple strings and typed client constructions in one scope."""
+    """Collect simple strings, typed clients and HTTP clients in one scope."""
 
     def __init__(self, aliases: dict[str, str]) -> None:
         self.aliases = aliases
         self.strings: dict[str, ast.expr] = {}
         self.objects: dict[str, str] = {}
+        self.http_clients: dict[str, str] = {}
 
     def _record(
         self,
@@ -269,14 +304,29 @@ class _ScopeBindingCollector(ast.NodeVisitor):
         if not isinstance(value, ast.Call):
             return
         symbol = _resolve_symbol(value.func, self.aliases)
-        if symbol not in _TYPED_EFFECT_METHODS:
-            return
-        for name in names:
-            self.objects[name] = symbol
+        if symbol in _TYPED_EFFECT_METHODS:
+            for name in names:
+                self.objects[name] = symbol
+        if symbol in _HTTP_CLIENT_FACTORIES:
+            for name in names:
+                self.http_clients[name] = symbol
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self._record(list(node.targets), node.value)
         self.generic_visit(node.value)
+
+    def _record_with_items(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            if isinstance(item.optional_vars, ast.Name):
+                self._record([item.optional_vars], item.context_expr)
+
+    def visit_With(self, node: ast.With) -> None:
+        self._record_with_items(node)
+        self.generic_visit(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self._record_with_items(node)
+        self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         self._record([node.target], node.value)
@@ -296,11 +346,11 @@ class _ScopeBindingCollector(ast.NodeVisitor):
 def _scope_bindings(
     body: list[ast.stmt],
     aliases: dict[str, str],
-) -> tuple[dict[str, ast.expr], dict[str, str]]:
+) -> tuple[dict[str, ast.expr], dict[str, str], dict[str, str]]:
     collector = _ScopeBindingCollector(aliases)
     for statement in body:
         collector.visit(statement)
-    return collector.strings, collector.objects
+    return collector.strings, collector.objects, collector.http_clients
 
 
 def _environment_default_parts(
@@ -389,6 +439,45 @@ def _is_model_http_call(
     )
 
 
+def _is_pm_http_call(
+    call: ast.Call,
+    bindings: dict[str, ast.expr],
+) -> bool:
+    url = _http_url(call)
+    if url is None:
+        return False
+    return any(
+        endpoint in part for part in _string_parts(url, bindings) for endpoint in _PM_ENDPOINTS
+    )
+
+
+def _is_graph_node_path(path: str) -> bool:
+    return _GRAPH_NODE_MARKER in f"/{path}"
+
+
+def _http_client_receiver_factory(call: ast.Call, scope: Scope) -> str | None:
+    """Return the HTTP-client factory symbol behind an effect-method call.
+
+    Tracks ``client = shared_client()`` / ``async with shared_client() as c``
+    bindings and the chained ``shared_client().get(...)`` form. Plain names
+    that were never bound to a client factory (e.g. ``dict.get``) yield None,
+    keeping dictionary lookups out of the inventory.
+    """
+
+    func = call.func
+    if not isinstance(func, ast.Attribute) or func.attr not in _HTTP_EFFECT_METHODS:
+        return None
+    receiver = func.value
+    if isinstance(receiver, ast.Await):
+        receiver = receiver.value
+    if isinstance(receiver, ast.Name):
+        return scope.http_clients.get(receiver.id)
+    if isinstance(receiver, ast.Call):
+        symbol = _resolve_symbol(receiver.func, scope.aliases)
+        return symbol if symbol in _HTTP_CLIENT_FACTORIES else None
+    return None
+
+
 def _callee_text(call: ast.Call) -> str:
     return _dotted(call.func) or ast.unparse(call.func)
 
@@ -397,8 +486,8 @@ class _Visitor(ast.NodeVisitor):
     def __init__(self, path: str, tree: ast.Module) -> None:
         self.path = path
         aliases = _scope_aliases(tree.body)
-        strings, objects = _scope_bindings(tree.body, aliases)
-        self.scopes = [Scope("<module>", aliases, strings, objects)]
+        strings, objects, http_clients = _scope_bindings(tree.body, aliases)
+        self.scopes = [Scope("<module>", aliases, strings, objects, http_clients)]
         self.raw: list[tuple[str, str, str, int, str]] = []
 
     @property
@@ -414,10 +503,11 @@ class _Visitor(ast.NodeVisitor):
         else:
             qualname = f"{self.scope.qualname}.{node.name}"
         aliases = {**self.scope.aliases, **_scope_aliases(node.body)}
-        local_strings, local_objects = _scope_bindings(node.body, aliases)
+        local_strings, local_objects, local_http = _scope_bindings(node.body, aliases)
         strings = {**self.scope.strings, **local_strings}
         objects = {**self.scope.objects, **local_objects}
-        self.scopes.append(Scope(qualname, aliases, strings, objects))
+        http_clients = {**self.scope.http_clients, **local_http}
+        self.scopes.append(Scope(qualname, aliases, strings, objects, http_clients))
         for statement in node.body:
             self.visit(statement)
         self.scopes.pop()
@@ -457,6 +547,16 @@ class _Visitor(ast.NodeVisitor):
             return path_rule
         if _is_model_http_call(call, self.scope.strings):
             return "MODEL_EFFECT", "openai-compatible-http"
+        if _is_pm_http_call(call, self.scope.strings):
+            return "PM_POLLING_EFFECT", "pm-polling-http"
+        # #1195 AC7: retained graph nodes own no direct external HTTP. A call
+        # on a tracked shared HTTP client fails closed here even when the URL
+        # is fully dynamic (nothing in its string parts identifies the effect
+        # class), so an undispositioned graph-node request cannot slip past.
+        if _is_graph_node_path(self.path) and (
+            _http_client_receiver_factory(call, self.scope) is not None
+        ):
+            return "DIRECT_HTTP_EFFECT", "graph-node-http"
 
         symbol = _resolve_symbol(call.func, self.scope.aliases)
         if symbol in _MODEL_FUNCTIONS:
