@@ -42,7 +42,46 @@ or placeholder-only section.
   OpenAPI/docs, and A2A paths do not negotiate. Business routes stay on their
   stable `/v1` mounts; no `/vN` path duplication exists.
 
+### Changed
+
+- **v1.0 release contract consolidated into canonical planning docs (no linked issue:
+  governance realignment).** Stakeholder decisions from the 2026-10-01 architecture
+  review now live in [`ROADMAP.md`](ROADMAP.md) (release contract section),
+  [`BACKLOG.md`](BACKLOG.md) (`[conductor-402]`–`[conductor-413]`,
+  `[engine-112]`–`[engine-115]`), and
+  [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md)
+  (§9 v1.0 amendments). Workspaces replaces the legacy Conductor page tree; M1
+  RunStore unification ([#251](https://github.com/Agent-StrongHold/Project-mAIstro/issues/251))
+  gates UI cutover; Evolution UI hidden until v1.2; Stronghold deferred to engine v1.5.
+
+- **Documentation folder realignment (no linked issue: docs hygiene).** Added
+  [`docs/README.md`](docs/README.md) navigation map; updated
+  [`docs/product/TERMINOLOGY.md`](docs/product/TERMINOLOGY.md),
+  [`docs/WAYS-OF-WORKING.md`](docs/WAYS-OF-WORKING.md), and deployment/shipped-surface
+  docs for Workspaces naming; marked [`docs/adr/DECISION-BACKLOG.md`](docs/adr/DECISION-BACKLOG.md)
+  as a 2026-05 snapshot; completed [`docs/adr/ADR-INDEX.md`](docs/adr/ADR-INDEX.md)
+  for all ADRs (`[engine-113]`); fixed stale `docs/analysis/` citations; superseded
+  duplicate [ADR-061526-f383](docs/adr/ADR-061526-f383-foreign-harness-adapters-and-portability.md)
+  in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
+
 ### Security
+
+- **Every base/tool image in every Dockerfile is pinned by immutable digest
+  (#349).** Build stages no longer float on mutable tags and the uv installer
+  is no longer copied from a `:latest` image, so a registry tag move cannot
+  change the code that installs every dependency without a repository diff.
+  Each reference is pinned `name:tag@sha256:<digest>` — the digest is the
+  resolution authority (a manifest-list index digest, so a fixed target
+  platform always resolves the same per-arch artifact), the tag the
+  human-readable version annotation. All nine pins are registered in
+  `quality/image-pins.json`; the new `check-image-pins` gate (quality.yml)
+  rejects `:latest` anywhere and fails any unregistered digest or unpinned
+  base without an owned, issue-numbered exemption, so base updates land only
+  as reviewable registry-plus-Dockerfile changes — refreshed automatically by
+  Dependabot's docker ecosystem, whose PRs carry the changelog, scan, rebuild
+  and smoke evidence of the ordinary PR gates. Release images publish with
+  SLSA provenance in mode=max and release.yml refuses a release whose
+  provenance attestation does not name every pinned base digest.
 
 - **Active root Runs are capped per principal and per Workspace (#1182,
   partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
