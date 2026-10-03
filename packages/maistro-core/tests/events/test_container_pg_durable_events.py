@@ -76,8 +76,7 @@ async def wire():
         yield _build
     finally:
         for container in built:
-            if container.db_pool is not None:
-                await container.db_pool.close()
+            await container.aclose()
 
 
 @pytest.fixture

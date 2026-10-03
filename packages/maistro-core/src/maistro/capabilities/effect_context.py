@@ -305,8 +305,8 @@ new_in_memory_effect_context = new_effect_context
 
 __all__ = [
     "CapabilityEffectContext",
-    "binding_scope_policy",
     "bind_container_effect_context",
+    "binding_scope_policy",
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",

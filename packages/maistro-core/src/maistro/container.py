@@ -1841,17 +1841,21 @@ async def _wire_capability_effects(
     # every branch. `new_effect_context` now defaults to a DENY evaluator --
     # an omitted policy is an unavailable dependency, not an authorization --
     # and the in-memory builder is an alias for it.
-    if db_pool is not None:
-        context = await new_sqlite_effect_context(
-            db_pool,
+    # PostgreSQL first: durable events already prefer a supplied pool over
+    # SQLite when both are wired (#135); capability effects must follow or a
+    # caller with `pg_pool` + `sqlite://` gets PG event durability and SQLite
+    # effect stores that share one closed connection after teardown.
+    if pg_pool is not None:
+        context = await new_postgres_effect_context(
+            pg_pool,
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
             usage_log=usage_log,
             quota_tracker=quota_tracker,
         )
-    elif pg_pool is not None:
-        context = await new_postgres_effect_context(
-            pg_pool,
+    elif db_pool is not None:
+        context = await new_sqlite_effect_context(
+            db_pool,
             credentials=capability_credentials,
             policy_evaluator=binding_scope_policy,
             usage_log=usage_log,
