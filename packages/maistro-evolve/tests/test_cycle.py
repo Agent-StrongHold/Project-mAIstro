@@ -4,8 +4,18 @@ from datetime import UTC, datetime
 
 import pytest
 
-from maistro_evolve.cycle import EvolutionConfig, EvolutionCycle
+from maistro_evolve.cycle import (
+    EvolutionConfig,
+    EvolutionCycle,
+    FitnessEvidenceDriftError,
+)
+from maistro_evolve.fitness import compute_fitness
 from maistro_evolve.harness import EvalHarness
+from maistro_evolve.objective import (
+    DEFAULT_OBJECTIVE,
+    OBJECTIVE_VERSION,
+    EvaluationObjective,
+)
 from maistro_evolve.population import PopulationStore
 from maistro_evolve.tournament import EloTournament
 from maistro_evolve.types import DAGTopology, EvalResult, EvalWeights, NodeGenome, PipelineGenome
@@ -233,6 +243,98 @@ class TestEvolutionCycle:
 
         genomes = population.list_all()
         assert len(genomes) >= 4
+
+
+class TestFitnessEvidenceLedger:
+    """#853 AC5/AC8 enforced in production: the cycle keeps each genome's
+    latest fitness evidence and refuses a score that moves although the
+    evidence hash and objective version did not — recomputability is a
+    runtime property of the loop, not a hope the tests hold on its behalf.
+    """
+
+    @staticmethod
+    def _scored_population() -> PopulationStore:
+        population = PopulationStore()
+        a = _genome("a")
+        a.eval_scores = {"proxy_ifeval": 0.8, "proxy_bfcl": 0.6}
+        a.harness_params["total_cost_usd"] = 0.5
+        population.add(a)
+        b = _genome("b")
+        b.eval_scores = {"proxy_ifeval": 0.4}
+        b.topology.nodes[0].temperature = 0.9  # distinct trait evidence
+        population.add(b)
+        return population
+
+    def test_identical_evidence_recomputes_identically_and_is_recorded(self):
+        cycle = EvolutionCycle()
+        pop = self._scored_population()
+        expected = {
+            g.id: compute_fitness(g, pop.list_all(), cycle.objective).total for g in pop.list_all()
+        }
+
+        # Two passes through the SAME cycle: the second sees the first's
+        # record, finds the evidence unchanged, and must not raise.
+        first = {g.id: g.fitness_score for g in cycle._compute_all_fitness(pop)}
+        second = {g.id: g.fitness_score for g in cycle._compute_all_fitness(pop)}
+        assert first == second == expected
+
+        rec = cycle.fitness_evidence["g-a"]
+        direct = compute_fitness(pop.get("g-a"), pop.list_all(), cycle.objective)
+        assert rec.total == expected["g-a"]
+        assert rec.capability_score == direct.capability_score
+        assert rec.objective_version == direct.objective_version == OBJECTIVE_VERSION
+        assert rec.evidence_hash == direct.evidence_hash
+        assert rec.evidence_hash  # a sha256 over the exact inputs is recorded
+        assert rec.component_roles == direct.component_roles
+        # Cost evidence was recorded for g-a, so it is not "missing".
+        assert "cost_efficiency" not in rec.missing_evidence
+
+    def test_score_drift_under_unchanged_evidence_raises(self):
+        cycle = EvolutionCycle()
+        pop = self._scored_population()
+        cycle._compute_all_fitness(pop)
+
+        # Simulate the scoring arithmetic moving under identical evidence:
+        # hash and objective_version stay equal, the total does not. This is
+        # the "genome's own score changed without improved capability" defect
+        # in its purest form, and the cycle must refuse it.
+        rec = cycle.fitness_evidence["g-a"]
+        cycle.fitness_evidence["g-a"] = rec.model_copy(update={"total": rec.total + 5.0})
+        with pytest.raises(FitnessEvidenceDriftError, match="identical evidence"):
+            cycle._compute_all_fitness(pop)
+
+    def test_evidence_change_is_not_flagged_and_is_re_recorded(self):
+        cycle = EvolutionCycle()
+        pop = self._scored_population()
+        cycle._compute_all_fitness(pop)
+        old_hash = cycle.fitness_evidence["g-a"].evidence_hash
+
+        g = pop.get("g-a")
+        g.eval_scores["proxy_ifeval"] = 0.9  # a real, recorded evidence change
+        pop.add(g)
+        cycle._compute_all_fitness(pop)  # must not raise
+
+        rec = cycle.fitness_evidence["g-a"]
+        assert rec.evidence_hash != old_hash
+        assert rec.capability_score > 0.0
+
+    def test_objective_change_is_not_flagged_and_is_recorded(self):
+        cycle = EvolutionCycle()
+        pop = self._scored_population()
+        cycle._compute_all_fitness(pop)
+
+        # A governed objective swap moves hash + version — a recorded reason
+        # for the score to move — so the guard must stay silent while the
+        # new ruler is what the record now names.
+        cycle.objective = EvaluationObjective(
+            version="pop-owned-v3-test",
+            benchmark_weights=DEFAULT_OBJECTIVE.benchmark_weights,
+            default_benchmark_weight=DEFAULT_OBJECTIVE.default_benchmark_weight,
+            fitness_term_weights=DEFAULT_OBJECTIVE.fitness_term_weights,
+            missing_evidence_credit=DEFAULT_OBJECTIVE.missing_evidence_credit,
+        )
+        cycle._compute_all_fitness(pop)  # must not raise
+        assert cycle.fitness_evidence["g-a"].objective_version == "pop-owned-v3-test"
 
 
 class TestEvalHarness:

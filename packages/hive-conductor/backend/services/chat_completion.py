@@ -472,7 +472,7 @@ PM_TOOLS: list[dict[str, Any]] = [
                     "size": {"type": "string", "description": "Column span: 1, 2, 3, 4, 5, or 6"},
                     "config": {
                         "type": "object",
-                        "description": "Widget config. For jira: {project, status, days, assignee, jql_extra, jira_display}. For kpi: {field, sub}. For custom: {source, table, filter_formula} or {endpoint, params}.",
+                        "description": "Widget config. For jira: {project, status, days, assignee, jql_extra, jira_display}. For kpi: {field, sub} — fields approval_rate and ttft currently render N/A (no source measures them). For custom metrics source: {source: 'metrics', metric: 'latency'|'ttft'|'cost'|'tokens'|'invocations'} — there is no errors metric. For custom: {source, table, filter_formula} or {endpoint, params}.",
                     },
                     "tab": {
                         "type": "string",
@@ -2128,9 +2128,28 @@ def _record_chat_metric(
         _chat_metrics.pop(0)
 
 
-def get_chat_metrics_summary() -> dict[str, Any]:
-    """Aggregate chat metrics for the dashboard."""
-    if not _chat_metrics:
+def get_chat_metrics_summary(
+    user_id: str | None = None, window_seconds: float | None = None
+) -> dict[str, Any]:
+    """Aggregate chat metrics for the dashboard.
+
+    `user_id` scopes the aggregation to one principal's observations: the
+    dashboard serves per-principal KPI envelopes, and the unscoped default
+    would pool every account's latency and spend into each of them (#380).
+    `window_seconds` keeps only observations newer than that; `None` (the
+    default, and every pre-#380 caller) aggregates the whole ring.
+
+    `last_observation_ts` — the newest observation in the filtered set, or
+    `None` — is how a caller tells fresh data from a set nobody has added to
+    since before its window began.
+    """
+    rows = _chat_metrics
+    if user_id is not None:
+        rows = [m for m in rows if m.get("user") == user_id]
+    if window_seconds is not None:
+        cutoff = __import__("time").time() - window_seconds
+        rows = [m for m in rows if m.get("ts", 0) >= cutoff]
+    if not rows:
         return {
             "count": 0,
             "latency_ms_p50": 0,
@@ -2138,19 +2157,21 @@ def get_chat_metrics_summary() -> dict[str, Any]:
             "tokens_in_total": 0,
             "tokens_out_total": 0,
             "cost_usd_total": 0.0,
+            "last_observation_ts": None,
         }
-    lats = sorted(m["latency_ms"] for m in _chat_metrics)
+    lats = sorted(m["latency_ms"] for m in rows)
     n = len(lats)
     return {
         "count": n,
         "latency_ms_p50": lats[n // 2] if n else 0,
         "latency_ms_p95": lats[int(n * 0.95)] if n else 0,
         "latency_ms_mean": sum(lats) / n if n else 0,
-        "tokens_in_total": sum(m["tokens_in"] for m in _chat_metrics),
-        "tokens_out_total": sum(m["tokens_out"] for m in _chat_metrics),
+        "tokens_in_total": sum(m["tokens_in"] for m in rows),
+        "tokens_out_total": sum(m["tokens_out"] for m in rows),
         "cost_usd_total": sum(
-            m["tokens_out"] * 0.000003 + m["tokens_in"] * 0.000001 for m in _chat_metrics
+            m["tokens_out"] * 0.000003 + m["tokens_in"] * 0.000001 for m in rows
         ),  # rough estimate
+        "last_observation_ts": max(m["ts"] for m in rows),
     }
 
 

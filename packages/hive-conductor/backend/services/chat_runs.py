@@ -57,6 +57,7 @@ class AdmittedTurn:
     run: Run
     agent_id: str
     container: Any
+    admitter: ChatRunAdmitter
 
 
 def _unavailable(detail: str) -> HTTPException:
@@ -119,6 +120,35 @@ async def _turn_workspace(user_id: str, workspace_id: Any) -> str:
     return (await resolve_default_workspace(user_id)).id
 
 
+def _request_id(request: Request) -> str | None:
+    """The HTTP request id, when middleware stamped one.
+
+    Provenance carries it the same way the core seam does: a conversation is
+    found by session id, a turn by request id. An empty stamp is no stamp.
+    """
+    value = getattr(getattr(request, "state", None), "request_id", None)
+    return value if isinstance(value, str) and value else None
+
+
+async def _settle_window(admitter: ChatRunAdmitter, run: Run) -> None:
+    """Release this admitter's dispatch shield and re-apply its window.
+
+    Hive keeps one `ChatRunAdmitter` per Workspace. `Container._close_chat_run`
+    sweeps `container.chat_admitter`, which is a different window, so a Hive
+    turn that ended with no later admission used to sit past `max_retained`.
+    The shield is released only after the turn has settled: while it is set,
+    a concurrent admission cannot delete a RUNNING turn that has no Attempt yet.
+    """
+    try:
+        admitter.release_dispatch_pending(run.run_id)
+    except Exception:
+        logger.warning("chat dispatch shield release failed", exc_info=True)
+    try:
+        await asyncio.shield(admitter.sweep())
+    except Exception:
+        logger.warning("chat Run retention sweep failed", exc_info=True)
+
+
 def _owned_session(request: Request, session_id: Any) -> str | None:
     """The session id to record as provenance, when it is the caller's own.
 
@@ -150,6 +180,8 @@ async def admit_turn(
             "process has not started"
         )
     run: Run | None = None
+    admitter: ChatRunAdmitter | None = None
+    marked = False
     try:
         ws = await _turn_workspace(user_id, workspace_id)
         agent = await resolve_workspace_agent(ws)
@@ -157,18 +189,27 @@ async def admit_turn(
         run = await admitter.admit(
             messages,
             session_id=_owned_session(request, session_id),
+            request_id=_request_id(request),
             actor_principal_id=user_id,
         )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        # Marked while still QUEUED, before RUNNING, so a concurrent sweep
+        # cannot see an Attempt-less RUNNING turn and delete it.
+        admitter.mark_dispatch_pending(run.run_id)
+        marked = True
         run = await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
     except asyncio.CancelledError:
+        if marked and admitter is not None and run is not None:
+            admitter.release_dispatch_pending(run.run_id)
         await asyncio.shield(container._cancel_incomplete_admission(run))
         raise
     except Exception:
         logger.warning("chat turn could not be admitted as a Run", exc_info=True)
+        if marked and admitter is not None and run is not None:
+            admitter.release_dispatch_pending(run.run_id)
         await container._cancel_incomplete_admission(run)
         raise _unavailable("chat turn could not be admitted; retry shortly") from None
-    return AdmittedTurn(run=run, agent_id=agent.id, container=container)
+    return AdmittedTurn(run=run, agent_id=agent.id, container=container, admitter=admitter)
 
 
 async def execute_turn(
@@ -194,33 +235,36 @@ async def execute_turn(
         return response
 
     try:
-        result = await ChatAttemptExecutor(container.run_store).execute(
-            run.run_id, messages, _dispatch
-        )
-    except ChatDispatchUnrecorded as exc:
-        logger.warning(
-            "chat turn %s was answered but could not be recorded as an Attempt; "
-            "its Run is left open for recovery",
-            exc.run_id,
-            exc_info=True,
-        )
-        result = exc.response
-    except Exception as exc:
-        if not dispatched:
-            # The spine refused before the model was reached (#1108): nothing
-            # failed, and the turn is not answered ungoverned.
-            logger.warning("chat turn could not be recorded as an Attempt", exc_info=True)
+        try:
+            result = await ChatAttemptExecutor(container.run_store).execute(
+                run.run_id, messages, _dispatch
+            )
+        except ChatDispatchUnrecorded as exc:
+            logger.warning(
+                "chat turn %s was answered but could not be recorded as an Attempt; "
+                "its Run is left open for recovery",
+                exc.run_id,
+                exc_info=True,
+            )
+            result = exc.response
+        except asyncio.CancelledError:
             await container._close_chat_run(run, cancelled=True)
-            raise _unavailable("chat turn could not be executed; retry shortly") from None
-        await container._close_chat_run(run, error=failure_category(exc))
-        raise
-    except asyncio.CancelledError:
-        await container._close_chat_run(run, cancelled=True)
-        raise
-    else:
-        await container._close_chat_run(run, result=chat_turn_outcome(result))
-    result["run_id"] = run.run_id
-    return result
+            raise
+        except Exception as exc:
+            if not dispatched:
+                # The spine refused before the model was reached (#1108): nothing
+                # failed, and the turn is not answered ungoverned.
+                logger.warning("chat turn could not be recorded as an Attempt", exc_info=True)
+                await container._close_chat_run(run, cancelled=True)
+                raise _unavailable("chat turn could not be executed; retry shortly") from None
+            await container._close_chat_run(run, error=failure_category(exc))
+            raise
+        else:
+            await container._close_chat_run(run, result=chat_turn_outcome(result))
+        result["run_id"] = run.run_id
+        return result
+    finally:
+        await _settle_window(turn.admitter, run)
 
 
 async def cancel_unstarted(turn: AdmittedTurn) -> None:
@@ -231,6 +275,7 @@ async def cancel_unstarted(turn: AdmittedTurn) -> None:
     RUNNING until the stranded-admission sweep.
     """
     await asyncio.shield(turn.container._close_chat_run(turn.run, cancelled=True))
+    await _settle_window(turn.admitter, turn.run)
 
 
 def reset_for_tests() -> None:
