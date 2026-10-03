@@ -18,6 +18,7 @@ from maistro.runs import (
 )
 from maistro.runs.execution import ExecutionYielded
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class RecordingRuntime(PythonExecutionRuntime):
@@ -59,7 +60,7 @@ async def _node_run() -> tuple[InMemoryRunStore, str, str]:
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     return store, run.run_id, node_run.node_run_id
 
@@ -237,7 +238,7 @@ async def test_run_cancellation_fences_before_provider_launch() -> None:
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
     started = asyncio.Event()
 
@@ -796,7 +797,7 @@ async def test_cancelling_a_local_run_for_a_missing_run_is_an_integrity_error() 
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await torn.create_run(graph)
+    run = await torn.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     torn._vanished_run_id = run.run_id
     service = AttemptExecutionService(store=torn, runtime=PythonExecutionRuntime())
     with pytest.raises(RunIntegrityError, match="does not exist"):
@@ -843,7 +844,7 @@ async def test_run_cancellation_settles_queue_only_node_runs() -> None:
             Node(node_id="node-3", node_type="agent"),
         ],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     queue_only = await store.create_node_run(run.run_id, node_id="node-1")
     with_live_attempt = await store.create_node_run(run.run_id, node_id="node-2")
     already_terminal = await store.create_node_run(run.run_id, node_id="node-3")
@@ -926,7 +927,7 @@ async def test_cancel_settled_node_runs_sweeps_exactly_the_queue_only_nodes() ->
             Node(node_id="node-3", node_type="agent"),
         ],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     queue_only = await store.create_node_run(run.run_id, node_id="node-1")
     with_live_attempt = await store.create_node_run(run.run_id, node_id="node-2")
     already_terminal = await store.create_node_run(run.run_id, node_id="node-3")

@@ -37,6 +37,7 @@ from maistro.graph.nodes.base import (
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -253,6 +254,7 @@ async def _parked_run(container: Container, kind: str, *, workspace: str) -> str
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert await container.execute_admitted_runs() == 1
     parked = await container.run_store.get_run(run.run_id)
@@ -450,6 +452,7 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     # Leave room for a real PostgreSQL round trip while keeping the recovery
     # window short enough to exercise the heartbeat and expiry boundary.
@@ -1393,6 +1396,7 @@ class TestAMultiNodeRunIsNotThisTicksToResume:
             graph,
             provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
             initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         await container.run_store.transition_run(run.run_id, RunStatus.WAITING)
