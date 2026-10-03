@@ -148,6 +148,7 @@ if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
     from maistro.runs.consumption import ParkedPause, TickAccounting
+    from maistro.runs.model import Attempt
     from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
@@ -1173,7 +1174,8 @@ class Container:
 
         ``remaining`` bounds this Run's share of the sweep's ``limit``: the
         caller passes the room it has left, so a Run early in the page cannot
-        spend the whole budget a second time.
+        spend the whole budget a second time. Only observed persisted progress
+        (an accepted outcome or a Run settlement) charges the budget (#1850).
         """
         from maistro.runs.store import RunIntegrityError
 
@@ -1187,7 +1189,8 @@ class Container:
             if completed is None:
                 continue
             try:
-                await reconciler.reconcile(completed)
+                if await self._reconcile_terminal_attempt_progress(completed, reconciler):
+                    done += 1
             except RunIntegrityError:
                 logger.warning(
                     "terminal Attempt %s could not be reconciled",
@@ -1195,7 +1198,6 @@ class Container:
                     exc_info=True,
                 )
                 continue
-            done += 1
         return done
 
     async def _reconcile_unreconciled_terminal_attempts(
@@ -1234,6 +1236,32 @@ class Container:
         if reconciled:
             logger.info("reconciled %d unreconciled terminal Attempt(s)", reconciled)
         return reconciled
+
+    async def _reconcile_terminal_attempt_progress(
+        self, attempt: Attempt, reconciler: AttemptLifecycleReconciler
+    ) -> bool:
+        """Observe acceptance/settlement, not exclusive ownership of a repair.
+
+        Store transitions return records, not a won-write flag. A peer may make
+        progress between these reads; counting that observation is conservative
+        for this tick's budget. Replaying unchanged facts on the next tick must
+        not charge again. Timestamps and other incidental changes do not count.
+        """
+        before_node = await self.run_store.get_node_run(attempt.node_run_id)
+        if before_node is None:
+            raise RunIntegrityError("terminal replay is missing its NodeRun")
+        before_run = await self.run_store.get_run(before_node.run_id)
+        if before_run is None:
+            raise RunIntegrityError("terminal replay is missing its Run")
+        reconciled = await reconciler.reconcile(attempt)
+        after_run = await self.run_store.get_run(before_node.run_id)
+        accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
+        settled = (
+            before_run.status not in TERMINAL_RUN_STATUSES
+            and after_run is not None
+            and after_run.status in TERMINAL_RUN_STATUSES
+        )
+        return accepted or settled
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100
