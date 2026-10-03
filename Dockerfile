@@ -17,8 +17,20 @@
 # Pin the interpreter major/minor.  The identity stack includes native crypto
 # dependencies (notably coincurve), so following `latest` across a Python major
 # can turn an otherwise reproducible image into a source-build failure.
-FROM python:3.13.15-slim-bookworm AS builder
+# Digest-pinned (#349): a tag move must not change what installs every
+# dependency without a repository diff. Refresh via Dependabot's docker
+# ecosystem and record the new digest in quality/image-pins.json.
+FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS builder
 WORKDIR /app
+# CI evidence (run 36835563311, job 110282105809): both buildx attempts of the
+# sibling research image died inside pip on `files.pythonhosted.org` read
+# timeouts -- pip's 15s default, under runner load, on multi-hundred-KB wheels.
+# The resolution itself is sound (a pip --dry-run of the same requirements
+# resolves cleanly), so the defect is transport patience, not pinning. State
+# the patience instead of rediscovering it on the next registry slow spell;
+# buildx-build-retry.sh still retries the whole invocation above this layer.
+ENV PIP_DEFAULT_TIMEOUT=60 \
+    PIP_RETRIES=10
 ENV PATH="/app/venv/bin:$PATH"
 RUN python -m venv /app/venv
 COPY pyproject.toml uv.lock README.md ./
@@ -51,7 +63,7 @@ RUN pip install --no-cache-dir \
 # stays Wolfi (low-CVE) while providing the `git` binary the orchestrator's git
 # tools (maistro.tools.git — used by orchestrator/waves/fan_in.py) exec directly;
 # the previous distroless runtime shed git and broke those tools.
-FROM python:3.13.15-slim-bookworm
+FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
@@ -71,7 +83,8 @@ COPY pyproject.toml uv.lock README.md ./
 # Static docker CLI (talks to a mounted /var/run/docker.sock) — a single static
 # binary, no daemon. 29-cli ships a binary built with go1.26.8; older 27-cli
 # binaries embedded go1.22.11 (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
-COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
+# Digest-pinned (#349): the installer/tool image is as immutable as the base.
+COPY --from=docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca /usr/local/bin/docker /usr/local/bin/docker
 EXPOSE 8000
 STOPSIGNAL SIGTERM
 # Drop to an unprivileged numeric uid for runtime.

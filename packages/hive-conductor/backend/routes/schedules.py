@@ -16,6 +16,7 @@ from services.dag_execution_scope import (
     authorize_hive_dag_scope,
     authorize_hive_dag_workspace,
 )
+from services.request_principal import require_actor_id
 
 from maistro.scheduling.cron import CronParseError, minimum_gap
 from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS, MAX_CATCHUP_WINDOW_SECONDS
@@ -155,8 +156,7 @@ def _check_fire_id(value: str | None) -> str | None:
 
 def _actor(request: Request) -> str:
     """The authenticated principal; a schedule is never owned by "system"."""
-    user = getattr(request.state, "user", None) or {}
-    actor = str(user.get("id") or "").strip()
+    actor = require_actor_id(request).strip()
     if not actor:
         raise HTTPException(status_code=401, detail="authentication required")
     return actor

@@ -10,6 +10,7 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from models.schemas import MCPServer, MCPTool
 from pydantic import BaseModel, ConfigDict
+from services.request_principal import request_principal
 
 from maistro.http import shared_client
 from maistro.security.outbound import OutboundBlockedError, outbound_origin
@@ -29,9 +30,10 @@ HEALTH_TIMEOUT_SECONDS = 3.0
 
 
 def _user_id(request: Request) -> str | None:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    return str(uid) if uid else None
+    principal = request_principal(request)
+    if principal is None or not principal.user_id:
+        return None
+    return principal.user_id
 
 
 async def _health_check(server: MCPServer, *, user_id: str | None = None) -> MCPServer:

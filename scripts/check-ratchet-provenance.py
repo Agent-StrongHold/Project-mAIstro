@@ -42,6 +42,16 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "each Dockerfile's disposition and named build/scan jobs rather than comparing "
         "against a tolerated prior-state oracle"
     ),
+    ("check-image-pins.py", "quality/image-pins.json"): (
+        "the pin registry is the reviewed approval authority being changed (#349): every pin "
+        "and exemption row is explicit policy, and a base update lands as the reviewable "
+        "registry-plus-Dockerfile diff rather than against a prior-state oracle"
+    ),
+    ("check-image-pins.py", "quality/image-inventory.json"): (
+        "release dispositions are read from the reviewed per-tree inventory specification; "
+        "reclassifying a Dockerfile is itself the reviewable edit, and "
+        "check-image-inventory.py owns validating that inventory"
+    ),
     ("pip_audit_gate.py", "quality/direct-dependency-exceptions.json"): (
         "dependency exceptions are an explicitly reviewed specification"
     ),

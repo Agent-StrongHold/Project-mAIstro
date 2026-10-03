@@ -13,8 +13,14 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
+from maistro.capabilities.approval_store import InMemoryApprovalStore, SqliteApprovalStore
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import InMemoryBindingStore, RevocableBindingStore
+from maistro.capabilities.binding_store import (
+    InMemoryBindingStore,
+    PgBindingStore,
+    RevocableBindingStore,
+    SqliteBindingStore,
+)
 from maistro.capabilities.credential_routing import CredentialRouting
 from maistro.capabilities.governed_invocation import (
     GovernedInvocationExecutionService,
@@ -26,9 +32,14 @@ from maistro.capabilities.invocation import (
     InvocationExecutionService,
     InvocationStore,
 )
+from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.capabilities.pg_invocation_store import PgInvocationStore
 from maistro.credentials.router import CredentialRouter
-from maistro.events.envelope import EventStore, InMemoryEventStore
+from maistro.events.envelope import EventStore, InMemoryEventStore, SqliteEventStore
+from maistro.events.pg_envelope import PgEventStore
 from maistro.policy.types import Decision, PolicyVerdict
+from maistro.quota.recorder import CanonicalInvocationUsageRecorder
+from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 
 
 async def binding_scope_policy(
@@ -89,6 +100,9 @@ class CapabilityEffectContext:
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
+    # The same recorder is installed at Invocation terminalization for every
+    # effect consumer; callers do not thread independent response callbacks.
+    usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def with_policy_evaluator(self, policy_evaluator: PolicyEvaluator) -> CapabilityEffectContext:
@@ -116,11 +130,16 @@ def new_effect_context(
     invocation_store: InvocationStore | None = None,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
 ) -> CapabilityEffectContext:
     """Compose one canonical effect authority from caller-selected stores.
 
-    Production uses this constructor with stores selected by the Container's
-    configured persistence backend. Tests/local ephemeral composition can use
+    ``invocation_store`` selects the canonical effect ledger; ephemeral
+    composition defaults to the in-memory store while durable containers pass
+    the SQLite/PostgreSQL capability Invocation stores. Production uses this
+    constructor with stores selected by the Container's configured persistence
+    backend; tests/local ephemeral composition can use
     :func:`new_in_memory_effect_context`. Keeping the service construction here
     means durability changes storage lifetime only; it cannot create a second
     policy or Invocation execution path.
@@ -129,12 +148,26 @@ def new_effect_context(
     ``invocation_store`` is durable: #1133 durable-izes those separately, and
     this constructor's job here is only the Invocation authority #1091 needed
     for governed model egress.
+
+    ``credentials`` supplies the scoped credential pool for Provider selection
+    (#58); omitted, the router exists but holds no credentials, so routed
+    acquisitions fail closed until one is registered in the requesting scope.
+
+    ``usage_log``/``quota_tracker`` install the canonical quota recorder (#718)
+    as the Invocation service's single ``on_completed`` hook, so every governed
+    provider effect — and every reconciliation settled ``APPLIED`` — records
+    evidence on the quota ledger exactly once.
     """
 
     binding_store = InMemoryBindingStore()
     store = invocation_store or InMemoryInvocationStore()
     event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=store)
+    usage_log = usage_log or get_default_usage_log()
+    usage_recorder = CanonicalInvocationUsageRecorder(usage_log, quota_tracker)
+    invocation_service = InvocationExecutionService(
+        store=store,
+        on_completed=usage_recorder.record,
+    )
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
@@ -147,8 +180,106 @@ def new_effect_context(
         invocations=governed,
         invocation_store=store,
         event_store=event_store,
+        usage_log=usage_log,
         credentials=credentials or CredentialRouter(),
     )
+
+
+async def new_sqlite_effect_context(
+    conn: Any,
+    *,
+    credentials: CredentialRouter | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
+) -> CapabilityEffectContext:
+    """Build the canonical effect authority on the container's SQLite database."""
+
+    bindings = SqliteBindingStore(conn)
+    invocation_store = SqliteInvocationStore(conn)
+    event_store = SqliteEventStore(conn)
+    approval_store = SqliteApprovalStore(conn)
+    await bindings.ensure_schema()
+    await invocation_store.ensure_schema()
+    await event_store.ensure_schema()
+    await approval_store.ensure_schema()
+    # The usage recorder attaches here, not only in `new_effect_context`
+    # (#718): a durable deployment takes one of these two branches instead,
+    # and a context built without it would dispatch governed effects whose
+    # provider usage nothing ever recorded.
+    selected_usage_log = usage_log or get_default_usage_log()
+    usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
+    governed = GovernedInvocationExecutionService(
+        invocation_service=InvocationExecutionService(
+            store=invocation_store, on_completed=usage_recorder.record
+        ),
+        event_store=event_store,
+        policy_evaluator=policy_evaluator or binding_scope_policy,
+        approval_store=approval_store,
+    )
+    return CapabilityEffectContext(
+        bindings=bindings,
+        invocations=governed,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        usage_log=selected_usage_log,
+        credentials=credentials or CredentialRouter(),
+    )
+
+
+async def new_postgres_effect_context(
+    pool: Any,
+    *,
+    credentials: CredentialRouter | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
+) -> CapabilityEffectContext:
+    """Build the canonical effect authority on a shared PostgreSQL pool."""
+
+    bindings = PgBindingStore(pool)
+    invocation_store = PgInvocationStore(pool)
+    event_store = PgEventStore(pool)
+    await bindings.ensure_schema()
+    await invocation_store.ensure_schema()
+    await event_store.ensure_schema()
+    # The usage recorder attaches here, not only in `new_effect_context`
+    # (#718): a durable deployment takes one of these two branches instead,
+    # and a context built without it would dispatch governed effects whose
+    # provider usage nothing ever recorded.
+    selected_usage_log = usage_log or get_default_usage_log()
+    usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
+    approval_store = InMemoryApprovalStore()
+    governed = GovernedInvocationExecutionService(
+        invocation_service=InvocationExecutionService(
+            store=invocation_store, on_completed=usage_recorder.record
+        ),
+        event_store=event_store,
+        policy_evaluator=policy_evaluator or binding_scope_policy,
+        approval_store=approval_store,
+    )
+    return CapabilityEffectContext(
+        bindings=bindings,
+        invocations=governed,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        usage_log=selected_usage_log,
+        credentials=credentials or CredentialRouter(),
+    )
+
+
+_bound_container_effect_context: CapabilityEffectContext | None = None
+
+
+def bind_container_effect_context(context: CapabilityEffectContext | None) -> None:
+    global _bound_container_effect_context
+    _bound_container_effect_context = context
+    default_effect_context.cache_clear()
+
+
+def unbind_container_effect_context(context: CapabilityEffectContext) -> None:
+    if _bound_container_effect_context is context:
+        bind_container_effect_context(None)
 
 
 @lru_cache(maxsize=1)
@@ -162,6 +293,8 @@ def default_effect_context() -> CapabilityEffectContext:
     backend-specific context explicitly.
     """
 
+    if _bound_container_effect_context is not None:
+        return _bound_container_effect_context
     # This named composition root deliberately selects the narrow M1 policy;
     # unnamed contexts stay read-only until their application supplies one.
     return new_effect_context(policy_evaluator=binding_scope_policy)
@@ -172,8 +305,12 @@ new_in_memory_effect_context = new_effect_context
 
 __all__ = [
     "CapabilityEffectContext",
+    "bind_container_effect_context",
     "binding_scope_policy",
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
+    "new_postgres_effect_context",
+    "new_sqlite_effect_context",
+    "unbind_container_effect_context",
 ]
