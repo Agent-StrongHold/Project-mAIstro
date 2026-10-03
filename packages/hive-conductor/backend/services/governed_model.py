@@ -427,9 +427,7 @@ async def mint_operation_identity(
     parent_run = await store.get_run(parent_run_id) if parent_run_id else None
     if parent_run_id and parent_run is None:
         raise LookupError(f"canonical Run {parent_run_id!r} does not exist")
-    resolved_actor = (
-        parent_run.actor_principal_id if parent_run is not None else actor_principal_id
-    )
+    resolved_actor = parent_run.actor_principal_id if parent_run is not None else actor_principal_id
     graph = Graph(
         workspace_id=workspace_id,
         project_id=project_id,
