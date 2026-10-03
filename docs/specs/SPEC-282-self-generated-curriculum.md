@@ -227,3 +227,10 @@ promote through the #21/#116 candidate/evaluation/promotion contract.
 - SPEC-202's fidelity tiers are unchanged: the reserved namespace is not a
   third fidelity tier and never reaches an `EvalResult`; practice signal stays
   inside `curriculum.Curriculum`.
+- Shipped surface: the package root re-exports the lane-comparison API
+  (`from maistro_evolve import compare_lanes, LaneBudget, ...`), the same
+  public-surface convention `maistro_rsi/__init__.py` uses. This keeps the
+  measurement module on a real import path from every `maistro_evolve`
+  entry point — the reachability ratchet treats an unwired module as dead —
+  without adding a caller, scheduler, or evaluation authority; ADR-088's
+  "API not locked" posture still applies.
