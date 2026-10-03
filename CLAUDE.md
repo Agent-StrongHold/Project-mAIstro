@@ -11,7 +11,7 @@ container refuses at startup rather than failing later.
 
 ## Architecture
 
-Consolidation **monorepo** (single git repo, `uv` workspace) with 9 Python packages + the hive-conductor app. It is *not* just a library: it **contains** the Agent Conductor app (`hive-conductor`, the personal/homelab product) and the canvas ability (`maistro-canvas`), and exposes `maistro-core` for downstream products to import. (Was historically split across sibling repos.)
+Consolidation **monorepo** (single git repo, `uv` workspace) with 9 Python packages + the hive-conductor app. It is *not* just a library: it **contains** the **Workspaces** product (`packages/hive-conductor` — replacing the legacy Conductor page tree for v1.0) and the canvas ability (`maistro-canvas`), and exposes `maistro-core` for downstream products to import. (Was historically split across sibling repos.)
 
 ```
 packages/
@@ -32,18 +32,21 @@ packages/
 ```
 maistro-engine (this monorepo)
   │  contains
-  ├── Agent Conductor (household/personal)  — packages/hive-conductor (consumes maistro-core)
+  ├── Workspaces product (v1.0)             — packages/hive-conductor (consumes maistro-core)
+  │     replaces legacy Conductor UI; cutover: docs/architecture/WORKSPACE-CUTOVER-PLAN.md
   └── canvas ability                        — packages/maistro-canvas
   │
   │  imported by downstream products
-  ├─→ Canvas book-maker POC (name TBD)      — imports maistro-canvas (separate frontend app)
-  └─→ Stronghold (PLANNED)                  — will import maistro-engine, add multi-tenancy +
+  ├─→ Canvas book-maker POC (persona template skin, v1.1) — imports maistro-canvas
+  └─→ Stronghold (PLANNED, engine v1.5)     — will import maistro-engine, add hard multi-tenancy +
                                               stricter security, and disable homelab/personal features
 ```
 
-Agent Conductor ships **here**; the Canvas book-maker and Stronghold are downstream products that **import** the engine (Stronghold is a planned refactor, not yet done).
+Workspaces ships **here** for v1.0; the Canvas book-maker and Stronghold are downstream products that **import** the engine (Stronghold target: engine v1.5, not yet started).
 
-**ADR-019** defines the canonical source split: maistro-core = product-agnostic shared runtime (no `org_id`); multi-tenancy/security-posture/feature-toggles live in the importing product (Stronghold). Notable decisions include ADR-036 (ontology), ADR-038 (reliability), ADR-062 (graph execution protocol), and ADR-057 (memory exposure mode).
+**ADR-019** defines the canonical source split: maistro-core = product-agnostic shared runtime; hard multi-tenancy lives in Stronghold (ADR-068 scope axes in core). Notable decisions: ADR-036 (ontology), ADR-038 (reliability), ADR-062 (graph execution protocol), ADR-057 (memory exposure mode).
+
+**v1.0 planning:** release contract in [`ROADMAP.md`](ROADMAP.md); item backlog in [`BACKLOG.md`](BACKLOG.md); Workspace cutover in [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md).
 
 ### Naming convention
 

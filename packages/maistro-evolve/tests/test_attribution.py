@@ -32,7 +32,6 @@ from maistro_evolve.hyper_mutator import spawn_fixer_challenger
 from maistro_evolve.mutate import (
     MUTATION_OPERATOR_NAMES,
     mutate_all,
-    mutate_eval_weights,
     mutate_node,
     mutate_prompt,
     mutate_selected,
@@ -96,7 +95,6 @@ class TestOriginStamping:
             (mutate_topology, "mutate_topology"),
             (mutate_node, "mutate_node"),
             (mutate_prompt, "mutate_prompt"),
-            (mutate_eval_weights, "mutate_eval_weights"),
         ],
     )
     def test_mutation_children_record_operator_identity_and_version(
@@ -300,7 +298,10 @@ class TestCredit:
         child = mutate_prompt(parent, 1.0)  # baseline 0.5 → 0.9 is an improvement
         store.add(child)
         config = EvolutionConfig(
-            target_benchmarks=["proxy_ifeval"], eval_batch_size=5, cull_pct=0.0
+            target_benchmarks=["proxy_ifeval"],
+            eval_batch_size=5,
+            cull_pct=0.0,
+            reconfirm_per_cycle=0,  # one verified sample per genome: pure first-eval credit
         )
         import asyncio
 
@@ -312,6 +313,43 @@ class TestCredit:
         # The unattributable seed parent produced no credit events.
         assert len(cycle.ledger.events) == 1
         assert cycle.ledger.events[0].candidate_id == child.id
+
+    def test_cycle_reconfirmation_also_credits_producer(self) -> None:
+        """#854 reconfirmation shares the M4-A8 crediting path: every fresh
+        verified sample of a candidate is additional evidence about the
+        producer that built it, APPENDED to the ledger — attempts accumulate,
+        candidate history is never rewritten."""
+        harness = EvalHarness()
+        harness._benchmarks.clear()
+
+        async def fake_runner(genome: PipelineGenome, llm_call: object) -> EvalResult:
+            return EvalResult(benchmark="proxy_ifeval", score=0.9, samples_evaluated=1)
+
+        harness.register_benchmark("proxy_ifeval", fake_runner)
+        cycle = EvolutionCycle(harness=harness)
+        store = PopulationStore()
+        parent = _genome("parent")
+        store.add(parent)
+        child = mutate_prompt(parent, 1.0)  # baseline 0.5 → 0.9 is an improvement
+        store.add(child)
+        config = EvolutionConfig(
+            target_benchmarks=["proxy_ifeval"],
+            eval_batch_size=5,
+            cull_pct=0.0,
+            reconfirm_per_cycle=2,  # default policy: re-sample weakest/oldest evidence
+        )
+        import asyncio
+
+        asyncio.run(cycle.run_cycle(store, llm_call=None, config=config))
+        producer = producer_identity("mutate_prompt", ProducerKind.MUTATION_OPERATOR)
+        stats = cycle.ledger.stats(producer, cycle._eval_context(config).key())
+        assert stats is not None
+        # First eval + one #854 reconfirmation of the child: two appended
+        # credit events for the same producer and candidate. (The reconfirmed
+        # seed parent stays unattributable and emits nothing.)
+        assert stats.attempts == 2
+        assert stats.improvements == 2
+        assert [e.candidate_id for e in cycle.ledger.events] == [child.id, child.id]
 
     def test_cycle_attribution_disabled_records_nothing(self) -> None:
         harness = EvalHarness()

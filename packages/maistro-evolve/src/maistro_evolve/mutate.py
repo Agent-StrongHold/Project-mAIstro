@@ -23,7 +23,6 @@ from .fixer_genome import (
 )
 from .types import (
     DAGEdgeGenome,
-    EvalWeights,
     NodeGenome,
     PipelineGenome,
 )
@@ -70,7 +69,6 @@ MUTATION_OPERATOR_NAMES: tuple[str, ...] = (
     "mutate_node",
     "mutate_prompt",
     "mutate_fixer_genome",
-    "mutate_eval_weights",
 )
 
 _MUTATION_SHORT_NAMES: dict[str, str] = {
@@ -78,7 +76,6 @@ _MUTATION_SHORT_NAMES: dict[str, str] = {
     "mutate_node": "node",
     "mutate_prompt": "prompt",
     "mutate_fixer_genome": "fixer",
-    "mutate_eval_weights": "weight",
 }
 
 
@@ -121,8 +118,6 @@ def _apply_mutation_operator(
         return mutate_prompt(genome, rate, origin_context=origin_context, _stamp=stamp)
     if name == "mutate_fixer_genome":
         return mutate_fixer_genome(genome, rate, origin_context=origin_context, _stamp=stamp)
-    if name == "mutate_eval_weights":
-        return mutate_eval_weights(genome, rate, origin_context=origin_context, _stamp=stamp)
     raise ValueError(f"unknown mutation operator {name!r}; known: {list(MUTATION_OPERATOR_NAMES)}")
 
 
@@ -282,60 +277,14 @@ def mutate_prompt(
     return stamp_origin(child, _mutation_origin("mutate_prompt", genome, origin_context))
 
 
-def mutate_eval_weights(
-    genome: PipelineGenome,
-    rate: float,
-    *,
-    origin_context: EvalContext | None = None,
-    _stamp: bool = True,
-) -> PipelineGenome:
-    if random.random() > rate:
-        child = PipelineGenome(
-            id=_new_id(),
-            name=genome.name + "-weight-mut",
-            topology=deepcopy(genome.topology),
-            eval_weights=deepcopy(genome.eval_weights),
-            harness_params=deepcopy(genome.harness_params),
-            fitness_score=None,
-            eval_scores={},
-            generation=genome.generation,
-            parent_a_id=genome.id,
-            parent_b_id=None,
-            created_at=_fresh_timestamp(),
-            updated_at=_fresh_timestamp(),
-        )
-        if not _stamp:
-            return child
-        return stamp_origin(child, _mutation_origin("mutate_eval_weights", genome, origin_context))
-    fields = EvalWeights.model_fields
-    new_vals: dict[str, float] = {}
-    for name in fields:
-        current = getattr(genome.eval_weights, name)
-        new_vals[name] = max(0.01, current + random.gauss(0, 0.03))
-    total = sum(new_vals.values())
-    for name in new_vals:
-        new_vals[name] = round(new_vals[name] / total, 4)
-    renorm_total = sum(new_vals.values())
-    if renorm_total != 1.0:
-        first_key = next(iter(new_vals))
-        new_vals[first_key] = round(new_vals[first_key] + (1.0 - renorm_total), 4)
-    child = PipelineGenome(
-        id=_new_id(),
-        name=genome.name + "-weight-mut",
-        topology=deepcopy(genome.topology),
-        eval_weights=EvalWeights(**new_vals),
-        harness_params=deepcopy(genome.harness_params),
-        fitness_score=None,
-        eval_scores={},
-        generation=genome.generation,
-        parent_a_id=genome.id,
-        parent_b_id=None,
-        created_at=_fresh_timestamp(),
-        updated_at=_fresh_timestamp(),
-    )
-    if not _stamp:
-        return child
-    return stamp_origin(child, _mutation_origin("mutate_eval_weights", genome, origin_context))
+# The eval_weights mutation operator is gone (#853): the evaluation objective
+# is population-owned (see objective.py) and a genome cannot mutate its own
+# ruler. A tombstone that only raises would be dead code with no callers, so
+# the operator is removed outright — tests/test_mutate.py pins its absence,
+# and reintroducing any weight-mutating operator must clear the per-identity
+# vulture ledger before it can land. (M4-A8 merge note: it is likewise absent
+# from MUTATION_OPERATOR_NAMES and PRODUCER_VERSIONS, so no attributable
+# identity remains for a removed operator.)
 
 
 def _mutate_one_fixer(fixer: FixerGenome, rate: float) -> FixerGenome:
@@ -449,10 +398,15 @@ def mutate_all(
     """
     Apply all mutation operators to the genome in sequence.
 
-    This function sequentially applies topology, node, prompt, fixer-genome, and
-    evaluation weight mutations to the input genome, each with the given mutation
-    rate. The resulting genome is a mutated version of the input, with a new name
+    This function sequentially applies topology, node, prompt, and fixer-genome
+    mutations to the input genome, each with the given mutation rate. The
+    resulting genome is a mutated version of the input, with a new name
     indicating that all mutation types were applied.
+
+    Evaluation weights are deliberately NOT mutated (#853): the scoring
+    objective is population-owned (``objective.EvaluationObjective``) and the
+    genome's ``eval_weights`` field is an inert legacy carry-over — a candidate
+    must not be able to mutate the ruler it is measured with.
 
     Args:
         genome: The input pipeline genome to mutate.
@@ -470,11 +424,14 @@ def mutate_all(
         composite ``mutate_all`` CandidateOrigin (the intermediate per-operator
         children are transient and carry no origin into the population).
     """
+    # Each per-operator child is transient (_stamp=False): the composite
+    # mutate_all origin stamped below is the candidate's single provenance
+    # record (M4-A8).
     current = mutate_topology(genome, rate, models, _stamp=False)
     current = mutate_node(current, rate, models, _stamp=False)
     current = mutate_prompt(current, rate, _stamp=False)
     current = mutate_fixer_genome(current, rate, _stamp=False)
-    current = mutate_eval_weights(current, rate, _stamp=False)
+    # No mutate_eval_weights: the objective is population-owned (#853).
     current.name = genome.name + "-all-mut"
     if not _stamp:
         return current

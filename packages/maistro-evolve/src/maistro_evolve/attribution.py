@@ -69,7 +69,6 @@ PRODUCER_VERSIONS: dict[str, str] = {
     "mutate_node": "1",
     "mutate_prompt": "1",
     "mutate_fixer_genome": "1",
-    "mutate_eval_weights": "1",
     "mutate_all": "1",
     "mutate_selected": "1",
     "crossover_and_mutate": "1",

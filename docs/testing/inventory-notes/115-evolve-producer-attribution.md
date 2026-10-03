@@ -37,3 +37,12 @@ The new tests cover, per acceptance criterion:
 - audit + scoping: statistics are bucketed per evaluation context
   (fidelity + benchmark set + scope, canonicalized key); `attribution_report`
   dumps the append-only log (optionally scoped to one context).
+
+Develop-merge update (b4b9e187e): `mutate_eval_weights` was removed upstream
+(#853, objective is population-owned), so the operator disappears from
+`MUTATION_OPERATOR_NAMES`, `PRODUCER_VERSIONS`, and the origin-stamping
+parametrization. One test was added pinning the merged crediting contract:
+#854 reconfirmation shares the attribution path — each fresh verified sample
+of a candidate appends another credit event for its producer (attempts
+accumulate; candidate history is never rewritten), while
+`reconfirm_per_cycle=0` still yields exactly one first-eval credit.
