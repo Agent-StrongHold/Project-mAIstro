@@ -17,6 +17,7 @@ The invariants under test are the ones the epic sells:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -483,6 +484,73 @@ class TestRender:
         assert rendered.results_listed >= 1
         assert rendered.tokens_spent > 0
 
+    async def test_empty_log_renders_neither_block(self, env: Any) -> None:
+        """A fresh Workspace has no log: no header may open an empty block."""
+        assert render_working([]) == ""
+        assert render_guide([]) == ""
+
+    async def test_guide_budget_drops_whole_lines(self, env: Any) -> None:
+        """A GUIDE budget drops whole index lines and never truncates one."""
+
+        def entry(entry_id: str, text: str) -> WorkspaceObservation:
+            return WorkspaceObservation(
+                workspace_id=WS,
+                entry_id=entry_id,
+                kind=ObservationKind.OBSERVATION,
+                cycle=1,
+                text=text,
+            )
+
+        long_entry = entry("obs-long", "L" * 400)
+        short_entry = entry("obs-short", "kept under budget")
+
+        unbounded = render_guide([long_entry, short_entry])
+        assert long_entry.entry_id in unbounded
+        assert "kept under budget" in unbounded
+
+        # Enough for the header plus the short line, never the long one.
+        bounded = render_guide([long_entry, short_entry], budget_tokens=40)
+        lines = bounded.splitlines()
+        assert lines[0].startswith("# WORKING MEMORY GUIDE")
+        assert any("kept under budget" in line for line in lines)
+        assert not any("LLLL" in line for line in lines)
+        assert "recall the id" in bounded
+
+        # A budget nothing fits cannot even open the block.
+        assert render_guide([long_entry, short_entry], budget_tokens=1) == ""
+
+
+class TestResultPayloadContract:
+    """``WorkingResult`` payload serialization: the shape the durable twin
+    promises, independent of the column store that also carries it."""
+
+    async def test_working_result_json_round_trip(self, env: Any) -> None:
+        result = WorkingResult(
+            workspace_id=WS,
+            result_id="res-abc",
+            source="deploy-tool",
+            content="full payload\n" * 5,
+            meta={"run": "r-1"},
+        )
+        raw = result.to_json()
+        payload = json.loads(raw)
+        # The digest is derived, never stored; ``kind`` is reserved shape.
+        assert "digest" not in payload
+        assert payload["kind"] is None
+        restored = WorkingResult.from_json(raw)
+        assert restored == result
+
+    async def test_from_json_strips_a_foreign_kind_key(self, env: Any) -> None:
+        result = WorkingResult(
+            workspace_id=WS,
+            result_id="res-abc",
+            source="tool",
+            content="c",
+        )
+        payload = json.loads(result.to_json())
+        payload["kind"] = "tool_result"  # a shape another writer might set
+        assert WorkingResult.from_json(json.dumps(payload)) == result
+
 
 # --------------------------------------------------------------------------
 # measurement
@@ -572,6 +640,16 @@ class TestWiring:
             manager = wire_in_memory_working_memory()
         assert isinstance(manager.store, InMemoryWorkspaceLogStore)
         assert any("#301" in record.message for record in caplog.records)
+
+    async def test_no_pool_falls_back_silently_when_declined(self, caplog: Any) -> None:
+        """``warn=False`` is the explicit opt-out: the caller who accepts the
+        lossy fallback gets no warning spam for a decision already made."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            manager = wire_in_memory_working_memory(warn=False)
+        assert isinstance(manager.store, InMemoryWorkspaceLogStore)
+        assert not any("#301" in record.message for record in caplog.records)
 
     async def test_container_wires_working_memory(self, tmp_path: Any) -> None:
         """The Container seam: SQLite pool in, durable manager out; no pool,
