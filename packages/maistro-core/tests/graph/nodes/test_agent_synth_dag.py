@@ -22,6 +22,7 @@ from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
 from maistro.graph.synth import SynthRequest, SynthResult
 from maistro.graph.types import GraphConfig
 from maistro.security.dag_shape.proportionality import ProportionalityVerdict
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _compat_sentinel():
@@ -37,7 +38,12 @@ def _compat_sentinel():
 
 
 def _ctx(**overrides: Any) -> NodeContext:
-    base = {"run_id": "r1", "dag_id": "d1", "node_id": "n1"}
+    base = {
+        "run_id": "r1",
+        "dag_id": "d1",
+        "node_id": "n1",
+        "user_id": DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    }
     base.update(overrides)
     return NodeContext(**base)
 
