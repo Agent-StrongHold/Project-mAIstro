@@ -549,6 +549,13 @@ class Container:
             self.history_conn = None
             self.holds_db_pool = False
 
+    @staticmethod
+    def _chat_actor_principal(auth: Any) -> str | None:
+        principal = getattr(auth, "user_id", None) or getattr(auth, "username", None) or None
+        if principal is not None:
+            principal = str(principal).strip() or None
+        return principal
+
     def _resolve_chat_auth(self, auth: Any) -> Any:
         """Evaluate an identity-free turn as the role-less anonymous principal.
 
@@ -765,10 +772,11 @@ class Container:
         """
         if self.chat_admitter is None:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
+        auth = self._resolve_chat_auth(auth)
         run: Run | None = None
         try:
             admitter = self.chat_admitter
-            principal = getattr(auth, "user_id", None) or None
+            principal = self._chat_actor_principal(auth)
             try:
                 run = await admitter.admit(
                     messages,
@@ -1161,6 +1169,7 @@ class Container:
         self, *, now: datetime | None, limit: int
     ) -> int:
         """Replay reconciliation for terminal Attempts a crash interrupted (#804)."""
+        from maistro.runs.model import RunStatus
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
         from maistro.runs.store import run_cursor_key
 
