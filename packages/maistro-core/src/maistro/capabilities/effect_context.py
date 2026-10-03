@@ -10,9 +10,9 @@ a provider merely because one happens to be registered elsewhere.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from functools import lru_cache
 from typing import Any
 
+from maistro.capabilities.approval_store import InMemoryApprovalStore, SqliteApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import (
     InMemoryBindingStore,
@@ -197,9 +197,11 @@ async def new_sqlite_effect_context(
     bindings = SqliteBindingStore(conn)
     invocation_store = SqliteInvocationStore(conn)
     event_store = SqliteEventStore(conn)
+    approval_store = SqliteApprovalStore(conn)
     await bindings.ensure_schema()
     await invocation_store.ensure_schema()
     await event_store.ensure_schema()
+    await approval_store.ensure_schema()
     # The usage recorder attaches here, not only in `new_effect_context`
     # (#718): a durable deployment takes one of these two branches instead,
     # and a context built without it would dispatch governed effects whose
@@ -212,6 +214,7 @@ async def new_sqlite_effect_context(
         ),
         event_store=event_store,
         policy_evaluator=policy_evaluator or binding_scope_policy,
+        approval_store=approval_store,
     )
     return CapabilityEffectContext(
         bindings=bindings,
@@ -245,12 +248,14 @@ async def new_postgres_effect_context(
     # provider usage nothing ever recorded.
     selected_usage_log = usage_log or get_default_usage_log()
     usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
+    approval_store = InMemoryApprovalStore()
     governed = GovernedInvocationExecutionService(
         invocation_service=InvocationExecutionService(
             store=invocation_store, on_completed=usage_recorder.record
         ),
         event_store=event_store,
         policy_evaluator=policy_evaluator or binding_scope_policy,
+        approval_store=approval_store,
     )
     return CapabilityEffectContext(
         bindings=bindings,
@@ -262,20 +267,56 @@ async def new_postgres_effect_context(
     )
 
 
-@lru_cache(maxsize=1)
+# Containers can nest or close out of order. One slot loses an outer live
+# Container when the inner one closes; retain publication order by identity.
+_published_contexts: list[CapabilityEffectContext] = []
+_ephemeral_context: CapabilityEffectContext | None = None
+
+
+def bind_container_effect_context(context: CapabilityEffectContext | None) -> None:
+    """Publish one Container-owned context, or explicitly reset all defaults."""
+    if context is None:
+        _clear_default_effect_context()
+        return
+    unbind_container_effect_context(context)
+    _published_contexts.append(context)
+
+
+def unbind_container_effect_context(context: CapabilityEffectContext) -> None:
+    """Withdraw this Container without discarding another live Container."""
+    for index, published in enumerate(_published_contexts):
+        if published is context:
+            del _published_contexts[index]
+            return
+
+
 def default_effect_context() -> CapabilityEffectContext:
-    """Process-wide canonical context used by registry-constructed effect nodes.
+    """The innermost live Container, otherwise one shared empty fallback.
 
-    The shared instance matters: a Node must resolve the same Binding authority
-    an application populated, and retries must consult the same Invocation
-    ledger. No default Binding is created here; absence remains a hard refusal.
-    Production Containers do not use this fallback: they inject their selected
-    backend-specific context explicitly.
+    No default Binding is created. An unconfigured effect still fails closed
+    instead of obtaining a provider just because one is registered elsewhere.
     """
+    if _published_contexts:
+        return _published_contexts[-1]
+    global _ephemeral_context
+    if _ephemeral_context is None:
+        # This named composition root deliberately selects the narrow M1
+        # policy; unnamed contexts stay read-only until supplied with one.
+        _ephemeral_context = new_effect_context(policy_evaluator=binding_scope_policy)
+    return _ephemeral_context
 
-    # This named composition root deliberately selects the narrow M1 policy;
-    # unnamed contexts stay read-only until their application supplies one.
-    return new_effect_context(policy_evaluator=binding_scope_policy)
+
+def _clear_default_effect_context() -> None:
+    """Reset publication as well as fallback cache for explicit caller resets."""
+    global _ephemeral_context
+    _published_contexts.clear()
+    _ephemeral_context = None
+
+
+# Preserve the established reset entry point used by fixtures and embedders.
+# Clearing only an lru_cache leaves a published SQLite context pointing at a
+# connection its owner already closed.
+default_effect_context.cache_clear = _clear_default_effect_context  # type: ignore[attr-defined]
 
 
 new_in_memory_effect_context = new_effect_context
@@ -283,10 +324,12 @@ new_in_memory_effect_context = new_effect_context
 
 __all__ = [
     "CapabilityEffectContext",
+    "bind_container_effect_context",
     "binding_scope_policy",
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
     "new_postgres_effect_context",
     "new_sqlite_effect_context",
+    "unbind_container_effect_context",
 ]
