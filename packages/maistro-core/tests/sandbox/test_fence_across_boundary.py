@@ -23,6 +23,7 @@ from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunStatus
 from maistro.runs.store import StaleExecutionFence
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.sandbox import SandboxConfig
 from maistro.sandbox.commit import fenced_commit
 from maistro.sandbox.fence import (
@@ -51,7 +52,11 @@ async def _leased_attempt(
         name="fenced",
         nodes=[Node(node_id="step", node_type="test.fence.step")],
     )
-    run = await store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await store.create_run(
+        graph,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        initial_status=RunStatus.QUEUED,
+    )
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(run.run_id, node_id="step")
     await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)

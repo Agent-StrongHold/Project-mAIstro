@@ -370,6 +370,7 @@ class MasterOrchestrator:
         durable_store: DurableRunStore | None = None,
         workspace_id: str | None = None,
         project_id: str | None = None,
+        actor_principal_id: str | None = None,
     ) -> None:
         if max_concurrent_per_wave <= 0:
             raise ValueError("max_concurrent_per_wave must be positive")
@@ -389,6 +390,7 @@ class MasterOrchestrator:
         self._waves: list[Wave] = []
         self._xp_earned: dict[str, int] = {}
         self._workspace_id = workspace_id or f"master-{uuid4().hex}"
+        self._actor_principal_id = actor_principal_id or f"orchestrator:{self._workspace_id}"
         self._project_id = project_id
         self._project_store: ProjectScopeStore | None = None
         if run_store is None:
@@ -634,6 +636,7 @@ class MasterOrchestrator:
         graph = self._build_graph(project_id=project_id)
         admitted = await self._run_store.create_run(
             graph,
+            actor_principal_id=self._actor_principal_id,
             initial_status=RunStatus.QUEUED,
             provenance={"admission_source": "master_orchestrator"},
         )
