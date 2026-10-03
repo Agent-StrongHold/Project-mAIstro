@@ -170,7 +170,9 @@ Carryover: the NEEDS-DEEP-REVIEW trusted-base half from 54830db28.
 - **Durable leg proven against a live database (first time, not skipped):**
   pgvector/pgvector:pg18 container on :5434, `alembic upgrade head` ran the
   full 000→048 chain cleanly (048 = backlog work-source tables; **superseded
-  by the second CI-repair addendum below: that revision is now `049`**), then the
+  twice by the CI-repair addenda below: that revision is now `051` after the
+  045cfdfbe sync re-parented it onto develop's 049/050 — see the fifth
+  addendum**), then the
   conformance suite with `MAISTRO_TEST_PG_DSN` set: **53 passed / 1 skipped**
   (vs 38/16 without a DSN). The remaining skip is the structural
   memory-reference reopen test ("the reference has no substrate to reopen").
@@ -369,3 +371,83 @@ changed in this round; the diff is the merge resolution plus a one-line ledger p
   promotion-surface, shell-execution, contract-markers, enumerations, lifecycle) OK.
 - **Test inventory delta:** none — no test added, removed, or retagged in this round;
   the `inventory-delta:` block above still describes the branch's +54 backlog nodes.
+
+## Fifth CI-repair addendum (develop-sync round at 487f71c41, 045cfdfbe)
+
+Scope: resolve the develop-sync merge preserved in the worktree (MERGE_HEAD
+`045cfdfbe` — develop's M7-A4 domain packs, retrodiction prefilter, dependency
+bumps, plus the principal-identity / route-permissions grant families), fix the
+alembic head collision that sync re-introduced, re-bank the exact vulture
+candidate ledger for the merged tree, and re-prove the named merge-queue failure
+(Supply chain / pip-audit). No backlog behavior changed.
+
+- **Develop sync conflict resolved in place:** the unmerged paths were exactly
+  `quality/ratchet-authorizations.json` and `quality/vulture-baseline.json`.
+  The authorizations file was resolved as a per-section semantic union — a
+  three-way key comparison showed **zero content conflicts** (every key both
+  sides touched is byte-identical), so the union preserves all 341 grants:
+  this branch's backlog/lane vulture+reachability grants plus develop's new
+  `principal-identity` (32) and `route-permissions` (40) sections and its
+  radon/promotion-surface additions. A post-resolution script asserted no
+  grant from either side was lost. The vulture ledger was resolved to this
+  branch's exact re-banked ledger and re-banked again for the merged tree
+  (below). Merge committed as `487f71c41`.
+- **Alembic collision fixed a second time (049 → 051):** develop landed its own
+  `049_canonical_run_eval_scores` and `050_design_creative_briefs`, colliding
+  with this branch's renumbered `049_backlog_work_source` (same parent 048).
+  Per the 046 chain convention the backlog migration re-attached after the new
+  trunk tip: `alembic/versions/051_backlog_work_source.py`,
+  `revision = "051"`, `down_revision = "050"`. Doc references updated
+  (`backlog/model.py`, `backlog/pg_store.py` ×2). `alembic heads` → single
+  `051 (head)`; `alembic history` shows the linear 048→049→050→051 tail.
+  Develop's own head-pin test
+  `tests/migrations/test_capability_invocation_effect_index_migration.py`
+  asserts `get_heads() == ["050"]`; its comment block narrates every prior
+  collision being reconciled the same way, so the pin moved to `051` with the
+  narration extended (2 passed).
+- **exact-debt-ledger re-banked post-merge:** `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*' --update`
+  delta is exactly +5/−16: banked the five identities develop's merged code
+  added (`identity/principal.py::audit_label|has_permission`, three
+  `bind_workspace_store` scope-store methods — all granted at base) and pruned
+  the sixteen rows the merged tree no longer flags (identity `__init__`
+  exports, `graph/definitions.py::binding_ids` ×2, archive/auth `__getattr__`,
+  scheduling `_validate`, design/evolve/rsi rows). Re-running enforce: 0
+  unclassified, 0 never-allowlist, no candidate-added/removed/unbanked — the
+  candidate leg is exact. The trusted leg still reports the documented,
+  unfixable-branch-side residual: 50 NEW identities, **all 50**
+  `maistro.backlog.*` (verified programmatically via the checker's own
+  `_trusted_state`/`_rule_deltas`), all unauthorized at merge-base 045cfdfbe
+  (#534 two-merge; grants must land on develop first).
+- **Named merge-queue failure (Supply chain / pip-audit) re-proven at the
+  merged head:** security.yml sequence run verbatim (`uv sync --locked
+  --all-extras`; freeze; `pip-audit --strict --format=json -r`; `scripts/
+  pip_audit_gate.py`) — audit exit 1 with 2 findings, both
+  `ecdsa==0.19.2 PYSEC-2026-1325`, gate exit 0 (ALLOWED triage),
+  direct-dependency usage OK (10 packages / 61 runtime deps / 4
+  dispositions). The ci.yml `security` leg (`--extra dev`) audits a strict
+  subset of the same locked environment, so it cannot surface a finding the
+  `--all-extras` superset did not. Note the merge itself moved uv.lock (449
+  lines: opentelemetry 1.45, fastmcp 4.0.10, copier, regex, …) — the gate is
+  green against the moved lock without any new triage entry.
+- **Merge fallout battery, all green at `487f71c41` + ledger commit:**
+  `ruff check .` / `ruff format --check .` clean; `check-suite-inventory.py`
+  14/14 (re-run after the migration-test edit); `check-shipped-surface-truth.py`
+  OK; `check-backlog-consistency.py` OK (167 items); `check-ratchet-provenance.py`
+  — the four unregistered reads from the earlier finding are gone; every leg OK
+  except the two reachability provenance gates it aggregates (below); migration
+  chain **13 passed** on a pristine pg18 (`pg-auto115-r2`, fresh `migr82r5`);
+  the whole `tests/migrations` directory **100 passed / 0 skipped** with
+  `MAISTRO_TEST_DATABASE_URL`; backlog suite with a migrated DSN
+  (`migr82pg`, `alembic upgrade head` to 051) **53 passed / 1 skipped** (the
+  structural memory-reference reopen skip); backlog-history suites + history
+  API **64 passed**; hive-conductor `test_backlog_routes.py` **36 passed**;
+  mypy clean across the six canonical packages (763 files).
+- **Reachability trusted legs:** `check-reachability-provenance.py` and
+  `check-reachability-dispositions-provenance.py` fail on exactly the
+  documented five `maistro.backlog.*` modules (178 → 183) — the unchanged
+  #534 two-merge residual awaiting the develop-side grants-only merge.
+- **Test inventory delta:** none — no test added, removed, or retagged; the
+  capability-invocation test edit changes two assertion values inside an
+  existing test (the documented head-pin reconciliation), leaving its suite
+  count at 2.

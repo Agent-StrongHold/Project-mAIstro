@@ -65,9 +65,12 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # eval-score evidence then re-parented onto that 048 as `049`, and
     # #774's `design_creative_briefs` — which had taken 049 on develop while
     # this branch's eval evidence took the same number on the same parent —
-    # re-parented onto that 049 as `050` after the collision. The single
-    # linear head is `050`.
-    walked = {item.revision for item in directory.walk_revisions("base", "050")}
+    # re-parented onto that 049 as `050` after the collision. #82's backlog
+    # work source, which had taken `049` on this branch before develop's eval
+    # evidence landed, re-parented onto that 050 as `051` through the
+    # 045cfdfbe sync — the same move one more time. The single linear head is
+    # `051`.
+    walked = {item.revision for item in directory.walk_revisions("base", "051")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -76,7 +79,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "047" in walked
     assert "048" in walked
     assert "049" in walked
-    assert directory.get_heads() == ["050"]
+    assert "050" in walked
+    assert directory.get_heads() == ["051"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
