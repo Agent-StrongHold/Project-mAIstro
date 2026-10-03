@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
 
 interface MemoryEntry { id: string; key: string; value: string; namespace: string; tags: string[]; }
-interface Namespace { name: string; count: number; }
+interface Namespace { name: string; entry_count: number; }
 
 const C = { bg: "#0a0914", card: "#11101e", border: "rgba(196,166,97,0.14)", gold: "#c4a661", ink: "#f3f0fb", muted: "#8b83a8", dim: "#5a5478", acc: "#a78bfa", ok: "#7cd4a0", danger: "#e87c7c" };
 
@@ -252,7 +252,7 @@ Current memories:\n${entries.slice(0, 15).map(e => `- [${e.namespace}] ${e.value
             <div style={{ fontSize: "var(--text-floor)", fontWeight: 600, color: C.gold, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Namespaces</div>
             <button onClick={() => setActiveNs(null)} style={{ display: "block", width: "100%", textAlign: "left", padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: "var(--text-floor)", marginBottom: 2, background: !activeNs ? "rgba(167,139,250,0.1)" : "transparent", color: !activeNs ? C.ink : C.muted }}>All ({entries.length})</button>
             {namespaces.map(ns => (
-              <button key={ns.name} onClick={() => setActiveNs(ns.name)} style={{ display: "block", width: "100%", textAlign: "left", padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: "var(--text-floor)", marginBottom: 2, background: activeNs === ns.name ? "rgba(167,139,250,0.1)" : "transparent", color: activeNs === ns.name ? C.ink : C.muted }}>{ns.name} ({ns.count})</button>
+              <button key={ns.name} onClick={() => setActiveNs(ns.name)} style={{ display: "block", width: "100%", textAlign: "left", padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: "var(--text-floor)", marginBottom: 2, background: activeNs === ns.name ? "rgba(167,139,250,0.1)" : "transparent", color: activeNs === ns.name ? C.ink : C.muted }}>{ns.name} ({ns.entry_count})</button>
             ))}
           </div>
           <div style={{ flex: 1 }}>

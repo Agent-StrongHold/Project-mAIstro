@@ -80,6 +80,44 @@ from maistro.tasks.status import can_transition
 logger = structlog.get_logger()
 
 
+def _build_unpublished_task(
+    request: TaskCreate,
+    *,
+    task_id: str,
+    created_at: datetime,
+    user_id: str = "",
+    service_principal_id: str | None = None,
+    delegation_id: str | None = None,
+    actor_kind: TaskActorKind = "user",
+    idempotency_key: str | None = None,
+) -> TaskResponse:
+    """Build the queued receipt before canonical Run admission publishes it."""
+    return TaskResponse(
+        task_id=task_id,
+        status=TaskStatus.QUEUED,
+        description=request.description,
+        workspace=request.workspace,
+        user_id=user_id or request.user_id or "",
+        service_principal_id=service_principal_id,
+        delegation_id=delegation_id,
+        actor_kind=actor_kind,
+        task_type=request.task_type,
+        agent_id=request.agent_id,
+        capability=request.capability,
+        program_context=request.program_context,
+        branch=request.branch,
+        constraints=list(request.constraints),
+        tier=request.tier or 2,
+        lane=request.lane,
+        priority_tier=request.priority_tier,
+        session_id=request.session_id,
+        idempotency_key=idempotency_key,
+        phase="queued",
+        progress=TaskProgress(),
+        created_at=created_at,
+    )
+
+
 def _record_values(task: TaskResponse) -> dict[str, Any]:
     """Snapshot the TaskRecord column values for one task, taken synchronously
     so the fire-and-forget write cannot race later in-memory mutation."""
@@ -697,30 +735,16 @@ class TaskQueue:
         which stays the single place a receipt is born and a Run minted.
         """
         task_id = TaskResponse.new_id()
-        owner = user_id or request.user_id or ""
-        task = TaskResponse(
+        created_at = datetime.now(UTC)
+        task = _build_unpublished_task(
+            request,
             task_id=task_id,
-            status=TaskStatus.QUEUED,
-            description=request.description,
-            workspace=request.workspace,
-            user_id=owner,
+            created_at=created_at,
+            user_id=user_id,
             service_principal_id=service_principal_id,
             delegation_id=delegation_id,
             actor_kind=actor_kind,
-            task_type=request.task_type,
-            agent_id=request.agent_id,
-            capability=request.capability,
-            program_context=request.program_context,
-            branch=request.branch,
-            constraints=list(request.constraints),
-            tier=request.tier or 2,
-            lane=request.lane,
-            priority_tier=request.priority_tier,
-            session_id=request.session_id,
             idempotency_key=idempotency_key,
-            phase="queued",
-            progress=TaskProgress(),
-            created_at=datetime.now(UTC),
         )
         if self._admitter is not None:
             # Deliberately not best-effort. TaskRecord persistence may fail

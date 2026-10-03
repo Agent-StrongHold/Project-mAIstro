@@ -27,7 +27,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .fitness import hard_gate_threshold
 from .harness import EvalHarness, evidence_method
+from .retrodiction import PrefilterDecision, RetrodictionPrefilter
 from .types import NodeGenome, PipelineGenome
 
 # MIPROv2-style grounding: describe what each benchmark measures so the
@@ -265,6 +267,36 @@ async def _select_target_node(
     return node
 
 
+def _triage_candidates(
+    candidates: list[str],
+    genome: PipelineGenome,
+    node: NodeGenome,
+    weakest: str,
+    prefilter: RetrodictionPrefilter | None,
+) -> tuple[dict[str, PrefilterDecision], list[str], list[str]]:
+    """Replay each proposed prompt against prior traces (M4-A5) and order the
+    verification spend: known-total-failure repeats are dropped outright (no
+    frontier call), expected repeats verify after novel work, novel
+    candidates keep proposal order."""
+    decisions: dict[str, PrefilterDecision] = {}
+    ordered: list[str] = []
+    deferred: list[str] = []
+    for text in candidates:
+        if prefilter is None:
+            ordered.append(text)
+            continue
+        probe = spawn_challenger(genome, node.id, text)
+        decision = prefilter.decide(probe, [weakest])
+        decisions[text] = decision
+        if prefilter.would_filter(decision):
+            continue
+        if prefilter.deprioritizes(decision):
+            deferred.append(text)
+            continue
+        ordered.append(text)
+    return decisions, ordered, deferred
+
+
 async def _evaluate_candidates(
     candidates: list[str],
     genome: PipelineGenome,
@@ -272,16 +304,52 @@ async def _evaluate_candidates(
     weakest: str,
     harness: EvalHarness,
     llm_call: Any,
+    prefilter: RetrodictionPrefilter | None = None,
 ) -> tuple[PipelineGenome | None, float | None, str | None]:
-    """Evaluate candidate prompts; return (best_challenger, best_score, best_prompt)."""
+    """Evaluate candidate prompts; return (best_challenger, best_score, best_prompt).
+
+    With a retrodiction prefilter (M4-A5), each proposed challenger is
+    replayed against prior traces BEFORE its verification eval: a proposal
+    that byte-identically repeats a payload whose recorded evidence already
+    fails the hard gate is skipped outright (no frontier spend), expected
+    repeats are verified after novel work, and every decision (with trace
+    ids and reason codes) is recorded on the challenger that carries it.
+    Real verification results are recorded back into the prefilter's ledger
+    so later cycles can retrodict against them.
+    """
     best_challenger: PipelineGenome | None = None
     best_score: float | None = None
     best_prompt: str | None = None
-    for text in candidates:
+    decisions, ordered, deferred = _triage_candidates(candidates, genome, node, weakest, prefilter)
+
+    async def _verify(text: str) -> None:
+        nonlocal best_challenger, best_score, best_prompt
         challenger = spawn_challenger(genome, node.id, text)
+        decision = decisions.get(text)
+        if decision is not None:
+            challenger.harness_params["retrodiction"] = decision.summary()
         results = await harness.evaluate_genome(challenger, [weakest], llm_call)
         if not results:
-            continue
+            return
+        stub = bool(results[0].metadata.get("stub"))
+        if (
+            prefilter is not None
+            and decision is not None
+            and decision.verdict != "allow"
+            and not stub
+        ):
+            # A stub result is SPEC-202 noise: it neither verifies a candidate
+            # nor counts as an observed outcome for false-negative accounting.
+            # (decisions is populated only when the prefilter exists, so the
+            # prefilter guard is behavior-preserving — it exists for the
+            # type checker, which cannot narrow through the dict lookup.)
+            prefilter.observe_outcome(
+                decision,
+                passed=results[0].score >= hard_gate_threshold(weakest),
+                genome_id=challenger.id,
+            )
+        if prefilter is not None and not stub:
+            prefilter.ledger.record(challenger, results)
         score = results[0].score
         challenger.eval_scores[weakest] = score
         challenger.eval_evidence[weakest] = evidence_method(results[0])
@@ -290,6 +358,9 @@ async def _evaluate_candidates(
             best_score = score
             best_challenger = challenger
             best_prompt = text
+
+    for text in [*ordered, *deferred]:
+        await _verify(text)
     return best_challenger, best_score, best_prompt
 
 
@@ -303,6 +374,7 @@ async def reflective_improve(
     accept_margin: float = 0.0,
     prompt_history: Sequence[tuple[str, float]] = (),
     node_attribution: bool = True,
+    prefilter: RetrodictionPrefilter | None = None,
 ) -> ReflectionOutcome | None:
     if llm_call is None or not genome.topology.nodes:
         return None
@@ -339,7 +411,7 @@ async def reflective_improve(
     )
 
     best_challenger, best_score, best_prompt = await _evaluate_candidates(
-        candidates, genome, node, weakest, harness, llm_call
+        candidates, genome, node, weakest, harness, llm_call, prefilter=prefilter
     )
     accepted = (
         best_score is not None
