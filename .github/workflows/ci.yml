@@ -505,6 +505,159 @@ jobs:
             age-keygen --help > /dev/null && echo "✓ age-keygen ready" || exit 1
           fi
       - run: uv sync --locked --extra dev --extra bootstrap
+      # The Builder conformance module targets the production
+      # ContainerBuilderSandbox, not a fake. Build its minimal supported image
+      # from the test directory so the repository (and any ambient secrets) is
+      # never sent as a Docker build context (#80).
+      - name: Build the real Builder sandbox image
+        run: >-
+          docker build --tag maistro-builders:latest
+          --file packages/maistro-bootstrap/tests/Dockerfile.sandbox
+          packages/maistro-bootstrap/tests
+      # ADR-093 Decision 2 (#80 reopened): ContainerBuilderSandbox refuses a
+      # rootful, user-namespace-unmapped daemon -- container uid 0 there IS
+      # host uid 0, which is the D-04 regression this conformance suite exists
+      # to prevent. Prove the fail-closed branch first, against the runner's
+      # own rootful system daemon, before the lane switches to a rootless one.
+      - name: Rootful daemon is refused (ADR-093 Decision 2 fail-closed proof)
+        run: >-
+          uv run pytest
+          packages/maistro-bootstrap/tests/test_container_sandbox.py::test_sandbox_refuses_a_rootful_unmapped_daemon
+          -v --tb=short
+      # The escape suite itself runs where the sandbox actually starts: a
+      # daemon whose containers get non-host uids (rootless or userns-remapped).
+      # The bwrap step above already relaxed
+      # kernel.apparmor_restrict_unprivileged_userns for its own kernel probes;
+      # rootlesskit needs the same relaxation, so keep this step after it.
+      #
+      # Provisioning (#80 round 19): the rootless toolchain comes from Docker's
+      # pinned static bundle. The previous apt route died with exit 100 on the
+      # runner (`docker-ce-rootless-extras` has no installation candidate —
+      # the Docker apt repo is not in the runner image's sources), so the
+      # escape suite never ran remotely. `dockerd` itself is preinstalled on
+      # the runner; uidmap and slirp4netns are in Ubuntu's own universe repo,
+      # not Docker's. Same recipe as the locally-proven lane.
+      #
+      # Round 20: remote run 36336385671 (at 8f714f20d) still failed this
+      # step — the daemon never reported ready in 120s while the step spun
+      # silently and dockerd.log was never shown. Three fixes, all
+      # GitHub-runner rootless-docker requirements: (1) /run/user/<uid> is
+      # NOT guaranteed to exist for the runner user on hosted images —
+      # rootlesskit fails without it, so create it up front; (2) the AppArmor
+      # unprivileged-userns relaxation done for bwrap earlier must not be
+      # load-bearing here by step-ordering accident — re-assert it, hard;
+      # (3) when readiness times out, print the daemon log tail and exit 1 so
+      # the next failure carries its own evidence instead of a bare grep
+      # mismatch.
+      - name: Start a rootless Docker daemon for the conformance lane
+        env:
+          DOCKER_ROOTLESS_EXTRAS_VERSION: "29.8.1"
+        run: |
+          set -euxo pipefail
+          uid="$(id -u)"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          # Hosted runners do not create a logind session for the runner
+          # user; XDG_RUNTIME_DIR must exist and belong to it before
+          # rootlesskit can build its runtime dir.
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$uid:$uid" "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
+          # Same kernel knob the bwrap provisioning relaxes; do not depend
+          # on that step having survived its own `|| true`s.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Rootless dockerd enforces --memory/--pids-limit only through a
+          # delegated cgroup v2 subtree, which systemd grants to a user
+          # manager. Hosted runners have no logind session for the runner
+          # user, so start one via linger; the enforcement probe in the
+          # image-load step below turns any residual non-delegation into a
+          # named failure instead of a red escape test two steps later.
+          sudo loginctl enable-linger "$uid" || true
+          timeout 180 sudo apt-get update || true
+          timeout 180 sudo apt-get install -y uidmap slirp4netns || true
+          # The installs above are best-effort because the runner image
+          # usually ships both already — but then the binaries must exist,
+          # or rootlesskit would die opaquely. Fail here, with the cause in
+          # the step name, not two minutes later in a readiness poll.
+          command -v newuidmap slirp4netns
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-${DOCKER_ROOTLESS_EXTRAS_VERSION}.tgz" \
+            | tar xz -C "$RUNNER_TEMP"
+          export PATH="$RUNNER_TEMP/docker-rootless-extras:$PATH"
+          lane_dir="$RUNNER_TEMP/docker-l80"
+          mkdir -p "$lane_dir"
+          # Direct dockerd-rootless.sh rather than setuptool+systemd: fewer
+          # moving parts, and the daemon only has to outlive this job. vfs is
+          # deterministic without fuse-overlayfs; the lane is small.
+          #
+          # Round 25 root cause for the eight red runs before this one: the
+          # runner's dockerd (28.x) default-initializes the iptables firewall
+          # inside the rootlesskit netns and dies with "failed to create NAT
+          # chain DOCKER: iptables ... Permission denied (you must be root)"
+          # — reproduced locally against dockerd 28.5.2 with this exact
+          # recipe. The locally-proven lanes of rounds 19-24 masked it only
+          # because moby 29.x stopped firewall-initializing in rootless mode.
+          # So the firewall/bridge/port-publish plane is disabled explicitly:
+          # the sandbox contract's network default-deny is per-container
+          # (--network=none; no bridge, NAT or publish path is ever
+          # exercised), and removing the plane removes the exact privilege
+          # the rootless netns cannot grant. The escape suite was re-run
+          # green (16 passed, 1 daemon-posture skip) against a daemon started
+          # with these exact flags under dockerd 28.5.2 before this landed.
+          # Rootless Docker cannot read/manage the runner's AppArmor profiles.
+          # Keep securityfs discovery out of this daemon's PRIVATE mountns,
+          # not out of the host. Production sandbox flags remain unchanged.
+          MAISTRO_TEST_ROOTLESS_LANE=1 uv run pytest \
+            packages/maistro-bootstrap/tests/test_container_lane.py -v --tb=short
+          nohup bash scripts/ci-rootless-mountns.sh dockerd-rootless.sh \
+            --iptables=false \
+            --ip6tables=false \
+            --userland-proxy=false \
+            --bridge=none \
+            --storage-driver=vfs \
+            --data-root="$lane_dir/data" \
+            --exec-root="$lane_dir/exec" \
+            --pidfile="$lane_dir/docker.pid" \
+            --host="unix://$lane_dir/docker.sock" \
+            > "$lane_dir/dockerd.log" 2>&1 &
+          daemon_ready=0
+          for _ in $(seq 1 60); do
+            if docker --host "unix://$lane_dir/docker.sock" info > /dev/null 2>&1; then
+              daemon_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$daemon_ready" -ne 1 ]; then
+            echo "::error::rootless dockerd did not become ready in 120s; dockerd.log tail follows"
+            tail -n 200 "$lane_dir/dockerd.log" || true
+            exit 1
+          fi
+          docker --host "unix://$lane_dir/docker.sock" info \
+            --format '{{json .SecurityOptions}}' | grep -q rootless
+          echo "DOCKER_HOST=unix://$lane_dir/docker.sock" >> "$GITHUB_ENV"
+      # Seed the rootless daemon from the image built above instead of
+      # rebuilding it: the lane's budget belongs to the conformance run. The
+      # first docker talks to the runner's rootful system daemon explicitly;
+      # the second inherits DOCKER_HOST from the previous step's GITHUB_ENV.
+      - name: Load the Builder sandbox image into the rootless daemon
+        run: |
+          docker --host unix:///var/run/docker.sock save maistro-builders:latest | docker load
+          # Round 25: prove the daemon can actually enforce the sandbox's
+          # resource budget before the suite runs on it. Rootless dockerd
+          # needs the delegated cgroup v2 subtree set up by the linger step;
+          # without it, --memory is silently dropped and the exhaustion test
+          # would fail opaquely. Reading memory.max back from inside a
+          # 64m-limited container is the enforcement proof; "max" means
+          # unbounded, i.e. not enforced.
+          enforced="$(docker run --rm --network=none --memory=64m --memory-swap=64m \
+            maistro-builders:latest cat /sys/fs/cgroup/memory.max)"
+          echo "memory.max under a 64m limit: $enforced"
+          if [ "$enforced" != "67108864" ]; then
+            echo "::error::rootless daemon cannot enforce container memory limits (memory.max='$enforced'); cgroup v2 delegation to the runner user is missing"
+            exit 1
+          fi
+      - name: Run the real Builder sandbox conformance lane
+        run: uv run pytest packages/maistro-bootstrap/tests/test_container_sandbox.py -v --tb=short
       - run: uv run pytest packages/maistro-bootstrap/tests -v --tb=short
       - run: uv run pytest packages/maistro-core/tests -v --tb=short
         env:
@@ -534,6 +687,38 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
+      # The proxy-SWE-bench evaluator executes untrusted candidate code in the
+      # real core Docker sandbox, whose default image is python:3.12-slim
+      # (maistro.config.settings.SandboxSettings.image). That evaluator
+      # deliberately fails closed when the sandbox cannot start -- the correct
+      # security posture (#80) -- but it means a missing image is red tests,
+      # not an untested suite: merge-queue runs 36508346054 and 36440932829
+      # both lost two swebench cases to exactly that. Every step after the
+      # conformance lane inherits DOCKER_HOST of the lane's rootless daemon
+      # (via GITHUB_ENV), and that daemon sits inside a rootlesskit netns
+      # where the host DNS stub (127.0.0.53) is unreachable, so its first-time
+      # registry pull dies with "lookup registry-1.docker.io ... connection
+      # refused". Systematic, not a flake -- so the image must be seeded into
+      # the active daemon rather than pulled by it: pull on the runner's
+      # rootful system daemon (already cached there by the Dockerfile.sandbox
+      # build; retries only cover a cold runner) and transfer it exactly the
+      # way the Builder image was loaded into this same daemon earlier. The
+      # second docker of the pipe inherits DOCKER_HOST, i.e. the lane daemon
+      # the pytest step below will use.
+      - name: Seed python:3.12-slim into the lane daemon (swebench sandbox image)
+        run: |
+          set -euo pipefail
+          pulled=0
+          for attempt in 1 2 3; do
+            if timeout 240 docker --host unix:///var/run/docker.sock pull python:3.12-slim; then
+              pulled=1
+              break
+            fi
+            echo "::warning::python:3.12-slim pull attempt $attempt failed"
+            sleep 10
+          done
+          [ "$pulled" -eq 1 ] || { echo "::error::could not pull python:3.12-slim for the swebench sandbox"; exit 1; }
+          docker --host unix:///var/run/docker.sock save python:3.12-slim | docker load
       - run: uv run pytest packages/maistro-rsi/tests packages/maistro-evolve/tests -v --tb=short
         env:
           REQUIRE_AUTH: "false"

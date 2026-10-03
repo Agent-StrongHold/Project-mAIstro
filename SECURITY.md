@@ -323,12 +323,52 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    weakest available rung; a host with nothing refuses everything. That refusal is the current
    state of the guarantee: it is fail-closed, not satisfied. See
    [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md). The
-   SPEC-190 conformance and escape suite now ships and runs in CI (#80):
-   `packages/maistro-core/tests/sandbox/test_escape_conformance.py` exercises the filesystem,
-   process, namespace, device, host-socket, credential and privilege surfaces against the real
-   kernel, along with memory, CPU and file-size exhaustion and post-timeout cleanup. It
-   establishes that the Tier-3 guardrail is real; it does not turn Tier 3 into a boundary
-   against hostile code, which is what Tiers 1 and 2 are still for.
+   SPEC-190 conformance and escape suites target real backends (#80):
+   `packages/maistro-bootstrap/tests/test_container_sandbox.py` exercises the production
+   `ContainerBuilderSandbox` Docker backend's filesystem, process, namespace, network, device,
+   host-socket, credential and privilege surfaces (including tracked-only seed inputs and blanked
+   Docker proxy variables (HTTP, HTTPS, FTP, and both case spellings), read-only rootfs with
+   the runtime's implicit `/dev/shm` and `/dev/mqueue` tmpfs pinned read-only at create time —
+   the suite enumerates the live `/proc/mounts` and proves only `/workspace` and `/tmp` accept
+   agent writes — plus resource budget, timeout kill (including detached
+   descendants) and cleanup behavior.
+   `packages/maistro-core/tests/sandbox/test_escape_conformance.py`
+   provides the corresponding live Bubblewrap Tier-3 lane. These are real-kernel/container
+   assertions, not selector or fake-backend tests. ADR-093 Decision 2's rootless requirement is
+   **enforced at launch, not assumed**: the Docker backend reads its own container's
+   `/proc/self/uid_map` and refuses whenever container uid 0 maps to host uid 0 (including a
+   partially remapped map), or whenever that mapping is unproven; the CI conformance lane is
+   configured for both branches — refusal against the runner's rootful system daemon, and the full escape
+   suite (including a live uid_map probe that container root does not map to host root) against a
+   rootless daemon the lane provisions itself. That provisioning deliberately keeps the
+   firewall/bridge/port-publish plane off (`--iptables=false --ip6tables=false
+   --userland-proxy=false --bridge=none`): the network default-deny in the contract is enforced
+   per-container (`--network=none`), and an older dockerd (28.x) otherwise fails daemon start
+   building NAT chains the rootless netns cannot authorize — the runner failure was reproduced
+   locally against dockerd 28.5.2, the fixed recipe re-ran the suite 16-passed against that
+   daemon, and the lane asserts cgroup memory-limit enforcement (via `loginctl enable-linger` +
+   a `memory.max` probe) before the suite executes. **Remote Builder escape execution is not
+   yet verified:** the last recorded CI run failed before the suite because rootless Docker
+   could not read the runner's AppArmor profiles. The repaired lane uses
+   `scripts/ci-rootless-mountns.sh` to mask securityfs only in the daemon's private mount
+   namespace, dropping host privilege before starting Docker; it neither changes host
+   AppArmor policy nor relaxes production sandbox flags. This lane does **not** prove
+   AppArmor confinement. Current executed evidence and remaining validation limits are in
+   [`docs/testing/inventory-notes/l80-securityfs-lane-repair.md`](docs/testing/inventory-notes/l80-securityfs-lane-repair.md).
+   The subsequent [seed-path repair and live validation](docs/testing/inventory-notes/l80-seed-path-replacement.md)
+   also prove refusal when an indexed file is replaced by a directory or has a
+   symlinked parent: neither authorizes copying unrelated host contents. Seed
+   preparation assumes a stable, trusted host worktree, not concurrent host-side
+   mutation. This additional local evidence does not verify hosted CI execution.
+   The Docker backend remains a shared-kernel
+   guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
+   backends for untrusted autonomous execution. Unattended RSI (`maistro_rsi run`/`evolve`) is
+   held to that posture from both sides: a stated Tier-3 backend refuses (ADR-093 decision 6
+   floors autonomous execution at a user-space kernel), and an *unstated* isolation refuses as
+   well — no default quietly executes candidate work on the host (ADR-093 decision 5's
+   no-bare-subprocess tier), while an operator-stated `--isolation local` remains the documented
+   ADR-082926-a6ab carve-out; `packages/maistro-rsi/tests/test_autonomous_isolation_tier.py`
+   pins the guard at the CLI dispatcher, the config boundary and the sandbox factory.
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced

@@ -157,6 +157,50 @@ the workdir and refuses anything that escapes it. Those calls run on the host �
 they are how work gets in and results come out — so an unchecked path would be
 a host write with no sandbox involved.
 
+## The Builder container backend (Docker)
+
+The builders/RSI loop's `ContainerBuilderSandbox` (see
+`packages/maistro-bootstrap/src/maistro_bootstrap/builders/container_sandbox.py`)
+is not a rung of the selector ladder — it is a separate, transitional seam for
+supervised Builder sessions (autonomous RSI runs refuse `--isolation container`
+under the mode floors above). ADR-093 Decision 2 still governs it: a retained
+container runtime MUST be rootless and socket-less, and since #80 reopened that
+is **enforced at launch, not assumed**. The sandbox reads its own container's
+`/proc/self/uid_map` before any root exec or seed and refuses to start when
+container uid 0 maps to host uid 0 — including a partially remapped map — or
+when the uid-0 mapping is unproven. A rootless daemon
+(`dockerd-rootless-setuptool.sh`) may map container root to its unprivileged
+daemon user, while a `--userns-remap` daemon maps it to a subuid; neither maps
+container root to host root. There is no flag or environment override, for the
+same reason there is none for `--network=none`.
+
+Both branches are conformance-tested against the production class
+(`packages/maistro-bootstrap/tests/test_container_sandbox.py`): the full escape
+suite — filesystem, process, namespace, device, host-socket, credential,
+privilege, network-deny, seed hygiene, resource budget, timeout kill, cleanup —
+runs on a qualifying daemon, including a live assertion that container uid 0
+does not map to host uid 0; on a rootful unmapped daemon the suite reduces to
+the fail-closed proof that the sandbox refuses to start and leaves no container
+behind. CI is configured for both: refusal against the runner's own rootful system
+daemon, then the escape suite against a rootless daemon started in the lane —
+provisioned with the firewall/bridge plane off (`--iptables=false
+--ip6tables=false --userland-proxy=false --bridge=none`, safe because the
+contract's network default-deny is per-container) and a cgroup
+memory-enforcement probe, so the suite cannot run against a daemon that
+cannot enforce the resource budget. Remote escape execution remains **unverified**:
+the last recorded run failed at container creation because rootless Docker could
+not read the runner's AppArmor profiles. The repair masks securityfs only in a
+private daemon mount namespace (`scripts/ci-rootless-mountns.sh`) and drops host
+privilege before Docker starts. Host AppArmor policy and production sandbox
+flags are unchanged; AppArmor confinement is not part of this lane's evidence.
+See [current execution evidence](../testing/inventory-notes/l80-securityfs-lane-repair.md)
+for local results and the outstanding remote validation requirement.
+The [seed-path regression record](../testing/inventory-notes/l80-seed-path-replacement.md)
+adds a subsequent live rootless run and independent rootful refusal. Indexed
+paths with symlinked parents or replacement directories are refused before
+archiving; tar never recurses from an indexed leaf. The host worktree must stay
+stable during seed preparation. Hosted CI execution remains unverified.
+
 ## Verification
 
 - Flag construction is asserted on **every** host, because the flags are the

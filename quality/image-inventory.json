@@ -99,6 +99,15 @@
       "published_by": null
     },
     {
+      "id": "maistro-bootstrap-sandbox-test",
+      "dockerfile": "packages/maistro-bootstrap/tests/Dockerfile.sandbox",
+      "disposition": "INTERNAL",
+      "rationale": "Minimal image built only by the CI Builder sandbox conformance lane and used exclusively for this repository's real ContainerBuilderSandbox tests; it is never published or distributed.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
+    },
+    {
       "id": "hive-conductor-e2e-playwright",
       "dockerfile": "packages/hive-conductor/tests/Dockerfile.playwright",
       "disposition": "INTERNAL",

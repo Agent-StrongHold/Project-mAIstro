@@ -63,6 +63,11 @@ from maistro_rsi.harvest_boundary import (
     WardenGuardedCallable,
     WardenHarvestBoundary,
 )
+from maistro_rsi.isolation_floor import (
+    AUTONOMOUS_FLOOR,
+    IsolationTier,
+    tier_satisfies,
+)
 from maistro_rsi.merge import greedy_merge
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
 from maistro_rsi.regression_judge import JudgeVerdict, judge_regression_verdict
@@ -686,6 +691,86 @@ def _resume_transcript(
     return _trim_for_resume(list(transcript), char_budget=char_budget)
 
 
+# The isolation the CLI vocabulary can name, mapped to the ADR-093 tier it
+# actually is. ``local`` is deliberately absent: it is not a sandbox tier at
+# all but an operator's explicit choice to run the loop on their own machine
+# (ADR-082926-a6ab), governed by the local loop's own boundary set —
+# credential boundary, warden, RLPHD review. An *unstated* isolation (``""``,
+# the config/CLI default) is not a choice at all: ADR-093 decision 5 has no
+# bare-subprocess tier, so the only default the ladder permits is failing
+# closed (#80 repair) — which is why "" is absent here too.
+_CLI_ISOLATION_TIERS: dict[str, IsolationTier] = {"container": "container"}
+
+#: The isolation names this loop can actually construct a BuilderSandbox for:
+#: the apply closure wires exactly these two. Everything else — a typo, a
+#: future backend with no wiring yet — refuses at the factory instead of
+#: silently falling into the host-worktree branch (#80 repair).
+_CONSTRUCTIBLE_ISOLATIONS: frozenset[str] = frozenset({"local", "container"})
+
+
+def autonomous_isolation_refusal(isolation: str | None) -> str | None:
+    """Why `isolation` cannot back an unattended RSI loop, or None if it can.
+
+    ADR-093 decision 6 sets execution-mode floors: an *autonomous* run — the
+    multi-cycle ``run``/``evolve`` loops, nobody at the keyboard — may not
+    execute candidate code behind a Tier-3 OS container; the floor is a
+    Tier-2 user-space kernel (gVisor or better). Decision 5 is explicit that
+    the hardened container is "a guardrail against accidents … not a security
+    boundary against hostile code", which is exactly what an unattended
+    self-improvement cycle runs. So the run refuses to start (``full-auto is
+    blocked``) rather than executing unsupervised adversarial code behind a
+    shared kernel.
+
+    Driven off the ADR-093 floors mirrored in ``maistro_rsi.isolation_floor``
+    rather than hardcoded here: the guard compares the tier the backend *is*
+    against the declared autonomous floor, so a future Tier-2+ backend wired
+    to the same flag passes without this check being edited, and the refusal
+    always names the floor it enforced. The mirror exists because importing
+    the canonical ``maistro.sandbox.policy`` would drag ~220 unprotected
+    maistro-core modules into the promotion closure (see that module's
+    docstring); ``test_autonomous_isolation_tier.py`` pins the mirror to the
+    canonical policy so neither drifts.
+
+    Three outcomes (#80 repair):
+
+    - ``local`` proceeds: ADR-082926-a6ab's carve-out for the operator who
+      explicitly chose host execution on their own machine.
+    - An *unstated* isolation (``""``/``None``) refuses: a default that
+      silently selected host execution would be exactly the bare-subprocess
+      tier ADR-093 decision 5 forbids, reached by nobody's decision. Fail
+      closed, name the choices, let the operator pick one.
+    - A stated backend is judged by the ladder, not the string: a name this
+      map cannot translate is neither cleared nor damned here (a future
+      ``vm`` wiring passes the moment its tier satisfies the floor);
+      ``container`` translates to Tier 3 and refuses. Whether the loop can
+      *construct* a backend for the name is the factory's question, checked
+      there.
+    """
+    if isolation == "local":
+        return None
+    if not isolation:
+        return (
+            "no isolation was chosen for an unattended loop: ADR-093 decision 5 "
+            "fails closed rather than defaulting candidate execution onto the "
+            "host. Pass --isolation local to accept host execution on your own "
+            "machine (ADR-082926-a6ab), or back the loop with a gVisor-or-better "
+            "sandbox backend."
+        )
+    tier = _CLI_ISOLATION_TIERS.get(isolation)
+    if tier is None:
+        return None
+    if tier_satisfies(tier, AUTONOMOUS_FLOOR):
+        return None
+    return (
+        f"isolation={isolation!r} selects a Tier-3 container backend, below the "
+        f"ADR-093 decision-6 autonomous floor ({AUTONOMOUS_FLOOR!r}: a user-space "
+        "kernel or better). An unattended multi-cycle RSI run refuses to start behind "
+        "a shared kernel — run the builders session interactively (its floor is "
+        "Tier 3 with a human confirming gated actions), or back the loop with a "
+        "gVisor-or-better sandbox backend."
+    )
+
+
 def make_builders_apply_patch(
     objective: str = _DEFAULT_OBJECTIVE,
     *,
@@ -694,7 +779,7 @@ def make_builders_apply_patch(
     reasoning_effort: str | None = None,
     system_prompt: str | None = None,
     max_agent_turns: int = 6,
-    isolation: str = "local",
+    isolation: str,
     image: str = "maistro-builders:latest",
     source_repository: str | None = None,
 ) -> ApplyPatchFn:
@@ -708,15 +793,42 @@ def make_builders_apply_patch(
     when that budget runs out mid-work the next turn RESUMES from the full
     transcript (see `_resume_transcript`) instead of restarting cold.
 
-    ``isolation`` selects the BuilderSandbox:
+    ``isolation`` selects the BuilderSandbox and must be stated explicitly —
+    there is no silent default (#80 repair):
       - ``"local"``    — `LocalWorktreeSandbox`, edits run on the host (fast).
+        The operator's explicit choice of their own machine (ADR-082926-a6ab).
       - ``"container"``— `ContainerBuilderSandbox`, the agent's edits and commands
         run inside an ephemeral Docker container (ADR-093), then sync back to the
-        worktree for the loop to commit. Requires ``image`` to be built.
+        worktree for the loop to commit. Requires ``image`` to be built. Refused
+        by the tier guard: Tier 3 is below this loop's autonomous floor
+        (ADR-093 decision 6).
+      - anything else — including an unstated isolation — raises
+        `ContainmentUnavailable` before anything is built: ADR-093 decision 5
+        has no bare-subprocess tier to fall back to.
 
     Model resolution is left to `ResponsesAPICallable` (``model=None`` →
     ``MAISTRO_BUILDERS_MODEL``/``DEFAULT_MODEL`` from the loaded ``.env``).
     """
+    # The factory is the one place a sandbox tier is chosen, so the floor is
+    # enforced here — at every caller, CLI or programmatic — rather than
+    # defaulting unattended candidate work onto the host (#80 repair). Two
+    # distinct questions, in order: does the stated backend's tier satisfy
+    # the autonomous floor (the guard; an unstated isolation refuses there),
+    # and can the loop *construct* a backend for this name at all (below).
+    # The apply closure's fallback branch is the host worktree, so a name the
+    # loop cannot wire — typo or a future backend with no construction yet —
+    # must refuse instead of silently degrading into it (ADR-093 decision 5:
+    # no bare-subprocess tier, reached by accident instead of decision).
+    tier_refusal = autonomous_isolation_refusal(isolation)
+    if tier_refusal is not None:
+        raise ContainmentUnavailable(tier_refusal)
+    if isolation not in _CONSTRUCTIBLE_ISOLATIONS:
+        raise ContainmentUnavailable(
+            f"isolation={isolation!r} does not name a sandbox backend this loop "
+            "can construct (" + ", ".join(sorted(_CONSTRUCTIBLE_ISOLATIONS)) + "). "
+            "ADR-093 decision 5 has no bare-subprocess tier to fall back to; "
+            "state one of those explicitly."
+        )
 
     async def _run_turns(
         session: object, cycle_model: str | None = None, *, workspace: str
@@ -866,8 +978,12 @@ class LocalRsiConfig:
     # Larger turn budget for a FEATURE (v2.0) slot — ambitious, multi-file work
     # (ImprovementKind.FEATURE unlocks it; bounded kinds use agent_turns_per_cycle).
     feature_agent_turns: int = 15
-    # "local" (host worktree) or "container" (ADR-093 Docker isolation).
-    isolation: str = "local"
+    # "local" (host worktree) is an explicit operator choice (ADR-082926-a6ab);
+    # "container" is ADR-093 Docker isolation, refused for this unattended loop
+    # (ADR-093 decision 6). Unstated ("") refuses to start: a silent host
+    # default would be the bare-subprocess tier ADR-093 decision 5 forbids
+    # (#80 repair).
+    isolation: str = ""
     sandbox_image: str = "maistro-builders:latest"
     baseline_branch: str = "rsi-baseline"
     test_timeout: int = 900
@@ -2574,6 +2690,23 @@ class LocalRsiLoop:
             return _NoHostExecSandbox(cycle_dir)
         return LocalSandbox(cycle_dir)
 
+    def _require_autonomous_isolation_tier(self) -> None:
+        """Refuse a Tier-3 backend for this unattended loop (ADR-093 decision 6).
+
+        The CLI refuses `--isolation container` before any work starts, and an
+        unstated isolation refuses the same way — a silent host default would
+        be the bare-subprocess tier decision 5 forbids (#80 repair); this
+        is the same rule at the library boundary, because `LocalRsiConfig` is
+        a public constructor and a programmatic caller can reach `run()` without
+        ever passing through ``maistro_rsi.__main__`. Interactive use of the
+        same `ContainerBuilderSandbox` (a human at the builders TUI, SPEC-200
+        gates live) keeps its Tier-3 floor — it is the autonomy that is
+        refused here, not the backend.
+        """
+        refusal = autonomous_isolation_refusal(self._config.isolation)
+        if refusal is not None:
+            raise ContainmentUnavailable(refusal)
+
     def _require_contained_signals(self) -> None:
         """Refuse a configuration whose signals would execute on the host (#305).
 
@@ -2646,6 +2779,7 @@ class LocalRsiLoop:
         return proc.returncode == 0
 
     def run(self) -> LocalRsiResult:
+        self._require_autonomous_isolation_tier()
         self._require_contained_signals()
         self._setup_baseline()
         self._load_saved_patches()  # resume from a prior run by reapplying saved patches

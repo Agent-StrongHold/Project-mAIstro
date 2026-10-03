@@ -8,10 +8,31 @@ elsewhere (e.g. a CI box without Docker).
 `ContainerBuilderSandbox` — not a fake or a selector backend — so the network
 and privilege regressions below run here, against the real container this
 class really creates.
+
+#80 (reopened) adds the daemon privilege boundary: ADR-093 Decision 2 requires a
+retained container runtime to be *rootless*. `ContainerBuilderSandbox` now
+enforces that at entry (see `_verify_userns_boundary`), so this suite splits by
+daemon posture — on a rootless or userns-remapped daemon the full escape suite
+runs AND the user-namespace probe proves container uids are not host uids; on a
+rootful un-remapped daemon the sandbox must REFUSE to start, which the refusal
+test below proves against the production class. Both branches are conformance
+evidence for the same Decision 2 requirement.
+
+The posture probe is TRI-STATE and runs at import (collection) time, so it is
+time-bounded and exception-safe: a daemon that errors or stalls past the probe
+timeout yields "unproven", which skips BOTH branches instead of erroring the
+whole pytest collection (the hosted-infra `test` gate failure: an unhandled
+`subprocess.TimeoutExpired` from `docker run` at import) or running the refusal
+test against a slow-but-boundary-providing daemon (which would fail with DID
+NOT RAISE). A skipped suite loses coverage for that run only; the dedicated
+conformance lane in ci.yml re-proves both postures on daemons it provisions
+itself.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,26 +43,86 @@ from maistro_bootstrap.builders.container_sandbox import (
     _AGENT_UID_GID,
     DEFAULT_IMAGE,
     ContainerBuilderSandbox,
+    _uid_map_maps_container_root_to_host_root,
 )
 
 
 def _docker_ready() -> bool:
+    """Docker answers and has the image.
+
+    Bounded and exception-safe because this executes at import during
+    *collection*: a stalled daemon must degrade to "not ready" (skip) rather
+    than hang the run (the image-inspect call previously had no timeout at
+    all) or fail the collection with an unhandled exception.
+    """
     if shutil.which("docker") is None:
         return False
-    r = subprocess.run(
-        ["docker", "image", "inspect", DEFAULT_IMAGE], capture_output=True, text=True
-    )
+    try:
+        r = subprocess.run(
+            ["docker", "image", "inspect", DEFAULT_IMAGE],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
     return r.returncode == 0
+
+
+def _daemon_uid_boundary() -> bool | None:
+    """Tri-state daemon posture for the ADR-093 Decision 2 conformance split.
+
+    Uses the same production classifier
+    (`_uid_map_maps_container_root_to_host_root`) the sandbox's launch gate
+    uses, applied to a throwaway probe container's `/proc/self/uid_map` —
+    exactly the evidence `__enter__` will demand of its own container, so the
+    qualification decision and the gate cannot drift.
+
+    True: boundary proven (container uids are not host uids) — the escape
+    suite runs. False: identity map proven (container uid 0 IS host uid 0) —
+    the refusal test runs. None: unproven (docker errored, or the probe timed
+    out on a stalled daemon). None skips BOTH branches: on unproven evidence
+    the refusal test would fire against a boundary-providing daemon that
+    merely answered slowly and fail with DID NOT RAISE — the flake-to-red
+    conversion this module used to ship.
+    """
+    try:
+        probe = subprocess.run(
+            ["docker", "run", "--rm", "--network=none", DEFAULT_IMAGE, "cat", "/proc/self/uid_map"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    return not _uid_map_maps_container_root_to_host_root(probe.stdout)
 
 
 pytestmark = pytest.mark.skipif(
     not _docker_ready(), reason=f"docker or {DEFAULT_IMAGE} image unavailable"
 )
 
+_DAEMON_UID_BOUNDARY = _daemon_uid_boundary() if _docker_ready() else None
 
+_needs_isolating_daemon = pytest.mark.skipif(
+    _DAEMON_UID_BOUNDARY is not True,
+    reason=(
+        "daemon is rootful without userns remapping (or its posture is "
+        "unproven): ContainerBuilderSandbox refuses to start on an identity "
+        "uid_map (ADR-093 Decision 2) — the refusal is proven by "
+        "test_sandbox_refuses_a_rootful_unmapped_daemon when the identity map "
+        "is positively observed"
+    ),
+)
+
+
+@_needs_isolating_daemon
 def test_agent_edits_are_isolated_from_host(tmp_path: Path) -> None:
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
     host_before = (tmp_path / "hello.py").read_text(encoding="utf-8")
 
     with ContainerBuilderSandbox(tmp_path) as sb:
@@ -60,9 +141,11 @@ def test_agent_edits_are_isolated_from_host(tmp_path: Path) -> None:
     assert (tmp_path / "pkg" / "new.py").exists()
 
 
+@_needs_isolating_daemon
 def test_path_escape_blocked(tmp_path: Path) -> None:
     (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "f.py"], cwd=tmp_path, check=True)
     from maistro_bootstrap.builders.errors import SandboxEscapeError
 
     with ContainerBuilderSandbox(tmp_path) as sb:
@@ -99,12 +182,14 @@ except OSError:
 """
 
 
+@_needs_isolating_daemon
 def test_agent_commands_cannot_reach_any_network_by_default(tmp_path: Path) -> None:
     """The #77 regression: an agent-issued command in the supported unattended
     Builder environment must not be able to make network connections under
     default policy — external, DNS, link-local/metadata, or private."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         # The policy is the container's create-time config, not a filter the
@@ -129,12 +214,14 @@ def test_agent_commands_cannot_reach_any_network_by_default(tmp_path: Path) -> N
     assert "DNS DENIED" in out
 
 
+@_needs_isolating_daemon
 def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
     """The other half of the regression: the agent used to be container root.
     Its commands must run as the sandbox's non-root uid and fail the things
     only root can do."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         rc, out = sb.run_argv_status(["id", "-u"])
@@ -146,15 +233,34 @@ def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
         assert rc != 0, "agent chowned the workspace — it retained CAP_CHOWN"
 
 
+@_needs_isolating_daemon
 def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     """#77/#78: the seed must not carry the repo's ambient credential surface
-    into the container — `.git` config/hooks, dotenv files, root-level key
-    material — while the working tree itself (and nested test fixtures) still
-    arrives, and `git diff` keeps working off the seeded refs."""
+    into the container — `.git`, dotenv files, root-level key material, and
+    unrelated untracked host files — while indexed worktree files arrive. Builder
+    git tools use a sanitized in-container baseline."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
+    # Keep dotenv files indexed: the seed must exclude credential-shaped files
+    # even when a caller accidentally committed them.
+    (tmp_path / ".env").write_text("GITHUB_TOKEN=ambient-secret\n", encoding="utf-8")
+    (tmp_path / ".env.production").write_text(
+        "DATABASE_PASSWORD=ambient-secret\n", encoding="utf-8"
+    )
+    (tmp_path / ".envrc").write_text("export TOKEN=ambient-secret\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "hello.py"],
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "add",
+            "hello.py",
+            ".env",
+            ".env.production",
+            ".envrc",
+        ],
         cwd=tmp_path,
         check=True,
     )
@@ -163,27 +269,76 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         cwd=tmp_path,
         check=True,
     )
-    (tmp_path / ".env").write_text("GITHUB_TOKEN=ambient-secret\n", encoding="utf-8")
+    # Real worktrees may use a linked shared index; exercise the same
+    # production seed path that previously failed on sharedindex.* files.
+    subprocess.run(["git", "update-index", "--split-index"], cwd=tmp_path, check=True)
+    (tmp_path / "unrelated-host-secret.txt").write_text(
+        "HOST_SECRET=ambient-secret\n", encoding="utf-8"
+    )
     (tmp_path / "server.pem").write_text("PRIVATE KEY material\n", encoding="utf-8")
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "production-token.txt").write_text("TOKEN=ambient-secret\n", encoding="utf-8")
+    fixtures = tmp_path / "tests" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "fixture.pem").write_text("test fixture not a credential\n", encoding="utf-8")
+    nested_git = fixtures / "nested-repo" / ".git"
+    nested_git.mkdir(parents=True)
+    (nested_git / "config").write_text("credential.helper=leak\n", encoding="utf-8")
+
+    # A Gitlink is an indexed directory entry, but its checked-out contents are
+    # not part of the parent repository's index. A blind tar of the gitlink
+    # recurses into this untracked host material (the reopened #80 regression).
+    child = tmp_path / "vendor" / "child"
+    child.mkdir(parents=True)
+    (child / "README").write_text("child checkout\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=child, check=True)
+    subprocess.run(["git", "add", "README"], cwd=child, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=child@test",
+            "-c",
+            "user.name=child",
+            "commit",
+            "-qm",
+            "child",
+        ],
+        cwd=child,
+        check=True,
+    )
+    (child / "unrelated-host-secret.txt").write_text(
+        "SUBMODULE_HOST_SECRET=leaked\n", encoding="utf-8"
+    )
+    child_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=child, text=True).strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"160000,{child_sha},vendor/child"],
+        cwd=tmp_path,
+        check=True,
+    )
     with (tmp_path / ".git" / "config").open("a") as cfg:
         cfg.write("\tcredential.helper = !leak-token\n")
     (tmp_path / ".git" / "hooks" / "pre-commit").write_text(
         "#!/bin/sh\ncurl evil\n", encoding="utf-8"
     )
-    fixtures = tmp_path / "tests" / "fixtures"
-    fixtures.mkdir(parents=True)
-    (fixtures / "fixture.pem").write_text("test fixture not a credential\n", encoding="utf-8")
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         # Ambient credential surface: absent inside.
         with pytest.raises(FileNotFoundError):
             sb.read_file(".env")
         with pytest.raises(FileNotFoundError):
+            sb.read_file(".env.production")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file(".envrc")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("unrelated-host-secret.txt")
+        with pytest.raises(FileNotFoundError):
             sb.read_file("server.pem")
-        rc, _ = sb.run_argv_status(["cat", "/workspace/.git/config"])
-        assert rc != 0, ".git/config (credential helpers, remote tokens) was seeded"
-        rc, _ = sb.run_argv_status(["cat", "/workspace/.git/hooks/pre-commit"])
-        assert rc != 0, ".git/hooks (host-authored scripts) was seeded"
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("secrets/production-token.txt")
+        rc, _ = sb.run_argv_status(["test", "!", "-e", "/workspace/.git"])
+        assert rc == 0, "host .git metadata was seeded"
 
         # Working tree: still seeded.
         assert "original" in sb.read_file("hello.py")
@@ -192,9 +347,387 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         # test failure beats a silent credential leak.
         with pytest.raises(FileNotFoundError):
             sb.read_file("tests/fixtures/fixture.pem")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("tests/fixtures/nested-repo/.git/config")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("vendor/child/unrelated-host-secret.txt")
 
-        # git diff still works off the seeded refs/objects (config stripped).
+        # Builder git tools use an in-container baseline, not host metadata.
         sb.edit_file("hello.py", "original", "EDITED")
         patch = sb.diff()
         assert "fatal" not in patch
         assert '+print("EDITED")' in patch
+
+
+@_needs_isolating_daemon
+@pytest.mark.parametrize("replacement", ["directory", "symlink-parent"])
+def test_seed_refuses_replaced_index_paths(tmp_path: Path, replacement: str) -> None:
+    """An index entry must not authorize unrelated contents at the same path."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _repo_with_file(repo)
+    tracked = repo / "nested" / "config.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("indexed content\n")
+    subprocess.run(["git", "add", "nested/config.txt"], cwd=repo, check=True)
+    # Preserve the indexed file while replacing its worktree path, as happens
+    # during an unstaged file/directory or directory/symlink type change.
+    tracked.parent.rename(repo / "original-nested")
+    if replacement == "directory":
+        tracked.mkdir(parents=True)
+        (tracked / "unrelated-host-secret.txt").write_text("l80-secret-sentinel")
+    else:
+        private = tmp_path / "host-private"
+        private.mkdir()
+        (private / "config.txt").write_text("l80-secret-sentinel")
+        tracked.parent.symlink_to(private, target_is_directory=True)
+
+    sandbox = ContainerBuilderSandbox(repo)
+    with pytest.raises(RuntimeError, match="unsafe seed path"), sandbox:
+        pytest.fail("unsafe host content was admitted into the sandbox")
+    assert sandbox._cid is None, "seed refusal must clean up the container"
+
+
+def _repo_with_file(tmp_path: Path) -> None:
+    (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
+
+
+@_needs_isolating_daemon
+def test_container_environment_is_credential_default_deny(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Populated host credentials and Docker proxy config must not cross."""
+    _repo_with_file(tmp_path)
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY"):
+        monkeypatch.setenv(name, "l80-host-secret-sentinel")
+    # Docker injects proxies from client config even without explicit --env.
+    # Set every supported proxy field, rather than passing vacuously on a host
+    # which has no credentials/proxies configured in the first place.
+    config = tmp_path / "docker-client"
+    config.mkdir()
+    (config / "config.json").write_text(
+        json.dumps(
+            {
+                "proxies": {
+                    "default": dict.fromkeys(
+                        ("httpProxy", "httpsProxy", "ftpProxy", "allProxy", "noProxy"),
+                        "http://l80-user:l80-proxy-secret@127.0.0.1:9",
+                    )
+                }
+            }
+        )
+    )
+    # Preserve the daemon selected by the caller even when it came from a
+    # Docker context: the fresh config must not switch this test to rootful.
+    endpoint = subprocess.run(
+        ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if "DOCKER_CONTEXT" in os.environ or "DOCKER_HOST" not in os.environ:
+        monkeypatch.setenv("DOCKER_HOST", endpoint)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    monkeypatch.setenv("DOCKER_CONFIG", str(config))
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        env = sb.run_command("env")
+
+    assert "l80-host-secret-sentinel" not in env
+    assert "l80-proxy-secret" not in env
+    values = dict(line.split("=", 1) for line in env.splitlines() if "=" in line)
+    assert values.get("HOME") == "/tmp"
+    assert not set(values).intersection(
+        {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY"}
+    )
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "FTP_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "ftp_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        assert values.get(name, "") == "", f"Docker proxy leaked through {name}"
+
+
+@_needs_isolating_daemon
+def test_rootfs_and_writable_scope_are_explicit(tmp_path: Path) -> None:
+    """The live Docker config, not permissions in the image, sets the scope.
+
+    `--read-only` alone is not the writable-scope contract: the runtime mounts
+    writable tmpfs at /dev/shm and an mqueue filesystem at /dev/mqueue outside
+    the image layers (the D-04 live regression this suite missed). Those are
+    pinned read-only at create time, and the mount table itself is enumerated
+    so a future implicit Docker default cannot reopen scratch silently.
+    """
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        inspect = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}",
+                sb._require_cid(),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert inspect == "true 2147483648 512"
+        rc, _ = sb.run_argv_status(["sh", "-c", "touch /usr/escape"])
+        assert rc != 0
+        assert sb.run_argv_status(["touch", "/workspace/allowed"])[0] == 0
+        assert sb.run_argv_status(["touch", "/tmp/scratch"])[0] == 0
+        # The runtime's implicit scratch surfaces must refuse an agent write:
+        # /dev/shm, /dev/mqueue (the pinned pair), /dev, and procfs.
+        for escape in (
+            "/dev/shm/l80-proof",
+            "/dev/mqueue/l80-proof",
+            "/dev/l80-proof",
+            "/proc/l80-proof",
+        ):
+            assert sb.run_argv_status(["touch", escape])[0] != 0, escape
+        # The whole write scope, not just the named paths: every rw mount
+        # outside {/tmp, /workspace} — including ones a future runtime adds
+        # implicitly — must refuse an agent probe write.
+        rc, mounts = sb.run_argv_status(["cat", "/proc/mounts"])
+        assert rc == 0
+        writable_elsewhere = []
+        for line in mounts.splitlines():
+            fields = line.split()
+            if len(fields) < 4 or "rw" not in fields[3].split(","):
+                continue
+            if fields[1] in ("/tmp", "/workspace"):
+                continue
+            probe = f"{fields[1].rstrip('/')}/l80-scope-probe"
+            if sb.run_argv_status(["touch", probe])[0] == 0:
+                writable_elsewhere.append(fields[1])
+        assert writable_elsewhere == [], (
+            f"agent-writable mounts outside /tmp and /workspace: {writable_elsewhere}"
+        )
+
+
+@_needs_isolating_daemon
+def test_process_namespace_devices_and_host_socket_are_not_reachable(tmp_path: Path) -> None:
+    """Exercise the Docker backend's namespace, device and socket surfaces."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, out = sb.run_argv_status(["sh", "-c", "ls /proc | grep -Ec '^[0-9]+$'"])
+        assert rc == 0 and int(out.strip()) < 20
+        assert (
+            sb.run_argv_status(
+                ["sh", "-c", "mkdir -p /workspace/m && mount -t tmpfs none /workspace/m"]
+            )[0]
+            != 0
+        )
+        assert sb.run_argv_status(["chroot", "/", "/bin/true"])[0] != 0
+        assert sb.run_argv_status(["test", "!", "-e", "/dev/kvm"])[0] == 0
+        assert sb.run_argv_status(["mknod", "/workspace/device", "b", "8", "0"])[0] != 0
+        assert sb.run_argv_status(["test", "!", "-e", "/var/run/docker.sock"])[0] == 0
+        assert sb.run_argv_status(["test", "!", "-e", "/run/docker.sock"])[0] == 0
+        rc, caps = sb.run_argv_status(["grep", "CapEff", "/proc/self/status"])
+        assert rc == 0 and caps.split()[-1].strip("0") == ""
+        rc, nnp = sb.run_argv_status(["grep", "NoNewPrivs", "/proc/self/status"])
+        assert rc == 0 and nnp.split()[-1] == "1"
+
+
+@_needs_isolating_daemon
+def test_timeout_kills_the_command_and_detached_descendants(
+    tmp_path: Path,
+) -> None:
+    """A timeout also kills a candidate that creates a detached session."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, _ = sb.run_argv_status(
+            [
+                "sh",
+                "-c",
+                "setsid sh -c 'echo $$ > /workspace/pid; exec sleep 30' & wait",
+            ],
+            timeout=1,
+        )
+        assert rc != 0
+        pid = sb.read_file("pid").strip()
+        assert sb.run_argv_status(["kill", "-0", pid])[0] != 0
+
+
+@_needs_isolating_daemon
+def test_context_cleanup_removes_the_container(tmp_path: Path) -> None:
+    """Exiting the sandbox force-removes its ephemeral container."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        cid = sb._require_cid()
+    assert subprocess.run(["docker", "inspect", cid], capture_output=True).returncode != 0
+
+
+@_needs_isolating_daemon
+def test_memory_exhaustion_is_contained_by_the_container_limit(tmp_path: Path) -> None:
+    """An allocation above the configured cgroup budget fails in the container."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, _ = sb.run_argv_status(
+            [
+                "python",
+                "-c",
+                "b=bytearray(3 * 1024 * 1024 * 1024); "
+                "[b.__setitem__(i, 1) for i in range(0, len(b), 4096)]",
+            ],
+            timeout=30,
+        )
+        assert rc != 0
+
+
+@_needs_isolating_daemon
+def test_container_user_namespace_maps_container_uids_off_the_host(
+    tmp_path: Path,
+) -> None:
+    """#80 reopened: the privilege attack surface ADR-093 Decision 2 governs.
+
+    The container's `/proc/self/uid_map` — read through the sandbox's own
+    exec path, as the agent uid, exactly as the production launch gate reads
+    it — must NOT map container uids onto host uids. On a rootless or
+    userns-remapped daemon every inside uid, container root included (the
+    one-shot bootstrap chown), lands on an unallocated host subuid; only a
+    rootful un-remapped daemon yields the identity map, and that daemon is
+    refused below.
+    """
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, uid_map = sb.run_argv_status(["cat", "/proc/self/uid_map"])
+        assert rc == 0, uid_map
+        assert not _uid_map_maps_container_root_to_host_root(uid_map), (
+            f"container uid 0 maps to host root (or the map is unproven): {uid_map!r}"
+        )
+        # And specifically: container uid 0 (the only uid any escape or the
+        # bootstrap chown could claim) is not host uid 0.
+        root_line = next(line for line in uid_map.splitlines() if line.split()[0] == "0")
+        assert root_line.split()[1] != "0", uid_map
+
+
+@_needs_isolating_daemon
+def test_nested_user_namespace_does_not_reopen_the_host(tmp_path: Path) -> None:
+    """Nesting a user namespace is how candidate code would try to regain the
+    capabilities `--cap-drop ALL` removed.
+
+    Whether the kernel lets an unprivileged uid nest user namespaces is a
+    property of the host (the CI lane relaxes the AppArmor knob that blocks
+    it elsewhere), so — like the Bubblewrap Tier-3 suite's twin of this test
+    — the assertion is about *reach*, not refusal: whether the nesting
+    succeeds or is refused, the image root stays unwritable, nothing appears
+    in it, and no mount the agent's uid was denied becomes mountable through
+    the nested namespace. The fallback runs the same payload unnested so the
+    assertions hold on both kinds of host.
+    """
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        payload = "touch /usr/l80-escape 2>&1"
+        out = sb.run_command(f"unshare -Ur sh -c '{payload}' || sh -c '{payload}'")
+        assert "Read-only file system" in out, out
+        rc, _ = sb.run_argv_status(["test", "!", "-e", "/usr/l80-escape"])
+        assert rc == 0, "a nested user namespace wrote into the image root"
+        # The nested namespace does not own the sandbox's mount namespace, so
+        # mounting through it stays refused however the nesting itself went.
+        rc, _ = sb.run_argv_status(
+            [
+                "sh",
+                "-c",
+                "mkdir -p /workspace/n && unshare -Ur mount -t tmpfs none /workspace/n",
+            ]
+        )
+        assert rc != 0, "a nested user namespace mounted a filesystem"
+        rc, mounts = sb.run_argv_status(["cat", "/proc/mounts"])
+        assert rc == 0
+        assert not [line for line in mounts.splitlines() if " /workspace/n " in line]
+
+
+@_needs_isolating_daemon
+def test_no_block_devices_reachable(tmp_path: Path) -> None:
+    """A visible disk is a filesystem escape that needs no kernel bug."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        text = sb.run_command("ls /dev/sd* /dev/nvme* /dev/vd* /dev/loop* 2>&1")
+        assert "No such file" in text
+        # No line that is not an ls error — i.e. no device actually matched.
+        assert not [line for line in text.splitlines() if not line.startswith("ls:")]
+
+
+@_needs_isolating_daemon
+def test_no_host_unix_sockets_visible(tmp_path: Path) -> None:
+    """A reachable `docker.sock` or agent socket is root on the host, with no
+    exploit required. Unix sockets are per network namespace, so a table
+    holding only its header is the namespace being real rather than the host
+    having no sockets."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        lines = sb.run_command("cat /proc/net/unix 2>/dev/null | wc -l")
+        assert int(lines.strip()) <= 1, f"host unix sockets visible: {lines}"
+
+
+@_needs_isolating_daemon
+def test_no_host_listening_ports_visible(tmp_path: Path) -> None:
+    """`/proc/net/tcp` is per network namespace, so an empty one (headers
+    only) is the `--network=none` namespace being real rather than the host
+    having no services — the live-network twin of the egress probe."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        lines = sb.run_command("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l")
+        assert int(lines.strip()) <= 2, f"host listening ports visible: {lines}"
+
+
+@pytest.mark.skipif(
+    _DAEMON_UID_BOUNDARY is not False,
+    reason=(
+        "this daemon provably provides the rootless/userns boundary (or its "
+        "posture is unproven), so there is no identity uid_map to be refused "
+        "here — the escape suite is this daemon's conformance branch"
+    ),
+)
+def test_sandbox_refuses_a_rootful_unmapped_daemon(tmp_path: Path) -> None:
+    """The other half of the Decision 2 conformance: a rootful daemon without
+    user-namespace remapping maps container uid 0 onto host uid 0 — every
+    container-root privilege (the bootstrap chown included) would be host
+    root. The production `ContainerBuilderSandbox` must refuse to start
+    there, name the ADR, and leave no container behind.
+
+    This is the branch this repository's own CI and dev hosts exercised before
+    #80 reopened: `docker info` reported `rootdir=/var/lib/docker` with no
+    rootless marker, and the sandbox ran anyway. Where the full escape suite
+    skips, this refusal is what still runs — the fail-closed behavior is the
+    guarantee, and it is proven against the real daemon that lacks the
+    boundary.
+    """
+    _repo_with_file(tmp_path)
+    # Only builder-sandbox containers (this image), and only "no new leftovers":
+    # on a shared daemon other work may legitimately remove or add unrelated
+    # containers between the two snapshots.
+    before = set(
+        subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"ancestor={DEFAULT_IMAGE}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    )
+
+    sandbox = ContainerBuilderSandbox(tmp_path)
+    with pytest.raises(RuntimeError, match="ADR-093 Decision 2"):
+        sandbox.__enter__()
+
+    # The refusal must clean up the container it created rather than leaving
+    # an admitted-but-refused sandbox lying around on the refused daemon.
+    after = set(
+        subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"ancestor={DEFAULT_IMAGE}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    )
+    assert not (after - before), "refused entry left a sandbox container behind"
