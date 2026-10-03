@@ -92,3 +92,25 @@ new/regressed findings, xenon counts 67 C-blocks (baseline 77, none in
 tools/git), the vulture ledger holds at 1378 identities, mypy --strict has
 no errors outside the pre-existing maistro_bootstrap import-resolution gaps,
 and both suite inventories match.
+
+## Independent verification round (head d21d5f28e839, post develop-sync)
+
+Re-executed fresh at the merge head that carries the develop sync
+(8c8fc8d6706a) — the validation rounds above predate it, so none of their
+claims were carried forward. Executed evidence: driver checks in job
+d747e1ab348c all green (`ruff check` / `ruff format --check` clean; 73
+passed in `tests/tools/git/test_server_security.py` +
+`maistro-rsi/tests/test_cli.py` + `test_selfbranch.py`; suite inventories
+match — maistro-core 12265, maistro-rsi 851); the two prior blocking
+Quality gates re-run locally with CI's exact argv —
+`check-radon-baseline.py` exit 0 (145 = 145, zero new/regressed/stale) and
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` exit 0 (1361 = 1361); `mypy packages/maistro-core/src`
+reports only the 5 pre-existing environment-only maistro_bootstrap
+import-not-found errors in files this branch does not touch. The
+agent-reachable clone path (`maistro_rsi.selfbranch` → hardened
+`git_clone`) is unchanged by the sync; raw `git clone` sites remain limited
+to the operator CLI trust domain (`rsi harvest --clone-url` / `--repo-dir`,
+`_builders_tui.py`, local-loop baseline of the operator-configured repo
+path). PR #1729 body and branch commits carry no closure keywords
+("Refs #404" only).
