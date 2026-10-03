@@ -59,41 +59,7 @@ from maistro.workspaces.store import InMemoryWorkspaceStore
 #: Each key is `store:backend:case`. Every entry is a case that does not hold
 #: today; its body asserts the unscoped behaviour, so closing it fails the
 #: test until the entry is deleted.
-KNOWN_GAPS = frozenset(
-    {
-        "workspaces:memory:read",  # #364 WorkspaceStore.get takes no principal
-        "workspaces:sqlite:read",  # #364 WorkspaceStore.get takes no principal
-        "workspaces:postgres:read",  # #364 WorkspaceStore.get takes no principal
-        "workspaces:memory:mutate",  # #364 WorkspaceStore.update takes no principal
-        "workspaces:sqlite:mutate",  # #364 WorkspaceStore.update takes no principal
-        "workspaces:postgres:mutate",  # #364 WorkspaceStore.update takes no principal
-        "projects:memory:read",  # #364 ProjectScopeStore.get takes no principal
-        "projects:sqlite:read",  # #364 ProjectScopeStore.get takes no principal
-        "projects:postgres:read",  # #364 ProjectScopeStore.get takes no principal
-        "projects:memory:mutate",  # #364 update_defaults takes no principal
-        "projects:sqlite:mutate",  # #364 update_defaults takes no principal
-        "projects:postgres:mutate",  # #364 update_defaults takes no principal
-        "runs:memory:read",  # #364 RunStore.get_run is a primary-key lookup
-        "runs:sqlite:read",  # #364 RunStore.get_run is a primary-key lookup
-        "runs:postgres:read",  # #364 RunStore.get_run is a primary-key lookup
-        "runs:memory:mutate",  # #364 RunStore.transition_run takes no principal
-        "runs:sqlite:mutate",  # #364 RunStore.transition_run takes no principal
-        "runs:postgres:mutate",  # #364 RunStore.transition_run takes no principal
-        "runs:memory:read_node_run",  # #364 get_node_run is a primary-key lookup
-        "runs:sqlite:read_node_run",  # #364 get_node_run is a primary-key lookup
-        "runs:postgres:read_node_run",  # #364 get_node_run is a primary-key lookup
-        "runs:memory:read_attempt",  # #364 get_attempt is a primary-key lookup
-        "runs:sqlite:read_attempt",  # #364 get_attempt is a primary-key lookup
-        "runs:postgres:read_attempt",  # #364 get_attempt is a primary-key lookup
-        "runs:model:actor_required",  # #364 Run.actor_principal_id defaults to None
-        "runs:memory:admission_requires_actor",  # #364 create_run admits no actor
-        "runs:sqlite:admission_requires_actor",  # #364 create_run admits no actor
-        "runs:postgres:admission_requires_actor",  # #364 create_run admits no actor
-        "runs:memory:admission_rejects_blank_actor",  # #364 a blank actor is stored
-        "runs:sqlite:admission_rejects_blank_actor",  # #364 a blank actor is stored
-        "runs:postgres:admission_rejects_blank_actor",  # #364 a blank actor is stored
-    }
-)
+KNOWN_GAPS: frozenset[str] = frozenset()
 
 #: Every backend a key may name, whether or not this run collects it: the
 #: stale-entry check below must see the PostgreSQL keys on a laptop too.
@@ -201,11 +167,14 @@ async def stores(
 ) -> AsyncIterator[Stores]:
     if request.param == "memory":
         projects = InMemoryProjectScopeStore()
+        workspaces = InMemoryWorkspaceStore(project_store=projects)
+        projects.bind_workspace_store(workspaces)
+        runs = InMemoryRunStore(project_store=projects, workspace_store=workspaces)
         yield Stores(
             backend="memory",
-            workspaces=InMemoryWorkspaceStore(project_store=projects),
+            workspaces=workspaces,
             projects=projects,
-            runs=InMemoryRunStore(project_store=projects),
+            runs=runs,
             audit=InMemoryAuditLog(),
         )
         return
@@ -217,7 +186,8 @@ async def stores(
             await sqlite_projects.ensure_schema()
             workspaces = SqliteWorkspaceStore(conn, project_store=sqlite_projects)
             await workspaces.ensure_schema()
-            runs = SqliteRunStore(conn, project_store=sqlite_projects)
+            sqlite_projects.bind_workspace_store(workspaces)
+            runs = SqliteRunStore(conn, project_store=sqlite_projects, workspace_store=workspaces)
             await runs.ensure_schema()
             audit = SqliteAuditLog(conn)
             await audit.ensure_schema()
@@ -234,11 +204,13 @@ async def stores(
         raise RuntimeError(msg)
 
     pg_projects = PgProjectScopeStore(pg_pool)
+    workspaces = PgWorkspaceStore(pg_pool, project_store=pg_projects)
+    pg_projects.bind_workspace_store(workspaces)
     yield Stores(
         backend="postgres",
-        workspaces=PgWorkspaceStore(pg_pool, project_store=pg_projects),
+        workspaces=workspaces,
         projects=pg_projects,
-        runs=PgRunStore(pg_pool, project_store=pg_projects),
+        runs=PgRunStore(pg_pool, project_store=pg_projects, workspace_store=workspaces),
         audit=PgAuditLog(pg_pool),
     )
 
@@ -273,16 +245,21 @@ class _WorkspaceAdapter:
         return scope.workspace_id
 
     async def read_as(self, stores: Stores, record_id: str, outsider: Scope) -> str | None:
-        workspace = await stores.workspaces.get(record_id)
+        workspace = await stores.workspaces.get(
+            record_id, principal_id=outsider.principal_id
+        )
         return None if workspace is None else str(workspace.workspace_id)
 
     async def mutate_as(self, stores: Stores, record_id: str, outsider: Scope) -> None:
         # `update` takes the whole record, so the outsider builds it from the
-        # same unscoped read the `read` case measures.
-        current = await stores.workspaces.get(record_id)
+        # same scoped read the `read` case measures.
+        current = await stores.workspaces.get(record_id, principal_id=outsider.principal_id)
         if current is None:
             return
-        await stores.workspaces.update(current.model_copy(update={"name": _TRESPASS}))
+        await stores.workspaces.update(
+            current.model_copy(update={"name": _TRESPASS}),
+            principal_id=outsider.principal_id,
+        )
 
     async def mutated(self, stores: Stores, record_id: str) -> bool:
         workspace = await stores.workspaces.get(record_id)
@@ -296,11 +273,13 @@ class _ProjectAdapter:
         return await stores.project_in(scope)
 
     async def read_as(self, stores: Stores, record_id: str, outsider: Scope) -> str | None:
-        project = await stores.projects.get(record_id)
+        project = await stores.projects.get(record_id, principal_id=outsider.principal_id)
         return None if project is None else str(project.project_id)
 
     async def mutate_as(self, stores: Stores, record_id: str, outsider: Scope) -> None:
-        await stores.projects.update_defaults(record_id, defaults={"model": _TRESPASS})
+        await stores.projects.update_defaults(
+            record_id, defaults={"model": _TRESPASS}, principal_id=outsider.principal_id
+        )
 
     async def mutated(self, stores: Stores, record_id: str) -> bool:
         project = await stores.projects.get(record_id)
@@ -315,11 +294,13 @@ class _RunAdapter:
         return run.run_id
 
     async def read_as(self, stores: Stores, record_id: str, outsider: Scope) -> str | None:
-        run = await stores.runs.get_run(record_id)
+        run = await stores.runs.get_run(record_id, principal_id=outsider.principal_id)
         return None if run is None else str(run.run_id)
 
     async def mutate_as(self, stores: Stores, record_id: str, outsider: Scope) -> None:
-        await stores.runs.transition_run(record_id, RunStatus.CANCELLED)
+        await stores.runs.transition_run(
+            record_id, RunStatus.CANCELLED, principal_id=outsider.principal_id
+        )
 
     async def mutated(self, stores: Stores, record_id: str) -> bool:
         run = await stores.runs.get_run(record_id)
@@ -437,15 +418,18 @@ async def test_an_outsider_cannot_read_a_runs_children_by_id(stores: Stores, cas
     node_run = await stores.runs.create_node_run(run.run_id, node_id="node-1")
     attempt = await stores.runs.create_attempt(node_run.node_run_id)
 
-    # Neither lookup has anywhere to put an outsider's identity: this is the
-    # read any caller holding the id can make.
+    outsider = await stores.enrol("child-outsider")
     if case == "read_node_run":
         record_id = node_run.node_run_id
-        refused, found = await _refused(stores.runs.get_node_run(record_id))
+        refused, found = await _refused(
+            stores.runs.get_node_run(record_id, principal_id=outsider.principal_id)
+        )
         seen = None if found is None else found.node_run_id
     else:
         record_id = attempt.attempt_id
-        refused, found = await _refused(stores.runs.get_attempt(record_id))
+        refused, found = await _refused(
+            stores.runs.get_attempt(record_id, principal_id=outsider.principal_id)
+        )
         seen = None if found is None else found.attempt_id
 
     _settle(

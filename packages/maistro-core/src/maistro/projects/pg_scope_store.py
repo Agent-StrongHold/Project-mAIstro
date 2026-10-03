@@ -40,6 +40,9 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 from maistro.runs.evidence_json import json_of, model_of
 
 #: Passes the leaf-first Project purge may take before it gives up. A Workspace
@@ -56,6 +59,20 @@ class PgProjectScopeStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+        self._workspace_store: WorkspaceStore | None = None  # type: ignore[name-defined]
+
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:  # type: ignore[name-defined]
+        self._workspace_store = workspace_store
+
+    async def _require_project_view(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import is_blank_principal, require_project_view
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_view(project, workspace_store, principal_id)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Any]:
@@ -191,11 +208,16 @@ class PgProjectScopeStore:
             )
         return project
 
-    async def get(self, project_id: str) -> Project | None:
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         payload = await self._payload(
             "SELECT payload FROM canonical_projects WHERE project_id = $1", project_id
         )
-        return model_of(Project, payload) if payload is not None else None
+        if payload is None:
+            return None
+        project = model_of(Project, payload)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project
 
     async def lineage(self, project_id: str) -> list[Project]:
         return await self._lineage(project_id)
@@ -283,8 +305,11 @@ class PgProjectScopeStore:
         project_id: str,
         *,
         defaults: dict[str, Any],
+        principal_id: str | None = None,
     ) -> Project:
         project = await self._require(project_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},

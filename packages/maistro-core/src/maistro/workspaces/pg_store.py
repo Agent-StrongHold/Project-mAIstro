@@ -135,17 +135,35 @@ class PgWorkspaceStore:
             await self._project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 
-    async def get(self, workspace_id: str) -> Workspace | None:
+    async def get(self, workspace_id: str, *, principal_id: str | None = None) -> Workspace | None:
         """Return the Workspace, or ``None`` when no record has that id."""
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+
         async with self._pool.acquire() as conn:
             payload = await conn.fetchval(
                 "SELECT payload FROM canonical_workspaces WHERE workspace_id = $1",
                 workspace_id,
             )
-        return model_of(Workspace, payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace_id, principal_id)
+        return model_of(Workspace, payload)
 
-    async def update(self, workspace: Workspace) -> Workspace:
+    async def update(
+        self, workspace: Workspace, *, principal_id: str | None = None
+    ) -> Workspace:
         """Persist a changed Workspace and stamp ``updated_at``."""
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         async with self._pool.acquire() as conn:
             status = await conn.execute(
