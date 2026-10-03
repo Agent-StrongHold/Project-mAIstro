@@ -37,7 +37,7 @@ from maistro.graph.nodes.base import (
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 pytestmark = [pytest.mark.contract("behavioral")]

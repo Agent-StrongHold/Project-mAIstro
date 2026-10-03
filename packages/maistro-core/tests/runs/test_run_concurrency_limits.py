@@ -31,7 +31,7 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import DuplicateOccurrence, RunStore
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @dataclass

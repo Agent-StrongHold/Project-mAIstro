@@ -27,7 +27,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
 from maistro.runs.store import DEFAULT_ARCHIVE_AFTER, InMemoryRunStore
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 25, tzinfo=UTC)
 COLD = NOW - timedelta(days=200)

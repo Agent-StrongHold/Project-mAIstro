@@ -28,7 +28,7 @@ from maistro.runs.archival import ARCHIVE_DISABLED, ArchivePolicy, RunArchiveSwe
 from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 25, tzinfo=UTC)
 COLD = NOW - timedelta(days=200)

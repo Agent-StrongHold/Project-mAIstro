@@ -24,7 +24,7 @@ from maistro.runs.recovery_events import (
     RecoveryDispositionEvent,
 )
 from maistro.runs.store import StaleExecutionFence
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 LEDGER = Path(__file__).resolve().parents[4] / "docs" / "testing" / "recovery-evidence-ledger.json"
 

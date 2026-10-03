@@ -18,7 +18,7 @@ from maistro.runs.store import InMemoryRunStore
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks.models import TaskCreate
 from maistro.tasks.queue import TaskQueue
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def test_without_a_connection_the_spine_is_in_memory() -> None:

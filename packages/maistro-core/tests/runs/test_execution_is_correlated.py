@@ -21,7 +21,7 @@ from maistro.observability.correlation import (
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import AttemptExecutionService, InMemoryRunStore, RunExecutionService
 from maistro.runtime import PythonExecutionRuntime
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 

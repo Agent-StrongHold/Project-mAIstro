@@ -20,7 +20,7 @@ from maistro.runs.admission import (
     direct_work_graph,
 )
 from maistro.runs.store import InMemoryRunStore
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 #: Any registered kind works; the tests are about admission, not this kind.
 KIND = "transform.format_markdown"

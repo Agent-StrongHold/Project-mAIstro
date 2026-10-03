@@ -13,7 +13,7 @@ from maistro.runs import (
     RunStatus,
 )
 from maistro.runtime import PythonExecutionRuntime
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _completed_execution() -> tuple[InMemoryRunStore, str, object]:

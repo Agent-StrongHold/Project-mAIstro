@@ -18,7 +18,7 @@ from maistro.runs.recovery_events import (
     CanonicalRecoveryEventSink,
     RecoveryDispositionEvent,
 )
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _RecordingCanonicalSink:

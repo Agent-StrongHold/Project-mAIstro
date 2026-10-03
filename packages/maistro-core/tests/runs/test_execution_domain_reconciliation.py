@@ -8,7 +8,7 @@ from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import AttemptExecutionService, AttemptStatus, InMemoryRunStore, RunStatus
 from maistro.runtime import PythonExecutionRuntime
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.mark.asyncio

@@ -31,7 +31,7 @@ from maistro.runs.retention_scope import (
     WorkspaceRetentionScope,
 )
 from maistro.runs.store import InMemoryRunStore, PurgeOutcome
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 SCOPE = WorkspaceRetentionScope(workspace_id="workspace-1")

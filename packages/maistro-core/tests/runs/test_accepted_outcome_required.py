@@ -9,7 +9,7 @@ from maistro.runs import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunS
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import NodeRun
 from maistro.runs.store import RunStore
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _running_node(spine: Any) -> tuple[RunStore, NodeRun]:

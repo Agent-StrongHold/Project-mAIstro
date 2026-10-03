@@ -27,7 +27,7 @@ from maistro.runs.sources import (
 )
 from maistro.runs.store import DuplicateOccurrence
 from maistro.runtime import PythonExecutionRuntime
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _project_store() -> tuple[InMemoryProjectScopeStore, str]:

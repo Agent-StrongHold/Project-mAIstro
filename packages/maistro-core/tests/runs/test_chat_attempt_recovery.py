@@ -38,7 +38,7 @@ from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.store import StaleExecutionFence
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]

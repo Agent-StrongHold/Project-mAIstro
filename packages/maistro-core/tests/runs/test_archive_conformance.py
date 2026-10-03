@@ -38,7 +38,7 @@ from maistro.graph import Graph, Node
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
 from maistro.runs.store import DuplicateOccurrence
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
 COLD = NOW - timedelta(days=200)

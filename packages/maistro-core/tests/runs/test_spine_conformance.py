@@ -63,7 +63,7 @@ from maistro.runs.store import (
     StaleExecutionFence,
 )
 from maistro.testing.postgres import postgres_dsn
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _graph(workspace: str, project_id: str, *, node_ids: tuple[str, ...] = ("node-1",)) -> Graph:

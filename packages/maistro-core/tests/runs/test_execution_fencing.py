@@ -17,7 +17,7 @@ from maistro.runs import (
     StaleExecutionFence,
 )
 from maistro.runtime import PythonExecutionRuntime
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _scope() -> tuple[InMemoryProjectScopeStore, Graph]:

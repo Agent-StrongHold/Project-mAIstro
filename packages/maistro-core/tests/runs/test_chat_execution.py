@@ -45,7 +45,7 @@ from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]

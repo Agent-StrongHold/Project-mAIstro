@@ -12,7 +12,7 @@ from maistro.runs import (
     RunIntegrityError,
     RunStatus,
 )
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _graph(*, workspace_id: str, project_id: str) -> Graph:

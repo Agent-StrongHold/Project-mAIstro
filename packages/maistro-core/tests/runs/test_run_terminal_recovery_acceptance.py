@@ -9,7 +9,7 @@ import pytest
 from maistro.graph import Edge, Graph, Node
 from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.mark.ac("ADR-082526-237d/AC-5")

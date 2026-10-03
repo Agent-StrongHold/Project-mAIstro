@@ -18,7 +18,7 @@ from maistro.graph.definitions import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 KIND = "transform.format_markdown"
 

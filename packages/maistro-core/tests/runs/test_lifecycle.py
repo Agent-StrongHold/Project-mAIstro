@@ -20,7 +20,7 @@ from maistro.runs import (
     transition_run,
 )
 from maistro.runs.lifecycle import settle_open_node_run, transition_path
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _graph() -> Graph:

@@ -31,7 +31,7 @@ from maistro.runs.chat_admission import (
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.runs.task_kinds import DELEGATE_NODE_KIND
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.fixture

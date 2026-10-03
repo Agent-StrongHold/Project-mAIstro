@@ -19,7 +19,7 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.engine import SkipReason
 from maistro.scheduling.model import OverlapPolicy, Schedule
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -43,7 +43,7 @@ from maistro.projects.pg_scope_store import PgProjectScopeStore
 from maistro.runs.pg_store import PgRunStore
 from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.model import Schedule
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.scheduling.pg_store import PgScheduleStore
 from maistro.testing.postgres import postgres_dsn
 

@@ -27,7 +27,7 @@ from maistro.runs.model import (
 )
 from maistro.runs.repair import Disposition, classify, repair, survey
 from maistro.runs.store import RunIntegrityError, validate_accepted_outcome_against_attempt
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 

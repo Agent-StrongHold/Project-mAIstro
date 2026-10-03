@@ -22,7 +22,7 @@ from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.model import RunStatus
 from maistro.runs.retention import UNBOUNDED_RETENTION, RetentionPolicy
 from maistro.runs.store import InMemoryRunStore
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.fixture

@@ -53,7 +53,7 @@ from maistro.runs.model import (
 )
 from maistro.runs.store import RunStore
 from maistro.runtime import PythonExecutionRuntime
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 WINDOWS = frozenset(

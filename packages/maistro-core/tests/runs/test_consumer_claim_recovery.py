@@ -18,7 +18,7 @@ from maistro.runs.consumption import SCHEDULE_EXECUTOR_ID
 from maistro.runs.model import Attempt, AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError, run_cursor_key
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 

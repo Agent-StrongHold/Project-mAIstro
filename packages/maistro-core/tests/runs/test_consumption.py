@@ -24,7 +24,7 @@ from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import run_cursor_key
 from maistro.scheduling.model import Schedule
-from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 
