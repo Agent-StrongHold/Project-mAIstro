@@ -520,13 +520,13 @@ def test_get_container_logs_socket_present_other_error(admin_client: Any, monkey
 # --------------------------------------------------------------------------- #
 
 
-def test_build_container(admin_client: Any) -> None:
+def test_build_container_is_explicitly_unsupported(admin_client: Any) -> None:
+    """No build is wired; the route refuses instead of faking one (#389)."""
     r = admin_client.post("/v1/containers/build", json={"name": "x", "dockerfile": "FROM x"})
-    assert r.status_code == 200
-    assert r.json() == {"status": "building", "log": "Building..."}
+    assert r.status_code == 501
+    assert "not implemented" in r.json()["detail"]
 
 
-def test_suggest_dockerfile(admin_client: Any) -> None:
+def test_suggest_dockerfile_is_explicitly_unsupported(admin_client: Any) -> None:
     r = admin_client.post("/v1/containers/suggest", json={"description": "a python app"})
-    assert r.status_code == 200
-    assert "FROM python" in r.json()["dockerfile"]
+    assert r.status_code == 501

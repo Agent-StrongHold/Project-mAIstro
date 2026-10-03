@@ -244,6 +244,12 @@ class MemoryEntry(BaseModel):
     created_at: datetime
     updated_at: datetime
     accessed_count: int = 0
+    #: Contradiction count — durable record of how many times this entry was
+    #: contradicted through `POST /v1/memory/entries/{id}/contradict` (#389).
+    #: The route used to acknowledge a contradiction it never stored; the
+    #: count lives on the entry itself so the acknowledgment and the state
+    #: change are the same write through the one durable store.
+    contradictions: int = 0
     ttl_seconds: int | None = None
 
 
