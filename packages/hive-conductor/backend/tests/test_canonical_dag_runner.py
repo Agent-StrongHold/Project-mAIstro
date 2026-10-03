@@ -510,6 +510,7 @@ def test_recovery_refuses_a_run_whose_nodes_lack_durable_legacy_metadata() -> No
         project_id="p-1",
         graph=GraphSnapshot.from_graph(plain),
         status=RunStatus.QUEUED,
+        actor_principal_id="test-user",
         provenance={"admission_source": "hive_legacy_dag", "execution_mode": "interactive"},
     )
 

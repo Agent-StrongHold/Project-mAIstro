@@ -38,11 +38,18 @@ async def _fresh_pool():
     loop that created it, so the second test to ask for one gets the first
     test's connections on a loop that has closed, and asyncpg answers
     "another operation is in progress".
+
+    `create_container` also binds the container's PostgreSQL effect context
+    globally; closing the pool without unbinding leaves autouse fixtures
+    holding a closed pool on the next test.
     """
+    from maistro.capabilities.effect_context import bind_container_effect_context
     from maistro.persistence import close_pool
 
+    bind_container_effect_context(None)
     await close_pool()
     yield
+    bind_container_effect_context(None)
     await close_pool()
 
 
