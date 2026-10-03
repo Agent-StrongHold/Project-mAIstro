@@ -27,6 +27,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
 from maistro.runs.store import DEFAULT_ARCHIVE_AFTER, InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 25, tzinfo=UTC)
 COLD = NOW - timedelta(days=200)
@@ -60,7 +61,7 @@ async def _run(spine: Any, *, status: RunStatus, finished: Any, retention: Any) 
     state the store can really hold.
     """
     store, _archive, graph, _project_id = spine
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     moved = run.model_copy(
         update={"status": status, "finished_at": finished, "retention_expires_at": retention}
     )
@@ -124,6 +125,7 @@ async def test_a_run_claiming_an_occurrence_is_never_archived(spine: Any) -> Non
     claiming = await store.create_run(
         graph,
         provenance={SCHEDULE_ID_KEY: "sched-1", SCHEDULED_FOR_KEY: NOW.isoformat()},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     store._runs[claiming.run_id] = claiming.model_copy(
         update={"status": RunStatus.COMPLETED, "finished_at": COLD, "retention_expires_at": None}
