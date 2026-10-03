@@ -94,12 +94,15 @@ class TestTheStoreStatesItsReachAndItsTable:
 class TestTheReachIsWhatTheStatementSays:
     @pytest.mark.ac("SPEC-083026-6cef/AC-1")
     def test_a_production_module_calls_the_governed_seam(self) -> None:
-        callers = sorted(
-            str(path.relative_to(_REPO))
-            for path in _REPO.glob("packages/*/src/**/*.py")
-            if _calls_governed_seam(path.read_text())
-        )
-        assert "packages/maistro-core/src/maistro/graph/nodes/agent_spawn_harness.py" in callers
+        target = "packages/maistro-core/src/maistro/graph/nodes/agent_spawn_harness.py"
+        callers = []
+        for path in _REPO.glob("packages/*/src/**/*.py"):
+            if _calls_governed_seam(path.read_text()):
+                caller = str(path.relative_to(_REPO))
+                callers.append(caller)
+                if caller == target:
+                    break
+        assert target in callers
 
     def test_the_caller_scan_finds_calls_not_definitions(self) -> None:
         assert _calls_governed_seam("    await self._effects.invocations.invoke(binding=binding)")
