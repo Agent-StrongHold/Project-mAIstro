@@ -47,6 +47,16 @@ or placeholder-only section.
 
 ### Security
 
+- **Default Invocation quota wiring refuses unknown token and monetary bounds
+  before provider dispatch (#1362).** Character-count guesses omit byte-level
+  tokenization, full message fields, tool and response schemas, and multimodal
+  billing; absent output limits cannot be priced as zero. The gateway currently
+  has no proven complete-request bound, so default token/micro-USD budgets now
+  fail closed even for priced models with `max_tokens`. Request-count policies,
+  unconfigured quota admission, and explicitly injected adapter-backed quota
+  contexts are unchanged. Numeric-budget usability remains incomplete until an
+  adapter enforces a full physical-request bound (#1196).
+
 - **Every base/tool image in every Dockerfile is pinned by immutable digest
   (#349).** Build stages no longer float on mutable tags and the uv installer
   is no longer copied from a `:latest` image, so a registry tag move cannot
