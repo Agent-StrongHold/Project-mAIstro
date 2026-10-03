@@ -12,10 +12,13 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    GetJsonSchemaHandler,
     SerializerFunctionWrapHandler,
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.graph.definitions import Graph
@@ -500,7 +503,6 @@ class Attempt(BaseModel):
         )
         return self
 
-    @model_serializer(mode="wrap")
     def _serialize_cancellation_cause(
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, Any]:
@@ -509,6 +511,28 @@ class Attempt(BaseModel):
         if self.cancellation_cause is None:
             payload.pop("cancellation_cause", None)
         return payload
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Describe the declared fields, not the wrapper's generic dict return."""
+        if handler.mode == "validation":
+            return handler(core_schema)
+        while (
+            core_schema["type"] == "function-before"
+            or core_schema["type"] == "function-after"
+            or core_schema["type"] == "function-wrap"
+        ):
+            core_schema = core_schema["schema"]
+        # Only this model's output wrapper is removed from a shallow schema copy.
+        # Nested field schemas and the runtime serializer remain untouched.
+        field_schema = core_schema.copy()
+        field_schema.pop("serialization", None)
+        return handler(field_schema)
+
+    # Register the actual serializer explicitly so static readers see its use.
+    _serialize_cancellation_cause = model_serializer(mode="wrap")(_serialize_cancellation_cause)
 
 
 class EvalMethod(StrEnum):

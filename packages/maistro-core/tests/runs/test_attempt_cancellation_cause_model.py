@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -275,3 +275,70 @@ async def test_existing_inmemory_creation_and_claim_defaults_stay_unknown() -> N
         assert attempt.cancellation_cause is None
         assert "cancellation_cause" not in attempt.model_dump(mode="json")
         assert await store.get_attempt(attempt.attempt_id) == attempt
+
+
+def _assert_attempt_schema(schema: dict[str, Any], definitions: dict[str, Any]) -> None:
+    # The existing payload fixture is independent of the serializer/model fields.
+    assert set(schema["properties"]) == set(_legacy_payload()) | {"cancellation_cause"}
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["node_run_id", "ordinal"]
+    assert schema["properties"]["ordinal"]["minimum"] == 1
+    assert schema["properties"]["created_at"]["format"] == "date-time"
+    assert schema["properties"]["finished_at"]["default"] is None
+    assert schema["properties"]["result"]["default"] is None
+    assert schema["properties"]["cancellation_cause"] == {
+        "anyOf": [{"$ref": "#/$defs/CancellationCause"}, {"type": "null"}],
+        "default": None,
+    }
+    assert definitions["CancellationCause"]["enum"] == ["requested", "recovered"]
+    assert definitions["AttemptStatus"]["enum"] == [
+        "created",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "yielded",
+    ]
+    assert definitions["ExecutionLease"]["required"] == [
+        "node_run_id",
+        "attempt_id",
+        "lease_epoch",
+        "holder",
+    ]
+
+
+@pytest.mark.parametrize("mode", ["validation", "serialization"])
+def test_attempt_json_schema_preserves_declared_fields(
+    mode: Literal["validation", "serialization"],
+) -> None:
+    schema = Attempt.model_json_schema(mode=mode)
+    _assert_attempt_schema(schema, schema["$defs"])
+
+
+def test_nested_attempt_serialization_schema_preserves_declared_fields() -> None:
+    from pydantic import TypeAdapter
+
+    class Envelope(BaseModel):
+        attempts: list[Attempt]
+
+    for schema in (
+        Envelope.model_json_schema(mode="serialization"),
+        TypeAdapter(list[Attempt]).json_schema(mode="serialization"),
+    ):
+        definitions = schema["$defs"]
+        _assert_attempt_schema(definitions["Attempt"], definitions)
+
+
+def test_schema_generation_does_not_change_runtime_serialization() -> None:
+    unknown = _attempt()
+    typed = _attempt(cancellation_cause="recovered")
+    original_unknown = unknown.model_dump_json()
+    original_typed = typed.model_dump_json()
+    for _ in range(2):
+        Attempt.model_json_schema(mode="serialization")
+        Attempt.model_json_schema(mode="validation")
+        assert unknown.model_dump_json() == original_unknown == _LEGACY_JSON
+        assert typed.model_dump_json() == original_typed
+        assert json.loads(original_typed)["cancellation_cause"] == "recovered"
