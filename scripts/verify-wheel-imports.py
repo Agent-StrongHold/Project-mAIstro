@@ -64,6 +64,7 @@ CORE_PUBLIC_SURFACE = [
     "maistro.container",
     "maistro.credentials",
     "maistro.events",
+    "maistro.goals",
     "maistro.graph",
     "maistro.http",
     "maistro.memory",
