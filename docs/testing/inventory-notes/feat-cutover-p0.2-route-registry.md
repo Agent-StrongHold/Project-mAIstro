@@ -1,6 +1,4 @@
 ---
-inventory-delta:
-  quality/: +3
 ---
 # feat-cutover-p0.2-route-registry
 
