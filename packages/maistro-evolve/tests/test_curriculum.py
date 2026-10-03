@@ -9,10 +9,14 @@ resulting practice signal can never enter external-evaluation scoring
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from maistro_evolve.curriculum import (
+    CURRICULUM_GENERATOR_VERSION,
     CURRICULUM_PROVENANCE,
+    CURRICULUM_VALIDATOR_VERSION,
     GATE_BASELINE_FAILS,
     GATE_REFERENCE_SOLVES,
     GATE_SOLVER_SOLVES,
@@ -24,6 +28,7 @@ from maistro_evolve.curriculum import (
     Curriculum,
     CurriculumItem,
     GateOutcome,
+    content_digest,
     generate_curriculum,
     validate_challenge,
 )
@@ -246,12 +251,14 @@ class TestCurriculumStore:
         await curriculum.submit(_draft(), solver=_solver, baseline_answer="")
         assert curriculum.items[0].provenance == CURRICULUM_PROVENANCE
 
+    @pytest.mark.asyncio
     @pytest.mark.ac("SPEC-282/AC-6")
-    def test_item_cannot_be_rebranded_as_external(self):
+    async def test_item_cannot_be_rebranded_as_external(self):
         """AC-6: constructing an item under another provenance label raises."""
         draft = _draft()
+        decision = await validate_challenge(draft, solver=_solver, baseline_answer="")
         with pytest.raises(ValueError, match="provenance"):
-            CurriculumItem(id="x", draft=draft, provenance="external-ifeval")
+            CurriculumItem(id="x", draft=draft, validation=decision, provenance="external-ifeval")
 
     @pytest.mark.ac("SPEC-282/AC-6")
     def test_reserved_namespace_constant_shape(self):
@@ -370,3 +377,169 @@ class TestAdmissionDecisionShape:
         """AC-1: asking a decision about a gate it never ran reports None."""
         decision = AdmissionDecision(draft=_draft(), outcomes=())
         assert decision.outcome(GATE_WELL_FORMED) is None
+
+
+class TestProvenanceRetention:
+    """AC-9 (#24/SPEC-282): an accepted challenge *retains* its provenance.
+
+    The M4-D exit evidence requires each accepted challenge to carry its
+    source/generator version, validator version, exact content identity,
+    validation evidence, and canonical run references — as retained facts on
+    the item, not derivable-only-from-callsites.
+    """
+
+    async def _admitted_item(self, **kwargs) -> CurriculumItem:
+        draft = kwargs.pop("draft", None) or _draft()
+        decision = await validate_challenge(draft, solver=_solver, baseline_answer="")
+        assert decision.admitted
+        return CurriculumItem(id="item-1", draft=draft, validation=decision, **kwargs)
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_item_retains_generator_and_validator_versions(self):
+        """AC-9: versions default to the pinned module contracts and persist."""
+        item = await self._admitted_item()
+        assert item.generator_version == CURRICULUM_GENERATOR_VERSION
+        assert item.validator_version == CURRICULUM_VALIDATOR_VERSION
+        # The validator version is derived from the protected gate set, so a
+        # changed gate set is a different validator version by construction.
+        derived = (
+            "curriculum-gates/1:" + hashlib.sha256("|".join(GATES).encode("utf-8")).hexdigest()[:12]
+        )
+        assert derived == CURRICULUM_VALIDATOR_VERSION
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_submit_retains_host_generator_version(self):
+        """AC-9: a host's own generator contract version is kept verbatim."""
+        curriculum = Curriculum()
+        decision = await curriculum.submit(
+            _draft(),
+            solver=_solver,
+            baseline_answer="",
+            generator_version="host-proposer/7",
+        )
+        assert decision.admitted
+        assert curriculum.items[0].generator_version == "host-proposer/7"
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_submit_refuses_empty_generator_version(self):
+        """AC-9: an unnamed generator is a refusal, not a silent default."""
+        curriculum = Curriculum()
+        with pytest.raises(ValueError, match="generator_version"):
+            await curriculum.submit(
+                _draft(), solver=_solver, baseline_answer="", generator_version="  "
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_item_retains_exact_content_identity(self):
+        """AC-9: content hash is the draft's exact digest, verified on construction."""
+        item = await self._admitted_item()
+        assert item.content_hash == content_digest(item.draft)
+        assert item.content_hash.startswith("sha256:")
+        # Distinct drafts carry distinct content identities.
+        other = await self._admitted_item(draft=_draft(statement="What is 3+3?"))
+        assert other.content_hash != item.content_hash
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_mismatched_content_hash_is_a_tamper_attempt(self):
+        """AC-9: a retained hash that does not match the draft raises."""
+        draft = _draft()
+        decision = await validate_challenge(draft, solver=_solver, baseline_answer="")
+        with pytest.raises(ValueError, match="content_hash"):
+            CurriculumItem(
+                id="x",
+                draft=draft,
+                validation=decision,
+                content_hash="sha256:" + "0" * 64,
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_item_retains_its_validation_evidence(self):
+        """AC-9: the admitted decision (per-gate outcomes) stays on the item."""
+        item = await self._admitted_item()
+        assert item.validation.admitted
+        assert [o.gate for o in item.validation.outcomes] == list(GATES)
+        assert all(o.executed and o.passed for o in item.validation.outcomes)
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_item_cannot_exist_without_admitted_evidence(self):
+        """AC-9: a rejected (or unchecked) draft mints no item, even directly."""
+        draft = _draft(verify=lambda a: True)  # degenerate → baseline gate refuses
+        decision = await validate_challenge(draft, solver=_solver, baseline_answer="")
+        assert not decision.admitted
+        with pytest.raises(ValueError, match="admitted"):
+            CurriculumItem(id="x", draft=draft, validation=decision)
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_item_evidence_must_belong_to_its_own_draft(self):
+        """AC-9: another draft's admission decision is not this item's evidence."""
+        item = await self._admitted_item()
+        other_draft = _draft(statement="What is 3+3?", expected="6")
+        with pytest.raises(ValueError, match="different draft"):
+            CurriculumItem(id="y", draft=other_draft, validation=item.validation)
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_submit_retains_canonical_run_references(self):
+        """AC-9: run references supplied by the executing host are kept verbatim."""
+        curriculum = Curriculum()
+        refs = ("run:abc123", "node_run:def456")
+        decision = await curriculum.submit(
+            _draft(), solver=_solver, baseline_answer="", run_refs=refs
+        )
+        assert decision.admitted
+        assert curriculum.items[0].run_refs == refs
+        # Defaults to the honest empty fact: in-process validation outside the
+        # graph runtime recorded no canonical references.
+        plain = Curriculum()
+        await plain.submit(_draft(), solver=_solver, baseline_answer="")
+        assert plain.items[0].run_refs == ()
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_run_references_must_name_something(self):
+        """AC-9: blank or non-string run references are refused."""
+        draft = _draft()
+        decision = await validate_challenge(draft, solver=_solver, baseline_answer="")
+        with pytest.raises(ValueError, match="run references"):
+            CurriculumItem(id="x", draft=draft, validation=decision, run_refs=("run:1", "   "))
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_provenance_record_carries_the_full_retention_set(self):
+        """AC-9: the JSON-safe record exposes every retention field + evidence."""
+        item = await self._admitted_item(run_refs=("run:abc",))
+        record = item.provenance_record()
+        assert record["id"] == item.id
+        assert record["provenance"] == CURRICULUM_PROVENANCE
+        assert record["generator_version"] == CURRICULUM_GENERATOR_VERSION
+        assert record["validator_version"] == CURRICULUM_VALIDATOR_VERSION
+        assert record["content_hash"] == item.content_hash
+        assert record["run_refs"] == ["run:abc"]
+        assert record["proposer"] == item.draft.proposer
+        assert [g["gate"] for g in record["validation"]] == list(GATES)
+        assert all(g["executed"] and g["passed"] for g in record["validation"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.ac("SPEC-282/AC-9")
+    async def test_generate_curriculum_passes_retention_through(self):
+        """AC-9: the batch helper stamps versions and run refs onto items."""
+        curriculum = await generate_curriculum(
+            lambda: _draft(),
+            solver=_solver,
+            baseline_answer="",
+            rounds=2,
+            generator_version="batch-proposer/2",
+            run_refs=("run:batch-1",),
+        )
+        assert curriculum.summary() == {"admitted": 2, "rejected": 0}
+        for item in curriculum.items:
+            assert item.generator_version == "batch-proposer/2"
+            assert item.run_refs == ("run:batch-1",)

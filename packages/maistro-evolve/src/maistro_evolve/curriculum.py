@@ -47,6 +47,8 @@ principles):
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -54,7 +56,9 @@ from inspect import isawaitable
 from typing import Any
 
 __all__ = [
+    "CURRICULUM_GENERATOR_VERSION",
     "CURRICULUM_PROVENANCE",
+    "CURRICULUM_VALIDATOR_VERSION",
     "GATE_BASELINE_FAILS",
     "GATE_REFERENCE_SOLVES",
     "GATE_SOLVER_SOLVES",
@@ -65,6 +69,7 @@ __all__ = [
     "Curriculum",
     "CurriculumItem",
     "GateOutcome",
+    "content_digest",
     "generate_curriculum",
     "validate_challenge",
 ]
@@ -81,10 +86,31 @@ CURRICULUM_PROVENANCE = "self-generated"
 #: — the namespace, not the adjective, is the contract.
 RESERVED_BENCHMARK_PREFIX = "self_generated/"
 
+#: Version of the generator-side contract this module ships: the shape of a
+#: ``ChallengeDraft`` and the proposer seam. Recorded verbatim on every
+#: admitted item so a retained challenge names exactly which draft contract
+#: produced it (SPEC-282: accepted challenges retain their source/generator
+#: version).
+CURRICULUM_GENERATOR_VERSION = "curriculum-generator/1"
+
 GATE_WELL_FORMED = "well_formed"
 GATE_REFERENCE_SOLVES = "reference_solves"
 GATE_SOLVER_SOLVES = "solver_solves"
 GATE_BASELINE_FAILS = "baseline_fails"
+
+#: Version of the protected validator: the gate set identity, derived from the
+#: exact gate names so any change to the gate set is a new validator version.
+#: Recorded verbatim on every admitted item next to its per-gate evidence, so
+#: retained validation evidence always names the validator that produced it
+#: (SPEC-282: accepted challenges retain their validator version).
+CURRICULUM_VALIDATOR_VERSION = (
+    "curriculum-gates/1:"
+    + hashlib.sha256(
+        "|".join(
+            (GATE_WELL_FORMED, GATE_REFERENCE_SOLVES, GATE_SOLVER_SOLVES, GATE_BASELINE_FAILS)
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+)
 
 #: The protected gate set, in execution order. Admission requires *all* of
 #: them; a caller cannot weaken the set without replacing this module.
@@ -311,13 +337,64 @@ def _verify_solved(draft: ChallengeDraft, answer: str) -> bool:
     return bool(draft.verify(answer))
 
 
+def content_digest(draft: ChallengeDraft) -> str:
+    """Exact content identity of a draft: a digest over its full content.
+
+    Covers the statement, acceptance criteria, reference solution and proposer
+    verbatim, plus the checker's *identity* (module-qualified name — a stable
+    label, not portable bytecode; the checker's behavior is evidenced by the
+    retained per-gate outcomes rather than re-derived from the digest). Two
+    drafts with the same digest carry the same challenge text byte-for-byte,
+    which is what "exact content identity" means for retention (SPEC-282
+    AC-9).
+    """
+    checker = getattr(draft.verify, "__qualname__", repr(draft.verify))
+    module = getattr(draft.verify, "__module__", "")
+    payload = json.dumps(
+        {
+            "statement": draft.statement,
+            "acceptance": draft.acceptance,
+            "reference_solution": draft.reference_solution,
+            "proposer": draft.proposer,
+            "checker": f"{module}.{checker}",
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class CurriculumItem:
-    """An admitted challenge. Provenance is pinned at construction."""
+    """An admitted challenge, retained with its full provenance evidence.
+
+    Every field exists because the M4-D exit evidence (#24/SPEC-282) requires
+    an accepted challenge to *retain* — not merely be followed by — its
+    provenance: which generator contract produced it, which validator version
+    admitted it, the exact content identity, the per-gate validation evidence,
+    and any canonical ``Goal -> Graph -> Run -> NodeRun -> Attempt`` references
+    under which its validation probes or practice attempts executed.
+
+    Construction *requires* the admitting :class:`AdmissionDecision` for
+    exactly this draft — there is no way to mint an item without validation
+    evidence, closing even the direct-constructor bypass.
+    """
 
     id: str
     draft: ChallengeDraft
+    validation: AdmissionDecision
+    generator_version: str = CURRICULUM_GENERATOR_VERSION
+    validator_version: str = CURRICULUM_VALIDATOR_VERSION
     provenance: str = CURRICULUM_PROVENANCE
+    #: Canonical run references (e.g. ``Run``/``NodeRun`` ids) supplied by the
+    #: host that executed the gates or practice attempts inside a canonical
+    #: evaluation run. Empty means the validation executed in-process, outside
+    #: the graph runtime — the shipped default, recorded as the fact it is.
+    run_refs: tuple[str, ...] = ()
+    #: Exact content identity; computed from the draft when omitted, and
+    #: verified against the draft when supplied (a mismatching hash is a
+    #: tamper attempt and raises).
+    content_hash: str = ""
 
     def __post_init__(self) -> None:
         if self.provenance != CURRICULUM_PROVENANCE:
@@ -327,6 +404,59 @@ class CurriculumItem:
                 "signal cannot be rebranded as external evaluation evidence "
                 "(SPEC-282 AC-6)"
             )
+        if self.validation.draft != self.draft:
+            raise ValueError(
+                "validation evidence belongs to a different draft — a "
+                "curriculum item retains the decision that admitted *it* "
+                "(SPEC-282 AC-9)"
+            )
+        if not self.validation.admitted:
+            raise ValueError(
+                "a curriculum item can only be constructed from an admitted "
+                "decision — rejected or partially-checked drafts have no "
+                "item to attach to (SPEC-282 AC-9)"
+            )
+        for ref in self.run_refs:
+            if not isinstance(ref, str) or not ref.strip():
+                raise ValueError(
+                    f"run references must be non-empty strings, got {ref!r} — "
+                    "a canonical run reference names the run that executed"
+                )
+        expected = content_digest(self.draft)
+        if not self.content_hash:
+            object.__setattr__(self, "content_hash", expected)
+        elif self.content_hash != expected:
+            raise ValueError(
+                f"content_hash {self.content_hash!r} does not match the draft "
+                f"({expected}) — retained content identity must be the "
+                "challenge's own (SPEC-282 AC-9)"
+            )
+
+    def provenance_record(self) -> dict[str, Any]:
+        """The full retention record for this item, as JSON-safe primitives.
+
+        This is the form downstream consumers (audit, the lane comparison, any
+        future durable store) read: identity, versions, content hash, run
+        references, and the per-gate validation evidence verbatim.
+        """
+        return {
+            "id": self.id,
+            "provenance": self.provenance,
+            "generator_version": self.generator_version,
+            "validator_version": self.validator_version,
+            "content_hash": self.content_hash,
+            "run_refs": list(self.run_refs),
+            "proposer": self.draft.proposer,
+            "validation": [
+                {
+                    "gate": o.gate,
+                    "executed": o.executed,
+                    "passed": o.passed,
+                    "detail": o.detail,
+                }
+                for o in self.validation.outcomes
+            ],
+        }
 
 
 class Curriculum:
@@ -359,16 +489,35 @@ class Curriculum:
         *,
         solver: SolverFn | None,
         baseline_answer: str | None,
+        generator_version: str | None = None,
+        run_refs: tuple[str, ...] = (),
     ) -> AdmissionDecision:
-        """Validate ``draft`` through the protected gates; store it iff admitted."""
+        """Validate ``draft`` through the protected gates; store it iff admitted.
+
+        ``generator_version`` names the calling host's generator contract when
+        it differs from the module default, and ``run_refs`` carries the
+        canonical run references of the run the gates executed under — both
+        are retained verbatim on the admitted item (SPEC-282 AC-9).
+        """
         if not isinstance(draft, ChallengeDraft):
             raise TypeError(
                 f"submit requires a ChallengeDraft, got {type(draft).__name__} — "
                 "an untyped blob has no gates to run"
             )
+        version = CURRICULUM_GENERATOR_VERSION if generator_version is None else generator_version
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError(f"generator_version must be a non-empty string, got {version!r}")
         decision = await validate_challenge(draft, solver=solver, baseline_answer=baseline_answer)
         if decision.admitted:
-            self._items.append(CurriculumItem(id=uuid.uuid4().hex, draft=draft))
+            self._items.append(
+                CurriculumItem(
+                    id=uuid.uuid4().hex,
+                    draft=draft,
+                    validation=decision,
+                    generator_version=version,
+                    run_refs=run_refs,
+                )
+            )
         else:
             self._rejected.append(decision)
         return decision
@@ -385,12 +534,16 @@ async def generate_curriculum(
     solver: SolverFn,
     baseline_answer: str,
     rounds: int = 1,
+    generator_version: str | None = None,
+    run_refs: tuple[str, ...] = (),
 ) -> Curriculum:
     """Propose up to ``rounds`` drafts and gate each through :meth:`Curriculum.submit`.
 
     A proposer crash is recorded in ``curriculum.proposer_errors`` and skips
     that round — it is not a challenge, so it produces no decision and can
-    never admit anything.
+    never admit anything. ``generator_version`` and ``run_refs`` pass through
+    to every :meth:`Curriculum.submit` call and are retained on admitted items
+    (SPEC-282 AC-9).
     """
     if propose is None:
         raise ValueError(
@@ -420,5 +573,11 @@ async def generate_curriculum(
                 f"proposer returned {type(draft).__name__}, not a ChallengeDraft"
             )
             continue
-        await curriculum.submit(draft, solver=solver, baseline_answer=baseline_answer)
+        await curriculum.submit(
+            draft,
+            solver=solver,
+            baseline_answer=baseline_answer,
+            generator_version=generator_version,
+            run_refs=run_refs,
+        )
     return curriculum
