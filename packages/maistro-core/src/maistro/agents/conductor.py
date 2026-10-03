@@ -293,7 +293,8 @@ def _is_retryable(exc: Exception) -> bool:
     """Check if an exception represents a transient failure worth retrying."""
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return True
-    if isinstance(exc, httpx.ConnectError):
+    # A connect timeout at the gateway is as transient as a refused one.
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _RETRYABLE_STATUS_CODES
@@ -438,7 +439,10 @@ async def _run_with_retry(
         except Exception as exc:
             if _is_retryable(exc):
                 last_exc = exc
-                shared_failure = isinstance(exc, httpx.ConnectError)
+                # Both connect failures are shared-endpoint evidence: the
+                # TCP/TLS handshake to the gateway never completed, so no
+                # routed upstream could be at fault.
+                shared_failure = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
                 await logger.awarning(
                     "llm_transient_error",
                     attempt=attempt + 1,

@@ -675,6 +675,16 @@
     {
       "source": "packages/hive-conductor/backend/routes/design.py",
       "method": "POST",
+      "route": "/projects/{project_id}/consistency",
+      "handler": "evaluate_project_consistency",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "cross-artifact consistency inspection (#779): runs the deterministic evaluator over the submitted frozen snapshot and returns the result contract; it proposes refinement, it never rewrites project state",
+      "truth_contract": "pure evaluation of the request body — no store access, no durable effect, no model call; the same evaluator the design.consistency_eval graph node runs inside a Run"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/design.py",
+      "method": "POST",
       "route": "/projects/{project_id}/render",
       "handler": "create_render_job",
       "disposition": "disabled",

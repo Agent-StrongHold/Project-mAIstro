@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.effect_context import new_postgres_effect_context
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationExecutionService,
@@ -409,3 +410,59 @@ async def test_pg_service_deduplicates_logical_effect_across_node_run_visits() -
     assert replay.invocation_id == first.invocation_id
     assert replay.node_run_id == "node-run-1"
     assert replay.attempt_id == "attempt-1"
+
+
+async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired() -> None:
+    """The container's durable-backend precedence picks the canonical ledger.
+
+    With a PostgreSQL pool wired, capability Invocations must live in
+    ``PgInvocationStore`` (schema ensured), not the SQLite or in-memory
+    fallback -- the ledger the replay contract reconciles against.
+    """
+
+    class _Transaction:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    executed: list[str] = []
+
+    class _SchemaConnection:
+        async def execute(self, query: str, *args: Any) -> str:
+            # The live path ensures all three effect schemas, not only the
+            # ledger's, so asserting that every statement names
+            # `capability_invocations` was a property of the helper this test
+            # used to call rather than of the composition it stands for.
+            executed.append(query)
+            return "OK"
+
+        def transaction(self) -> _Transaction:
+            return _Transaction()
+
+    class _Acquire:
+        def __init__(self) -> None:
+            self._conn = _SchemaConnection()
+
+        async def __aenter__(self) -> _SchemaConnection:
+            return self._conn
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class _SchemaPool(_FakePgInvocationPool):
+        def acquire(self) -> _Acquire:
+            return _Acquire()
+
+    # Through the live composition path, not a helper only this test called.
+    # `_wire_capability_invocations` selected the ledger on its own until the
+    # effect context took that job over; keeping the test pointed at it left
+    # a production function whose only caller was this line (vulture, #1195).
+    context = await new_postgres_effect_context(_SchemaPool())
+
+    assert isinstance(context.invocation_store, PgInvocationStore)
+    assert any("capability_invocations" in q for q in executed), (
+        "the ledger's schema was never ensured on the wired pool"
+    )
+    assert await context.invocation_store.get("inv-absent") is None

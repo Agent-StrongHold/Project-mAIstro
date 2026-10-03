@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from models.schemas import Mission, MissionStep
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
+from services.request_principal import require_actor_id
 from services.workspace_mode import is_workspace_member
 
 from routes.audit import log_audit
@@ -134,11 +135,7 @@ class CreateMissionBody(BaseModel):
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id") or user.get("username")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 @router.post("", response_model=Mission)

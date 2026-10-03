@@ -1,0 +1,36 @@
+# p0-1-principal-migration-wave2a
+
+Workspace cutover Wave 2 Lane A — burn P0.1 `state_user_access` debt on
+`develop`.
+
+## What changed
+
+- Extended `maistro.identity.Principal` with `username`, `permissions`,
+  `elevated_permissions`, and helpers (`actor_id`, `audit_label`,
+  `has_permission`, `is_admin`).
+- Hive Conductor `AuthMiddleware` now stamps `request.state.principal` instead
+  of `request.state.user`.
+- Added `services/request_principal.py` as the shared read boundary for routes
+  and services.
+- Migrated 22 hive-conductor route modules plus `owned_records`,
+  `program_hyperagent`, and `tool_primitives`.
+- Migrated maistro-turing middleware, inbound security, and chat route.
+
+## Ratchet
+
+`quality/principal-identity-baseline.json` reduced from **32 → 4** tolerated
+entries. Remaining debt is `parallel_principal_class` only:
+
+- `HiveUser` (hive schemas)
+- `CurrentUser` (maistro-canvas auth)
+- `_SubsystemIdentity` (maistro-core privilege)
+- `AuthenticatedPrincipal` (maistro-server API)
+
+## Verification
+
+```bash
+RATCHET_BASE_REV=origin/develop uv run python scripts/check-principal-identity.py
+uv run pytest packages/maistro-core/tests/fitness/test_principal_identity.py \
+  packages/hive-conductor/backend/tests/test_auth_middleware.py \
+  packages/maistro-turing/backend/tests/test_chat.py -q
+```

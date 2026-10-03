@@ -8,7 +8,9 @@ on the wire because they need different reactions: `400` means fix the value,
 
 from __future__ import annotations
 
+import json
 import logging
+import ssl
 from typing import Any, Literal
 
 import httpx
@@ -166,17 +168,82 @@ def settings_quotas() -> dict:
 
 @router.get("/models")
 def settings_models() -> dict:
-    models = _fetch_available_models()
-    return {"models": models}
+    """Gateway model catalog plus discovery provenance (#287).
+
+    `models` remains the field every existing consumer reads. `discovered`,
+    `source`, and `error` are additive: a caller must be able to tell a real
+    gateway catalog from a stored-default substitute, because a failed fetch
+    presented as a valid catalog is exactly what let a broken or unauthorized
+    gateway look usable in Setup.
+    """
+    models, discovery = _discover_gateway_models()
+    return {"models": models, **discovery}
 
 
-def _fetch_available_models() -> list[str]:
+class _MalformedCatalogError(Exception):
+    """The gateway answered, but the payload is not a model catalog."""
+
+
+def _classify_http_status(status: int) -> str:
+    """Map a gateway HTTP status onto the wizard's failure taxonomy (#287)."""
+    if status in (401, 403):
+        return "auth"
+    if status == 404:
+        return "not_found"
+    if status >= 500:
+        return "server"
+    return "http"
+
+
+def _is_tls_failure(exc: BaseException | None) -> bool:
+    """Walk the exception chain looking for a TLS/certificate failure."""
+    seen = 0
+    while exc is not None and seen < 6:
+        if isinstance(exc, ssl.SSLError):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
+
+
+def _parse_gateway_catalog(data: object) -> list[str]:
+    """Validate and normalize a gateway catalog payload, or raise malformed."""
+    if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+        raise _MalformedCatalogError()
+    model_ids: list[str] = []
+    for entry in data["data"]:
+        if not isinstance(entry, dict):
+            raise _MalformedCatalogError()
+        raw = entry.get("id", entry.get("model", ""))
+        if raw is not None:
+            model_ids.append(str(raw))
+    return sorted({m for m in model_ids if m})
+
+
+def _discover_gateway_models() -> tuple[list[str], dict[str, Any]]:
+    """Return (model_ids, discovery_metadata) for the configured gateway.
+
+    The metadata's `error.kind` carries the failure taxonomy the Setup wizard
+    surfaces (#287): `not_configured`, `auth`, `not_found`, `server`, `http`,
+    `policy`, `connectivity`, `tls`, `malformed`, `empty`, `unexpected`.
+    Messages are sanitized on purpose — failure class plus HTTP status, never
+    a gateway URL, key, or response body. The function never raises: the
+    contract is "answer with the best-known catalog plus the reason it is not
+    a live gateway catalog".
+    """
     import os
 
     base = os.environ.get("LITELLM_API_BASE") or os.environ.get("LITELLM_PROXY_URL") or ""
     key = os.environ.get("LITELLM_API_KEY") or os.environ.get("LITELLM_PROXY_KEY") or ""
     if not base:
-        return [settings_store.current().default_model]
+        return [settings_store.current().default_model], {
+            "discovered": False,
+            "source": "stored_default",
+            "error": {
+                "kind": "not_configured",
+                "message": "No LLM gateway is configured; the stored default is the only known-good model.",
+            },
+        }
     try:
         headers = {}
         if key:
@@ -184,12 +251,55 @@ def _fetch_available_models() -> list[str]:
         url = f"{base.rstrip('/')}/models"
         resp = httpx.get(url, headers=headers, timeout=5.0)
         resp.raise_for_status()
-        data = resp.json()
-        model_ids = [m.get("id", m.get("model", "")) for m in data.get("data", [])]
-        return sorted({m for m in model_ids if m}) or [settings_store.current().default_model]
-    except Exception:
-        logger.debug("model list fetch failed, returning default")
-        return [settings_store.current().default_model]
+        unique = _parse_gateway_catalog(resp.json())
+        if not unique:
+            return [], {
+                "discovered": False,
+                "source": "gateway",
+                "error": {
+                    "kind": "empty",
+                    "message": "The gateway answered but returned an empty model catalog.",
+                },
+            }
+        return unique, {"discovered": True, "source": "gateway", "error": None}
+    except httpx.UnsupportedProtocol:
+        kind = "policy"
+        message = "The configured gateway URL uses a scheme that is not allowed; only http/https gateway URLs are permitted."
+    except httpx.TransportError as exc:
+        if _is_tls_failure(exc):
+            kind = "tls"
+            message = "TLS certificate verification failed while contacting the gateway."
+        else:
+            kind = "connectivity"
+            message = "Could not reach the gateway (connection error or timeout)."
+    except httpx.HTTPStatusError as exc:
+        kind = _classify_http_status(exc.response.status_code)
+        message = (
+            f"The gateway rejected the model-discovery request (HTTP {exc.response.status_code})."
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError, _MalformedCatalogError):
+        kind = "malformed"
+        message = "The gateway response could not be parsed as a model catalog."
+    except Exception as exc:  # contract is never-raise: classify and degrade.
+        kind = "unexpected"
+        message = "An unexpected error occurred while discovering gateway models."
+        logger.info("gateway model discovery raised %s", type(exc).__name__)
+    logger.warning("gateway model discovery failed: kind=%s detail=%s", kind, message)
+    return [settings_store.current().default_model], {
+        "discovered": False,
+        "source": "stored_default",
+        "error": {"kind": kind, "message": message},
+    }
+
+
+def _fetch_available_models() -> list[str]:
+    """Back-compat view: just the catalog, defaulting to the stored model.
+
+    Kept separate from `settings_models` because "which models" and "was this
+    actually discovered from the gateway" are different questions (#287).
+    """
+    models, _ = _discover_gateway_models()
+    return models or [settings_store.current().default_model]
 
 
 @router.get("/features")

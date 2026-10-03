@@ -464,6 +464,11 @@ class TestIsRetryable:
     def test_connect_error_is_retryable(self) -> None:
         assert _is_retryable(httpx.ConnectError("boom")) is True
 
+    def test_connect_timeout_is_retryable(self) -> None:
+        # ConnectTimeout is not a TimeoutError subclass in httpx 0.28.x;
+        # mirror llm_gateway.py, which treats both as an unreachable gateway.
+        assert _is_retryable(httpx.ConnectTimeout("timed out")) is True
+
     def test_retryable_status_code_is_retryable(self) -> None:
         request = httpx.Request("GET", "http://x")
         response = httpx.Response(503, request=request)
@@ -634,11 +639,18 @@ class TestRunScopedCircuits:
         assert llm_circuits.breaker(healthy_domain).state is CircuitState.CLOSED
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            httpx.ConnectError("connection refused"),
+            httpx.ConnectTimeout("connect timed out"),
+        ],
+    )
     async def test_shared_gateway_failure_blocks_every_provider_behind_it(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, exc: Exception
     ) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("connection refused", request=request)
+            raise exc
 
         _patched_client(monkeypatch, handler)
         monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
@@ -648,8 +660,9 @@ class TestRunScopedCircuits:
             with pytest.raises(LLMProviderError):
                 await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
 
-        # ConnectError is an explicit shared-dependency failure: the
-        # gateway-level breaker represents it for both providers.
+        # ConnectError/ConnectTimeout are explicit shared-dependency
+        # failures: the gateway-level breaker represents them for both
+        # providers.
         for model in ("model-a", "model-b"):
             with pytest.raises(CircuitOpenError):
                 await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
