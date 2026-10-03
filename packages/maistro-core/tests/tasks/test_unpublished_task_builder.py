@@ -12,7 +12,6 @@ import maistro.tasks.lanes as task_lanes
 import maistro.tasks.models as task_models
 import maistro.tasks.queue as queue_mod
 
-
 _FIXED_TIME = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 
 
