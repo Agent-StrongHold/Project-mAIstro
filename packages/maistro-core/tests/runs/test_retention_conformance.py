@@ -26,6 +26,7 @@ from maistro.graph import Graph, Node
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.retention_scope import WorkspaceRetentionScope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, is_purgeable
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 EXPIRED = NOW - timedelta(seconds=1)
@@ -55,7 +56,11 @@ def _graph(workspace: str, project_id: str, *, node_ids: tuple[str, ...] = ("nod
 
 async def _run(spine: Any, *, expires_at: datetime | None) -> Any:
     store, workspace, project_id = spine
-    return await store.create_run(_graph(workspace, project_id), retention_expires_at=expires_at)
+    return await store.create_run(
+        _graph(workspace, project_id),
+        retention_expires_at=expires_at,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
 
 async def _terminal_run(spine: Any, *, expires_at: datetime | None) -> Any:
@@ -85,7 +90,9 @@ async def test_no_deadline_is_the_default(spine: Any) -> None:
     the default has to be the setting that changes nothing."""
     store, workspace, project_id = spine
 
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     reloaded = await store.get_run(run.run_id)
     assert reloaded is not None
@@ -187,7 +194,11 @@ async def test_a_parent_run_is_not_purged_while_a_child_exists(spine: Any) -> No
     skipped rather than attempted and failed."""
     store, workspace, project_id = spine
     parent = await _terminal_run(spine, expires_at=EXPIRED)
-    await store.create_run(_graph(workspace, project_id), parent_run_id=parent.run_id)
+    await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     purged = await store.purge_expired_runs(_scope(spine), now=NOW)
 
@@ -205,6 +216,7 @@ async def test_a_run_whose_node_run_a_child_descends_from_is_not_purged(spine: A
         _graph(workspace, project_id),
         parent_run_id=parent.run_id,
         parent_node_run_id=node_run.node_run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     await store.transition_run(parent.run_id, RunStatus.COMPLETED)
 
@@ -308,6 +320,7 @@ def test_is_purgeable_needs_all_three_conditions() -> None:
             status=status,
             finished_at=NOW if status is RunStatus.COMPLETED else None,
             retention_expires_at=expires_at,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     assert is_purgeable(_make(RunStatus.COMPLETED, EXPIRED), NOW)

@@ -31,6 +31,7 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import DuplicateOccurrence, RunStore
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @dataclass
@@ -47,8 +48,9 @@ class _Spine:
         )
 
     async def root(self, workspace: str, principal: str | None) -> Any:
+        actor = principal if principal is not None else DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         return await self.store.create_run(
-            self.graph(workspace), actor_principal_id=principal, initial_status=RunStatus.QUEUED
+            self.graph(workspace), actor_principal_id=actor, initial_status=RunStatus.QUEUED
         )
 
     async def move(self, run_id: str, target: RunStatus) -> None:
@@ -141,7 +143,7 @@ async def test_the_principal_ceiling_spans_workspaces(spine: _Spine) -> None:
 async def test_thirty_third_active_root_run_in_one_workspace_is_refused(spine: _Spine) -> None:
     w1, _ = _workspaces(spine)
     for index in range(32):
-        await spine.root(w1, f"user-{index % 8}" if index % 2 else None)
+        await spine.root(w1, f"user-{index % 8}")
 
     with pytest.raises(RunConcurrencyExceeded) as refused:
         await spine.root(w1, "fresh-user")

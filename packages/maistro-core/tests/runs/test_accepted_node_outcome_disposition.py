@@ -19,6 +19,7 @@ from maistro.runs import (
     RunStatus,
 )
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _execution() -> tuple[InMemoryRunStore, str, AttemptExecutionService]:
@@ -36,7 +37,7 @@ async def _execution() -> tuple[InMemoryRunStore, str, AttemptExecutionService]:
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
     store = InMemoryRunStore(project_store=projects)
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     return (
         store,

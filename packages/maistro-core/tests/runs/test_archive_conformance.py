@@ -38,6 +38,7 @@ from maistro.graph import Graph, Node
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
 from maistro.runs.store import DuplicateOccurrence
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
 COLD = NOW - timedelta(days=200)
@@ -68,7 +69,11 @@ async def _finished_run(
     produces is one the sweep would really find.
     """
     store, _archive, workspace, project_id = archive_spine
-    run = await store.create_run(_graph(workspace, project_id), retention_expires_at=expires_at)
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        retention_expires_at=expires_at,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     return await store.transition_run(run.run_id, status, at=at)
@@ -116,7 +121,9 @@ async def test_live_work_is_not_archived(archive_spine: Any) -> None:
     """A Run still running keeps its payload where it can be read without a
     network round trip, for the same reason retention never purges live work."""
     store, _archive, workspace, project_id = archive_spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -192,6 +199,7 @@ async def test_a_scheduled_run_is_never_archived_and_the_claim_survives_a_sweep(
             SCHEDULE_ID_KEY: "sched-arch",
             SCHEDULED_FOR_KEY: scheduled_for,
         },
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
@@ -216,6 +224,7 @@ async def test_a_scheduled_run_is_never_archived_and_the_claim_survives_a_sweep(
                 SCHEDULE_ID_KEY: "sched-arch",
                 SCHEDULED_FOR_KEY: scheduled_for,
             },
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     assert plain.run_id
 
@@ -275,7 +284,9 @@ async def test_the_attempt_evidence_moves_and_still_reads_back(
     tries than it did.
     """
     store, archive, workspace, project_id = archive_spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
     token = attempt.execution_lease.fencing_token
@@ -306,7 +317,9 @@ async def test_non_finite_evidence_survives_the_move(archive_spine: Any) -> None
     so it gets the same encoder or it reintroduces the bug on a longer delay.
     """
     store, _archive, workspace, project_id = archive_spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     await store.transition_run(run.run_id, RunStatus.COMPLETED, at=COLD, result={"score": math.nan})

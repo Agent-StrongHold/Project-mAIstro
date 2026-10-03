@@ -30,6 +30,7 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import ActiveAttemptExists, DuplicateOccurrence, RunIntegrityError
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _asyncpg_integrity_base() -> type[Exception]:
@@ -94,6 +95,7 @@ class TestStatusListingEvidence:
             project_id=root.project_id,
             graph=GraphSnapshot.from_graph(graph),
             provenance=_occurrence_provenance(),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         store = PgRunStore(
             _PoolReturning([{"payload": json_of(run), "archive_key": None}]),
@@ -118,6 +120,7 @@ class TestStatusListingEvidence:
             workspace_id="w1",
             project_id=root.project_id,
             graph=GraphSnapshot.from_graph(graph),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         run = transition_run(run, RunStatus.QUEUED)
         run = transition_run(run, RunStatus.RUNNING)
@@ -178,7 +181,11 @@ class TestTheOccurrenceClaimIsMatchedByName:
         store, graph = await _store_raising(_violation("some_other_index"))
 
         with pytest.raises(_AsyncpgViolation):
-            await store.create_run(graph, provenance=_occurrence_provenance())
+            await store.create_run(
+                graph,
+                provenance=_occurrence_provenance(),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
 
     async def test_the_occurrence_index_becomes_a_duplicate_occurrence(self) -> None:
         """The positive half, so the two tests together pin the discrimination
@@ -186,7 +193,11 @@ class TestTheOccurrenceClaimIsMatchedByName:
         store, graph = await _store_raising(_violation(OCCURRENCE_INDEX))
 
         with pytest.raises(DuplicateOccurrence) as caught:
-            await store.create_run(graph, provenance=_occurrence_provenance())
+            await store.create_run(
+                graph,
+                provenance=_occurrence_provenance(),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
 
         assert caught.value.schedule_id == "sched-1"
 
@@ -196,7 +207,11 @@ class TestTheOccurrenceClaimIsMatchedByName:
         store, graph = await _store_raising(_violation(OCCURRENCE_INDEX))
 
         with pytest.raises(_AsyncpgViolation):
-            await store.create_run(graph, provenance={ADMISSION_SOURCE: "task_queue"})
+            await store.create_run(
+                graph,
+                provenance={ADMISSION_SOURCE: "task_queue"},
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
 
 
 class _AsyncpgViolation(_asyncpg_integrity_base()):  # type: ignore[misc]
@@ -416,7 +431,9 @@ async def _claim_store() -> tuple[PgRunStore, _ClaimPool, Graph]:
 async def test_pg_claim_admits_a_new_logical_effect_and_finds_it() -> None:
     store, _pool, graph = await _claim_store()
 
-    claim = await store.claim_run_by_effect(graph, effect_key="delegate:pg-new")
+    claim = await store.claim_run_by_effect(
+        graph, effect_key="delegate:pg-new", actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert claim.claimed is True
     found = await store.find_run_by_effect("delegate:pg-new")
@@ -429,8 +446,12 @@ async def test_pg_claim_admits_a_new_logical_effect_and_finds_it() -> None:
 async def test_pg_claim_replays_a_committed_winner() -> None:
     store, pool, graph = await _claim_store()
 
-    first = await store.claim_run_by_effect(graph, effect_key="delegate:pg-replay")
-    second = await store.claim_run_by_effect(graph, effect_key="delegate:pg-replay")
+    first = await store.claim_run_by_effect(
+        graph, effect_key="delegate:pg-replay", actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    second = await store.claim_run_by_effect(
+        graph, effect_key="delegate:pg-replay", actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert first.claimed is True
     assert second.claimed is False
@@ -447,10 +468,13 @@ async def test_pg_claim_adopts_the_winner_that_committed_mid_claim() -> None:
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
         provenance={"effect_key": "delegate:pg-race"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     pool.race_winner = winner
 
-    claim = await store.claim_run_by_effect(graph, effect_key="delegate:pg-race")
+    claim = await store.claim_run_by_effect(
+        graph, effect_key="delegate:pg-race", actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert claim.claimed is False
     assert claim.run.run_id == winner.run_id
@@ -461,7 +485,9 @@ async def test_pg_claim_refuses_an_empty_effect_key() -> None:
     store, _pool, graph = await _claim_store()
 
     with pytest.raises(ValueError, match="effect_key must be non-empty"):
-        await store.claim_run_by_effect(graph, effect_key="")
+        await store.claim_run_by_effect(
+            graph, effect_key="", actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
 
 
 @pytest.mark.asyncio
@@ -473,6 +499,7 @@ async def test_pg_claim_refuses_a_parent_node_run_without_a_parent_run() -> None
             graph,
             effect_key="delegate:pg-orphan-node",
             parent_node_run_id="node-run-nowhere",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -484,6 +511,7 @@ async def test_pg_claim_binds_a_declared_parent_chain() -> None:
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     parent_node = NodeRun(run_id=parent.run_id, node_id="n1", ordinal=1)
     pool.rows[parent.run_id] = json_of(parent)
@@ -494,6 +522,7 @@ async def test_pg_claim_binds_a_declared_parent_chain() -> None:
         effect_key="delegate:pg-with-parent",
         parent_run_id=parent.run_id,
         parent_node_run_id=parent_node.node_run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert claim.claimed is True
@@ -508,11 +537,13 @@ async def test_pg_claim_refuses_a_foreign_parent_node_run() -> None:
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     other_parent = Run(
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     foreign_node = NodeRun(run_id=other_parent.run_id, node_id="n1", ordinal=1)
     pool.rows[parent.run_id] = json_of(parent)
@@ -524,6 +555,7 @@ async def test_pg_claim_refuses_a_foreign_parent_node_run() -> None:
             effect_key="delegate:pg-foreign-node",
             parent_run_id=parent.run_id,
             parent_node_run_id=foreign_node.node_run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -534,4 +566,8 @@ async def test_pg_claim_conflict_with_no_winner_is_an_integrity_failure() -> Non
     pool.reject_insert = True
 
     with pytest.raises(RunIntegrityError, match="conflicted with another constraint"):
-        await store.claim_run_by_effect(graph, effect_key="delegate:pg-nowhere")
+        await store.claim_run_by_effect(
+            graph,
+            effect_key="delegate:pg-nowhere",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )

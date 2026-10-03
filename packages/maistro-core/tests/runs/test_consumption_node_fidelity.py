@@ -22,6 +22,7 @@ from maistro.graph.nodes import BaseNode, NodeContext, register_node
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 #: SPEC-082926-d90e declares `contracts: [behavioral]`, and ADR-032 says a
@@ -125,7 +126,10 @@ async def _admit(
     if overrides is not None:
         provenance[SCHEDULE_INPUTS_KEY] = overrides
     run = await container.run_store.create_run(
-        graph, provenance=provenance, initial_status=RunStatus.QUEUED
+        graph,
+        provenance=provenance,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     return run.run_id
 

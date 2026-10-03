@@ -10,6 +10,7 @@ import pytest
 from maistro.graph import Edge, Graph, Node
 from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _graph(workspace: str, project_id: str, node_ids: tuple[str, ...]) -> Graph:
@@ -23,7 +24,9 @@ def _graph(workspace: str, project_id: str, node_ids: tuple[str, ...]) -> Graph:
 
 async def _running_nodes(spine: Any, node_ids: tuple[str, ...]) -> tuple[Any, Any, tuple[Any, ...]]:
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id, node_ids))
+    run = await store.create_run(
+        _graph(workspace, project_id, node_ids), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_runs = []
@@ -225,7 +228,7 @@ async def test_generic_reconciliation_does_not_settle_a_cyclic_graph(spine: Any)
             Edge(from_node="b", to_node="a"),
         ],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_runs = []

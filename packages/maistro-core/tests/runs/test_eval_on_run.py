@@ -30,6 +30,7 @@ from maistro.runs.store import (
     RunIntegrityError,
     RunNotFound,
 )
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 GOAL_ID = "goal-homestead"
 GOAL_REVISION = 4
@@ -55,7 +56,9 @@ async def _produce(spine: Any) -> tuple[Any, Any, Any, Any]:
     Attempt completes but before the graph moves on.
     """
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(node_run.node_run_id)
     await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
@@ -225,7 +228,9 @@ async def test_a_reeval_waits_for_the_prior_attempt_and_stays_on_its_own_run(
     """A retry opens only where the spine allows one: same Run, no live Attempt."""
     store, run, node_run, _attempt = await _produce(spine)
 
-    other = await store.create_run(_graph(*spine[1:]))
+    other = await store.create_run(
+        _graph(*spine[1:]), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     other_node_run = await store.create_node_run(other.run_id, node_id="node-1")
     with pytest.raises(NodeRunNotFound):
         await open_re_eval_attempt(store, run.run_id, other_node_run.node_run_id)
@@ -330,7 +335,9 @@ async def test_eval_complete_is_a_property_of_persisted_records_not_of_intention
 async def test_an_eval_record_cannot_dangle_off_the_spine(spine: Any) -> None:
     """Run, NodeRun, Attempt must be one connected triple, or the store refuses."""
     store, run, node_run, attempt = await _produce(spine)
-    other_run = await store.create_run(_graph(*spine[1:]))
+    other_run = await store.create_run(
+        _graph(*spine[1:]), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     other_node_run = await store.create_node_run(other_run.run_id, node_id="node-1")
     other_attempt = await store.create_attempt(other_node_run.node_run_id)
 

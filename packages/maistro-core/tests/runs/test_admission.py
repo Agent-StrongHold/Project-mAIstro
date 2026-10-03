@@ -20,6 +20,7 @@ from maistro.runs.admission import (
     direct_work_graph,
 )
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 #: Any registered kind works; the tests are about admission, not this kind.
 KIND = "transform.format_markdown"
@@ -174,7 +175,13 @@ async def test_admission_into_an_unknown_project_is_refused(scoped) -> None:
     store, _ = scoped
     with pytest.raises(Exception):  # noqa: B017 - store raises its own scope error
         await admit_direct_work(
-            store, workspace_id="w1", project_id="p-nope", node_type=KIND, name="n", source="s"
+            store,
+            workspace_id="w1",
+            project_id="p-nope",
+            node_type=KIND,
+            name="n",
+            source="s",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 

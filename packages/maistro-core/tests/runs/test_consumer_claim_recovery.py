@@ -18,6 +18,7 @@ from maistro.runs.consumption import SCHEDULE_EXECUTOR_ID
 from maistro.runs.model import Attempt, AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError, run_cursor_key
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 
@@ -68,6 +69,7 @@ async def _admit(
         graph,
         provenance={ADMISSION_SOURCE: source},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     return run.run_id
 
@@ -301,6 +303,7 @@ async def test_sqlite_claim_is_atomic_running_evidence_and_uses_ordinary_recover
             graph,
             provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
             initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         claim = await store.claim_consumer_run(
             run.run_id,
@@ -382,6 +385,7 @@ async def test_postgres_claim_is_atomic_running_evidence(pg_pool: object) -> Non
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     claim = await store.claim_consumer_run(
         run.run_id,

@@ -17,6 +17,7 @@ from maistro.runs import (
     StaleExecutionFence,
 )
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _scope() -> tuple[InMemoryProjectScopeStore, Graph]:
@@ -39,7 +40,7 @@ async def _scope() -> tuple[InMemoryProjectScopeStore, Graph]:
 async def test_raw_attempt_fixture_remains_unfenced() -> None:
     projects, graph = await _scope()
     store = InMemoryRunStore(project_store=projects)
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(node_run.node_run_id)
 
@@ -52,7 +53,7 @@ async def test_raw_attempt_fixture_remains_unfenced() -> None:
 async def test_leased_attempt_rejects_missing_and_wrong_fence() -> None:
     projects, graph = await _scope()
     store = InMemoryRunStore(project_store=projects)
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
 
@@ -78,7 +79,7 @@ async def test_leased_attempt_rejects_missing_and_wrong_fence() -> None:
 async def test_retry_uses_new_epoch_and_old_fence_cannot_update_new_attempt() -> None:
     projects, graph = await _scope()
     store = InMemoryRunStore(project_store=projects)
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
 
     first = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
@@ -113,7 +114,7 @@ async def test_retry_uses_new_epoch_and_old_fence_cannot_update_new_attempt() ->
 async def test_attempt_execution_service_uses_fence_transparently() -> None:
     projects, graph = await _scope()
     store = InMemoryRunStore(project_store=projects)
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
 
@@ -141,7 +142,7 @@ async def test_sqlite_enforces_same_fence_contract() -> None:
     async with aiosqlite.connect(":memory:") as conn:
         store = SqliteRunStore(conn, project_store=projects)
         await store.ensure_schema()
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
         assert attempt.execution_lease is not None
@@ -168,7 +169,7 @@ async def test_sqlite_enforces_same_fence_contract() -> None:
 async def _running_node_run(store: Any, graph: Any) -> Any:
     from maistro.runs.model import RunStatus
 
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")

@@ -18,6 +18,7 @@ from maistro.runs.store import InMemoryRunStore
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks.models import TaskCreate
 from maistro.tasks.queue import TaskQueue
+from maistro.testing.runs import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def test_without_a_connection_the_spine_is_in_memory() -> None:
@@ -83,7 +84,11 @@ async def test_a_queue_on_the_wired_spine_admits_a_resolvable_run(durable: bool)
         ) = await wire_execution_spine(conn, workspace_id="w1")
         queue = TaskQueue(admitter=admitter)
 
-        task = await queue.submit(TaskCreate(description="ship it", task_type="code"))
+        task = await queue.submit(
+            TaskCreate(
+                description="ship it", task_type="code", user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+            )
+        )
 
         assert task.run_id
         run = await run_store.get_run(task.run_id)
@@ -105,7 +110,9 @@ async def test_the_workspace_is_the_one_asked_for() -> None:
     ) = await wire_execution_spine(None, workspace_id="tenant-a")
     queue = TaskQueue(admitter=admitter)
 
-    task = await queue.submit(TaskCreate(description="ship it"))
+    task = await queue.submit(
+        TaskCreate(description="ship it", user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    )
 
     run = await run_store.get_run(task.run_id or "")
     assert run is not None
