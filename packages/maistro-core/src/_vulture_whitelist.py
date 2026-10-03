@@ -14,6 +14,15 @@ from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTarge
 from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
+from maistro.ontology.rubric import (
+    PassFailScale,
+    RubricDimension,
+    RubricGate,
+    RubricProvenance,
+    RubricScale,
+    RubricSemantic,
+)
+from maistro.projects.rubric_store import RubricStore
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
@@ -148,4 +157,26 @@ _VULTURE_WHITELIST = (
     # variable above rather than a class-object reference, which would not
     # typecheck.
     latest_by_dimension,
+    # Goal `Rubric` as a first-class ontology kind (M7-A2, #791). The issue
+    # ships persistence + ontology only — its stop condition ("Do not score
+    # anything in this PR") defers the consumers to later M7 work, so the
+    # store methods' callers (eval scoring, the acceptance fence) are outside
+    # this `packages/*/src` scan; the contract ships first by design, like
+    # CampaignSelector above. The Pydantic validators are invoked implicitly
+    # at validation time; the fields are contract vocabulary (id, name,
+    # weight, scale, method, evidence_required; pass/fail gate; authorship
+    # provenance) serialized through model_dump_json and read by those
+    # deferred consumers.
+    RubricScale._at_least_one,
+    RubricProvenance._pack_shape,
+    RubricSemantic._dimension_consistency,
+    PassFailScale.pass_value,
+    PassFailScale.fail_value,
+    RubricDimension.evidence_required,
+    RubricGate.pass_threshold,
+    RubricProvenance.authored_by,
+    RubricStore.update_dimensions,
+    RubricStore.instantiate_from_catalog,
+    RubricStore.record_run_binding,
+    RubricStore.binding_for_run,
 )
