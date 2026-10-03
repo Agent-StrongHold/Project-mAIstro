@@ -214,6 +214,21 @@
       "notes": "Chat-admitted Runs carry a retention deadline and are purged by RunRetentionSweeper.maybe_sweep on chat admission (runs/chat_admission.py); other Runs are archived (runs/archival.py) rather than deleted. Dependents are listed in runs/retention_scope.py."
     },
     {
+      "table": "canonical_run_eval_scores",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/runs/sqlite_store.py",
+      "data_class": "execution_state",
+      "retention": "run_purge",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.maybe_sweep",
+      "issue": "#792",
+      "parent": "canonical_runs",
+      "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
+      "notes": "Eval scores are Run evidence on the spine (M7-A3): deleted with their Run in the purge transaction, before the spine rows they name. Reference policy: runs/retention_scope.py."
+    },
+    {
       "table": "canonical_workspace_memberships",
       "backends": [
         "postgres",
@@ -477,6 +492,18 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "Book-maker POC schema. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "design_creative_briefs",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/brief_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "CreativeBrief versions are the immutable creative provenance Runs/artifacts cite (#774); the contract is append-only and has no deletion path by design, like design_outputs."
     },
     {
       "table": "design_outputs",

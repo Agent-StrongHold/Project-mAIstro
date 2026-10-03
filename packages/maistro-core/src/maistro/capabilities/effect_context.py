@@ -13,8 +13,14 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
+from maistro.capabilities.approval_store import InMemoryApprovalStore, SqliteApprovalStore
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import InMemoryBindingStore, RevocableBindingStore
+from maistro.capabilities.binding_store import (
+    InMemoryBindingStore,
+    PgBindingStore,
+    RevocableBindingStore,
+    SqliteBindingStore,
+)
 from maistro.capabilities.credential_routing import CredentialRouting
 from maistro.capabilities.governed_invocation import (
     GovernedInvocationExecutionService,
@@ -26,8 +32,11 @@ from maistro.capabilities.invocation import (
     InvocationExecutionService,
     InvocationStore,
 )
+from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.capabilities.pg_invocation_store import PgInvocationStore
 from maistro.credentials.router import CredentialRouter
-from maistro.events.envelope import EventStore, InMemoryEventStore
+from maistro.events.envelope import EventStore, InMemoryEventStore, SqliteEventStore
+from maistro.events.pg_envelope import PgEventStore
 from maistro.policy.types import Decision, PolicyVerdict
 from maistro.quota.recorder import CanonicalInvocationUsageRecorder
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
@@ -176,6 +185,103 @@ def new_effect_context(
     )
 
 
+async def new_sqlite_effect_context(
+    conn: Any,
+    *,
+    credentials: CredentialRouter | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
+) -> CapabilityEffectContext:
+    """Build the canonical effect authority on the container's SQLite database."""
+
+    bindings = SqliteBindingStore(conn)
+    invocation_store = SqliteInvocationStore(conn)
+    event_store = SqliteEventStore(conn)
+    approval_store = SqliteApprovalStore(conn)
+    await bindings.ensure_schema()
+    await invocation_store.ensure_schema()
+    await event_store.ensure_schema()
+    await approval_store.ensure_schema()
+    # The usage recorder attaches here, not only in `new_effect_context`
+    # (#718): a durable deployment takes one of these two branches instead,
+    # and a context built without it would dispatch governed effects whose
+    # provider usage nothing ever recorded.
+    selected_usage_log = usage_log or get_default_usage_log()
+    usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
+    governed = GovernedInvocationExecutionService(
+        invocation_service=InvocationExecutionService(
+            store=invocation_store, on_completed=usage_recorder.record
+        ),
+        event_store=event_store,
+        policy_evaluator=policy_evaluator or binding_scope_policy,
+        approval_store=approval_store,
+    )
+    return CapabilityEffectContext(
+        bindings=bindings,
+        invocations=governed,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        usage_log=selected_usage_log,
+        credentials=credentials or CredentialRouter(),
+    )
+
+
+async def new_postgres_effect_context(
+    pool: Any,
+    *,
+    credentials: CredentialRouter | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
+) -> CapabilityEffectContext:
+    """Build the canonical effect authority on a shared PostgreSQL pool."""
+
+    bindings = PgBindingStore(pool)
+    invocation_store = PgInvocationStore(pool)
+    event_store = PgEventStore(pool)
+    await bindings.ensure_schema()
+    await invocation_store.ensure_schema()
+    await event_store.ensure_schema()
+    # The usage recorder attaches here, not only in `new_effect_context`
+    # (#718): a durable deployment takes one of these two branches instead,
+    # and a context built without it would dispatch governed effects whose
+    # provider usage nothing ever recorded.
+    selected_usage_log = usage_log or get_default_usage_log()
+    usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
+    approval_store = InMemoryApprovalStore()
+    governed = GovernedInvocationExecutionService(
+        invocation_service=InvocationExecutionService(
+            store=invocation_store, on_completed=usage_recorder.record
+        ),
+        event_store=event_store,
+        policy_evaluator=policy_evaluator or binding_scope_policy,
+        approval_store=approval_store,
+    )
+    return CapabilityEffectContext(
+        bindings=bindings,
+        invocations=governed,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        usage_log=selected_usage_log,
+        credentials=credentials or CredentialRouter(),
+    )
+
+
+_bound_container_effect_context: CapabilityEffectContext | None = None
+
+
+def bind_container_effect_context(context: CapabilityEffectContext | None) -> None:
+    global _bound_container_effect_context
+    _bound_container_effect_context = context
+    default_effect_context.cache_clear()
+
+
+def unbind_container_effect_context(context: CapabilityEffectContext) -> None:
+    if _bound_container_effect_context is context:
+        bind_container_effect_context(None)
+
+
 @lru_cache(maxsize=1)
 def default_effect_context() -> CapabilityEffectContext:
     """Process-wide canonical context used by registry-constructed effect nodes.
@@ -187,6 +293,8 @@ def default_effect_context() -> CapabilityEffectContext:
     backend-specific context explicitly.
     """
 
+    if _bound_container_effect_context is not None:
+        return _bound_container_effect_context
     # This named composition root deliberately selects the narrow M1 policy;
     # unnamed contexts stay read-only until their application supplies one.
     return new_effect_context(policy_evaluator=binding_scope_policy)
@@ -197,8 +305,12 @@ new_in_memory_effect_context = new_effect_context
 
 __all__ = [
     "CapabilityEffectContext",
+    "bind_container_effect_context",
     "binding_scope_policy",
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
+    "new_postgres_effect_context",
+    "new_sqlite_effect_context",
+    "unbind_container_effect_context",
 ]

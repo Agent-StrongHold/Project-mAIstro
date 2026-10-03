@@ -19,6 +19,7 @@ from maistro.capabilities.binding_store import (
     RevocableBindingStore,
     SqliteBindingStore,
     _scope_checked,
+    register_boot_binding,
 )
 from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.governed_invocation import InvocationDenied
@@ -822,3 +823,70 @@ async def test_pg_revocation_forbids_the_identity_for_every_replica() -> None:
         )
     with pytest.raises(BindingNotFound, match="has been revoked"):
         await store.put(_binding())
+
+
+class TestBootRegistrationSurvivesRestart:
+    """`register_boot_binding` is what a composition root calls on every start.
+
+    The property that matters is that the second start behaves like the first.
+    """
+
+    @staticmethod
+    def _boot() -> Binding:
+        """A freshly constructed boot Binding, as a new process would build it."""
+
+        return Binding(
+            binding_id="builtin:self-repair:infra-action",
+            workspace_id="default",
+            project_id="default",
+            node_id="self-repair",
+            capability="infra_action",
+        )
+
+    async def test_a_second_boot_reuses_the_stored_record(self) -> None:
+        """Re-registering an identical definition is a no-op, not a conflict.
+
+        A durable store compares the whole Binding, and two processes build
+        theirs with different `created_at`. A plain `put` therefore succeeded
+        on the first boot and raised `ValueError` on every one after, which
+        disabled the capability exactly on deployments that persist anything.
+        """
+
+        async with aiosqlite.connect(":memory:") as conn:
+            store = SqliteBindingStore(conn)
+            await store.ensure_schema()
+
+            first = await register_boot_binding(store, self._boot())
+            second = await register_boot_binding(store, self._boot())
+
+            assert second == first
+            # The real first-registration time survives; it is not restamped.
+            assert second.created_at == first.created_at
+
+    async def test_a_redefined_boot_binding_is_still_refused(self) -> None:
+        """Only `created_at` is forgiven; a changed definition is a conflict.
+
+        Otherwise the reuse that fixes restarts would also silently accept an
+        identity whose capability or scope had been changed under it.
+        """
+
+        async with aiosqlite.connect(":memory:") as conn:
+            store = SqliteBindingStore(conn)
+            await store.ensure_schema()
+            await register_boot_binding(store, self._boot())
+
+            redefined = self._boot().model_copy(update={"capability": "model.chat"})
+            with pytest.raises(ValueError, match="different definition"):
+                await register_boot_binding(store, redefined)
+
+    async def test_a_revocation_still_refuses_the_identity_on_a_later_boot(self) -> None:
+        """Reuse must not become a way to re-grant what an operator withdrew."""
+
+        async with aiosqlite.connect(":memory:") as conn:
+            store = SqliteBindingStore(conn)
+            await store.ensure_schema()
+            await register_boot_binding(store, self._boot())
+            await store.revoke("builtin:self-repair:infra-action")
+
+            with pytest.raises(BindingNotFound):
+                await register_boot_binding(store, self._boot())
