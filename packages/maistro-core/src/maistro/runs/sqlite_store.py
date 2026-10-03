@@ -65,12 +65,15 @@ from maistro.runs.store import (
     validate_child_scope,
     validate_eval_score_spine,
 )
+from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     import aiosqlite
+
+    from maistro.workspaces.store import WorkspaceStore
 
 _TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
 
@@ -397,10 +400,12 @@ class SqliteRunStore:
         conn: aiosqlite.Connection,
         *,
         project_store: ProjectScopeStore,
+        workspace_store: WorkspaceStore | None = None,
         concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         self._conn = conn
         self._project_store = project_store
+        self._workspace_store = workspace_store
         self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # One connection, and now more than one caller: the task runner drives
         # four workers against this store (#143), and `create_attempt` opens an
@@ -421,6 +426,13 @@ class SqliteRunStore:
         # Staged payload updates, applied and committed together by
         # `_flush`. Only ever non-empty inside one `_write_lock` holder.
         self._pending: list[tuple[tuple[str, str], str, str, str]] = []
+
+    def _run_boundary(self) -> RunStoreBoundary:
+        if self._workspace_store is None:
+            from maistro.runs.scoped_reads import RunNotVisible
+
+            raise RunNotVisible
+        return RunStoreBoundary(self, self._workspace_store, self._project_store)
 
     async def ensure_schema(self) -> None:
         # Match the projects/workspaces stores: enable foreign keys before the
@@ -469,7 +481,7 @@ class SqliteRunStore:
                 parent_run_id=parent_run_id,
                 parent_node_run_id=parent_node_run_id,
                 persona_id=persona_id,
-                actor_principal_id=actor_principal_id,
+                actor_principal_id=require_admitted_actor(actor_principal_id),
                 provenance=dict(provenance or {}),
                 retention_expires_at=retention_expires_at,
             )
@@ -551,12 +563,16 @@ class SqliteRunStore:
             await self._conn.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             raise
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         row = await self._fetchone(
             "SELECT payload FROM canonical_runs WHERE run_id = ?",
             (run_id,),
         )
-        return model_of_json(Run, row[0]) if row is not None else None
+        if row is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
+        return model_of_json(Run, row[0])
 
     async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
         # Same expression-index pattern as the schedule-occurrence claim above:
@@ -644,7 +660,7 @@ class SqliteRunStore:
                         parent_run_id=parent_run_id,
                         parent_node_run_id=parent_node_run_id,
                         persona_id=persona_id,
-                        actor_principal_id=actor_principal_id,
+                        actor_principal_id=require_admitted_actor(actor_principal_id),
                         provenance={**dict(provenance or {}), "effect_key": effect_key},
                         retention_expires_at=retention_expires_at,
                     ),
@@ -1106,7 +1122,10 @@ class SqliteRunStore:
         at: datetime | None = None,
         result: object | None = None,
         error: str | None = None,
+        principal_id: str | None = None,
     ) -> Run:
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._write_lock:
             run = await self._require_run(run_id)
             check_completion_is_earned(target, await self._node_runs_of(run_id))
@@ -1178,12 +1197,18 @@ class SqliteRunStore:
             await self._conn.commit()
             return node_run
 
-    async def get_node_run(self, node_run_id: str) -> NodeRun | None:
+    async def get_node_run(
+        self, node_run_id: str, *, principal_id: str | None = None
+    ) -> NodeRun | None:
         row = await self._fetchone(
             "SELECT payload FROM canonical_node_runs WHERE node_run_id = ?",
             (node_run_id,),
         )
-        return model_of_json(NodeRun, row[0]) if row is not None else None
+        if row is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_node_run(node_run_id, principal_id=principal_id)
+        return model_of_json(NodeRun, row[0])
 
     async def _node_runs_of(self, run_id: str) -> list[NodeRun]:
         """Every NodeRun under a Run, without re-checking the Run exists.
@@ -1387,12 +1412,18 @@ class SqliteRunStore:
                 reclaimed.append(settled)
         return reclaimed
 
-    async def get_attempt(self, attempt_id: str) -> Attempt | None:
+    async def get_attempt(
+        self, attempt_id: str, *, principal_id: str | None = None
+    ) -> Attempt | None:
         row = await self._fetchone(
             "SELECT payload FROM canonical_attempts WHERE attempt_id = ?",
             (attempt_id,),
         )
-        return model_of_json(Attempt, row[0]) if row is not None else None
+        if row is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_attempt(attempt_id, principal_id=principal_id)
+        return model_of_json(Attempt, row[0])
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]:
         await self._require_node_run(node_run_id)

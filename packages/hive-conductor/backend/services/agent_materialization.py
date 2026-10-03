@@ -49,7 +49,11 @@ from models.schemas import Agent
 
 from maistro.personas.expander import expand_persona
 from maistro.personas.schema import PersonaTemplate
-from maistro.security.warden.detector import Warden, context_from_messages, message_to_scan_text
+from maistro.security.warden.detector import (
+    Warden,
+    context_from_messages,
+    message_to_scan_text,
+)
 
 from .model_store import register_pop_hook
 
