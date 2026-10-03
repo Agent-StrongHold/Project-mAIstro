@@ -67,7 +67,7 @@ class _FrozenDict(dict[Any, Any]):
 
 
 class _FrozenList(list[Any]):
-    """List-shaped immutable-by-value evidence that preserves list equality/JSON shape."""
+    """List-shaped immutable-by-value evidence that remains JSON serializable."""
 
     @staticmethod
     def _deny(*_args: object, **_kwargs: object) -> None:
@@ -527,7 +527,7 @@ class Attempt(BaseModel):
             core_schema = core_schema["schema"]
         # Only this model's output wrapper is removed from a shallow schema copy.
         # Nested field schemas and the runtime serializer remain untouched.
-        field_schema = core_schema.copy()
+        field_schema = dict(core_schema)
         field_schema.pop("serialization", None)
         return handler(field_schema)
 
