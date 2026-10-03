@@ -146,6 +146,34 @@ async def calibrate_proxy_scorers(genome: PipelineGenome, llm_call: Any) -> dict
     }
 
 
+def _fixture_responder(mode: dict[str, str], fallback: str, *, exact: bool = False) -> Any:
+    """Deterministic candidate stub shared by the per-scorer calibrators.
+
+    Replies with the canned response whose fixture key the prompt carries.
+    User messages are scanned newest-first so a tau-bench follow-up turn
+    (simulated tool results appended after the candidate's own call) cannot
+    shadow the original prompt; ``exact=True`` is that conversation's
+    equality match, where a substring test would let one sample's key leak
+    into another's transcript. When no fixture matches — a runner's prompt
+    template drifting away from the fixture keys, or a sample edited out
+    from under the mode dict — the stub answers ``fallback``: the run
+    degrades to zero scores, which the report shows, instead of crashing
+    the calibration mid-suite.
+    """
+
+    async def _call(messages: list[dict[str, Any]], **kwargs: Any) -> str:
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            content = message["content"]
+            for key, reply in mode.items():
+                if content == key if exact else key in content:
+                    return reply
+        return fallback
+
+    return _call
+
+
 async def _calibrate_bfcl(genome: PipelineGenome, llm_call: Any) -> dict[str, Any]:
     mention = {
         s["query"]: _bfcl_narration(s["expected_name"], s.get("expected_params"))
@@ -158,18 +186,10 @@ async def _calibrate_bfcl(genome: PipelineGenome, llm_call: Any) -> dict[str, An
         for s in BFCL_SAMPLES
     }
 
-    async def responder(mode: dict[str, str]) -> Any:
-        async def _call(messages: list[dict[str, Any]], **kwargs: Any) -> str:
-            user = messages[-1]["content"]
-            for query, reply in mode.items():
-                if query in user:
-                    return reply
-            return "I am not sure how to do that."
-
-        return _call
-
-    narration = await run_bfcl(genome, (await responder(mention)))
-    verified = await run_bfcl(genome, (await responder(real_call)))
+    narration = await run_bfcl(genome, _fixture_responder(mention, "I am not sure how to do that."))
+    verified = await run_bfcl(
+        genome, _fixture_responder(real_call, "I am not sure how to do that.")
+    )
     return _rates(narration.score, verified.score, len(BFCL_SAMPLES))
 
 
@@ -185,53 +205,44 @@ async def _calibrate_tau(genome: PipelineGenome, llm_call: Any) -> dict[str, Any
         for s in TAU_BENCH_SAMPLES
     }
 
-    def responder(mode: dict[str, str]) -> Any:
-        async def _call(messages: list[dict[str, Any]], **kwargs: Any) -> str:
-            for user_msg in reversed(messages):
-                if user_msg["role"] == "user" and user_msg["content"] in mode:
-                    return mode[user_msg["content"]]
-            return "I cannot proceed."
-
-        return _call
-
-    narration = await run_tau_bench(genome, responder(mention))
-    verified = await run_tau_bench(genome, responder(real_calls))
+    narration = await run_tau_bench(
+        genome, _fixture_responder(mention, "I cannot proceed.", exact=True)
+    )
+    verified = await run_tau_bench(
+        genome, _fixture_responder(real_calls, "I cannot proceed.", exact=True)
+    )
     return _rates(narration.score, verified.score, len(TAU_BENCH_SAMPLES))
 
 
 async def _calibrate_gaia(genome: PipelineGenome, llm_call: Any) -> dict[str, Any]:
     answers = _answer_by_question(GAIA_SAMPLES, "answer")
 
-    def responder(mode: str) -> Any:
-        async def _call(messages: list[dict[str, Any]], **kwargs: Any) -> str:
-            user = messages[-1]["content"]
-            for question, answer in answers.items():
-                if question in user:
-                    return _gaia_narration(answer) if mode == "narrate" else answer
-            return "I am not sure."
-
-        return _call
-
-    narration = await run_gaia(genome, responder("narrate"), judge_llm_call=strict_judge(False))
-    verified = await run_gaia(genome, responder("answer"), judge_llm_call=strict_judge(False))
+    narration = await run_gaia(
+        genome,
+        _fixture_responder({q: _gaia_narration(a) for q, a in answers.items()}, "I am not sure."),
+        judge_llm_call=strict_judge(False),
+    )
+    verified = await run_gaia(
+        genome,
+        _fixture_responder(dict(answers), "I am not sure."),
+        judge_llm_call=strict_judge(False),
+    )
     return _rates(narration.score, verified.score, len(GAIA_SAMPLES))
 
 
 async def _calibrate_ragas(genome: PipelineGenome, llm_call: Any) -> dict[str, Any]:
     expected = {s["question"]: s["expected_answer"] for s in RAGAS_SAMPLES}
 
-    def responder(mode: str) -> Any:
-        async def _call(messages: list[dict[str, Any]], **kwargs: Any) -> str:
-            user = messages[-1]["content"]
-            for question, answer in expected.items():
-                if question in user:
-                    return _ragas_narration(answer) if mode == "narrate" else answer
-            return "I am not sure."
-
-        return _call
-
-    narration = await run_ragas(genome, responder("narrate"), judge_llm_call=strict_judge(False))
-    verified = await run_ragas(genome, responder("answer"), judge_llm_call=strict_judge(True))
+    narration = await run_ragas(
+        genome,
+        _fixture_responder({q: _ragas_narration(a) for q, a in expected.items()}, "I am not sure."),
+        judge_llm_call=strict_judge(False),
+    )
+    verified = await run_ragas(
+        genome,
+        _fixture_responder(dict(expected), "I am not sure."),
+        judge_llm_call=strict_judge(True),
+    )
     return _rates(narration.score, verified.score, len(RAGAS_SAMPLES))
 
 
