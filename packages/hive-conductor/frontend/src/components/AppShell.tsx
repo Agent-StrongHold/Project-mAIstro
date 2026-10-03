@@ -3,6 +3,7 @@ import { clearUiState } from "../lib/uiState";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
 import { AppearanceToggle } from "./AppearanceToggle";
+import { DegradedBanner } from "./DegradedBanner";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 import { WorkspaceShare } from "./WorkspaceShare";
 import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
@@ -57,6 +58,7 @@ const fullNav = [
 
 async function logout() {
   try {
+    // frontend-typed-client: allow pre-existing banked raw fetch (was :60); line shifted by the #97 DegradedBanner import/render above.
     await fetch("/v1/auth/logout", { method: "POST", credentials: "same-origin" });
   } catch {
     // best effort — even if it fails, redirecting lets the user log in fresh.
@@ -191,6 +193,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
         </button>
       </nav>
       <main className="main-content">
+        {/* M3-B7 (#97): degraded mode is a user-facing operating state —
+            the banner names every degraded optional capability from
+            /health and disappears on its own when they recover. */}
+        <DegradedBanner />
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />
