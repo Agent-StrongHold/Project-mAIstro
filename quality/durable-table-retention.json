@@ -1057,6 +1057,18 @@
       "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
       "issue": "#325",
       "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (put_result is INSERT OR IGNORE on the content address). Deleted by the same purge_workspace that removes the log entries referencing them; the lifetime question is the log's."
+    },
+    {
+      "table": "workspace_backlog_history",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/backlog_history/sqlite_store.py",
+      "data_class": "audit",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#101",
+      "notes": "Append-only BacklogItem history: INSERT is the only write and there is no delete path by design, so rows accumulate for the life of the deployment. The PostgreSQL history slice decides retention."
     }
   ]
 }
