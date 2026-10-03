@@ -146,10 +146,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import asyncio
     import logging as _logging
 
+    from services.audit_bridge import bind_audit_event_loop
     from settings_defaults import apply_default_settings_if_needed
 
     from maistro.security.transport import assert_session_transport_is_safe
-    from services.audit_bridge import bind_audit_event_loop
 
     _lifespan_log = _logging.getLogger("hive.lifespan")
     bind_audit_event_loop(asyncio.get_running_loop())
