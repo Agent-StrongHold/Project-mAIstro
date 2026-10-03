@@ -6,7 +6,13 @@
       "reason": "The seam #231 exists to have the live Hive scheduler build against, not yet a consumed dependency: the migration is blocked on maistro.runs.consumption's deliberate single-node-Run scope (#44/#34), since Hive's bundled daily-status DAG is multi-node and a straight swap today would leave firings QUEUED forever. Exposed ahead of its reader so the constructor exists in one reviewed place before the migration lands, following template_store's own precedent (#251) of exposing a store ahead of the routes that consume it."
     }
   },
-  "ac-state": {},
+  "ac-state": {
+    "design_coverage@34.9711": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1841",
+      "reason": "P0.8 mandatory Run actor_principal_id un-proves admission paths that previously admitted actor-less runs; the fall is banked in quality/ac-state-notes/feat-cutover-p0-8-store-scope-burn.json."
+    }
+  },
   "reachability": {
     "maistro.events.convergence": {
       "owner": "@BlakeMatthews-dev",
@@ -309,6 +315,31 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#338",
       "reason": "A declared field on `WaitForSubtasksOut`, read through pydantic validation and serialization rather than by a Python attribute access -- exactly the case `pydantic-declarative-field` records. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'audit_label'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1816",
+      "reason": "Principal.audit_label is the canonical human-readable audit actor label added in Wave 2 Lane A (#1816 / P0.1). Hive routes (e.g. hitl.py) and the audit bridge call it across package boundaries; vulture scans packages/*/src in isolation and cannot see hive-conductor consumers. This grant authorizes only this exact identity until cross-package reachability tooling catches up."
+    },
+    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'has_permission'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1816",
+      "reason": "Principal.has_permission is the task-scoped elevation check added in Wave 2 Lane A (#1816 / P0.1). Hive middleware and routes delegate to it via principal_has_permission; vulture scans packages/*/src in isolation and cannot see hive-conductor consumers. This grant authorizes only this exact identity until cross-package reachability tooling catches up."
+    },
+    "packages/maistro-core/src/maistro/projects/pg_scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "PgScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
+    },
+    "packages/maistro-core/src/maistro/projects/scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "InMemoryScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
+    },
+    "packages/maistro-core/src/maistro/projects/sqlite_scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "SQLiteScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
     }
   },
   "model-egress": {
@@ -1423,6 +1454,121 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#53",
       "reason": "Pre-existing /v1/ prefix with no declared permission or exemption, measured when Workspace cutover P0.2 landed the route-permission ratchet (default-allow route table, review finding C). Granted as starting debt only; it is declared in quality/route-permissions.json under cutover lane P0.2 and its baseline row is deleted then."
+    },
+    "exempt::/v1/auth": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (identity bootstrap); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/backlog": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal planning board); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/canvas": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (canvas evaluation); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/chat": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (primary product surface); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/cli": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (CLI session record only); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/dag-metrics": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (read-only node metrics); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/dag-runs": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (in-route scoped run inspection); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/dashboard": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal UI layout); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/design": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (design content authoring); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/eval-judge": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (in-route scoped verdict reads); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/install": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (bootstrap installer); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/memory": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal memory surface); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/messages": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal notification inbox); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/profile": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (caller profile); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/program": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (onboarding coaching); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/quotas": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (read-only quota telemetry); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/setup": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (first-run bootstrap); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/setup-checklist": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal setup checklist); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/tasks": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal missions); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/topology": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (read-only topology inspection); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/voice": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (device-credential voice intent); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/widgets": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (dashboard widgets); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
+    },
+    "exempt::/v1/work-items": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#53",
+      "reason": "Reviewed authenticated-only prefix (personal work-item drafts); exempt_reason declaration lands under cutover Wave 2 Lane B P0.2."
     }
   },
   "principal-identity": {
