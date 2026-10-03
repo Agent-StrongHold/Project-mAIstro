@@ -206,6 +206,69 @@ class TestOriginStamping:
 
 
 # --------------------------------------------------------------------------
+# AC1 seam (M4-A6 x M4-A8 reconciliation): every produced candidate carries
+# BOTH lineage records — the archive's CandidateProvenance (the promotion
+# gate's complete_provenance contract) AND the attribution system's frozen
+# CandidateOrigin (the credit ledger's identity) — and neither stamp may
+# displace the other.
+# --------------------------------------------------------------------------
+
+
+class TestDualStampSeam:
+    @staticmethod
+    def _stamped(name: str) -> PipelineGenome:
+        # Population members carry an M4-A6 seed record (the admission gate
+        # requires it); children inherit the objective from the primary parent.
+        from maistro_evolve.archive import OperatorKind, stamp_provenance
+
+        return stamp_provenance(
+            _genome(name), parents=[], operator=OperatorKind.SEED, objective="obj"
+        )
+
+    def test_composite_child_carries_complete_provenance_and_origin(self) -> None:
+        from maistro_evolve.archive import complete_provenance
+
+        a, b = self._stamped("a"), self._stamped("b")
+        child = crossover_and_mutate(a, b, 0.3)
+        # M4-A6 record is complete for the promotion gate and names the two
+        # STORED parents (traversable lineage, not the transient intermediates).
+        prov = complete_provenance(child)
+        assert prov.operator == "crossover"
+        assert prov.parents == [a.id, b.id]
+        assert prov.objective == "obj"
+        assert child.parent_a_id == a.id and child.parent_b_id == b.id
+        # M4-A8 record is present alongside it, unchanged by the provenance
+        # stamping: the composite mutation producer with the crossover chain.
+        assert child.origin is not None
+        assert child.origin.producer.name == "mutate_all"
+        assert child.origin.upstream == (a.id, b.id)
+
+    def test_mutate_selected_child_is_promotion_gate_complete(self) -> None:
+        from maistro_evolve.archive import complete_provenance
+
+        parent = self._stamped("p")
+        child = mutate_selected(parent, 0.5, operators=("mutate_prompt", "mutate_node"))
+        prov = complete_provenance(child)
+        assert prov.operator == "all_mutation"
+        assert prov.parents == [parent.id]
+        assert "mutate_prompt" in prov.detail and "mutate_node" in prov.detail
+        assert child.origin is not None
+        assert child.origin.producer.name == "mutate_selected"
+
+    def test_plain_crossover_carries_both_records(self) -> None:
+        from maistro_evolve.archive import complete_provenance
+
+        a, b = self._stamped("a"), self._stamped("b")
+        child = crossover(a, b)
+        prov = complete_provenance(child)
+        assert prov.operator == "crossover"
+        assert prov.parents == [a.id, b.id]
+        assert child.origin is not None
+        assert child.origin.producer.name == "crossover"
+        assert child.origin.parents == (a.id, b.id)
+
+
+# --------------------------------------------------------------------------
 # AC2: evaluation results update producer statistics without rewriting
 # candidate history
 # --------------------------------------------------------------------------

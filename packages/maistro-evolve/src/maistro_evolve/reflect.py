@@ -181,6 +181,8 @@ async def propose_candidates(
 
 
 def spawn_challenger(genome: PipelineGenome, node_id: str, new_prompt: str) -> PipelineGenome:
+    from .archive import OperatorKind, stamp_provenance
+
     child = genome.model_copy(deep=True)
     now = datetime.now(UTC).isoformat()
     child.id = uuid.uuid4().hex[:12]
@@ -197,9 +199,12 @@ def spawn_challenger(genome: PipelineGenome, node_id: str, new_prompt: str) -> P
         if node.id == node_id:
             node.system_prompt = new_prompt
             break
-    # M4-A8 producer attribution: the structured twin of the harness_params
-    # marker above — this candidate was produced by the reflective prompt
-    # operator, and its credit baseline is the parent's stored scores.
+    # M4-A6 candidate record (operator/objective/prompt version + legacy
+    # parent fields), then M4-A8 producer attribution: the structured twin of
+    # the harness_params marker above — this candidate was produced by the
+    # reflective prompt operator, and its credit baseline is the parent's
+    # stored scores.
+    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.REFLECTION, base=genome)
     producer = producer_identity("reflective_improve", ProducerKind.PROMPT_OPERATOR)
     return stamp_origin(
         child,

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 
+from .archive import OperatorKind, stamp_provenance
 from .attribution import CandidateOrigin, EvalContext, ProducerKind, producer_identity, stamp_origin
 from .mutate import MUTATION_OPERATOR_NAMES, mutate_all, mutate_selected
 from .types import (
@@ -126,8 +127,18 @@ def crossover(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    # M4-A6 candidate record: parents/operator/objective/prompt version, with
+    # the legacy parent_a_id/parent_b_id fields re-derived from the parents.
+    stamp_provenance(
+        child,
+        parents=[parent_a.id, parent_b.id],
+        operator=OperatorKind.CROSSOVER,
+        base=parent_a,
+    )
     if not _stamp:
         return child
+    # M4-A8 producer attribution: the generator identity+version, the credit
+    # baseline (parents' stored scores), and the eval context, frozen at birth.
     producer = producer_identity("crossover", ProducerKind.GENERATOR)
     return stamp_origin(
         child,
@@ -154,14 +165,22 @@ def crossover_and_mutate(
     roster (see ``mutate_all``) — without it, breeding can drift a lineage onto
     models the gateway can't serve.
 
-    M4-A8 producer attribution: the produced child carries a CandidateOrigin
-    whose direct producer is the mutation composite that last shaped it
-    (``mutate_all``/``mutate_selected``), with ``upstream`` recording the two
-    crossover parents (the intermediate crossover child itself is transient,
-    so the parent_a_id chain alone would dead-end at an unstorred id) and
-    ``chain`` preserving the full crossover→mutation pipeline for audit.
-    ``operators=None`` applies every mutation operator (legacy behavior);
-    a ledger-driven subset is how the cycle favors productive operators.
+    M4-A6 lineage: the returned child records BOTH crossover parents. The
+    intermediate crossover child is a construction detail — the mutation
+    composite re-parents to its immediate input, which would otherwise replace
+    this child's recorded second parent with a genome that never joined the
+    population, making the two-parent record unraversable. The final
+    ``stamp_provenance`` re-derives the legacy ``parent_a_id``/``parent_b_id``
+    fields from the authoritative parents record, so no manual re-pointing is
+    needed (and none can drift).
+
+    M4-A8 producer attribution: the produced child also carries a
+    CandidateOrigin whose direct producer is the mutation composite that last
+    shaped it (``mutate_all``/``mutate_selected``), with ``upstream`` recording
+    the two crossover parents and ``chain`` preserving the full
+    crossover→mutation pipeline for audit. ``operators=None`` applies every
+    mutation operator (legacy behavior); a ledger-driven subset is how the
+    cycle favors productive operators.
     """
     cross_child = crossover(parent_a, parent_b, origin_context=origin_context, _stamp=False)
     cross_baseline = _crossover_baseline(parent_a, parent_b)
@@ -182,6 +201,13 @@ def crossover_and_mutate(
         )
         applied = list(operators)
         composite = "mutate_selected"
+    stamp_provenance(
+        final,
+        parents=[parent_a.id, parent_b.id],
+        operator=OperatorKind.CROSSOVER,
+        base=parent_a,
+        detail="crossover+" + composite,
+    )
     producer = producer_identity(composite, ProducerKind.MUTATION_OPERATOR)
     return stamp_origin(
         final,
