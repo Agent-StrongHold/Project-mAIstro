@@ -130,7 +130,7 @@ provenance names *which independent judge* accepted.
   without the write, the reclassification would evaporate and the next
   process would re-learn the anti-pattern by re-buying the failure.
 
-All twelve new fields are durable in both SQL twins; migration 051 adds the
+All twelve new fields are durable in both SQL twins; migration 052 adds the
 columns, and #1156's disposition contract enforces that a future Learning
 field cannot land in one twin only.
 
@@ -158,7 +158,7 @@ field cannot land in one twin only.
 - Validation is only as good as outcome attribution: a scope that never calls
   `mark_outcome` starves its own Gauntlet (min_uses fails), which fails closed
   toward *not* promoting — the safe direction.
-- The durable schema grows by 11 columns (migration 051). SQLite files upgrade
+- The durable schema grows by 11 columns (migration 052). SQLite files upgrade
   in place; pre-M4B rows read back as the local empirical learnings they were.
 
 ## Acceptance criteria

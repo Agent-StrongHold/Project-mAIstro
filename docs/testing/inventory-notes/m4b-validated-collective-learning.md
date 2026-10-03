@@ -89,6 +89,13 @@ lifecycle-columns migration is now `051` re-parented onto develop's `050`
 head. The migration chain-tip pin now asserts `get_heads() == ["051"]` —
 same test node, extended asserts, no node count change.
 
+A second develop collision renumbered it again: develop inserted
+`049_design_artifact_versions` (#780) and renumbered briefs to `050` and
+canonical-run-eval-scores to `051`, so this branch's lifecycle columns
+re-parent onto that `051` as `052` — the single linear head the pin now
+asserts is `"052"`. Same test node, same invariant, no node count change
+(see `auto-121-develop-sync-migration-052.md`).
+
 The radon gate flagged four new C-grade blocks introduced by the M4-B code
 (`_check_with_gauntlet`, `consolidate`, two `_row_to_learning` twins); all
 four were refactored below the C boundary by extraction (`_gauntlet_candidates`,
