@@ -21,43 +21,90 @@ from maistro.events.envelope import (
 if TYPE_CHECKING:
     import asyncpg
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS canonical_event_log (
-    event_id TEXT PRIMARY KEY,
-    stream_id TEXT NOT NULL,
-    sequence BIGINT NOT NULL,
-    type TEXT NOT NULL,
-    timestamp DOUBLE PRECISION NOT NULL,
-    workspace_id TEXT NOT NULL DEFAULT '',
-    stream_scope TEXT NOT NULL DEFAULT '',
-    project_id TEXT NOT NULL DEFAULT '',
-    run_id TEXT NOT NULL DEFAULT '',
-    node_run_id TEXT NOT NULL DEFAULT '',
-    attempt_id TEXT NOT NULL DEFAULT '',
-    invocation_id TEXT NOT NULL DEFAULT '',
-    session_id TEXT NOT NULL DEFAULT '',
-    correlation_id TEXT NOT NULL DEFAULT '',
-    causation_id TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL DEFAULT '',
-    actor_id TEXT NOT NULL DEFAULT '',
-    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    provenance JSONB NOT NULL DEFAULT '{}'::jsonb,
-    UNIQUE(stream_id, sequence)
-);
-CREATE INDEX IF NOT EXISTS idx_canonical_event_stream
-    ON canonical_event_log (stream_id, sequence);
-CREATE INDEX IF NOT EXISTS idx_canonical_event_run
-    ON canonical_event_log (run_id, sequence);
-"""
 
-_SCHEMA_LOCK_KEY = 0x6D61_6531  # "mae1"
+# The columns this store consumes, not a second schema definition: no DDL,
+# defaults, migration stamp or type requirements on additive columns live here.
+_EVENT_COLUMN_TYPES = {
+    "event_id": "text",
+    "stream_id": "text",
+    "sequence": "bigint",
+    "type": "text",
+    "timestamp": "double precision",
+    "workspace_id": "text",
+    "stream_scope": "text",
+    "project_id": "text",
+    "run_id": "text",
+    "node_run_id": "text",
+    "attempt_id": "text",
+    "invocation_id": "text",
+    "session_id": "text",
+    "correlation_id": "text",
+    "causation_id": "text",
+    "source": "text",
+    "actor_id": "text",
+    "payload": "jsonb",
+    "provenance": "jsonb",
+}
 
 
 async def ensure_canonical_event_schema(pool: asyncpg.Pool) -> None:
-    """Create the canonical Event table for standalone/supplied-pool callers."""
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCHEMA_LOCK_KEY)
-        await conn.execute(_SCHEMA)
+    """Require migration 030's read/write contract without changing the schema.
+
+    The historical name is retained for supplied-pool callers. Alembic alone
+    owns DDL; this preflight also runs through CapabilityEffectContext, so an
+    unmigrated pool must fail rather than silently creating a second schema.
+    Check consumed column types, SELECT/INSERT privileges and the two uniqueness
+    guarantees on which event identity and stream ordering depend. Additional
+    columns/indexes from newer migrations are compatible and must not require
+    an exact head stamp.
+    """
+    async with pool.acquire() as conn:
+        # Runtime reads use SELECT *, including additive columns. Also name
+        # consumed columns explicitly so a missing one fails even with no rows.
+        await conn.execute(
+            f"SELECT *, {', '.join(_EVENT_COLUMN_TYPES)} FROM canonical_event_log LIMIT 0"
+        )
+        columns = await conn.fetch(
+            """SELECT a.attname, a.atttypid::regtype::text AS data_type,
+                      has_column_privilege(a.attrelid, a.attnum, 'INSERT') AS can_insert
+               FROM pg_attribute a
+               WHERE a.attrelid = 'canonical_event_log'::regclass
+                 AND a.attname = ANY($1::text[]) AND NOT a.attisdropped""",
+            list(_EVENT_COLUMN_TYPES),
+        )
+        incompatible = [
+            row["attname"]
+            for row in columns
+            if row["data_type"] != _EVENT_COLUMN_TYPES[row["attname"]]
+        ]
+        if incompatible:
+            raise RuntimeError(
+                "PostgreSQL canonical_event_log has incompatible column types: "
+                + ", ".join(incompatible)
+                + "; apply and verify Alembic migrations before starting the application"
+            )
+        if any(not row["can_insert"] for row in columns):
+            raise RuntimeError(
+                "PostgreSQL canonical_event_log requires INSERT privilege on every "
+                "column written by the Event store"
+            )
+        indexes = await conn.fetch(
+            """SELECT array_agg(a.attname ORDER BY k.ord) AS columns
+               FROM pg_index i
+               JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE
+               JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+               WHERE i.indrelid = 'canonical_event_log'::regclass
+                 AND i.indisunique AND i.indisvalid AND i.indisready AND i.indimmediate
+                 AND i.indpred IS NULL AND i.indexprs IS NULL
+                 AND k.ord <= i.indnkeyatts
+               GROUP BY i.indexrelid"""
+        )
+    keys = {tuple(row["columns"]) for row in indexes}
+    if not {("event_id",), ("stream_id", "sequence")} <= keys:
+        raise RuntimeError(
+            "PostgreSQL canonical_event_log lacks required unique keys; "
+            "apply and verify Alembic migrations before starting the application"
+        )
 
 
 class PgEventStore:
@@ -73,6 +120,7 @@ class PgEventStore:
         self._pool = pool
 
     async def ensure_schema(self) -> None:
+        """Check the Alembic-managed schema; never create or repair it."""
         await ensure_canonical_event_schema(self._pool)
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:

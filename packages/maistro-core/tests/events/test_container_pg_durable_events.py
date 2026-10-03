@@ -80,10 +80,17 @@ async def wire():
 
 
 @pytest.fixture
-async def pg_pool():
+async def pg_pool(canonical_event_schema: str):
     import asyncpg
 
-    pool = await asyncpg.create_pool(_require_postgres(), min_size=1, max_size=4)
+    # Canonical Events require the official migration even while this suite
+    # still exercises runtime setup for the separate legacy delivery tables.
+    pool = await asyncpg.create_pool(
+        _require_postgres(),
+        min_size=1,
+        max_size=4,
+        server_settings={"search_path": f"{canonical_event_schema},public"},
+    )
     try:
         yield pool
     finally:
@@ -102,7 +109,6 @@ class TestPoolSelectsThePostgresStores:
 
     async def test_the_wired_stores_reach_the_server(self, pg_pool, wire):
         """Types alone would pass against a store holding a dead pool."""
-        await pg_pool.execute("TRUNCATE handler_invocations, trigger_definitions, event_log")
         container = await wire(_config(), pg_pool=pg_pool)
 
         appended = await container.durable_event_log.append("task.created", entity_id="e1")
@@ -113,14 +119,27 @@ class TestPoolSelectsThePostgresStores:
         ]
 
     async def test_wiring_creates_the_schema_it_needs(self, pg_pool, wire):
-        """A container wired against a database that has never run migrations
-        004 and 036 must still come up: `_wire_pg_durable_events` calls
-        `ensure_event_schema` once for all four stores."""
-        await pg_pool.execute(
-            "DROP TABLE IF EXISTS "
-            "handler_invocations, trigger_definitions, event_log, consumer_cursors"
+        """Legacy delivery setup remains unchanged by the canonical Event cut.
+
+        Revision 030 is already applied by the pool fixture. The separate
+        legacy delivery tables still use `_wire_pg_durable_events`' runtime
+        setup until their own migration-authority cut is completed.
+        """
+        legacy_tables = [
+            "handler_invocations",
+            "trigger_definitions",
+            "event_log",
+            "consumer_cursors",
+        ]
+        catalogue_query = (
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname = current_schema() AND tablename = ANY($1::text[])"
         )
+        assert not await pg_pool.fetch(catalogue_query, legacy_tables)
         container = await wire(_config(), pg_pool=pg_pool)
+        assert {
+            row["tablename"] for row in await pg_pool.fetch(catalogue_query, legacy_tables)
+        } == set(legacy_tables)
 
         await container.handler_invocation_store.get_or_create("t1", 1)
         assert len(await container.handler_invocation_store.list_for_event(1)) == 1
