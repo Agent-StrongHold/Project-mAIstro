@@ -30,9 +30,7 @@ async def test_public_cancel_fences_an_executor_that_swallows_cancellation(
         raise AssertionError("unreachable")
 
     execution = asyncio.create_task(
-        runtime.execute(
-            None, None, execution_id="swallows", executor=executor, timeout_s=timeout_s
-        )
+        runtime.execute(None, None, execution_id="swallows", executor=executor, timeout_s=timeout_s)
     )
     try:
         async with asyncio.timeout(3):
