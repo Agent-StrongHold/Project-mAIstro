@@ -213,6 +213,18 @@ class EngineService:
         return getattr(container, "run_reader", None)
 
     @property
+    def graph_run_store(self) -> Any:
+        """The core Container's durable graph-continuation store, or None.
+
+        The DurableRunStore the canonical graph executor checkpoints into —
+        Run + GraphExecutionState + NodeRuns + Attempts. None without the
+        bridge, like `run_store`: inspection then answers from the projection
+        alone rather than inventing graph state it cannot read (#775).
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "graph_run_store", None)
+
+    @property
     def schedule_store(self) -> Any:
         """The core Container's canonical Schedule store, or None.
 
@@ -348,7 +360,10 @@ class EngineService:
 
             # Required to source the registry; its wiring half is the second
             # documented optional degradation (baselines/SAFE_NOOP).
-            self._wire_capabilities(settings)
+            # Awaited: boot registration writes a Binding, and on a durable
+            # store that is I/O (#1133). Called without `await` the coroutine
+            # is created and dropped, so nothing is wired and nothing raises.
+            await self._wire_capabilities(settings)
 
             # Required: the feedback outcome store.
             self._wire_outcome_store()
@@ -528,9 +543,13 @@ class EngineService:
             )
         self._agent_port = port
 
-    def _wire_capabilities(self, settings: Settings) -> None:
+    async def _wire_capabilities(self, settings: Settings) -> None:
         """Source the registry (Container when configured, else canonical) and
-        register host-health providers + apply activation. Never crashes startup."""
+        register host-health providers + apply activation. Never crashes startup.
+
+        Awaited rather than called: boot registration writes a Binding, and on
+        a durable store that is I/O (#1133).
+        """
         container = getattr(self._agent_port, "container", None)
         if container is not None and getattr(container, "capabilities", None) is not None:
             self._capabilities = container.capabilities
@@ -549,7 +568,7 @@ class EngineService:
             except Exception:
                 vault = None
 
-            wire_capabilities(
+            await wire_capabilities(
                 self._capabilities,
                 settings_model=settings_store.current(),
                 config=settings,

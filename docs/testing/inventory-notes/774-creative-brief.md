@@ -337,3 +337,20 @@ Re-validated on the repaired tree:
   no issues in 745 source files;
 - `check-suite-inventory.py` (14 suites), `verify-monorepo-layout.sh`, and
   `check-merge-markers.py` all exit 0.
+
+
+## Round 6 (develop sync at the #792 repair: the briefs migration re-parents onto the eval 049 as 050)
+
+The #792 lane's develop sync merged `origin/develop` (tip `33bcd3ce288`) into
+`auto-792` and preserved the conflict for resolution. Both branches had taken
+revision `049` on the same parent `048` — this contract's
+`design_creative_briefs` on develop, the canonical Run eval-score evidence on
+the #792 branch — so `get_heads()` answered `["049", "049"]` and Alembic's
+script directory refused the duplicate. Per the same one-linear-head
+convention the rounds above document, the eval-score migration keeps `049`
+(it re-parented onto 048 first, in the #792 lane's round 2) and the briefs
+migration is renumbered to **`050_design_creative_briefs`**
+(`down_revision = "049"`). The effect-index chain test now walks to `050`,
+asserts `get_heads() == ["050"]`, and its resolution comment names the
+collision. `SPEC-092826`'s "migration 049" mention follows the renumber. No
+test node IDs moved; this note's inventory delta (+59) is unchanged.

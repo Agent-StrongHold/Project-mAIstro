@@ -98,7 +98,14 @@ jobs:
               );
 
               const latest = new Map();
-              for (const run of runs) latest.set(run.name, run);
+              for (const run of runs) {
+                // Same-SHA workflow attempts can arrive newest-first or span
+                // pages. Compare check-run IDs, not response order or verdict:
+                // a newer queued/cancelled/failed attempt must supersede success.
+                // started_at may be null while queued; an old job can finish last.
+                const previous = latest.get(run.name);
+                if (!previous || run.id > previous.id) latest.set(run.name, run);
+              }
 
               const pending = [];
               for (const name of required) {
