@@ -42,6 +42,12 @@ from maistro_evolve.coverage_gate import (
 from maistro_evolve.doc_regression import doc_regressions
 from maistro_evolve.improvement import ImprovementKind
 from maistro_evolve.mutation_probe import MutationProbe, probe_diff_mutations
+from maistro_evolve.scenario_objective import (
+    CorrectnessResult,
+    ScenarioEvaluation,
+    ScenarioObjective,
+    evaluate_proven_scenarios,
+)
 from maistro_evolve.scorecard import (
     FitnessWeights,
     GateResult,
@@ -292,6 +298,20 @@ class FitnessInputs:
     declared_kind: str | None = None
     fail_first: FailFirstEvidence | None = None
     baseline_quality_composite: float | None = None
+    # The weighted proven-scenario objective (M5-B, #108): the immutable,
+    # versioned scenario ruler the loop evaluates candidates with, plus the
+    # prior proven scores (best-ever per scenario, archive.proven_scenario_scores
+    # semantics), the candidate's own scenario scores, and — optionally — an
+    # explicit correctness verdict. When ``scenario_correctness`` is None the
+    # ``tests_pass`` gate IS the correctness oracle (contract/acceptance tests
+    # are the non-negotiable oracle); a caller with a broader oracle (security
+    # suites, contract tests beyond the loop's own pytest run) injects it.
+    # All four stay None when the loop has no scenario objective configured;
+    # the scenario gate and signal are then simply absent.
+    scenario_objective: ScenarioObjective | None = None
+    scenario_proven_scores: dict[str, float] = field(default_factory=dict)
+    scenario_candidate_scores: dict[str, float] = field(default_factory=dict)
+    scenario_correctness: CorrectnessResult | None = None
 
 
 def _ladder_signals(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
@@ -482,9 +502,107 @@ def _mutation_signal(inp: FitnessInputs, w: FitnessWeights) -> SignalScore | Non
     )
 
 
+def _scenario_objective_eval(inp: FitnessInputs) -> ScenarioEvaluation | None:
+    """Evaluate the proven-scenario objective when the caller configured one.
+
+    Pure: no measurement happens here, the caller gathered the scores. The
+    default correctness oracle is the ``tests_pass`` gate itself (the
+    contract/acceptance tests), so a loop that configured a scenario objective
+    but has no broader oracle still gets the M5-B semantics — a red test suite
+    scores zero on the scenario objective, no matter the aggregate.
+    """
+    if inp.scenario_objective is None:
+        return None
+    oracle = inp.scenario_correctness or CorrectnessResult(
+        passed=inp.tests_passed,
+        failures=() if inp.tests_passed else (inp.test_reason or "tests failed",),
+    )
+    return evaluate_proven_scenarios(
+        inp.scenario_objective,
+        inp.scenario_proven_scores,
+        inp.scenario_candidate_scores,
+        oracle,
+    )
+
+
+def _scenario_gate_items(scenario_eval: ScenarioEvaluation | None) -> list[GateResult]:
+    """The proven-scenario veto (M5-B, #108) as a gate list: empty when no
+    scenario objective was configured (absent evidence adds no gate), a
+    single non-tradeable gate otherwise.
+
+    The gate reads ``promotable`` — zeroed when the correctness oracle failed
+    or any proven scenario regressed / was never evaluated — so no unrelated
+    scalar gain (coverage, quality, even other scenarios' gains) can rescue
+    the candidate. The full evaluation rides in ``detail`` and on
+    ``Scorecard.scenario_objective``, so the correctness verdict and the
+    scalar score are recorded separately for audit.
+    """
+    if scenario_eval is None:
+        return []
+    return [
+        GateResult(
+            "no_proven_scenario_regression",
+            scenario_eval.promotable,
+            scenario_eval.summary(),
+            detail={
+                "objective_version": scenario_eval.objective_version,
+                "objective_digest": scenario_eval.objective_digest,
+                "correctness_passed": scenario_eval.correctness_gate.passed,
+                "correctness_failures": list(scenario_eval.correctness_gate.failures),
+                "regressed": scenario_eval.regressed,
+                "not_evaluated": scenario_eval.not_evaluated,
+                "raw_weighted_score": scenario_eval.raw_weighted_score,
+                "objective_score": scenario_eval.objective_score,
+            },
+        )
+    ]
+
+
+def _scenario_signal(scenario_eval: ScenarioEvaluation, w: FitnessWeights) -> SignalScore:
+    """The scalar ranking contribution of the proven-scenario objective: the
+    dominant term of the composite when present (M5-B #108 — keeping the
+    proven scenarios green IS the objective the work signals serve). Only
+    ranks candidates that already cleared the scenario gate."""
+    return SignalScore(
+        "proven_scenarios",
+        MeasureKind.DERIVED,
+        scenario_eval.objective_score,
+        w.proven_scenarios,
+        (
+            "criticality-weighted proven scenarios under "
+            f"{scenario_eval.objective_version} ({scenario_eval.objective_digest}): "
+            f"score={scenario_eval.objective_score:.4f}; correctness="
+            f"{'pass' if scenario_eval.correctness_gate.passed else 'FAIL'}"
+        ),
+        detail={
+            "objective_version": scenario_eval.objective_version,
+            "objective_digest": scenario_eval.objective_digest,
+            "raw_weighted_score": scenario_eval.raw_weighted_score,
+            "regressed": scenario_eval.regressed,
+            "not_evaluated": scenario_eval.not_evaluated,
+        },
+    )
+
+
+def _scenario_signal_items(
+    scenario_eval: ScenarioEvaluation | None, w: FitnessWeights
+) -> list[SignalScore]:
+    """``_scenario_signal`` as a list: empty when no scenario objective was
+    configured, so absent evidence adds no signal (and no branch lands in
+    ``compose_scorecard``)."""
+    if scenario_eval is None:
+        return []
+    return [_scenario_signal(scenario_eval, w)]
+
+
 def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None) -> Scorecard:
     """Pure: assemble gates + priority-weighted scores into a Scorecard."""
     w = weights or FitnessWeights()
+    # The proven-scenario objective (M5-B, #108) is evaluated first: its gate
+    # is a veto like any other, and its evaluation record rides on the
+    # Scorecard so the correctness verdict and the scalar objective are
+    # recorded separately from the work-signal composite.
+    scenario_eval = _scenario_objective_eval(inp)
     gates = [
         GateResult(
             "tests_pass",
@@ -527,9 +645,13 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
             assertion_score=inp.assertion_score,
         ),
         *inp.lint_gates,
+        *_scenario_gate_items(scenario_eval),
         *_conditional_gates(inp),
     ]
-    scores: list[SignalScore] = [red_green_signal(inp.tdd, w.red_green)]
+    scores: list[SignalScore] = [
+        red_green_signal(inp.tdd, w.red_green),
+        *_scenario_signal_items(scenario_eval, w),
+    ]
     cov_delta = (
         inp.candidate_coverage - inp.baseline_coverage
         if inp.candidate_coverage is not None and inp.baseline_coverage is not None
@@ -581,7 +703,11 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
                 inp.code_quality_detail or "changed-source quality composite",
             )
         )
-    return Scorecard(gates=gates, scores=scores)
+    return Scorecard(
+        gates=gates,
+        scores=scores,
+        scenario_objective=scenario_eval,
+    )
 
 
 def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) -> tuple[bool, str]:
