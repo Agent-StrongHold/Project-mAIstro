@@ -11,10 +11,14 @@ Public surface:
 - ``InMemoryOntology`` — the only implementation, in-process and not
   thread-safe. There is no durable, SQLAlchemy-backed store.
 
-This layer has no production consumer yet: nothing outside
-``maistro.ontology`` resolves semantic objects through the registry.
-Connecting it is tracked by #34, which the reachability ledger records
-as the CONNECT disposition for this subsystem.
+The registry's process-level wiring is still pending: no in-repo process
+resolves semantic objects through it yet; connecting one is tracked by #34.
+The Goal `Rubric` kind (M7-A2, issue #791) ships as the layer's public library
+surface — registered by :func:`register_rubric_kind` and persisted through
+:class:`maistro.projects.rubric_store.RubricStore`, which
+:mod:`maistro.projects` exports — so the modules are import-reachable as
+published API while the first process consumer lands with M7 scoring/fence
+work.
 
 Usage:
 

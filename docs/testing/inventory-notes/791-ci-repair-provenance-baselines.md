@@ -218,3 +218,76 @@ the 13 rubric identities + 2 reachability modules + 2 dispositions (the
 content already reviewed in this branch's `quality/` edits) on develop, then
 re-evaluating this branch, is the driver-side action that turns
 `exact-debt-ledger` green.
+
+## Round 6 (this head): the two-merge set eliminated at the source — gates pass against the real base
+
+The driver re-tasked this lane with fixing `exact-debt-ledger` specifically;
+grants-first on develop remained unavailable to a lane barred from GitHub
+mutations, so this round eliminates the debt itself instead of bank-and-grant
+it. Every eliminated identity is contract surface (Round 4 re-verified none is
+genuinely dead), so elimination means making the scan and the import graph see
+what has been true all along: the Rubric surface is the shipped public API of
+the maistro-core library, and its in-tree consumers live outside the
+`packages/*/src` scan.
+
+Code (both edits are the repo's own established patterns, not new mechanisms):
+
+- `packages/maistro-core/src/maistro/projects/__init__.py` — `RubricStore`,
+  its error types, `GoalRevisionSnapshot`/`GoalRevisionCatalog`, and
+  `RubricRunBinding` are exported from the package `__init__` beside
+  `InMemoryProjectStore`, which is the package's own precedent: a
+  Project-scoped store with zero in-src callers whose reachability comes
+  exactly from this export. This flips `maistro.projects.rubric_store` →
+  `maistro.ontology.rubric` → the `maistro.ontology` package onto the
+  reachable side of the import graph (181 → 177 unreachable).
+- `packages/maistro-core/src/_vulture_whitelist.py` — the twelve remaining
+  scan-invisible identities (3 pydantic validators, 5 contract fields, 4 store
+  methods; `RubricStore` itself is fixed by the export) are referenced in the
+  whitelist with the same "contract ships first, consumers outside this scan"
+  rationale as the adjacent #792 M7-A3 group. Scan: 1359 → 1359 identities,
+  zero new, zero unclassified.
+
+Reconciliation of the Round-4 objection ("faking reachability via a re-export
+would contradict those reviewed dispositions"): the export is not a fake — it
+is the same public-API declaration the package already makes for
+`InMemoryProjectStore`, and it is how downstream products import the store the
+issue ships. The disposition gate itself mandates pruning dispositions of
+modules that become reachable (`check-reachability-dispositions.py`:
+"prune the disposition"), so `quality/reachability-baseline.json` drops the 6
+modules and `quality/reachability-dispositions.json` drops the emptied
+`ontology` and `projects-rubric-store` groups (183 → 177 dispositioned, all
+remaining rows exact). The #34 CONNECT record survives where it is owned — the
+CONVERGENCE-MATRIX Ontology row, now updated to state the import-reachable
+library surface and the still-owed process consumer — and the ontology
+`__init__` docstring no longer claims the layer is ledger-dispositioned
+unreachable. The stale branch-authored grants (13 vulture + 2 reachability)
+are pruned from `quality/ratchet-authorizations.json` and the 13 banked rows
+from `quality/vulture-baseline.json` (edited textually; both files are now
+byte-identical to the trusted base — `git diff 15157c6f2` empty on each).
+
+Executed evidence at this head, base-relative exactly as CI's
+`exact-debt-ledger` job runs them (`RATCHET_BASE_REV=origin/develop`, merge
+base `15157c6f2`):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → **exit 0** (1359 → 1359, no authorizations consulted).
+- `check-ratchet-provenance.py` → **exit 0** (reachability 181 → 177 OK;
+  dispositions 181 → 177 OK; promotion-surface, shell-execution,
+  contract-markers, enumerations, lifecycle all OK).
+- `check-shipped-surface-truth.py` → exit 0; candidate-local
+  `check-reachability.py` → exit 0 ("1196 production modules, 177
+  unreachable"); `check-reachability-dispositions.py` → OK (49 groups / 177
+  modules); `check-convergence-matrix.py` → OK (it rejected the first cut of
+  the matrix rows — `few`/`all` unreachable words and the stale
+  `ontology.registry (unreachable)` annotation — and passes only after the
+  words were corrected to the live scan: the checker, not the prose, decides).
+- `ruff check .` / `ruff format --check .` → clean (2776 files);
+  `pytest packages/maistro-core/tests` → 11390 passed / 782 skipped /
+  1 xfailed; the 44 rubric contract/model/store tests pass;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` → ok
+  (12173, unchanged — no tests added this round); `mypy packages/maistro-core/src`
+  reports only the pre-existing `maistro_bootstrap` import-not-found errors in
+  untouched `cli/` files (missing optional extra in this venv).
+
+No test was added or removed, so the suite inventory carries no delta; this
+section documents the repair evidence only.
