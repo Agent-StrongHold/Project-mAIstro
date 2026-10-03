@@ -8,16 +8,16 @@ from typing import Any
 
 import pytest
 
+import maistro.tasks.lanes as task_lanes
+import maistro.tasks.models as task_models
 import maistro.tasks.queue as queue_mod
-from maistro.tasks.lanes import Lane
-from maistro.tasks.models import TaskCreate
 
 
 _FIXED_TIME = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 
 
 def _build(
-    request: TaskCreate,
+    request: task_models.TaskCreate,
     *,
     task_id: str = "task-fixed",
     user_id: str = "",
@@ -33,7 +33,7 @@ def _build(
 
 
 def test_unpublished_builder_preserves_all_receipt_fields_and_defaults() -> None:
-    minimal = _build(TaskCreate(description="minimal"), task_id="minimal-task")
+    minimal = _build(task_models.TaskCreate(description="minimal"), task_id="minimal-task")
     assert minimal.model_dump(mode="json") == {
         "task_id": "minimal-task",
         "status": "queued",
@@ -63,13 +63,13 @@ def test_unpublished_builder_preserves_all_receipt_fields_and_defaults() -> None
         "completed_at": None,
     }
 
-    request = TaskCreate(
+    request = task_models.TaskCreate(
         description="full",
         workspace="/tmp/workspace",
         tier=4,
         branch="feature/full",
         constraints=["tests", "lint"],
-        lane=Lane.LIVE,
+        lane=task_lanes.Lane.LIVE,
         priority_tier="P0",
         task_type="code",
         agent_id="mason",
@@ -124,15 +124,15 @@ def test_unpublished_builder_preserves_all_receipt_fields_and_defaults() -> None
 
 
 def test_unpublished_builder_preserves_owner_precedence() -> None:
-    request_owner = TaskCreate(description="owned", user_id="request-owner")
+    request_owner = task_models.TaskCreate(description="owned", user_id="request-owner")
 
     assert _build(request_owner, user_id="call-owner").user_id == "call-owner"
     assert _build(request_owner).user_id == "request-owner"
-    assert _build(TaskCreate(description="anonymous")).user_id == ""
+    assert _build(task_models.TaskCreate(description="anonymous")).user_id == ""
 
 
 def test_unpublished_builder_preserves_supplied_key_and_copies_constraints() -> None:
-    request = TaskCreate(
+    request = task_models.TaskCreate(
         description="copy",
         constraints=["one"],
         idempotency_key="request-key",
@@ -157,7 +157,7 @@ def test_unpublished_builder_has_no_clock_id_or_publication_side_effects(
     class _BombClock:
         now = staticmethod(_bomb)
 
-    request = TaskCreate(
+    request = task_models.TaskCreate(
         description="pure",
         constraints=["keep"],
         program_context={"nested": ["value"]},
@@ -221,7 +221,7 @@ async def test_submit_once_uses_builder_before_existing_admission(
     original_builder = queue_mod._build_unpublished_task
     builder_calls: list[dict[str, Any]] = []
 
-    def _wrapped_builder(request: TaskCreate, **kwargs: Any):
+    def _wrapped_builder(request: task_models.TaskCreate, **kwargs: Any):
         builder_calls.append({"request": request, **kwargs})
         return original_builder(request, **kwargs)
 
@@ -240,7 +240,7 @@ async def test_submit_once_uses_builder_before_existing_admission(
 
     submission = asyncio.create_task(
         queue._submit_once(
-            TaskCreate(description="ordered", user_id="request-owner"),
+            task_models.TaskCreate(description="ordered", user_id="request-owner"),
             user_id="principal",
             workspace_id="workspace-1",
             idempotency_key="key-1",
@@ -282,7 +282,7 @@ async def test_submit_once_uses_builder_before_existing_admission(
 
     with pytest.raises(RuntimeError, match="admission failed"):
         await failed._submit_once(
-            TaskCreate(description="refused"),
+            task_models.TaskCreate(description="refused"),
             user_id="principal",
             workspace_id="workspace-2",
         )
