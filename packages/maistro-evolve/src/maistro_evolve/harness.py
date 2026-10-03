@@ -31,6 +31,25 @@ signal — see SPEC-202 and the evolve CLAUDE.md stability statement.
 """
 
 
+def evidence_method(result: EvalResult) -> str:
+    """The verified-method provenance for one benchmark result (#384).
+
+    Extracts ``metadata["evidence"]`` into the compact string recorded in
+    ``PipelineGenome.eval_evidence``: the ``method`` field for dict-shaped
+    evidence (what every runner in this package now emits), the string
+    itself for str-shaped evidence, and "unverified" when a result carries
+    no record. Absence is provenance too — recorded, never silently
+    dropped — so champion selection can always name (or flag) the evidence
+    behind every score.
+    """
+    evidence = result.metadata.get("evidence")
+    if isinstance(evidence, dict):
+        return str(evidence.get("method", "unverified"))
+    if isinstance(evidence, str) and evidence:
+        return evidence
+    return "unverified"
+
+
 class EvalHarness:
     def __init__(self, benchmark_fidelity: BenchmarkFidelity = "proxy") -> None:
         self._benchmarks: dict[str, BenchmarkRunner] = {}

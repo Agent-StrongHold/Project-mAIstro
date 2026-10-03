@@ -687,6 +687,30 @@ or placeholder-only section.
 
 ### Changed
 
+- **Evolve proxy fitness no longer credits text narration (#384).** The
+  `proxy_gaia` scorer lost its fuzzy fallbacks (0.9 raw-substring, 0.85
+  digit-set, 0.7 word-overlap, and the `max(exact, judged)` merge): only a
+  normalized/numeric exact match earns unjudged score, everything else is
+  verified solely by the LLM judge (fail-closed 0.0 on judge failure), with an
+  optional `judge_llm_call` to verify with a different model than the candidate
+  answered with. The `proxy_ragas` scorer's word-overlap primary score, its
+  `>= 0.6` judge-skip and its `max(static, judged)` merge are gone — the judge
+  runs for every sample and is the only credit path; the static overlap is
+  reported as an explicitly uncredited diagnostic. `proxy_bfcl` and
+  `proxy_tau_bench` (already structured-call-only since #852) and the two fixed
+  scorers now record evidence provenance in `EvalResult.metadata["evidence"]`,
+  folded into the new `PipelineGenome.eval_evidence` and surfaced by the new
+  `PopulationStore.champion_provenance()`. Stored genomes gain an
+  `eval_evidence` field (defaults to `{`). New `benchmarks/calibration.py`
+  measures each scorer's narration false-positive rate against held-out
+  adversarial fixtures (`calibrate_proxy_scorers`). Serialized-genome consumers
+  that rejected unknown fields must tolerate the new key. Both acceptance
+  surfaces are operator-reachable: `python -m maistro_rsi evolve` prints the
+  champion's per-benchmark score→evidence provenance, and a new
+  `python -m maistro_rsi calibrate` runs the harness offline against a stored
+  genome and reports each scorer's narration false-positive rate (reporting
+  only — the fitness hard gates stay the only scoring authority).
+
 - **Terminal BACKLOG.md items must carry closure evidence (#101, partial).**
   `scripts/check-backlog-consistency.py` now fails an `Implemented` item with
   no PR/issue link or existing repo file, a cited repo path that no longer
