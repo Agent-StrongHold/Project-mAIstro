@@ -351,6 +351,7 @@ class TestCapabilityPromotionGate:
             "objective_version": objective_version(["proxy_ifeval"]),
             "evidence_cycle": 1,
         }
+
         other = _genome("peer", eval_scores={"proxy_ifeval": 0.9})
         other.id = "peer"
         components = compute_fitness(g, [g, other], alt)
