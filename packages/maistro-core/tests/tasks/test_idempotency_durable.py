@@ -24,7 +24,12 @@ from typing import Any
 import aiosqlite
 import pytest
 
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.model import RunStatus
+from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.wiring import spine_is_migrated
+from maistro.tasks import queue as queue_module
+from maistro.tasks.admission import TaskRunAdmitter
 from maistro.tasks.idempotency import (
     DEFAULT_REPLAY_WINDOW,
     PENDING_LEASE,
@@ -39,6 +44,8 @@ from maistro.tasks.idempotency import (
     admission_scope_key,
     wire_task_idempotency,
 )
+from maistro.tasks.models import TaskCreate
+from maistro.tasks.queue import TaskQueue
 from maistro.testing.postgres import postgres_dsn
 from maistro.types.errors import ConfigError
 
@@ -243,6 +250,87 @@ async def test_the_takeover_guard_matches_what_the_reader_decided(tmp_path: Path
     )
     assert isinstance(replay, Replayed)
     await conn.close()
+
+
+async def test_completion_write_fault_reconciles_the_committed_run_after_store_recreation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completion-write fault cannot turn one admitted Run into two.
+
+    The first process commits the Run after ``begin`` but loses the later
+    claim-completion write. A fresh SQLite Run/claim pair then retries after
+    the pending lease. Discovery must attach the already committed Run to the
+    old claim rather than taking it over and minting another one (#1845).
+    """
+
+    class _QueueClock:
+        current = _NOW
+
+        @classmethod
+        def now(cls, tz: object) -> datetime:
+            assert tz is UTC
+            return cls.current
+
+    monkeypatch.setattr(queue_module, "datetime", _QueueClock)
+    database = tmp_path / "admission.sqlite3"
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace")
+    project = await projects.create(
+        workspace_id="workspace", parent_project_id=root.project_id, name="Tasks"
+    )
+
+    first_connection = await aiosqlite.connect(database)
+    first_runs = SqliteRunStore(first_connection, project_store=projects)
+    first_claims = SqliteTaskIdempotencyStore(first_connection)
+    await first_runs.ensure_schema()
+    await first_claims.ensure_schema()
+
+    async def completion_write_fails(*_args: object, **_kwargs: object) -> bool:
+        raise OSError("injected completion write failure")
+
+    monkeypatch.setattr(first_claims, "complete", completion_write_fails)
+    request = TaskCreate(description="commit once", idempotency_key="completion-fault")
+    first_queue = TaskQueue(
+        admitter=TaskRunAdmitter(
+            first_runs, workspace_id="workspace", project_id=project.project_id
+        ),
+        idempotency_store=first_claims,
+    )
+    first = await first_queue.submit(request, user_id="alice", workspace_id="workspace")
+    assert first.run_id is not None
+    assert await first_runs.get_run(first.run_id) is not None
+    await first_connection.close()
+
+    _QueueClock.current = _STALL
+    second_connection = await aiosqlite.connect(database)
+    second_runs = SqliteRunStore(second_connection, project_store=projects)
+    second_claims = SqliteTaskIdempotencyStore(second_connection)
+    await second_runs.ensure_schema()
+    await second_claims.ensure_schema()
+    try:
+        second_queue = TaskQueue(
+            admitter=TaskRunAdmitter(
+                second_runs, workspace_id="workspace", project_id=project.project_id
+            ),
+            idempotency_store=second_claims,
+        )
+        retry = await second_queue.submit(request, user_id="alice", workspace_id="workspace")
+
+        assert (retry.task_id, retry.run_id) == (first.task_id, first.run_id)
+        queued = await second_runs.list_by_status(RunStatus.QUEUED, limit=10)
+        assert [run.run_id for run in queued] == [first.run_id]
+        scope = admission_scope_key(
+            principal="alice",
+            workspace_id="workspace",
+            project_id=project.project_id,
+            action="tasks.submit",
+            key="completion-fault",
+        )
+        record = await second_claims.get(scope)
+        assert record is not None and record.admitted
+        assert (record.task_id, record.run_id) == (first.task_id, first.run_id)
+    finally:
+        await second_connection.close()
 
 
 # ── PostgreSQL: the statements, at the pool boundary ──────────────
