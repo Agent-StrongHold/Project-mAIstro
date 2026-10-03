@@ -321,11 +321,6 @@
       "issue": "#791",
       "reason": "RubricProvenance.authored_by records who authored a revision - part of the #791 provenance contract (who authored, which pack supplied defaults); M7-A2 (#791) registers the Goal `Rubric` as a first-class ontology kind: a versioned scored-acceptance object bound to one Goal revision. The identity is declarative Pydantic surface or store API consumed by packages/maistro-core/tests (ontology/test_rubric_model.py, ontology/test_rubric_contracts.py, projects/test_rubric_store.py) and reserved for Run scoring and fence gating, which the issue's stop condition explicitly defers (\"Do not score anything in this PR\"), so a src-only vulture scan cannot see in-package consumption yet. This grant authorizes only the exact Vulture identity named by the key; it does not approve scoring behavior or close #791."
     },
-    "packages/maistro-core/src/maistro/ontology/rubric.py::unused variable 'recorded_at'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#791",
-      "reason": "RubricRunBindingSemantic.recorded_at timestamps the durable Run->(Rubric, Goal) revision binding; declarative field of the persisted ontology record; M7-A2 (#791) registers the Goal `Rubric` as a first-class ontology kind: a versioned scored-acceptance object bound to one Goal revision. The identity is declarative Pydantic surface or store API consumed by packages/maistro-core/tests (ontology/test_rubric_model.py, ontology/test_rubric_contracts.py, projects/test_rubric_store.py) and reserved for Run scoring and fence gating, which the issue's stop condition explicitly defers (\"Do not score anything in this PR\"), so a src-only vulture scan cannot see in-package consumption yet. This grant authorizes only the exact Vulture identity named by the key; it does not approve scoring behavior or close #791."
-    },
     "packages/maistro-core/src/maistro/ontology/rubric.py::unused method '_at_least_one'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#791",
@@ -355,11 +350,6 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#791",
       "reason": "RubricStore.instantiate_from_catalog is how a pack-supplied default dimension catalog instantiates a Rubric without owning it (deep-copied dimensions, provenance origin=\"pack\", catalog never persisted) - the #791 pack-contract invariant; M7-A2 (#791) registers the Goal `Rubric` as a first-class ontology kind: a versioned scored-acceptance object bound to one Goal revision. The identity is declarative Pydantic surface or store API consumed by packages/maistro-core/tests (ontology/test_rubric_model.py, ontology/test_rubric_contracts.py, projects/test_rubric_store.py) and reserved for Run scoring and fence gating, which the issue's stop condition explicitly defers (\"Do not score anything in this PR\"), so a src-only vulture scan cannot see in-package consumption yet. This grant authorizes only the exact Vulture identity named by the key; it does not approve scoring behavior or close #791."
-    },
-    "packages/maistro-core/src/maistro/projects/rubric_store.py::unused method 'list_for_goal'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#791",
-      "reason": "RubricStore.list_for_goal enumerates the latest Rubric revision per rubric_id bound to a Goal; read-side API for Run/fence consumers that the stop condition defers; M7-A2 (#791) registers the Goal `Rubric` as a first-class ontology kind: a versioned scored-acceptance object bound to one Goal revision. The identity is declarative Pydantic surface or store API consumed by packages/maistro-core/tests (ontology/test_rubric_model.py, ontology/test_rubric_contracts.py, projects/test_rubric_store.py) and reserved for Run scoring and fence gating, which the issue's stop condition explicitly defers (\"Do not score anything in this PR\"), so a src-only vulture scan cannot see in-package consumption yet. This grant authorizes only the exact Vulture identity named by the key; it does not approve scoring behavior or close #791."
     },
     "packages/maistro-core/src/maistro/projects/rubric_store.py::unused method 'record_run_binding'": {
       "owner": "@BlakeMatthews-dev",

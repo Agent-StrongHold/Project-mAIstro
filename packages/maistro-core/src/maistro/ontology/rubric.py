@@ -241,7 +241,6 @@ class RubricRunBindingSemantic(BaseModel):
     rubric_revision: int = Field(ge=1)
     goal_id: str = Field(min_length=1)
     goal_revision: int = Field(ge=1)
-    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 def rubric_run_binding_entity_id(run_id: str) -> UUID:

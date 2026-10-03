@@ -117,3 +117,51 @@ structural two-merge set documented above: 15 unauthorized vulture identities,
 2 new unreachable modules, 2 new dispositions — each waiting on the same
 driver-side grants-first PR, for which this branch's `quality/` edits are the
 ready-made, scan-verified content.
+
+## Round 4 (this head): genuinely dead identities eliminated, 15 → 13
+
+Applied the CI-repair directive "fix what is genuinely dead": two of the 15
+identities were not contract surface at all but unreviewed speculative
+generality, and are now deleted at the source together with their ledger rows
+and grant rows:
+
+- `RubricStore.list_for_goal` — zero callers in `src/`, zero tests, and no
+  acceptance criterion names it (the issue's read-side requirements are the
+  per-revision reads and the Run binding, both kept and tested).
+- `RubricRunBindingSemantic.recorded_at` — write-only (default_factory populates
+  it; nothing in src or tests ever reads it), not part of the issue's binding
+  contract (goal_id + Goal revision + rubric_id + Rubric revision).
+
+`quality/vulture-baseline.json` lost the 2 matching rows and
+`quality/ratchet-authorizations.json` the 2 matching grants (both edited
+textually because of the duplicate-top-level-key round-trip hazard documented
+above). The candidate ledger still matches the live scan exactly (zero
+candidate deltas). Re-verified at this head: ruff check/format clean; canonical
+mypy invocation clean; 180 passed / 26 skipped in `packages/maistro-core/tests`
+(ontology + projects); suite inventory unchanged; `check-shipped-surface-truth.py`
+exit 0; candidate-local `check-reachability.py` exit 0 and
+`check-reachability-dispositions.py` OK.
+
+The remaining failure surface at `RATCHET_BASE_REV=origin/develop` is exactly:
+
+- 13 unauthorized vulture identities — 5 contract-named fields
+  (`pass_value`, `fail_value`, `evidence_required`, `pass_threshold`,
+  `authored_by`, all issue vocabulary), 3 pydantic validators enforcing
+  required invariants (`_at_least_one`, `_pack_shape`, `_dimension_consistency`,
+  each exercised via `ValidationError` in `test_rubric_model.py`), and 5 store
+  acceptance-surface members (`RubricStore`, `update_dimensions`,
+  `instantiate_from_catalog`, `record_run_binding`, `binding_for_run` —
+  acceptance criteria 3, 4, and 8). None can be eliminated without breaking an
+  acceptance criterion: any renamed or restructured equivalent is flagged
+  identically, because a src-only scan cannot see test-only consumption, and
+  the stop condition ("Do not score anything") forbids the first production
+  consumers.
+- 2 NEW unreachable modules + 2 NEW dispositions (`maistro.ontology.rubric`,
+  `maistro.projects.rubric_store`), dispositioned CONNECT (#34) / LIBRARY in
+  `quality/reachability-dispositions.json`. Faking reachability via a
+  re-export would contradict those reviewed dispositions and erase #34's
+  CONNECT record, so they are left as recorded.
+
+Each of these rows needs the already-written grants to exist at the merge base
+(grants-only PR on develop, then rebase) — no further change to this branch is
+required for `exact-debt-ledger` to pass.

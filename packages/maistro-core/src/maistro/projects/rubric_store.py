@@ -248,16 +248,6 @@ class RubricStore:
         semantics = [RubricSemantic.model_validate(e.get_semantic()) for e in found]
         return sorted(semantics, key=lambda s: s.revision)
 
-    async def list_for_goal(self, goal_id: str) -> list[RubricSemantic]:
-        """All Rubric revisions (latest per rubric_id) bound to a Goal."""
-        found = self._ontology.query(RUBRIC_KIND, goal_id=goal_id)
-        latest: dict[str, RubricSemantic] = {}
-        for entity in found:
-            sem = RubricSemantic.model_validate(entity.get_semantic())
-            if sem.rubric_id not in latest or sem.revision > latest[sem.rubric_id].revision:
-                latest[sem.rubric_id] = sem
-        return sorted(latest.values(), key=lambda s: (s.rubric_id, s.revision))
-
     # -- run bindings --------------------------------------------------------
 
     async def record_run_binding(
