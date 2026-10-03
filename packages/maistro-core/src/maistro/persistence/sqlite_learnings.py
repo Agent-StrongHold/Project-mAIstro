@@ -6,6 +6,7 @@ import itertools
 import json
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
@@ -84,10 +85,18 @@ _SQLITE_INSERT_FIELDS = (
 
 
 class SqliteLearningStore:
-    """SQLite-backed learning store implementing the same protocol as PgLearningStore."""
+    """SQLite-backed learning store implementing the same protocol as PgLearningStore.
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    Same ADR-057 write-authority gate as the PostgreSQL twin: no declared mode
+    refuses every mutation; ``SYSTEM_MANAGED`` denies agent-actor writes and
+    promotions before any SQL runs.
+    """
+
+    def __init__(
+        self, conn: aiosqlite.Connection, exposure_mode: MemoryExposureMode | None = None
+    ) -> None:
         self._conn = conn
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Create the learnings table, and upgrade one created before its columns.
@@ -129,12 +138,14 @@ class SqliteLearningStore:
                 "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         Resolved before the dedup probe for the same reason as the PostgreSQL
-        original: the deduplicating branch returns early (#709).
+        original: the deduplicating branch returns early (#709). The
+        write-authority gate precedes both (ADR-057): a denial executes no SQL.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
@@ -310,8 +321,15 @@ class SqliteLearningStore:
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
-        """Promote learnings with hit_count >= threshold."""
+        """Promote learnings with hit_count >= threshold.
+
+        The ADR-057 ``promote`` authority: agent-actor promotions are denied
+        under ``SYSTEM_MANAGED`` before the UPDATE runs.
+        """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         cursor = await self._conn.execute(
             "SELECT id FROM learnings WHERE status = 'active' AND hit_count >= ? AND org_id = ?",
             (threshold, org_id),

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.types import Learning
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_scope import matches_learning_scope
@@ -18,14 +19,25 @@ MAX_LEARNINGS = 10_000
 
 
 class InMemoryLearningStore:
-    """In-memory learning store with dedup, FIFO cap, and org-scoped queries."""
+    """In-memory learning store with dedup, FIFO cap, and org-scoped queries.
 
-    def __init__(self, max_learnings: int = MAX_LEARNINGS) -> None:
+    Write authority (ADR-057): constructed without an ``exposure_mode`` the store
+    refuses every write and promotion with ``MemoryUndeclaredModeError``; with
+    ``SYSTEM_MANAGED``, agent-actor writes and promotions raise
+    ``MemoryWriteDenied`` before any state changes.
+    """
+
+    def __init__(
+        self,
+        max_learnings: int = MAX_LEARNINGS,
+        exposure_mode: MemoryExposureMode | None = None,
+    ) -> None:
         self._learnings: list[Learning] = []
         self._next_id = 1
         self._max = max_learnings
+        self._exposure_mode = exposure_mode
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         The in-memory store fills provenance too. It is the default backend in
@@ -36,7 +48,13 @@ class InMemoryLearningStore:
         Assigned onto the object rather than kept beside it: this store keeps
         the caller's `Learning` and hands the same instance back, so a
         provenance held anywhere else would not survive the read (#709).
+
+        The write-authority gate is the first statement (ADR-057): a denied
+        agent write raises before provenance is filled or the dedup probe runs,
+        so a refusal leaves no partial state and cannot be steered by the
+        learning's content.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
@@ -178,8 +196,16 @@ class InMemoryLearningStore:
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
-        """Promote learnings that hit threshold, scoped by org."""
+        """Promote learnings that hit threshold, scoped by org.
+
+        A promotion is the ADR-057 ``promote`` authority, not a write: under
+        ``SYSTEM_MANAGED`` it is admin-only, so an agent-actor call is denied
+        before any status flips (SPEC-062126-6a31, open question 5).
+        """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         promoted: list[Learning] = []
         for learning in self._learnings:
             if learning.status != "active" or learning.hit_count < threshold:

@@ -72,6 +72,24 @@ or placeholder-only section.
   SLSA provenance in mode=max and release.yml refuses a release whose
   provenance attestation does not name every pinned base digest.
 
+- **Memory write authority (ADR-057) is enforced at every memory store
+  boundary (#390, partial).** Every production memory store — learnings
+  (in-memory, SQLite, PostgreSQL and the hybrid-search wrapper's inner store),
+  episodic, outcomes and skill mutations — now calls the exposure-mode gate as
+  the first statement of each mutating method. A store constructed without a
+  declared `MemoryExposureMode` refuses to mutate at all
+  (`MemoryUndeclaredModeError`, fail-closed; SPEC-062126-6a31's no-implicit-
+  default rule), an agent-actor write or promotion under `system_managed`
+  raises `MemoryWriteDenied` before any state changes (denied writes leave no
+  partial durable state), and a system actor writes under every mode. The
+  decision reads only the declared mode, the actor and the per-block tag —
+  never model or persona content. The container declares the deployment's
+  posture from the new `AgentConfig.memory.exposure_mode` setting
+  (`agent_managed` default — the engine's existing behavior, now explicit;
+  set `system_managed` for curated-context deployments). Not yet wired, and
+  disclosed in KNOWN-GAPS until then: per-call read gating, `hybrid` per-block
+  tags (agent writes fail closed under `hybrid`), `memory.write.denied` event
+  emission, and a product-reachable E2E proving a denied write.
 - **Active root Runs are capped per principal and per Workspace (#1182,
   partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
   refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for

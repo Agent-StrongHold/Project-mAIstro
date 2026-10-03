@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.approval import LearningApprovalGate
 from maistro.memory.learnings.promoter import LearningPromoter
 from maistro.memory.learnings.store import InMemoryLearningStore
@@ -24,7 +25,7 @@ async def test_gate_queues_eligible_learning_for_approval() -> None:
     With the find_relevant("") bug present, candidates is always empty so no
     approval request is ever created — this asserts otherwise.
     """
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     learning = Learning(
         trigger_keys=["deploy", "rollback"],
         learning="Always snapshot before deploy",
@@ -49,7 +50,7 @@ async def test_gate_queues_eligible_learning_for_approval() -> None:
 @pytest.mark.asyncio
 async def test_below_threshold_learning_not_queued() -> None:
     """A learning under threshold must NOT be queued for approval."""
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.store(
         Learning(trigger_keys=["x"], learning="too fresh", hit_count=2, status="active")
     )
@@ -65,7 +66,7 @@ async def test_below_threshold_learning_not_queued() -> None:
 @pytest.mark.asyncio
 async def test_approved_learning_gets_promoted_on_next_pass() -> None:
     """Once an admin approves, the next check promotes the learning."""
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     learning = Learning(
         trigger_keys=["deploy"],
         learning="snapshot first",
@@ -93,7 +94,7 @@ async def test_approved_learning_gets_promoted_on_next_pass() -> None:
 @pytest.mark.asyncio
 async def test_org_scoped_candidates_only() -> None:
     """Gate enumeration respects org scoping when an org_id is supplied."""
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.store(Learning(trigger_keys=["a"], learning="org-a", hit_count=9, org_id="org-a"))
     await store.store(Learning(trigger_keys=["b"], learning="org-b", hit_count=9, org_id="org-b"))
 
