@@ -36,7 +36,9 @@ from maistro_registry.linker import (
 )
 from maistro_registry.retrieval import (
     OpenAICompatExpander,
+    QueryExpander,
     RetrievalSearcher,
+    SearchResponse,
     build_index,
     evaluate,
     load_corpus,
@@ -287,18 +289,18 @@ def cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_search(args: argparse.Namespace) -> int:
-    """Run one BM25 query and print ranked, provenance-carrying results."""
-    root = Path(args.root)
-    searcher = _load_searcher(root, args.index, args.max_df_share)
-    expander = None
-    if args.expand_endpoint:
-        if not args.expand_model:
-            print("error: --expand-model is required with --expand-endpoint", file=sys.stderr)
-            return 2
-        expander = OpenAICompatExpander(base_url=args.expand_endpoint, model=args.expand_model)
-    response = searcher.search(args.query, k=args.k, expander=expander)
+def _expander_from_args(args: argparse.Namespace) -> tuple[QueryExpander | None, int]:
+    """The optional LLM expander from CLI flags; `(None, 2)` on bad flags."""
+    if not args.expand_endpoint:
+        return None, 0
+    if not args.expand_model:
+        print("error: --expand-model is required with --expand-endpoint", file=sys.stderr)
+        return None, 2
+    return OpenAICompatExpander(base_url=args.expand_endpoint, model=args.expand_model), 0
 
+
+def _print_search_response(response: SearchResponse, show_terms: bool) -> None:
+    """Render the response with its audit trail; `no results` when empty."""
     print(f"query: {response.query!r}")
     print(f"terms kept: {' '.join(response.query_terms) or '(none)'}")
     if response.rejected_terms:
@@ -309,11 +311,21 @@ def cmd_search(args: argparse.Namespace) -> int:
         print(f"expansion skipped: {response.expansion_error}", file=sys.stderr)
     if not response.results:
         print("no results")
-        return 0
+        return
     for result in response.results:
         print(result.render())
-        if args.terms:
+        if show_terms:
             print(f"         matched: {' '.join(result.matched_terms) or '(none)'}")
+
+
+def cmd_search(args: argparse.Namespace) -> int:
+    """Run one BM25 query and print ranked, provenance-carrying results."""
+    expander, error = _expander_from_args(args)
+    if expander is None and error:
+        return error
+    searcher = _load_searcher(Path(args.root), args.index, args.max_df_share)
+    response = searcher.search(args.query, k=args.k, expander=expander)
+    _print_search_response(response, show_terms=args.terms)
     return 0
 
 

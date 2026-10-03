@@ -150,14 +150,8 @@ def _known_gaps_documents(root: Path) -> list[CorpusDocument]:
     return documents
 
 
-def load_corpus(root: Path, *, include_known_gaps: bool = True) -> list[CorpusDocument]:
-    """Load the architectural corpus under `root`, deterministically ordered.
-
-    Order is by (path, section) so two builds over the same corpus see the
-    documents in the same sequence — the index fingerprint and every
-    golden-set measurement depend on that.
-    """
-    root = Path(root)
+def _walk_corpus_files(root: Path) -> list[Path]:
+    """Deterministic corpus walk: front-matter documents, navigation aids skipped."""
     files: list[Path] = []
     seen: set[Path] = set()
     for pattern in _WALK_PATTERNS:
@@ -169,30 +163,48 @@ def load_corpus(root: Path, *, include_known_gaps: bool = True) -> list[CorpusDo
             if p.suffix == ".md" and p.is_file() and p not in seen:
                 seen.add(p)
                 files.append(p)
+    return files
 
-    documents: list[CorpusDocument] = []
-    for path in files:
-        parsed = parse_file(path)
-        front_matter = _front_matter_or_none(parsed.front_matter)
-        documents.append(
-            CorpusDocument(
-                # Only *validated* front matter may name the id (a raw `id:`
-                # that failed validation is exactly the field that cannot be
-                # trusted) — and the same trust rule governs every provenance
-                # field: status/layer/kind come from the validated object or
-                # not at all. The filename stem keeps such documents
-                # addressable, and the body keeps them searchable.
-                doc_id=front_matter.id if front_matter is not None else path.stem,
-                title=_title_from_body(parsed.body, path.stem),
-                kind=front_matter.kind.value if front_matter is not None else "doc",
-                status=front_matter.status.value if front_matter is not None else None,
-                layer=front_matter.layer.value if front_matter is not None else None,
-                path=path.relative_to(root).as_posix(),
-                version=content_version(path.read_text(encoding="utf-8")),
-                body=parsed.body,
-                front_matter=front_matter,
-            )
-        )
+
+def _front_matter_document(
+    root: Path,
+    path: Path,
+    front_matter: FrontMatter | None,
+) -> CorpusDocument:
+    """Build one retrieval unit, keeping only *validated* provenance fields.
+
+    Only validated front matter may name the id (a raw `id:` that failed
+    validation is exactly the field that cannot be trusted) — and the same
+    trust rule governs every provenance field: status/layer/kind come from
+    the validated object or not at all. The filename stem keeps such
+    documents addressable, and the body keeps them searchable.
+    """
+    parsed = parse_file(path)
+    return CorpusDocument(
+        doc_id=front_matter.id if front_matter is not None else path.stem,
+        title=_title_from_body(parsed.body, path.stem),
+        kind=front_matter.kind.value if front_matter is not None else "doc",
+        status=front_matter.status.value if front_matter is not None else None,
+        layer=front_matter.layer.value if front_matter is not None else None,
+        path=path.relative_to(root).as_posix(),
+        version=content_version(path.read_text(encoding="utf-8")),
+        body=parsed.body,
+        front_matter=front_matter,
+    )
+
+
+def load_corpus(root: Path, *, include_known_gaps: bool = True) -> list[CorpusDocument]:
+    """Load the architectural corpus under `root`, deterministically ordered.
+
+    Order is by (path, section) so two builds over the same corpus see the
+    documents in the same sequence — the index fingerprint and every
+    golden-set measurement depend on that.
+    """
+    root = Path(root)
+    documents = [
+        _front_matter_document(root, path, _front_matter_or_none(parse_file(path).front_matter))
+        for path in _walk_corpus_files(root)
+    ]
     # Front-matter documents sort by path; known-gap sections (appended
     # below) keep document order instead — sections of one file stay in
     # the order the author wrote them, and the file has one fixed path,

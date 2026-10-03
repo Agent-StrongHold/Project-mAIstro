@@ -136,37 +136,59 @@ def ndcg_at_k(ranked_ids: Sequence[str], relevant: Mapping[str, int], k: int) ->
     return dcg / idcg
 
 
+def _parse_golden_entry(path: Path, entry: Any) -> GoldenQuery:
+    """Validate one golden-set entry; raise ValueError naming `path`."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("query"), str):
+        raise ValueError(f"{path}: each entry needs a string 'query'")
+    relevant = entry.get("relevant")
+    if not isinstance(relevant, dict) or not all(
+        isinstance(doc, str) and isinstance(grade, int) for doc, grade in relevant.items()
+    ):
+        raise ValueError(f"{path}: 'relevant' must map doc-id strings to int grades")
+    # Grades are the named scale, not free integers: RELATED is the
+    # floor (anything lower could not be told apart from noise) and
+    # DIRECT the ceiling (nothing is more on-point than on-point).
+    if not all(GRADE_RELATED <= grade <= GRADE_DIRECT for grade in relevant.values()):
+        raise ValueError(
+            f"{path}: grades must be in {GRADE_RELATED}..{GRADE_DIRECT} "
+            f"(RELATED..DIRECT); got {sorted(relevant.values())}"
+        )
+    note = entry.get("note", "")
+    return GoldenQuery(
+        query=entry["query"],
+        relevant=dict(relevant),
+        note=note if isinstance(note, str) else "",
+    )
+
+
 def load_golden(path: Path) -> list[GoldenQuery]:
     """Load a golden set: JSON array of {query, relevant, note?} objects."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, list):
         raise ValueError(f"{path}: golden set must be a JSON array")
-    queries: list[GoldenQuery] = []
-    for entry in data:
-        if not isinstance(entry, dict) or not isinstance(entry.get("query"), str):
-            raise ValueError(f"{path}: each entry needs a string 'query'")
-        relevant = entry.get("relevant")
-        if not isinstance(relevant, dict) or not all(
-            isinstance(doc, str) and isinstance(grade, int) for doc, grade in relevant.items()
-        ):
-            raise ValueError(f"{path}: 'relevant' must map doc-id strings to int grades")
-        # Grades are the named scale, not free integers: RELATED is the
-        # floor (anything lower could not be told apart from noise) and
-        # DIRECT the ceiling (nothing is more on-point than on-point).
-        if not all(GRADE_RELATED <= grade <= GRADE_DIRECT for grade in relevant.values()):
-            raise ValueError(
-                f"{path}: grades must be in {GRADE_RELATED}..{GRADE_DIRECT} "
-                f"(RELATED..DIRECT); got {sorted(relevant.values())}"
-            )
-        note = entry.get("note", "")
-        queries.append(
-            GoldenQuery(
-                query=entry["query"],
-                relevant=dict(relevant),
-                note=note if isinstance(note, str) else "",
-            )
-        )
-    return queries
+    return [_parse_golden_entry(path, entry) for entry in data]
+
+
+def _evaluate_case(
+    search_fn: Callable[[str, int], SearchResponse],
+    golden_query: GoldenQuery,
+    k: int,
+) -> QueryEvaluation:
+    """One golden query through `search_fn(query, k)`, fully measured."""
+    response = search_fn(golden_query.query, k)
+    ranked_ids = tuple(result.doc_id for result in response.results)
+    relevant_ids = frozenset(
+        doc for doc, grade in golden_query.relevant.items() if grade >= GRADE_RELEVANT
+    )
+    return QueryEvaluation(
+        query=golden_query.query,
+        ranked_ids=ranked_ids,
+        relevant_ids=relevant_ids,
+        recall=recall_at_k(ranked_ids, golden_query.relevant, k),
+        mrr=mrr(ranked_ids, golden_query.relevant),
+        ndcg=ndcg_at_k(ranked_ids, golden_query.relevant, k),
+        matched_relevant=tuple(doc for doc in ranked_ids if doc in relevant_ids),
+    )
 
 
 def evaluate(
@@ -181,24 +203,7 @@ def evaluate(
     live `RetrievalSearcher` and a test double can drive the same
     measurement.
     """
-    cases: list[QueryEvaluation] = []
-    for golden_query in golden:
-        response = search_fn(golden_query.query, k)
-        ranked_ids = tuple(result.doc_id for result in response.results)
-        relevant_ids = frozenset(
-            doc for doc, grade in golden_query.relevant.items() if grade >= GRADE_RELEVANT
-        )
-        cases.append(
-            QueryEvaluation(
-                query=golden_query.query,
-                ranked_ids=ranked_ids,
-                relevant_ids=relevant_ids,
-                recall=recall_at_k(ranked_ids, golden_query.relevant, k),
-                mrr=mrr(ranked_ids, golden_query.relevant),
-                ndcg=ndcg_at_k(ranked_ids, golden_query.relevant, k),
-                matched_relevant=tuple(doc for doc in ranked_ids if doc in relevant_ids),
-            )
-        )
+    cases = [_evaluate_case(search_fn, golden_query, k) for golden_query in golden]
     n = len(cases)
     return QualityReport(
         k=k,
