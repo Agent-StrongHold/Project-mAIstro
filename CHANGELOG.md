@@ -382,6 +382,20 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace BacklogItem history service (#101).**
+  `maistro.workspaces.backlog_history` records each BacklogItem's life as an
+  append-only journal: field and priority edits as before/after pairs, BACKLOG.md
+  status moves, claims (#100's reserved fields), blockers and their clearing,
+  partial progress that implies no status, decomposition receipts that snapshot
+  the parent's acceptance criteria, discovered prerequisites/defects pinned to
+  a PROPOSED initial status, exact Goal identity/revision links (#458),
+  reconciliation decision references, and Run/evaluation evidence. Closure is
+  refused without evidence refs — a completed Run alone is never closure — and
+  reopening requires a reason. An in-memory reference store and a SQLite store
+  (writing inside the paired Project store's transaction, assigning a
+  per-item sequence) share one store contract; the Container wires it on the
+  Project store's backend and maistro-server serves member-only reads at
+  `GET /v1/workspaces/{workspace_id}/backlog/{item_id}/history`.
 - **Governed `image.generate` Capability for Canvas/Design Studio generation
   (#286, partial).** `maistro.capabilities.ImageGenerationEgress.generate`
   runs one image generation through the canonical Binding → policy →
