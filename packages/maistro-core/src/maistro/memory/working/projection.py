@@ -591,16 +591,38 @@ class WorkspaceWorkingMemoryProjection:
             agent_id=agent_id, user_id=user_id, team_id=team_id, org_id=org_id
         )
         no_scope_filter = not (agent_id or user_id or team_id or org_id)
-        visible: dict[str, EpisodicMemory] = {}
-        for memory_id, memory in self._records.items():
-            if memory.deleted or memory.weight < min_weight:
-                continue
-            if not no_scope_filter and not matches_scope(memory, filters):
-                continue
-            if project_id and memory.project_id != project_id:
-                continue
-            visible[memory_id] = memory
-        return visible
+        return {
+            memory_id: memory
+            for memory_id, memory in self._records.items()
+            if self._is_selectable(
+                memory,
+                filters=filters,
+                no_scope_filter=no_scope_filter,
+                project_id=project_id,
+                min_weight=min_weight,
+            )
+        }
+
+    @staticmethod
+    def _is_selectable(
+        memory: EpisodicMemory,
+        *,
+        filters: list[tuple[str, str | None]],
+        no_scope_filter: bool,
+        project_id: str | None,
+        min_weight: float,
+    ) -> bool:
+        """The per-record half of the scope predicate above.
+
+        Split from ``_visible`` only so no single block carries the whole
+        clause set; the rule itself stays the one spelling
+        (``build_scope_filter`` + ``matches_scope``, ADR-083026-a322).
+        """
+        if memory.deleted or memory.weight < min_weight:
+            return False
+        if not no_scope_filter and not matches_scope(memory, filters):
+            return False
+        return not (project_id and memory.project_id != project_id)
 
     def _bm25(self, query_terms: list[str]) -> dict[str, float]:
         """Okapi BM25 over the inverted index.
