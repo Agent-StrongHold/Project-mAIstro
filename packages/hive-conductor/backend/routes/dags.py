@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import stores
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from services.dag_execution_scope import (
     DagWorkspaceSelectionError,
     authorize_hive_dag_scope,
@@ -202,7 +202,12 @@ class UpdateDAGBody(BaseModel):
     nodes: list[DAGNode] | None = None
     edges: list[DAGEdge] | None = None
     entry_node: str | None = None
-    max_cycles: int | None = None
+    # New writes are validated against the same envelope execution clamps to
+    # (maistro.graph.policies), so an out-of-policy budget is refused at edit
+    # time instead of being silently reinterpreted at run time. Stored DAGs
+    # that predate the envelope stay readable: DAGFile remains tolerant and
+    # execution records the declared/effective pair (#1184).
+    max_cycles: int | None = Field(default=None, ge=1, le=20)
     run_scout: bool | None = None
     status: Literal["draft", "active", "archived"] | None = None
 

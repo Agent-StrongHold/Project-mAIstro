@@ -36,6 +36,7 @@ from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import run_durable_graph
 from maistro.graph.nodes import get_node
 from maistro.runs.model import RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 from maistro.types.security import AuditEntry
 
@@ -174,7 +175,11 @@ async def _paused_hitl_run(container: Container, *, creator: str) -> str:
     )
     assert container.run_store is not None
     assert container.graph_run_store is not None
-    admitted = await container.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await container.run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     paused = await run_durable_graph(
         graph,
         store=container.graph_run_store,

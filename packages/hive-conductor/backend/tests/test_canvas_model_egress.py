@@ -36,6 +36,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
+from maistro.runs.model import GraphSnapshot, Run
 from maistro.runs.store import InMemoryRunStore
 
 
@@ -547,16 +548,26 @@ def _seed_run(
     """Seed one canonical Canvas execution with the requested shape."""
 
     async def _create() -> tuple[Any, Any | None, Any | None]:
-        run = await run_store.create_run(
-            Graph(
-                graph_id=f"canvas-graph-{node_type}-{actor_principal_id}",
+        graph = Graph(
+            graph_id=f"canvas-graph-{node_type}-{actor_principal_id}",
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="Canvas quality",
+            nodes=[Node(node_id="canvas-quality", node_type=node_type)],
+        )
+        if actor_principal_id is None:
+            run = Run.model_construct(
                 workspace_id=workspace_id,
                 project_id=project_id,
-                name="Canvas quality",
-                nodes=[Node(node_id="canvas-quality", node_type=node_type)],
-            ),
-            actor_principal_id=actor_principal_id,
-        )
+                graph=GraphSnapshot.from_graph(graph),
+                actor_principal_id=None,
+            )
+            run_store._runs[run.run_id] = run
+        else:
+            run = await run_store.create_run(
+                graph,
+                actor_principal_id=actor_principal_id,
+            )
         node_run = attempt = None
         if with_node_run:
             node_run = await run_store.create_node_run(run.run_id, node_id="canvas-quality")

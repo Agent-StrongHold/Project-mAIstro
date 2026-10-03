@@ -42,6 +42,7 @@ from maistro.graph.durable_runs.attempt_executor import run_durable_graph
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.interop.contract import INTEROP_ONTOLOGY_V1, InteropContractError
 from maistro.runs.model import Attempt, NodeRun
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro_design.packs import (
     DomainPack,
     ExecuteBackend,
@@ -148,6 +149,7 @@ async def _run_pack_graph(
         store=InMemoryDurableRunStore(),
         node_resolver=_stub_resolver,
         inputs={"text": f"brief for {pack.pack_id.value}"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         provenance={"goal_id": goal_id, "goal_revision": goal_revision},
         run_id=run_id,
     )

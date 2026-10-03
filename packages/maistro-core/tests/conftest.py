@@ -61,7 +61,13 @@ def _reset_singletons() -> Iterator[None]:
 
     set_default_quota_tracker(None)
 
-    pass
+    from maistro.capabilities.effect_context import (
+        bind_container_effect_context,
+        default_effect_context,
+    )
+
+    bind_container_effect_context(None)
+    default_effect_context.cache_clear()
 
 
 @pytest.fixture(autouse=True)
