@@ -34,7 +34,6 @@
         "packages/maistro-server/src/maistro_server/api/webhooks.py::unused function 'github_webhook'",
         "packages/maistro-server/src/maistro_server/api/workspaces.py::unused function 'create_workspace'",
         "packages/maistro-server/src/maistro_server/api/workspaces.py::unused function 'delete_workspace'",
-        "packages/maistro-server/src/maistro_server/api/workspaces.py::unused function 'get_workspace'",
         "packages/maistro-server/src/maistro_server/api/workspaces.py::unused function 'list_members'",
         "packages/maistro-server/src/maistro_server/api/workspaces.py::unused function 'list_workspaces'",
         "packages/maistro-server/src/maistro_server/api/workspaces.py::unused function 'remove_member'",
@@ -537,7 +536,6 @@
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'scheduling_wait_seconds_last'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'scheduling_wait_seconds_total'",
         "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'isolation_tier'",
-        "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'min_isolation'",
         "packages/maistro-core/src/maistro/security/auth_throttle.py::unused variable 'delay_seconds'",
         "packages/maistro-core/src/maistro/security/auth_throttle.py::unused variable 'elevate'",
         "packages/maistro-core/src/maistro/security/content_security_policy.py::unused variable 'SELF'",
@@ -1244,7 +1242,6 @@
         "packages/maistro-core/src/maistro/state.py::unused method 'put_model_unique'",
         "packages/maistro-core/src/maistro/state.py::unused method 'put_raw'",
         "packages/maistro-core/src/maistro/state.py::unused method 'put_raw_if_absent'",
-        "packages/maistro-core/src/maistro/tasks/lanes.py::unused method 'held'",
         "packages/maistro-core/src/maistro/tasks/queue.py::unused method 'remove_where'",
         "packages/maistro-core/src/maistro/tasks/runner.py::unused attribute '_draining'",
         "packages/maistro-core/src/maistro/tasks/runner.py::unused attribute '_draining'",
@@ -1302,7 +1299,16 @@
         "packages/maistro-core/src/maistro/vault.py::unused method 'use'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'",
-        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'"
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'",
+        "packages/maistro-core/src/maistro/eval_workspace/model.py::unused method '_validate_workspace'",
+        "packages/maistro-core/src/maistro/eval_workspace/model.py::unused method '_validate_snapshot'",
+        "packages/maistro-core/src/maistro/eval_workspace/pool.py::unused method 'warm_count'",
+        "packages/maistro-core/src/maistro/eval_workspace/service.py::unused method 'provision'",
+        "packages/maistro-core/src/maistro/eval_workspace/service.py::unused method 'activate'",
+        "packages/maistro-core/src/maistro/eval_workspace/service.py::unused method 'fork_from_workspace'",
+        "packages/maistro-core/src/maistro/eval_workspace/service.py::unused method 'fork_from_snapshot'",
+        "packages/maistro-core/src/maistro/eval_workspace/store.py::unused method 'find_by_owner'",
+        "packages/maistro-core/src/maistro/eval_workspace/store.py::unused method 'find_by_owner'"
       ]
     },
     {

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import TypedDict
 
 from maistro.eval_workspace.digest import content_digest, environment_digest
 from maistro.eval_workspace.model import (
@@ -48,14 +49,23 @@ class OwnershipError(WorkspaceStateError):
 
 
 #: Keyword provenance accepted by every producing operation (ADR-083026-e602).
-Provenance = dict[str, str | None]
+#: A TypedDict, not ``dict[str, str | None]``: ``**``-unpacking a plain
+#: mapping offers every constructor parameter a ``str | None``, which pyright
+#: (unlike mypy) reads as a possible mismatch on fields the provenance never
+#: touches. Optional per-key types keep the call sites honest.
+class ProvenanceKwargs(TypedDict, total=False):
+    """Optional producing-execution keyword arguments for one record."""
+
+    produced_run_id: str | None
+    produced_node_run_id: str | None
+    produced_attempt_id: str | None
 
 
 def _provenance_kwargs(
     run_id: str | None,
     node_run_id: str | None,
     attempt_id: str | None,
-) -> dict[str, str | None]:
+) -> ProvenanceKwargs:
     return {
         "produced_run_id": run_id,
         "produced_node_run_id": node_run_id,
