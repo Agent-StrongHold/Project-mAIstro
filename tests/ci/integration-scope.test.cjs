@@ -30,12 +30,14 @@ function run(id, conclusion = 'success', overrides = {}) {
   };
 }
 
-async function poll(snapshots, { required = ['docker-build'], attempts = 2, interval = 1 } = {}) {
+async function poll(snapshots, { required = ['docker-build'], attempts = 2, interval = 1, apiErrors = [] } = {}) {
   const failures = [];
   const messages = [];
+  const warnings = [];
   const requests = [];
   const waits = [];
   const listForRef = Symbol('checks.listForRef');
+  let calls = 0;
   const sandbox = {
     process: { env: {
       REQUIRED_JSON: JSON.stringify(required),
@@ -43,7 +45,11 @@ async function poll(snapshots, { required = ['docker-build'], attempts = 2, inte
       EVIDENCE_WAIT_ATTEMPTS: String(attempts),
       EVIDENCE_WAIT_INTERVAL_MS: String(interval),
     } },
-    core: { info: message => messages.push(message), setFailed: message => failures.push(message) },
+    core: {
+      info: message => messages.push(message),
+      warning: message => warnings.push(message),
+      setFailed: message => failures.push(message),
+    },
     context: { repo: { owner: 'Agent-StrongHold', repo: 'Project-mAIstro' } },
     github: {
       rest: { checks: { listForRef } },
@@ -53,6 +59,12 @@ async function poll(snapshots, { required = ['docker-build'], attempts = 2, inte
         assert.equal(options.owner, 'Agent-StrongHold');
         assert.equal(options.repo, 'Project-mAIstro');
         assert.equal(options.per_page, 100);
+        calls += 1;
+        // Inject transient API failures before the next snapshot lands:
+        // the shipped script must survive them inside its evidence budget.
+        if (calls <= apiErrors.length) {
+          throw new Error(apiErrors[calls - 1]);
+        }
         requests.push(options);
         return structuredClone(snapshots[Math.min(requests.length - 1, snapshots.length - 1)]);
       },
@@ -60,7 +72,7 @@ async function poll(snapshots, { required = ['docker-build'], attempts = 2, inte
     setTimeout: (resolve, milliseconds) => { waits.push(milliseconds); resolve(); },
   };
   await vm.runInNewContext(`(async () => {\n${script}\n})()`, sandbox);
-  return { failures, messages, requests, waits };
+  return { failures, messages, warnings, requests, waits, calls };
 }
 
 function permutations(values) {
@@ -147,6 +159,34 @@ test('empty scope returns without querying while malformed budgets still fail cl
     assert.deepEqual(invalid.failures, ['invalid Integration Scope polling budget']);
     assert.deepEqual(invalid.requests, []);
   }
+});
+
+test('a transient checks API failure stays pending inside the evidence budget (run 37155659880)', async () => {
+  // The exact response body the 2026-10-03 integration-scope failure crashed
+  // on: every required producer had succeeded, then one 503 broke the poller.
+  const outage = 'No server is currently available to service your request. '
+    + 'Sorry about that. Please try resubmitting your request and contact us if '
+    + 'the problem persists.';
+  const result = await poll([[run(30)]], { attempts: 3, interval: 1, apiErrors: [outage, 'Server Error'] });
+  succeeded(result);
+  assert.equal(result.calls, 3);
+  assert.equal(result.requests.length, 1);
+  assert.deepEqual(result.waits, [1, 1]);
+  assert.equal(result.warnings.length, 2);
+  assert.ok(result.warnings[0].includes('attempt 1'));
+  assert.ok(result.warnings[0].includes(outage));
+});
+
+test('an API down for the whole budget still fails closed with the timeout verdict', async () => {
+  const result = await poll(
+    [[run(30)]],
+    { attempts: 3, interval: 50, apiErrors: Array(3).fill('No server is currently available to service your request.') },
+  );
+  assert.deepEqual(result.failures, ['timed out waiting for required specialized CI evidence']);
+  assert.equal(result.calls, 3);
+  assert.equal(result.requests.length, 0);
+  assert.deepEqual(result.waits, [50, 50, 50]);
+  assert.equal(result.warnings.length, 3);
 });
 
 test('workflow preserves read-only permissions, exact PR/merge-group SHA, and polling budget', () => {
