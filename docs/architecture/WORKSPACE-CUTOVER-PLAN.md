@@ -435,7 +435,8 @@ retiring its ledger row → Phase 2 deletes → epics close by ac-state, never b
 | AC-P1–P9 registration | in review, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
 | P0.1, P0.2 grants | in review, [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
 | P0.1, P0.2 checks | in review, [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805); red until #1804 is in its merge base |
-| P0.3, P0.4, P0.6–P0.9 checks | not started |
+| P0.3 check | in review; 64 raw fetch + 142 hand-typed declarations banked |
+| P0.4, P0.6–P0.9 checks | not started |
 | P0.5 | backend selection landed with #1321 (see P0.5 "Today"); durable approvals and one process-wide context remain; the check is not started |
 
 An early draft of the P0.1/P0.2 checks reached `develop` without review on 2026-10-01 and

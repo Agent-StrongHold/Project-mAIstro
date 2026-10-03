@@ -26,6 +26,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from services import user_credentials as cred_svc
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["setup-checklist"])
 logger = logging.getLogger(__name__)
@@ -35,11 +36,7 @@ _DISMISS_TTL_DAYS = 7
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 def _kv() -> Any | None:
