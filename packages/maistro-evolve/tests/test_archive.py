@@ -29,7 +29,6 @@ from maistro_evolve.archive import (
     apply_objective,
     complete_provenance,
     evaluation_run_ids,
-    promote_with_retention,
     prompt_version,
     proven_scenario_scores,
     resolve_lineage,
@@ -360,8 +359,11 @@ async def test_blocked_promotion_summary_carries_regression_evidence() -> None:
     challenger = _challenger("new", scores={"ifeval": 0.85, "bfcl": 0.75})
     population.add(challenger)
     with pytest.raises(HistoricalRegressionBlocked) as excinfo:
-        await promote_with_retention(
-            population, archive, "new", _audit(), RetentionGate(RetentionPolicy())
+        await population.promote_audited(
+            "new",
+            _audit(),
+            archive=archive,
+            gate=RetentionGate(RetentionPolicy()),
         )
     summary = excinfo.value.report.summary()
     assert "regressed ifeval: candidate 0.8500 < proven 0.9500" in summary
@@ -372,8 +374,11 @@ async def test_promotion_record_carries_lineage_depth_and_prior_event() -> None:
     challenger = _challenger("new", scores={"ifeval": 0.99, "bfcl": 0.8})
     population.add(challenger)
     archive.record(challenger, event="created")
-    promoted = await promote_with_retention(
-        population, archive, "new", _audit(), RetentionGate(RetentionPolicy())
+    promoted = await population.promote_audited(
+        "new",
+        _audit(),
+        archive=archive,
+        gate=RetentionGate(RetentionPolicy()),
     )
     assert promoted.id == "new"
     entry = archive._latest("new")
@@ -523,8 +528,11 @@ async def test_promotion_blocked_by_historical_regression() -> None:
 
     audit = _audit()
     with pytest.raises(HistoricalRegressionBlocked) as excinfo:
-        await promote_with_retention(
-            population, archive, "new", audit, RetentionGate(RetentionPolicy())
+        await population.promote_audited(
+            "new",
+            audit,
+            archive=archive,
+            gate=RetentionGate(RetentionPolicy()),
         )
     report = excinfo.value.report
     # 0.85 regresses against the stepping stone's proven 0.95
@@ -538,13 +546,40 @@ async def test_promotion_blocked_by_historical_regression() -> None:
     assert population.get("new") is not None
 
 
+async def test_retention_precondition_runs_before_governed_policy() -> None:
+    """The M4-A6 precondition sits on the sanctioned promotion path itself:
+    a candidate blocked by retention is refused at that seam even when it
+    would also fail the #854 governed policy — the archive records the
+    retention block, no audit entry is written, no state changes."""
+    population, archive = _retention_env()
+    challenger = _challenger("weak", scores={"ifeval": 0.5, "bfcl": 0.5})
+    challenger.approved_for_promotion = False  # would fail the governed policy too
+    population.add(challenger)
+    audit = _audit()
+    with pytest.raises(HistoricalRegressionBlocked):
+        await population.promote_audited(
+            "weak",
+            audit,
+            archive=archive,
+            gate=RetentionGate(RetentionPolicy()),
+        )
+    # retention refused it before promotion was even attempted: the refusal
+    # lives in the archive, not the audit trail, and nothing was activated
+    assert audit.entries == []
+    assert population.get_active() is None
+    assert archive.latest_event("weak") == "blocked"
+
+
 async def test_promotion_blocked_when_proven_set_not_replayed() -> None:
     population, archive = _retention_env()
     challenger = _challenger("new", scores={"ifeval": 0.99})  # bfcl never faced
     population.add(challenger)
     with pytest.raises(HistoricalRegressionBlocked) as excinfo:
-        await promote_with_retention(
-            population, archive, "new", _audit(), RetentionGate(RetentionPolicy())
+        await population.promote_audited(
+            "new",
+            _audit(),
+            archive=archive,
+            gate=RetentionGate(RetentionPolicy()),
         )
     assert excinfo.value.report.not_evaluated == ["bfcl"]
 
@@ -553,8 +588,11 @@ async def test_promotion_succeeds_when_retention_holds() -> None:
     population, archive = _retention_env()
     challenger = _challenger("new", scores={"ifeval": 0.99, "bfcl": 0.8})
     population.add(challenger)
-    promoted = await promote_with_retention(
-        population, archive, "new", _audit(), RetentionGate(RetentionPolicy())
+    promoted = await population.promote_audited(
+        "new",
+        _audit(),
+        archive=archive,
+        gate=RetentionGate(RetentionPolicy()),
     )
     assert promoted.id == "new"
     assert population.get_active() is not None
@@ -569,12 +607,11 @@ async def test_governance_override_requires_objective_change() -> None:
     challenger = _challenger("same-obj", scores={"ifeval": 0.5, "bfcl": 0.5})
     population.add(challenger)
     with pytest.raises(HistoricalRegressionBlocked):
-        await promote_with_retention(
-            population,
-            archive,
+        await population.promote_audited(
             "same-obj",
             _audit(),
-            RetentionGate(RetentionPolicy()),
+            archive=archive,
+            gate=RetentionGate(RetentionPolicy()),
             governance=GovernanceDecision(
                 rationale="we like it", decided_by="gov", new_objective="obj"
             ),
@@ -588,12 +625,11 @@ async def test_governance_override_requires_objective_change() -> None:
     # proven 0.95, which is exactly the block the decision unlocks.
     challenger2 = _challenger("new-obj", scores={"ifeval": 0.9, "bfcl": 0.9})
     population.add(challenger2)
-    promoted = await promote_with_retention(
-        population,
-        archive,
+    promoted = await population.promote_audited(
         "new-obj",
         _audit(),
-        RetentionGate(RetentionPolicy()),
+        archive=archive,
+        gate=RetentionGate(RetentionPolicy()),
         governance=GovernanceDecision(
             rationale="pivot: objective changes",
             decided_by="gov",
@@ -611,8 +647,11 @@ async def test_promotion_requires_complete_provenance() -> None:
     challenger.provenance = None
     population.add(challenger)
     with pytest.raises(ProvenanceIncomplete):
-        await promote_with_retention(
-            population, archive, "bare", _audit(), RetentionGate(RetentionPolicy())
+        await population.promote_audited(
+            "bare",
+            _audit(),
+            archive=archive,
+            gate=RetentionGate(RetentionPolicy()),
         )
 
 
@@ -622,20 +661,22 @@ async def test_first_candidate_under_objective_has_nothing_to_defend() -> None:
     first = _challenger("first", scores={"ifeval": 0.5})
     population.add(first)
     # no archived/other candidates: no prior proven set, promotion proceeds
-    promoted = await promote_with_retention(
-        population, archive, "first", _audit(), RetentionGate(RetentionPolicy())
+    promoted = await population.promote_audited(
+        "first",
+        _audit(),
+        archive=archive,
+        gate=RetentionGate(RetentionPolicy()),
     )
     assert promoted.id == "first"
 
 
 async def test_unknown_candidate_rejected() -> None:
     with pytest.raises(ValueError):
-        await promote_with_retention(
-            PopulationStore(),
-            CandidateArchive(),
+        await PopulationStore().promote_audited(
             "ghost",
             _audit(),
-            RetentionGate(RetentionPolicy()),
+            archive=CandidateArchive(),
+            gate=RetentionGate(RetentionPolicy()),
         )
 
 

@@ -29,7 +29,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
@@ -596,6 +596,22 @@ class RetentionGate:
         return bool(gov.new_objective) and gov.new_objective != historical_objective
 
 
+def _population_plus_archive(
+    population: PopulationStore,
+    archive: CandidateArchive,
+) -> dict[str, PipelineGenome]:
+    """The live population overlaid with archive snapshots for ids no longer
+    live — every candidate whose recorded evidence still counts (M4-A6: a
+    culled stepping stone defends its scenarios as well as a champion)."""
+    seen = {genome.id: genome for genome in population.list_all()}
+    for candidate_id in archive.candidates():
+        if candidate_id not in seen:
+            snapshot = archive.get(candidate_id)
+            if snapshot is not None:
+                seen[candidate_id] = snapshot
+    return seen
+
+
 def proven_scenario_scores(
     population: PopulationStore,
     archive: CandidateArchive,
@@ -611,15 +627,7 @@ def proven_scenario_scores(
     capability even if it still beats today's champion.
     """
     proven: dict[str, float] = {}
-    seen: dict[str, PipelineGenome] = {}
-    for genome in population.list_all():
-        seen[genome.id] = genome
-    for candidate_id in archive.candidates():
-        if candidate_id not in seen:
-            snapshot = archive.get(candidate_id)
-            if snapshot is not None:
-                seen[candidate_id] = snapshot
-    for genome in seen.values():
+    for genome in _population_plus_archive(population, archive).values():
         if objective and (genome.provenance is None or genome.provenance.objective != objective):
             continue
         for scenario, score in genome.eval_scores.items():
@@ -642,54 +650,3 @@ def evaluate_retention(
     if not proven:
         return None
     return gate.evaluate(candidate, proven)
-
-
-async def promote_with_retention(
-    population: PopulationStore,
-    archive: CandidateArchive,
-    genome_id: str,
-    audit: Any,
-    gate: RetentionGate,
-    *,
-    governance: GovernanceDecision | None = None,
-) -> PipelineGenome:
-    """The M4-A6 promotion path: provenance check → retention evaluation →
-    the audited promotion transition.
-
-    Fail-closed at every step: a candidate with an incomplete record raises
-    :class:`ProvenanceIncomplete`; a historical regression (or an unreplayed
-    proven scenario) raises :class:`HistoricalRegressionBlocked` unless
-    ``governance`` explicitly changes the objective; only then does the
-    sanctioned ``PopulationStore.promote_audited`` transition run (its own
-    human-approval gate still applies — retention is one necessary condition,
-    never a bypass of human approval). The outcome is recorded in the archive
-    either way, so a blocked promotion is inspectable evidence, not a silent
-    retry loop.
-    """
-    genome = population.get(genome_id)
-    if genome is None:
-        raise ValueError(f"unknown genome_id: {genome_id}")
-    provenance = complete_provenance(genome)
-    report = evaluate_retention(population, archive, genome, gate)
-    if report is not None and report.blocked:
-        report.governance = governance
-        if not gate.governance_overrides(report, provenance.objective):
-            archive.record(
-                genome,
-                event="blocked",
-                detail=f"promotion blocked: {report.summary()}",
-            )
-            raise HistoricalRegressionBlocked(report)
-    promoted = await population.promote_audited(genome_id, audit)
-    # The promoted record carries its own provenance analysis: how deep the
-    # recorded lineage runs (across retirement) and which archive event
-    # preceded this promotion — a retry after a "blocked" entry is exactly the
-    # history an auditor needs to see on the promotion record itself.
-    lineage_depth = len(resolve_lineage(population, archive, genome_id))
-    prior_event = archive.latest_event(genome_id)
-    detail = f"retention: {report.summary()}" if report is not None else "no prior proven set"
-    detail += f"; lineage_depth={lineage_depth}"
-    if prior_event is not None:
-        detail += f"; prior_archive_event={prior_event}"
-    archive.record(promoted, event="promoted", detail=detail)
-    return promoted
