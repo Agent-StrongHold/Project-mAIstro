@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -547,6 +548,41 @@ class EvolutionCycle:
             pool = [name for name in pool if name != pick]
         return chosen
 
+    def _spawn_island_child(
+        self,
+        pa: PipelineGenome | None,
+        pb: PipelineGenome | None,
+        config: EvolutionConfig,
+        operators: Sequence[str] | None,
+        origin_context: EvalContext | None,
+        population: PopulationStore,
+        island_pop: IslandPopulation,
+        island_id: int,
+    ) -> bool:
+        """Crossover two parents and register the child on its island.
+
+        Returns False when either parent is missing (tournament sampling can
+        yield fewer distinct genomes than slots to fill); otherwise True.
+        Shared by both breeding paths so attribution stamping, registration,
+        and island placement cannot drift apart.
+        """
+        if pa is None or pb is None:
+            return False
+        child = crossover_and_mutate(
+            pa,
+            pb,
+            config.mutation_rate,
+            models=config.allowed_models or None,
+            operators=operators,
+            origin_context=origin_context,
+        )
+        population.add(child)
+        # Use force_assign: mutation chains rewrite parent_a_id, so
+        # assign() would fall back to round-robin and place the child
+        # on the wrong island.
+        island_pop.force_assign(child.id, island_id)
+        return True
+
     def _breed_island(
         self,
         island_pop: IslandPopulation,
@@ -576,20 +612,9 @@ class EvolutionCycle:
             for i in range(0, min(needed, len(parent_ids) - 1), 2):
                 a = genome_map.get(parent_ids[i])
                 b = genome_map.get(parent_ids[i + 1] if i + 1 < len(parent_ids) else parent_ids[0])
-                if a and b:
-                    child = crossover_and_mutate(
-                        a,
-                        b,
-                        config.mutation_rate,
-                        models=config.allowed_models or None,
-                        operators=operators,
-                        origin_context=origin_context,
-                    )
-                    population.add(child)
-                    # Use force_assign: mutation chains rewrite parent_a_id, so
-                    # assign() would fall back to round-robin and place the child
-                    # on the wrong island.
-                    island_pop.force_assign(child.id, island_id)
+                self._spawn_island_child(
+                    a, b, config, operators, origin_context, population, island_pop, island_id
+                )
         else:
             island_scored = [
                 g
@@ -607,17 +632,9 @@ class EvolutionCycle:
                 else:
                     pa = breeding_pool[0] if breeding_pool else None
                     pb = None
-                if pa and pb:
-                    child = crossover_and_mutate(
-                        pa,
-                        pb,
-                        config.mutation_rate,
-                        models=config.allowed_models or None,
-                        operators=operators,
-                        origin_context=origin_context,
-                    )
-                    population.add(child)
-                    island_pop.force_assign(child.id, island_id)
+                self._spawn_island_child(
+                    pa, pb, config, operators, origin_context, population, island_pop, island_id
+                )
 
     async def _hyper_mutate_one(
         self,

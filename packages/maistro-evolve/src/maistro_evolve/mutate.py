@@ -23,6 +23,7 @@ from .fixer_genome import (
 )
 from .types import (
     DAGEdgeGenome,
+    DAGTopology,
     NodeGenome,
     PipelineGenome,
 )
@@ -121,6 +122,27 @@ def _apply_mutation_operator(
     raise ValueError(f"unknown mutation operator {name!r}; known: {list(MUTATION_OPERATOR_NAMES)}")
 
 
+def _rewire_edges(topo: DAGTopology, rate: float) -> None:
+    """Randomly drop one existing edge and/or add one random edge."""
+    if random.random() < rate and topo.edges:
+        idx = random.randint(0, len(topo.edges) - 1)
+        topo.edges.pop(idx)
+
+    if random.random() < rate and topo.nodes:
+        a = random.choice(topo.nodes)
+        b_candidates = [n for n in topo.nodes if n.id != a.id]
+        if b_candidates:
+            b = random.choice(b_candidates)
+            topo.edges.append(
+                DAGEdgeGenome(
+                    id=_new_id(),
+                    from_node=a.id,
+                    to_node=b.id,
+                    condition=random.choice([None, "success", "failure", "timeout"]),
+                )
+            )
+
+
 def mutate_topology(
     genome: PipelineGenome,
     rate: float,
@@ -162,23 +184,7 @@ def mutate_topology(
             )
         )
 
-    if random.random() < rate and topo.edges:
-        idx = random.randint(0, len(topo.edges) - 1)
-        topo.edges.pop(idx)
-
-    if random.random() < rate and topo.nodes:
-        a = random.choice(topo.nodes)
-        b_candidates = [n for n in topo.nodes if n.id != a.id]
-        if b_candidates:
-            b = random.choice(b_candidates)
-            topo.edges.append(
-                DAGEdgeGenome(
-                    id=_new_id(),
-                    from_node=a.id,
-                    to_node=b.id,
-                    condition=random.choice([None, "success", "failure", "timeout"]),
-                )
-            )
+    _rewire_edges(topo, rate)
 
     child = PipelineGenome(
         id=_new_id(),

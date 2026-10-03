@@ -126,7 +126,14 @@ class TestCycleFoldsEvidence:
             type(
                 "_Cfg",
                 (),
-                {"eval_batch_size": 4, "eval_ema_alpha": 1.0, "target_benchmarks": ["proxy_bfcl"]},
+                {
+                    "eval_batch_size": 4,
+                    "eval_ema_alpha": 1.0,
+                    "target_benchmarks": ["proxy_bfcl"],
+                    # M4-A8/#115: this test pins evidence folding, not producer
+                    # credit — keep the ledger path out of its assertions.
+                    "producer_attribution": False,
+                },
             )(),
             llm_call=None,
         )
@@ -154,7 +161,14 @@ class TestCycleFoldsEvidence:
             type(
                 "_Cfg",
                 (),
-                {"eval_batch_size": 4, "eval_ema_alpha": 1.0, "target_benchmarks": ["proxy_bfcl"]},
+                {
+                    "eval_batch_size": 4,
+                    "eval_ema_alpha": 1.0,
+                    "target_benchmarks": ["proxy_bfcl"],
+                    # M4-A8/#115: same scoping — the unverified-evidence
+                    # assertion must not depend on producer credit.
+                    "producer_attribution": False,
+                },
             )(),
             llm_call=None,
         )

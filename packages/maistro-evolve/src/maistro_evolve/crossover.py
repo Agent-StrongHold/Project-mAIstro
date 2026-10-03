@@ -38,6 +38,31 @@ def _crossover_baseline(parent_a: PipelineGenome, parent_b: PipelineGenome) -> d
     return baseline
 
 
+def _rewire_parent_edges(
+    parent_edges: Sequence[DAGEdgeGenome], node_id_map: dict[str, str]
+) -> list[DAGEdgeGenome]:
+    """Map both parents' edges onto the child's fresh node-id namespace.
+
+    Edges touching unknown nodes are dropped; a missing ``to_node`` (a root
+    edge) maps to ``None``.
+    """
+    child_edges: list[DAGEdgeGenome] = []
+    for edge in parent_edges:
+        from_mapped = node_id_map.get(edge.from_node)
+        to_mapped = node_id_map.get(edge.to_node) if edge.to_node else None
+        if from_mapped is None:
+            continue
+        child_edges.append(
+            DAGEdgeGenome(
+                id=_new_id(),
+                from_node=from_mapped,
+                to_node=to_mapped,
+                condition=edge.condition,
+            )
+        )
+    return child_edges
+
+
 def crossover(
     parent_a: PipelineGenome,
     parent_b: PipelineGenome,
@@ -70,20 +95,9 @@ def crossover(
             n.id = new_id
             child_nodes.append(n)
 
-    child_edges: list[DAGEdgeGenome] = []
-    for edge in parent_a.topology.edges + parent_b.topology.edges:
-        from_mapped = node_id_map.get(edge.from_node)
-        to_mapped = node_id_map.get(edge.to_node) if edge.to_node else None
-        if from_mapped is None:
-            continue
-        child_edges.append(
-            DAGEdgeGenome(
-                id=_new_id(),
-                from_node=from_mapped,
-                to_node=to_mapped,
-                condition=edge.condition,
-            )
-        )
+    child_edges = _rewire_parent_edges(
+        parent_a.topology.edges + parent_b.topology.edges, node_id_map
+    )
 
     # eval_weights is an inert legacy field since #853 (scoring reads the
     # population-owned objective). Inherit parent_a's verbatim — it is
