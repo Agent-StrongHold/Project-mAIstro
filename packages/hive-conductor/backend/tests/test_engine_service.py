@@ -339,11 +339,15 @@ async def test_demo_mode_task_backend_executes_through_the_governed_egress(
         hive_default_workspace_id = "ws-hive"
 
     sentinel_egress = object()
+    sentinel_idempotency = object()
+
+    class _Container:
+        task_idempotency = sentinel_idempotency
 
     class _FakeBridge:
         """Stands in for a started MaistroCoreBridge (an AgentPort)."""
 
-        container = object()
+        container = _Container()
         governed_egress = sentinel_egress
 
         async def start(self, settings: Any) -> None:
@@ -364,8 +368,9 @@ async def test_demo_mode_task_backend_executes_through_the_governed_egress(
     captured: dict[str, Any] = {}
 
     class _Q:
-        def __init__(self, *, admitter: Any = None) -> None:
+        def __init__(self, *, admitter: Any = None, idempotency_store: Any = None) -> None:
             self.admitter = admitter
+            captured["idempotency_store"] = idempotency_store
 
     class _R:
         def __init__(self, q: Any, executor: Any, attempts: Any = None) -> None:
@@ -397,6 +402,7 @@ async def test_demo_mode_task_backend_executes_through_the_governed_egress(
     svc = EngineService()
     await svc.start(_Settings())  # type: ignore[arg-type]
     assert type(svc._backend).__name__ == "LocalTaskBackend"
+    assert captured["idempotency_store"] is sentinel_idempotency
 
     task = SimpleNamespace(description="demo task")
     result = await captured["executor"](task)
