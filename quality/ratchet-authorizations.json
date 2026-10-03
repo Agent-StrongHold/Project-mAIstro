@@ -309,6 +309,31 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#338",
       "reason": "A declared field on `WaitForSubtasksOut`, read through pydantic validation and serialization rather than by a Python attribute access -- exactly the case `pydantic-declarative-field` records. Newly visible because #1362 wires the M1 effect door onto the container promotion path and brings the quota door with it; none of these is newly dead. The grant admits each identity as it already is and authorizes nothing to get worse."
+    },
+    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'audit_label'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1816",
+      "reason": "Principal.audit_label is the canonical human-readable audit actor label added in Wave 2 Lane A (#1816 / P0.1). Hive routes (e.g. hitl.py) and the audit bridge call it across package boundaries; vulture scans packages/*/src in isolation and cannot see hive-conductor consumers. This grant authorizes only this exact identity until cross-package reachability tooling catches up."
+    },
+    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'has_permission'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1816",
+      "reason": "Principal.has_permission is the task-scoped elevation check added in Wave 2 Lane A (#1816 / P0.1). Hive middleware and routes delegate to it via principal_has_permission; vulture scans packages/*/src in isolation and cannot see hive-conductor consumers. This grant authorizes only this exact identity until cross-package reachability tooling catches up."
+    },
+    "packages/maistro-core/src/maistro/projects/pg_scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "PgScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
+    },
+    "packages/maistro-core/src/maistro/projects/scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "InMemoryScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
+    },
+    "packages/maistro-core/src/maistro/projects/sqlite_scope_store.py::unused method 'bind_workspace_store'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#364",
+      "reason": "SQLiteScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
     }
   },
   "model-egress": {
@@ -1059,31 +1084,6 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#55",
       "reason": "The PostgreSQL EventEnvelope store joins the promotion path for the same reason its 48 neighbours did: the M1 effect door (#55 / #1362) composes Invocation, quota and the canonical event envelope onto the container promotion path, and this module is the durable half of the envelope already granted beside it (events/envelope.py, events/durable_log.py, events/bus.py). It became reachable specifically when #1362 merged #1321: the reconciled durable PostgreSQL builder imports PgEventStore, where before only the SQLite store was composed on that path. It writes and reads event rows -- an append-only record of what happened, read by nothing that decides what happens next. It scores no candidate, gates no merge, and installs no promotion authority, which is the question this ratchet asks. This grant lands first so #1362 cannot approve its own promotion-surface expansion."
-    },
-    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'audit_label'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1816",
-      "reason": "Principal.audit_label is the canonical human-readable audit actor label added in Wave 2 Lane A (#1816 / P0.1). Hive routes (e.g. hitl.py) and the audit bridge call it across package boundaries; vulture scans packages/*/src in isolation and cannot see hive-conductor consumers. This grant authorizes only this exact identity until cross-package reachability tooling catches up."
-    },
-    "packages/maistro-core/src/maistro/identity/principal.py::unused method 'has_permission'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1816",
-      "reason": "Principal.has_permission is the task-scoped elevation check added in Wave 2 Lane A (#1816 / P0.1). Hive middleware and routes delegate to it via principal_has_permission; vulture scans packages/*/src in isolation and cannot see hive-conductor consumers. This grant authorizes only this exact identity until cross-package reachability tooling catches up."
-    },
-    "packages/maistro-core/src/maistro/projects/pg_scope_store.py::unused method 'bind_workspace_store'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#364",
-      "reason": "PgScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
-    },
-    "packages/maistro-core/src/maistro/projects/scope_store.py::unused method 'bind_workspace_store'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#364",
-      "reason": "InMemoryScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
-    },
-    "packages/maistro-core/src/maistro/projects/sqlite_scope_store.py::unused method 'bind_workspace_store'": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#364",
-      "reason": "SQLiteScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
     }
   },
   "principal-identity": {
