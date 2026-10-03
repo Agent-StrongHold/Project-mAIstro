@@ -25,7 +25,9 @@ def test_require_admitted_actor_strips() -> None:
     assert require_admitted_actor("  alice  ") == "alice"
 
 
-async def _world() -> tuple[InMemoryRunStore, InMemoryWorkspaceStore, InMemoryProjectScopeStore, Run, NodeRun, Attempt]:
+async def _world() -> tuple[
+    InMemoryRunStore, InMemoryWorkspaceStore, InMemoryProjectScopeStore, Run, NodeRun, Attempt
+]:
     projects = InMemoryProjectScopeStore()
     workspaces = InMemoryWorkspaceStore(project_store=projects)
     projects.bind_workspace_store(workspaces)
