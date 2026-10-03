@@ -38,6 +38,7 @@ from maistro.ontology.rubric import (
     RUBRIC_KIND,
     RUBRIC_RUN_BINDING_KIND,
     PackRubricCatalog,
+    ProvenanceOrigin,
     RubricAggregation,
     RubricDimension,
     RubricGate,
@@ -222,7 +223,9 @@ class RubricStore:
             gate=catalog.gate or RubricGate(pass_threshold=80.0),
             aggregation=catalog.aggregation or RubricAggregation(),
             provenance=RubricProvenance(
-                authored_by=adopted_by, origin="pack", pack_id=catalog.pack_id
+                authored_by=adopted_by,
+                origin=ProvenanceOrigin.PACK,
+                pack_id=catalog.pack_id,
             ),
             rubric_id=rubric_id,
         )
