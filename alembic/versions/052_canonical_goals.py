@@ -32,8 +32,8 @@ So the DDL is `CREATE TABLE IF NOT EXISTS` plus `CREATE INDEX IF NOT EXISTS` --
 a fresh table and an adopted one are built from the same definition, and an
 adopted one is untouched.
 
-Revision ID: 051
-Revises: 050
+Revision ID: 052
+Revises: 051
 Create Date: 2026-10-02
 """
 
@@ -41,8 +41,13 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "051"
-down_revision = "050"
+# Took `051` on parent `050_design_creative_briefs`, then develop's
+# `051_canonical_run_eval_scores` (#792) claimed that same number on the
+# same parent while this branch was open -- so this revision re-parents
+# onto that `051` as `052`, the same renumbering this chain performs on
+# every develop collision so it keeps exactly one linear head.
+revision = "052"
+down_revision = "051"
 branch_labels = None
 depends_on = None
 

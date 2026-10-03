@@ -59,16 +59,19 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # The invariant is one linear head — now `045`, this branch's Run-scoped
     # logical-effect admission revision that continues 043's chain — with the
     # revisions it superseded on its ancestor path, not any fixed parent.
-    # `046_durable_elevation_grants` (#72) now continues the chain after this
+    # `046_durable_elevation_grants` (#72) continues the chain after this
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
-    # that; #398's `048_canvas_job_retry_backoff` continues it. #792's
-    # eval-score evidence then re-parented onto that 048 as `049`, and
-    # #774's `design_creative_briefs` — which had taken 049 on develop while
-    # this branch's eval evidence took the same number on the same parent —
-    # re-parented onto that 049 as `050` after the collision, and #1572's
-    # canonical Goal tables continue it as `051`. The single linear head is
-    # that newest revision.
-    walked = {item.revision for item in directory.walk_revisions("base", "051")}
+    # that; #398's `048_canvas_job_retry_backoff` continues it, and
+    # `049_design_artifact_versions` (#780) continues that; #774's
+    # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
+    # #780 claimed them — continues after that. #792's eval-score evidence,
+    # which had taken `049` on develop while this branch's artifact-version
+    # ledger took the same number on the same parent, re-parents onto that
+    # `050` as `051_canonical_run_eval_scores`. #1572's canonical Goal
+    # tables took `051` on that same `050` parent while eval-score evidence
+    # claimed it on develop, so they re-parent onto `051` as `052`, the
+    # single linear head.
+    walked = {item.revision for item in directory.walk_revisions("base", "052")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -78,7 +81,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "048" in walked
     assert "049" in walked
     assert "050" in walked
-    assert directory.get_heads() == ["051"]
+    assert "051" in walked
+    assert directory.get_heads() == ["052"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

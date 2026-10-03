@@ -297,6 +297,8 @@ class Run(BaseModel):
     def _validate_run(self) -> Run:
         _require_non_empty(self.workspace_id, "workspace_id")
         _require_non_empty(self.project_id, "project_id")
+        if self.actor_principal_id is None or not self.actor_principal_id.strip():
+            raise ValueError("actor_principal_id is required")
         self._validate_scope_identity()
         if self.parent_run_id == self.run_id:
             raise ValueError("Run cannot be its own parent")

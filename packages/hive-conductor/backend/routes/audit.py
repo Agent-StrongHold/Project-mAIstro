@@ -67,6 +67,20 @@ def log_audit(
 async def list_entries(
     action: str | None = None, severity: str | None = None, actor: str | None = None
 ) -> list[dict]:
+    return await audit_entries_view(action=action, severity=severity, actor=actor)
+
+
+async def audit_entries_view(
+    action: str | None = None, severity: str | None = None, actor: str | None = None
+) -> list[dict]:
+    """The one audit-log read every surface shares (#389).
+
+    `GET /v1/audit`, the settings-change trail and the schedule fire history
+    all serve the same durable log, so they share this read: the core
+    Sentinel store when a Container exposes one, otherwise the same rows from
+    the hive dict `log_audit` wrote (unit tests, boot ordering). Both legs
+    return the Hive HTTP shape, so callers filter and sort identically.
+    """
     core_entries = await list_core_audit_entries(action=action, severity=severity, actor=actor)
     if core_entries is not None:
         return core_entries

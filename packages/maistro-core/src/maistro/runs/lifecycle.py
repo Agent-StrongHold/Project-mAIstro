@@ -354,6 +354,24 @@ def lease_is_expired(attempt: Attempt, now: datetime) -> bool:
     return lease.expires_at <= now
 
 
+def has_live_execution_lease(attempts: list[Attempt], now: datetime) -> bool:
+    """Whether any of these Attempts still holds an unexpired execution lease.
+
+    The crash-recovery sweeps' "is anyone still executing this?" predicate, in
+    one place: a non-terminal Attempt carrying a lease that has not lapsed as
+    of ``now``. A terminal Attempt holds nothing, and a lease-less Attempt is
+    never treated as live -- the same additive stance ``lease_is_expired``
+    takes -- so a deployment that never asked for a TTL keeps exactly today's
+    behaviour.
+    """
+    return any(
+        attempt.status not in TERMINAL_ATTEMPT_STATUSES
+        and attempt.execution_lease is not None
+        and not lease_is_expired(attempt, now)
+        for attempt in attempts
+    )
+
+
 def renewed_lease(lease: ExecutionLease, *, at: datetime, ttl: timedelta) -> ExecutionLease:
     """The same lease, alive for another ``ttl`` from ``at``.
 
