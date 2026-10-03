@@ -180,6 +180,8 @@ async def propose_candidates(
 
 
 def spawn_challenger(genome: PipelineGenome, node_id: str, new_prompt: str) -> PipelineGenome:
+    from .archive import OperatorKind, stamp_provenance
+
     child = genome.model_copy(deep=True)
     now = datetime.now(UTC).isoformat()
     child.id = uuid.uuid4().hex[:12]
@@ -196,7 +198,9 @@ def spawn_challenger(genome: PipelineGenome, node_id: str, new_prompt: str) -> P
         if node.id == node_id:
             node.system_prompt = new_prompt
             break
-    return child
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.REFLECTION, base=genome
+    )
 
 
 def _target_node(genome: PipelineGenome) -> NodeGenome:
