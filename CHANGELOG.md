@@ -123,6 +123,14 @@ or placeholder-only section.
   for tool …` and logs why. The standalone ReAct and Artificer strategy paths
   apply the same rule. Callers that construct Agents directly must wire a
   Sentinel whose permission table grants the tools they need.
+- **Layer-1 episodic recall is scoped to the current Project (#1047,
+  partial).** `DefaultContextAssemblyPolicy.layer1` filtered by `agent_id`
+  only, so an agent id used in two Projects/Workspaces recalled Project A's
+  AGENT-scope memories inside Project B. `layer1` (and the
+  `ContextAssemblyPolicy` protocol) now take a keyword-only `project_id`,
+  which `assemble` passes through to both the ranked and the unranked store
+  read; a memory with no project is not guessed into one. A blank
+  `project_id` keeps the agent-wide recall.
 
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET

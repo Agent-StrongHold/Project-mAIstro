@@ -163,6 +163,29 @@ class TestRankingGoesThroughTheProtocol:
         assert call["org_id"] == "o1"
         assert call["min_weight"] == 0.3
 
+    @pytest.mark.parametrize("query", ["", "deploy"])
+    async def test_layer1_sends_the_project_to_the_store(self, query: str) -> None:
+        """#1047: both recall paths ask the store for this Project's memories only."""
+        store = _ListOnlyEpisodicStore([_mem("deploy script", 0.4, "a")])
+        policy = DefaultContextAssemblyPolicy(
+            episodic_store=store,
+            outcome_store=InMemoryOutcomeStore(),
+            project_store=InMemoryProjectStore(),
+        )
+
+        await policy.assemble(
+            project_id="p1",
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=10_000,
+            query=query,
+        )
+
+        layer1_call = store.scope_calls[0]
+        assert layer1_call["agent_id"] == "agent-1"
+        assert layer1_call["project_id"] == "p1"
+
 
 class TestTheBudgetDropsWholeMemories:
     """AC-3."""
