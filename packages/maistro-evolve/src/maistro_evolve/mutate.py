@@ -5,6 +5,7 @@ import uuid
 from copy import deepcopy
 from datetime import UTC, datetime
 
+from .archive import OperatorKind, stamp_provenance
 from .fixer_genome import (
     FixerGenome,
     FixerStrategy,
@@ -107,7 +108,7 @@ def mutate_topology(
                 )
             )
 
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-topo-mut",
         topology=topo,
@@ -120,6 +121,9 @@ def mutate_topology(
         parent_b_id=None,
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
+    )
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.TOPOLOGY_MUTATION, base=genome
     )
 
 
@@ -141,7 +145,7 @@ def mutate_node(
             node.strategy = random.choice(STRATEGY_LIST)
         if random.random() < rate:
             node.max_tool_rounds = random.randint(1, 20)
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-node-mut",
         topology=topo,
@@ -154,6 +158,9 @@ def mutate_node(
         parent_b_id=None,
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
+    )
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.NODE_MUTATION, base=genome
     )
 
 
@@ -168,7 +175,7 @@ def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
             if len(sentences) > 2:
                 sentences.pop(random.randint(0, len(sentences) - 1))
                 node.system_prompt = ". ".join(sentences)
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-prompt-mut",
         topology=topo,
@@ -182,6 +189,9 @@ def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.PROMPT_MUTATION, base=genome
+    )
 
 
 # The eval_weights mutation operator is gone (#853): the evaluation objective
@@ -189,7 +199,10 @@ def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
 # ruler. A tombstone that only raises would be dead code with no callers, so
 # the operator is removed outright — tests/test_mutate.py pins its absence,
 # and reintroducing any weight-mutating operator must clear the per-identity
-# vulture ledger before it can land.
+# vulture ledger before it can land. M4-A6 reconciliation: the archive's
+# provenance-stamping contract covers the surviving producers (topology, node,
+# prompt, fixer, crossover, hyper/reflect challenges); the retired weights
+# operator was dropped from that surface along with the operator itself.
 
 
 def _mutate_one_fixer(fixer: FixerGenome, rate: float) -> FixerGenome:
@@ -225,7 +238,7 @@ def mutate_fixer_genome(genome: PipelineGenome, rate: float) -> PipelineGenome:
     for node in topo.nodes:
         if node.fixer is not None:
             node.fixer = _mutate_one_fixer(node.fixer, rate)
-    return PipelineGenome(
+    child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-fixer-mut",
         topology=topo,
@@ -238,6 +251,9 @@ def mutate_fixer_genome(genome: PipelineGenome, rate: float) -> PipelineGenome:
         parent_b_id=None,
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
+    )
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.FIXER_MUTATION, base=genome
     )
 
 
@@ -273,4 +289,13 @@ def mutate_all(
     current = mutate_fixer_genome(current, rate)
     # No mutate_eval_weights: the objective is population-owned (#853).
     current.name = genome.name + "-all-mut"
-    return current
+    # Lineage points at the STORED parent, never at the intermediate children
+    # the operator chain built and discarded (M4-A6): each mutate_* step above
+    # re-parents to its immediate input, so without this the returned child's
+    # parent_a_id named a genome that exists nowhere — a lineage record that
+    # could not be traversed. The composite operator still says exactly what
+    # happened (all_mutation over the operator chain).
+    current.parent_a_id = genome.id
+    return stamp_provenance(
+        current, parents=[genome.id], operator=OperatorKind.ALL_MUTATION, base=genome
+    )
