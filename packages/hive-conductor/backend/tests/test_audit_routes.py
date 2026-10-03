@@ -33,6 +33,31 @@ import stores  # noqa: E402
 from routes.audit import log_audit  # noqa: E402
 
 
+@pytest.mark.parametrize("path", ["/v1/audit", "/v1/audit/export", "/v1/audit/retention"])
+def test_audit_requires_canonical_principal(path: str) -> None:
+    """A legacy state.user dict is not an authenticated principal after P0.1.
+
+    The small app deliberately omits AuthMiddleware: each audit read boundary
+    must fail closed itself, including export before streaming headers start.
+    """
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from routes.audit import router
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def legacy_identity(request: Request, call_next):
+        request.state.user = {"id": "admin", "role": "admin"}
+        return await call_next(request)
+
+    app.include_router(router, prefix="/v1/audit")
+    with TestClient(app) as client:
+        response = client.get(path)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Authentication required"
+
+
 def _clear(store) -> None:
     for key in list(store.keys()):
         store.pop(key, None)

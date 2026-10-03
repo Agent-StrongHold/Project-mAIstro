@@ -10,6 +10,7 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
+from services.audit_bridge import hive_entry_to_core, list_core_audit_entries, write_core_audit_sync
 from services.audit_query import (
     DEFAULT_AUDIT_PAGE_SIZE,
     AuditPage,
@@ -18,6 +19,7 @@ from services.audit_query import (
     page_entries,
     retention,
 )
+from services.request_principal import require_principal
 
 router = APIRouter(tags=["audit"])
 
@@ -48,6 +50,7 @@ def log_audit(
     severity: Literal["info", "warning", "critical"] = "info",
 ) -> None:
     entry_id = str(uuid4())
+    created_at = _now()
     entry = AuditEntry(
         id=entry_id,
         action=action,
@@ -55,22 +58,20 @@ def log_audit(
         target=target,
         detail=detail or {},
         severity=severity,
-        created_at=_now(),
+        created_at=created_at,
     )
     stores.audit_log[entry_id] = entry.model_dump(mode="json")
-
-
-def _principal(request: Request) -> dict[str, Any]:
-    """The authenticated principal, or a fail-closed 401.
-
-    AuthMiddleware sets `request.state.user` on every /v1/ path; a handler
-    that cannot name its principal must refuse rather than guess, because the
-    answer below is scoped to that principal (#1174's rule, applied here).
-    """
-    user = getattr(request.state, "user", None) or {}
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user
+    write_core_audit_sync(
+        hive_entry_to_core(
+            entry_id=entry_id,
+            action=action,
+            actor=actor,
+            target=target,
+            detail=detail,
+            severity=severity,
+            created_at=created_at,
+        )
+    )
 
 
 def _actor_scope(request: Request) -> frozenset[str] | None:
@@ -82,11 +83,10 @@ def _actor_scope(request: Request) -> frozenset[str] | None:
     *query* constraint (services.audit_query), evaluated before pagination, so
     another actor's entries are not merely off-page but out of the query.
     """
-    user = _principal(request)
-    if user.get("role") == "admin":
+    principal = require_principal(request)
+    if principal.is_admin:
         return None
-    names = {str(user.get(key)) for key in ("username", "id") if user.get(key)}
-    return frozenset(names)
+    return frozenset(name for name in (principal.username, principal.user_id) if name)
 
 
 def _query_args(
@@ -100,29 +100,42 @@ def _query_args(
 
 
 @router.get("")
-def list_entries(
+async def list_entries(
     request: Request,
     action: str | None = None,
     severity: str | None = None,
     actor: str | None = None,
     limit: int = DEFAULT_AUDIT_PAGE_SIZE,
     cursor: str | None = None,
-) -> AuditPage:
-    """One bounded, scope-filtered page of the audit trail, newest first.
+) -> AuditPage | list[dict]:
+    """Read canonical audit events when bound; page the legacy fallback.
 
-    The envelope replaced a bare array: a page must be able to say there is
+    The core store still has its pre-#358 list contract. Do not hide core-only
+    events by routing around that authority. Core cursor pagination remains an
+    unresolved cutover prerequisite; the UI must not be declared merge-ready.
+
+    In the legacy fallback the envelope replaced a bare array: a page says there is
     more (`next_cursor`) without the client guessing. `limit` is clamped to
     [1, MAX_AUDIT_PAGE_SIZE]; a malformed cursor is a 400, not a silent page
     one — a client that echoes a cursor it did not get from this API is
     broken, and pretending otherwise would hide that.
     """
+    scope = _actor_scope(request)
+    core_entries = await list_core_audit_entries(action=action, severity=severity, actor=actor)
+    if core_entries is not None:
+        # Sentinel decision records are admin-scoped (ADR-073). Personal
+        # legacy events must not become a way to read the core decision audit.
+        if scope is not None:
+            raise HTTPException(status_code=403, detail="Audit administrator required")
+        return core_entries
+
     try:
         return page_entries(
             stores.audit_log,
             **_query_args(action, severity, actor),
             limit=limit,
             cursor=cursor or None,
-            actor_scope=_actor_scope(request),
+            actor_scope=scope,
             backend=stores.persistence_backend(),
         )
     except ValueError as exc:
@@ -144,11 +157,13 @@ def export_entries(
     contract as the list route: a non-admin exports their own entries only.
     """
 
+    scope = _actor_scope(request)
+
     def generate():
         for entry in iter_export_entries(
             stores.audit_log,
             **_query_args(action, severity, actor),
-            actor_scope=_actor_scope(request),
+            actor_scope=scope,
             backend=stores.persistence_backend(),
         ):
             yield json.dumps(entry, default=str) + "\n"
@@ -170,7 +185,7 @@ def retention_policy(request: Request) -> dict[str, Any]:
     purge lane is #325. Declared before /{entry_id} so the parameterised
     route cannot swallow these paths.
     """
-    _principal(request)
+    require_principal(request)
     return retention() | {
         "durable": stores.persistence_backend() is not None,
         "scope": "deployment" if _actor_scope(request) is None else "own",

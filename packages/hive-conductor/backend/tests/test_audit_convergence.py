@@ -41,21 +41,7 @@ from maistro.types.security import AuditEntry
 
 pytestmark = [pytest.mark.contract("cross-service")]
 
-KNOWN_GAPS = frozenset(
-    {
-        # #53: routes/auth.py login() records login_failed via log_audit -> stores.audit_log only.
-        "failed_login",
-        # #53: routes/auth.py elevate() records elevate via log_audit -> stores.audit_log only.
-        "elevation",
-        # #325: routes/hitl.py cancel_human_work() records hitl_cancel via log_audit only.
-        "hitl_cancel",
-        # #325: services/chat_gate.py gate_tool_dispatch() logs chat_tool_privilege_blocked
-        # via log_audit only; the core Sentinel never sees Hive's chat tool dispatch.
-        "denied_tool_call",
-        # #53: routes/audit.py list_entries() reads stores.audit_log, never the core AuditLog.
-        "audit_read_path",
-    }
-)
+KNOWN_GAPS: frozenset[str] = frozenset()
 
 # Seeded by conftest._seed_test_user.
 _USER = ("user", "testuser", "testpass")
@@ -225,6 +211,30 @@ async def test_denied_tool_call_is_one_core_audit_row(booted: Container) -> None
 
     assert result["blocked"] is True
     await _assert_converges("denied_tool_call", booted, before, user_id)
+
+
+async def test_core_decision_audit_is_admin_scoped(
+    client: httpx.AsyncClient, booted: Container
+) -> None:
+    user_id, username, password = _USER
+    await _login(client, username, password)
+    marker = f"private-decision-{uuid4().hex}"
+    assert booted.audit_log is not None
+    await booted.audit_log.log(
+        AuditEntry(
+            timestamp=datetime.now(UTC),
+            boundary="test",
+            user_id=user_id,
+            verdict="denied",
+            detail=marker,
+            request_id=marker,
+        )
+    )
+
+    response = await client.get("/v1/audit")
+
+    assert response.status_code == 403
+    assert marker not in response.text
 
 
 async def test_audit_route_reads_the_core_audit_log(
