@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from maistro.events.bus import EventBus
 from maistro.events.envelope import EventEnvelope, InMemoryEventStore, SqliteEventStore
 from maistro.events.pg_envelope import PgEventStore
@@ -32,6 +34,10 @@ class _FakeConnection:
     async def execute(self, sql: str, *args: Any) -> None:
         self._statements.append(sql)
 
+    async def fetch(self, sql: str) -> list[dict[str, list[str]]]:
+        self._statements.append(sql)
+        return [{"columns": ["event_id"]}, {"columns": ["stream_id", "sequence"]}]
+
     def transaction(self) -> _FakeTransaction:
         return _FakeTransaction()
 
@@ -48,7 +54,7 @@ class _Acquire:
 
 
 class _FakePgPool:
-    """Pool double for the wiring question only: was the schema ensured?"""
+    """Pool double for the wiring question only: was the migrated schema checked?"""
 
     def __init__(self) -> None:
         self.statements: list[str] = []
@@ -92,14 +98,14 @@ async def test_a_supplied_db_pool_selects_the_sqlite_store_after_its_schema() ->
         await connection.close()
 
 
-async def test_a_supplied_pg_pool_selects_the_postgres_store_after_its_schema() -> None:
+async def test_a_supplied_pg_pool_checks_the_schema_without_ddl() -> None:
     pool = _FakePgPool()
 
     publisher = await wire_canonical_events(pg_pool=pool)
 
     assert isinstance(publisher.store, PgEventStore)
-    assert any("pg_advisory_xact_lock" in sql for sql in pool.statements)
-    assert any("CREATE TABLE IF NOT EXISTS canonical_event_log" in sql for sql in pool.statements)
+    assert any("FROM canonical_event_log LIMIT 0" in sql for sql in pool.statements)
+    assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)
 
 
 async def test_a_pg_pool_takes_precedence_over_a_sqlite_connection() -> None:
@@ -123,3 +129,12 @@ async def test_the_wired_publisher_persists_before_notifying_legacy_consumers() 
     [projected] = legacy_bus.get_history()
     assert projected.event_id == persisted.event_id
     assert projected.timestamp == persisted.timestamp
+
+
+async def test_incompatible_pg_pool_fails_without_selecting_another_backend(monkeypatch) -> None:
+    async def incompatible(_self) -> None:
+        raise RuntimeError("unmigrated PostgreSQL")
+
+    monkeypatch.setattr(PgEventStore, "ensure_schema", incompatible)
+    with pytest.raises(RuntimeError, match="unmigrated PostgreSQL"):
+        await wire_canonical_events(pg_pool=_FakePgPool(), db_pool=object())

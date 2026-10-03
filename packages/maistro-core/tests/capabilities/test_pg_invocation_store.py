@@ -494,6 +494,10 @@ async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired()
             executed.append(query)
             return "OK"
 
+        async def fetch(self, query: str) -> list[dict[str, list[str]]]:
+            executed.append(query)
+            return [{"columns": ["event_id"]}, {"columns": ["stream_id", "sequence"]}]
+
         def transaction(self) -> _Transaction:
             return _Transaction()
 
