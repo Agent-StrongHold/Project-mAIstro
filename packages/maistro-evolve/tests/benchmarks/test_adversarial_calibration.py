@@ -26,6 +26,7 @@ import pytest
 from maistro_evolve.benchmarks.bfcl import _score_tool_call
 from maistro_evolve.benchmarks.calibration import (
     _bfcl_narration,
+    _fixture_responder,
     _gaia_narration,
     _ragas_narration,
     _tau_narration,
@@ -77,6 +78,71 @@ class TestStrictJudge:
     async def test_approve_mode_approves(self) -> None:
         judge = strict_judge(True)
         assert await judge([{"role": "user", "content": "grounded answer"}]) == "10"
+
+
+class TestFixtureResponder:
+    """The candidate stub all four calibrators share, both of whose arcs:
+    fixture-keyed replies, and the unmatched-prompt fallback. The fallback
+    is the harness's fixture-drift contract — if a runner's prompt template
+    stops carrying the fixture keys, the run scores zero (visible in the
+    report) instead of crashing the calibration mid-suite."""
+
+    @pytest.mark.asyncio
+    async def test_substring_mode_answers_the_matching_prompt(self) -> None:
+        responder = _fixture_responder({"What is 2+2?": "4"}, "I am not sure.")
+        reply = await responder([{"role": "user", "content": "What is 2+2?\n\nAnswer briefly."}])
+        assert reply == "4"
+
+    @pytest.mark.asyncio
+    async def test_exact_mode_skips_tool_results_but_still_matches_the_prompt(
+        self,
+    ) -> None:
+        """tau-bench's multi-turn shape: the simulated tool-result user turn
+        must not match (exact content), and the original prompt one turn
+        deeper in the transcript still does — the newest-first user scan."""
+        responder = _fixture_responder(
+            {"refund order 1": '{"name": "refund_order"}'},
+            "I cannot proceed.",
+            exact=True,
+        )
+        multi_turn = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "refund order 1"},
+            {"role": "assistant", "content": '{"name": "refund_order"}'},
+            {"role": "user", "content": "Result from refund_order: Success."},
+        ]
+        assert await responder(multi_turn) == '{"name": "refund_order"}'
+
+    @pytest.mark.asyncio
+    async def test_exact_mode_never_matches_a_partial_or_foreign_prompt(
+        self,
+    ) -> None:
+        responder = _fixture_responder(
+            {"refund order 1": "canned"}, "I cannot proceed.", exact=True
+        )
+        assert (
+            await responder([{"role": "user", "content": "please refund order 12"}])
+            == "I cannot proceed."
+        )
+
+    @pytest.mark.asyncio
+    async def test_substring_mode_falls_back_when_no_fixture_matches(self) -> None:
+        """Fixture/prompt drift: nothing matches, the stub degrades to the
+        fallback reply so the scorer records zero instead of raising."""
+        responder = _fixture_responder({"known question": "known answer"}, "I am not sure.")
+        drifted = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "a prompt carrying no fixture key at all"},
+        ]
+        assert await responder(drifted) == "I am not sure."
+
+    @pytest.mark.asyncio
+    async def test_non_user_messages_never_match(self) -> None:
+        responder = _fixture_responder({"known question": "known answer"}, "fallback")
+        assistant_only = [
+            {"role": "assistant", "content": "known question"},
+        ]
+        assert await responder(assistant_only) == "fallback"
 
 
 class TestCalibrationReport:

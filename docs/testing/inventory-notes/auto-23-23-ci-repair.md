@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-rsi/tests: +7
+  packages/maistro-evolve/tests: +5
 ---
 # auto-23-23-ci-repair
 
