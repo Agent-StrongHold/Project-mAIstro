@@ -177,11 +177,41 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     expect(body).toBeTruthy();
   });
 
-  test("10 — canonical audit is admin-only and cursor paginated", async ({ page }) => {
+  test("10 — audit authority is scoped and cursor paginated", async ({ page }) => {
     await loginAsPM(page);
-    // ADR-073: canonical Sentinel decisions are not a personal legacy trail.
-    expect((await page.request.get("/v1/audit")).status()).toBe(403);
-    expect((await page.request.get("/v1/audit/export")).status()).toBe(403);
+    // CI's no-key harness serves a scoped legacy trail, whereas a configured
+    // bridge serves admin-only canonical decisions (ADR-073). Health selects
+    // the expectation independently of the audit response under test.
+    const health = await page.request.get("/health");
+    expect(health.status()).toBe(200);
+    const engine = (await health.json()).engine;
+    expect(engine.state).toBe("ready");
+    expect(["StubAgentPort", "MaistroCoreBridge"]).toContain(engine.agent_port);
+    const canonical = engine.agent_port === "MaistroCoreBridge";
+    const identity = await page.request.get("/v1/auth/whoami");
+    expect(identity.status()).toBe(200);
+    const user = (await identity.json()).user;
+    const ownActors = new Set([user.id, user.username]);
+    for (const path of ["/v1/audit", "/v1/audit/export"]) {
+      const response = await page.request.get(path, { params: { limit: 1 } });
+      expect(response.status()).toBe(canonical ? 403 : 200);
+      if (!canonical) {
+        const rows = path === "/v1/audit"
+          ? (await response.json()).entries
+          : (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.every((row: { actor: string }) => ownActors.has(row.actor))).toBe(true);
+        if (path === "/v1/audit") expect(rows).toHaveLength(1);
+        else expect(rows.length).toBeLessThanOrEqual(10_000);
+        const excluded = await page.request.get(path, { params: { actor: ADMIN_USER } });
+        expect(excluded.status()).toBe(200);
+        if (path === "/v1/audit") {
+          expect(await excluded.json()).toEqual({ entries: [], next_cursor: null });
+        } else {
+          expect(await excluded.text()).toBe("");
+        }
+      }
+    }
     const login = await page.request.post("/v1/auth/login", {
       data: { username: ADMIN_USER, password: ADMIN_PASS },
     });
@@ -191,6 +221,7 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     const auditPage = await auditResp.json();
     expect(Object.keys(auditPage).sort()).toEqual(["entries", "next_cursor"]);
     expect(auditPage.entries).toHaveLength(1);
+    expect(auditPage.entries[0].id.startsWith("core-")).toBe(canonical);
     expect(auditPage.next_cursor).toBeTruthy();
     const following = await page.request.get("/v1/audit", {
       params: { limit: 1, cursor: auditPage.next_cursor },

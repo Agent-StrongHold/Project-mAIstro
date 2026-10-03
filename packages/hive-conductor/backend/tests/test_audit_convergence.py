@@ -351,3 +351,51 @@ async def test_core_authorization_precedes_any_query(
     monkeypatch.setattr(booted.audit_log, "get_entries", forbidden_query)
     response = await client.get(path)
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("canonical", [False, True], ids=["legacy", "canonical"])
+def test_pm_audit_contract_against_each_production_authority(
+    container: Container, monkeypatch: pytest.MonkeyPatch, canonical: bool
+) -> None:
+    """Run the external PM assertion against real routes, auth, and both stores.
+
+    Only transport and boot binding differ from compose. Neither audit responses
+    nor engine health are mocked, so selecting the wrong contract fails here.
+    """
+    import runpy
+    from contextlib import closing
+
+    import stores
+    from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
+    from fastapi.testclient import TestClient
+    from main import app
+    from routes.auth import hash_password
+    from services.engine import get_engine
+
+    engine = get_engine()
+    bridge = MaistroCoreBridge()
+    bridge._container = container
+    monkeypatch.setattr(engine, "_agent_port", bridge if canonical else StubAgentPort())
+    monkeypatch.setattr(engine, "_state", "ready")
+    monkeypatch.setattr(engine, "_configured", canonical)
+    for user_id, username, password in (
+        ("user", "pmuser", "pmpass1234"),
+        ("admin", "admin", "adminpass123"),
+    ):
+        monkeypatch.setitem(
+            stores.users,
+            user_id,
+            stores.users[user_id].model_copy(
+                update={"username": username, "password_hash": hash_password(password)}
+            ),
+        )
+    # The shared suite boot/binding is already installed. Don't start a second
+    # lifespan when the external assertion opens its isolated administrator.
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: closing(TestClient(app)))
+    namespace = runpy.run_path(str(Path(__file__).parents[2] / "tests/e2e/test_pm_workflow_api.py"))
+    with closing(TestClient(app)) as pm:
+        login = pm.post("/v1/auth/login", json={"username": "pmuser", "password": "pmpass1234"})
+        assert login.status_code == 200
+        namespace["TestAuditTrail"]().test_audit_log_has_entries(
+            pm, login.cookies.get("hive_session")
+        )

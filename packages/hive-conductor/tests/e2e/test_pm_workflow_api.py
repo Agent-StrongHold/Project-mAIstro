@@ -17,6 +17,7 @@ Run standalone:
 
 from __future__ import annotations
 
+import json
 import os
 
 import httpx
@@ -250,10 +251,43 @@ class TestDAGLifecycle:
 
 class TestAuditTrail:
     def test_audit_log_has_entries(self, client: httpx.Client, session):
-        # Canonical Sentinel decisions are admin-only (ADR-073), not personal
-        # legacy JsonStore events. Keep the shared PM session untouched.
-        assert client.get("/v1/audit").status_code == 403
-        assert client.get("/v1/audit/export").status_code == 403
+        # CI's no-key compose harness binds StubAgentPort, so it serves the
+        # personal legacy trail. A configured bridge serves admin-only Sentinel
+        # decisions (ADR-073). Select expectations from independent health,
+        # never accept either 200 or 403 based on the response under test.
+        health = client.get("/health")
+        assert health.status_code == 200
+        engine = health.json()["engine"]
+        assert engine["state"] == "ready", engine
+        port = engine["agent_port"]
+        assert port in {"StubAgentPort", "MaistroCoreBridge"}, engine
+        canonical = port == "MaistroCoreBridge"
+        identity = client.get("/v1/auth/whoami")
+        assert identity.status_code == 200
+        user = identity.json()["user"]
+        own_actors = {user["id"], user["username"]}
+        for path in ("/v1/audit", "/v1/audit/export"):
+            response = client.get(path, params={"limit": 1})
+            assert response.status_code == (403 if canonical else 200), response.text
+            if not canonical:
+                rows = (
+                    response.json()["entries"]
+                    if path == "/v1/audit"
+                    else [json.loads(line) for line in response.text.splitlines()]
+                )
+                assert rows, "The PM login must be recorded in the personal trail"
+                assert all(row["actor"] in own_actors for row in rows)
+                if path == "/v1/audit":
+                    assert len(rows) == 1
+                else:
+                    assert len(rows) <= 10_000
+                excluded = client.get(path, params={"actor": "admin"})
+                assert excluded.status_code == 200
+                if path == "/v1/audit":
+                    assert excluded.json() == {"entries": [], "next_cursor": None}
+                else:
+                    assert excluded.text == ""
+        # Keep the shared PM session untouched when reading as administrator.
         with httpx.Client(base_url=BASE, timeout=30.0) as admin:
             login = admin.post(
                 "/v1/auth/login",
@@ -268,6 +302,7 @@ class TestAuditTrail:
             body = response.json()
             assert set(body) == {"entries", "next_cursor"}
             assert len(body["entries"]) == 1
+            assert body["entries"][0]["id"].startswith("core-") is canonical
             assert body["next_cursor"]
             following = admin.get(
                 "/v1/audit",
