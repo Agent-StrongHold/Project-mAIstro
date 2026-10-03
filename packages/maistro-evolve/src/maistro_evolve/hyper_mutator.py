@@ -37,7 +37,7 @@ from pydantic import BaseModel, ValidationError
 
 from .attribution import CandidateOrigin, EvalContext, ProducerKind, producer_identity, stamp_origin
 from .fixer_genome import FixerGenome, render_system_prompt, to_prompt_payload
-from .harness import EvalHarness
+from .harness import EvalHarness, evidence_method
 from .types import NodeGenome, PipelineGenome
 
 # Slot-space search tips — one per candidate diversifies the proposals (the
@@ -339,6 +339,7 @@ async def hyper_mutate(
             continue
         score = results[0].score
         challenger.eval_scores[bench] = score
+        challenger.eval_evidence[bench] = evidence_method(results[0])
         if best_score is None or score > best_score:
             best_challenger, best_score, best_slots = (
                 challenger,

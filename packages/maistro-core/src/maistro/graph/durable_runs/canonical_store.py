@@ -20,11 +20,18 @@ from typing import Any
 from maistro.runs.aggregation import terminal_run_payload
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
+    has_live_execution_lease,
     settle_open_node_run,
     transition_node_run,
     transition_run,
 )
-from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
+from maistro.runs.model import (
+    TERMINAL_RUN_STATUSES,
+    Attempt,
+    NodeRun,
+    Run,
+    RunStatus,
+)
 from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
 
 from .continuation import GraphContinuation, GraphContinuationStore
@@ -384,6 +391,8 @@ class CanonicalDurableRunStore:
             return True
         if await self._reconcile_terminal_graph(continuation, canonical, moment):
             return True
+        if await self._reconcile_stalled_active_frontier(continuation, canonical, moment):
+            return True
         if await self._reconcile_unstarted_claim(continuation, canonical, moment):
             return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
@@ -492,10 +501,12 @@ class CanonicalDurableRunStore:
             return False
         if target is RunStatus.CANCELLED and _matching_hitl_settlement(continuation, target):
             return False
-        if not self._terminal_long_observed(continuation, moment):
-            return False
         record = await self.get(run_id)
         if record is None or not self._spine_is_quiet(record, moment):
+            return False
+        if not self._continuation_ahead_of_spine(
+            record, continuation
+        ) and not self._terminal_long_observed(continuation, moment):
             return False
         if target is RunStatus.COMPLETED:
             result, error = terminal_run_payload(record.node_runs, target)
@@ -510,6 +521,63 @@ class CanonicalDurableRunStore:
         settled = await self._mirror_terminal_hitl(desired, run_id, target)
         self._terminal_first_seen.pop(run_id, None)
         return settled
+
+    @staticmethod
+    def _continuation_ahead_of_spine(
+        record: DurableRunRecord,
+        continuation: GraphContinuation,
+    ) -> bool:
+        """Whether the continuation settled while open NodeRuns remain on the spine."""
+        if continuation.status not in _GRAPH_TERMINAL_STATUSES:
+            return False
+        if record.run.status in TERMINAL_RUN_STATUSES:
+            return False
+        return any(node_run.status not in TERMINAL_RUN_STATUSES for node_run in record.node_runs)
+
+    async def _reconcile_stalled_active_frontier(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+        moment: datetime,
+    ) -> bool:
+        """Re-queue graph work after a frontier NodeRun landed without its checkpoint."""
+        if (
+            continuation.status is not RunStatus.RUNNING
+            or canonical.status is not RunStatus.RUNNING
+        ):
+            return False
+        if continuation.resume_at is not None:
+            return False
+        record = await self.get(continuation.run_id)
+        if record is None or not self._has_stalled_active_frontier(record, moment):
+            return False
+        visible = continuation.model_copy(
+            update={"resume_at": moment, "version": continuation.version + 1}
+        )
+        try:
+            await self._continuations.update(visible)
+        except ValueError:
+            return False
+        return True
+
+    def _has_stalled_active_frontier(self, record: DurableRunRecord, moment: datetime) -> bool:
+        """Whether active NodeRuns exist with no live Attempt holding them."""
+        active_node_runs = [
+            node_run
+            for node_run in record.node_runs
+            if node_run.status in {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING}
+        ]
+        for node_run in active_node_runs:
+            attempts = [
+                attempt
+                for attempt in record.attempts
+                if attempt.node_run_id == node_run.node_run_id
+            ]
+            if not attempts:
+                return True
+            if has_live_execution_lease(attempts, moment):
+                return False
+        return True
 
     def _terminal_long_observed(self, continuation: GraphContinuation, moment: datetime) -> bool:
         """Whether this terminal continuation version has been seen for the quiet period.

@@ -92,6 +92,14 @@ class PipelineGenome(BaseModel):
     harness_params: dict[str, Any] = {}
     fitness_score: float | None = None
     eval_scores: dict[str, float] = {}
+    # Per-benchmark verification provenance (#384): for each entry in
+    # ``eval_scores``, the verified method the score came from (the
+    # ``method`` of the runner's ``metadata["evidence"]`` — e.g.
+    # "structured-call-match", "llm-judge", "exact-match+llm-judge"), or
+    # "unverified" when a result carried no evidence record. Champion
+    # selection must be able to name the evidence behind every score; this
+    # is that record, folded alongside the score it describes.
+    eval_evidence: dict[str, str] = {}
     generation: int = 0
     parent_a_id: str | None = None
     parent_b_id: str | None = None

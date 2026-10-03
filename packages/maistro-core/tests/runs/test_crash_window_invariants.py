@@ -53,6 +53,7 @@ from maistro.runs.model import (
 )
 from maistro.runs.store import RunStore
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 WINDOWS = frozenset(
@@ -65,14 +66,7 @@ WINDOWS = frozenset(
     }
 )
 
-KNOWN_GAPS = frozenset(
-    {
-        "settle_after_last_node_run",  # owner #804
-        "frontier_node_runs_after_resume_at_cleared",  # owner #804
-        "attempt_completion_before_reconcile",  # owner #804
-        "terminal_continuation_before_mirror",  # owner #804
-    }
-)
+KNOWN_GAPS = frozenset()
 
 _WORKSPACE = "ws-crash-windows"
 _LEASE_TTL = timedelta(seconds=30)
@@ -267,7 +261,11 @@ async def _admitted_attempt_service(
     spine: _Spine, kill: _KillAt
 ) -> tuple[AttemptExecutionService, str, str]:
     """A RUNNING Run and NodeRun, as admission claims them (#251), and a leased executor."""
-    run = await spine.run_store.create_run(spine.graph(), initial_status=RunStatus.QUEUED)
+    run = await spine.run_store.create_run(
+        spine.graph(),
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await spine.run_store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await spine.run_store.create_node_run(run.run_id, node_id="a")
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
@@ -382,7 +380,9 @@ async def test_frontier_node_runs_lost_after_the_checkpoint_cleared_resume_at() 
     """
     spine = await _spine()
     graph = spine.graph(chained=True)
-    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     spine.walker.kill_on = lambda record: any(item.node_id == "b" for item in record.node_runs)
 
     await _kill_graph_walk(spine, graph, admitted.run_id)
@@ -408,7 +408,9 @@ async def test_terminal_continuation_written_before_its_canonical_mirror() -> No
     """
     spine = await _spine()
     graph = spine.graph()
-    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     spine.walker.kill_on = lambda record: record.run.status in TERMINAL_RUN_STATUSES
     spine.walker.continuation_lands = True
 

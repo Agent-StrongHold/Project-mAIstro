@@ -1027,3 +1027,125 @@ def test_package_surface_resolves_the_creative_graph_lazily() -> None:
     assert maistro_design.plan_creative_graph is creative_graph_module.plan_creative_graph
     assert maistro_design.run_creative_graph is creative_graph_module.run_creative_graph
     assert maistro_design.CreativeGraphPlan is creative_graph_module.CreativeGraphPlan
+
+
+@pytest.mark.parametrize("shared_changed", [False, True])
+def test_invalidation_keeps_branch_change_reasons_and_shared_precedence(
+    shared_changed: bool,
+) -> None:
+    old = _brief()
+    landing, _deck, poster = old.artifact_requests
+    new = old.new_version(
+        audience="professional bakers" if shared_changed else old.audience,
+        artifact_requests=(
+            poster,
+            landing.model_copy(update={"format": "markdown", "channel": "copy"}),
+            ArtifactRequest(request_id="new-script", channel="script", format="text"),
+        ),
+    )
+
+    report = invalidated_requests(old, new)
+
+    assert report.invalidated_request_ids == (
+        ("landing-page", "launch-deck", "new-script", "poster-launch")
+        if shared_changed
+        else ("landing-page", "launch-deck", "new-script")
+    )
+    assert report.unchanged_request_ids == (() if shared_changed else ("poster-launch",))
+    expected_reasons = {
+        "launch-deck": "artifact request removed",
+        "new-script": "artifact request added",
+    }
+    if shared_changed:
+        expected_reasons["*"] = (
+            "shared decision changed (audience); every descendant "
+            "consuming the shared decisions is invalidated"
+        )
+    else:
+        expected_reasons["landing-page"] = "artifact request changed: channel, format"
+    assert report.reasons == expected_reasons
+
+
+def test_invalidation_refuses_unrelated_brief_lineages() -> None:
+    with pytest.raises(ValueError, match="one brief lineage"):
+        invalidated_requests(_brief(), _brief())
+
+
+@pytest.mark.parametrize("annotation_version", [None, 0, 7])
+async def test_provenance_handles_planned_orphan_and_malformed_annotations(
+    annotation_version: int | None,
+) -> None:
+    import json
+
+    from maistro.graph.durable_runs.types import DurableRunRecord
+    from maistro.graph.execution_state import GraphExecutionState
+
+    brief = _brief()
+    completed = await run_creative_graph(brief, store=InMemoryDurableRunStore())
+    # A persisted snapshot can describe branches that never ran. No client
+    # outputs or execution replay may be needed to explain these branches.
+    snapshot = GraphExecutionState(
+        run_id=completed.run_id,
+        blackboard_snapshot={
+            "node_annotations": {
+                "agent.note": "ignore non-artifact records",
+                "artifact::broken": "{not json",
+                "artifact::scalar": '"not an object"',
+                "artifact::null": None,
+                "artifact::orphan": json.dumps(
+                    {
+                        "channel": "script",
+                        "artifact_id": "historical-artifact",
+                        "goal_revision": annotation_version,
+                        "brief_version": annotation_version,
+                        "consumed_message_decision_id": "recorded-message",
+                        "consumed_visual_decision_id": "recorded-visual",
+                    }
+                ),
+            }
+        },
+    )
+    record = DurableRunRecord(run=completed.run, graph_state=snapshot)
+    original = record.model_dump(mode="json")
+
+    result = artifact_provenance(record)
+
+    assert [item.request_id for item in result] == [
+        "landing-page",
+        "launch-deck",
+        "orphan",
+        "poster-launch",
+    ]
+    for item in result:
+        assert item.status == "planned"
+        assert item.attempt_count == 0
+        assert item.node_run_ids == ()
+        assert item.goal_id == GOAL
+        expected_goal_revision = (annotation_version or 4) if item.request_id == "orphan" else 4
+        expected_brief_version = (annotation_version or 1) if item.request_id == "orphan" else 1
+        assert item.goal_revision == expected_goal_revision
+        assert item.brief_version == expected_brief_version
+    orphan = next(item for item in result if item.request_id == "orphan")
+    assert orphan.node_id == "artifact.generate.orphan"
+    assert orphan.channel == "script"
+    assert orphan.artifact_id == "historical-artifact"
+    assert orphan.content_digest == ""
+    assert orphan.consumed_message_decision_id == "recorded-message"
+    assert orphan.consumed_visual_decision_id == "recorded-visual"
+    assert record.model_dump(mode="json") == original
+
+    empty_record = DurableRunRecord(
+        run=completed.run.model_copy(update={"provenance": {}}),
+        graph_state=GraphExecutionState(run_id=completed.run_id),
+    )
+    for item in artifact_provenance(empty_record):
+        assert item.goal_id == ""
+        assert item.goal_revision == 0
+        assert item.brief_id == ""
+        assert item.brief_version == 0
+        assert item.goal_owner_agent_id == ""
+        assert item.goal_delegation_ref is None
+        assert item.artifact_id == ""
+        assert item.content_digest == ""
+        assert item.consumed_message_decision_id == ""
+        assert item.consumed_visual_decision_id == ""

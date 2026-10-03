@@ -28,6 +28,7 @@ from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunNotFound
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 
@@ -124,7 +125,10 @@ async def test_cancelled_turn_observes_cancelled_run_without_false_terminalizati
 async def test_cancelled_close_rejects_error_payload() -> None:
     """Cancellation is a terminal cause, not a second failure payload."""
     container = await _container()
-    run = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    run = await container.chat_admitter.admit(
+        [{"role": "user", "content": "hi"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     with pytest.raises(ValueError, match="cannot carry error or result"):
         await container._close_chat_run(run, cancelled=True, error="provider_error")
@@ -390,7 +394,10 @@ async def test_a_caller_supplied_run_is_adopted_rather_than_duplicated() -> None
     """
     container = await _container()
     container.conduit = _Conduit()
-    mine = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    mine = await container.chat_admitter.admit(
+        [{"role": "user", "content": "hi"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await container.run_store.transition_run(mine.run_id, RunStatus.QUEUED)
     await container.run_store.transition_run(mine.run_id, RunStatus.RUNNING)
 
@@ -408,7 +415,10 @@ async def test_an_adopted_run_is_still_terminalized_here() -> None:
     recovery reads as a process that died."""
     container = await _container()
     container.conduit = _Conduit()
-    mine = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    mine = await container.chat_admitter.admit(
+        [{"role": "user", "content": "hi"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await container.run_store.transition_run(mine.run_id, RunStatus.QUEUED)
     await container.run_store.transition_run(mine.run_id, RunStatus.RUNNING)
 
@@ -561,7 +571,9 @@ async def test_compensation_declines_a_run_already_past_queued() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await container.run_store.create_run(graph)
+    run = await container.run_store.create_run(
+        graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
     running = await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -623,6 +635,7 @@ async def _stranded_running_chat_run(
         session_id=None,
         intent_hint="",
         known_task_types=container.config.task_types,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert admitted is not None
     at = datetime.now(UTC) - age
@@ -650,7 +663,9 @@ async def test_an_admission_stranded_before_running_is_cancelled(stage: RunStatu
     earlier, and it holds an active-root slot all the same (#1182)."""
     container = await _container()
     admitted = await container.chat_admitter.admit(  # type: ignore[union-attr]
-        [{"role": "user", "content": "hi"}], known_task_types=container.config.task_types
+        [{"role": "user", "content": "hi"}],
+        known_task_types=container.config.task_types,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     if stage is RunStatus.QUEUED:
         await container.run_store.transition_run(admitted.run_id, RunStatus.QUEUED)
@@ -711,7 +726,11 @@ async def test_a_stranded_admission_from_a_non_chat_source_is_left_alone() -> No
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await container.run_store.create_run(graph, provenance={ADMISSION_SOURCE: "schedule"})
+    run = await container.run_store.create_run(
+        graph,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={ADMISSION_SOURCE: "schedule"},
+    )
     at = datetime.now(UTC) - timedelta(minutes=10)
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED, at=at)
     await container.run_store.transition_run(run.run_id, RunStatus.RUNNING, at=at)
@@ -899,7 +918,11 @@ async def test_a_store_that_ignores_the_source_filter_still_spares_a_foreign_run
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    foreign = await container.run_store.create_run(graph, provenance={ADMISSION_SOURCE: "schedule"})
+    foreign = await container.run_store.create_run(
+        graph,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={ADMISSION_SOURCE: "schedule"},
+    )
     at = datetime.now(UTC) - timedelta(minutes=10)
     await container.run_store.transition_run(foreign.run_id, RunStatus.QUEUED, at=at)
     await container.run_store.transition_run(foreign.run_id, RunStatus.RUNNING, at=at)

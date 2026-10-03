@@ -30,6 +30,7 @@ from maistro.tasks.admission import (
 )
 from maistro.tasks.models import TaskCreate, TaskStatus
 from maistro.tasks.queue import TaskQueue, configure_task_queue, get_task_queue
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.fixture
@@ -123,13 +124,15 @@ async def test_absent_session_and_user_are_omitted_rather_than_blank(scoped) -> 
         admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
     )
 
-    task = await queue.submit(TaskCreate(description="Fix it"))
+    task = await queue.submit(
+        TaskCreate(description="Fix it", user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    )
 
     run = await runs.get_run(task.run_id or "")
     assert run is not None
     assert SESSION_ID_KEY not in run.provenance
-    assert "user_id" not in run.provenance
-    assert run.actor_principal_id is None
+    assert run.provenance["user_id"] == DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    assert run.actor_principal_id == DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def test_the_bound_request_id_lands_on_the_runs_provenance(scoped) -> None:
@@ -532,6 +535,7 @@ async def test_recovery_ignores_queued_runs_from_other_admission_sources(scoped)
         node_type=DELEGATE_NODE_KIND,
         name="scheduled work",
         source="schedule",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         initial_status=RunStatus.QUEUED,
     )
     stranded_schedule = await admit_direct_work(
@@ -541,6 +545,7 @@ async def test_recovery_ignores_queued_runs_from_other_admission_sources(scoped)
         node_type=DELEGATE_NODE_KIND,
         name="scheduled work left running",
         source="schedule",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         initial_status=RunStatus.QUEUED,
     )
     await runs.transition_run(stranded_schedule.run_id, RunStatus.RUNNING)

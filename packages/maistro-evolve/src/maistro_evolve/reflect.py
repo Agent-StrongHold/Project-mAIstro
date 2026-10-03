@@ -28,7 +28,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .attribution import CandidateOrigin, EvalContext, ProducerKind, producer_identity, stamp_origin
-from .harness import EvalHarness
+from .harness import EvalHarness, evidence_method
 from .types import NodeGenome, PipelineGenome
 
 # MIPROv2-style grounding: describe what each benchmark measures so the
@@ -295,6 +295,7 @@ async def _evaluate_candidates(
             continue
         score = results[0].score
         challenger.eval_scores[weakest] = score
+        challenger.eval_evidence[weakest] = evidence_method(results[0])
         challenger.harness_params["total_cost_usd"] = results[0].cost_usd
         if best_score is None or score > best_score:
             best_score = score
