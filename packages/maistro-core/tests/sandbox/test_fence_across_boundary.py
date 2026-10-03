@@ -23,7 +23,6 @@ from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunStatus
 from maistro.runs.store import StaleExecutionFence
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.sandbox import SandboxConfig
 from maistro.sandbox.commit import fenced_commit
 from maistro.sandbox.fence import (
@@ -34,6 +33,7 @@ from maistro.sandbox.fence import (
     SandboxFence,
     assert_fence_is_current,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _leased_attempt(
