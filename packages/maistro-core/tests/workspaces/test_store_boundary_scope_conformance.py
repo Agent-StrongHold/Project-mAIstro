@@ -532,6 +532,26 @@ def test_the_audit_log_has_no_by_id_mutation() -> None:
 # ── the gap set itself ─────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+async def test_blank_principal_workspace_get_is_denied(stores: Stores, blank: str) -> None:
+    from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+
+    owner = await stores.enrol("blank-get")
+    with pytest.raises(WorkspaceAuthorizationDenied):
+        await stores.workspaces.get(owner.workspace_id, principal_id=blank)
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+async def test_blank_principal_workspace_update_is_denied(stores: Stores, blank: str) -> None:
+    from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+
+    owner = await stores.enrol("blank-update")
+    workspace = await stores.workspaces.get(owner.workspace_id)
+    assert workspace is not None
+    with pytest.raises(WorkspaceAuthorizationDenied):
+        await stores.workspaces.update(workspace, principal_id=blank)
+
+
 def test_every_known_gap_names_a_real_case() -> None:
     """A misspelt or orphaned entry would excuse nothing and hide nothing."""
     universe = {
