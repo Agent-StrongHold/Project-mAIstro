@@ -16,9 +16,14 @@ from pathlib import Path
 
 import pytest
 
+import aiosqlite
+
 from maistro.capabilities.approval_store import SqliteApprovalStore
 from maistro.capabilities.binding_store import InMemoryBindingStore, SqliteBindingStore
-from maistro.capabilities.effect_context import default_effect_context
+from maistro.capabilities.effect_context import (
+    default_effect_context,
+    new_sqlite_effect_context,
+)
 from maistro.capabilities.invocation import InMemoryInvocationStore
 from maistro.capabilities.invocation_store import SqliteInvocationStore
 from maistro.container import create_container
@@ -117,6 +122,36 @@ async def test_governed_invocations_use_a_durable_approval_store_on_sqlite() -> 
         assert approvals is container.capability_effects.approval_store
     finally:
         await container.aclose()
+
+
+async def test_sqlite_effect_context_reuses_already_selected_stores(tmp_path: Path) -> None:
+    """#1133 AC-8: when the Container already chose durable stores, the
+    builder must thread those exact instances through rather than silently
+    opening a second invocation/event/approval store behind them -- which
+    would split one logical ledger across two objects reading/writing the
+    same table without knowing about each other.
+    """
+    conn = await aiosqlite.connect(tmp_path / "effect-context-injected.db")
+    try:
+        invocation_store = SqliteInvocationStore(conn)
+        await invocation_store.ensure_schema()
+        event_store = SqliteEventStore(conn)
+        await event_store.ensure_schema()
+        approvals = SqliteApprovalStore(conn)
+        await approvals.ensure_schema()
+
+        context = await new_sqlite_effect_context(
+            conn,
+            invocation_store=invocation_store,
+            event_store=event_store,
+            approvals=approvals,
+        )
+
+        assert context.invocation_store is invocation_store
+        assert context.event_store is event_store
+        assert context.approval_store is approvals
+    finally:
+        await conn.close()
 
 
 async def test_capability_effects_and_container_share_one_invocation_store() -> None:

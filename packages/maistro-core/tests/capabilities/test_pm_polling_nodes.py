@@ -9,6 +9,8 @@ from typing import Any
 import aiosqlite
 import httpx
 
+import pytest
+
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
@@ -16,6 +18,8 @@ from maistro.capabilities.effect_context import (
     new_in_memory_effect_context,
     new_sqlite_effect_context,
 )
+from maistro.capabilities.pm_polling import invoke_airtable_poll, invoke_jira_poll
+from maistro.capabilities.providers.pm_polling import AirtablePollRequest, JiraPollRequest
 from maistro.credentials.types import CredentialRecord
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.airtable_poll import AirtablePollNode
@@ -121,6 +125,31 @@ async def test_jira_poll_crosses_binding_and_invocation_without_secret_in_payloa
     )
 
 
+async def test_blank_jira_binding_id_fails_before_any_binding_lookup(monkeypatch: Any) -> None:
+    """Same contract as the Airtable node's blank-`binding_id` guard: refused
+    by the node itself, before `bindings.resolve` ever runs."""
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    resolved = False
+
+    original_resolve = effects.bindings.resolve
+
+    async def spy_resolve(*args: Any, **kwargs: Any) -> Any:
+        nonlocal resolved
+        resolved = True
+        return await original_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(effects.bindings, "resolve", spy_resolve)
+
+    result = await JiraPollNode(effect_context=effects).run(
+        {"binding_id": "", "jql": "status = Done"},
+        _ctx(),
+    )
+
+    assert result.success is False
+    assert result.error_code == "BindingNotFound"
+    assert resolved is False
+
+
 async def test_missing_binding_fails_before_airtable_http(monkeypatch: Any) -> None:
     effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     called = False
@@ -144,6 +173,34 @@ async def test_missing_binding_fails_before_airtable_http(monkeypatch: Any) -> N
     assert result.success is False
     assert result.error_code == "BindingNotFound"
     assert called is False
+
+
+async def test_blank_airtable_binding_id_fails_before_any_binding_lookup(
+    monkeypatch: Any,
+) -> None:
+    """A blank `binding_id` is refused by the node itself -- before
+    `bindings.resolve` ever runs -- so a missing value reads as "no Binding
+    was configured" rather than racing a lookup keyed on an empty string."""
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    resolved = False
+
+    original_resolve = effects.bindings.resolve
+
+    async def spy_resolve(*args: Any, **kwargs: Any) -> Any:
+        nonlocal resolved
+        resolved = True
+        return await original_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(effects.bindings, "resolve", spy_resolve)
+
+    result = await AirtablePollNode(effect_context=effects).run(
+        {"binding_id": "   ", "base_id": "app-1", "table": "Work"},
+        _ctx(),
+    )
+
+    assert result.success is False
+    assert result.error_code == "BindingNotFound"
+    assert resolved is False
 
 
 async def test_airtable_poll_is_governed_and_repeats_deduplicate(monkeypatch: Any) -> None:
@@ -404,3 +461,58 @@ async def test_unknown_http_outcome_blocks_a_repeated_poll(monkeypatch: Any) -> 
     assert first.error_code == "PollingHttpError"
     assert second.error_code == "UnsafeEffectRetry"
     assert calls == 1
+
+
+async def test_invoke_jira_poll_rejects_a_binding_resolved_for_another_capability() -> None:
+    """`invoke_jira_poll` is the governed egress for both `jira.search` and
+    `jira.subtasks`; a Binding resolved for an unrelated capability (a
+    `graph.nodes` wiring bug, or a future caller skipping
+    `bindings.resolve`'s capability filter) must be refused before any
+    credential routing or provider dispatch -- not silently invoked against
+    the wrong Jira endpoint policy."""
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    binding = Binding(
+        binding_id="mismatched-binding",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="n1",
+        capability="airtable.records",
+        provider_name="jira",
+    )
+
+    with pytest.raises(ValueError, match="unexpected Jira capability 'airtable.records'"):
+        await invoke_jira_poll(
+            effects,
+            binding=binding,
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            effect_key="jira.poll.search:mismatch",
+            request=JiraPollRequest(jql="assignee=currentUser()", max_results=1),
+            timeout_s=1.0,
+        )
+
+
+async def test_invoke_airtable_poll_rejects_a_binding_resolved_for_another_capability() -> None:
+    """Same contract as the Jira egress above, for Airtable (#1195)."""
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    binding = Binding(
+        binding_id="mismatched-binding",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="n1",
+        capability="jira.search",
+        provider_name="airtable",
+    )
+
+    with pytest.raises(ValueError, match="unexpected Airtable capability 'jira.search'"):
+        await invoke_airtable_poll(
+            effects,
+            binding=binding,
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            effect_key="airtable.poll.records:mismatch",
+            request=AirtablePollRequest(base_id="app-1", table="Work"),
+            timeout_s=1.0,
+        )
