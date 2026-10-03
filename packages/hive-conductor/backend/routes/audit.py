@@ -67,9 +67,7 @@ def log_audit(
 async def list_entries(
     action: str | None = None, severity: str | None = None, actor: str | None = None
 ) -> list[dict]:
-    core_entries = await list_core_audit_entries(
-        action=action, severity=severity, actor=actor
-    )
+    core_entries = await list_core_audit_entries(action=action, severity=severity, actor=actor)
     if core_entries is not None:
         return core_entries
 
