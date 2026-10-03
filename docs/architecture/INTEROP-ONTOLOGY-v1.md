@@ -11,8 +11,10 @@ This document is the named cross-product contract for MAIstro. It does not intro
 ## One product, three access paths — owner clarification 2026-10-03
 
 MAIstro is one product. Workspace UI, CLI and API are three ways to access the same
-features, the same Agent and the same tools. Workspace encompasses every product UI
-surface. Builders, Evolve and RSI are feature families within this product, not independent
+features, the same Agent and the same tools. “Same Agent” means the common product-facing
+Agent/tool contract and authority across interfaces; internal specialized agents, delegation
+and domain roles remain valid and governed by that contract. Workspace encompasses every product
+UI surface. Builders, Evolve and RSI are feature families within this product, not independent
 products or execution/business-rule authorities. The historical “cross-product” terminology
 in this contract names cross-package/feature integration; it does not permit separate products
 inside this repository. Downstream packaging and isolation boundaries are unchanged.
