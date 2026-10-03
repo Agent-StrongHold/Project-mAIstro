@@ -26,7 +26,11 @@ pipeline lives in `maistro_registry/retrieval/`:
   id/slug/layer keywords ×2, body ×1 — a field-weighted BM25
   approximation) and the serializable index. A saved index carries a
   corpus fingerprint over (path, version) pairs and refuses to load
-  under a foreign format version.
+  under a foreign format version; freshness against a live corpus is
+  *enforced* by `stale_index_reason`, which `search`/`eval` run on every
+  `--index` use — a corpus refresh or removal makes a stale saved index
+  a refusal (exit 2, naming the rebuild command) instead of an answer
+  from stale provenance.
 - **`expand.py`** — optional LLM query expansion sent through the one
   governed model-egress seam (`execute_model_chat` in
   `maistro.capabilities.providers.llm_gateway`, the module

@@ -143,6 +143,51 @@ def test_search_uses_a_prebuilt_index_and_custom_ceiling(
     assert "ADR-001" in out
 
 
+def test_search_refuses_a_stale_saved_index(
+    corpus: Path, tmp_path: Path, make_doc: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Corpus refresh invalidates stale indexed content: a saved index
+    whose corpus has since gained a document is refused (exit 2) with the
+    rebuild command, instead of answering from provenance that no longer
+    describes the sources."""
+    index_path = tmp_path / "retrieval-index.json"
+    from maistro_registry.cli import cmd_index
+
+    assert cmd_index(_args(["index", str(corpus), "--output", str(index_path)])) == 0
+    capsys.readouterr()
+    make_doc(
+        corpus,
+        "docs/adr",
+        "ADR-005-scheduler.md",
+        "ADR-005",
+        "Scheduler lanes",
+        body="Lanes schedule recurring tasks.",
+    )
+    args = _args(["search", "queue", str(corpus), "--index", str(index_path)])
+    assert cmd_search(args) == 2
+    err = capsys.readouterr().err
+    assert "stale index" in err and "maistro-registry index" in err
+
+
+def test_eval_refuses_an_index_stale_to_edited_content(
+    corpus: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The removal leg from the other side: editing a document's bytes is
+    a corpus change, and eval over a saved index must refuse it the same
+    way search does — one freshness contract for every consumer."""
+    index_path = tmp_path / "retrieval-index.json"
+    from maistro_registry.cli import cmd_index
+
+    assert cmd_index(_args(["index", str(corpus), "--output", str(index_path)])) == 0
+    capsys.readouterr()
+    doc = corpus / "docs/adr/ADR-001-queue.md"
+    text = doc.read_text(encoding="utf-8")
+    doc.write_text(text.replace("Tasks queue for durable work.", "Tasks queue with leases."))
+    args = _args(["eval", str(corpus), "--index", str(index_path)])
+    assert cmd_eval(args) == 2
+    assert "stale index" in capsys.readouterr().err
+
+
 def test_search_endpoint_without_model_is_a_clean_error(
     corpus: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -46,6 +46,7 @@ from maistro_registry.retrieval import (
     load_index,
     report_to_dict,
     save_index,
+    stale_index_reason,
 )
 from maistro_registry.schema import FrontMatter
 from maistro_registry.validator import ValidationResult, validate_file
@@ -259,12 +260,26 @@ def _load_searcher(
     root: Path,
     index_path: str | None,
     max_df_share: float | None,
-) -> RetrievalSearcher:
-    """Prebuilt index when given, otherwise build from the corpus at `root`."""
-    index = load_index(Path(index_path)) if index_path else build_index(load_corpus(root))
-    if max_df_share is None:
-        return RetrievalSearcher(index)
-    return RetrievalSearcher(index, max_df_share=max_df_share)
+) -> tuple[RetrievalSearcher, str | None]:
+    """Prebuilt index when given, otherwise build from the corpus at `root`.
+
+    A prebuilt index is served only after its fingerprint is checked
+    against the corpus at `root` (`stale_index_reason`): a corpus refresh
+    or removal invalidates stale indexed content instead of answering
+    from it. The second element carries the refusal message.
+    """
+    if index_path:
+        index = load_index(Path(index_path))
+        stale = stale_index_reason(index, load_corpus(root))
+    else:
+        index = build_index(load_corpus(root))
+        stale = None
+    searcher = (
+        RetrievalSearcher(index)
+        if max_df_share is None
+        else RetrievalSearcher(index, max_df_share=max_df_share)
+    )
+    return searcher, stale
 
 
 def cmd_index(args: argparse.Namespace) -> int:
@@ -323,7 +338,10 @@ def cmd_search(args: argparse.Namespace) -> int:
     expander, error = _expander_from_args(args)
     if expander is None and error:
         return error
-    searcher = _load_searcher(Path(args.root), args.index, args.max_df_share)
+    searcher, stale = _load_searcher(Path(args.root), args.index, args.max_df_share)
+    if stale is not None:
+        print(f"error: stale index: {stale}", file=sys.stderr)
+        return 2
     response = searcher.search(args.query, k=args.k, expander=expander)
     _print_search_response(response, show_terms=args.terms)
     return 0
@@ -332,7 +350,10 @@ def cmd_search(args: argparse.Namespace) -> int:
 def cmd_eval(args: argparse.Namespace) -> int:
     """Measure retrieval quality over a golden set; fail below thresholds."""
     root = Path(args.root)
-    searcher = _load_searcher(root, args.index, args.max_df_share)
+    searcher, stale = _load_searcher(root, args.index, args.max_df_share)
+    if stale is not None:
+        print(f"error: stale index: {stale}", file=sys.stderr)
+        return 2
     golden_path = Path(args.golden) if args.golden else _GOLDEN_DATA_FILE
     golden = load_golden(golden_path)
     report = evaluate(lambda query, k: searcher.search(query, k=k), golden, k=args.k)

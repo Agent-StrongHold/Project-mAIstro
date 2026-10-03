@@ -44,6 +44,7 @@ from maistro_registry.retrieval.index import (
     enrich_document,
     load_index,
     save_index,
+    stale_index_reason,
 )
 from maistro_registry.retrieval.quality import (
     GoldenQuery,
@@ -88,5 +89,6 @@ __all__ = [
     "recall_at_k",
     "report_to_dict",
     "save_index",
+    "stale_index_reason",
     "tokenize",
 ]

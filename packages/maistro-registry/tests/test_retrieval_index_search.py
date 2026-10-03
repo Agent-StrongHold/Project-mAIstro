@@ -20,6 +20,7 @@ from maistro_registry.retrieval import (
     load_corpus,
     load_index,
     save_index,
+    stale_index_reason,
 )
 from maistro_registry.retrieval.terms import CorpusStats, idf, tokenize
 
@@ -207,6 +208,36 @@ def test_index_refuses_foreign_format_version(tiny_repo: Path, tmp_path: Path) -
     path.write_text(text.replace('"format_version": 1', '"format_version": 999'), encoding="utf-8")
     with pytest.raises(IndexVersionError, match="format version"):
         load_index(path)
+
+
+def test_stale_index_reason_enforces_freshness_against_the_corpus(
+    tiny_repo: Path, make_doc: object
+) -> None:
+    """The fingerprint is a contract, not a label: a saved index whose
+    corpus has moved on must be reportable as stale, naming both states,
+    while an unchanged corpus stays servable."""
+    index = build_index(load_corpus(tiny_repo))
+    assert stale_index_reason(index, load_corpus(tiny_repo)) is None
+
+    # Addition leg: a new document is a different corpus state.
+    make_doc(
+        tiny_repo,
+        "docs/adr",
+        "ADR-004-extra.md",
+        "ADR-004",
+        "Extra document",
+        body="More prose.",
+    )
+    reason = stale_index_reason(index, load_corpus(tiny_repo))
+    assert reason is not None
+    assert index.fingerprint in reason, "the refusal names the index's own state"
+    assert "maistro-registry index" in reason, "the refusal names the rebuild command"
+
+    # Content-change leg: edited bytes are stale too, even at the same path.
+    refreshed = build_index(load_corpus(tiny_repo))
+    path = tiny_repo / "docs/adr/ADR-004-extra.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("More prose.", "Changed prose."))
+    assert stale_index_reason(refreshed, load_corpus(tiny_repo)) is not None
 
 
 def test_fingerprint_moves_with_any_corpus_change(tiny_repo: Path, make_doc: object) -> None:

@@ -16,9 +16,12 @@ Two jobs, both done once per corpus instead of once per query:
    statistics (`terms.CorpusStats`), the mean document length BM25
    normalizes by, and a `fingerprint` over (path, version) pairs that
    pins which corpus state an index was built from. Saved indexes carry
-   the fingerprint and format version; loading one built from a different
-   corpus state raises `IndexVersionError` instead of silently scoring
-   against stale provenance.
+   the fingerprint and format version; loading one with a foreign format
+   version raises `IndexVersionError`, and freshness against a corpus is
+   enforced by `stale_index_reason` — consumers (the CLI, on every
+   `search`/`eval` naming `--index`) refuse an index whose fingerprint
+   no longer matches the corpus instead of scoring against stale
+   provenance.
 
 No external deps: tokenization and statistics only (`engine#ADR-039`
 substrate posture — retrieval stays dependency-free until measured
@@ -214,6 +217,28 @@ def index_to_dict(index: RetrievalIndex) -> dict[str, Any]:
 
 class IndexVersionError(RuntimeError):
     """A saved index cannot be trusted for this corpus or this code."""
+
+
+def stale_index_reason(index: RetrievalIndex, documents: list[CorpusDocument]) -> str | None:
+    """Why this saved index must not serve `documents`, or None when fresh.
+
+    A saved index is a projection of exactly one corpus state, pinned by
+    its fingerprint over (path, version) pairs. Serving it against a
+    corpus that has since gained, lost, or changed a document would
+    answer from stale provenance — paths and content versions that no
+    longer describe the real sources — so freshness is *enforced*, not
+    merely recorded: consumers compare the loaded fingerprint against
+    the corpus they are about to serve (the CLI does this on every
+    `search`/`eval` that names `--index`) and refuse the mismatch.
+    """
+    current = corpus_fingerprint(documents)
+    if index.fingerprint == current:
+        return None
+    return (
+        f"index fingerprint {index.fingerprint} does not match the corpus at this root "
+        f"({current}) — the corpus changed since the index was built; "
+        "rebuild it with `maistro-registry index`"
+    )
 
 
 def index_from_dict(data: dict[str, Any]) -> RetrievalIndex:
