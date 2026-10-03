@@ -156,7 +156,6 @@
         "docs/specs/SPEC-242-memory-cross-scope-consent.md [behavioral]",
         "docs/specs/SPEC-242-memory-cross-scope-consent.md [boundary]",
         "docs/specs/SPEC-243-memory-retrieval-ranking.md [behavioral]",
-        "docs/specs/SPEC-244-context-assembly-policy.md [behavioral]",
         "docs/specs/SPEC-245-authz-tier-ladder.md [behavioral]",
         "docs/specs/SPEC-245-authz-tier-ladder.md [boundary]",
         "docs/specs/SPEC-246-authz-approver-graph.md [behavioral]",
