@@ -90,6 +90,18 @@
       "notes": "Append-only audit trail with no retention. Legal hold and tamper-evidence are the importing product's (owner decision on #325)."
     },
     {
+      "table": "candidate_archive",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-evolve/src/maistro_evolve/archive.py",
+      "data_class": "event_history",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#113",
+      "notes": "Optional SQLite mirror of the in-memory CandidateArchive (M4-A6): the append-only ledger of candidate lifecycle events (created/retired/promoted/branched/blocked). Kept forever on purpose — deleting a lineage row erases the provenance the archive exists to preserve, so archive.py has no deletion path; retention evaluation and non-champion branching read retired snapshots forever. Bounded by the candidates a deployment actually creates."
+    },
+    {
       "table": "books",
       "backends": [
         "postgres"
