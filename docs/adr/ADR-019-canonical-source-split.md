@@ -31,7 +31,7 @@ history:
 
 The original Products table below records historical packaging, not separate contemporary
 UI/CLI/API feature authorities. MAIstro is one product with Workspace UI, CLI and API over
-shared services ([unified product contract](../architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03));
+shared services ([unified product contract](../architecture/PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03));
 Canvas/Design/Builders/Evolve/RSI are feature families. External downstream product and
 multi-tenant boundaries remain unchanged. Under [ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md), local canonical
 durability uses PostgreSQL; the table's former SQLite default is limited to small bootstrap/

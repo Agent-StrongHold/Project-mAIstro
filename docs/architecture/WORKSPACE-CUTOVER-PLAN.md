@@ -546,7 +546,7 @@ There is one product, accessed through Workspace UI, CLI and API. Workspace enco
 all product UI surfaces; Builders, Evolve and RSI are integrated features of the same Agent
 and tool/capability system. Their package boundaries preserve specialized algorithms and
 domain records, not independent products, executors or business-rule owners. See the
-[authoritative interface contract](INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03).
+[authoritative interface contract](PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03).
 
 The API and Workspace UI target near feature parity. CLI commands expose the same
 functionality with interface-appropriate output and interaction. UI/CLI/API entry adapters
@@ -571,7 +571,7 @@ bridge later. This does not remove necessary historical-data migration/import, e
 adapters, domain algorithms or security boundaries, and it does not claim parity is implemented.
 
 
-The [interface gap matrix](INTEROP-ONTOLOGY-v1.md#interface-gap-ownership--2026-10-03)
+The [interface gap matrix](PRODUCT-ACCESS-POLICY.md#interface-gap-ownership--2026-10-03)
 records verified existing owners and staged gaps. [#1874](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1874)
 owns the complete entry-point/gap inventory; the bounded CLI page #292 and external CLI bundle
 work do not own full-product parity. Phase/release closure needs actual feature evidence rather

@@ -39,7 +39,7 @@ history:
 
 “Standalone Canvas” below is historical packaging/library context, not a separate current
 MAIstro product or permission for a private UI/API execution authority. The
-[unified product contract](../architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03)
+[unified product contract](../architecture/PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03)
 puts Canvas/Design and other feature surfaces inside Workspace UI, CLI and API over the
 same canonical services. Independently usable libraries and downstream boundaries remain
 valid. Asset identity, route/schema contracts, authorization and isolation requirements are

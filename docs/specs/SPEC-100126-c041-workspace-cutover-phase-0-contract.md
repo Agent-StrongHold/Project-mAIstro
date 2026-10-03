@@ -32,7 +32,7 @@ owners:
 
 ## Interface-wide interpretation — 2026-10-03
 
-The owner's [unified product contract](../architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03)
+The owner's [unified product contract](../architecture/PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03)
 applies to this Phase 0 foundation: Workspace UI, CLI and API access the same Agent, tools
 and canonical application services. Builders, Evolve and RSI are unified feature families.
 P0 principal, authorization, typed-contract, audit, durable-effect, crash-recovery and scope

@@ -158,11 +158,23 @@ SELECT client_addr, write_lag, replay_lag FROM pg_stat_replication;
 
 ## 3. Weekly restore-and-verify drill
 
-Run [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh) weekly
-for **each** database backed up in §2, using its matching `POSTGRES_DB`, `POSTGRES_USER`,
-`BACKUP_ROOT` and backup date. `PG_IMAGE` must match the source PostgreSQL major version and
+The existing [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh)
+can collect scratch-restore diagnostics per database using matching `POSTGRES_DB`,
+`POSTGRES_USER`, `BACKUP_ROOT` and backup date, subject to its role and verification limits below.
+It cannot yet discharge the weekly recovery proof required by #88/#1881. `PG_IMAGE` must match the source PostgreSQL major version and
 required extensions; its default is `pgvector/pgvector:pg17`. It restores only to its uniquely
 named scratch container and removes that container on exit, never into the running application.
+
+**Scratch-role limitation.** The script initializes only `POSTGRES_USER`. Its `--no-owner`
+option does not suppress archived ACL/grant restoration, so an archive referencing other roles
+can fail before verification. The loop below does not provision those roles. Such archives need
+an owner-provisioned isolated destination with all recorded roles/privileges/extensions, using
+the prerequisites and per-owner restore in §§4.3–4.4, adapted to a distinct isolated project/
+endpoint rather than the running production containers. That is a separate manual drill, not a
+capability of this script. Do not add `--no-acl` or skip security evidence to manufacture a pass.
+Even an archive compatible with its single-role scratch cluster is **not proven** by a PASS:
+the snapshot/raw-hash limitations below remain. #1881 owns the verifier repair; #88 owns full
+backup/security-state coverage.
 
 ```bash
 # BACKUP_DATE is an existing YYYY-MM-DD directory under each database's root.

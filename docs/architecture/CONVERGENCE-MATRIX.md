@@ -9,7 +9,7 @@ The convergence program has one execution identity — `Workspace/Project → Gr
 
 ## Product authority — 2026-10-03
 
-[The unified product contract](INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03)
+[The unified product contract](PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03)
 requires Workspace UI, CLI and API to expose the same Agent, tools and feature authority.
 Builders, Evolve and RSI are feature families, not separate products. The rows below inventory
 current package/seam ownership, including migration debt; shared types alone do not satisfy

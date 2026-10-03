@@ -35,7 +35,7 @@ history:
 
 ## Product boundary clarification — 2026-10-03
 
-The owner clarified [one product, three access paths](../architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03):
+The owner clarified [one product, three access paths](../architecture/PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03):
 Workspace UI, CLI and API expose the same Agent, tools and capability/application-service
 authority. Builders, Evolve and RSI are integrated feature families, not independent products.
 Specialized algorithms, artifacts, evaluation/lineage and quarantine remain domain state;
