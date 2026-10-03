@@ -20,7 +20,7 @@ from maistro.workspaces import (
     WorkspaceRole,
     WorkspaceStore,
 )
-from maistro_server.api import campaigns, projects
+from maistro_server.api import backlog_history, campaigns, projects
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
     configure_workspace_store,
@@ -34,6 +34,7 @@ from maistro_server.api.workspace_access import (
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 router.include_router(projects.router)
+router.include_router(backlog_history.router)
 # Workspace work campaigns (#103): operator controls under
 # /{workspace_id}/campaigns. Included here because a campaign is scoped to
 # the Workspace its operators steer, so its routes share this prefix and its

@@ -88,7 +88,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The typed-client ratchet resolves the event's trusted base and ancestry.
+          # Ratchet steps resolve origin/develop and the typed-client ratchet
+          # resolves the event's trusted base; shallow checkout leaves that ref
+          # unresolvable and fails with "Needed a single revision".
           fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
@@ -140,6 +142,14 @@ jobs:
       # quality.yml beside the other Phase 0 debt gates.
       - name: Frontend typed-client debt (raw fetch + hand-typed — ratchet)
         run: uv run python scripts/check-frontend-typed-client.py
+      # One lie further: a route that answers 200 without doing the operation
+      # it names. `/v1/settings/reload` said "reloaded" for years without
+      # reloading anything, and `fetch` never rejects on a canned payload
+      # (#389). This refuses any handler whose every return is a pure literal
+      # with no operation behind it, and holds the audited inventory
+      # (quality/api-route-contracts.json) against the live route table.
+      - name: No canned no-op route handlers ship
+        run: python3 scripts/check-api-route-contracts.py
       # The same failure mode one layer out: a document naming a component that
       # does not exist. DEPLOYMENT-STANCE.md listed a `maistro-sandbox-worker`
       # in all four supported profiles and offered Kata and gVisor as backends;
@@ -827,7 +837,27 @@ jobs:
       - run: uv sync --locked --extra dev
       - run: uv pip install pip-audit
       - run: uv pip freeze --exclude-editable > /tmp/deps.txt
-      - run: uv run pip-audit --strict --format=json -r /tmp/deps.txt > /tmp/pip-audit.json || true
+      # Same retry contract as security.yml's supply-chain job (single gate
+      # script, same failure mode): retry only an unusable report — a crashed
+      # audit leaves the redirected file empty — never a finding-bearing one,
+      # whose verdict belongs to the gate's allowlist.
+      - name: pip-audit (retry transient registry outages)
+        run: |
+          for attempt in 1 2 3; do
+            status=0
+            uv run pip-audit --strict --format=json -r /tmp/deps.txt > /tmp/pip-audit.json || status=$?
+            if [ -s /tmp/pip-audit.json ] && \
+               uv run python -c "import json,sys; json.load(open(sys.argv[1]))" /tmp/pip-audit.json 2>/dev/null; then
+              echo "pip-audit attempt ${attempt}: report complete (audit exit ${status})"
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::pip-audit produced no usable report after 3 attempts (last exit ${status}) — registry/network outage; retry the job"
+              exit 1
+            fi
+            echo "::warning::pip-audit attempt ${attempt} produced no usable report (exit ${status}); retrying in 15s"
+            sleep 15
+          done
       - run: python scripts/pip_audit_gate.py /tmp/pip-audit.json
 
   docker-build:

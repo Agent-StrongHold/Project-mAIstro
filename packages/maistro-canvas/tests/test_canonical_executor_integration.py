@@ -36,6 +36,8 @@ from maistro_canvas.types import (
 
 pytestmark = pytest.mark.asyncio
 
+_TEST_ACTOR = "user-1"
+
 
 class _CanvasStore:
     #: The one org this deployment's rows belong to (#857).
@@ -354,6 +356,7 @@ async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> Non
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
+        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 2
 
@@ -397,6 +400,7 @@ async def test_receipt_persistence_failure_leaves_run_for_durable_reconciliation
             layer_id="layer-1",
             action=JobAction.GENERATE,
             prompt="safe",
+            actor_principal_id=_TEST_ACTOR,
         )
 
     # Receipt persistence failure is indistinguishable from process death to
@@ -432,6 +436,7 @@ async def test_restart_reconciles_admission_gap_and_idempotent_retry_reuses_run(
             action=JobAction.GENERATE,
             prompt="safe",
             idempotency_key="generation-1",
+            actor_principal_id=_TEST_ACTOR,
         )
     queued = await runs.list_by_status(RunStatus.QUEUED, limit=10)
     assert len(queued) == 1
@@ -456,6 +461,7 @@ async def test_restart_reconciles_admission_gap_and_idempotent_retry_reuses_run(
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
+        actor_principal_id=_TEST_ACTOR,
     )
     assert retried.id == repaired[0].id
     all_runs = [
@@ -618,6 +624,7 @@ async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> 
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="   ",
+        actor_principal_id=_TEST_ACTOR,
     )
     assert "canvas_operation_id" not in first.params
 
@@ -631,6 +638,7 @@ async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> 
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="   ",
+        actor_principal_id=_TEST_ACTOR,
     )
 
     assert second.id != first.id
@@ -654,6 +662,7 @@ async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
+        actor_principal_id=_TEST_ACTOR,
     )
     retried = await executor.start_job(
         org_id=_CanvasStore.ORG,
@@ -662,6 +671,7 @@ async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
+        actor_principal_id=_TEST_ACTOR,
     )
 
     assert retried.id == first.id
@@ -692,6 +702,7 @@ async def test_retry_of_active_operation_with_changed_inputs_is_rejected() -> No
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-mismatch",
+        actor_principal_id=_TEST_ACTOR,
     )
 
     with pytest.raises(RunIntegrityError, match="retried with different inputs"):
@@ -702,6 +713,7 @@ async def test_retry_of_active_operation_with_changed_inputs_is_rejected() -> No
             action=JobAction.GENERATE,
             prompt="a completely different prompt",
             idempotency_key="generation-mismatch",
+            actor_principal_id=_TEST_ACTOR,
         )
 
 
@@ -748,6 +760,7 @@ async def test_terminal_retry_with_a_durable_receipt_skips_a_replacement_admissi
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-durable",
+        actor_principal_id=_TEST_ACTOR,
     )
     assert canonical.admit_calls == 1
     # Terminal, as a completed generation's receipt would be -- and no longer
@@ -761,6 +774,7 @@ async def test_terminal_retry_with_a_durable_receipt_skips_a_replacement_admissi
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-durable",
+        actor_principal_id=_TEST_ACTOR,
     )
 
     assert retried.id == first.id
@@ -833,6 +847,7 @@ async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
+        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 2
     runner = runtime.runner
@@ -885,6 +900,7 @@ async def test_execution_deadline_at_the_retry_ceiling_fails_both_sides_consiste
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
+        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 1
 

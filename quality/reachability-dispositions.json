@@ -159,15 +159,12 @@
       "id": "evolve-unwired",
       "subsystem": "Evolve tournament optimizer",
       "disposition": "CONNECT",
-      "rationale": "Evolve providers, benchmarks and serialisation with no caller on the cycle path. #51 moves cycles onto canonical Runs, which is when these are reached.",
+      "rationale": "Evolve terminal runner, benchmarks and serialisation with no caller on the cycle path. #51 moves cycles onto canonical Runs, which is when these are reached. The providers package left this group in the #384 round: maistro_rsi's calibrate handler imports OpenAICompatibleProvider, so it is reachable.",
       "root": "maistro_evolve.cycle, once it runs as a canonical Run (#51)",
       "modules": [
         "maistro_evolve.architecture_fit",
         "maistro_evolve.benchmarks.repo_history",
         "maistro_evolve.executable_terminal_runner",
-        "maistro_evolve.providers",
-        "maistro_evolve.providers.codex_cli",
-        "maistro_evolve.providers.openai_compatible",
         "maistro_evolve.serialize"
       ]
     },

@@ -47,7 +47,14 @@ async def _queued_runs(store: Any, workspace: str, project_id: str, count: int) 
         name="fair scan parity",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    return [await store.create_run(graph, initial_status=RunStatus.QUEUED) for _ in range(count)]
+    return [
+        await store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=f"fair-scan-user-{index}",
+        )
+        for index in range(count)
+    ]
 
 
 async def test_a_run_behind_more_foreign_runs_than_one_tick_inspects_is_reached_on_the_next(

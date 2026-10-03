@@ -80,7 +80,8 @@ def test_daily_status_seed_has_required_identity_fields() -> None:
     assert d["name"]
     assert d["description"]
     assert d["entry_node"] == "jira_poll"
-    assert d["max_cycles"] == 1
+    # The declared cycle budget must cover the seed's own 5-wave depth (#1184).
+    assert d["max_cycles"] == 5
 
 
 def test_daily_status_seed_topology_is_5_nodes_4_edges_sequential() -> None:
