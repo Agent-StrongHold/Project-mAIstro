@@ -391,7 +391,6 @@
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'bfcl'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'ifeval'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'parent_b_id'",
-        "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'passed_hard_gate'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'proxy_bfcl'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'proxy_gaia'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'proxy_ifeval'",

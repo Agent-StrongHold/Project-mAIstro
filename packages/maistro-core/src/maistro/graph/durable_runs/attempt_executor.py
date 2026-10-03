@@ -23,6 +23,7 @@ from maistro.graph.nodes.base import (
     NodeResult,
     ReplaySemantics,
 )
+from maistro.graph.policies import declared_dag_max_cycles, declared_node_timeout_s
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
@@ -30,7 +31,11 @@ from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunIntegrityError, RunStore
-from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
+from maistro.runtime import (
+    ExecutionRuntime,
+    PythonExecutionRuntime,
+    RuntimeDeadlineExceeded,
+)
 
 from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
@@ -393,7 +398,18 @@ async def _walk(
             spine=spine,
             max_steps=max_steps,
             steps=steps,
+            cycle_budget=declared_dag_max_cycles(graph.metadata),
         )
+
+
+def _completed_frontiers(record: DurableRunRecord) -> int:
+    """Completed frontier waves already spent under the declared cycle budget.
+
+    The budget reads ``graph_state.cycle`` — the durable wave counter the walk
+    already checkpoints — so the bound survives a resume without a second
+    counter to keep honest.
+    """
+    return record.graph_state.cycle
 
 
 async def _walk_until_settled(
@@ -407,9 +423,34 @@ async def _walk_until_settled(
     spine: RunStore | None,
     max_steps: int,
     steps: int,
+    cycle_budget: int | None = None,
 ) -> DurableRunRecord:
-    """Walk frontiers until the Run settles or `max_steps` is spent."""
+    """Walk frontiers until the Run settles or a declared budget is spent.
+
+    ``cycle_budget`` is the graph's *declared* ``max_cycles``, resolved through
+    the bounded policy (`maistro.graph.policies`): the number of traversal
+    frontiers (waves) this walk may execute — the incumbent ``GraphConfig``
+    cycle semantics, now actually enforced. The check reads the persisted
+    ``graph_state.cycle``, so the budget is durable across resumes, and it
+    cannot weaken the step floor: ``max_steps`` is enforced in the very same
+    loop and can only bind earlier. An undeclared budget (``None``) leaves
+    every existing graph bounded exactly as before. Exhaustion fails the Run
+    with the budget named — the same fail-closed posture as the step budget
+    (#243): a truncation must never read as success.
+    """
     while record.graph_state.active_node_ids and steps < max_steps:
+        if cycle_budget is not None and _completed_frontiers(record) >= cycle_budget:
+            return await traversal._mark_failed(
+                record,
+                error_code="CycleBudgetExhausted",
+                error_message=(
+                    f"run exceeded max_cycles={cycle_budget} after "
+                    f"{_completed_frontiers(record)} completed frontier(s) with frontier "
+                    f"{record.graph_state.active_node_ids!r} still pending; the graph "
+                    "owes work its declared cycle budget does not cover"
+                ),
+                store=store,
+            )
         steps += 1
         record = await _walk_frontier(
             record,
@@ -482,6 +523,18 @@ async def _walk_frontier(
         # the record or terminalizing the Run would itself go through the
         # broken store. Let it reach the recovery boundary untouched.
         raise
+    except RuntimeDeadlineExceeded as exc:
+        # The canonical ExecutionRuntime deadline the node's declared policy
+        # asked for expired. The Attempt row already carries TIMED_OUT plus its
+        # deadline_at; the Run names the same fact so "why did this stop" is
+        # answerable from the Run alone.
+        latest = await _reload_record(record.run_id, store=store, cause=exc)
+        return await traversal._mark_failed(
+            latest,
+            error_code="AttemptDeadlineExceeded",
+            error_message=str(exc),
+            store=store,
+        )
     except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
         return await traversal._mark_failed(
@@ -663,6 +716,14 @@ async def _execute_frontier(
             ctx,
             executor=executor,
             executor_id=str(getattr(node, "kind", None) or spec.node_type or node_id),
+            # The node's declared timeout policy, resolved through the bounded
+            # envelope, becomes the canonical ExecutionRuntime deadline for
+            # this Attempt: `deadline_at` is persisted before launch and
+            # expiry terminalizes the Attempt TIMED_OUT. Undeclared nodes keep
+            # today's no-deadline behavior. This is what makes a product
+            # runner's own transport timeout unable to extend work past the
+            # canonical policy — the runtime owns the enforcement (#1184).
+            timeout_s=declared_node_timeout_s(spec.policies),
             reconcile_logical=False,
             context_factory=context_for_attempt,
             prior_completion_accepted=prior_completion_accepted,

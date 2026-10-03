@@ -1033,6 +1033,18 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "No DELETE, and restore full-scans the table. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity; retention itself stays open on #325."
+    },
+    {
+      "table": "workspace_backlog_history",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/backlog_history/sqlite_store.py",
+      "data_class": "audit",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#101",
+      "notes": "Append-only BacklogItem history: INSERT is the only write and there is no delete path by design, so rows accumulate for the life of the deployment. The PostgreSQL history slice decides retention."
     }
   ]
 }
