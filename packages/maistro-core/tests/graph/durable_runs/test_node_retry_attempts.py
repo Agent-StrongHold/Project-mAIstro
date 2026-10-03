@@ -103,7 +103,9 @@ def _graph(
 
 
 async def _run(graph: Graph, node: BaseNode[Any, Any], run_store: InMemoryRunStore) -> Any:
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     return await run_durable_graph(
         graph,
         store=InMemoryDurableRunStore(),
@@ -237,7 +239,9 @@ async def test_the_other_walk_reaches_the_same_verdict(
     run_store, workspace_id, project_id = await _spine()
     node = _FlakyStep(failures=failures)
     graph = _graph(workspace_id, project_id, _FlakyStep.kind, policies={"max_attempts": 3})
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     record = await traversal.run_durable_graph(
         graph,

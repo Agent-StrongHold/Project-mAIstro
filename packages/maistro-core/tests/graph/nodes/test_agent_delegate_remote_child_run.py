@@ -992,7 +992,9 @@ class TestCrossInstanceDelegationFilesAChildRun:
                 )
             ],
         )
-        parent = await run_store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+        parent = await run_store.create_run(
+            graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await run_store.transition_run(parent.run_id, RunStatus.QUEUED)
         durable = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=run_store)

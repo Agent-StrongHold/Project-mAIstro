@@ -35,7 +35,9 @@ async def _canonical_run() -> tuple[InMemoryRunStore, str]:
         nodes=[Node(node_id="step", node_type="test.checkpoint-authority")],
     )
     run_store = InMemoryRunStore(project_store=projects)
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     return run_store, run.run_id
 
 

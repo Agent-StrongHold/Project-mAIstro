@@ -128,7 +128,10 @@ def _recording_delegator() -> _RecordingDelegator:
 
 async def _dispatched(store: InMemoryRunStore, project_id: str, **inputs: Any):
     """Dispatch one delegation and return `(node, parent, child_run_id)`."""
-    parent = await store.create_run(_graph(workspace_id="workspace-1", project_id=project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    parent = await store.create_run(
+        _graph(workspace_id="workspace-1", project_id=project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
     node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
     result = await node.run(

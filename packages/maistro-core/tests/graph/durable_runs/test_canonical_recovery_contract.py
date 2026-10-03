@@ -112,7 +112,9 @@ async def _bound_execution_store() -> tuple[
 ]:
     run_store, workspace_id, project_id = await _spine()
     graph = _graph(workspace_id, project_id)
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     run = await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await run_store.create_node_run(run.run_id, node_id="step")
     await run_store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
@@ -139,7 +141,11 @@ async def test_pinned_run_rejects_a_different_graph_before_physical_work() -> No
     run_store, workspace_id, project_id = await _spine()
     canonical_graph = _graph(workspace_id, project_id, name="canonical graph")
     supplied_graph = _graph(workspace_id, project_id, name="different graph")
-    admitted = await run_store.create_run(canonical_graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    admitted = await run_store.create_run(
+        canonical_graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     executed: list[str] = []
 
     def resolver(node_id: str, graph: Any) -> _Step:
@@ -169,7 +175,9 @@ async def test_pinned_parent_is_running_before_any_node_executes() -> None:
         name="observe parent",
         nodes=[Node(node_id="step", node_type=_ObserveRunStatus.kind)],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     seen: list[RunStatus] = []
 
     record = await traversal.run_durable_graph(
@@ -210,7 +218,9 @@ async def test_retry_adopts_node_run_created_before_checkpoint_failure() -> None
     """Canonical NodeRun identity survives a failed aggregate checkpoint exactly once."""
     run_store, workspace_id, project_id = await _spine()
     graph = _graph(workspace_id, project_id)
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     class FailFrontierCheckpoint(InMemoryDurableRunStore):
         fail_frontier = True
@@ -306,7 +316,9 @@ async def test_scoped_reclaim_settles_canonical_attempt_before_immediate_retry()
 
 
 async def _admitted(run_store: InMemoryRunStore, graph: Graph) -> str:
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     return run.run_id
 
 
