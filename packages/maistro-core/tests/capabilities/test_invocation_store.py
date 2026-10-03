@@ -7,6 +7,7 @@ import aiosqlite
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.invocation import (
     InMemoryInvocationStore,
     Invocation,
@@ -15,7 +16,7 @@ from maistro.capabilities.invocation import (
     UnsafeEffectRetry,
 )
 from maistro.capabilities.invocation_store import SqliteInvocationStore
-from maistro.container import _wire_capability_invocations
+from maistro.container import _wire_capability_effects
 
 
 class _Provider:
@@ -115,9 +116,63 @@ async def test_sqlite_store_serializes_active_effect_creation_across_connections
 
 async def test_container_wires_capability_store_to_sqlite_connection() -> None:
     async with aiosqlite.connect(":memory:") as conn:
-        store = await _wire_capability_invocations(pg_pool=None, db_pool=conn)
-        assert isinstance(store, SqliteInvocationStore)
-        await store.ensure_schema()
+        effects = await _wire_capability_effects(
+            effect_context=None,
+            db_pool=conn,
+            pg_pool=None,
+            capability_bindings=(),
+            capability_credentials=None,
+        )
+        assert isinstance(effects.invocation_store, SqliteInvocationStore)
+        await effects.invocation_store.ensure_schema()
+
+
+async def test_a_supplied_effect_context_is_returned_rather_than_a_second_one_built() -> None:
+    """A caller that already owns the effect authority keeps owning it.
+
+    The Container is the composition root, and `effect_context` is how an
+    embedder hands it one it built. Selecting a backend anyway would leave two
+    Invocation ledgers in the same process, each believing it is canonical --
+    and the one the caller holds would be the one nothing wrote to.
+    """
+
+    supplied = new_in_memory_effect_context()
+    async with aiosqlite.connect(":memory:") as conn:
+        effects = await _wire_capability_effects(
+            effect_context=supplied,
+            # A pool is offered and must be ignored: the supplied context wins.
+            db_pool=conn,
+            pg_pool=None,
+            capability_bindings=(),
+            capability_credentials=None,
+        )
+    assert effects is supplied
+
+
+async def test_configured_bindings_are_registered_in_the_selected_store() -> None:
+    """The Bindings a deployment configures reach the store it selected.
+
+    `_require_*_binding` in every egress reads the *registered* record, not
+    the Binding object a caller passes, so a configured Binding that never
+    reached the store authorizes nothing at all -- the deployment would come
+    up looking configured and refuse every effect.
+    """
+
+    binding = Binding(
+        binding_id="configured-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+    async with aiosqlite.connect(":memory:") as conn:
+        effects = await _wire_capability_effects(
+            effect_context=None,
+            db_pool=conn,
+            pg_pool=None,
+            capability_bindings=(binding,),
+            capability_credentials=None,
+        )
+        assert await effects.bindings.get("configured-1") == binding
 
 
 async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen(tmp_path) -> None:
@@ -521,3 +576,157 @@ async def test_invoke_logical_admission_race_replays_completed_winner_across_nod
     assert replay.status is InvocationStatus.COMPLETED
     # Both the racing read and the re-read used the Run-wide scope.
     assert store.read_scopes == [None, None]
+
+
+# --- SqliteInvocationStore.claim: the three exits nothing was exercising ---
+
+
+def _binding_and_resolved() -> tuple[Binding, ResolvedBinding]:
+    binding = Binding(
+        binding_id="binding-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+    return binding, ResolvedBinding.from_provider(binding, _Provider())
+
+
+def _invocation(resolved: ResolvedBinding, invocation_id: str, **over: object) -> Invocation:
+    fields: dict[str, object] = {
+        "invocation_id": invocation_id,
+        "run_id": "run-1",
+        "node_run_id": "node-run-1",
+        "attempt_id": "attempt-1",
+        "binding": resolved,
+        "effect_key": "write:claim",
+    }
+    fields.update(over)
+    return Invocation(**fields)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_claim_returns_the_completed_prior_instead_of_dispatching(tmp_path) -> None:
+    """A replay, not a race, and it must not hold the write lock to say so.
+
+    `claim` takes BEGIN IMMEDIATE before reading history, so the path that
+    finds a completed prior has to roll back explicitly. Returning without
+    that leaves the database write lock held by a connection that has
+    decided to do nothing, and the next writer blocks on it.
+    """
+    async with aiosqlite.connect(tmp_path / "claim.db") as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        _binding, resolved = _binding_and_resolved()
+        await store.create(
+            _invocation(
+                resolved,
+                "inv-done",
+                status=InvocationStatus.COMPLETED,
+                result="committed",
+                finished_at=datetime.now(UTC),
+            )
+        )
+
+        claimed = await store.claim(_invocation(resolved, "inv-new"))
+
+        assert claimed.invocation_id == "inv-done"
+        assert claimed.status is InvocationStatus.COMPLETED
+        # The lock is released, so an unrelated write goes through rather than
+        # blocking behind a transaction the claim never closed.
+        await store.create(_invocation(resolved, "inv-other", effect_key="write:unrelated"))
+
+
+@pytest.mark.asyncio
+async def test_claim_refuses_a_non_terminal_prior_as_an_unsafe_retry(tmp_path) -> None:
+    """RUNNING means the remote outcome cannot be proven absent.
+
+    Only a FAILED prior -- one an adapter proved never applied -- is eligible
+    for a new physical Invocation.
+    """
+    async with aiosqlite.connect(tmp_path / "claim.db") as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        _binding, resolved = _binding_and_resolved()
+        await store.create(_invocation(resolved, "inv-live", status=InvocationStatus.RUNNING))
+
+        with pytest.raises(UnsafeEffectRetry, match="running"):
+            await store.claim(_invocation(resolved, "inv-second"))
+
+        await store.create(_invocation(resolved, "inv-other", effect_key="write:unrelated"))
+
+
+@pytest.mark.asyncio
+async def test_claim_admits_after_a_failed_prior(tmp_path) -> None:
+    """The one prior that is eligible: FAILED is `EffectNotApplied` evidence."""
+    async with aiosqlite.connect(tmp_path / "claim.db") as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        _binding, resolved = _binding_and_resolved()
+        await store.create(
+            _invocation(
+                resolved,
+                "inv-failed",
+                status=InvocationStatus.FAILED,
+                error="EffectNotApplied: the provider proved nothing was applied",
+                finished_at=datetime.now(UTC),
+            )
+        )
+
+        claimed = await store.claim(_invocation(resolved, "inv-retry"))
+
+        assert claimed.invocation_id == "inv-retry"
+
+
+@pytest.mark.asyncio
+async def test_claim_reports_a_lost_insert_race_as_an_unsafe_retry(tmp_path) -> None:
+    """The partial unique index is the final guard, and its rejection must
+    not surface as a raw sqlite3.IntegrityError.
+
+    A caller that catches UnsafeEffectRetry to re-read canonical history
+    would not catch an IntegrityError, so the loser of a cross-connection
+    race would crash instead of replaying.
+    """
+    async with aiosqlite.connect(tmp_path / "claim.db") as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        _binding, resolved = _binding_and_resolved()
+        await store.claim(_invocation(resolved, "inv-dup"))
+
+        # A *different* effect_key, so the in-transaction history read finds
+        # nothing and the claim proceeds to insert -- where the primary key
+        # rejects it. That is the shape of a lost cross-connection race: the
+        # winner's row is invisible to this reader but real to the index.
+        with pytest.raises(UnsafeEffectRetry, match="already has an active or completed"):
+            await store.claim(_invocation(resolved, "inv-dup", effect_key="write:elsewhere"))
+
+        await store.create(_invocation(resolved, "inv-other", effect_key="write:unrelated"))
+
+
+@pytest.mark.asyncio
+async def test_claim_releases_the_write_lock_when_something_unexpected_raises(tmp_path) -> None:
+    """The bare `except BaseException` is load-bearing, not defensive noise.
+
+    Any escape from inside BEGIN IMMEDIATE that skips the rollback strands
+    the database write lock on this connection for the process's life. A
+    cancellation is the realistic case, and it is not an Exception.
+    """
+    async with aiosqlite.connect(tmp_path / "claim.db") as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        _binding, resolved = _binding_and_resolved()
+        broken = _invocation(resolved, "inv-boom")
+
+        original = store._row_values
+
+        def _explode(_invocation_arg: Invocation) -> tuple[object, ...]:
+            raise KeyboardInterrupt("interrupted mid-transaction")
+
+        store._row_values = _explode  # type: ignore[method-assign]
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                await store.claim(broken)
+        finally:
+            store._row_values = original  # type: ignore[method-assign]
+
+        # Proof the lock was released: this write would block otherwise.
+        await store.create(_invocation(resolved, "inv-after"))
