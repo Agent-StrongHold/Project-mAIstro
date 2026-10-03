@@ -56,6 +56,8 @@ from maistro.workspaces.pg_store import PgWorkspaceStore
 from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 from maistro.workspaces.store import InMemoryWorkspaceStore
 
+pytestmark = pytest.mark.ac("SPEC-100126-c041/AC-8")
+
 #: Each key is `store:backend:case`. Every entry is a case that does not hold
 #: today; its body asserts the unscoped behaviour, so closing it fails the
 #: test until the entry is deleted.

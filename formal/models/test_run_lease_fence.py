@@ -151,10 +151,11 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
             )
         )
         self.store = PgRunStore(server.pool, project_store=projects)
+        principal_id = f"formal-i29-{uuid.uuid4().hex}"
         run = server.run(
             self.store.create_run(
                 _graph(workspace, project.project_id),
-                actor_principal_id="formal-i29-principal",
+                actor_principal_id=principal_id,
             )
         )
         self.node_run = server.run(self.store.create_node_run(run.run_id, node_id="node-1"))
