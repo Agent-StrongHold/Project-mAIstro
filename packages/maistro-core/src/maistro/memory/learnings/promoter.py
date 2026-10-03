@@ -118,7 +118,21 @@ class LearningPromoter:
         for lr in candidates:
             if lr.hit_count < self._threshold or lr.status != "active":
                 continue
-            verdict = await self._gauntlet.evaluate(lr)
+            # A candidate whose evaluation cannot complete (transient trial
+            # Run or evaluator failure) is not a rejected candidate: it stays
+            # active here and is re-evaluated on a later pass. The failure is
+            # contained to this candidate so the remaining candidates are
+            # still considered and promotion never breaks the caller, which
+            # awaits this inline before persisting the Run.
+            try:
+                verdict = await self._gauntlet.evaluate(lr)
+            except Exception:
+                logger.exception(
+                    "Gauntlet evaluation failed for learning #%s; "
+                    "leaves it active for retry",
+                    lr.id,
+                )
+                continue
             if not verdict.ok:
                 logger.info(
                     "Gauntlet rejected learning #%s (%s): stays active and local",

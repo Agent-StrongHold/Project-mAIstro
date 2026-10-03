@@ -382,6 +382,42 @@ async def test_rejected_candidate_keeps_its_evidence_and_stays_local() -> None:
     assert row.category == "tooling" and row.tool_name == "bash"
 
 
+class RaisingThenRecordingEvaluator(ScriptedEvaluator):
+    """Raises for the first candidate it sees; otherwise returns passing trials."""
+
+    def __init__(self) -> None:
+        super().__init__(lambda candidate: passing_trials(candidate.content_hash))
+        self.raised: list[str] = []
+
+    async def evaluate(self, candidate: GauntletCandidate) -> EvaluationRecord:
+        if not self.raised:
+            self.raised.append(candidate.content_hash)
+            raise RuntimeError("transient trial Run failure")
+        return await super().evaluate(candidate)
+
+
+async def test_evaluator_failure_is_contained_per_candidate() -> None:
+    """An evaluator that raises must not abort the pass or poison the caller.
+
+    The raising candidate stays active for a controlled retry; later
+    candidates are still considered and promoted in the same pass.
+    """
+    store = InMemoryLearningStore()
+    await store.store(make_learning(trigger_keys=["deploy"]))
+    await store.store(make_learning(trigger_keys=["lint"], learning="run the linter"))
+    evaluator = RaisingThenRecordingEvaluator()
+    promoter = LearningPromoter(store, threshold=5, gauntlet=gauntlet(evaluator))
+
+    promoted = await promoter.check_and_promote()
+
+    # The failure hit exactly one candidate; the other still promoted.
+    assert len(evaluator.raised) == 1
+    assert [p.learning for p in promoted] == ["run the linter"]
+    rows = {row.learning: row for row in await store.list_all()}
+    assert rows["snapshot the workspace before deploying"].status == "active"
+    assert rows["run the linter"].status == "promoted"
+
+
 async def test_store_promotion_seam_is_per_candidate_and_scoped() -> None:
     store = InMemoryLearningStore()
     learning = make_learning()
