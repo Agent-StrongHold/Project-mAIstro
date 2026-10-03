@@ -854,6 +854,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
       "reason": "Complexity #1730 added, in a package the ratchet does not yet watch (#1682). This block is not new -- it dates from the 2026-08-21 initial release -- but its complexity is: #1730 wired the fail-first evidence gate through it on 2026-10-02 and took it from 16 to 19. That is a regression, not a surfacing, and the ledger says so rather than reusing the 'newly visible, not newly complex' wording the other #1682 grants carry; the file being old would have made that wording look right and it would have been false. It went unmeasured only because the radon scan still covers packages/maistro-core/src alone, so maistro-rsi was never in scope -- had it been, #1730 would have had to answer for this before merging. It is the local RSI loop's fitness decision point. This grant admits the current value so #1684 can land and pins it there; #1792 tracks bringing it back down, together with the three blocks #1730 added outright."
+    },
+    "packages/maistro-core/src/maistro/container.py::Container._reconcile_unreconciled_terminal_attempts@17": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1817",
+      "reason": "Post-merge reconciliation: #1817 (\"close P0.7 crash windows and P0.9 chat-gate gaps\") merged this block to develop without a radon grant, which reds the trusted-base comparison for every candidate and merge group behind it on the queue -- not a regression this PR introduced. The function replays reconciliation for terminal Attempts a crash interrupted (#804): it pages RUNNING Runs, and for each one walks its NodeRuns and Attempts to decide, per NodeRun, whether every Attempt already settled, a lease is still live, or the lease lapsed -- three outcomes the loop must tell apart before it can call the Reconciler. Author already marked it `# noqa: C901`, the generic linter's opt-out; this is the repo's separate, stricter ledger that needs its own grant. This grant authorizes this one complexity identity only, at its already-merged value."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::CanonicalDurableRunStore._has_stalled_active_frontier@12": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1817",
+      "reason": "Post-merge reconciliation, the same #1817 gap as the grant above: this block landed in the same commit with no radon grant. Decides whether a durable Run's active NodeRuns have gone quiet with no Attempt still holding them -- short-circuiting on no active NodeRuns, then per NodeRun checking for zero Attempts (stalled) or a live, unexpired lease (not stalled) before concluding every active NodeRun is abandoned. This grant authorizes this one complexity identity only, at its already-merged value."
     }
   },
   "contract-markers": {
