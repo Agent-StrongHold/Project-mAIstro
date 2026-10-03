@@ -84,15 +84,32 @@ jobs:
             if (required.size === 0) return;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-              const runs = await github.paginate(
-                github.rest.checks.listForRef,
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: candidateSha,
-                  per_page: 100,
-                },
-              );
+              let runs;
+              try {
+                runs = await github.paginate(
+                  github.rest.checks.listForRef,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: candidateSha,
+                    per_page: 100,
+                  },
+                );
+              } catch (error) {
+                // A transient GitHub API fault (network timeout like the
+                // UND_ERR_HEADERS_TIMEOUT that killed run 37156509599, or a
+                // 5xx) must not discard the aggregator: the evidence window
+                // keeps polling and still fails closed if evidence never
+                // appears. Permanent client errors (octokit's default
+                // retry-exempt status codes) are rethrown so a wrong SHA or
+                // bad token fails fast instead of burning the whole budget.
+                if (Number.isInteger(error?.status) && [400, 401, 403, 404, 422].includes(error.status)) {
+                  throw error;
+                }
+                core.warning(`attempt ${attempt}: transient API error (${error?.message || error}); retrying within the evidence window`);
+                await new Promise(resolve => setTimeout(resolve, intervalMs));
+                continue;
+              }
 
               const latest = new Map();
               for (const run of runs) {

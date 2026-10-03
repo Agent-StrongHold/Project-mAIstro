@@ -30,11 +30,13 @@ function run(id, conclusion = 'success', overrides = {}) {
   };
 }
 
-async function poll(snapshots, { required = ['docker-build'], attempts = 2, interval = 1 } = {}) {
+async function poll(snapshots, { required = ['docker-build'], attempts = 2, interval = 1, errors = [] } = {}) {
   const failures = [];
   const messages = [];
+  const warnings = [];
   const requests = [];
   const waits = [];
+  let thrown = null;
   const listForRef = Symbol('checks.listForRef');
   const sandbox = {
     process: { env: {
@@ -43,7 +45,11 @@ async function poll(snapshots, { required = ['docker-build'], attempts = 2, inte
       EVIDENCE_WAIT_ATTEMPTS: String(attempts),
       EVIDENCE_WAIT_INTERVAL_MS: String(interval),
     } },
-    core: { info: message => messages.push(message), setFailed: message => failures.push(message) },
+    core: {
+      info: message => messages.push(message),
+      warning: message => warnings.push(message),
+      setFailed: message => failures.push(message),
+    },
     context: { repo: { owner: 'Agent-StrongHold', repo: 'Project-mAIstro' } },
     github: {
       rest: { checks: { listForRef } },
@@ -54,14 +60,23 @@ async function poll(snapshots, { required = ['docker-build'], attempts = 2, inte
         assert.equal(options.repo, 'Project-mAIstro');
         assert.equal(options.per_page, 100);
         requests.push(options);
-        return structuredClone(snapshots[Math.min(requests.length - 1, snapshots.length - 1)]);
+        if (requests.length <= errors.length) throw errors[requests.length - 1];
+        return structuredClone(snapshots[Math.min(requests.length - 1 - errors.length, snapshots.length - 1)]);
       },
     },
     setTimeout: (resolve, milliseconds) => { waits.push(milliseconds); resolve(); },
   };
-  await vm.runInNewContext(`(async () => {\n${script}\n})()`, sandbox);
-  return { failures, messages, requests, waits };
+  try {
+    await vm.runInNewContext(`(async () => {\n${script}\n})()`, sandbox);
+  } catch (error) {
+    thrown = error;
+  }
+  return { failures, messages, warnings, requests, waits, thrown };
 }
+
+// The exact fault that killed integration-scope in run 37156509599: an
+// undici HeadersTimeoutError from checks.listForRef, carrying no HTTP status.
+const headersTimeout = Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' });
 
 function permutations(values) {
   if (values.length === 0) return [[]];
@@ -146,6 +161,42 @@ test('empty scope returns without querying while malformed budgets still fail cl
     const invalid = await poll([], options);
     assert.deepEqual(invalid.failures, ['invalid Integration Scope polling budget']);
     assert.deepEqual(invalid.requests, []);
+  }
+});
+
+test('transient API faults keep polling and still succeed when evidence later appears', async () => {
+  const result = await poll([[run(30)]], { errors: [headersTimeout], attempts: 3, interval: 1 });
+  succeeded(result);
+  assert.equal(result.requests.length, 2);
+  assert.deepEqual(result.waits, [1]);
+  assert.ok(result.warnings.some(message =>
+    message.includes('transient API error') && message.includes('Headers Timeout Error')));
+
+  // A 5xx HttpError is equally transient: retried, not fatal.
+  const serverError = Object.assign(new Error('Internal Server Error'), { status: 502 });
+  const retried = await poll([[run(30)]], { errors: [serverError], attempts: 2, interval: 1 });
+  succeeded(retried);
+  assert.equal(retried.requests.length, 2);
+});
+
+test('persistent transient faults consume the same budget and still fail closed', async () => {
+  const result = await poll([[]], {
+    errors: [headersTimeout, headersTimeout, headersTimeout], attempts: 3, interval: 50,
+  });
+  assert.deepEqual(result.failures, ['timed out waiting for required specialized CI evidence']);
+  assert.equal(result.requests.length, 3);
+  assert.deepEqual(result.waits, [50, 50, 50]);
+});
+
+test('permanent client errors fail fast instead of burning the evidence budget', async () => {
+  for (const status of [400, 401, 403, 404, 422]) {
+    const notFound = Object.assign(new Error('permanent'), { status });
+    const result = await poll([[run(30)]], { errors: [notFound, notFound], attempts: 3 });
+    assert.ok(result.thrown, `status ${status} must be rethrown`);
+    assert.equal(result.thrown.status, status);
+    assert.deepEqual(result.failures, []);
+    assert.equal(result.requests.length, 1);
+    assert.deepEqual(result.waits, []);
   }
 });
 
