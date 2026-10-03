@@ -538,3 +538,32 @@ Workspace + user + **global** for v1.0. Team axis returns `NotImplemented` or hi
 | Canvas | #735, #851, #93 |
 | Capabilities | #59, #848 |
 | Security on Agent | #66, #1171, #1202 |
+
+
+## 10. Unified product access — owner clarification 2026-10-03
+
+There is one product, accessed through Workspace UI, CLI and API. Workspace encompasses
+all product UI surfaces; Builders, Evolve and RSI are integrated features of the same Agent
+and tool/capability system. Their package boundaries preserve specialized algorithms and
+domain records, not independent products, executors or business-rule owners. See the
+[authoritative interface contract](INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03).
+
+The API and Workspace UI target near feature parity. CLI commands expose the same
+functionality with interface-appropriate output and interaction. UI/CLI/API entry adapters
+must delegate to the same scoped application services and canonical Agent/tool authority;
+a new route or command is not permission to duplicate admission, authorization, approvals,
+execution, retry/cancel, storage or observation. All feature work enters canonical Runs,
+NodeRuns, Attempts and governed Invocations, and appears in the single Run browser.
+
+For each feature cutover, identify its equivalent API, Workspace and CLI operation (or a
+named temporary presentation gap), and verify the same allowed/refused result, canonical
+identity, durable effect and observable state. Existing P0 scope/security and M1 crash/replica
+proof remain required. Interface parity does not bypass sandbox isolation, approvals or
+feature-availability gates. Preserve domain-specific Builders artifacts, Evolve evaluations
+and RSI quarantine/provenance rather than flattening them into one generic record.
+
+**Release scope is unchanged here.** Section 9's v1.0 replacement/deletion rules and the
+Evolution UI return in v1.2 remain recorded milestones. They are staged delivery of one
+product, not permission for a separate Evolution product. Whether the owner's near-parity
+requirement advances Evolution UI exposure into v1.0 needs an explicit release-scope decision;
+this clarification does not silently make that change or claim parity is implemented.

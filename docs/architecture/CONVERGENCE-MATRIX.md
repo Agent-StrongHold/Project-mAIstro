@@ -7,6 +7,17 @@
 
 The convergence program has one execution identity — `Workspace/Project → Graph → Run → NodeRun → Attempt → ExecutionRuntime` — and one effect path — `Capability → Provider → Binding → Invocation`. Every competing owner below is either legitimate domain state, a compatibility/projection surface, or explicit convergence debt.
 
+## Product authority — 2026-10-03
+
+[The unified product contract](INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03)
+requires Workspace UI, CLI and API to expose the same Agent, tools and feature authority.
+Builders, Evolve and RSI are feature families, not separate products. The rows below inventory
+current package/seam ownership, including migration debt; shared types alone do not satisfy
+convergence. All interfaces use the same canonical business rules, Run/Attempt/effect services
+and observer/inspection plane. Domain-specific algorithms/state and security boundaries remain.
+Near API/Workspace parity and CLI functional parity are targets requiring behavior evidence,
+not claims made by the structural matrix checker.
+
 ## What the checker enforces
 
 `scripts/check-convergence-matrix.py` fails CI when the two tables disagree, module prefixes stop partitioning every production module, a row's unreachable share disagrees with the reachability ratchet, a disposition leaves the fixed vocabulary, a cited ADR/SPEC does not exist, or an **ownership claim names a module that no product path reaches** (#378) — see [How to read an ownership cell](#how-to-read-an-ownership-cell-378) for the grammar those columns now follow. Fifteen such claims were in the table when that check was turned on, all of them now annotated with what is actually true.

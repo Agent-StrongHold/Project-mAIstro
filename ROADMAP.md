@@ -5,6 +5,20 @@ together: a variant is a Copier template plus the packages it turns on, not a
 separate repository. [`BACKLOG.md`](BACKLOG.md) is the item-level companion; the
 substrate-vs-variant split is [`engine#ADR-019`](docs/adr/ADR-019-canonical-source-split.md).
 
+## Unified access contract — 2026-10-03
+
+One product has three access paths: Workspace UI, CLI and API use the same Agent, tools,
+capabilities and canonical business-rule services. Workspace encompasses all product UI
+surfaces. Builders, Evolve and RSI are integrated feature families, not independent products.
+API/Workspace UI target near parity; CLI exposes the same functionality with presentation
+suited to commands and structured output. See the [full authority and proof contract](docs/architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03).
+
+The existing v1.0/v1.2 milestones below are unchanged. In particular, the recorded Evolution
+UI deferral is a temporary delivery gap within one product. Advancing that UI to satisfy
+near-parity in v1.0 requires an explicit release-scope decision; no parity implementation or
+milestone change is implied by this clarification. Package/variant names below describe
+composition and downstream boundaries, not separate UI/CLI/API feature authorities.
+
 ## Item ID convention (per [`engine#ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md))
 
 Every roadmap and backlog item is tagged by the part of the product it belongs to:

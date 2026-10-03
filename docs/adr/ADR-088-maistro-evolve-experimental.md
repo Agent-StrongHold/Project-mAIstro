@@ -30,6 +30,16 @@ history:
 
 # ADR-088: maistro-evolve — experimental genome optimiser
 
+## Product boundary clarification — 2026-10-03
+
+The owner clarified [one product, three access paths](../architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03):
+Workspace UI, CLI and API expose the same Agent, tools and capability/application-service
+authority. Builders, Evolve and RSI are integrated feature families, not independent products.
+Specialized algorithms, artifacts, evaluation/lineage and quarantine remain domain state;
+execution and effects use canonical Run/NodeRun/Attempt and Invocation services, with shared
+observation and inspection. This clarification preserves existing safety/experimental gates
+and release sequencing; it does not claim convergence or feature parity is implemented.
+
 **Status:** Accepted
 **Date:** 2026-05-30
 **Records the intended shape** of the maistro-evolve package while stating plainly that it is

@@ -25,6 +25,11 @@ or placeholder-only section.
 
 ### Changed
 
+- **One product across Workspace UI, CLI and API (no linked issue: owner architecture
+  clarification).** Record shared Agent/tool/capability and business-rule authority, integrated
+  Builders/Evolve/RSI, near API/Workspace parity and CLI functional parity. Preserve specialized
+  domain state, security gates and existing release milestones; parity remains to be proven.
+
 - **Canonical storage guidance reconciled (#1135).** Reaffirm PostgreSQL at every deployment
   size, with separately owned MAIstro/LiteLLM/Langfuse databases and migrations. Amend conflicting
   SQLite-twin ADR/spec clauses and cutover guidance without deleting historical data, weakening

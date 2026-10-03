@@ -30,6 +30,23 @@ owners:
 
 # SPEC-100126-c041: Workspace cutover Phase 0 contract
 
+## Interface-wide interpretation — 2026-10-03
+
+The owner's [unified product contract](../architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03)
+applies to this Phase 0 foundation: Workspace UI, CLI and API access the same Agent, tools
+and canonical application services. Builders, Evolve and RSI are unified feature families.
+P0 principal, authorization, typed-contract, audit, durable-effect, crash-recovery and scope
+requirements cannot be implemented differently by each interface. Equivalent operations
+must reach the same service authority and produce the same governed canonical outcomes;
+type/DTO agreement alone is insufficient.
+
+The existing AC identifiers and unproven markers below are unchanged. Interface parity still
+needs feature-by-feature behavior evidence and a named owner for temporary gaps; this spec
+update neither claims that evidence nor adds a separate execution or business-rule owner.
+Near API/Workspace parity and CLI functional parity permit interface-appropriate presentation,
+not weaker security or independent Agent/tool registries. Release sequencing remains in the
+roadmap and cutover plan.
+
 - **Status:** Proposed
 - **Date:** 2026-10-01
 - **Plan:** [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](../architecture/WORKSPACE-CUTOVER-PLAN.md), Phase 0 (P0.1–P0.9)

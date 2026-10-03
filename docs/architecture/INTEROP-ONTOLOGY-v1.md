@@ -8,6 +8,43 @@
 
 This document is the named cross-product contract for MAIstro. It does not introduce a parallel domain model. It packages the accepted architecture into one versioned language that Builders, Conductor, Evolve, Canvas/Design Studio, schedules, the persistent Workspace Agent, and later RSI must use when exchanging shared concepts.
 
+## One product, three access paths — owner clarification 2026-10-03
+
+MAIstro is one product. Workspace UI, CLI and API are three ways to access the same
+features, the same Agent and the same tools. Workspace encompasses every product UI
+surface. Builders, Evolve and RSI are feature families within this product, not independent
+products or execution/business-rule authorities. The historical “cross-product” terminology
+in this contract names cross-package/feature integration; it does not permit separate products
+inside this repository. Downstream packaging and isolation boundaries are unchanged.
+
+This is stronger than matching DTOs or types. All three access paths must invoke the same
+canonical capability and application-service authority for admission, scope/authorization,
+Agent/tool selection, execution, approvals, cancellation/retry, durable state, events and
+inspection. A CLI command or UI route cannot implement a second business rule or silently
+select a private agent/tool registry. Transport, authentication entry mechanics and presentation
+may differ; the resulting principal/scope and governed behavior must agree.
+
+API and Workspace UI should have near feature parity. The CLI exposes the same functionality
+with interface-appropriate presentation, including commands/structured output for operations
+represented visually in Workspace. A temporary gap must be named with its owning work item,
+release scope and reason; it cannot become an independent backend or an unsupported claim of
+parity. Feature availability and authorization gates apply consistently across interfaces.
+
+Domain-specific state and algorithms remain legitimate: Builders stage/spec artifacts,
+Evolve populations/evaluation/lineage and RSI candidates/quarantine need not become the same
+objects. They use canonical Run/NodeRun/Attempt and Capability/Provider/Binding/Invocation
+services, one event/observer contract and the shared Run inspection surface. Domain receipts,
+continuations and search algorithms do not create another universal execution lifecycle.
+Security, isolation, privacy, budgets and approval requirements are not weakened by parity.
+
+**Proof still required.** For each exposed feature, exercise equivalent UI/API/CLI intents
+against the same scoped Agent/capability and compare canonical admission, allowed/refused
+outcomes, Run/Invocation identity, durable effects and observable state. Presentation need not
+be pixel-identical. Builders/Evolve/RSI work must be observable through the same Run browser.
+These are target requirements, not a statement that interface parity or convergence ships today.
+Release milestones remain in [ROADMAP.md](../../ROADMAP.md); this clarification does not move
+the existing v1.0/v1.2 Evolution UI boundary.
+
 ## Rule
 
 A shared concept has one canonical identity, one canonical semantic owner, and one versioned meaning. Product-local DTOs and views may project that concept for presentation or transport, but they may not redefine its identity, lifecycle, ownership, or lineage.
