@@ -1140,7 +1140,6 @@
         "packages/maistro-design/src/maistro_design/types.py::unused variable 'letter_spacing'",
         "packages/maistro-design/src/maistro_design/types.py::unused variable 'line_height'",
         "packages/maistro-design/src/maistro_design/types.py::unused variable 'output_formats'",
-        "packages/maistro-evolve/src/maistro_evolve/benchmarks/repo_history.py::unused variable 'failing_tests'",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/repo_history.py::unused variable 'gold_patch'",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/repo_history.py::unused variable 'issue_text'",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/repo_history.py::unused variable 'test_patch'",

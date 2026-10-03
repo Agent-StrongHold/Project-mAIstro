@@ -320,3 +320,52 @@ verbatim.
   #534's two-merge rule), so no candidate-side edit can clear them; the driver must land
   the staged grants on develop, then re-queue. No GitHub mutations are permitted from this
   worker.
+
+## Fourth CI-repair addendum (develop-sync completion round at b6957ed7c)
+
+Scope: complete the interrupted merge of origin/develop `4df9dd9bd` (develop's #1730
+RSI fail-first evidence and #1663 design cross-artifact consistency evaluation), repair
+the named merge-queue failure (Supply chain / pip-audit), and re-bank the exact
+vulture candidate ledger for the merged tree. No backlog source, test, or migration
+changed in this round; the diff is the merge resolution plus a one-line ledger prune.
+
+- **Develop sync conflict resolved in place:** the only unmerged path was
+  `quality/vulture-baseline.json` — both sides carry the same 15 rule ids reordered with
+  content drift (this branch's exact-debt-ledger re-banking vs develop's generic
+  category grants). Resolved to this branch's validated ledger (000fbf93d) and committed
+  as merge `b6957ed7c`; the candidate ledger was then re-banked from the live merged
+  scan (below).
+- **exact-debt-ledger re-banked post-merge:** `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*' --update` produced exactly one delta —
+  pruning `repo_history.py::unused variable 'failing_tests'`, which the merged tree no
+  longer flags. 0 unclassified, 0 never-allowlist; candidate bookkeeping exact
+  (re-running the checker shows no "Candidate ledger bookkeeping still needs attention"
+  section). The trusted leg still reports the documented, unfixable-branch-side residual:
+  50 NEW `maistro.backlog.*` identities vs the trusted base (grants are read from the
+  base revision, #534 two-merge).
+- **Named merge-queue failure (Supply chain / pip-audit) re-proven at the merged head,
+  both job shapes:** (1) ci.yml `security` sequence (`uv sync --locked --extra dev`;
+  `uv pip install pip-audit`; freeze; `pip-audit --strict --format=json`;
+  `pip_audit_gate.py`) → gate exit 0; (2) security.yml `Supply chain (pip-audit)`
+  sequence with `uv sync --locked --all-extras` (the difference that matters — extras
+  pull playwright/pyee) → gate exit 0, ecdsa==0.19.2 PYSEC-2026-1325 triaged in
+  ALLOWED, direct-dependency usage OK (10 packages, 60 runtime deps, 4 dispositions).
+  No dependency changed: `git diff 000fbf93d..4df9dd9bd -- uv.lock packages/*/pyproject.toml`
+  is empty, so no lockfile bump was needed this round.
+- **Merge fallout battery, all green at `b6957ed7c` (+ ledger commit):** `ruff check .` /
+  `ruff format --check .` clean; `check-suite-inventory.py` 14/14;
+  `check-shipped-surface-truth.py` OK; `alembic heads` → `049 (head)` single (develop
+  added no migrations); migration chain **13 passed** on a pristine pg18 (`auto-82-r4-pg`,
+  fresh database `migr82r4`, `MAISTRO_TEST_DATABASE_URL`); backlog suite 38 passed /
+  16 skipped; mypy --strict `packages/maistro-core/src` clean (660 files); the merged
+  develop suites pass: design `test_consistency.py` + conductor
+  `test_design_consistency_route.py` (8) + RSI fail-first/local-loop/red-green/fixer/
+  scout (94) = **102 passed**.
+- **Reachability trusted legs:** `check-reachability-provenance.py` and
+  `check-reachability-dispositions-provenance.py` fail on exactly the documented five
+  `maistro.backlog.*` modules (NEW vs trusted base; 182 → 187) — unchanged residual,
+  awaiting the develop-side grants-only merge. `check-ratchet-provenance.py` reports no
+  stale mappings; all other legs (adr-status-language, citation-status,
+  promotion-surface, shell-execution, contract-markers, enumerations, lifecycle) OK.
+- **Test inventory delta:** none — no test added, removed, or retagged in this round;
+  the `inventory-delta:` block above still describes the branch's +54 backlog nodes.
