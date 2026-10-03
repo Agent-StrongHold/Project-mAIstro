@@ -27,6 +27,8 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from maistro.identity import Principal
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) in sys.path:
     sys.path.remove(str(_BACKEND))
@@ -38,10 +40,10 @@ _USER_ID = "cancel-route-user"
 
 
 class _ScopedRequest:
-    """Just what the dag-runs handlers read off a request: `state.user`."""
+    """Just what the dag-runs handlers read off a request: `state.principal`."""
 
     def __init__(self, user_id: str) -> None:
-        self.state = SimpleNamespace(user={"id": user_id, "username": user_id})
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id, username=user_id))
 
 
 async def _owned_workspace() -> Any:

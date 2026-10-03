@@ -63,7 +63,12 @@ def daily_status_seed() -> dict[str, Any]:
             "with Airtable + research + suggested-actions branches."
         ),
         "use_case": "pm_fleet",
-        "max_cycles": 1,
+        # The declared cycle budget must cover the seed's own depth: five
+        # sequential nodes are five traversal waves under the enforced budget
+        # contract (maistro.graph.policies). The historical 1 was inert while
+        # execution ignored the field; declaring 5 keeps the seed runnable
+        # with the contract live (#1184).
+        "max_cycles": 5,
         "nodes": [
             {
                 "id": "jira_poll",

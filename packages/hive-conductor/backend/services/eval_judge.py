@@ -39,6 +39,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: Version of the evaluator contract that produced a verdict. Every persisted
+#: verdict records this so a proposal derived from it binds the exact evaluator
+#: that authored the evidence — a proposal's provenance chain is proposal id →
+#: verdict run_id → evaluator version (#861).
+EVAL_JUDGE_VERSION = "eval-judge/1"
+
 
 _RUBRIC = (
     "You are eval-judge: a strict, evidence-based reviewer of an AI agent's "
@@ -258,6 +264,7 @@ def _persist(run_record: Any, verdict: dict[str, Any], *, now: datetime | None =
     payload["run_id"] = run_id
     payload["dag_id"] = str(getattr(run_record, "dag_id", "") or "")
     payload["project_id"] = str(getattr(run_record, "project_id", "") or "")
+    payload["evaluator_version"] = EVAL_JUDGE_VERSION
     payload["scored_at"] = (now or datetime.now(UTC)).isoformat()
     stores.eval_verdicts[run_id] = payload
 

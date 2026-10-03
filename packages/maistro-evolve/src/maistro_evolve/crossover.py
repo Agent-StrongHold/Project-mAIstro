@@ -63,12 +63,10 @@ def crossover(parent_a: PipelineGenome, parent_b: PipelineGenome) -> PipelineGen
             )
         )
 
-    child_weights = {}
-    for field_name in parent_a.eval_weights.model_fields:
-        va = getattr(parent_a.eval_weights, field_name)
-        vb = getattr(parent_b.eval_weights, field_name)
-        child_weights[field_name] = round((va + vb) / 2.0, 4)
-
+    # eval_weights is an inert legacy field since #853 (scoring reads the
+    # population-owned objective). Inherit parent_a's verbatim — it is
+    # deliberately NOT averaged/mixed with parent_b's: the field cannot affect
+    # any score, and mixing it would falsely advertise it as meaningful.
     child_topo = DAGTopology(
         nodes=child_nodes,
         edges=child_edges,
@@ -82,7 +80,7 @@ def crossover(parent_a: PipelineGenome, parent_b: PipelineGenome) -> PipelineGen
         id=_new_id(),
         name=f"cross-{parent_a.id[:6]}-{parent_b.id[:6]}",
         topology=child_topo,
-        eval_weights=parent_a.eval_weights.__class__(**child_weights),
+        eval_weights=deepcopy(parent_a.eval_weights),
         harness_params=deepcopy(parent_a.harness_params),
         fitness_score=None,
         eval_scores={},

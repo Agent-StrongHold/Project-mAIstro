@@ -1,5 +1,9 @@
 # Conductor design system — as-is extraction
 
+> **Pre–Workspaces cutover baseline (2026-09-16).** Legacy Conductor UI stylesheet audit.
+> Replacement authority: [ADR-091626-ba4f](../adr/ADR-091626-ba4f-workspace-design-system-first-party-bundle.md)
+> and [WORKSPACE-CUTOVER-PLAN.md](../architecture/WORKSPACE-CUTOVER-PLAN.md).
+
 **Status:** audit, not a decision record (no registry front matter on purpose)
 **Decision it feeds:** [ADR-091626-ba4f](../adr/ADR-091626-ba4f-workspace-design-system-first-party-bundle.md) — the Workspace design system
 **Measured against:** `packages/hive-conductor/frontend/src/{index.css,App.css,themes/dark.css,fantasia-theme.css}` at `b542ef5`, 2026-09-16
