@@ -12,6 +12,8 @@ try:
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
 
+# The #774 brief contract keeps the top-level names it spec'd
+# (SPEC-092826: `CreativeBrief`, `CreativeBriefError`, `CreativeBriefStore`).
 from maistro_design.brief import (
     ArtifactProjection,
     ArtifactRequest,
@@ -107,6 +109,7 @@ __all__ = [
     "CreativeBrief",
     "CreativeBriefError",
     "CreativeBriefStore",
+    "CreativeGraphPlan",
     "CrossWorkspaceReferenceError",
     "DesignEngine",
     "DesignEngineProtocol",
@@ -184,4 +187,18 @@ def __getattr__(name: str) -> Any:
         from maistro_design.protocols import CreativeBriefStore
 
         return CreativeBriefStore
+    if name in {
+        "ArtifactProvenanceRecord",
+        "CreativeGraphPlan",
+        "InvalidationReport",
+        "artifact_provenance",
+        "channel_family",
+        "instantiate_creative_graph",
+        "invalidated_requests",
+        "plan_creative_graph",
+        "run_creative_graph",
+    }:
+        import maistro_design.creative_graph as creative_graph
+
+        return getattr(creative_graph, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
