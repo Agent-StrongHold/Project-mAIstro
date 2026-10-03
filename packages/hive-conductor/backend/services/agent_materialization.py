@@ -137,7 +137,21 @@ async def scan_messages(
     *,
     boundary: str = "user_input",
 ) -> dict:
-    """Scan the latest user turn with the conversation context the model receives."""
+    """Scan every forwarded message with bounded, ordered prior context.
+
+    A caller can supply assistant/tool history after its latest user turn, or
+    no user turn at all. Those messages still reach the model and must not be
+    omitted. Each current message is untrusted input; context provenance and
+    its bounded window remain the canonical Warden helper's responsibility.
+    """
+    # Keep the generic config walk's budgets before serializing chat metadata.
+    # Checking only the latest user turn or Warden's truncated context would
+    # silently exempt trailing/older text, nested content and oversized lists.
+    for scanned, (path, text) in enumerate(_text_leaves(messages), start=1):
+        if scanned > MAX_SCAN_NODES:
+            raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
+        if len(text) > MAX_SCAN_TEXT:
+            raise ScanBudgetExceeded(f"{path} is longer than {MAX_SCAN_TEXT} characters")
     warden = _warden()
     findings: list[str] = []
     latest_user = next(
@@ -172,7 +186,7 @@ async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
     selects the detector's second boundary (#315) so tool outputs that will be
     re-fed to a model are judged by the same detector, not a second check.
 
-    OpenAI-shaped chat message lists scan the latest user turn with prior
+    OpenAI-shaped chat message lists scan every forwarded message with prior
     conversation context instead of walking structural fields such as ``role``.
     """
     if _looks_like_chat_messages(config):

@@ -271,6 +271,10 @@ async def test_a_lockout_imposed_through_the_gate_survives_a_restart() -> None:
 async def test_sqlite_is_still_selected_by_a_sqlite_url() -> None:
     """The new branch must not have captured the old one."""
     container = await create_container(_config("sqlite://"))
-
-    assert container.pg_pool is None
-    assert container.db_pool is not None
+    try:
+        assert container.pg_pool is None
+        assert container.db_pool is not None
+    finally:
+        # SQLite owns non-daemon worker threads, even in the PostgreSQL job.
+        # The pool fixture closes only asyncpg pools; it cannot release these.
+        await container.aclose()

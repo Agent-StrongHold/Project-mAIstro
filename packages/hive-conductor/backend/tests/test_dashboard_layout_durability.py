@@ -19,6 +19,8 @@ import pytest
 import stores
 from services import dashboard_layouts
 
+from maistro.identity import Principal
+
 ROUTE_SOURCE = Path(__file__).resolve().parents[1] / "routes" / "dashboard_layout.py"
 
 LAYOUT: dict[str, Any] = {
