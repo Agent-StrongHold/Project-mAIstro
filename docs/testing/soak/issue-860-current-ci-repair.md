@@ -1,5 +1,60 @@
 # Issue #860 — current CI repair
 
+## Latest checkpoint — job `9ca96a35080a4b3f8c7ea6d01dc083aa`
+
+Frozen item: #860 only, branch `auto-860`, verified clean starting HEAD
+`62b69b3f500e40fa65e2ab91663e10083d3a544b`. Assigned develop base remains
+`cf4a562b65e0f459eec8e77e8b10ca7aa4f847d0`; the vulture gate uses the actual
+merge base `045cfdfbe3ea`. No merge conflict exists. Previous result
+`617c8e0536a54be8b6a065a42827903e/result.json` was inspected, not accepted as
+fresh verification. No driver `check-*.log` files were supplied in this job.
+
+Freshly executed (logs in the supplied job directory):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: exit 0; 1,360 reviewed identities match 1,360 findings, zero unclassified/never-allowlist (`worker-vulture.log`). No ledger amendment or dead-code deletion is justified.
+- `uv run ruff check .` and `uv run ruff format --check .`: both exit 0 (`worker-ruff-check.log`, `worker-ruff-format.log`).
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py -x -q -rs`: **80 passed, 5 skipped** (`worker-pytest.log`). All five skips require a migrated database via `MAISTRO_TEST_PG_DSN`; this is not live PostgreSQL evidence. Includes real production-middleware replica-selection counterexamples, real task router/spine backpressure, and the live Linux child-process sampler regression.
+
+Additional fresh checks: `uv run python scripts/check-deployment-claims.py`,
+`uv run python scripts/check-execution-lifecycles.py`,
+`uv run python scripts/check-merge-markers.py` and `git diff --check` all passed.
+The current `failed_promotion_checks` evaluator rejected each of the four fixed
+historical packs listed below for both duration and exact artifact; assertions
+passed (`worker-evidence-check.json`). Run 6 still records only 90.43 seconds.
+This evaluates historical evidence, not a new soak or its passing flags' validity.
+Production `maistro_server/main.py:588` installs the inspected limiter.
+
+Re-inspected production `RateLimitMiddleware` and reference Compose, the
+current artifact gate, tests and load/evidence profile. The old H3 shared-store
+claim is already corrected. The passing middleware regressions still demonstrate
+independent replica allowances, **not** non-bypass of an aggregate principal
+budget. The reference Compose declares two servers but supplies a local image
+build and mutable dependency tags; the assignment does not designate an immutable
+RC image/configuration. A four-hour host-process run would still fail the explicit
+`exact_rc_artifact` gate and would not resolve this block.
+
+Architecture reconciliation: accepted ADR-081226-69ee retains Graph → Run →
+NodeRun → Attempt; ADR-082126-f69c makes schedules canonical Run producers, not
+a second runtime. Accepted ADR-081626-f383 distinguishes durable stale-writer
+fencing from lease-expiry takeover. Therefore admission counts, process rejoin and
+terminal Run counts do not certify physical-work uniqueness/reclaim. ADR-081 is
+Proposed, not an accepted waiver. No execution or authorization authority changes.
+
+The ten-criterion acceptance disposition below remains **BLOCKED**. No new
+production soak, multi-replica deployment, active-work restart, or external finding
+filing is claimed. No code, runtime configuration, tests, inventory counts, ledgers,
+grants or historical evidence changed; this checkpoint is the only tree edit.
+The required next work remains designation of the exact RC/configuration, a
+representative production workload and telemetry/recovery oracle, resolution of
+the replica-limit mismatch, and a qualifying ≥14,400-second unchanged-artifact run.
+
+Progress: checked 1, done 0, skipped 0 issues, errors 0 validation commands;
+5 database tests skipped. Commit this checkpoint; #860 remains unresolved.
+
+---
+
+The following sections preserve the previous job's checkpoint and acceptance map.
+
 ## Frozen scope
 
 - Assigned issue: #860 only; branch `auto-860`.
