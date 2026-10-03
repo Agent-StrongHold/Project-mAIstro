@@ -595,10 +595,20 @@ def _load_keys(raw: object) -> list[str]:
     return []
 
 
+def _text_or(row: asyncpg.Record, key: str, default: str = "") -> str:
+    """A nullable text column read as the not-null default the contract wants.
+
+    The columns are nullable and the dataclass fields are not: a row with no
+    producer comes back as a Learning naming none, which is the same fact in
+    the shape the caller expects (#709).
+    """
+    return row.get(key) or default
+
+
 def _row_to_learning(row: asyncpg.Record) -> Learning:
     return Learning(
         id=row["id"],
-        category=row.get("category") or "",
+        category=_text_or(row, "category"),
         trigger_keys=_load_keys(row.get("trigger_keys")),
         learning=row["learning"],
         tool_name=row.get("tool_name", ""),
@@ -607,24 +617,23 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         source_query=row.get("source_query", ""),
         agent_id=row.get("agent_id") or None,
         user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=row.get("team_id") or "",
-        scope=MemoryScope(row.get("scope") or "agent"),
+        org_id=_text_or(row, "org_id"),
+        team_id=_text_or(row, "team_id"),
+        scope=MemoryScope(_text_or(row, "scope", "agent")),
         hit_count=row.get("hit_count", 0),
         status=row.get("status", "active"),
         rca_category=row.get("rca_category"),
         rca_prevention=row.get("rca_prevention", ""),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
-        # `or ""` because the columns are nullable and the dataclass fields are
-        # not: a row with no producer comes back as a Learning naming none,
-        # which is the same fact in the shape the caller expects (#709).
-        run_id=row.get("run_id") or "",
-        node_run_id=row.get("node_run_id") or "",
-        attempt_id=row.get("attempt_id") or "",
-        validated_by=row.get("validated_by") or "",
-        validated_evaluator_version=row.get("validated_evaluator_version") or "",
+        run_id=_text_or(row, "run_id"),
+        node_run_id=_text_or(row, "node_run_id"),
+        attempt_id=_text_or(row, "attempt_id"),
+        validated_by=_text_or(row, "validated_by"),
+        validated_evaluator_version=_text_or(row, "validated_evaluator_version"),
+        # The one numeric nullable: `or` so a stored NULL reads as "never
+        # validated" (0) rather than failing the not-null dataclass field.
         validated_at=row.get("validated_at") or 0.0,
         validation_run_ids=_load_keys(row.get("validation_run_ids")),
-        validation_content_hash=row.get("validation_content_hash") or "",
+        validation_content_hash=_text_or(row, "validation_content_hash"),
     )

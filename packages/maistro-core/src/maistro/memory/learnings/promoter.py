@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from maistro.memory.learnings.approval import LearningApprovalGate
-    from maistro.memory.learnings.gauntlet import LearningGauntlet
+    from maistro.memory.learnings.gauntlet import GauntletVerdict, LearningGauntlet
     from maistro.memory.mutations import InMemorySkillMutationStore
     from maistro.protocols.memory import LearningStore
     from maistro.protocols.skills import SkillForge
@@ -126,31 +126,42 @@ class LearningPromoter:
                     verdict.reason,
                 )
                 continue
-            updated = await self._store.promote_learning(
-                lr.id or 0,
-                org_id=lr.org_id,
-                validated_by=verdict.evaluator_name or verdict.gauntlet,
-                evaluator_version=verdict.evaluator_version,
-                validated_at=time.time(),
-                validation_run_ids=verdict.evaluation_run_ids,
-                validation_content_hash=verdict.content_hash,
-            )
+            updated = await self._promote_validated(lr, verdict)
             if updated is None:
-                # Raced away or out of scope between enumeration and
-                # promotion: not ours to resurrect.
                 continue
-            logger.info(
-                "Gauntlet-validated promotion: learning #%d (runs=%d, evaluator=%s@%s)",
-                updated.id,
-                len(verdict.evaluation_run_ids),
-                verdict.evaluator_name,
-                verdict.evaluator_version,
-            )
-            if updated.tool_name and self._forge:
-                await self._try_mutate_skill(updated)
             promoted.append(updated)
 
         return promoted
+
+    async def _promote_validated(self, lr: Learning, verdict: GauntletVerdict) -> Learning | None:
+        """Promote one Gauntlet-accepted candidate, stamping the verdict's provenance.
+
+        Writes the verdict's audit trail onto the promoted row: the exact
+        evaluation Run ids, the evaluator version, and the frozen-content
+        hash that was validated. Returns None when the row raced away or
+        left scope between enumeration and promotion — not ours to resurrect.
+        """
+        updated = await self._store.promote_learning(
+            lr.id or 0,
+            org_id=lr.org_id,
+            validated_by=verdict.evaluator_name or verdict.gauntlet,
+            evaluator_version=verdict.evaluator_version,
+            validated_at=time.time(),
+            validation_run_ids=verdict.evaluation_run_ids,
+            validation_content_hash=verdict.content_hash,
+        )
+        if updated is None:
+            return None
+        logger.info(
+            "Gauntlet-validated promotion: learning #%d (runs=%d, evaluator=%s@%s)",
+            updated.id,
+            len(verdict.evaluation_run_ids),
+            verdict.evaluator_name,
+            verdict.evaluator_version,
+        )
+        if updated.tool_name and self._forge:
+            await self._try_mutate_skill(updated)
+        return updated
 
     async def _check_with_gate(self, org_id: str = "") -> list[Learning]:
         """Gate-aware promotion: queue for approval + process approved."""

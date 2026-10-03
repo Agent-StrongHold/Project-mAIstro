@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from maistro.types.memory import Learning
@@ -118,22 +118,6 @@ def freeze_candidate(learning: Learning) -> GauntletCandidate:
 
 
 @dataclass(frozen=True)
-class TrialSpec:
-    """One evaluation context a candidate is tried in.
-
-    `regime` is the task type or tool the trial exercises — it should be one
-    the candidate is applicable to. `held_out` marks a context the producing
-    evidence never touched: held-out trials are how an evaluation set proves
-    it is independent of the evidence that induced the learning, rather than
-    re-measuring the same context that produced it.
-    """
-
-    context_id: str
-    regime: str
-    held_out: bool = False
-
-
-@dataclass(frozen=True)
 class TrialResult:
     """The outcome of one trial, naming the canonical Run that executed it.
 
@@ -147,6 +131,10 @@ class TrialResult:
     regime: str
     run_id: str
     success: bool
+    #: True for a context the producing evidence never touched: held-out
+    #: trials are how an evaluation set proves it is independent of the
+    #: evidence that induced the learning, rather than re-measuring the
+    #: same context that produced it.
     held_out: bool = False
     notes: str = ""
 
@@ -361,6 +349,32 @@ class IndependentTrialsGauntlet:
         return failed
 
 
+@dataclass
+class _ChainEvidence:
+    """Mutable accumulator for ChainedGauntlet: the union of member provenance."""
+
+    failed: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    run_ids: list[str] = field(default_factory=list)
+    versions: list[str] = field(default_factory=list)
+    content_hash: str = ""
+
+    def absorb(self, verdict: GauntletVerdict, *, member_name: str, reason: str) -> None:
+        """Fold one member's verdict into the chain evidence.
+
+        A member that names no failed checks of its own still fails the chain
+        under the member's name, so an opaque rejection is never silently
+        dropped.
+        """
+        self.content_hash = self.content_hash or verdict.content_hash
+        if verdict.evaluator_version and verdict.evaluator_version not in self.versions:
+            self.versions.append(verdict.evaluator_version)
+        self.run_ids.extend(rid for rid in verdict.evaluation_run_ids if rid not in self.run_ids)
+        if not verdict.ok:
+            self.failed.extend(verdict.failed_checks or (member_name,))
+            self.reasons.append(reason)
+
+
 class ChainedGauntlet:
     """Compose gauntlets: all must accept, failures are reported as the union."""
 
@@ -372,37 +386,29 @@ class ChainedGauntlet:
 
     async def evaluate(self, learning: Learning) -> GauntletVerdict:
         """Run every member; the chain passes only when each member passes."""
-        failed: list[str] = []
-        reasons: list[str] = []
-        run_ids: list[str] = []
-        versions: list[str] = []
-        content_hash = ""
+        merged = _ChainEvidence()
         for member in self._members:
             verdict = await member.evaluate(learning)
-            content_hash = content_hash or verdict.content_hash
-            if verdict.evaluator_version and verdict.evaluator_version not in versions:
-                versions.append(verdict.evaluator_version)
-            run_ids.extend(rid for rid in verdict.evaluation_run_ids if rid not in run_ids)
-            if not verdict.ok:
-                failed.extend(verdict.failed_checks or (member.name,))
-                reasons.append(f"{member.name}: {verdict.reason}")
-        if failed:
+            merged.absorb(
+                verdict, member_name=member.name, reason=f"{member.name}: {verdict.reason}"
+            )
+        if merged.failed:
             return GauntletVerdict(
                 ok=False,
-                reason="; ".join(reasons),
+                reason="; ".join(merged.reasons),
                 gauntlet=self.name,
-                failed_checks=tuple(failed),
-                evaluation_run_ids=tuple(run_ids),
+                failed_checks=tuple(merged.failed),
+                evaluation_run_ids=tuple(merged.run_ids),
                 evaluator_name=self.name,
-                evaluator_version="+".join(versions),
-                content_hash=content_hash,
+                evaluator_version="+".join(merged.versions),
+                content_hash=merged.content_hash,
             )
         return GauntletVerdict(
             ok=True,
             reason="; ".join(f"{member.name}" for member in self._members),
             gauntlet=self.name,
-            evaluation_run_ids=tuple(run_ids),
+            evaluation_run_ids=tuple(merged.run_ids),
             evaluator_name=self.name,
-            evaluator_version="+".join(versions),
-            content_hash=content_hash,
+            evaluator_version="+".join(merged.versions),
+            content_hash=merged.content_hash,
         )

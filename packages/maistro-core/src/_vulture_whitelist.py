@@ -14,6 +14,7 @@ from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTarge
 from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
+from maistro.memory.learnings.gauntlet import ChainedGauntlet, IndependentTrialsGauntlet
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
@@ -148,4 +149,12 @@ _VULTURE_WHITELIST = (
     # variable above rather than a class-object reference, which would not
     # typecheck.
     latest_by_dimension,
+    # The Gauntlet seam (M4-B2, #118): IndependentTrialsGauntlet and
+    # ChainedGauntlet are constructed by the embedding host (or tests) and
+    # injected into LearningPromoter(gauntlet=...); no scanned call site in
+    # `packages/*/src` instantiates them, the same intentionally-external
+    # posture as CampaignSelector above. TrialSpec's type vocabulary lives on
+    # TrialResult, which the evaluator protocol returns.
+    IndependentTrialsGauntlet,
+    ChainedGauntlet,
 )
