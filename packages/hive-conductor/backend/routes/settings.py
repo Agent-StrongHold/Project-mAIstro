@@ -4,6 +4,20 @@ Every write here returns the record `services.settings_store` read back out of
 the store, never the body the caller sent. The three failure modes are distinct
 on the wire because they need different reactions: `400` means fix the value,
 `409` means re-read and retry, `503` means the store is the problem.
+
+The auxiliary routes are real queries or real operations against the same
+durable owners, not canned responses (#389):
+
+- `POST /reload` re-reads the durable record (services.settings_store.reload);
+  `503` means the store read failed — it never claims a reload it did not do.
+- `GET /audit` is the settings-change trail, read from the durable audit log
+  (stores.audit_log, the same store `GET /v1/audit` serves). Empty means no
+  settings write has been recorded — an empty-valid answer, not a stub.
+- `GET /quotas` is the provider usage panel, served by the same LiteLLM-backed
+  aggregation as `GET /v1/quotas/providers`; one owner, one source of truth.
+- `GET|PUT|DELETE /volatile` are the PREVIEW surface: values that are never
+  persisted to the record. The OpenAPI descriptions say so ("Preview"), per
+  the #389 rule that preview/unsupported operations identify themselves.
 """
 
 from __future__ import annotations
@@ -18,8 +32,9 @@ from fastapi import APIRouter, HTTPException
 from models.schemas import CapabilitySetting, SettingsModel
 from pydantic import BaseModel, ConfigDict, ValidationError
 from services import settings_store
+from services.provider_usage import provider_panel
 
-from routes.audit import log_audit
+from routes.audit import audit_entries_view, log_audit
 
 logger = logging.getLogger(__name__)
 
@@ -127,18 +142,23 @@ def patch_settings(body: PatchSettingsBody, expected_revision: int | None = None
     return saved
 
 
-@router.get("/volatile")
+@router.get("/volatile", summary="Preview overrides (non-durable)")
 def get_volatile_settings() -> dict[str, Any]:
-    """Preview overrides. Separate surface, `durable: false`, never in the record."""
+    """Preview overrides. Separate surface, `durable: false`, never in the record.
+
+    Preview surface (#389): the values here are deliberately volatile — an
+    overlay for trying a change before committing it. They are never written
+    to the durable record, and this operation says so in the schema.
+    """
     return {"durable": False, "values": settings_store.preview()}
 
 
-@router.put("/volatile")
+@router.put("/volatile", summary="Preview overrides (non-durable)")
 def put_volatile_settings(body: dict[str, Any]) -> dict[str, Any]:
     return {"durable": False, "values": settings_store.set_preview(body)}
 
 
-@router.delete("/volatile")
+@router.delete("/volatile", summary="Preview overrides (non-durable)")
 def delete_volatile_settings() -> dict[str, Any]:
     """Drop every preview override.
 
@@ -152,18 +172,72 @@ def delete_volatile_settings() -> dict[str, Any]:
 
 
 @router.post("/reload")
-def reload_settings() -> dict:
-    return {"status": "reloaded"}
+def reload_settings() -> dict[str, Any]:
+    """Re-read the settings record from its durable store, for real (#389).
+
+    This route used to return `{"status": "reloaded"}` without touching
+    anything — a success for an operation that did nothing. Now it drops the
+    in-process cache and reads the store: the response is the record the store
+    holds *after* the reload (same shape as `GET /record`), so a caller can
+    compare its revision against what it saw before and observe the change an
+    out-of-band write made. `503` means the store could not be read; nothing
+    was reloaded and no success is claimed.
+    """
+    try:
+        record = settings_store.reload()
+    except Exception as exc:  # store read failure — unavailable, not empty
+        logger.error("settings reload failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail=f"settings could not be reloaded: {exc}"
+        ) from exc
+    log_audit("settings_reload", "system", detail={"revision": record.revision})
+    return {
+        "durable": settings_store.durable(),
+        "schema_version": record.schema_version,
+        "revision": record.revision,
+        "updated_at": record.updated_at.isoformat(),
+        "values": record.values.model_dump(mode="json"),
+    }
+
+
+#: The audit actions this surface owns. `GET /audit` is the settings-scoped
+#: view over the ONE durable audit log that `GET /v1/audit` serves whole --
+#: not a second log.
+_SETTINGS_AUDIT_ACTIONS = frozenset({"settings_update", "settings_patch", "settings_reload"})
 
 
 @router.get("/audit")
-def settings_audit() -> list:
-    return []
+async def settings_audit(limit: int = 100) -> list[dict[str, Any]]:
+    """The settings-change trail, read from the durable audit log (#389).
+
+    Read through the shared `audit_entries_view` — the same core-store-first
+    read `GET /v1/audit` serves, never a second log. Returned newest-first,
+    capped at `limit` (bounded 1..1000). Empty means no settings write has
+    been recorded yet — an empty-valid answer, distinct from a failure (which
+    raises) or an authorization refusal (handled by the `/v1/settings` auth
+    scope in middleware/auth.py).
+    """
+    limit = max(1, min(limit, 1000))
+    entries = [
+        e for e in await audit_entries_view() if e.get("action", "") in _SETTINGS_AUDIT_ACTIONS
+    ]
+    entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+    return entries[:limit]
 
 
 @router.get("/quotas")
-def settings_quotas() -> dict:
-    return {"providers": []}
+def settings_quotas() -> dict[str, Any]:
+    """The provider usage panel, from the one canonical owner (#389).
+
+    This used to return `{"providers": []}` — a hard-coded empty collection.
+    The provider panel's canonical owner is the LiteLLM proxy aggregation
+    behind `GET /v1/quotas/providers`; this route delegates to it (same
+    envelope — `state` distinguishes ok / no_data / unavailable / error)
+    rather than maintaining a second source that would drift. The panel
+    lives in `services.provider_usage`, so this delegation imports a service
+    module, not another router file.
+    """
+    return provider_panel()
 
 
 @router.get("/models")
