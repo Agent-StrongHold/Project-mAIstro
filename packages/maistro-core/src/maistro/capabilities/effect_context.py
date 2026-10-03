@@ -377,7 +377,6 @@ def _durable_context(
     quietly omits one. The two builders above differ only in which concrete
     stores they open, which is the only thing a backend should decide.
     """
-
     return new_effect_context(
         binding_store=bindings,
         invocation_store=invocation_store,

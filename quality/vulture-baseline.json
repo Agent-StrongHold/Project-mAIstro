@@ -947,6 +947,8 @@
         "packages/maistro-core/src/maistro/graph/templates.py::unused method 'list_for_workspace'",
         "packages/maistro-core/src/maistro/graph/types.py::unused method '_normalize_nodes'",
         "packages/maistro-core/src/maistro/http.py::unused function 'override_transport'",
+        "packages/maistro-core/src/maistro/identity/principal.py::unused method 'audit_label'",
+        "packages/maistro-core/src/maistro/identity/principal.py::unused method 'has_permission'",
         "packages/maistro-core/src/maistro/integrations/coinswarm.py::unused method 'emit_agent_fitness'",
         "packages/maistro-core/src/maistro/integrations/coinswarm.py::unused method 'emit_evolution_result'",
         "packages/maistro-core/src/maistro/integrations/coinswarm.py::unused method 'pause_agent'",
