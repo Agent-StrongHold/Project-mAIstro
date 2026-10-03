@@ -43,3 +43,29 @@ try:
     __version__ = importlib.metadata.version("maistro-evolve")
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
+
+# Shipped measurement surface (SPEC-282 / M4-D #24): the bounded curriculum
+# lane comparison is part of this package's public API — a consumer imports
+# it from the package root exactly like any other library capability. The
+# eager re-export is also what keeps the module on a real import path from
+# every ``maistro_evolve`` entry point: importing any submodule executes this
+# ``__init__``, so the reachability ratchet sees the module wired, not dead.
+# ADR-088 still governs: experimental package, API not locked.
+from .lane_comparison import (
+    CURRICULUM_ENABLED_LANE,
+    EXTERNAL_ONLY_LANE,
+    LaneBudget,
+    LaneComparisonReport,
+    LaneMeasurement,
+    compare_lanes,
+)
+
+__all__ = [
+    "CURRICULUM_ENABLED_LANE",
+    "EXTERNAL_ONLY_LANE",
+    "LaneBudget",
+    "LaneComparisonReport",
+    "LaneMeasurement",
+    "__version__",
+    "compare_lanes",
+]
