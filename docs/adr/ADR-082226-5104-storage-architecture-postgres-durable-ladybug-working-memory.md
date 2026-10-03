@@ -36,14 +36,19 @@ owners:
 ## Storage-policy reconciliation — 2026-10-03
 
 The owner reaffirmed this decision for laptop, team and enterprise deployments. Sections 1
-and 9 govern canonical durability. The later SQLite-twin deployment clauses in
+and 9 govern canonical durability. This scope applies to every canonical durable family,
+not only the examples below. The SQLite single-Conductor/homelab choice in
+[ADR-082126-f69c](ADR-082126-f69c-recurrence-produces-runs.md) §6 and the later SQLite-twin deployment clauses in
 [ADR-083026-a322](ADR-083026-a322-episodic-memory-is-durable.md) (§2–3) and
 [ADR-083026-427c](ADR-083026-427c-prompt-versions-and-labels-are-separate-facts.md)
 (SQLite single-instance paragraph) are superseded **only in their production-backend scope**.
 Their durability, scope, decay, transaction, version/label and data-preservation guarantees
 remain in force. Their dated amendments below retain the original implementation history;
 the ADRs are not wholly superseded. [ADR-092326-97c4](ADR-092326-97c4-shared-postgres-workspace-owner.md)
-reinforces the shared PostgreSQL owner.
+reinforces the shared PostgreSQL owner. The dated amendments in ADR-019 (local defaults),
+ADR-048 (search backend), ADR-083026-3d92 (profiles) and ADR-083026-6e2a (historical recovery
+wiring) distinguish canonical policy from still-present implementations; none permits another
+production backend or waives domain/data-preservation guarantees.
 
 The original Context and implementation-gap observations below describe the August decision,
 not a fresh runtime audit. No runtime retirement or acceptance-criterion completion is claimed

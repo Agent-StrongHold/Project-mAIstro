@@ -42,6 +42,16 @@ owners:
 
 # SPEC-083026-56ee: A session turn names its producing Run, and an outcome names its session
 
+## Storage scope clarification — 2026-10-03
+
+[ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) governs production persistence: PostgreSQL is the sole canonical
+durable backend, with Alembic-owned schema. References below to SQLite twins, three-store
+conformance or legacy schema upgrades record existing implementations/fixtures and historical
+compatibility, not new production-backend parity or runtime canonical-DDL requirements.
+Retained test/import paths must preserve producer identity, scope, attribution, idempotency
+and legacy-unknown semantics; all PostgreSQL provenance guarantees remain required. Existing
+data cannot be discarded to complete cutover, and no runtime retirement is claimed here.
+
 ## Context
 
 ADR-083026-56ee records the decision. This spec states what has to be true for

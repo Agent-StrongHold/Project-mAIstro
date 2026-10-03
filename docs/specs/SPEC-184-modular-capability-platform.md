@@ -100,10 +100,13 @@ settings patterns maistro-engine already has rather than inventing parallel mach
   `ToolExecutor` shape: `name`, `slot`, `trust_tier`, `requires` (env vars + reachable services),
   `async healthcheck() -> Health`, plus the slot-specific methods. Multiple providers may exist per
   slot; **at most one is active**.
-- **`CapabilityRegistry`** — modeled on `InMemorySkillRegistry`
-  (`packages/maistro-core/src/maistro/skills/registry.py:19-85`): thread-safe, trust-tier aware,
-  in-memory with the same optional SQLite backing the settings store already uses. Tracks per slot:
-  installed providers, the active provider, and the enabled flag.
+- **`CapabilityRegistry`** — a thread-safe, trust-tier-aware view over canonical PostgreSQL
+  Provider/Binding state, using core stores and Alembic-owned schema. Installed providers,
+  active-provider selection and enabled/disabled facts survive restart through those owners;
+  the registry must not copy them into SQLite settings or a private authority. In-memory
+  registries may be explicit tests or reconstructible caches, never durable selection truth.
+  Small bootstrap/configuration settings may still use SQLite; they cannot override canonical
+  activation, disablement, trust, scope or Binding policy.
 
 **Consumers depend only on the slot Protocol.** Swapping `ha_rest` for `alexa_plus`, or adding
 `crypto_did` approval later, requires zero change to callers.
@@ -132,11 +135,13 @@ clobber the existing selection.
 
 ### 3. Runtime toggles, settings, and baseline policy
 
-- **State split.** The registry holds *what is installed*; the settings store holds *what is
-  active*. Extend `SettingsModel` with:
+- **One activation authority.** Canonical PostgreSQL Provider/Binding stores own installed,
+  active and enabled facts. `SettingsModel` may expose their projection as
   `capabilities: dict[slot, {enabled: bool, active_provider: str | None, provider_settings: dict}]`.
-  Toggling rides the existing `PATCH /v1/settings` `model_copy(update=...)` path plus a thin
-  `PATCH /v1/capabilities/{slot}` convenience route. Effective on next call; no restart.
+  Both `PATCH /v1/settings` and `PATCH /v1/capabilities/{slot}` delegate activation changes to
+  the same governed canonical service and read its persisted result. A settings
+  `model_copy(update=...)` alone cannot activate a provider or acknowledge durable selection.
+  Non-authoritative bootstrap preferences remain separate. Effective on next call; no restart.
 - **Resolution order** on every slot call:
   1. slot `enabled` is false → fallback policy;
   2. else `active_provider` (or first healthy provider by trust tier);
@@ -293,7 +298,9 @@ of all of them.
 - [ ] A `CapabilitySlot` Protocol and `CapabilityProvider` Protocol exist in
       `packages/maistro-core/src/maistro/capabilities/`, with `mypy --strict` clean.
 - [ ] `CapabilityRegistry` registers providers as `installed, inactive`; activation is a separate
-      settings-driven step; both states survive a restart via the existing SQLite backing.
+      governed settings-driven step; both states survive restart through canonical PostgreSQL
+      Provider/Binding stores and are observed consistently by a second replica. SQLite
+      bootstrap/configuration settings cannot activate, disable or select a Provider independently.
 - [ ] Entry-point discovery loads at least one provider declared via
       `[project.entry-points."maistro.capabilities"]` in a separate package, **and** one declared via
       a `SKILL.md` manifest.

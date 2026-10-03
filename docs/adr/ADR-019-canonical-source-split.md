@@ -27,6 +27,18 @@ history:
 
 # ADR-019: Canonical Source Split — maistro-engine vs Stronghold
 
+## Product and storage scope clarification — 2026-10-03
+
+The original Products table below records historical packaging, not separate contemporary
+UI/CLI/API feature authorities. MAIstro is one product with Workspace UI, CLI and API over
+shared services ([unified product contract](../architecture/INTEROP-ONTOLOGY-v1.md#one-product-three-access-paths--owner-clarification-2026-10-03));
+Canvas/Design/Builders/Evolve/RSI are feature families. External downstream product and
+multi-tenant boundaries remain unchanged. Under [ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md), local canonical
+durability uses PostgreSQL; the table's former SQLite default is limited to small bootstrap/
+configuration state, explicit tests and necessary historical imports. The canonical source
+ownership and package-dependency rules in this ADR are unchanged. The former Stronghold-only
+PostgreSQL requirement in the split table is superseded by the shared storage decision.
+
 **Context:** Three codebases share one Python runtime architecture. Need a rule for where new code lands.
 
 ~~Extended by [`engine#ADR-030`](ADR-030-four-repo-governance.md) (Four-Repo Governance)~~ —
@@ -45,7 +57,7 @@ absorbed here, not kept as separate peers. See `docs/archive/CONSOLIDATION-PLAN.
 |-------------------------------|------------------------|
 | Protocols (abstract interfaces) | Keycloak integration |
 | Agent runtime (base, strategies, factory, roster) | Vaultwarden secrets backend |
-| Memory (learnings, episodic, outcomes, scopes) | Postgres + pgvector as mandatory store |
+| Memory (learnings, episodic, outcomes, scopes); PostgreSQL + pgvector canonical storage at every deployment size (ADR-082226-5104) | |
 | Security (Warden, Sentinel, gate, PII filter, trust tiers) | Redis caching layer (prompt cache, rate limiter, session store) |
 | Classifier (keyword, LLM fallback, complexity, multi-intent) | K8s sandbox lifecycle (deployer, templates, budgets) |
 | Router (scorer, selector, filter, scarcity, speed) | Tenant isolation middleware |
@@ -63,11 +75,11 @@ absorbed here, not kept as separate peers. See `docs/archive/CONSOLIDATION-PLAN.
 | Canvas protocols (CanvasStore, ImageGenClient, Compositor) | |
 | Da Vinci agent definition | |
 
-### Products
+### Original product/package context (scope clarified 2026-10-03)
 
 | Product | What it is | Relationship to maistro-engine |
 |---------|-----------|-------------------------------|
-| **Agent Conductor** | Household/personal product | Runs maistro-server + maistro-turing. SQLite + age-vault + Tailscale defaults. |
+| **Agent Conductor** | Household/personal product | Runs maistro-server + maistro-turing. PostgreSQL canonical durability; SQLite only bounded bootstrap/config/test/import use. Age-vault + Tailscale defaults. |
 | **Agent Stronghold** | Enterprise/multi-tenant product | `pip install maistro-core` + its own multi-tenant layer. Postgres + Keycloak + Vaultwarden + K8s. |
 | **Canvas Studio** | Standalone book builder | `pip install maistro-core` for canvas protocols. Own React app + Express API + P40 image gen server. |
 | **Project Turing** | Autonoetic self-model extension | Lives in `maistro-turing` package. |

@@ -569,3 +569,10 @@ v1.2 staging on 2026-10-03: build against canonical shared services directly, wi
 interim compatibility layer, duplicate feature backend or private Agent/tool authority to
 bridge later. This does not remove necessary historical-data migration/import, external-protocol
 adapters, domain algorithms or security boundaries, and it does not claim parity is implemented.
+
+
+The [interface gap matrix](INTEROP-ONTOLOGY-v1.md#interface-gap-ownership--2026-10-03)
+records verified existing owners and staged gaps. [#1874](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1874)
+owns the complete entry-point/gap inventory; the bounded CLI page #292 and external CLI bundle
+work do not own full-product parity. Phase/release closure needs actual feature evidence rather
+than treating the matrix or the existence of #1874 as completion.

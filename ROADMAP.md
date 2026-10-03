@@ -20,6 +20,9 @@ backend or private Agent/tool registry to bridge later. Necessary historical-dat
 external-protocol adapters and security boundaries remain. No parity implementation is claimed.
 Package/variant names below describe composition and downstream boundaries, not separate
 UI/CLI/API feature authorities.
+[The interface gap matrix](docs/architecture/INTEROP-ONTOLOGY-v1.md#interface-gap-ownership--2026-10-03)
+names current feature owners; [#1874](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1874)
+owns the missing holistic inventory without changing these release scopes.
 
 ## Item ID convention (per [`engine#ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md))
 
