@@ -164,7 +164,9 @@ async def test_revision_resolves_one_historical_revision_or_says_not_visible(
     assert found.goal_revision == 1
 
     with pytest.raises(GoalNotVisible):
-        await world.service.revision(world.a.workspace_id, world.a.goal_id, 99, principal_id="alice")
+        await world.service.revision(
+            world.a.workspace_id, world.a.goal_id, 99, principal_id="alice"
+        )
 
 
 async def test_active_for_agent_and_children_resolve_for_a_member(world: _World) -> None:

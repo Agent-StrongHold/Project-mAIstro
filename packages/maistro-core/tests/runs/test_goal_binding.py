@@ -33,9 +33,7 @@ def _snapshot() -> GraphSnapshot:
 
 async def test_admission_binds_the_goal_and_the_exact_revision_it_read(spine: Any) -> None:
     store, workspace, project_id = spine
-    run = await store.create_run(
-        _graph(workspace, project_id), goal_id="goal-1", goal_revision=3
-    )
+    run = await store.create_run(_graph(workspace, project_id), goal_id="goal-1", goal_revision=3)
 
     assert run.goal_id == "goal-1"
     assert run.goal_revision == 3
@@ -57,9 +55,7 @@ async def test_historical_runs_keep_the_revision_they_ran_against(spine: Any) ->
     """A Goal moving on (a later revision, even a different Goal entirely for
     the next Run) must not retroactively change what an existing Run recorded."""
     store, workspace, project_id = spine
-    first = await store.create_run(
-        _graph(workspace, project_id), goal_id="goal-1", goal_revision=1
-    )
+    first = await store.create_run(_graph(workspace, project_id), goal_id="goal-1", goal_revision=1)
     second = await store.create_run(
         _graph(workspace, project_id), goal_id="goal-1", goal_revision=2
     )

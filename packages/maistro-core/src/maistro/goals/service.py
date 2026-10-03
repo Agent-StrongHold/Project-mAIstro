@@ -37,9 +37,7 @@ class GoalService:
         self.workspace_store = workspace_store
         self._authorizer = WorkspaceAuthorizer(workspace_store)
 
-    async def _require(
-        self, principal_id: str, workspace_id: str, action: WorkspaceAction
-    ) -> None:
+    async def _require(self, principal_id: str, workspace_id: str, action: WorkspaceAction) -> None:
         # Raised outside the suppressed lookup, like `ScopedRunReader._admits`:
         # a denial here and a missing Goal below it must be the same shape, or
         # the exception chain itself would be the leak #1150 forbids.
@@ -127,9 +125,7 @@ class GoalService:
         await self._require(principal_id, workspace_id, WorkspaceAction.VIEW)
         return await self.goal_store.active_for_agent(workspace_id, agent_id)
 
-    async def children(
-        self, workspace_id: str, goal_id: str, *, principal_id: str
-    ) -> list[Goal]:
+    async def children(self, workspace_id: str, goal_id: str, *, principal_id: str) -> list[Goal]:
         await self.get(workspace_id, goal_id, principal_id=principal_id)
         return await self.goal_store.children(workspace_id, goal_id)
 
