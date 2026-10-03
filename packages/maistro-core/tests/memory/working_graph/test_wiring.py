@@ -31,6 +31,7 @@ from maistro.memory.working_graph.wiring import (
 )
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.workspaces import InMemoryWorkspaceStore
 
 from .conftest import WORKSPACE_A, WORKSPACE_B, make_memory
@@ -90,6 +91,10 @@ class World:
         run = await self.runs.create_run(
             graph,
             parent_run_id=parent_run_id,
+            # The store boundary requires an admitted actor (#364): a Run is
+            # always created by someone, and the canonical test actor is the
+            # admitted principal tests use.
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             provenance={"goal_id": goal_id} if goal_id else None,
         )
         return run.run_id

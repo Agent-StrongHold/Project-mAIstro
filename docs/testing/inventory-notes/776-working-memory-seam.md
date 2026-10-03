@@ -5,6 +5,67 @@ inventory-delta:
 
 # 776 — per-Workspace working-memory seam (M3 product floor)
 
+> Round note (salvage-block resolution + develop sync, head 213940be1, base
+> 8c8fc8d67): the "worker left uncommitted work" block was two untracked
+> regenerable gate artifacts (`coverage-core.xml` from a local coverage-producer
+> re-run, `vulture_output.txt` from a manual ledger scan) — no tracked file was
+> ever dirty; both are now gitignored with the same rationale as `coverage.xml`
+> and remain on disk untracked. The round also merged `origin/develop`
+> (tip 8c8fc8d67, 5 commits). One textual conflict pair, one semantic decision:
+> develop's tip (8c8fc8d67) deliberately removed `_has_stalled_active_frontier`'s
+> `if not active_node_runs: return False` early-return (empty-active now falls
+> through to `True` — a RUNNING run with no active NodeRun frontier is stalled)
+> and renamed the lease predicate to public `has_live_execution_lease(attempts,
+> now)` in lifecycle.py; this branch's only competing change was a mechanical
+> salvage refactor (extract `attempt_lease_is_live` + `_active_node_runs`, no
+> semantic or #776 content — the early return predated it). Resolution: took
+> develop's side wholesale in `runs/lifecycle.py` and
+> `graph/durable_runs/canonical_store.py`; both files are byte-identical to
+> origin/develop after the merge, and grep proves no consumer of the removed
+> helpers outside `maistro/container.py`, which develop itself updated.
+> develop's #364 store-boundary hardening (`create_run` now requires an
+> admitted actor) broke two wiring-test node IDs through their shared `World`
+> helper — fixture-only fix: `run_for` passes
+> `actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID` (same constant the runs
+> suites use); no node IDs added or removed (`check-suite-inventory.py` ok).
+> Gate evidence at this head, all executed locally: `ruff check` / `ruff format
+> --check` clean; working_graph 35 passed; runs+graph+capabilities 3053 passed;
+> full `packages/maistro-core/tests` under the CI coverage producer
+> (`coverage run --branch --source=... --timeout=120` for the documented WSL
+> port-1 stall) → 11484 passed, 782 skipped, 1 xfailed; `check-diff-coverage.py
+> coverage-core.xml --base 8c8fc8d67` exit 0 (9 production files ≥90/80, zero
+> unmeasured); server 482 passed with two documented local-artifact exclusions
+> (below); canvas+turing+bootstrap+design 1412 passed; root `tests/` 4221
+> passed with one documented exclusion; `pytest formal/models/ --timeout=300
+> --hypothesis-seed=0` → 664 passed against a fresh pgvector/pg18 after
+> `alembic upgrade head` (chain to 050) with CI-style editable installs of
+> formal/, maistro-core, maistro-evolve; mypy over the 9 CI-listed src trees →
+> 901 files, no issues; `check-vulture-baseline.py packages/*/src
+> --min-confidence 60 --exclude '*/third_party/*'` exit 0 (1361/1361 banked);
+> radon, version, release, doc-links, enumerations, workspace-retirement,
+> route-permissions, principal-identity, frontend-typed-client, vendor-ifeval,
+> vendor-bfcl, reachability, credential-authority, wiring-reads,
+> agent-store-writes, contract-markers, convergence-matrix,
+> reachability-dispositions, ratchet-provenance, promotion-surface, M1-freeze
+> and formal-oracle-independence (base origin/develop) all exit 0; quality
+> ledgers byte-identical to origin/develop after the merge
+> (`git diff --numstat origin/develop -- quality/` empty).
+>
+> Two local-only environment findings for the next verifier, both proven
+> environmental (CI has neither artifact): (1) a stale untracked `.env` from an
+> earlier stack bring-up makes 3 `test_sigterm_shutdown.py` tests fail — the
+> subprocess loads its plain `API_KEYS` and develop's #843 startup validation
+> refuses to boot; all 3 pass with the file set aside (restored after). (2) A
+> stale generated `quality/ac-state.json` (gitignored, written by
+> `scripts/check-ac-state.py`) makes
+> `test_every_quality_json_state_surface_is_classified_once` report it
+> unclassified; the test passes with the file set aside. Not committed by this
+> round: the branch's rsi/evolve suites and the hive-conductor frontend builds
+> were not re-run locally — the diff touches no file they import (grep: no
+> consumer of the resolved lease predicate outside maistro-core), and
+> `formal/models` (which imports maistro_evolve against core) passes end to
+> end.
+
 > Round note (CI-repair verification, head 82a80eacf): every gate the last
 > merge-queue evaluation reded was re-run locally against the merged head —
 > no code change was needed this round; the failures at b8a897882 predate the
