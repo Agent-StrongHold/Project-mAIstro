@@ -28,22 +28,29 @@ history:
 
 ## Bounded storage scope — 2026-10-03
 
-This proposal covers only the permitted small bootstrap/configuration SQLite state in
+The target role of SQLite is the small bootstrap/configuration state permitted by
 [ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md). It is not a universal domain-state writer: canonical Runs,
 Workspace identity, memory and other durable domain records belong to PostgreSQL core stores
 with Alembic-owned migrations. Explicit test and historical import tools are outside this
-production singleton boundary. Existing data must be preserved during any cutover.
+production singleton boundary. **Until verified migration and retirement, all currently
+live production SQLite writers remain subject to this singleton/acknowledgement, backpressure,
+checkpoint and atomic-upgrade contract**, including transitional domain families such as
+accounts, sessions, profiles, registration policy and layouts in the
+[Conductor persistence map](../architecture/CONDUCTOR-PERSISTENCE-MAP.md). Reclassifying a
+family as “not bootstrap” does not release its guard or permit a second writer. Existing data
+must be preserved; this transitional protection does not authorize new SQLite canonical
+features or claim that the PostgreSQL cutover is complete.
 
 See `blakematthews-dev/project_maistro` specs/infra/S-140-sqlite-singleton.md for full spec.
 
 ## Acceptance Criteria
 
-- [ ] When the bootstrap/configuration SQLite store is enabled, its Conductor owner opens exactly one write-mode connection across its lifetime
+- [ ] When production SQLite state is enabled, its Conductor owner opens exactly one write-mode connection across its lifetime, covering bootstrap/configuration and all still-live transitional domain writers
 - [ ] `open_writer()` raises if called more than once; `open_reader()` returns read-only connections
-- [ ] CI gate fails the build if a production bootstrap/configuration writer opens SQLite in non-`ro` mode outside its singleton module
-- [ ] All writes to this bootstrap/configuration store route through `state.submit(transaction)`
+- [ ] CI gate fails the build if any production SQLite writer opens in non-`ro` mode outside the singleton module; transitional domain writers remain covered until their verified migration and retirement
+- [ ] All current production SQLite subsystem writes route through `state.submit(transaction)`; canonical PostgreSQL writes use their own core stores, not this singleton
 - [ ] Queue is bounded; overflow applies backpressure (submit blocks) rather than dropping or OOMing
 - [ ] Concurrent reads from many subsystems + Console + external `sqlite3` CLI work without contention while the writer is active
 - [ ] WAL checkpoint runs periodically; database file does not grow unboundedly
 - [ ] State database backups are encrypted with the admin keypair (SPEC-011-style age encryption) before writing to disk; no plaintext copy of `state.db` is ever written to `~/.conductor/backups/`; backup files use the `.db.age` suffix and are importable via `maistro db restore`
-- [ ] Bootstrap/configuration SQLite schema migrations run atomically at startup; a failed migration rolls back completely and conductor refuses to start with a `MIGRATION_FAILED` error naming the failing migration; conductor never starts with a partially-migrated schema
+- [ ] Existing production SQLite schema migrations (including transitional domain data) run atomically at startup; a failed migration rolls back completely and conductor refuses to start with a `MIGRATION_FAILED` error naming the failing migration; conductor never starts with a partially-migrated schema

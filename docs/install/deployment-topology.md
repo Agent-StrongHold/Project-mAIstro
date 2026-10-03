@@ -206,10 +206,24 @@ A failing drill is a paging alert: your backups are not restorable.
    docker compose -f deploy/docker-compose.prod.yml exec postgres-replica \
      psql -U maistro -c "SELECT pg_promote();"
    ```
-4. Repoint the app: set `DB_HOST=postgres-replica` for both `maistro-server-*`
-   services (env/.env) and `docker compose ... up -d maistro-server-1 maistro-server-2`.
-   (With Patroni/pgbouncer this step is automatic.)
-5. Verify: `curl -fsS http://localhost:8080/health/ready`.
+4. Repoint **every deployed client of the shared cluster**, not only MAIstro. Promotion does
+   not move the failed `postgres-primary` hostname. For the two `maistro-server-*` services,
+   set `DB_HOST=postgres-replica` in their configuration and recreate them with
+   `docker compose ... up -d maistro-server-1 maistro-server-2`. If Hive embeds a Container,
+   its owner updates the same canonical database endpoint too. LiteLLM and Langfuse owners
+   update their own PostgreSQL connection endpoint to the promoted host, keeping each
+   logical database, role and migration ownership unchanged, and restart/reload their clients
+   using the deployed version's procedure. Do not copy one application's credentials into
+   another or change grants to complete failover.
+   A stable failover endpoint can avoid per-client host edits only if **all** clients already
+   use it and its owner has verified that it routes to the newly writable primary; merely
+   deploying Patroni/pgbouncer does not prove this. Inventory and record each client endpoint.
+5. Verify each application's actual connection and representative read/write against the
+   promoted database through its owner. MAIstro includes
+   `curl -fsS http://localhost:8080/health/ready`; Hive, LiteLLM and Langfuse require their own
+   version-appropriate health/application checks. A passing MAIstro health check alone is not
+   shared-cluster recovery evidence. Do not declare recovery complete while any deployed
+   client still targets the failed primary.
 6. Rebuild a new standby from the promoted node before considering the incident closed:
    wipe the old primary volume, then re-run its container with the `pg_basebackup -R`
    bootstrap pattern (see the `postgres-replica` command in `docker-compose.prod.yml`)
