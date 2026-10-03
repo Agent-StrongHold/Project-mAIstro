@@ -53,7 +53,7 @@ on:
     # tests/test_branch_policy.py, so a push to any documented branch receives
     # this gate set — a `feature/*` or bare-name branch is not a documented
     # shape and gets its gates at PR time, where pull_request is unfiltered.
-    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, chore/*]
+    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, docs/*, chore/*]
 
 # See the rationale in ci.yml: supersede candidate runs, let protected-branch
 # pushes finish so their pass/fail record survives.
@@ -738,7 +738,7 @@ jobs:
         run: uv run python scripts/check-radon-baseline.py
 
       - name: radon CC (report; the ratchet above is the gate)
-        run: uv run radon cc packages/maistro-core/src --min B --total-average
+        run: uv run radon cc packages/*/src -i third_party --min B --total-average
 
       # Single-sourced version (E1/#294): VERSION is the source of truth, and
       # every package's pyproject.toml/__version__ fallback, inter-package
@@ -787,6 +787,36 @@ jobs:
       - name: enumeration coverage (derived control lists — ratchet)
         run: uv run python scripts/check_enumerations.py
 
+      # The Workspace cutover only deprecates the old Conductor surfaces if
+      # they can't pick up new consumers while their replacements land, so
+      # quality/workspace-retirement.json only shrinks (#1046, cutover S0.1).
+      # Its importer lists are judged against the merge base, so it needs this
+      # job's full history.
+      - name: workspace retirement (retiring Conductor surfaces gain no importers — ratchet)
+        run: uv run python scripts/check-workspace-retirement.py
+
+      # Default-allow route prefixes are the seam Workspace cutover P0.2 closes:
+      # every authenticated /v1/{segment} mount must declare a permission or a
+      # reviewed exempt_reason before Workspace surfaces land (#53 AC-P2). Same
+      # app introspection as the enumeration check above, so it lives beside it.
+      - name: route permissions (every authenticated prefix declared — ratchet)
+        run: uv run python scripts/check-route-permissions.py
+
+      # Parallel HTTP principal types and dict-shaped request.state.user are
+      # how the last three Conductor attempts kept diverging identity. P0.1
+      # ratchets them to one canonical Principal in maistro-core (#53). Its
+      # baseline is read from the merge base, so it needs this job's history.
+      - name: principal identity (one HTTP principal surface — ratchet)
+        run: uv run python scripts/check-principal-identity.py
+
+      # Workspace cutover P0.3 closes the hand-typed client seam: HTTP must
+      # eventually go through one generated client and entity shapes must come
+      # from types.gen.ts (#1048 AC-P3). Until then this ratchet banks the
+      # current raw-fetch and hand-typed declaration debt and refuses growth.
+      # Its baseline is read from the merge base, so it needs this job's history.
+      - name: frontend typed client (raw fetch + hand-typed entities — ratchet)
+        run: uv run python scripts/check-frontend-typed-client.py
+
       # The vendored IFEval grader and corpus are the *exam* the RSI loop is
       # scored against, so they must stay byte-comparable to what Google
       # published. This verifies the committed tree still matches its pinned
@@ -800,24 +830,113 @@ jobs:
       - name: vendored benchmark provenance (BFCL checker + corpus)
         run: uv run python scripts/vendor_bfcl.py --check
 
-      # Ratchet, not a 0-baseline: full backlog (77 ERROR blocks measured
-      # 2026-06-29) is too large to clear in one PR (Phase 18 code-health
-      # sweep). Hard-fails on REGRESSION (new violations beyond the
-      # recorded baseline) on every branch; raise the floor as the backlog
-      # is worked down, and drop the ratchet for a strict 0-baseline once
-      # XENON_BASELINE reaches 0.
+      # Ratchet, not a 0-baseline: the backlog (140 ERROR blocks over all
+      # shipped src, measured 2026-09-29; 139 by 2026-09-30) is too large to
+      # clear in one PR.
+      # Hard-fails on REGRESSION (new violations beyond the recorded
+      # baselines) on every branch; lower the floor as the backlog is worked
+      # down, and drop the ratchet for a strict 0-baseline once the counts
+      # reach 0.
+      #
+      # This step's unique value after #1682 is the module-rank and
+      # project-average axes: check-radon-baseline.py now carries the same
+      # 139 blocks as a per-identity ledger, which is strictly stronger than
+      # a count for the per-block axis.
       - name: xenon (per-function ≤ B; per-module ≤ B; project avg ≤ A — ratchet)
         env:
-          XENON_BASELINE: 77
+          # 77 -> 140 when the scope widened from maistro-core to every shipped
+          # package (2026-09-29, #1682). Not a loosening: the old floor watched
+          # 67 violations in one package while 73 more went unseen in canvas,
+          # evolve, rsi and the rest. Measured per package at the change:
+          # core 67, evolve 25, rsi 30, canvas 11, bootstrap 2, registry 2,
+          # design 1, server 1, turing 1.
+          #
+          # This number has moved twice before merging, which is the point of
+          # recording why. 140 -> 139: #1674 took
+          # tau_bench.py::_score_tool_usage from C (14) to B (9), and the radon
+          # ledger dropped the same row. 139 -> 145: #1663 added three C blocks
+          # in maistro-design and #1730 added three in maistro-rsi and regressed
+          # three more there (#1793 grants all nine; #1791/#1792 track taking
+          # them back down). Both PRs merged on 2026-10-02, into packages this
+          # scan does not watch *until this PR lands* -- which is the argument
+          # for landing it rather than refreshing the number again.
+          #
+          # 145 is the same number check-radon-baseline.py now carries, and that
+          # is the point: the two tools measure the same blocks over the same
+          # scope, so a divergence between this count and the ledger's length is
+          # itself a signal that one of them stopped looking.
+          XENON_BASELINE: 145
+          # Module rank was never gated at all. The old count matched only
+          # '^ERROR:xenon:block', so a whole module drifting to C passed in
+          # silence; widening the scope surfaced one.
+          #
+          # By identity, not by count -- the same argument that replaced
+          # vulture's total-count ceiling with quality/vulture-baseline.json.
+          # A count of 1 is satisfied by *any* one module, so a module
+          # improving from C to B would silently pay for a different module
+          # degrading from B to C in the same change, and the tolerated debt
+          # would rotate while the number held still. It matters more here
+          # than for blocks: a module average crosses into C through added
+          # B-ranked blocks, which the per-block radon ledger does not track,
+          # so this is the only instrument watching that axis.
+          #
+          # Empty, and still enforcing. Its one entry, tau_bench.py at C, was
+          # fixed by #1674 (the module is now A); an empty ledger means any
+          # module reaching C fails by name. Add a row only with the reason.
+          XENON_MODULE_LEDGER: ""
         run: |
-          uv run xenon --max-absolute B --max-modules B --max-average A packages/maistro-core/src > xenon.log 2>&1 || true
+          # -i third_party for the same reason check-radon-baseline.py excludes
+          # it: vendored BFCL/IFEval source is kept byte-faithful to upstream on
+          # purpose and is not this repository's complexity to ratchet. Without
+          # the exclusion the count is 150 and two of the three module-rank
+          # violations are vendored files nobody may touch.
+          uv run xenon --max-absolute B --max-modules B --max-average A \
+            -i third_party \
+            packages/maistro-bootstrap/src packages/maistro-canvas/src \
+            packages/maistro-core/src packages/maistro-design/src \
+            packages/maistro-evolve/src packages/maistro-registry/src \
+            packages/maistro-rsi/src packages/maistro-server/src \
+            packages/maistro-turing/src > xenon.log 2>&1 || true
           count=$(grep -c '^ERROR:xenon:block' xenon.log || true)
+          average=$(grep -c '^ERROR:xenon:average' xenon.log || true)
           cat xenon.log
-          echo "xenon violation count: $count (baseline: $XENON_BASELINE)"
+          fail=0
+
+          echo "xenon block violations:  $count (baseline: $XENON_BASELINE)"
           if [ "$count" -gt "$XENON_BASELINE" ]; then
-            echo "::error::xenon regression — $count violations exceeds baseline of $XENON_BASELINE; refactor the new complex blocks (Boy Scout Rule)"
-            exit 1
+            echo "::error::xenon regression — $count block violations exceeds baseline of $XENON_BASELINE; refactor the new complex blocks (Boy Scout Rule)"
+            fail=1
           fi
+
+          # Module rank, compared as a set of <path> <rank> identities. Both
+          # directions fail, exactly like check-radon-baseline.py: a new one is
+          # a regression, and a fixed one must be removed from the ledger in
+          # the PR that fixed it, so the floor can only move down.
+          grep '^ERROR:xenon:module' xenon.log \
+            | sed -E "s/^ERROR:xenon:module '(.*)' has a rank of ([A-F])\$/\1 \2/" \
+            | sort > xenon-modules.now || true
+          printf '%s\n' "$XENON_MODULE_LEDGER" | sed -e 's/^[[:space:]]*//' -e '/^$/d' \
+            | sort > xenon-modules.ledger
+          echo "xenon module violations: $(wc -l < xenon-modules.now) (ledger: $(wc -l < xenon-modules.ledger))"
+          added=$(comm -23 xenon-modules.now xenon-modules.ledger)
+          fixed=$(comm -13 xenon-modules.now xenon-modules.ledger)
+          if [ -n "$added" ]; then
+            echo "::error::xenon regression — module-rank violations not in the ledger; a whole module drifting to C is a design signal, not a line-level one:"
+            while IFS= read -r module; do echo "  $module"; done <<< "$added"
+            fail=1
+          fi
+          if [ -n "$fixed" ]; then
+            echo "::error::xenon improvement not banked — remove these from XENON_MODULE_LEDGER in this PR so the floor cannot rotate:"
+            while IFS= read -r module; do echo "  $module"; done <<< "$fixed"
+            fail=1
+          fi
+
+          echo "xenon average violations: $average (baseline: 0)"
+          if [ "$average" -gt 0 ]; then
+            echo "::error::xenon regression — project average complexity fell below rank A"
+            fail=1
+          fi
+          exit "$fail"
 
       # Per-identity debt ledger, not a count: quality/vulture-baseline.json
       # records the exact reviewed finding identities per classification rule,
@@ -1096,3 +1215,21 @@ jobs:
           uv run interrogate -f 45 packages/maistro-core/src/maistro/graph/durable_runs
           uv run interrogate -f 63 packages/maistro-core/src/maistro/projects
           uv run interrogate -f 46 packages/maistro-core/src/maistro
+          # Every other shipped package, floored at its measured coverage on
+          # 2026-09-29. These were unmeasured until now, which is why turing
+          # sits at 24 and canvas at 36: nothing had ever asked.
+          uv run interrogate -f 64 packages/maistro-rsi/src
+          uv run interrogate -f 59 packages/maistro-server/src
+          uv run interrogate -f 51 packages/maistro-design/src
+          # evolve is the one package carrying vendored source. Measured with
+          # BFCL/IFEval included the aggregate reads 50.7%; the 14 upstream
+          # files are well documented and were lending 12.5 points to a
+          # floor meant to hold first-party code. Excluded, evolve's own
+          # coverage is 38.2% -- so a floor of 50 would have let first-party
+          # docstrings rot the whole way down while the step stayed green.
+          uv run interrogate -f 38 -e packages/maistro-evolve/src/maistro_evolve/benchmarks/third_party \
+            packages/maistro-evolve/src
+          uv run interrogate -f 50 packages/maistro-registry/src
+          uv run interrogate -f 45 packages/maistro-bootstrap/src
+          uv run interrogate -f 36 packages/maistro-canvas/src
+          uv run interrogate -f 24 packages/maistro-turing/src

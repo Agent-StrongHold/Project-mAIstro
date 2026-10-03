@@ -23,7 +23,37 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Changed
+
+- **v1.0 release contract consolidated into canonical planning docs (no linked issue:
+  governance realignment).** Stakeholder decisions from the 2026-10-01 architecture
+  review now live in [`ROADMAP.md`](ROADMAP.md) (release contract section),
+  [`BACKLOG.md`](BACKLOG.md) (`[conductor-402]`–`[conductor-413]`,
+  `[engine-112]`–`[engine-115]`), and
+  [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md)
+  (§9 v1.0 amendments). Workspaces replaces the legacy Conductor page tree; M1
+  RunStore unification ([#251](https://github.com/Agent-StrongHold/Project-mAIstro/issues/251))
+  gates UI cutover; Evolution UI hidden until v1.2; Stronghold deferred to engine v1.5.
+
+- **Documentation folder realignment (no linked issue: docs hygiene).** Added
+  [`docs/README.md`](docs/README.md) navigation map; updated
+  [`docs/product/TERMINOLOGY.md`](docs/product/TERMINOLOGY.md),
+  [`docs/WAYS-OF-WORKING.md`](docs/WAYS-OF-WORKING.md), and deployment/shipped-surface
+  docs for Workspaces naming; marked [`docs/adr/DECISION-BACKLOG.md`](docs/adr/DECISION-BACKLOG.md)
+  as a 2026-05 snapshot; completed [`docs/adr/ADR-INDEX.md`](docs/adr/ADR-INDEX.md)
+  for all ADRs (`[engine-113]`); fixed stale `docs/analysis/` citations; superseded
+  duplicate [ADR-061526-f383](docs/adr/ADR-061526-f383-foreign-harness-adapters-and-portability.md)
+  in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
+
 ### Security
+
+- **Project wisdom respects GLOBAL organization boundaries (#1247).**
+  Project-only `list_by_scope` refuses organization-bound GLOBAL rows without
+  caller organization context. Layer 3
+  keeps existing project-only AGENT/USER/TEAM changelog rows while including
+  only public or same-organization GLOBAL memories. Missing organization context
+  cannot expose organization-bound wisdom; authorized same-organization recall
+  remains available across the in-memory, SQLite and PostgreSQL store paths.
 
 - **Every base/tool image in every Dockerfile is pinned by immutable digest
   (#349).** Build stages no longer float on mutable tags and the uv installer
