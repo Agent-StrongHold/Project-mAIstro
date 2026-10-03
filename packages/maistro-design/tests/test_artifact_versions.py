@@ -19,12 +19,19 @@ from typing import Any
 import pytest
 from sqlalchemy import create_engine, text
 
+import maistro_design
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.model import RunStatus
 from maistro_design.trust import TrustTier
 from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
-from maistro_design.version_store import PgArtifactVersionStore
+from maistro_design.version_store import (
+    PgArtifactVersionStore,
+    _as_datetime,
+    _as_json_dict,
+    _integrity_code,
+)
 from maistro_design.versions import (
+    ArtifactLock,
     ArtifactLockConflict,
     ArtifactVersion,
     ArtifactVersionError,
@@ -34,8 +41,10 @@ from maistro_design.versions import (
     ChangeOrigin,
     ControlMode,
     CreativeArtifactService,
+    LockScope,
     LockStateError,
     VersionState,
+    VersionStateError,
 )
 
 ORG = "org-1"
@@ -956,3 +965,349 @@ class TestOneMixedControlProject:
         locked_tip = await service.tip(org_id=ORG, project_id=PROJECT, lineage_id="locked")
         assert locked_tip is not None
         assert (locked_tip.version, locked_tip.state) == (1, VersionState.ACCEPTED)
+
+
+class TestLockSweepsCoverEveryShapeOfLockRow:
+    """The guard contracts the public API alone cannot produce.
+
+    `lock_decision` needs no prior work, so a decision can be locked before a
+    lineage's first version exists; a branch lock cannot (`lock_branch`
+    requires a tip), and neither can a region lock. The behavioral suites
+    above prove the acceptance criteria through that API; these pin what the
+    same guards do with the lock rows a durable table can actually hold — a
+    branch lock placed before any work, a stale region row, a decision lock
+    that names no decision — where the contract is "degrade to does-not-block
+    or refuse loudly", never a crash or a silent rewrite.
+    """
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-2")
+    @pytest.mark.contract("behavioral")
+    async def test_a_branch_lock_placed_before_any_work_blocks_first_generation(
+        self, tmp_path: Path
+    ) -> None:
+        store = _open_store(tmp_path / "a.sqlite3")
+        service = CreativeArtifactService(store)
+        branch_lock = await store.add_lock(
+            ArtifactLock(
+                org_id=ORG, project_id=PROJECT, lineage_id="poster", scope=LockScope.BRANCH
+            )
+        )
+
+        with pytest.raises(ArtifactLockConflict) as conflict:
+            await _generate(service, "poster", "<main>v1</main>")
+        assert conflict.value.conflicts == ((branch_lock.lock_id, "branch"),)
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-3")
+    @pytest.mark.contract("behavioral")
+    async def test_first_generation_citing_a_locked_decision_with_new_content_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
+        # A decision locked before any version exists still governs the first
+        # generation that cites it.
+        lock = await service.lock_decision(
+            org_id=ORG,
+            project_id=PROJECT,
+            lineage_id="poster",
+            decision_ref="claim:tone",
+            decision_digest="sha256:aaa",
+            created_by="user-9",
+        )
+
+        with pytest.raises(ArtifactLockConflict) as conflict:
+            await _generate(
+                service,
+                "poster",
+                "<main>v1</main>",
+                decision_inputs={"claim:tone": "sha256:bbb"},
+            )
+        assert conflict.value.conflicts == ((lock.lock_id, "decision"),)
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-3")
+    @pytest.mark.contract("behavioral")
+    async def test_first_generation_honours_the_locked_digest_or_cites_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
+        await service.lock_decision(
+            org_id=ORG,
+            project_id=PROJECT,
+            lineage_id="poster",
+            decision_ref="claim:tone",
+            decision_digest="sha256:aaa",
+            created_by="user-9",
+        )
+
+        # Citing the locked content is fine…
+        agree = await _generate(
+            service,
+            "poster",
+            "<main>v1</main>",
+            decision_inputs={"claim:tone": "sha256:aaa"},
+        )
+        assert agree.version == 1
+
+        # …and so is work on another branch that never references the decision.
+        uncited = await _generate(
+            service,
+            "banner",
+            "<banner>v1</banner>",
+        )
+        assert uncited.lineage_id == "banner"
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-2")
+    @pytest.mark.contract("behavioral")
+    async def test_a_stale_region_row_does_not_block_first_generation(self, tmp_path: Path) -> None:
+        """A region lock names a version; before v1 exists it can only be a
+        stale row, and first generation must proceed rather than deadlock."""
+        store = _open_store(tmp_path / "a.sqlite3")
+        service = CreativeArtifactService(store)
+        await store.add_lock(
+            ArtifactLock(
+                org_id=ORG,
+                project_id=PROJECT,
+                lineage_id="poster",
+                scope=LockScope.REGION,
+                version=1,
+                address="characters",
+            )
+        )
+
+        v1 = await _generate(service, "poster", "<main>v1</main>")
+        assert v1.version == 1
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-3")
+    @pytest.mark.contract("behavioral")
+    async def test_a_decision_lock_that_names_no_decision_blocks_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """A decision lock with no decision_ref constrains nothing: there is
+        no digest to honour and no reference to contradict."""
+        store = _open_store(tmp_path / "a.sqlite3")
+        service = CreativeArtifactService(store)
+        await _generate(service, "poster", "<main>v1</main>")
+        await store.add_lock(
+            ArtifactLock(
+                org_id=ORG,
+                project_id=PROJECT,
+                lineage_id="poster",
+                scope=LockScope.DECISION,
+                decision_ref=None,
+                decision_digest=None,
+            )
+        )
+
+        v2 = await _refine(service, "poster", "<main>v2</main>")
+        assert v2.version == 2
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-2")
+    @pytest.mark.contract("behavioral")
+    async def test_locking_a_branch_with_no_work_names_the_problem(self, tmp_path: Path) -> None:
+        service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
+        with pytest.raises(ArtifactVersionNotFoundError):
+            await service.lock_branch(
+                org_id=ORG, project_id=PROJECT, lineage_id="empty", created_by="user-9"
+            )
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-7")
+    @pytest.mark.contract("behavioral")
+    async def test_a_manual_edit_must_name_its_author(self, tmp_path: Path) -> None:
+        service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
+        await _generate(service, "poster", "<main>v1</main>")
+        with pytest.raises(ArtifactVersionError):
+            await service.record_manual_edit(
+                org_id=ORG,
+                project_id=PROJECT,
+                lineage_id="poster",
+                author="",
+                content="<main>v2</main>",
+            )
+
+    @pytest.mark.contract("behavioral")
+    async def test_region_governance_is_by_address_and_scope(self) -> None:
+        """A lock on "characters" covers "characters.joe-smith" and a lock on
+        "characters.joe-smith" covers a rewrite of "characters" — and a lock
+        that is not a region lock, or a region lock with no address, covers
+        no address at all."""
+        region = ArtifactLock(
+            org_id=ORG,
+            project_id=PROJECT,
+            lineage_id="poster",
+            scope=LockScope.REGION,
+            version=1,
+            address="characters",
+        )
+        child = ArtifactLock(
+            org_id=ORG,
+            project_id=PROJECT,
+            lineage_id="poster",
+            scope=LockScope.REGION,
+            version=1,
+            address="characters.joe-smith",
+        )
+        assert region.covers_address("characters.joe-smith")
+        assert child.covers_address("characters")
+        assert region.covers_address("characters")
+        assert not region.covers_address("copy.headline")
+
+        branch = ArtifactLock(
+            org_id=ORG, project_id=PROJECT, lineage_id="poster", scope=LockScope.BRANCH
+        )
+        nameless = ArtifactLock(
+            org_id=ORG,
+            project_id=PROJECT,
+            lineage_id="poster",
+            scope=LockScope.REGION,
+            version=1,
+            address=None,
+        )
+        assert not branch.covers_address("characters")
+        assert not nameless.covers_address("characters")
+
+
+class TestStoreEdgesKeepTheirPromises:
+    """Store-level state transitions the service routes through unchanged:
+    the refusal paths and the in-place update are the contract."""
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-2")
+    @pytest.mark.contract("behavioral")
+    async def test_an_accepted_version_cannot_return_to_draft(self, tmp_path: Path) -> None:
+        store = _open_store(tmp_path / "a.sqlite3")
+        service = CreativeArtifactService(store)
+        await _generate(service, "poster", "<main>v1</main>")
+        await service.accept(org_id=ORG, project_id=PROJECT, lineage_id="poster", version=1)
+
+        with pytest.raises(VersionStateError):
+            await store.set_version_state(ORG, PROJECT, "poster", 1, VersionState.DRAFT)
+        kept = await service.get_version(
+            org_id=ORG, project_id=PROJECT, lineage_id="poster", version=1
+        )
+        assert kept.state is VersionState.ACCEPTED
+
+    @pytest.mark.contract("behavioral")
+    async def test_releasing_an_unknown_lock_is_an_error(self, tmp_path: Path) -> None:
+        service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
+        with pytest.raises(ArtifactVersionNotFoundError):
+            await service.release_lock(
+                org_id=ORG, project_id=PROJECT, lock_id="no-such-lock", released_by="user-9"
+            )
+
+    @pytest.mark.contract("behavioral")
+    async def test_superseding_unknown_guidance_is_an_error(self, tmp_path: Path) -> None:
+        service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
+        replacement = await service.add_guidance(
+            org_id=ORG, project_id=PROJECT, text="newer note", author="user-9"
+        )
+        with pytest.raises(ArtifactVersionNotFoundError):
+            await service.supersede_guidance(
+                org_id=ORG,
+                project_id=PROJECT,
+                guidance_id="no-such-guidance",
+                by_guidance_id=replacement.guidance_id,
+            )
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-4")
+    @pytest.mark.contract("behavioral")
+    async def test_active_guidance_scopes_project_wide_and_per_branch(self, tmp_path: Path) -> None:
+        service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
+        project_note = await service.add_guidance(
+            org_id=ORG, project_id=PROJECT, text="project-wide note", author="user-9"
+        )
+        poster_note = await service.add_guidance(
+            org_id=ORG, project_id=PROJECT, lineage_id="poster", text="poster note", author="user-9"
+        )
+        banner_note = await service.add_guidance(
+            org_id=ORG, project_id=PROJECT, lineage_id="banner", text="banner note", author="user-9"
+        )
+
+        poster_scope = await service.active_locks(
+            org_id=ORG, project_id=PROJECT, lineage_id="poster"
+        )
+        assert poster_scope == []
+        project_wide = await service.guidance_history(org_id=ORG, project_id=PROJECT)
+        assert sorted(g.guidance_id for g in project_wide) == sorted(
+            [project_note.guidance_id, poster_note.guidance_id, banner_note.guidance_id]
+        )
+        poster_history = await service.guidance_history(
+            org_id=ORG, project_id=PROJECT, lineage_id="poster"
+        )
+        assert [g.guidance_id for g in poster_history] == [poster_note.guidance_id]
+
+    @pytest.mark.ac("SPEC-092826-a780/AC-6")
+    @pytest.mark.contract("behavioral")
+    async def test_control_updates_in_place(self, tmp_path: Path) -> None:
+        service = CreativeArtifactService(_open_store(tmp_path / "a.sqlite3"))
+        first = await service.set_control(
+            org_id=ORG,
+            project_id=PROJECT,
+            lineage_id="poster",
+            mode=ControlMode.AUTONOMOUS,
+            updated_by="user-9",
+        )
+        latest = await service.set_control(
+            org_id=ORG,
+            project_id=PROJECT,
+            lineage_id="poster",
+            mode=ControlMode.DIRECT,
+            run_id="run-7",
+            updated_by="user-7",
+        )
+        view = await service.branch_state(org_id=ORG, project_id=PROJECT, lineage_id="poster")
+        assert view.mode is ControlMode.DIRECT
+        assert (view.control is not None and latest is not None) and (
+            view.control.updated_by == latest.updated_by == "user-7"
+        )
+        assert view.control.run_id == "run-7"
+        assert first.updated_by == "user-9"
+
+
+class TestBackendRowHelpersAreDriverIndependent:
+    """The row-shape helpers stand between two drivers: asyncpg hands back
+    datetimes and JSONB dicts, SQLite hands back ISO strings and JSON text.
+    Both must coerce to the same domain objects."""
+
+    @pytest.mark.contract("behavioral")
+    async def test_timestamps_arriving_as_datetime_or_text_coerce_to_utc(self) -> None:
+        aware = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+        naive = datetime(2026, 9, 29, 12, 0)
+        assert _as_datetime(aware) is aware
+        assert _as_datetime(naive) == aware
+        assert _as_datetime(naive).tzinfo is UTC
+        assert _as_datetime(aware.isoformat()) == aware
+
+    @pytest.mark.contract("behavioral")
+    async def test_json_payloads_arriving_empty_or_as_text_coerce_to_dicts(self) -> None:
+        assert _as_json_dict(None) == {}
+        assert _as_json_dict("") == {}
+        assert _as_json_dict('{"claim:tone": "sha256:aaa"}') == {"claim:tone": "sha256:aaa"}
+        assert _as_json_dict({"k": 1}) == {"k": "1"}
+
+    @pytest.mark.contract("behavioral")
+    async def test_integrity_codes_map_both_drivers_onto_sqlstate(self) -> None:
+        class _Orig:
+            def __init__(self, pgcode: str | None, sqlite_errorname: str | None) -> None:
+                self.pgcode = pgcode
+                self.sqlite_errorname = sqlite_errorname
+
+        class _DBAPIError(Exception):
+            def __init__(self, orig: Any) -> None:
+                super().__init__("constraint failed")
+                self.orig = orig
+
+        # asyncpg via SQLAlchemy: the driver's SQLSTATE survives as .orig.pgcode.
+        assert _integrity_code(_DBAPIError(_Orig("23505", None))) == "23505"
+        # An empty pgcode is no code at all.
+        assert _integrity_code(_DBAPIError(_Orig("", "SQLITE_CONSTRAINT_UNIQUE"))) == "23505"
+        # sqlite3: the error name maps onto the same SQLSTATE space.
+        assert _integrity_code(_DBAPIError(_Orig(None, "SQLITE_CONSTRAINT_UNIQUE"))) == "23505"
+        assert _integrity_code(_DBAPIError(_Orig(None, "SQLITE_CONSTRAINT_FOREIGNKEY"))) == "23503"
+        # A constraint the mapping does not know stays unknown rather than
+        # masquerading as a uniqueness conflict.
+        assert _integrity_code(_DBAPIError(_Orig(None, "SQLITE_CONSTRAINT_CHECK"))) is None
+        assert _integrity_code(_DBAPIError(_Orig(None, None))) is None
+        # And an error with no DBAPI cause at all is simply unclassifiable.
+        assert _integrity_code(Exception("no cause")) is None
+
+    @pytest.mark.contract("behavioral")
+    async def test_the_package_reexports_the_version_store(self) -> None:
+        assert maistro_design.PgArtifactVersionStore is PgArtifactVersionStore

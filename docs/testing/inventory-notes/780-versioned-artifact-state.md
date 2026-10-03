@@ -1,13 +1,14 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +22
+  packages/maistro-design/tests: +39
 ---
 # Versioned creative artifact state inventory
 
 Issue #780 adds `packages/maistro-design/tests/test_artifact_versions.py`
-(+22 collected node IDs, all marked `contract: behavioral` and traced to
-SPEC-092826-a780/AC-1..AC-9; +20 in the initial round plus two store-promise
-tests added in the repair round below). The tests drive the real
+(+39 collected node IDs, all marked `contract: behavioral` and traced to
+SPEC-092826-a780/AC-1..AC-9; +20 in the initial round, +2 store-promise tests,
++17 guard/edge-contract tests in the diff-coverage round below). The tests
+drive the real
 `PgArtifactVersionStore` against SQLite file databases, including
 close-and-reopen cycles, because the criteria are about what survives:
 prior AI/human versions with distinct provenance, locks, guidance, and
@@ -310,3 +311,75 @@ step removed them.
   (100 tests) remains proven from the f8e7402f round; this round's partial
   live-PG evidence is 15/15 lane surfaces + the fresh-cluster chain, not the
   full 100.
+
+## Diff-coverage repair round (job 01f40729a912494f9f4316c24f14d6bb, head 20f897a24 + this round's commit)
+
+The merge-queue quality gate failed on per-file diff coverage: of the changed
+lines in the three measured files, `__init__.py` scored 50% lines (the
+`PgArtifactVersionStore` lazy-re-export branch was never imported through the
+package), `version_store.py` 61.1% branch arcs and `versions.py` 75.0% branch
+arcs against the 90/80 floors. Every flagged arc was a real, reachable
+contract — none was dead code. This round adds 17 tests that exercise them:
+
+- The generation-time lock sweep (`record_generation`): a branch lock placed
+  before any work exists (only `store.add_lock` can create one — `lock_branch`
+  requires a tip) blocks first generation; a decision lock placed before any
+  work refuses a first generation citing a contradicting digest, and honours
+  the locked digest or no citation at all; a stale region row does not block
+  first generation; a decision lock that names no decision blocks nothing
+  (`_assert_not_locked` path); `lock_branch` on an empty lineage names the
+  problem; `covers_address` governance is by address and scope, including the
+  non-region and addressless locks no service path can produce.
+- Store edges: an accepted version cannot return to draft; releasing an
+  unknown lock and superseding unknown guidance are errors; `active_guidance`
+  scopes project-wide vs per-branch; `set_control` updates the durable row in
+  place; a manual edit must name its author.
+- Driver-independent row helpers (`_as_datetime`, `_as_json_dict`,
+  `_integrity_code`): datetime/ISO-string timestamps, empty/JSON-text/dict
+  payloads, and the asyncpg-`pgcode` / sqlite3-`sqlite_errorname` → SQLSTATE
+  mapping including the unknown and cause-less fall-throughs; plus the
+  package re-export identity for `PgArtifactVersionStore`.
+
+Executed evidence at this round's head:
+
+- `uv run pytest packages/maistro-design/tests -q` → 540 passed, 1 skipped
+  (39 in `test_artifact_versions.py`, was 22 test functions / 524 suite IDs).
+- `coverage run --branch --source=packages/maistro-design/src/maistro_design`
+  over the design suite, appended with the maistro-core producers from
+  `quality.yml`'s coverage-unit job (full core suite) — then
+  `scripts/check-diff-coverage.py coverage.xml --base 15157c6f2` → exit 0,
+  "every measured file this change touches is at or above 90% lines / 80%
+  branch arcs". Before the repair the same gate printed `FAIL: 3 file(s)
+  below the diff-coverage floor` with exactly the numbers above.
+- `pytest tests/migrations` against a real pgvector:pg18
+  (`MAISTRO_TEST_DATABASE_URL` set) → 15/15 passed; `alembic upgrade head`
+  on a freshly created database applies 049 (#780) → 050 → 051 cleanly.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → exit 0 (1359 reviewed → 1358 findings, 0 unclassified;
+  no ledger amendment needed — the new tests are test code, outside the scan).
+- `ruff check .` / `ruff format --check .` clean; `check-suite-inventory.py`
+  ok with this note's updated delta.
+
+Re-executed independently by repair job 0d6c2bbc2e1b (same working tree,
+before committing), with identical outcomes for every runnable item: design
+suite 540 passed / 1 skipped (39 collected in `test_artifact_versions.py`);
+core producer 11,345 passed with only the `unreachable_server` environment
+failure described below; combined core+design coverage at `--base 15157c6f2`
+→ `ok: every measured file this change touches is at or above 90% lines /
+80% branch arcs` (4 changed measured files, 6 exempt by declaration);
+vulture exit 0 (1359 → 1358); ruff, `check-suite-inventory.py`,
+`check-durable-table-inventory.py` and `check-ratchet-provenance.py` all
+exit 0. The raw-socket repro below was re-confirmed (connect to
+127.0.0.1:1 hangs past 5s instead of ECONNREFUSED). The live-PG migration
+leg was NOT re-run in that job — the Docker daemon was unreachable — and
+remains evidenced by the `pytest tests/migrations` 15/15 run above plus the
+earlier rounds' fresh-cluster chain; the pending diff touches neither
+migrations nor their tests.
+
+Environment note, for the next reader: on this WSL host a TCP connect to
+127.0.0.1:1 is silently dropped (rootless-docker/WSL networking), so
+`test_an_unreachable_server_is_an_error_not_a_fallback` spends ~60s in asyncpg
+retries and CI's `--timeout=30` kills it when run under load here. A raw
+socket connect reproduces the drop on any branch, so the failure is a host
+networking artifact, not a candidate regression; the test passes on CI
+runners (instant ECONNREFUSED) and passes locally without the timeout flag.
