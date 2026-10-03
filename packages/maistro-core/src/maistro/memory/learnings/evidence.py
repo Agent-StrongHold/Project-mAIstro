@@ -61,8 +61,9 @@ def promotion_blockers(
 
     - source Run/evaluation IDs are required — hit_count only says the text was
       *retrieved*, not that it was *right*;
-    - confidence must be measured and at least `min_confidence` — unmeasured is
-      a blocker, not a pass;
+    - confidence must be measured and strictly above `min_confidence` — an
+      exactly-at-floor evidence base is tied, not majority-positive, so it is a
+      blocker, not a pass; unmeasured is a blocker too;
     - a COUNTERFACTUAL claim additionally needs an evaluation: "it would have
       worked" is exactly the claim only an evaluation can test, and an INFERRED
       (LLM-distilled) claim still needs ordinary validation evidence —
@@ -73,7 +74,7 @@ def promotion_blockers(
         blockers.append("no_source_run_or_evaluation_ids")
     if learning.confidence is None:
         blockers.append("confidence_unmeasured")
-    elif learning.confidence < min_confidence:
+    elif learning.confidence <= min_confidence:
         blockers.append("confidence_below_threshold")
     if learning.epistemic_type == EpistemicType.COUNTERFACTUAL and not learning.evaluation_ids:
         blockers.append("counterfactual_without_evaluation")
@@ -101,7 +102,15 @@ def merge_applicability(existing: Learning, incoming: Learning) -> None:
         extra_runs.append(incoming.run_id)
     existing.evidence_run_ids = _union(existing.evidence_run_ids, extra_runs)
     existing.evaluation_ids = _union(existing.evaluation_ids, incoming.evaluation_ids)
-    if incoming.confidence is not None:
+    measured = outcome_confidence(existing.success_after_use, existing.failure_after_use)
+    if measured is not None:
+        # A measurement outranks a report: an incoming prior (REPORTED or any
+        # other unvalidated claim) must not raise a confidence the outcome
+        # counters paid for, or a mostly-failing row could ride a 0.9 prior
+        # through the promotion gate. Restate the ratio so the row cannot
+        # drift from its counters, matching the stores' `mark_outcome`.
+        existing.confidence = measured
+    elif incoming.confidence is not None:
         existing.confidence = (
             incoming.confidence
             if existing.confidence is None

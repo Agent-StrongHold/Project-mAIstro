@@ -64,6 +64,11 @@ class TestPromotionBlockers:
         blockers = promotion_blockers(_evidenced(confidence=0.2))
         assert blockers == ["confidence_below_threshold"]
 
+    def test_tied_evidence_at_floor_blocks(self) -> None:
+        """1 success / 1 failure is a tie, not a strict majority — it may not promote."""
+        blockers = promotion_blockers(_evidenced(confidence=0.5))
+        assert blockers == ["confidence_below_threshold"]
+
     def test_min_confidence_is_configurable(self) -> None:
         assert promotion_blockers(_evidenced(confidence=0.7), min_confidence=0.8) == [
             "confidence_below_threshold"

@@ -19,6 +19,13 @@ Column dispositions follow the record's own semantics:
 - The JSONB applicability/evidence columns default to `'[]'` and
   `epistemic_type` to `'observed'` — the honest reading of every pre-M4-B3 row,
   which was observed-by-construction and had no applicability recorded.
+  The DDL is spelled as raw SQL with `ADD COLUMN IF NOT EXISTS` (migration
+  025's idiom): a `server_default` string on `op.add_column` is rendered as a
+  *quoted literal* (`DEFAULT '''[]''::jsonb'`, not valid JSON — first boot of
+  a clean install died inside `ALTER TABLE`, observed as Gate C's
+  `maistro-engine is unhealthy` and formal-conformance's `invalid input
+  syntax for type json`), and a bare `ADD COLUMN` is not adoption-safe against
+  the stamp-back + re-upgrade repair path the chain is re-applied with.
 - `evidence_run_ids` is a list alongside the scalar `run_id` from migration 026:
   `run_id` names the one Run that produced the text, the list names every Run
   whose outcome supports the claim, and consolidation/rewording merges rows
@@ -34,49 +41,48 @@ Create Date: 2026-10-01
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision = "048"
 down_revision = "047"
 branch_labels = None
 depends_on = None
 
-_COLUMNS = (
-    ("epistemic_type", sa.Text(), "'observed'"),
-    # Same column kind as `trigger_keys` from migration 001: the stores write
-    # `json.dumps` text and asyncpg lets the server infer the JSONB target.
-    ("works_when", postgresql.JSONB(), "'[]'::jsonb"),
-    ("avoid_in", postgresql.JSONB(), "'[]'::jsonb"),
-    ("confidence", sa.Float(), None),
-    ("evidence_run_ids", postgresql.JSONB(), "'[]'::jsonb"),
-    ("evaluation_ids", postgresql.JSONB(), "'[]'::jsonb"),
+# Column DDL, in declaration order. The defaults are expression text (the cast
+# `'[]'::jsonb` is SQL, not a JSON value), matching what the SQLite twin's
+# in-place upgrade writes. `confidence` deliberately has no default.
+_DDL = (
+    ("epistemic_type", "TEXT NOT NULL DEFAULT 'observed'"),
+    ("works_when", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("avoid_in", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("confidence", "DOUBLE PRECISION"),
+    ("evidence_run_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("evaluation_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
 )
 
 
 def upgrade() -> None:
-    for name, column_type, default in _COLUMNS:
-        op.add_column(
-            "learnings",
-            sa.Column(
-                name,
-                column_type,
-                nullable=default is not None,
-                server_default=default,
-            ),
-        )
+    # `ADD COLUMN IF NOT EXISTS`, spelled as raw SQL like migration 025, not
+    # `op.add_column`: the chain is re-applied over already-migrated schemas
+    # (stamp-back + re-upgrade is a live repair path, and the Canvas store
+    # conformance suite drives it), where a bare ADD COLUMN dies on
+    # DuplicateColumn even though the schema it would build is the schema that
+    # already exists — #1194's 045 broke CI's coverage (PostgreSQL) leg exactly
+    # this way. Each defaulted column stays NOT NULL; its server_default
+    # backfills existing rows. `confidence` is the one nullable column: NULL is
+    # the modeled "never measured" state, and promotion treats it as a blocker.
+    for name, ddl in _DDL:
+        op.execute(f"ALTER TABLE learnings ADD COLUMN IF NOT EXISTS {name} {ddl}")
     # Promotion now asks "which rows may promote" across applicability and
     # confidence; this index serves the candidate scan the same way
     # idx_learnings_scope serves the scope-filtered reads.
-    op.create_index(
-        "idx_learnings_promotion_candidates",
-        "learnings",
-        ["org_id", "status", "hit_count"],
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_learnings_promotion_candidates "
+        "ON learnings (org_id, status, hit_count)"
     )
 
 
 def downgrade() -> None:
-    op.drop_index("idx_learnings_promotion_candidates", table_name="learnings")
-    for name, _column_type, _default in reversed(_COLUMNS):
-        op.drop_column("learnings", name)
+    op.execute("DROP INDEX IF EXISTS idx_learnings_promotion_candidates")
+    for name, _ddl in reversed(_DDL):
+        op.execute(f"ALTER TABLE learnings DROP COLUMN IF EXISTS {name}")

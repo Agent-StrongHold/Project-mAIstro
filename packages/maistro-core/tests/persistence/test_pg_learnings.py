@@ -8,11 +8,13 @@ the data round-tripped instead of merely "didn't raise".
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS
+from maistro.observability.correlation import bind_execution_context
 from maistro.persistence.pg_learnings import (
     _PG_INSERT_FIELDS,
     PgLearningStore,
@@ -238,6 +240,39 @@ async def test_store_dedupes_on_50pct_trigger_key_overlap_and_bumps_hit_count(
     assert bump_call.method == "execute"
     assert bump_call.query == "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1"
     assert bump_call.args == (7,)
+
+
+async def test_store_dedup_merges_the_resolved_ambient_run_id(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetch(
+        [
+            {
+                "id": 7,
+                "trigger_keys": ["foo", "baz"],
+                "works_when": [],
+                "avoid_in": [],
+                "confidence": None,
+                "evidence_run_ids": ["run-old"],
+                "evaluation_ids": [],
+            }
+        ]
+    )
+    conn.queue_execute()
+
+    # The caller names no ids; the execution is ambient (`bind_execution_context`).
+    # The dedup merge must fold in the *resolved* provenance — a merge fed the
+    # original blank-ID learning would drop the current execution from the
+    # surviving row's evidence, losing exactly what consolidation retains.
+    learning = make_learning(trigger_keys=["foo", "qux"])  # 1/2 = 50% overlap
+    with bind_execution_context(run_id="run-ambient"):
+        new_id = await store.store(learning)
+
+    assert new_id == 7
+    merge_call = conn.calls[1]
+    assert merge_call.method == "execute"
+    assert "UPDATE learnings SET works_when" in merge_call.query
+    assert json.loads(merge_call.args[3]) == ["run-old", "run-ambient"]
 
 
 async def test_store_inserts_when_overlap_below_threshold(
@@ -562,19 +597,37 @@ async def test_check_auto_promotions_promotes_rows_above_threshold(
     store: PgLearningStore, conn: FakeConnection
 ) -> None:
     conn.queue_fetch([_promotable_row()])
-    conn.queue_execute()
+    # The claim UPDATE runs as fetch ... RETURNING, so the fake must queue the
+    # rows the claim won; an empty result means the caller lost the race.
+    conn.queue_fetch([{"id": 1}])
 
     results = await store.check_auto_promotions(threshold=5)
 
-    select_call, update_call = conn.calls[0], conn.calls[1]
+    select_call, claim_call = conn.calls[0], conn.calls[1]
     assert select_call.method == "fetch"
     assert "hit_count >= $1" in select_call.query
     assert "AND org_id = $2" in select_call.query
-    assert update_call.method == "execute"
-    assert "UPDATE learnings SET status = 'promoted'" in update_call.query
-    assert update_call.args == ([1],)
+    assert claim_call.method == "fetch"
+    assert "UPDATE learnings SET status = 'promoted'" in claim_call.query
+    # Atomic claim: only rows still `active` flip, and RETURNING — not the
+    # candidate list — decides what this caller reports as promoted.
+    assert "AND status = 'active'" in claim_call.query
+    assert "RETURNING id" in claim_call.query
+    assert claim_call.args == ([1],)
     assert len(results) == 1
     assert results[0].status == "promoted"
+
+
+async def test_check_auto_promotions_loses_race_for_already_claimed_row(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    """A row another worker flipped to `promoted` first is not reported here."""
+    conn.queue_fetch([_promotable_row()])
+    conn.queue_fetch([])  # RETURNING comes back empty: the claim was lost.
+
+    results = await store.check_auto_promotions(threshold=5)
+
+    assert results == []
 
 
 async def test_check_auto_promotions_leaves_unevidenced_rows_active(

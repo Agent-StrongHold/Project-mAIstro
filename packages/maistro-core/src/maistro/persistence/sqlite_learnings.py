@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.learnings.evidence import (
@@ -11,7 +12,7 @@ from maistro.memory.learnings.evidence import (
     merge_applicability,
     promotion_blockers,
 )
-from maistro.observability.correlation import observed_provenance
+from maistro.observability.correlation import ExecutionProvenance, observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
@@ -173,14 +174,17 @@ class SqliteLearningStore:
         """Store a learning, naming the execution that produced it.
 
         Resolved before the dedup probe for the same reason as the PostgreSQL
-        original: the deduplicating branch returns early (#709).
+        original: the deduplicating branch returns early (#709). The probe
+        receives the resolved record so a learning relying on the ambient
+        `bind_execution_context` still contributes its Run to the surviving
+        row's evidence when it dedupes.
         """
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
             attempt_id=learning.attempt_id,
         )
-        dedup_id = await self._bump_dedup_hit(learning)
+        dedup_id = await self._bump_dedup_hit(learning, provenance)
         if dedup_id is not None:
             return dedup_id
 
@@ -223,7 +227,11 @@ class SqliteLearningStore:
         await self._conn.commit()
         return insert_cursor.lastrowid or 0
 
-    async def _bump_dedup_hit(self, learning: Learning) -> int | None:
+    async def _bump_dedup_hit(
+        self,
+        learning: Learning,
+        provenance: ExecutionProvenance,
+    ) -> int | None:
         """Return the id of the same-scope active row this learning dedupes into.
 
         The probe half of `store`: tool name, org, team, user, agent and
@@ -266,7 +274,18 @@ class SqliteLearningStore:
                         evidence_run_ids=json.loads(row[5]),
                         evaluation_ids=json.loads(row[6]),
                     )
-                    merge_applicability(prior, learning)
+                    # The merge folds `incoming.run_id` into the evidence
+                    # list, so it must see the ids `store` resolved, not the
+                    # blank fields of a learning that leaned on the ambient
+                    # context — otherwise a deduplicated write silently drops
+                    # the very execution the consolidation should retain.
+                    incoming = replace(
+                        learning,
+                        run_id=provenance.run_id,
+                        node_run_id=provenance.node_run_id,
+                        attempt_id=provenance.attempt_id,
+                    )
+                    merge_applicability(prior, incoming)
                     await self._conn.execute(
                         "UPDATE learnings SET works_when = ?, avoid_in = ?, confidence = ?, "
                         "evidence_run_ids = ?, evaluation_ids = ? WHERE id = ?",

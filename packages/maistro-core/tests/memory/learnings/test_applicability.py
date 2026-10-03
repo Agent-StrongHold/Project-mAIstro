@@ -17,6 +17,7 @@ import pytest
 from maistro.memory.learnings.evidence import merge_applicability
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.learnings.wisdom import learning_from_wisdom
+from maistro.observability.correlation import bind_execution_context
 from maistro.persistence.sqlite_learnings import SqliteLearningStore
 from maistro.types.memory import EpistemicType, Learning, MemoryScope
 
@@ -64,6 +65,19 @@ async def test_merge_applicability_keeps_strongest_confidence() -> None:
     weakened = Learning(confidence=0.1)
     merge_applicability(existing, weakened)
     assert existing.confidence == 0.9
+
+
+async def test_merge_applicability_keeps_measured_over_reported_prior() -> None:
+    """A mostly-failing row must not be lifted by an unvalidated 0.9 prior."""
+    existing = Learning(run_id="r1", confidence=0.2, success_after_use=1, failure_after_use=4)
+    incoming = Learning(run_id="r2", epistemic_type=EpistemicType.REPORTED, confidence=0.9)
+    merge_applicability(existing, incoming)
+    assert existing.confidence == pytest.approx(0.2)
+    assert existing.evidence_run_ids == ["r2"]  # still answerable to r2
+
+    # and the row still cannot drift from its counters
+    merge_applicability(existing, Learning(confidence=1.0))
+    assert existing.confidence == pytest.approx(0.2)
 
 
 async def test_epistemic_type_breaks_keyword_ties_in_retrieval() -> None:
@@ -215,6 +229,38 @@ class TestSqliteEpistemicRoundTrip:
         assert set(row.works_when) == {"cold starts", "prod deploys"}
         assert set(row.evidence_run_ids) == {"run-1", "run-2"}
         assert row.confidence == pytest.approx(0.9)
+
+    async def test_dedup_keeps_the_ambient_run_as_evidence(
+        self, store: SqliteLearningStore
+    ) -> None:
+        await store.store(
+            Learning(
+                trigger_keys=["deploy"],
+                learning="v1",
+                tool_name="bash",
+                org_id="org-1",
+                evidence_run_ids=["run-1"],
+                confidence=0.5,
+            )
+        )
+        # The rewording caller names no Run: the execution is ambient. The
+        # merge must see the ids `store` resolved, not the blank learning
+        # fields, or the deduplicated write loses the current execution.
+        reworded = Learning(
+            trigger_keys=["deploy"],
+            learning="v2 (reworded)",
+            tool_name="bash",
+            org_id="org-1",
+            confidence=0.9,
+        )
+        with bind_execution_context(run_id="run-ambient"):
+            await store.store(reworded)
+
+        (row,) = await store.list_all(org_id="org-1")
+        assert set(row.evidence_run_ids) == {"run-1", "run-ambient"}
+        # The surviving row keeps its original producer; the ambient Run is
+        # evidence, not a re-attribution.
+        assert row.run_id == ""
 
     async def test_mark_outcome_measures_confidence_in_sql(
         self, store: SqliteLearningStore

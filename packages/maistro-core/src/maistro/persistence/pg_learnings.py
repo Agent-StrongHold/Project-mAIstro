@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.learnings.evidence import (
@@ -13,7 +14,7 @@ from maistro.memory.learnings.evidence import (
     promotion_blockers,
 )
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
-from maistro.observability.correlation import observed_provenance
+from maistro.observability.correlation import ExecutionProvenance, observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
@@ -164,7 +165,10 @@ class PgLearningStore:
 
         Resolved before the dedup read, not after: the deduplicating branch
         returns early, and a provenance read that only happens on the insert
-        path would be a second place for the rule to live (#709).
+        path would be a second place for the rule to live (#709). The resolved
+        record (not just the insert) carries it: a learning that relies on the
+        ambient `bind_execution_context` for its ids must still contribute the
+        current Run to the surviving row's evidence when it dedupes.
         """
         provenance = observed_provenance(
             run_id=learning.run_id,
@@ -172,7 +176,7 @@ class PgLearningStore:
             attempt_id=learning.attempt_id,
         )
         async with self._pool.acquire() as conn:
-            dedup_id = await self._bump_dedup_hit(conn, learning)
+            dedup_id = await self._bump_dedup_hit(conn, learning, provenance)
             if dedup_id is not None:
                 return dedup_id
 
@@ -227,6 +231,7 @@ class PgLearningStore:
         self,
         conn: asyncpg.pool.PoolConnectionProxy,
         learning: Learning,
+        provenance: ExecutionProvenance,
     ) -> int | None:
         """Return the id of the same-scope active row this learning dedupes into.
 
@@ -266,7 +271,18 @@ class PgLearningStore:
                         evidence_run_ids=_load_keys(row["evidence_run_ids"]),
                         evaluation_ids=_load_keys(row["evaluation_ids"]),
                     )
-                    merge_applicability(prior, learning)
+                    # The merge folds `incoming.run_id` into the evidence list,
+                    # so it must see the ids `store` resolved, not the blank
+                    # fields of a learning that leaned on the ambient context
+                    # — otherwise a deduplicated write silently drops the
+                    # very execution the consolidation should retain.
+                    incoming = replace(
+                        learning,
+                        run_id=provenance.run_id,
+                        node_run_id=provenance.node_run_id,
+                        attempt_id=provenance.attempt_id,
+                    )
+                    merge_applicability(prior, incoming)
                     await conn.execute(
                         """UPDATE learnings SET works_when = $1, avoid_in = $2,
                            confidence = $3, evidence_run_ids = $4,
@@ -531,16 +547,33 @@ class PgLearningStore:
             ]
             if not promoted:
                 return []
-            ids = [lr.id for lr in promoted if lr.id is not None]
-            await conn.execute(
-                "UPDATE learnings SET status = 'promoted' WHERE id = ANY($1::int[])",
-                ids,
-            )
-            # The candidates were mapped before the UPDATE; the returned
-            # objects must report the state the rows now hold.
-            for lr in promoted:
-                lr.status = "promoted"
-            return promoted
+            return await self._claim_promoted(conn, promoted)
+
+    async def _claim_promoted(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy,
+        promoted: list[Learning],
+    ) -> list[Learning]:
+        """Flip the promoted rows durably and report the ones this caller won.
+
+        Atomic claim: flip only rows still `active` and take RETURNING as the
+        truth for what this caller promoted. Two workers racing here can both
+        select the same candidate before either UPDATE; an unconditional WHERE
+        let both succeed, so both callers reported a fresh promotion and the
+        skill mutation ran twice.
+        """
+        ids = [lr.id for lr in promoted if lr.id is not None]
+        claimed = await conn.fetch(
+            "UPDATE learnings SET status = 'promoted' "
+            "WHERE id = ANY($1::int[]) AND status = 'active' RETURNING id",
+            ids,
+        )
+        claimed_ids = {r["id"] for r in claimed}
+        # The candidates were mapped before the UPDATE; the returned objects
+        # must report the state the rows now hold.
+        for lr in promoted:
+            lr.status = "promoted"
+        return [lr for lr in promoted if lr.id in claimed_ids]
 
     async def get_promoted(
         self,
