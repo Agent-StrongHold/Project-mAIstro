@@ -74,7 +74,7 @@ def _scored_store() -> tuple[PopulationStore, PipelineGenome]:
     benchmarks = sorted(champ.eval_scores)
     champ.harness_params.update(
         {
-            "eval_samples": {b: 2 for b in benchmarks},
+            "eval_samples": dict.fromkeys(benchmarks, 2),
             "eval_history": {b: [champ.eval_scores[b], champ.eval_scores[b]] for b in benchmarks},
             "objective_version": objective_version(benchmarks),
             "evidence_cycle": 1,

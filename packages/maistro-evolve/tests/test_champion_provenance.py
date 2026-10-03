@@ -158,7 +158,7 @@ class TestChampionProvenance:
         benchmarks = sorted(genome.eval_scores)
         genome.harness_params.update(
             {
-                "eval_samples": {b: 2 for b in benchmarks},
+                "eval_samples": dict.fromkeys(benchmarks, 2),
                 "eval_history": {
                     b: [genome.eval_scores[b], genome.eval_scores[b]] for b in benchmarks
                 },
