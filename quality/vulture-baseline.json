@@ -395,7 +395,6 @@
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'proxy_swebench'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'proxy_tau_bench'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'proxy_terminalbench'",
-        "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'samples_evaluated'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'weighted_eval_score'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'ABILITY'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'BEHAVIORAL'",
