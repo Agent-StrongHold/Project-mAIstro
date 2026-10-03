@@ -1,7 +1,7 @@
 # Digest-pinned (#349): the rendered downstream image must resolve the same
 # base for identical declared inputs; python:3.12.12-slim-bookworm index digest
 # resolved 2026-09-30. Refresh by editing both pins below together.
-FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c AS builder
+FROM python:3.14.0-slim-bookworm@sha256:d13fa0424035d290decef3d575cea23d1b7d5952cdf429df8f5542c71e961576 AS builder
 
 # SECURITY-REVIEW: Fixed build commands only; no answer or runtime input reaches a shell.
 RUN apt-get update \
@@ -13,7 +13,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN /opt/venv/bin/pip install --disable-pip-version-check --no-cache-dir .
 
-FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+FROM python:3.14.0-slim-bookworm@sha256:d13fa0424035d290decef3d575cea23d1b7d5952cdf429df8f5542c71e961576
 
 RUN adduser --disabled-password --gecos "" --uid 10001 app
 COPY --from=builder --chown=10001:10001 /opt/venv /opt/venv
