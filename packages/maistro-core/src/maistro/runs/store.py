@@ -39,6 +39,7 @@ from maistro.runs.model import (
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
     evidence_values_equal,
 )
@@ -142,6 +143,31 @@ def validate_accepted_outcome_against_attempt(
         or not evidence_values_equal(actual.result, expected.result)
     ):
         raise RunIntegrityError("accepted outcome does not match its canonical persisted Attempt")
+
+
+def validate_eval_score_spine(
+    *,
+    run: Run,
+    node_run: NodeRun,
+    attempt: Attempt,
+) -> None:
+    """Require one eval score's spine references to agree (M7-A3).
+
+    An eval record names the `Run` that produced the artifact, the `NodeRun`
+    whose work it scores, and the physical `Attempt` whose evidence it scored.
+    All three must exist and agree, or the record would be eval evidence
+    hanging off nothing — the sidecar shape the contract forbids.
+    """
+    if node_run.run_id != run.run_id:
+        raise RunIntegrityError(
+            f"eval score NodeRun {node_run.node_run_id!r} belongs to Run {node_run.run_id!r}, "
+            f"not Run {run.run_id!r}"
+        )
+    if attempt.node_run_id != node_run.node_run_id:
+        raise RunIntegrityError(
+            f"eval score Attempt {attempt.attempt_id!r} belongs to NodeRun "
+            f"{attempt.node_run_id!r}, not NodeRun {node_run.node_run_id!r}"
+        )
 
 
 def require_repairable_attempt(attempt: Attempt) -> None:
@@ -601,6 +627,12 @@ class RunStore(Protocol):
 
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool: ...
 
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore: ...
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]: ...
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None: ...
+
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
 #: admission that this store is used by long-lived processes: maistro-server
@@ -673,6 +705,10 @@ class InMemoryRunStore:
         # either inserts, and this is the claim that refuses the second one
         # rather than leaving two Runs that agree on one job id.
         self._canvas_job_claims: dict[str, str] = {}
+        # Append-only eval evidence keyed by eval_id (M7-A3). No per-run index:
+        # the volume is the scored dimensions of the Runs held here, and the
+        # spine maps run_id -> node_run_ids already.
+        self._eval_scores: dict[str, RunEvalScore] = {}
 
     def _prune_terminal_runs(self) -> None:
         """Evict the oldest terminal Runs once the store exceeds its bound.
@@ -762,6 +798,12 @@ class InMemoryRunStore:
             if attempt.node_run_id in node_run_ids
         ]:
             del self._attempts[attempt_id]
+        # Eval scores are Run evidence: they die with the Run, never before it
+        # and never after (M7-A3).
+        for eval_id in [
+            eval_id for eval_id, score in self._eval_scores.items() if score.run_id == run_id
+        ]:
+            del self._eval_scores[eval_id]
 
     async def create_run(
         self,
@@ -1342,6 +1384,30 @@ class InMemoryRunStore:
         self._forget_run(run_id)
         return True
 
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
+        if eval_score.eval_id in self._eval_scores:
+            raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
+        run = self._require_run(eval_score.run_id)
+        node_run = self._require_node_run(eval_score.node_run_id)
+        attempt = self._require_attempt(eval_score.attempt_id)
+        validate_eval_score_spine(run=run, node_run=node_run, attempt=attempt)
+        self._eval_scores[eval_score.eval_id] = eval_score.model_copy(deep=True)
+        return eval_score.model_copy(deep=True)
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
+        self._require_run(run_id)
+        scores = [
+            score.model_copy(deep=True)
+            for score in self._eval_scores.values()
+            if score.run_id == run_id
+        ]
+        scores.sort(key=lambda score: (score.scored_at, score.eval_id))
+        return scores
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
+        score = self._eval_scores.get(eval_id)
+        return score.model_copy(deep=True) if score is not None else None
+
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         run = self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
@@ -1623,4 +1689,5 @@ __all__ = [
     "run_in_purge_scope",
     "validate_accepted_outcome_against_attempt",
     "validate_child_scope",
+    "validate_eval_score_spine",
 ]
