@@ -665,6 +665,7 @@ async def _canonical_two_workspace_fixture() -> tuple[Any, Any, Any, Any]:
             node_resolver=lambda node_id, current_graph: get_node("human.approve_draft")(),
             run_id=admitted.run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     return store, run_store, paused["ws-1058-member"], paused["ws-1058-foreign"]
 
@@ -757,6 +758,7 @@ async def _canonical_two_project_fixture() -> tuple[Any, Any, Any]:
             node_resolver=lambda node_id, current_graph: get_node("human.approve_draft")(),
             run_id=admitted.run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     return store, paused["scope-owned"], paused["scope-other"]
 
@@ -994,6 +996,7 @@ async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
         node_resolver=lambda node_id, current_graph: _CanonicalAsk(),
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     original_attempts = paused.attempts
     original_transition_run = run_store.transition_run
@@ -1064,6 +1067,7 @@ async def test_reconcile_repairs_crash_after_answer_before_run_mirror(
         node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     original_transition_run = run_store.transition_run
     crash = True
@@ -1142,6 +1146,7 @@ async def _paused_hitl_run(
         node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     return store, run_store, continuations, paused
 
@@ -1408,6 +1413,7 @@ async def _canonical_pause(
         node_resolver=lambda node_id, current_graph: _CanonicalAsk(),
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
 
@@ -1602,6 +1608,7 @@ async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() 
         node_resolver=lambda node_id, current_graph: _CanonicalAsk(),
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     original_attempts = paused.attempts
 
@@ -1630,6 +1637,7 @@ async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() 
         node_resolver=lambda node_id, current_graph: _CanonicalAsk(),
         run_id=cancel_run.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     cancel_settled = await store.cancel_hitl(
         cancel_paused.run_id, "ask", at=_BEFORE, authorization=_test_authorization()
@@ -2372,6 +2380,7 @@ async def _canonical_hitl_fixture() -> tuple[Any, Any, Any]:
         node_resolver=lambda node_id, current_graph: get_node("human.approve_draft")(),
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     return store, run_store, paused
 

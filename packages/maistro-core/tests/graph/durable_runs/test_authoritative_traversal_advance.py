@@ -163,6 +163,7 @@ async def test_each_advancing_frontier_persists_accepted_outcome_and_commit() ->
         _two_node_graph(),
         store=store,
         node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED
@@ -195,6 +196,7 @@ async def test_physical_completion_can_be_accepted_as_logical_failure_without_ad
         _failure_graph(),
         store=store,
         node_resolver=_failure_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED

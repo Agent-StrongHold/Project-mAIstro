@@ -159,6 +159,7 @@ async def test_pinned_run_rejects_a_different_graph_before_physical_work() -> No
             node_resolver=resolver,
             run_id=admitted.run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     assert executed == []
@@ -186,6 +187,7 @@ async def test_pinned_parent_is_running_before_any_node_executes() -> None:
         node_resolver=lambda node_id, graph: _ObserveRunStatus(run_store, admitted.run_id, seen),
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED
@@ -207,6 +209,7 @@ async def test_canonical_path_does_not_bootstrap_run_before_traversal_checkpoint
             store=_FailCreateStore(),
             node_resolver=lambda node_id, graph: _Step(),
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     assert await run_store.list_by_status(RunStatus.CREATED, limit=10) == []
@@ -240,6 +243,7 @@ async def test_retry_adopts_node_run_created_before_checkpoint_failure() -> None
             node_resolver=lambda node_id, graph: _Step(),
             run_id=admitted.run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     orphaned = await run_store.list_node_runs(admitted.run_id)
@@ -332,6 +336,7 @@ async def test_a_pinned_run_that_is_not_on_the_spine_is_refused() -> None:
             node_resolver=lambda node_id, graph: _Step(),
             run_id="never-admitted",
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -346,6 +351,7 @@ async def test_a_pinned_run_admitted_for_a_different_graph_is_refused() -> None:
             node_resolver=lambda node_id, graph: _Step(),
             run_id=run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -360,6 +366,7 @@ async def test_a_pinned_run_admitted_under_another_scope_is_refused() -> None:
             node_resolver=lambda node_id, graph: _Step(),
             run_id=run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -378,4 +385,5 @@ async def test_a_pinned_run_that_already_left_the_queue_is_refused() -> None:
             node_resolver=lambda node_id, graph: _Step(),
             run_id=run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )

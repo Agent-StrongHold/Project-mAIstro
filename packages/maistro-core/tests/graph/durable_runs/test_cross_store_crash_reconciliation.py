@@ -193,6 +193,7 @@ async def _crash_at_terminal_write(
                 node_resolver=lambda node_id, current: node,
                 run_id=admitted.run_id,
                 run_store=spine.run_store,
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
     finally:
         spine.store.update = real_update  # type: ignore[method-assign]
@@ -463,18 +464,18 @@ async def test_a_stranded_run_behind_many_running_runs_is_reached_within_bounded
     calls reaches the stranded Run.
     """
     filler = _graph(spine, _Step(), name="not graph work")
-    for _ in range(150):
+    for index in range(150):
         other = await spine.run_store.create_run(
             filler,
             initial_status=RunStatus.QUEUED,
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            actor_principal_id=f"filler-principal-{index}",
         )
         await spine.run_store.transition_run(other.run_id, RunStatus.RUNNING)
-    for _ in range(150):
+    for index in range(150):
         queued = await spine.run_store.create_run(
             filler,
             initial_status=RunStatus.QUEUED,
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            actor_principal_id=f"queued-principal-{index}",
         )
         await spine.continuations.create(
             GraphContinuation(

@@ -56,6 +56,7 @@ async def test_nonempty_launch_state_must_be_durable_before_checkpoint_one() -> 
             run_store=run_store,
             inputs={"request": {"customer_id": 123}},
             blackboard_metadata={"synth_depth": 4},
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     assert await durable.get(admitted.run_id) is None

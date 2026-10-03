@@ -341,6 +341,7 @@ async def test_public_durable_executor_routes_each_node_run_through_attempt_runt
         store=store,
         node_resolver=_resolver,
         runtime=runtime,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED
@@ -368,6 +369,7 @@ async def test_effect_key_contract_requires_a_recorded_key_before_retry() -> Non
         _unbound_effect_graph(),
         store=store,
         node_resolver=_unbound_effect_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
@@ -384,6 +386,7 @@ async def test_non_retryable_contract_overrides_a_graph_retry_budget() -> None:
         _never_retry_graph(),
         store=store,
         node_resolver=_never_retry_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
@@ -409,6 +412,7 @@ async def test_production_remote_work_kind_is_not_retried_under_a_retry_budget()
         _remote_work_graph(),
         store=store,
         node_resolver=_remote_work_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
@@ -426,6 +430,7 @@ async def test_outer_cancellation_terminalizes_attempt_node_run_and_run() -> Non
             store=store,
             node_resolver=_blocking_resolver,
             run_id="cancel-run",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     )
 

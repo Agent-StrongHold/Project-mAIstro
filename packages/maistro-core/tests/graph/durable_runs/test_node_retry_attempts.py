@@ -112,6 +112,7 @@ async def _run(graph: Graph, node: BaseNode[Any, Any], run_store: InMemoryRunSto
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
 
@@ -249,6 +250,7 @@ async def test_the_other_walk_reaches_the_same_verdict(
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is expected_status
