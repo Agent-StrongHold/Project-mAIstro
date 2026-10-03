@@ -1,4 +1,54 @@
-# Repair #116 @ dad6bc865 (branch auto-116) — 2026-10-03
+# Repair #116 @ e34a1d751 (branch auto-116) — 2026-10-03, round 3
+
+Round 3 (driver job 5c141c9dc460) re-executed the ordered repair — "fix what
+is genuinely dead + amend the ledger for reviewed retained identities" —
+against fresh evidence at e34a1d751 and confirmed it is **not executable
+branch-side**. Every step below re-run or re-read from primary evidence this
+round; none of it is inherited from round 2.
+
+- Gate reproduced with CI-exact args (quality.yml:960-965): `uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → **exit 1**; exactly the 3 promotion.py
+  identities unauthorized vs trusted base (plus the informational stale
+  POLICY row, which never fails the gate). Candidate ledger banks exactly
+  those 3 rows (quality/vulture-baseline.json:1301-1303), so the ordered
+  amendment is a no-op and removing them would newly fail `candidate_added`
+  (enforced at scripts/check-vulture-baseline.py:347-356).
+- Not genuinely dead: promotion.py:645 `promote` is docstring-pinned "The only
+  promotion path"; `attach_effect`/`mark_reversed` carry the AC-6 traceability
+  and AC-3 reversal semantics. Test classes AC1–AC6 exercise all three.
+- Grants read from base only: scripts/ratchet_provenance.py:478-504
+  (`load_authorizations` docstring: "a new grant does not take effect in the
+  change that introduces it"). `git diff cf4a562b HEAD --
+  quality/ratchet-authorizations.json` is empty; base grants contain 0
+  promotion.py rows; `git fetch` → origin/develop still cf4a562b (0 new
+  commits).
+- Adoption deferral re-read from the Accepted ADR/SPEC: ADR-100126-a9c4
+  (status: Accepted, ADR-INDEX.md:221) — "Families that have not adopted the
+  ledger yet are not in violation", rewiring is "migration work, not contract
+  definition, recorded as follow-up"; SPEC-100126-a9c4:195-206 family table
+  marks Record adoption = follow-up for all six families.
+- Suppression (noqa-style) rejected as gate weakening: it would route
+  retained surface around the grant review, exactly the self-approval path
+  ratchet_provenance.py exists to close. Not done.
+
+Everything else re-verified green at e34a1d751 (fresh runs): ruff check /
+format --check clean (2835 files); test_promotion_contract.py 32 passed;
+template stores (graph/test_template_store.py + graph/test_node_template_store.py)
+113 passed, 58 DB-skipped; check-ac-state --run-tests --ratchet --mandate
+cf4a562b exit 0; check-suite-inventory 14/14; check-promotion-surface ok;
+check-reachability 1223 modules/173 unreachable + dispositions OK; radon
+145 == 145; mypy packages/maistro-core/src shows only the 5 pre-existing
+maistro_bootstrap import-stub errors (cli/_builders_tui.py:160-163,
+cli/_install.py:20 — files untouched by this PR).
+
+The resolution is unchanged and above this lane: (a) land the reviewed grant
+on develop, then merge develop here; or (b) fund the ADR-deviating family
+adoption as scoped feature work. Neither is reachable from this worktree.
+
+---
+
+# Round 2 record @ dad6bc865 — 2026-10-03
 
 ## Verdict basis: vulture gate is proven branch-side unpassable; everything else green
 
