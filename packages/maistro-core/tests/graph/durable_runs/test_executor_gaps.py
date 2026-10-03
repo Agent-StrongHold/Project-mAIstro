@@ -27,6 +27,7 @@ from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import Attempt, NodeRun
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import completed_node_run, durable_record, graph_from_dag
 
@@ -282,6 +283,7 @@ class TestStepBudgetExhaustion:
             store=store,
             node_resolver=_resolver,
             max_steps=3,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         assert result.run.status is RunStatus.FAILED

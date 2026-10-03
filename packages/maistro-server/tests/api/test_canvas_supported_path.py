@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.testing.postgres import postgres_dsn
 from maistro_canvas.canvas.executor import CanvasExecutor
 from maistro_canvas.canvas.retry_policy import RetryBackoff
@@ -234,6 +235,7 @@ async def _admit(
         action="generate",
         model_id="probe-model",
         prompt=prompt,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
 
