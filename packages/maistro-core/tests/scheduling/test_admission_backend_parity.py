@@ -158,6 +158,7 @@ async def test_enable_disable_and_max_runs_leave_identical_rows(backend: Backend
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
+            actor_principal_id="test-actor-principal",
             max_runs=2,
             created_at=NOON - timedelta(days=30),
             last_fired_at=NOON - timedelta(hours=1),
@@ -227,6 +228,7 @@ async def test_a_not_yet_due_schedule_records_its_cursor_and_leaves_due(
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
+            actor_principal_id="test-actor-principal",
             created_at=NOON + timedelta(seconds=1),
         )
     )
@@ -268,6 +270,7 @@ async def test_a_timezone_edit_cannot_re_eligibil_an_already_claimed_instant(
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
+            actor_principal_id="test-actor-principal",
             overlap_policy=OverlapPolicy.ALLOW,
             catchup_window_seconds=6 * 3600.0,
             created_at=NOON - timedelta(days=30),
