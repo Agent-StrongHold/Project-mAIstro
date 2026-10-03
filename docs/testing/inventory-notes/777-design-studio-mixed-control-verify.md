@@ -4445,3 +4445,125 @@ condition still forbids private substitutes. Verdict remains
 NEEDS-DEEP-REVIEW for the same driver-level reasons: land the branch (its
 ledger +2 identities and all gate state ride it), then land the
 dependencies, then re-open #777. No closure keywords (`Refs #777` only).
+
+---
+
+## Round 64 — re-verify at head b50b1847f (base f5fa43771), CI-repair round
+
+Driver ran no deterministic checks (job dir `0a1e7d3e7dc940be9a845388a9e185fc`
+has no `check-*.log`); every result below was executed fresh in the worktree.
+
+### Develop position
+
+`origin/develop` fetched and unmoved at `f5fa43771103d140c7d485959e914aa8fce33079`
+== the declared lane base == already merged as HEAD `b50b1847f` (merge-base ==
+develop, 0 behind). No sync was needed or possible this round.
+
+### Dependency audit — fresh, one material change since round 63
+
+- **#775 creative Graph — LANDED** (develop `8bb0f1f01`, PR #1668, merged into
+  the lane as `7147838ab`): `packages/maistro-design/src/maistro_design/
+  creative_graph.py` + `creative_nodes.py`. It is a Design-Studio-side planner
+  over the **canonical** machinery — `plan_creative_graph` builds a canonical
+  `GraphTemplate`, `instantiate_creative_graph` binds Goal-revision +
+  accountable/delegated-Agent provenance via `GraphTemplate.instantiate`,
+  `run_creative_graph` launches through canonical `run_durable_graph`. No
+  competing execution authority; the #773/#775 stop condition holds.
+- **#774 CreativeBrief — landed** (unchanged from round 58+): versioned brief
+  referencing caller-supplied `goal_id`/`goal_revision` plus Persona and
+  Design System as `BriefReference`s (references, never copies).
+- **#804/#805/#806 Goal reconciliation — still absent.** 0 matches for
+  `GoalReconciler|goal_reconcil|goal_reconciliation|reconciliation_loop` in
+  `packages/*/src`. The `#804`-numbered develop commits in the new base
+  (`065c0d5f8`, `b4b9e187e`, `889f88019`) are Workspace-cutover P0.x
+  hardening (crash windows, effect context), not the reconciler. Leasing/
+  fencing hits are the canonical Run spine (`maistro_canvas/canvas/
+  canonical_execution.py`, `maistro/events/pg_stores.py`), not Goal
+  reconciliation.
+- **#458 canonical Goal behavior — still absent**: 0 `GoalRevision` matches
+  anywhere under `packages/` (the brief carries goal identity as opaque
+  reference strings).
+- **#776 Workspace Ladybug / workspace memory — still absent**: 0 matches.
+
+### Gates (fresh at b50b1847f + this round's repairs)
+
+- **Vulture CI gate** (`scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`): **EXIT=1** with the exact
+  round-58..63 shape — trusted base `f5fa43771103`, `1359 reviewed -> 1361
+  findings`, `unclassified: 0`, `never_allowlist: 0`, and the only
+  unauthorized identities are the two #777 seam accessors
+  (`engine.py:248 get_workspace_agent`, `engine.py:270 get_reconciler`) —
+  *retained, not dead* (consumed by `test_engine_workspace_seam.py`,
+  production injection at `design_service.py:240-253`). **No merge loss**: the
+  candidate ledger still banks both (`quality/vulture-baseline.json:1364-1365`;
+  branch-vs-develop diff is +3/-1, the lane's two rows intact). **No amendment
+  made**: the only remaining failure is the structural two-merge rule —
+  authorizations are read from the merge base, so a branch-side ledger or
+  grant edit cannot green it (`ratchet_provenance.load_authorizations` reads
+  `quality/ratchet-authorizations.json` from the base; the gate prints this
+  itself). Post-land arithmetic unchanged: all 1361 findings are banked in the
+  candidate ledger, so once the branch's two rows land in develop the gate
+  reads 0 deltas.
+- `uv run ruff check .` — **PASS**.
+- `uv run ruff format --check .` — initially **3 files would be reformatted**
+  (`routes/audit.py`, `services/agent_materialization.py`,
+  `maistro/graph/durable_runs/canonical_store.py`), all **byte-identical to
+  origin/develop** — drift the develop `#1817`/`#1818` wave landed. Repaired
+  by formatting exactly those three (whitespace-only, +11/-8); re-check
+  **PASS, 2774 files**.
+- `scripts/check-suite-inventory.py` — initially **ERROR** on two
+  develop-shipped malformed notes, both byte-identical to origin/develop:
+  `p0-1-principal-migration-wave2a.md` (six `inventory-delta:` lines in
+  `<file>: migrated` form, none parseable as `<suite>: <±count>`) and
+  `feat-cutover-p0.2-route-registry.md` (`quality/: +3` while its own prose
+  says "No Python test delta"). Verified the underlying truth before editing:
+  `ef4871e38` (#1816) added/removed zero test functions and did not touch
+  `docs/testing/inventory/baseline.json`, and `51a1a306a` (#1815) touched no
+  `tests/` files — so both notes honestly record *no* suite-count movement,
+  which the parser's documented normal case expresses as absence of the key.
+  Repaired by removing the two malformed blocks (prose already documents the
+  migrations); gate now **ok: 14 suites match** (backend 3239).
+- `scripts/check-doc-links.py`, `scripts/check-adr-index.py`,
+  `scripts/check-image-pins.py`, `scripts/check-image-inventory.py` — **PASS**.
+
+### Tests (fresh)
+
+- `uv run pytest packages/maistro-design/tests -q` — **502 passed, 1 skipped**
+  (grew from round 63's 468P: #775's creative-graph suite arrived green).
+- `uv run pytest packages/hive-conductor/backend/tests/test_design_service_startup.py -q`
+  — **28 passed** (lane surface: seam injection + startup).
+- `uv run pytest packages/maistro-core/tests/fitness -q` — **23 passed**
+  (grew from 13P; includes `test_no_second_design_product.py` — the #777 stop
+  condition remains CI-enforced).
+- `uv run pytest packages/hive-conductor/backend/tests -q` — **62 failed,
+  3171 passed, 6 skipped**, deterministic (identical 62 on two consecutive
+  full runs). **Develop-inherited, not lane-caused**: every failing file and
+  every implicated SUT file is byte-identical to `origin/develop` (verified
+  per-file), and the two failure classes are both products of develop's
+  `#1816` principal-migration wave (`ef4871e38`):
+  1. *Hard regression, fails even file-alone* — e.g.
+     `test_voice_intent_contract.py` constructs `FakeRequest(state.user=...)`
+     (the pre-#1816 contract, test file line 47-49) while the migrated voice
+     path now calls `require_principal` → `services/request_principal.py:22`
+     raises 401.
+  2. *Order-dependent contamination* — e.g.
+     `test_dag_run_scope.py::test_list_shows_runs_inside_the_callers_workspace`
+     passes alone but 401s in the full run (session-scoped `authed_client`).
+  None of the 14 failing files are lane surfaces; the lane's surfaces above
+  are green. CI runs this exact suite (`ci.yml:565`), so develop's HEAD is red
+  there too — this is develop's test debt to burn in its own lane, recorded
+  here rather than silently absorbed.
+
+### Acceptance — unchanged
+
+13/13 acceptance criteria remain unprovable as stated (the 11 reconciliation/
+mixed-control/E2E criteria need #804/#806/#458/#776; e2e still has no
+mixed-control spec — only `design-studio-keyboard.spec.ts` and
+`deck-sanitization.spec.ts` touch Design Studio surfaces). The in-branch
+halves that are provable stay green: AC1's seam half (engine seams raise when
+uninjected, never self-construct; #53 front door injected at
+`design_service.py:240-253`; 7P seam suite; 23P fitness tripwire) and AC2's
+brief half (#774 brief + #775 graph suites inside the 502P package run).
+#775 landing advances a dependency without making any #804-dependent
+criterion provable. Verdict: **BLOCKED** on unlanded canonical owners, same
+as rounds 1-63; no closure keywords (`Refs #777` only).
