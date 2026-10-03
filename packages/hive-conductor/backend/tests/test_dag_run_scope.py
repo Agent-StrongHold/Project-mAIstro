@@ -41,6 +41,8 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from maistro.identity import Principal
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -51,11 +53,11 @@ _AUTHED_USER_ID = "user"  # the session conftest seeds
 
 
 class _ScopedRequest:
-    """Just what the dag-runs handlers read off a request: `state.user` and
+    """Just what the dag-runs handlers read off a request: `state.principal` and
     `is_disconnected()` (the SSE generator's cancel check)."""
 
     def __init__(self, user_id: str) -> None:
-        self.state = SimpleNamespace(user={"id": user_id, "username": user_id})
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id, username=user_id))
 
     async def is_disconnected(self) -> bool:  # pragma: no cover - cancel check
         return False
@@ -381,7 +383,7 @@ def test_unauthenticated_reads_are_refused_before_any_existence_signal(
 def test_dag_run_handlers_fail_closed_without_a_principal() -> None:
     """The 401s pinned above are served by AuthMiddleware; this pins the
     handlers' OWN refusal of a principal-less request (#1174). Through the
-    app that arc is unreachable — middleware always sets `state.user` on
+    app that arc is unreachable — middleware always sets `state.principal` on
     /v1/ — so it is driven at handler level (the fabricated-Request style
     this suite already uses for the SSE half): if a request without a
     principal ever reaches a route — middleware misconfigured, the router
@@ -393,7 +395,7 @@ def test_dag_run_handlers_fail_closed_without_a_principal() -> None:
 
     _seed_run("r-anon", workspace_id="ws-exists")
 
-    request = SimpleNamespace(state=SimpleNamespace())  # no `user` attribute
+    request = SimpleNamespace(state=SimpleNamespace())  # no `principal` attribute
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(dag_runs.list_runs(request))
     assert excinfo.value.status_code == 401
