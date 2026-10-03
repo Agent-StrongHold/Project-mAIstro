@@ -197,10 +197,20 @@ async def pg_pool():
 async def governed_pm_bindings() -> None:
     """Supply explicit test Bindings for retained PM polling node tests."""
     from maistro.capabilities.binding import Binding
-    from maistro.capabilities.effect_context import default_effect_context
+    from maistro.capabilities.effect_context import (
+        bind_container_effect_context,
+        default_effect_context,
+    )
     from maistro.credentials.types import CredentialRecord
 
-    default_effect_context.cache_clear()
+    # `create_container` binds the container it builds as the process-wide
+    # default effect context (#804). A test that never closes its container
+    # leaves that binding pointing at a sqlite store whose aiosqlite worker
+    # dies with the test's event loop, and the next test's `put` below then
+    # fails with aiosqlite's "no active connection". Every test starts from
+    # the unbound, in-memory default; a container that wants to be the
+    # default re-binds itself during its own test.
+    bind_container_effect_context(None)
     effects = default_effect_context()
     definitions = (
         (

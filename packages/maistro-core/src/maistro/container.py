@@ -377,7 +377,7 @@ class Container:
     event_bus: EventBus = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
-    invocation_store: Any = None  # type: ignore[assignment]
+    invocation_store: Any = None
     handler_invocation_store: InvocationStore = None  # type: ignore[assignment]
     handler_caller: HandlerCaller = None  # type: ignore[assignment]
     # Durable replay cursor for the legacy-event bridge (#1163): a claim
@@ -1166,14 +1166,13 @@ class Container:
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
         return len(reclaimed)
 
-    async def _reconcile_unreconciled_terminal_attempts(  # noqa: C901
+    async def _reconcile_unreconciled_terminal_attempts(
         self, *, now: datetime | None, limit: int
     ) -> int:
         """Replay reconciliation for terminal Attempts a crash interrupted (#804)."""
-        from maistro.runs.lifecycle import lease_is_expired
-        from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus, RunStatus
+        from maistro.runs.model import RunStatus
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
-        from maistro.runs.store import RunIntegrityError, run_cursor_key
+        from maistro.runs.store import run_cursor_key
 
         moment = now if now is not None else datetime.now(UTC)
         reconciler = AttemptLifecycleReconciler(
@@ -1193,41 +1192,64 @@ class Container:
                 break
             for run in page:
                 after = run_cursor_key(run)
-                for node_run in await self.run_store.list_node_runs(run.run_id):
-                    if reconciled >= limit:
-                        break
-                    attempts = await self.run_store.list_attempts(node_run.node_run_id)
-                    if any(
-                        attempt.status not in TERMINAL_ATTEMPT_STATUSES
-                        and attempt.execution_lease is not None
-                        and not lease_is_expired(attempt, moment)
-                        for attempt in attempts
-                    ):
-                        continue
-                    completed = next(
-                        (
-                            attempt
-                            for attempt in reversed(attempts)
-                            if attempt.status is AttemptStatus.COMPLETED
-                        ),
-                        None,
-                    )
-                    if completed is None:
-                        continue
-                    try:
-                        await reconciler.reconcile(completed)
-                    except RunIntegrityError:
-                        logger.warning(
-                            "terminal Attempt %s could not be reconciled",
-                            completed.attempt_id,
-                            exc_info=True,
-                        )
-                        continue
-                    reconciled += 1
+                reconciled += await self._reconcile_run_terminal_attempts(
+                    run,
+                    reconciler,
+                    moment=moment,
+                    budget=limit - reconciled,
+                )
             if len(page) < min(limit - reconciled, limit):
                 break
         if reconciled:
             logger.info("reconciled %d unreconciled terminal Attempt(s)", reconciled)
+        return reconciled
+
+    async def _reconcile_run_terminal_attempts(
+        self,
+        run: Any,
+        reconciler: Any,
+        *,
+        moment: datetime,
+        budget: int,
+    ) -> int:
+        """Reconcile one RUNNING Run's crash-interrupted terminal Attempts.
+
+        A terminal Attempt whose NodeRun shows no live lease anywhere is work a
+        crash separated from its reconciliation; the latest COMPLETED Attempt
+        is the one whose outcome replays. Returns how many Attempts were
+        reconciled, never more than ``budget``.
+        """
+        from maistro.runs.lifecycle import attempt_lease_is_live
+        from maistro.runs.model import AttemptStatus
+        from maistro.runs.store import RunIntegrityError
+
+        reconciled = 0
+        for node_run in await self.run_store.list_node_runs(run.run_id):
+            if reconciled >= budget:
+                break
+            attempts = await self.run_store.list_attempts(node_run.node_run_id)
+            if any(attempt_lease_is_live(attempt, moment) for attempt in attempts):
+                continue
+            completed = next(
+                (
+                    attempt
+                    for attempt in reversed(attempts)
+                    if attempt.status is AttemptStatus.COMPLETED
+                ),
+                None,
+            )
+            if completed is None:
+                continue
+            try:
+                await reconciler.reconcile(completed)
+            except RunIntegrityError:
+                logger.warning(
+                    "terminal Attempt %s could not be reconciled",
+                    completed.attempt_id,
+                    exc_info=True,
+                )
+                continue
+            reconciled += 1
         return reconciled
 
     async def recover_stranded_chat_admissions(

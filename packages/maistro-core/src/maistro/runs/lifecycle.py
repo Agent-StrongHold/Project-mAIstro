@@ -354,6 +354,21 @@ def lease_is_expired(attempt: Attempt, now: datetime) -> bool:
     return lease.expires_at <= now
 
 
+def attempt_lease_is_live(attempt: Attempt, now: datetime) -> bool:
+    """Whether this Attempt holds an execution lease that has not lapsed.
+
+    The recovery-side complement of :func:`lease_is_expired`: a non-terminal
+    Attempt whose lease exists and has not yet expired is someone's live work,
+    so neither the durable-run spine's stalled-frontier detection nor the
+    Container's crash-window reconciliation (#804) may treat it as abandoned.
+    """
+    return (
+        attempt.status not in TERMINAL_ATTEMPT_STATUSES
+        and attempt.execution_lease is not None
+        and not lease_is_expired(attempt, now)
+    )
+
+
 def renewed_lease(lease: ExecutionLease, *, at: datetime, ttl: timedelta) -> ExecutionLease:
     """The same lease, alive for another ``ttl`` from ``at``.
 
