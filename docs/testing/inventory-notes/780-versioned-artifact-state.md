@@ -264,3 +264,49 @@ backed up to the job directory.
   `tests/migrations` against an isolated pgvector:pg18 on 127.0.0.1:15436 →
   100 passed; `check-suite-inventory.py --suite packages/maistro-design/tests`
   → 484 collected, inventory matches.
+
+## Independent re-verification + Gate C re-proof at the recorded head (job
+## 3891a5fa7f4f4f7d9c07d35e72e3bba8, head 6e24cc7ad05b)
+
+Nothing from the rounds above was trusted: every check re-executed at
+6e24cc7ad (the docs-only child of merge head f8e7402f — `git diff
+f8e7402f..HEAD` touches only this note, so install inputs are bit-identical).
+The prior round's salvage (`gatec-compose.override-tmp.yml`, still untracked
+in the worktree by agreement, plus the `.env`/`.maistro-install` left by the
+f8e7402f run) was backed up to the job plan dir
+(`/tmp/gatec-auto780-plan-3891/prior-state/`) before Gate C's own clean-state
+step removed them.
+
+- Battery: `ruff check .` / `ruff format --check .` clean;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1368 reviewed → 1367 findings, 0 unbanked, no
+  ledger amendment); `pytest packages/maistro-design/tests -q` → 483 passed
+  +1 skipped; AC classes (`test_artifact_versions.py` + `test_creative_brief.py`)
+  → 68 passed; `pytest tests/migrations` (no DB) → 19 passed, 81 skipped;
+  `alembic heads` → single head `051`; `check-suite-inventory.py --suite
+  packages/maistro-design/tests` → ok (484).
+- Gate C re-run at this head through the documented path, coexisting with the
+  live canonical `project-maistro` stack on the shared daemon: clean starting
+  state proven (`.env`/`.maistro-install` absent after backup), plan-dir
+  `compose.override.yml` = salvage file with `!override` on all five
+  `ports:` blocks, `docker compose config` shows exactly one published port
+  per service (18000/18101/14000/13100/15433) and auto780c-`*` container
+  names, project `auto-780`. `install.sh --skip-wizard --no-cli --no-open`
+  → exit 0; `/health/live`, engine `/health/ready`, conductor `/health/ready`
+  all green; `SELECT version_num FROM alembic_version` → `051` matching
+  `^[0-9a-z_]+$`; engine digest `sha256:2a4d500e7f3806e1…` recorded;
+  `down -v --remove-orphans` removed every auto-780 resource; the canonical
+  stack stayed healthy throughout.
+- Environment finding, recorded because it produced noisy output: the shared
+  rootless docker daemon restarted twice during this round (02:35:21,
+  02:40:21 CDT, while another party actively replaced canonical-stack
+  containers). Two full `pytest tests/migrations` runs against a live
+  pgvector:pg18 died mid-suite with asyncpg `CancelledError` connection
+  timeouts at exactly those restarts; the container is killed and `--rm`
+  removes it. With the daemon stable, the lane's migration surfaces re-ran
+  green against live PG18 (`test_capability_invocation_effect_index_migration.py`
+  + `test_migration_chain.py` → 15 passed in 51.5s), and Gate C itself proved
+  the whole 001→051 chain applies on a fresh cluster. The full-suite live run
+  (100 tests) remains proven from the f8e7402f round; this round's partial
+  live-PG evidence is 15/15 lane surfaces + the fresh-cluster chain, not the
+  full 100.
