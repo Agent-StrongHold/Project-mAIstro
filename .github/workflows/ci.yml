@@ -87,6 +87,12 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # check-frontend-typed-client.py (#1048 AC-P3) resolves its base
+          # against git history; the default shallow clone has none, and it
+          # refuses with "base revision could not be resolved" rather than
+          # comparing against nothing.
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
