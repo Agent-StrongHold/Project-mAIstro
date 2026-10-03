@@ -196,9 +196,9 @@ async def activate_provider(name: str, request: Request) -> dict[str, Any]:
         resolve_binding,
         settle_operation_identity,
     )
+    from services.request_principal import require_actor_id
 
     from maistro.capabilities.binding_store import BindingResolutionError
-    from services.request_principal import require_actor_id
 
     try:
         runtime = _runtime()

@@ -529,7 +529,6 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     import maistro_evolve.harness as harness_module
@@ -617,7 +616,6 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     import httpx
     import services.evolution as evolution_service
     import services.evolution_graph as evolution_graph
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     battle_started = asyncio.Event()
@@ -713,7 +711,6 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     evaluation_started = asyncio.Event()
