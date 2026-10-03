@@ -180,17 +180,33 @@ by the scripts, not evidence that a restore has been performed. The script:
 
 1. Takes the selected date's dump (yesterday by default) and restores it into a throwaway
    scratch PostgreSQL container.
-2. Re-runs `pg_dump` on the restored DB and compares its SHA-256 to the hash recorded
-   at backup time — the spec's property: *backup restore always produces bit-for-bit
-   identical state (via pg_dump hash)*.
-3. Prints per-table row counts and fails if zero user tables were restored.
+2. Re-runs `pg_dump` on the restored DB and compares raw SHA-256 with the separately
+   captured plain-SQL dump. This is the script's current behavior, **not a valid proof of
+   bit-identical restored state**; see the verification limitation below.
+3. Prints `pg_stat_user_tables.n_live_tup` estimates and fails if zero user tables were
+   reported. Those statistics are not an independent complete data comparison.
 4. Does **not** run application-level smoke tests. Before declaring application recovery proven,
    each owner separately restores into an isolated staging environment and checks its own
    application/version/migration compatibility and representative reads. For MAIstro include
    `GET /health/ready` and a smoke request; LiteLLM and Langfuse require their own owner checks.
    The script's scratch container is already cleaned up on exit, so it cannot serve that step.
 
-A failing drill is a paging alert: your backups are not restorable.
+**Known verification limitation — [#1881](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1881),
+under the [#88](https://github.com/Agent-StrongHold/Project-mAIstro/issues/88) backup/restore proof.**
+`backup.sh` takes the custom archive and plain-SQL dump in separate `pg_dump` calls, so
+concurrent writes can make their source snapshots differ. [PostgreSQL 17 documents](https://www.postgresql.org/docs/17/app-pgdump.html)
+that plain dumps generate a random `\restrict` key by default; a fresh dump's bytes can
+therefore differ without a data change. Do not disable this protection or reuse a known
+`--restrict-key` in production to force equal hashes; PostgreSQL warns against that use.
+The required repair is same-snapshot backup evidence plus safe schema/data verification,
+not a more permissive hash check.
+
+A failed drill is an alert to investigate, not proof from a hash mismatch alone that the
+backup is unrestorable. Distinguish restore-command failure, missing/corrupt artifacts,
+actual schema/data mismatch and verifier noise. Until the verifier is repaired, record this
+comparison as insufficient evidence rather than ignoring its failure or claiming recovery
+proved. A script PASS also does not discharge #88's wider authoritative-state and credential-
+escrow coverage; each owner's supported recovery claim still needs trustworthy evidence.
 
 ---
 
