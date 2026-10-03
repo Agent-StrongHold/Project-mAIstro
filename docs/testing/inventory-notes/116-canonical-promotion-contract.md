@@ -1,14 +1,16 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +26
+  packages/maistro-core/tests: +32
 ---
 # 116-canonical-promotion-contract
 
-Twenty-six new tests in one new file, `test_promotion_contract.py`. Nothing
-removed or reparametrised; the 151 pre-existing tests in
-`tests/graph/test_template_store.py`, `tests/graph/test_node_template_store.py`
-and `tests/governance/` still pass unchanged after the template family's
-approval type was reconciled onto the canonical one.
+Thirty-two tests in `test_promotion_contract.py`: the twenty-six this note
+originally recorded, plus the six reversal-decision tests added by the CI
+repair round below. Nothing removed or reparametrised; the 151 pre-existing
+tests in `tests/graph/test_template_store.py`,
+`tests/graph/test_node_template_store.py` and `tests/governance/` still pass
+unchanged after the template family's approval type was reconciled onto the
+canonical one.
 
 ## What the tests are for
 
@@ -71,3 +73,41 @@ one-approval-type class.
 * The pg-backed template stores' promotion audit tests are skipped in this
   environment (no Postgres up); the sqlite/in-memory equivalents run and
   the reconciliation change is import-level only for them.
+
+## CI-repair addendum (second round): reversal decisions made binding
+
+The exact-debt-ledger gate flagged 13 unbanked identities in
+`governance/promotion.py`. The prior round banked them; the gate's trusted
+leg reads authorizations from the merge base, where no vulture grants exist,
+so banking alone cannot turn the gate green. This round eliminated ten of
+the thirteen by making the module do what its docs and SPEC-100126-a9c4 R4
+already claimed, each with a test:
+
+* `REVERSAL_MECHANISM_BY_SCOPE` — the rollback `mechanism` is now the
+  scope's sanctioned reversal path (prompt label move, template
+  `promote_audited`, skill trust-tier step; the three store-less families
+  record the contract's generic reversal) instead of one template-flavored
+  default for every family. Clears the three `PromotionScope` members and
+  `mechanism`.
+* `mark_reversed` honors the record's rollback metadata: an irreversible
+  record refuses (`IrreversibleReversal`, clearing `reversible` and citing
+  `mechanism`), a superseded version refuses direct reversal until the
+  newer unreversed promotion is reversed (`SupersededReversal`, clearing
+  `rollback_target_version`), and the double-reversal refusal now says
+  *when* the first reversal happened (clearing `reversed_at`).
+* `evaluate` cross-checks the prior a promotion cites against recorded
+  history: a store whose claimed current content contradicts what this
+  ledger minted for that version is refused (`StaleCandidate`), closing a
+  gap where two agreeing lies from the calling store passed the
+  base-vs-current fence. Clears `prior_version`/`prior_content_hash`.
+* The module now declares `__all__` (the templates.py precedent for public
+  core surfaces), clearing `PromotionContract`.
+
+The remaining three identities (`PromotionContract.promote`,
+`PromotionLedger.attach_effect`, `PromotionLedger.mark_reversed`) are the
+gate methods whose first production consumers are the spec's declared
+follow-up store adoptions; manufacturing in-repo callers for them would be
+the success-shaped no-op the repo hunts, so they stay banked in
+`quality/vulture-baseline.json` (candidate leg exact against the scan,
+11 stale rows pruned) pending vulture grants landing on develop — the
+two-merge doctrine's own resolution, as in the #82 round-5 repair.

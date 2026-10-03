@@ -14,6 +14,7 @@ from datetime import datetime
 import pytest
 
 from maistro.governance.promotion import (
+    REVERSAL_MECHANISM_BY_SCOPE,
     AlreadyReversed,
     CandidateChange,
     DuplicateEffect,
@@ -21,6 +22,7 @@ from maistro.governance.promotion import (
     EffectMeasurement,
     EvaluationEvidence,
     IncompleteEvidence,
+    IrreversibleReversal,
     PromotionApproval,
     PromotionContract,
     PromotionLedger,
@@ -29,6 +31,7 @@ from maistro.governance.promotion import (
     ProtectedConstituentEdit,
     SelfApprovedPromotion,
     StaleCandidate,
+    SupersededReversal,
     UnchangedCandidate,
 )
 
@@ -341,6 +344,114 @@ class TestAC6Traceability:
     def test_effect_measurement_must_cite_runs(self):
         with pytest.raises(ValueError):
             EffectMeasurement("effect-1", ())
+
+
+class TestReversalDecisionSemantics:
+    """The reversal path honors the record's own rollback metadata.
+
+    R4 records rollback metadata so the record says *how* to reverse;
+    these tests pin the half that makes the metadata binding rather than
+    decorative (SPEC-100126-a9c4 R3/R4): the mechanism is the scope's
+    sanctioned path, reversibility is enforced, reversals happen newest
+    first, and a refusal says when an earlier reversal happened.
+    """
+
+    def test_mechanism_names_the_scope_sanctioned_path(self):
+        c = contract()
+        template = c.promote(
+            candidate(scope=PromotionScope.TEMPLATE, subject="tpl"),
+            approval(),
+            current_version=1,
+            current_content_hash="hash-v1",
+        )
+        assert template.rollback.mechanism == "promote_audited against the prior version"
+        prompt = c.promote(
+            candidate(scope=PromotionScope.PROMPT, subject="agent.planner"),
+            approval(),
+            current_version=1,
+            current_content_hash="hash-v1",
+        )
+        assert prompt.rollback.mechanism == "move the active label back to the prior version"
+        # Families without a dedicated store path yet record the contract's
+        # own generic reversal — never an empty story.
+        for scope in PromotionScope:
+            assert REVERSAL_MECHANISM_BY_SCOPE[scope]
+
+    def test_irreversible_record_refuses_reversal(self):
+        c = contract()
+        promoted = c.promote(
+            candidate(), approval(), current_version=1, current_content_hash="hash-v1"
+        )
+        sealed = dataclasses.replace(
+            promoted,
+            rollback=dataclasses.replace(promoted.rollback, reversible=False),
+        )
+        ledger = PromotionLedger()
+        ledger.append(sealed)
+        with pytest.raises(IrreversibleReversal) as caught:
+            ledger.mark_reversed(sealed.record_id, actor="human:op-2", reason="regression")
+        assert caught.value.rule == "reversal-irreversible"
+        trace = ledger.trace(PromotionScope.CODE, "patch-42", 2)
+        assert trace is not None and trace.reversals == (), "a refused reversal records nothing"
+
+    def test_superseded_version_refuses_direct_reversal_until_uncovered(self):
+        c = contract()
+        v2 = c.promote(candidate(), approval(), current_version=1, current_content_hash="hash-v1")
+        c.promote(
+            candidate(base_version=2, base_hash="hash-v2", proposed_hash="hash-v3"),
+            approval(),
+            current_version=2,
+            current_content_hash="hash-v2",
+        )
+        with pytest.raises(SupersededReversal) as caught:
+            c.ledger.mark_reversed(v2.record_id, actor="a", reason="undo v2 directly")
+        assert caught.value.rule == "reversal-order"
+        assert "code:patch-42:v3" in str(caught.value)
+        # The undo chain runs newest first: v3 lifts the veto on v2.
+        c.ledger.mark_reversed("code:patch-42:v3", actor="a", reason="undo v3")
+        c.ledger.mark_reversed(v2.record_id, actor="a", reason="now v2 is uncoverable")
+        trace = c.ledger.trace(PromotionScope.CODE, "patch-42", 2)
+        assert trace is not None and len(trace.reversals) == 1
+
+    def test_double_reversal_refusal_reports_when_the_first_happened(self):
+        c = contract()
+        record = c.promote(
+            candidate(), approval(), current_version=1, current_content_hash="hash-v1"
+        )
+        c.ledger.mark_reversed(record.record_id, actor="a", reason="first reversal")
+        with pytest.raises(AlreadyReversed) as caught:
+            c.ledger.mark_reversed(record.record_id, actor="b", reason="again")
+        trace = c.ledger.trace(PromotionScope.CODE, "patch-42", 2)
+        assert trace is not None
+        assert trace.reversals[0].reversed_at.isoformat() in str(caught.value)
+
+    def test_prior_citation_contradicting_recorded_history_is_refused(self):
+        c = contract()
+        c.promote(candidate(), approval(), current_version=1, current_content_hash="hash-v1")
+        # The store claims v2's content is something this ledger never minted:
+        # the candidate is cut from a base whose hash disagrees with recorded
+        # history, which the base-vs-current staleness fence cannot see
+        # because the store's two claims agree with each other.
+        with pytest.raises(StaleCandidate) as caught:
+            c.promote(
+                candidate(base_version=2, base_hash="hash-evil", proposed_hash="hash-v3"),
+                approval(),
+                current_version=2,
+                current_content_hash="hash-evil",
+            )
+        assert "v2 as hash-evil" in str(caught.value)
+
+    def test_promoting_on_agreeing_recorded_history_mints(self):
+        c = contract()
+        c.promote(candidate(), approval(), current_version=1, current_content_hash="hash-v1")
+        record = c.promote(
+            candidate(base_version=2, base_hash="hash-v2", proposed_hash="hash-v3"),
+            approval(),
+            current_version=2,
+            current_content_hash="hash-v2",
+        )
+        assert (record.prior_version, record.new_version) == (2, 3)
+        assert record.prior_content_hash == "hash-v2"
 
 
 class TestFenceEdges:

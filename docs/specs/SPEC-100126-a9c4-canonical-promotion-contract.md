@@ -152,8 +152,7 @@ Feature: One governed promotion contract
   @AC-2
   Scenario: Promotion mints the next explicit version and never reuses one
     Given a subject promoted to v2 through the contract
-    When the subject is rolled back to v1 by its store and the same candidate
-      content is promoted again
+    When the subject is rolled back to v1 by its store and the same candidate content is promoted again
     Then the new record mints v3, not a reassigned v2
     And promoting against a base whose hash no longer matches is refused
 
@@ -161,18 +160,14 @@ Feature: One governed promotion contract
   Scenario: The record is complete
     Given a gated promotion
     When the record is read back
-    Then it carries scope, subject, prior and new version, both content hashes,
-      evaluation Run ids, evaluator versions, approver, reason, deciding
-      authority, approval policy, and rollback metadata naming the prior
-      version as target with a reversal mechanism
+    Then it carries scope, subject, prior and new version, both content hashes, evaluation Run ids, evaluator versions, approver, reason, deciding authority, approval policy, and rollback metadata naming the prior version as target with a reversal mechanism
 
   @AC-4
   Scenario: A candidate cannot edit its own evaluator or security constitution
     Given a scope whose protected constituents include its evaluator surface
     When a candidate's changed refs intersect them
     Then promotion is refused even under a valid external approval
-    And a contract constructed without a classification for some scope is
-      refused at construction
+    And a contract constructed without a classification for some scope is refused at construction
 
   @AC-5
   Scenario: No self-approval
@@ -185,10 +180,8 @@ Feature: One governed promotion contract
   Scenario: Every promoted version traces to evaluation Runs and effect measurements
     Given a promoted version with evidence citing evaluation Run ids
     When later effect measurements are attached citing their own Run ids
-    Then trace(scope, subject, version) returns the record, the effects, and
-      any reversal entries
-    And attaching a measurement to an unknown record, or duplicating a
-      measurement id, is refused
+    Then trace(scope, subject, version) returns the record, the effects, and any reversal entries
+    And attaching a measurement to an unknown record, or duplicating a measurement id, is refused
 
   @AC-7
   Scenario: One approval type across families

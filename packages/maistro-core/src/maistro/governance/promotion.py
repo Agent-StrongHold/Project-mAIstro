@@ -71,6 +71,27 @@ class PromotionScope(StrEnum):
 #: audited against anything.
 DEFAULT_APPROVAL_POLICY = "direct-approval"
 
+#: The sanctioned reversal path per family, recorded as a promotion's rollback
+#: ``mechanism``. The paths are the ones the family stores already own: a
+#: prompt rolls back by moving its active label (SPEC-083026-427c), a template
+#: re-runs ``promote_audited`` against the prior version (ADR-082926-65bf), a
+#: skill re-promotes through the authenticated trust-tier step. The three
+#: families whose stores do not exist yet (policy, routing_config, code —
+#: SPEC-100126-a9c4's "record adoption: follow-up" column) record the
+#: contract's own generic reversal, which every family always has: the prior
+#: version is immutable and addressable, so re-promoting it is always
+#: available. The map must cover every scope — ``evaluate`` indexes it
+#: directly, so a family added to :class:`PromotionScope` without a mechanism
+#: is a KeyError at minting time, not a promotion with an empty story.
+REVERSAL_MECHANISM_BY_SCOPE: dict[PromotionScope, str] = {
+    PromotionScope.PROMPT: "move the active label back to the prior version",
+    PromotionScope.SKILL: "re-promote the prior version through the authenticated trust-tier step",
+    PromotionScope.TEMPLATE: "promote_audited against the prior version",
+    PromotionScope.POLICY: "re-promote the recorded prior version",
+    PromotionScope.ROUTING_CONFIG: "re-promote the recorded prior version",
+    PromotionScope.CODE: "re-promote the recorded prior version",
+}
+
 
 @dataclass(frozen=True)
 class PromotionApproval:
@@ -194,10 +215,12 @@ class RollbackMetadata:
 
     Because promotion mints a new version and never edits one in place, the
     prior version is always the rollback target: it remains addressable and
-    immutable. ``mechanism`` names the family's sanctioned reversal path
-    (``promote_audited`` against the prior version for templates, the
-    genome store's ``rollback_audited``, a label move for prompts), so the
-    record says how to reverse, not just that one could.
+    immutable. ``mechanism`` names the family's sanctioned reversal path,
+    taken from :data:`REVERSAL_MECHANISM_BY_SCOPE` at minting time (the
+    genome store's ``rollback_audited`` is the same idea one scope family
+    over), so the record says how to reverse, not just that one could.
+    ``reversible`` is binding, not descriptive: a record marked otherwise
+    refuses :meth:`PromotionLedger.mark_reversed`.
     """
 
     rollback_target_version: int
@@ -314,6 +337,14 @@ class AlreadyReversed(PromotionRefused):
     """The promotion was already reversed."""
 
 
+class IrreversibleReversal(PromotionRefused):
+    """The promotion is recorded as not reversible."""
+
+
+class SupersededReversal(PromotionRefused):
+    """A newer version was minted on top of the one being reversed."""
+
+
 class PromotionLedger:
     """Append-only store of promotion records, effects and reversals.
 
@@ -364,17 +395,56 @@ class PromotionLedger:
             )
         effects.append(effect)
 
+    def _newest_unreversed_successor(self, record: PromotionRecord) -> PromotionRecord | None:
+        """The newest standing promotion minted on top of ``record``, if any.
+
+        A reversed successor does not block: the undo chain runs newest
+        first, so reversing v3 re-opens v2 for reversal.
+        """
+        blockers = [
+            other
+            for other in self._records.values()
+            if other.scope is record.scope
+            and other.subject == record.subject
+            and other.new_version > record.new_version
+            and not self._reversals[other.record_id]
+        ]
+        return max(blockers, key=lambda other: other.new_version) if blockers else None
+
     def mark_reversed(self, record_id: str, *, actor: str, reason: str) -> ReversalEntry:
-        """Record that a promotion was reversed. The record itself is untouched."""
+        """Record that a promotion was reversed. The record itself is untouched.
+
+        The reversal honors the record's own rollback metadata: a promotion
+        recorded as not reversible cannot be reversed, and a version another
+        promotion was already minted on top of cannot be reversed directly —
+        undo the newest promotion first, or the ledger would end up
+        describing a history the stores never served.
+        """
         if record_id not in self._records:
             raise UnknownPromotion(record_id)
+        record = self._records[record_id]
         if not actor.strip() or not reason.strip():
             raise ValueError("a reversal must name its actor and its reason")
         reversals = self._reversals[record_id]
         if reversals:
             raise AlreadyReversed(
                 "reversal-once",
-                f"{record_id} was already reversed by {reversals[-1].actor!r}",
+                f"{record_id} was already reversed by {reversals[-1].actor!r} at "
+                f"{reversals[-1].reversed_at.isoformat()}",
+            )
+        if not record.rollback.reversible:
+            raise IrreversibleReversal(
+                "reversal-irreversible",
+                f"{record_id} is recorded as not reversible; its declared mechanism "
+                f"({record.rollback.mechanism!r}) cannot be honored",
+            )
+        blocker = self._newest_unreversed_successor(record)
+        if blocker is not None:
+            raise SupersededReversal(
+                "reversal-order",
+                f"{record_id} is superseded by {blocker.record_id} for "
+                f"{record.scope.value}/{record.subject} — reverse {blocker.record_id} first; "
+                f"this record's rollback target remains v{record.rollback.rollback_target_version}",
             )
         entry = ReversalEntry(
             record_id=record_id,
@@ -535,7 +605,7 @@ class PromotionContract:
 
         ledger_latest = self._ledger.latest_version(candidate.scope, candidate.subject)
         new_version = max(current_version, ledger_latest or 0) + 1
-        return PromotionRecord(
+        record = PromotionRecord(
             record_id=f"{candidate.scope.value}:{candidate.subject}:v{new_version}",
             scope=candidate.scope,
             subject=candidate.subject,
@@ -545,9 +615,32 @@ class PromotionContract:
             content_hash=candidate.proposed_content_hash,
             evidence=candidate.evidence,
             approval=approval,
-            rollback=RollbackMetadata(rollback_target_version=current_version),
+            rollback=RollbackMetadata(
+                rollback_target_version=current_version,
+                mechanism=REVERSAL_MECHANISM_BY_SCOPE[candidate.scope],
+            ),
             promoted_at=datetime.now(UTC),
         )
+        self._refuse_contradicted_prior(record)
+        return record
+
+    def _refuse_contradicted_prior(self, record: PromotionRecord) -> None:
+        """Refuse a promotion whose prior citation contradicts recorded history.
+
+        The staleness fence compares the candidate's base against the
+        calling store's word about now; this fence cross-checks that word
+        against what this ledger itself minted for the cited version, so
+        two claims that agree with each other cannot both be lies.
+        """
+        cited = self._ledger.trace(record.scope, record.subject, record.prior_version)
+        if cited is not None and cited.record.content_hash != record.prior_content_hash:
+            raise StaleCandidate(
+                "staleness",
+                f"the calling store reports {record.scope.value}/{record.subject} "
+                f"v{record.prior_version} as {record.prior_content_hash[:12]}, but this "
+                f"ledger recorded that version as {cited.record.content_hash[:12]} — the prior "
+                "a promotion cites must be the content history already recorded",
+            )
 
     def promote(
         self,
@@ -566,3 +659,32 @@ class PromotionContract:
         )
         self._ledger.append(record)
         return record
+
+
+__all__ = [
+    "DEFAULT_APPROVAL_POLICY",
+    "REVERSAL_MECHANISM_BY_SCOPE",
+    "AlreadyReversed",
+    "CandidateChange",
+    "DuplicateEffect",
+    "DuplicatePromotion",
+    "EffectMeasurement",
+    "EvaluationEvidence",
+    "IncompleteEvidence",
+    "IrreversibleReversal",
+    "PromotionApproval",
+    "PromotionContract",
+    "PromotionLedger",
+    "PromotionRecord",
+    "PromotionRefused",
+    "PromotionScope",
+    "PromotionTrace",
+    "ProtectedConstituentEdit",
+    "ReversalEntry",
+    "RollbackMetadata",
+    "SelfApprovedPromotion",
+    "StaleCandidate",
+    "SupersededReversal",
+    "UnchangedCandidate",
+    "UnknownPromotion",
+]
