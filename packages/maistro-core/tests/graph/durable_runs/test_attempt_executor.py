@@ -16,7 +16,14 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
-from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
+from maistro.graph.nodes import (
+    BaseNode,
+    NodeContext,
+    NodeResult,
+    ReplaySemantics,
+    compose_node,
+    get_node,
+)
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
 
@@ -99,6 +106,85 @@ class _Blocking(BaseNode[_Empty, _Seed]):
         return _Seed(seed="unreachable")
 
 
+class _UnboundEffect(BaseNode[_Empty, _Seed]):
+    kind: ClassVar[str] = "test.attempt.unbound_effect"
+    kind_category: ClassVar[str] = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _Empty
+    output_schema: ClassVar[type[BaseModel]] = _Seed
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+    calls: ClassVar[int] = 0
+
+    def replay_effect_key(self, inputs: _Empty, ctx: NodeContext) -> str:
+        del inputs, ctx
+        return ""
+
+    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
+        type(self).calls += 1
+        raise RuntimeError("effect key unavailable")
+
+
+class _NeverRetry(BaseNode[_Empty, _Seed]):
+    kind: ClassVar[str] = "test.attempt.never_retry"
+    kind_category: ClassVar[str] = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _Empty
+    output_schema: ClassVar[type[BaseModel]] = _Seed
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
+    calls: ClassVar[int] = 0
+
+    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
+        type(self).calls += 1
+        raise RuntimeError("ambiguous effect")
+
+
+def _unbound_effect_graph() -> Graph:
+    return Graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Unbound effect",
+        nodes=[
+            Node(
+                node_id="unbound",
+                node_type=_UnboundEffect.kind,
+                policies={"max_attempts": 3},
+            )
+        ],
+        metadata={"entry_node": "unbound"},
+    )
+
+
+def _never_retry_graph() -> Graph:
+    return Graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Non-retryable",
+        nodes=[
+            Node(
+                node_id="never",
+                node_type=_NeverRetry.kind,
+                policies={"max_attempts": 3},
+            )
+        ],
+        metadata={"entry_node": "never"},
+    )
+
+
+def _remote_work_graph() -> Graph:
+    """A graph whose only node is the production `agent.remote_work` kind."""
+    return Graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Delegated external work",
+        nodes=[
+            Node(
+                node_id="remote",
+                node_type="agent.remote_work",
+                policies={"max_attempts": 3},
+            )
+        ],
+        metadata={"entry_node": "remote"},
+    )
+
+
 class _RecordingRuntime(PythonExecutionRuntime):
     def __init__(self) -> None:
         super().__init__()
@@ -161,6 +247,25 @@ def _blocking_graph() -> Graph:
     )
 
 
+def _unbound_effect_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
+    del graph
+    assert node_id == "unbound"
+    return _UnboundEffect()
+
+
+def _never_retry_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
+    del graph
+    assert node_id == "never"
+    return _NeverRetry()
+
+
+def _remote_work_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
+    """Resolve through the production registry, not a test double."""
+    del graph
+    assert node_id == "remote"
+    return compose_node("agent.remote_work", {})
+
+
 def _blocking_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
     del graph
     assert node_id == "blocking"
@@ -168,14 +273,18 @@ def _blocking_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
 
 
 def _single_recovery_record(
-    *, attempt_status: AttemptStatus, attempt_result: object | None = None
+    *,
+    attempt_status: AttemptStatus,
+    attempt_result: object | None = None,
+    node_id: str = "start",
 ) -> DurableRunRecord:
+    kinds = {"start": _Start.kind, "never": _NeverRetry.kind}
     graph = Graph(
         workspace_id="ws-1",
         project_id="project-1",
         name="Recovery",
-        nodes=[Node(node_id="start", node_type=_Start.kind)],
-        metadata={"entry_node": "start"},
+        nodes=[Node(node_id=node_id, node_type=kinds[node_id])],
+        metadata={"entry_node": node_id},
     )
     run = Run(
         run_id="recover-run",
@@ -187,7 +296,7 @@ def _single_recovery_record(
     node_run = NodeRun(
         node_run_id="recover-node-run",
         run_id=run.run_id,
-        node_id="start",
+        node_id=node_id,
         ordinal=1,
         status=RunStatus.RUNNING,
     )
@@ -209,7 +318,7 @@ def _single_recovery_record(
         values["finished_at"] = run.created_at
         values["result"] = attempt_result
     attempt = Attempt.model_validate(values)
-    state = GraphExecutionState(run_id=run.run_id, active_node_ids=("start",))
+    state = GraphExecutionState(run_id=run.run_id, active_node_ids=(node_id,))
     return DurableRunRecord(
         run=run,
         graph_state=state,
@@ -246,6 +355,63 @@ async def test_public_durable_executor_routes_each_node_run_through_attempt_runt
         node_run.node_run_id for node_run in record.node_runs
     }
     assert set(runtime.execution_ids) == {attempt.attempt_id for attempt in record.attempts}
+
+
+@pytest.mark.asyncio
+async def test_effect_key_contract_requires_a_recorded_key_before_retry() -> None:
+    _UnboundEffect.calls = 0
+    store = InMemoryDurableRunStore()
+
+    record = await run_durable_graph(
+        _unbound_effect_graph(),
+        store=store,
+        node_resolver=_unbound_effect_resolver,
+    )
+
+    assert record.status is RunStatus.FAILED
+    assert _UnboundEffect.calls == 1
+    assert len(record.attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_contract_overrides_a_graph_retry_budget() -> None:
+    _NeverRetry.calls = 0
+    store = InMemoryDurableRunStore()
+
+    record = await run_durable_graph(
+        _never_retry_graph(),
+        store=store,
+        node_resolver=_never_retry_resolver,
+    )
+
+    assert record.status is RunStatus.FAILED
+    assert _NeverRetry.calls == 1
+    assert len(record.attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_production_remote_work_kind_is_not_retried_under_a_retry_budget() -> None:
+    """The shipped `agent.remote_work` kind declares NON_RETRYABLE (#1194).
+
+    The work executes at an A2A peer, so a failed visit must never be
+    re-dispatched locally: whether the remote effect already happened is not
+    observable here, and the delegation recovery path owns reconciliation.
+    This pins the *catalog* declaration to the executor's behaviour — the
+    graph's `max_attempts` budget must not override it.
+    """
+    assert get_node("agent.remote_work").replay_semantics is ReplaySemantics.NON_RETRYABLE
+
+    store = InMemoryDurableRunStore()
+
+    record = await run_durable_graph(
+        _remote_work_graph(),
+        store=store,
+        node_resolver=_remote_work_resolver,
+    )
+
+    assert record.status is RunStatus.FAILED
+    assert len(record.attempts) == 1
+    assert record.graph_state.visit_counts.get("remote") == 1
 
 
 @pytest.mark.asyncio
@@ -373,6 +539,45 @@ async def test_resume_folds_completed_attempt_without_redispatching_node() -> No
     assert record.attempts[0].status is AttemptStatus.COMPLETED
     assert record.node_runs[0].result == {"seed": "already-done"}
     assert _Start.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_resume_never_reexecutes_a_non_retryable_nodes_ambiguous_effect() -> None:
+    """Recovery re-dispatch consumes the executable replay contract (#1194).
+
+    ADR-082826-08f0's orphan row still rotates the interrupted Attempt to a
+    fresh chronological one, but for NON_RETRYABLE work the fresh Attempt
+    records a refusal as its own evidence instead of invoking the node body:
+    the effect may already have happened before the process died, and a second
+    physical try is exactly the duplication the contract forbids. The fold's
+    exhausted-failure rule (which reads the same contract) fails the Run, so
+    the ambiguity lands in front of a person instead of on the remote system.
+    """
+    # One call before the crash: the physical effect's outcome is unknown.
+    _NeverRetry.calls = 1
+    store = InMemoryDurableRunStore()
+    await store.create(
+        _single_recovery_record(attempt_status=AttemptStatus.RUNNING, node_id="never")
+    )
+
+    record = await resume_durable_graph(
+        "recover-run", store=store, node_resolver=_never_retry_resolver
+    )
+
+    # The body never ran again: one ambiguous effect, not two.
+    assert _NeverRetry.calls == 1
+    # The canonical recovery rotation still happened (ADR-082826-08f0): the
+    # orphaned Attempt is CANCELLED and a fresh chronological Attempt settles
+    # the refusal as its own durable evidence.
+    assert [attempt.status for attempt in record.attempts] == [
+        AttemptStatus.CANCELLED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert "ReplayRefused" in str(record.attempts[1].result)
+    # The fold fails the Run with the refusal, naming the contract.
+    assert record.status is RunStatus.FAILED
+    assert (record.run.error or "").startswith("ReplayRefused:")
+    assert record.node_runs[0].status is RunStatus.FAILED
 
 
 @pytest.mark.parametrize(

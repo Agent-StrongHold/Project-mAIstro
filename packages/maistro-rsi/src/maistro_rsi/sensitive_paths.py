@@ -64,6 +64,14 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # happens to live (Codex, #513).
     "hive-conductor/backend/services/rsi.py",
     "hive-conductor/backend/routes/rsi.py",
+    # The #509 dispatch backend: it builds the ``docker run`` argv that decides
+    # WHERE a run's candidate code executes — caps, mounts, network, user,
+    # interpreter resolution. A candidate that could edit it could move its own
+    # execution back onto the host without touching either file above — the
+    # same one-diff authorization hole the test-suite patterns below close for
+    # the classifier itself, so its pinning suite travels with it.
+    "hive-conductor/backend/services/rsi_container_dispatch.py",
+    "hive-conductor/backend/tests/test_rsi_container_dispatch.py",
     # The services package initializer, on the same reasoning as the others
     # below: a docstring today, on the runtime import path regardless.
     "hive-conductor/backend/services/__init__.py",
@@ -109,6 +117,28 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # SafeHarnessRunner composes Warden and the ActionGate but lives under
     # capabilities/, so the "maistro/security/" pattern above never saw it.
     "maistro/capabilities/providers/",
+    # The governed capability-effect boundary (#55/#1362): governed_invocation
+    # evaluates the invocation policy and enforces the durable approvals it
+    # consults; authority.py and approval_store.py are the approval authority
+    # and its durable record; invocation.py is the external-effect boundary and
+    # the invocation stores are its durable state. A candidate that can edit
+    # any of these can weaken the approval/effect gate without touching
+    # security/ or capabilities/providers/, so they sit on the sensitive
+    # surface instead of being tolerated as baseline admission (Codex review,
+    # chore/authorize-effect-door-promotion).
+    "maistro/capabilities/governed_invocation.py",
+    "maistro/capabilities/authority.py",
+    "maistro/capabilities/approval_store.py",
+    # binding_store.py is the gate itself, not a record of one: `_resolve` and
+    # `_scope_checked` enforce registration, disablement, revocation, and
+    # workspace/project/node/capability scope before every physical effect.
+    # `binding.py` next to it really is an inert dataclass and stays tolerated;
+    # this one is where a candidate would weaken the check and authorize its
+    # own effects without touching a protected module (Codex, #1758).
+    "maistro/capabilities/binding_store.py",
+    "maistro/capabilities/invocation.py",
+    "maistro/capabilities/invocation_store.py",
+    "maistro/capabilities/pg_invocation_store.py",
     # The DAG-synthesis substrate that lets an agent spawn further
     # sub-agents/DAGs: the recursion-depth cap and the two node kinds that
     # dispatch through it.

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import logging
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import stores
+from config import get_settings
 from fastapi import APIRouter, Header, HTTPException, Request
 from models.schemas import Schedule
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -14,6 +16,11 @@ from services.dag_execution_scope import (
     authorize_hive_dag_scope,
     authorize_hive_dag_workspace,
 )
+
+from maistro.scheduling.cron import CronParseError, minimum_gap
+from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS, MAX_CATCHUP_WINDOW_SECONDS
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["schedules"])
 
@@ -53,6 +60,73 @@ def _check_max_runs(value: int | None) -> int | None:
     if value is not None and value < 1:
         raise ValueError("max_runs must be at least 1 when set")
     return value
+
+
+def _check_catchup_window(value: float | None) -> float | None:
+    """Bound the catch-up window a client may request (#1200), as a 422.
+
+    After downtime the window decides how much missed work one evaluation will
+    consider, so an unbounded window is an unbounded backlog: the product cap
+    (`schedule_max_catchup_window_s`, itself bounded at startup) is what keeps
+    a client from asking for one. Zero stays legal — it means "never backfill"
+    — and `None` is the update body's "leave alone". The substrate's own
+    ceiling (`MAX_CATCHUP_WINDOW_SECONDS`) is never the binding constraint
+    here because the operator cap cannot be configured above it, but the
+    canonical model would reject it at the write below anyway; naming this
+    layer's own bound keeps the 422 about the product's rule.
+    """
+    if value is None:
+        return None
+    if value < 0:
+        raise ValueError("catchup_window_seconds cannot be negative")
+    if value > MAX_CATCHUP_WINDOW_SECONDS:
+        raise ValueError(
+            f"catchup_window_seconds must be at most {MAX_CATCHUP_WINDOW_SECONDS:g} (seven days)"
+        )
+    if value > get_settings().schedule_max_catchup_window_s:
+        raise ValueError(
+            "catchup_window_seconds must be at most "
+            f"{get_settings().schedule_max_catchup_window_s} "
+            "(schedule_max_catchup_window_s)"
+        )
+    return value
+
+
+def _frequency_gap(cron_expression: str, timezone: str) -> timedelta:
+    """The recurrence's shortest real gap, or a 422 for an unreadable cron.
+
+    `minimum_gap` measures consecutive fire times, so list/step/range forms
+    are all honored — `0,5,10 * * * *` is a five-minute schedule, not an
+    hourly one (ADR-082126-f69c §7).
+    """
+    try:
+        return minimum_gap(cron_expression, timezone=timezone)
+    except CronParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _require_supported_frequency(cron_expression: str, timezone: str) -> timedelta:
+    """The product frequency floor (#1200), enforced as a 422.
+
+    The substrate measures and does not decide (ADR-082126-f69c §7: rate
+    floors are product policy); this route is where the product decides. The
+    floor is the operator's `schedule_min_frequency_gap_s`, so what "too
+    often" means is deployment configuration — but the setting itself is
+    bounded at startup, which is what keeps a misconfiguration from quietly
+    accepting a busy-loop schedule.
+    """
+    gap = _frequency_gap(cron_expression, timezone)
+    floor = get_settings().schedule_min_frequency_gap_s
+    if gap < timedelta(seconds=floor):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"cron_expression {cron_expression!r} can fire every "
+                f"{gap.total_seconds():g}s; the minimum supported frequency is one "
+                f"fire per {floor}s (schedule_min_frequency_gap_s)"
+            ),
+        )
+    return gap
 
 
 def _check_fire_id(value: str | None) -> str | None:
@@ -129,6 +203,18 @@ async def _writable_schedule(
     return current
 
 
+async def _write_canonical(schedule: Schedule) -> None:
+    """Write the canonical definition before its Hive projection (#1199)."""
+    from services.scheduler import ScheduleAdmissionUnavailable, put_canonical_definition
+
+    try:
+        await put_canonical_definition(schedule.id, schedule)
+    except ScheduleAdmissionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ValueError, LookupError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("", response_model=list[Schedule])
 async def list_schedules(request: Request) -> list[Schedule]:
     allowed = await dag_run_inspection.authorized_workspace_ids(_actor(request))
@@ -157,6 +243,7 @@ class CreateScheduleBody(BaseModel):
     enabled: bool = True
     timezone: str = "UTC"
     max_runs: int | None = None
+    catchup_window_seconds: float = DEFAULT_CATCHUP_WINDOW_SECONDS
     # Selections, not authority: the create route admits them through the
     # canonical Workspace/Project service before anything is stored.
     workspace_id: str = ""
@@ -164,6 +251,7 @@ class CreateScheduleBody(BaseModel):
 
     _tz = field_validator("timezone")(_check_timezone)
     _bound = field_validator("max_runs")(_check_max_runs)
+    _window = field_validator("catchup_window_seconds")(_check_catchup_window)
 
 
 @router.post("", response_model=Schedule, status_code=201)
@@ -176,6 +264,9 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
     except DagWorkspaceSelectionError as exc:
         raise HTTPException(status_code=403, detail=_SCOPE_REFUSED) from exc
     await _require_writer(actor, scope.workspace_id)
+    # The floor is a create-time rule too (#1200): a busy-loop recurrence is
+    # refused before any row exists, exactly like an unreadable cron.
+    _require_supported_frequency(body.cron_expression, body.timezone)
     sid = str(uuid4())
     t = _now()
     schedule = Schedule(
@@ -190,13 +281,33 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
         enabled=body.enabled,
         timezone=body.timezone,
         max_runs=body.max_runs,
+        catchup_window_seconds=body.catchup_window_seconds,
         last_run=None,
         last_run_id=None,
         next_run=None,
         created_at=t,
         updated_at=t,
     )
-    stores.schedules[sid] = schedule
+    await _write_canonical(schedule)
+    try:
+        stores.schedules[sid] = schedule
+    except Exception:
+        # The canonical write above already committed (Codex, #1199): a
+        # failed second write must not leave an enabled canonical row behind
+        # that no Hive-keyed route can reach -- creation failed, so there is
+        # no Hive row for GET/PUT/DELETE to find it by, and startup backfill
+        # only ever adds rows, never removes one. Best-effort compensation;
+        # its own failure is logged and swallowed so the caller sees the real
+        # failure below, not this cleanup's.
+        from services.scheduler import delete_canonical_definition
+
+        try:
+            await delete_canonical_definition(sid)
+        except Exception:
+            logger.warning(
+                "Failed to compensate canonical schedule %s after a failed Hive write", sid
+            )
+        raise
     return schedule
 
 
@@ -218,26 +329,61 @@ class UpdateScheduleBody(BaseModel):
     enabled: bool | None = None
     timezone: str | None = None
     max_runs: int | None = None
+    catchup_window_seconds: float | None = None
 
     _tz = field_validator("timezone")(_check_timezone)
     _bound = field_validator("max_runs")(_check_max_runs)
+    _window = field_validator("catchup_window_seconds")(_check_catchup_window)
 
 
 @router.put("/{schedule_id}", response_model=Schedule)
 async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: Request) -> Schedule:
-    schedule = await _writable_schedule(request, schedule_id)
+    await _writable_schedule(request, schedule_id)
+    from services.scheduler import definition_lock
+
     updates = body.model_dump(exclude_none=True)
-    t = _now()
-    updates["updated_at"] = t
-    schedule = schedule.model_copy(update=updates)
-    stores.schedules[schedule_id] = schedule
-    return schedule
+    async with definition_lock(schedule_id):
+        current = stores.schedules.get(schedule_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        # The floor applies to the *effective* recurrence (#1200): a request
+        # that touches the recurrence — cron or zone, either of which can
+        # change when fires land — must bring it up to the floor, while one
+        # that edits only a name (or any other field) leaves a schedule filed
+        # before the floor existed exactly as it is. Refusing the unrelated
+        # edit would strand the row: its owner could not rename it without
+        # first recreating it, which is enforcement turning into bricking.
+        if "cron_expression" in updates or "timezone" in updates:
+            _require_supported_frequency(
+                str(updates.get("cron_expression", current.cron_expression)),
+                str(updates.get("timezone", current.timezone)),
+            )
+        updates["updated_at"] = _now()
+        await _write_canonical(current.model_copy(update=updates))
+        # Re-read after the await: a tick may have projected newer cursors.
+        latest = stores.schedules.get(schedule_id) or current
+        updated: Schedule = latest.model_copy(update=updates)
+        stores.schedules[schedule_id] = updated
+    return updated
+
+
+async def _delete_canonical(schedule_id: str) -> None:
+    from services.scheduler import ScheduleAdmissionUnavailable, delete_canonical_definition
+
+    try:
+        await delete_canonical_definition(schedule_id)
+    except ScheduleAdmissionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
     await _writable_schedule(request, schedule_id, require_active=False)
-    stores.schedules.pop(schedule_id, None)
+    from services.scheduler import definition_lock
+
+    async with definition_lock(schedule_id):
+        await _delete_canonical(schedule_id)
+        stores.schedules.pop(schedule_id, None)
 
 
 class ManualFireBody(BaseModel):

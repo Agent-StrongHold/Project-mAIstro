@@ -24,6 +24,7 @@ from routes import (
     attention,
     audit,
     auth,
+    backlog,
     capabilities,
     chat,
     cli,
@@ -325,6 +326,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/v1/agents")
     app.include_router(program.router, prefix="/v1/program")
     app.include_router(work_items.router, prefix="/v1/work-items")
+    app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
     app.include_router(attention.router, prefix="/v1/workspaces")
     app.include_router(mcp.router, prefix="/v1/mcp")
@@ -375,7 +377,10 @@ def create_app() -> FastAPI:
 
         static_root = STATIC_DIR.resolve()
 
-        @app.get("/{full_path:path}")
+        # Out of the schema: it is not an API, and listing it would make the
+        # OpenAPI document (and `frontend/src/api/types.gen.ts`) depend on
+        # whether the frontend happens to be built.
+        @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str):
             # Do not return the SPA shell for unknown API paths (avoids JSON parse errors in the UI).
             if full_path.startswith("v1/"):

@@ -38,9 +38,12 @@ def _reset_singleton():
     import services.engine as e
 
     prev = e._singleton
+    prev_failed = e._failed_startup
     e._singleton = None
+    e._failed_startup = None
     yield
     e._singleton = prev
+    e._failed_startup = prev_failed
 
 
 # --- TaskRecord properties ----------------------------------------------
@@ -273,6 +276,97 @@ async def test_start_in_demo_mode_uses_local_backend(
     assert type(svc._backend).__name__ == "LocalTaskBackend"
 
 
+async def test_demo_mode_task_backend_executes_through_the_governed_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Demo task execution crosses the bridge's canonical authority (#718).
+
+    A bare `run_task` executor left every demo task completion off the
+    Invocation/quota ledger while per-provider rows presented as complete.
+    The executor the backend installs must hand `run_task` the bridge's
+    governed egress and the deployment's Workspace, exactly as the
+    maistro-server `/tasks` worker does — the authority, not a per-caller
+    recording callback.
+    """
+    from services.engine import EngineService
+
+    class _Settings:
+        maistro_router_api_key = "router-key"
+        maistro_base_url = "http://localhost:8000"
+        hive_mode = "demo"
+        hive_default_workspace_id = "ws-hive"
+
+    sentinel_egress = object()
+
+    class _FakeBridge:
+        """Stands in for a started MaistroCoreBridge (an AgentPort)."""
+
+        container = object()
+        governed_egress = sentinel_egress
+
+        async def start(self, settings: Any) -> None:
+            del settings
+
+        async def route(
+            self,
+            messages: list[dict[str, Any]],
+            *,
+            session_id: str | None = None,
+            intent_hint: str = "",
+        ) -> dict[str, Any]:
+            del messages, session_id, intent_hint
+            return {"choices": []}
+
+    monkeypatch.setattr("adapters.maistro_core.MaistroCoreBridge", _FakeBridge, raising=True)
+
+    captured: dict[str, Any] = {}
+
+    class _Q:
+        def __init__(self, *, admitter: Any = None) -> None:
+            self.admitter = admitter
+
+    class _R:
+        def __init__(self, q: Any, executor: Any, attempts: Any = None) -> None:
+            captured["executor"] = executor
+
+        async def start(self) -> None:
+            pass
+
+    import types
+
+    queue_mod = types.ModuleType("maistro.tasks.queue")
+    queue_mod.TaskQueue = _Q  # type: ignore[attr-defined]
+    runner_mod = types.ModuleType("maistro.tasks.runner")
+    runner_mod.TaskRunner = _R  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "maistro.tasks.queue", queue_mod)
+    monkeypatch.setitem(sys.modules, "maistro.tasks.runner", runner_mod)
+
+    conductor_mod = types.ModuleType("maistro.agents.conductor")
+    run_task_calls: list[dict[str, Any]] = []
+
+    async def _capturing_run_task(task: Any, *args: Any, **kwargs: Any) -> Any:
+        del args
+        run_task_calls.append({"task": task, "kwargs": kwargs})
+        return "conductor-output"
+
+    conductor_mod.run_task = _capturing_run_task  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "maistro.agents.conductor", conductor_mod)
+
+    svc = EngineService()
+    await svc.start(_Settings())  # type: ignore[arg-type]
+    assert type(svc._backend).__name__ == "LocalTaskBackend"
+
+    task = SimpleNamespace(description="demo task")
+    result = await captured["executor"](task)
+    assert result == "conductor-output"
+    assert len(run_task_calls) == 1
+    assert run_task_calls[0]["task"] is task
+    assert run_task_calls[0]["kwargs"] == {
+        "governed_egress": sentinel_egress,
+        "workspace_id": "ws-hive",
+    }
+
+
 async def test_stop_with_no_backend_is_safe() -> None:
     from services.engine import EngineService
 
@@ -332,7 +426,9 @@ async def test_maistro_server_task_backend_submit_get_list_cancel(
 
     transport = httpx.MockTransport(_handler)
 
-    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key="k")
+    backend = MaistroServerTaskBackend(
+        base_url="http://maistro-server", api_key="k", delegation_key="test-delegation"
+    )
 
     _OrigAsyncClient = httpx.AsyncClient
     _OrigClient = httpx.Client
@@ -384,8 +480,34 @@ async def test_maistro_server_task_backend_get_missing_returns_none(
         ),
     )
 
-    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    backend = MaistroServerTaskBackend(
+        base_url="http://maistro-server", api_key=None, delegation_key="test-delegation"
+    )
     assert backend.get("missing") is None
+
+
+async def test_maistro_server_task_backend_get_async_maps_404_and_errors() -> None:
+    import httpx
+    from adapters.task_backend import MaistroServerTaskBackend
+
+    from maistro.http import override_transport
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404 if request.url.path == "/tasks/missing" else 500)
+
+    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    with override_transport(httpx.MockTransport(_handler)):
+        assert await backend.get_async("missing") is None
+        with pytest.raises(httpx.HTTPStatusError):
+            await backend.get_async("broken")
+
+
+async def test_maistro_server_task_backend_stop_without_sync_calls_is_safe() -> None:
+    from adapters.task_backend import MaistroServerTaskBackend
+
+    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    await backend.stop()
+    await backend.stop()
 
 
 # --- submit_task ---------------------------------------------------------
@@ -587,6 +709,32 @@ async def test_iter_task_events_yields_then_terminates() -> None:
     assert statuses == ["running", "completed"]
 
 
+async def test_iter_task_events_scoped_probe_is_awaited_and_fails_closed() -> None:
+    from services.engine import EngineService, TaskRecord
+
+    probed: list[tuple[str, Any]] = []
+
+    async def _events(tid: str) -> AsyncIterator[dict[str, Any]]:
+        yield {"id": tid, "status": "completed", "progress": 1.0, "current_step": "done"}
+
+    class _B:
+        def get(self, tid: str, *, user_id: Any = None) -> Any:
+            raise AssertionError("sync get must not run on the event loop")
+
+        async def get_async(self, tid: str, *, user_id: Any = None) -> Any:
+            probed.append((tid, user_id))
+            return TaskRecord(_fake_task(task_id=tid)) if user_id == "owner" else None
+
+        def iter_events(self, tid: str, *, user_id: Any = None) -> Any:
+            return _events(tid)
+
+    svc = EngineService()
+    svc._backend = _B()
+    assert [e["id"] async for e in svc.iter_task_events("t-1", user_id="owner")] == ["t-1"]
+    assert [e async for e in svc.iter_task_events("t-1", user_id="intruder")] == []
+    assert probed == [("t-1", "owner"), ("t-1", "intruder")]
+
+
 async def test_iter_task_events_returns_when_task_disappears() -> None:
     from services.engine import EngineService
 
@@ -658,3 +806,179 @@ def test_agent_port_exposes_the_bound_runtime() -> None:
     svc._agent_port = port
 
     assert svc.agent_port is port
+
+
+# --- principal-scoped engine operations (#1057) ---------------------------
+
+
+class _ScopedBackend:
+    """Records the owner every scoped call carries, like the real backends."""
+
+    def __init__(self, owner: str) -> None:
+        self.owner = owner
+        self.cancel_scoped_with: str | None = None
+        self.events_scoped_with: str | None = None
+
+    def get(self, task_id: str, *, user_id: str | None = None):
+        if user_id is not None and user_id != self.owner:
+            return None
+        return object()
+
+    async def get_async(self, task_id: str, *, user_id: str | None = None):
+        return self.get(task_id, user_id=user_id)
+
+    async def cancel(self, task_id: str, *, user_id: str | None = None) -> bool:
+        self.cancel_scoped_with = user_id
+        return True
+
+    def iter_events(self, task_id: str, *, user_id: str | None = None):
+        self.events_scoped_with = user_id
+        return iter([])
+
+
+async def test_cancel_task_refuses_a_task_owned_by_someone_else() -> None:
+    from services.engine import EngineService
+
+    backend = _ScopedBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    assert await service.cancel_task("t-1", user_id="bob") is False
+    assert backend.cancel_scoped_with is None
+
+
+async def test_cancel_task_preserves_the_caller_scope_on_the_backend() -> None:
+    from services.engine import EngineService
+
+    backend = _ScopedBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    assert await service.cancel_task("t-1", user_id="alice") is True
+    assert backend.cancel_scoped_with == "alice"
+
+
+async def test_cancel_task_probes_ownership_asynchronously_and_fails_closed() -> None:
+    """The cancel probe must be the async one (#1180): this coroutine runs on
+    the event loop (async `DELETE /v1/missions/{id}`), so the production
+    backend's sync `get` — a 30s-timeout httpx GET — would pin the loop."""
+    from services.engine import EngineService, TaskRecord
+
+    probed: list[tuple[str, Any]] = []
+
+    class _B:
+        def get(self, tid: str, *, user_id: Any = None) -> Any:
+            raise AssertionError("sync get must not run on the event loop")
+
+        async def get_async(self, tid: str, *, user_id: Any = None) -> Any:
+            probed.append((tid, user_id))
+            return TaskRecord(_fake_task(task_id=tid)) if user_id == "owner" else None
+
+        async def cancel(self, tid: str, *, user_id: Any = None) -> bool:
+            self.cancelled = (tid, user_id)
+            return True
+
+    backend = _B()
+    service = EngineService()
+    service._backend = backend
+
+    assert await service.cancel_task("t-1", user_id="intruder") is False
+    assert not hasattr(backend, "cancelled")
+    assert await service.cancel_task("t-1", user_id="owner") is True
+    assert backend.cancelled == ("t-1", "owner")
+    assert probed == [("t-1", "intruder"), ("t-1", "owner")]
+
+
+async def test_iter_task_events_yields_nothing_for_another_users_task() -> None:
+    from services.engine import EngineService
+
+    backend = _ScopedBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    events = [event async for event in service.iter_task_events("t-1", user_id="bob")]
+
+    assert events == []
+    assert backend.events_scoped_with is None
+
+
+def test_delete_task_refuses_another_users_task() -> None:
+    from services.engine import EngineService
+
+    class _RemovableBackend(_ScopedBackend):
+        def remove(self, task_id: str) -> bool:
+            self.removed = task_id
+            return True
+
+    backend = _RemovableBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    assert service.delete_task("t-1", user_id="bob") is False
+    assert not hasattr(backend, "removed")
+
+
+def test_delete_task_with_no_backend_is_false() -> None:
+    from services.engine import EngineService
+
+    service = EngineService()
+    service._backend = None
+
+    assert service.delete_task("t-1", user_id="alice") is False
+
+
+def test_delete_task_with_a_backend_that_cannot_remove_is_false() -> None:
+    from services.engine import EngineService
+
+    backend = _ScopedBackend(owner="alice")
+    service = EngineService()
+    service._backend = backend
+
+    assert service.delete_task("t-1", user_id="alice") is False
+
+
+async def _async_events():
+    yield {"step": 1}
+
+
+async def test_iter_task_events_without_a_scope_streams_the_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.engine import EngineService
+
+    class _EventBackend:
+        def __init__(self) -> None:
+            self.scoped_with: str | None = "unset"
+
+        def get(self, task_id: str, *, user_id: str | None = None):
+            return object()
+
+        def iter_events(self, task_id: str, *, user_id: str | None = None):
+            self.scoped_with = user_id
+            return _async_events()
+
+    backend = _EventBackend()
+    service = EngineService()
+    service._backend = backend
+
+    events = [event async for event in service.iter_task_events("t-1", user_id=None)]
+
+    assert events == [{"step": 1}]
+    assert backend.scoped_with is None
+
+
+async def test_local_task_backend_get_async_scopes_to_the_owner() -> None:
+    from adapters.task_backend import LocalTaskBackend
+
+    from maistro.tasks.models import TaskCreate
+
+    async def _executor(*_: Any, **__: Any) -> None:
+        return None
+
+    backend = LocalTaskBackend(executor=_executor)
+    rec = await backend.submit(TaskCreate(description="ship it"), user_id="owner")
+
+    got = await backend.get_async(rec.id, user_id="owner")
+    assert got is not None and got.id == rec.id
+    assert await backend.get_async(rec.id, user_id="intruder") is None
+    assert await backend.get_async("missing") is None

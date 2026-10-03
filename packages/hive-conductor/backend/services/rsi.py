@@ -2,16 +2,21 @@
 
 Two operator-facing modes (per the RSI production-readiness design):
 
-* **cleanup / improvement** (entry point A): drives ``LocalRsiLoop`` — clone a repo,
-  ratchet gate-passing improvements against the repo's own test command. This is the
-  proven, operator-run path.
+* **cleanup / improvement** (entry point A): drives the self-improvement loop
+  against a repo + test command. Since #509 this is *dispatched*: the whole
+  loop (agent, git, tests, coverage, fitness) runs inside an ephemeral runner
+  container (`services.rsi_container_dispatch`), because an in-process loop
+  executes candidate-authored code as this process (#305) — this service only
+  builds the launch argv, polls the mounted report directory, and relays the
+  container's exit code.
 * **greenfield exploration** (entry point B): drives ``RsiCycle`` — compete genomes
   against benchmarks (SWE-Bench Pro) in an Elo tournament, no repo test gate.
 
 Runs are on-demand (an operator starts one with a target + config), long-lived, and
 tracked here so the UI can poll status / cycles / promotions / exported patches.
 maistro-rsi is an optional dependency: if it isn't importable in this process the
-service reports ``available=False`` and the routes 503, so the rest of the app is
+service reports ``available=False`` (the greenfield path degrades; cleanup runs
+are gated on the container backend instead) so the rest of the app is
 unaffected (mirrors how ``services.evolution`` degrades).
 """
 
@@ -22,7 +27,10 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
+
+from services import rsi_container_dispatch as _dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +73,11 @@ class RunState:
     summary: str | None = None
     report_dir: str | None = None
     export_dir: str | None = None
+    #: Set once the run is dispatched (#509): the cleanup loop lives in an
+    #: ephemeral container, and cancellation must stop THAT, not just an
+    #: asyncio task. Surfaced in the API so an operator can find the same
+    #: container Docker sees (`docker ps --filter label=maistro.rsi.run-id`).
+    container_id: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -81,10 +94,16 @@ class RunState:
             "config": self.config,
             "report_dir": self.report_dir,
             "export_dir": self.export_dir,
+            "container_id": self.container_id,
         }
 
 
 class _RsiService:
+    #: How often a dispatched run's report directory is polled for progress.
+    #: A class attribute because tests shrink it; production polls on the
+    #: order of seconds, not the checkpoint cadence of the loop itself.
+    poll_interval_s: float = 5.0
+
     def __init__(self) -> None:
         self._runs: dict[str, RunState] = {}
 
@@ -102,6 +121,26 @@ class _RsiService:
         run = self._runs.get(run_id)
         if run is None or run.task is None or run.task.done():
             return False
+        # Stopping a dispatched run means stopping its container (#509) — a
+        # bounded `docker stop`, a different operation from cancelling the
+        # asyncio task with a different failure mode. Both happen: the
+        # container so the loop actually dies, the task so the service record
+        # settles without waiting for it.
+        if run.container_id:
+            try:
+                stopped = _dispatch.stop_container(run.container_id)
+            except Exception:
+                logger.warning(
+                    "rsi run %s: stopping container %s failed",
+                    run_id,
+                    run.container_id,
+                    exc_info=True,
+                )
+            else:
+                if not stopped:
+                    logger.info(
+                        "rsi run %s: container %s was already gone", run_id, run.container_id
+                    )
         run.task.cancel()
         run.status = "stopped"
         run.ended_at = _now()
@@ -126,6 +165,13 @@ class _RsiService:
         except asyncio.CancelledError:
             run.status = "stopped"
             raise
+        except _dispatch.DispatchError as exc:
+            run.status = "errored"
+            # Dispatch errors are composed server-side from exit codes and
+            # truncated docker stderr — no provider replies, no candidate
+            # output — so the operator-facing record can carry the reason.
+            run.last_error = str(exc)
+            logger.warning("rsi run %s failed: %s", run.run_id, exc, exc_info=True)
         except Exception as exc:
             run.status = "errored"
             # The run record is returned to the browser; the exception text
@@ -135,28 +181,18 @@ class _RsiService:
         finally:
             run.ended_at = _now()
 
-    # ── cleanup / improvement (LocalRsiLoop) ────────────────────────────────
+    # ── cleanup / improvement (contained dispatch, #509) ────────────────────────────────
     async def _drive_cleanup(self, run: RunState) -> None:
-        import tempfile
-        from pathlib import Path
+        """Run the cleanup loop inside an ephemeral container — never here.
 
-        from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop, make_builders_apply_patch
-
+        #305 closed this route because the in-process loop executes
+        candidate-authored code as the Conductor process. #509 re-opens it
+        with the loop dispatched the way `tools/run_rsi_isolated.sh` runs it:
+        agent, git, tests, coverage and the fitness gate all execute in the
+        runner container, and this process only builds the launch argv, polls
+        the mounted report directory, and relays the container's exit code.
+        """
         cfg = run.config
-        # The UI omits work_root/report_dir; LocalRsiLoop requires the first
-        # (Path(None) → TypeError before a single cycle) and silently skips
-        # checkpoints + promotion review records without the second — which
-        # left the patch-review page permanently empty. Allocate both the way
-        # the CLI path does.
-        # Derived, never taken from the request (#305). These are directories
-        # the loop writes to and, for the export child, deletes from; a caller
-        # who could name them could aim those writes at anything writable.
-        work_root = tempfile.mkdtemp(prefix=f"rsi-{run.run_id}-")
-        report_dir = str(Path(work_root) / "reports")
-        export_dir = str(Path(report_dir) / "export")
-        genome_models = [
-            m.strip() for m in (cfg.get("genome_models") or "").split(",") if m.strip()
-        ]
         # `test_argv` and `isolation` are resolved by routes/rsi.py against
         # services.rsi_execution_policy before they reach here, and both are
         # required (#305). Defaulting either would give an in-process caller a
@@ -172,56 +208,112 @@ class _RsiService:
                 f"an RSI run requires container isolation, not {isolation!r} — "
                 "candidate code does not execute on the host"
             )
-        lc = LocalRsiConfig(
-            repo_path=cfg["repo_path"],
-            # Kept only so logs and reports can name what ran; nothing executes
-            # it. `test_argv` is what the loop runs, without a shell.
-            test_command=" ".join(test_argv),
+
+        spec = _dispatch.build_spec(
+            run_id=run.run_id,
+            repo=Path(cfg["repo_path"]),
             test_argv=test_argv,
-            isolation=isolation,
-            work_root=work_root,
-            max_cycles=int(cfg.get("cycles", 3)),
+            cycles=int(cfg.get("cycles", 3)),
+            agent_turns=int(cfg.get("agent_turns", 6)),
             model=cfg.get("model"),
-            agent_turns_per_cycle=int(cfg.get("agent_turns", 6)),
             objective=cfg.get("objective") or "",
             targets=list(cfg.get("targets", []) or []),
             use_fitness=bool(cfg.get("fitness", False)),
             coverage_source=cfg.get("coverage_source") or ".",
             coverage_pytest_args=cfg.get("coverage_pytest_args") or "",
-            report_dir=report_dir,
-            export_patches=export_dir,
-            # Tournament settings: the UI shows working roster/scout controls,
-            # so not forwarding them meant every run silently executed with
-            # different settings than the operator chose.
-            genome_db=str(Path(work_root) / "population.db") if genome_models else None,
-            genome_models=genome_models,
-            roster_size=int(cfg.get("roster_size", 4) or 4),
             scout=bool(cfg.get("scout", False)),
+            genome_models=[
+                m.strip() for m in (cfg.get("genome_models") or "").split(",") if m.strip()
+            ],
+            roster_size=int(cfg.get("roster_size", 4) or 4),
         )
-        run.report_dir = lc.report_dir
-        run.export_dir = lc.export_patches
-        # `isolation` and `image` are load-bearing, not decoration: the factory
-        # defaults to "local" and builds a LocalWorktreeSandbox, so omitting
-        # them handed an HTTP-initiated run an agent that edits and executes on
-        # the host -- past the `isolation != "container"` refusal above, which
-        # only ever governed the loop's own sandbox (#305). An injected apply
-        # function wins over the one the loop would have built for itself, so
-        # this call site is the only place that decision is made.
-        apply_fn = make_builders_apply_patch(
-            objective=lc.objective or "",
-            model=lc.model,
-            max_agent_turns=lc.agent_turns_per_cycle,
-            isolation=lc.isolation,
-            image=lc.sandbox_image,
-        )
-        loop = LocalRsiLoop(lc, apply_patch=apply_fn)
-        # run() is synchronous: driven inline it would block the event loop for
-        # the whole multi-cycle run (status/stop unservable) and `await` on its
-        # dataclass result raised TypeError, marking every finished run errored.
-        result = await asyncio.to_thread(loop.run)
-        run.cycles = getattr(result, "cycles_run", 0) or len(getattr(result, "cycles", []) or [])
-        run.promotions = getattr(result, "promotions", 0)
-        run.summary = result.summary() if hasattr(result, "summary") else None
+        # Derived from the run id under the server's working root (#305), and
+        # the same directory the container writes reports into — the channel
+        # through which all progress crosses back to the host.
+        run.report_dir = str(spec.report_dir)
+        run.export_dir = str(spec.report_dir / "export")
+
+        # The launch runs in a thread the event loop can only abandon, not
+        # interrupt, so a stop that races this window would see no
+        # container_id and leave whatever `docker run` starts unowned. Keep the
+        # future alive through cancellation (shield) so the cleanup below can
+        # wait out the bounded launch and stop the container it produced.
+        launch_task: asyncio.Task[str] | None = None
+        container_id: str | None = None
+        try:
+            launch_task = asyncio.ensure_future(asyncio.to_thread(_dispatch.launch, spec))
+            container_id = await asyncio.shield(launch_task)
+            run.container_id = container_id
+            logger.info(
+                "rsi run %s dispatched into container %s (%s)",
+                run.run_id,
+                container_id,
+                _dispatch.describe(spec),
+            )
+            exit_code = await self._await_container(run, spec.report_dir, container_id)
+        except asyncio.CancelledError:
+            # The task was cancelled without stop_run having a container to
+            # stop: stop here too, so no dispatched run outlives its service
+            # record by accident. stop_run stops the container and marks the
+            # record before cancelling, so its path (cancel during the wait,
+            # container_id already set) skips the stop below — one bounded
+            # stop, not a second one racing the first. Best-effort — a failure
+            # to stop must not mask the cancellation itself.
+            stop_id = container_id if run.status != "stopped" else None
+            if container_id is None and launch_task is not None:
+                # Cancelled mid-launch: the worker thread outlives the cancel
+                # and may still start the container, and stop_run saw no
+                # container_id — nothing else will stop it. Wait out the
+                # bounded launch and stop what it actually started.
+                try:
+                    container_id = await asyncio.shield(launch_task)
+                except Exception:
+                    container_id = None
+                if container_id:
+                    run.container_id = container_id
+                    stop_id = container_id
+            if stop_id:
+                try:
+                    await asyncio.to_thread(_dispatch.stop_container, stop_id)
+                except Exception:
+                    logger.warning(
+                        "rsi run %s: container %s survived cancellation",
+                        run.run_id,
+                        stop_id,
+                        exc_info=True,
+                    )
+            raise
+        if exit_code != 0:
+            raise _dispatch.DispatchError(
+                f"the runner container exited with code {exit_code} — "
+                f"see its logs: docker logs rsi-run-{run.run_id}"
+            )
+        counts = await asyncio.to_thread(_dispatch.poll_reports, spec.report_dir)
+        run.cycles = counts.get("cycles_run", run.cycles)
+        run.promotions = counts.get("promotions", run.promotions)
+        run.summary = await asyncio.to_thread(_dispatch.final_summary, spec.report_dir)
+
+    async def _await_container(self, run: RunState, report_dir: Path, container_id: str) -> int:
+        """Wait out the container, polling the mounted reports for progress.
+
+        `docker wait` is a blocking call, so it runs in a thread; the polling
+        keeps `cycles`/`promotions` live for the UI while the loop works. If
+        the backend loses the container — daemon restart, `--rm` race — the
+        wait raises and the run is reported errored rather than left running
+        forever against a container that no longer exists.
+        """
+        wait_task = asyncio.ensure_future(asyncio.to_thread(_dispatch.wait, container_id))
+        try:
+            while not wait_task.done():
+                counts = await asyncio.to_thread(_dispatch.poll_reports, report_dir)
+                if counts:
+                    run.cycles = counts.get("cycles_run", run.cycles)
+                    run.promotions = counts.get("promotions", run.promotions)
+                await asyncio.sleep(self.poll_interval_s)
+            return await wait_task
+        except BaseException:
+            wait_task.cancel()
+            raise
 
     # ── greenfield exploration (RsiCycle / benchmark tournament) ────────────
     async def _drive_greenfield(self, run: RunState) -> None:

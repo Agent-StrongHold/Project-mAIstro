@@ -60,6 +60,35 @@ The escape hatch
 `# cross-package-imports: allow <reason>` on the import line or the line above.
 Mandatory reason, so the waiver is reviewable in the diff.
 
+Flat backend modules (P0.6, #1046)
+----------------------------------
+The same resolver is only as good as the names it can tell apart, and the app
+backends make that harder: `packages/hive-conductor/backend/` runs with the
+backend directory itself on `sys.path`, so `config`, `main`, `stores` are
+top-level module names that collide with any other tree doing the same, and the
+Turing backend's suite can never share a process with the Conductor's. Which
+package the Conductor backend becomes is prerequisite B of the Workspace
+cutover plan; until it is decided, this gate forbids growing the problem.
+
+Directly under `packages/*/backend/`, an entry is **flat** when it is
+
+- a `.py` module and `backend/` has no `__init__.py` (so it imports as a
+  top-level name), or
+- a directory holding Python modules with no `__init__.py` of its own (a
+  package-less bag of modules).
+
+A new package (a directory with `__init__.py`) passes: that is how the code is
+meant to move out. A new flat entry fails.
+
+The entries that were flat when this was written live in
+`TOLERATED_FLAT_BACKEND`, in this file, because this script already keeps its
+exceptions in code (the waiver comment above) rather than in a `quality/*.json`
+ledger. A frozen set in code cannot ratchet itself, so the check also fails on
+a **stale** entry -- one that is no longer flat, because it was deleted or made
+into a package. Removing one therefore forces its line out of the set in the
+same change, and the set can only shrink. Adding to it is a visible edit to a
+gate script in review, which is the whole of its protection.
+
 Usage
 -----
     python3 scripts/check-cross-package-imports.py
@@ -403,6 +432,76 @@ def source_files() -> list[Path]:
     return files
 
 
+#: Flat entries under `packages/*/backend/`, relative to `packages/`, measured
+#: when the P0.6 gate landed. May only shrink: `check_flat_backends` fails on an
+#: entry here that is no longer flat. Directories end in `/`.
+TOLERATED_FLAT_BACKEND = frozenset(
+    {
+        "hive-conductor/backend/config.py",
+        "hive-conductor/backend/logging_setup.py",
+        "hive-conductor/backend/main.py",
+        "hive-conductor/backend/settings_defaults.py",
+        "hive-conductor/backend/stores.py",
+        "hive-conductor/backend/tests/",
+    }
+)
+
+
+def _holds_python(directory: Path) -> bool:
+    return any(
+        not _SKIP_PARTS.intersection(path.relative_to(directory).parts)
+        for path in directory.rglob("*.py")
+    )
+
+
+def flat_backend_entries(packages: Path) -> set[str]:
+    """Every flat entry directly under `packages/*/backend/`, relative to `packages`.
+
+    A module is flat when `backend/` is not itself a package; a directory is
+    flat when it holds Python but no `__init__.py`. See the module docstring.
+    """
+    found: set[str] = set()
+    for backend in sorted(packages.glob("*/backend")):
+        if not backend.is_dir():
+            continue
+        backend_is_package = (backend / "__init__.py").is_file()
+        for entry in sorted(backend.iterdir()):
+            if entry.name in _SKIP_PARTS:
+                continue
+            rel = entry.relative_to(packages).as_posix()
+            if entry.is_file() and entry.suffix == ".py":
+                if not backend_is_package:
+                    found.add(rel)
+            elif entry.is_dir() and not (entry / "__init__.py").is_file() and _holds_python(entry):
+                found.add(f"{rel}/")
+    return found
+
+
+def check_flat_backends(packages: Path, tolerated: frozenset[str]) -> tuple[list[str], list[str]]:
+    """`(new, stale)`: flat entries not tolerated, and tolerated entries no longer flat."""
+    present = flat_backend_entries(packages)
+    return sorted(present - tolerated), sorted(tolerated - present)
+
+
+def _report_flat_backends(new: list[str], stale: list[str]) -> None:
+    if new:
+        print(f"FAIL: {len(new)} new flat module(s) under packages/*/backend/\n")
+        for entry in new:
+            print(f"  packages/{entry}")
+        print(
+            "\nNew backend code goes inside a package with an `__init__.py`, not as a\n"
+            "new top-level module: these names collide across backends (P0.6, #1046).\n"
+        )
+    if stale:
+        print(f"FAIL: {len(stale)} tolerated flat entr(y/ies) no longer flat\n")
+        for entry in stale:
+            print(f"  packages/{entry}")
+        print(
+            "\nDelete them from TOLERATED_FLAT_BACKEND in "
+            "scripts/check-cross-package-imports.py;\nthe set only shrinks.\n"
+        )
+
+
 def main() -> int:
     roots = source_roots()
     if not roots:
@@ -413,6 +512,7 @@ def main() -> int:
         sys.stderr.write("no first-party Python files found\n")
         return 1
 
+    status = 0
     findings = [f for path in files for f in scan(path, roots, REPO_ROOT)]
     if findings:
         print(f"FAIL: {len(findings)} cross-package import(s) name something that does not exist\n")
@@ -425,12 +525,23 @@ def main() -> int:
             "turns it into product behaviour. See #293.\n"
             "Waive with: # cross-package-imports: allow <reason>"
         )
-        return 1
+        status = 1
+    else:
+        print(
+            f"ok: {len(files)} file(s) import only modules and names that exist in "
+            f"{len(roots)} package(s)"
+        )
 
-    print(
-        f"ok: {len(files)} file(s) import only modules and names that exist in {len(roots)} package(s)"
-    )
-    return 0
+    new, stale = check_flat_backends(PACKAGES, TOLERATED_FLAT_BACKEND)
+    if new or stale:
+        _report_flat_backends(new, stale)
+        status = 1
+    else:
+        print(
+            f"ok: no new flat modules under packages/*/backend/ "
+            f"({len(TOLERATED_FLAT_BACKEND)} tolerated)"
+        )
+    return status
 
 
 if __name__ == "__main__":

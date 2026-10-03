@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,6 +18,14 @@ os.environ.setdefault("MAISTRO_DRY_RUN", "1")
 os.environ.setdefault("ALLOW_UNSAFE_RESOURCE_OVERRIDES", "true")
 os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "6000")
 os.environ.setdefault("RATE_LIMIT_BURST", "1000")
+
+# Pin the Rich/Click render width so CLI output assertions do not depend on the
+# developer's terminal. Rich resolves `COLUMNS` in `Console.__init__`, and the
+# CLI modules build their consoles at import time, so this has to be set here
+# (conftest is imported before any test module) and unconditionally -- an
+# inherited `COLUMNS` would otherwise silently re-flow tables and wrap paths.
+# 80 is what CI renders at, so local output matches CI's.
+os.environ["COLUMNS"] = "80"
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +53,13 @@ def _reset_singletons() -> Iterator[None]:
 
     tracing_module._langfuse = None
     tracing_module._langfuse_checked = False
+
+    # Process default quota ledger: container-creating tests register it via
+    # the composition root, and a leaked registration would route a later
+    # test's ungoverned-fallback evidence into an unrelated tracker (#718).
+    from maistro.quota.default_tracker import set_default_quota_tracker
+
+    set_default_quota_tracker(None)
 
     pass
 
@@ -106,6 +122,7 @@ def _reset_shared_http() -> Iterator[None]:
 #: discovered: truncating everything would take out the alembic version table
 #: and make a migrated database look unmigrated.
 _PG_SCRATCH_TABLES = (
+    "quota_invocation_evidence",
     "quota_usage_events",
     "quota_usage",
     "sessions",
@@ -123,6 +140,10 @@ _PG_SCRATCH_TABLES = (
     "security_violations",
     "security_strikes",
     "security_rate_limits",
+    # (#72) Signed elevation grants are security evidence with deterministic
+    # test principals; a leftover valid grant from a previous run would sit at
+    # the top of find_valid's id DESC ordering and answer for the wrong test.
+    "elevation_grants",
     "handler_invocations",
     "trigger_definitions",
     "event_log",
@@ -146,8 +167,8 @@ async def pg_pool():
     PostgreSQL parametrization. Skipping here would take the whole suite with it.
 
     Built directly rather than through `maistro.persistence.get_pool`, which is a
-    process singleton: one test's pool would outlive it and be handed to the
-    next, along with whatever event loop it was created on.
+    process singleton: one test's pool would outlive it and be handed to the next,
+    along with whatever event loop it was created on.
     """
     from maistro.testing.postgres import postgres_dsn
 
@@ -170,3 +191,96 @@ async def pg_pool():
         yield pool
     finally:
         await pool.close()
+
+
+@pytest.fixture(autouse=True)
+async def governed_pm_bindings() -> None:
+    """Supply explicit test Bindings for retained PM polling node tests."""
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import default_effect_context
+    from maistro.credentials.types import CredentialRecord
+
+    default_effect_context.cache_clear()
+    effects = default_effect_context()
+    definitions = (
+        (
+            "test-jira-binding",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-jira-cloud-binding",
+            "jira.search",
+            {
+                "base_url": "https://acme.atlassian.net",
+                "flavor": "cloud",
+                "email": "alice@example.com",
+            },
+            "jira",
+        ),
+        (
+            "test-jira-subtasks-binding",
+            "jira.subtasks",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-jira-cloud-subtasks-binding",
+            "jira.subtasks",
+            {
+                "base_url": "https://acme.atlassian.net",
+                "flavor": "cloud",
+                "email": "alice@example.com",
+            },
+            "jira",
+        ),
+        (
+            "test-jira-cloud-no-email-subtasks-binding",
+            "jira.subtasks",
+            {"base_url": "https://acme.atlassian.net", "flavor": "cloud"},
+            "jira",
+        ),
+        ("test-airtable-binding", "airtable.records", {}, "airtable"),
+        (
+            "test-seed-jira-binding",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-seed-jira-binding-2",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+    )
+    for binding_id, capability, config, provider in definitions:
+        workspace_id = "test-workspace" if binding_id.startswith("test-seed-jira-binding") else "w1"
+        project_id = (
+            "pm-proj-2"
+            if binding_id == "test-seed-jira-binding-2"
+            else "pm-proj-1"
+            if binding_id == "test-seed-jira-binding"
+            else "p1"
+        )
+        await effects.bindings.put(
+            Binding(
+                binding_id=binding_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                capability=capability,
+                config=config,
+                credential_refs=(f"{provider}-test-key",),
+                created_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+        effects.credentials.add(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            record=CredentialRecord(
+                key_id=f"{provider}-test-key",
+                provider=provider,
+                api_key=f"test-{provider}-secret",
+            ),
+        )

@@ -49,6 +49,7 @@ class _Conduit:
         return {"choices": [{"message": {"role": "assistant", "content": "hi"}}]}
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-3")
 async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     container = await _container()
     container.conduit = _Conduit()
@@ -243,6 +244,7 @@ async def test_the_chat_admitter_is_wired_by_the_container() -> None:
     assert container.chat_admitter.retained == 0
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-3")
 async def test_terminalized_concurrent_chat_burst_is_swept() -> None:
     """The bound still holds when no later admission arrives to sweep."""
     container = await _container()
@@ -640,6 +642,29 @@ async def test_stranded_running_admission_with_no_noderun_is_cancelled() -> None
     assert current is not None
     assert current.status is RunStatus.CANCELLED
     assert current.error == EXECUTION_NEVER_STARTED
+
+
+@pytest.mark.parametrize("stage", [RunStatus.CREATED, RunStatus.QUEUED])
+async def test_an_admission_stranded_before_running_is_cancelled(stage: RunStatus) -> None:
+    """A crash between `create_run` and the RUNNING write strands the Run
+    earlier, and it holds an active-root slot all the same (#1182)."""
+    container = await _container()
+    admitted = await container.chat_admitter.admit(  # type: ignore[union-attr]
+        [{"role": "user", "content": "hi"}], known_task_types=container.config.task_types
+    )
+    if stage is RunStatus.QUEUED:
+        await container.run_store.transition_run(admitted.run_id, RunStatus.QUEUED)
+
+    assert await container.recover_stranded_chat_admissions() == 0
+    recovered = await container.recover_stranded_chat_admissions(
+        now=datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    assert recovered == 1
+    current = await container.run_store.get_run(admitted.run_id)
+    assert current is not None
+    assert current.status is RunStatus.CANCELLED
+    assert current.error == ADMISSION_INCOMPLETE
 
 
 async def test_a_running_admission_still_within_its_grace_period_is_left_alone() -> None:

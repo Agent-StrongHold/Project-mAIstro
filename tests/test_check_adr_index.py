@@ -64,6 +64,14 @@ def test_every_indexed_adr_exists() -> None:
     assert structural == []
 
 
+def test_every_adr_in_the_corpus_is_indexed() -> None:
+    """Completeness gate for [engine-113]: no ADR file without an index row."""
+    _problems, structural = _gate().audit()
+    missing = [item for item in structural if "missing from the index" in item]
+
+    assert missing == []
+
+
 # --- mutate the index --------------------------------------------------------
 
 
@@ -175,10 +183,10 @@ def test_fix_leaves_the_reviewed_columns_alone(sandbox) -> None:
         if (m := row.match(line))
     }
     assert before == after
-    # 83 base rows + ADR-102 (this branch) + ADR-091626-ba4f + ADR-091726-7c2a
-    # + ADR-092326-97c4 + ADR-092526-4391 + ADR-092526-c41d... (develop merge):
-    # counted from the merged corpus, not asserted from either side alone.
-    assert len(after) == 89
+    # Row preservation, not a pinned corpus size: the corpus grows with every
+    # new ADR, and `before == after` already proves the reviewed columns
+    # survived; the count asserts no row vanished in the rewrite.
+    assert len(after) == len(before)
 
 
 def test_fix_is_idempotent(sandbox) -> None:
