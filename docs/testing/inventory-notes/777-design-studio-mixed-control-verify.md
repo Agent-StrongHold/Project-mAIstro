@@ -5992,3 +5992,62 @@ Sole blocker is unchanged: #804/#805/#806 persistent Goal reconciliation
 does not exist on origin/develop or at this head, and #777's stop condition
 forbids building a Design-Studio-private reconciler/Goal owner to fake it.
 Verdict: **BLOCKED**, dependency-blocking.
+
+## Round 87 — repair round at 7b1ab2600 (develop sync 4fd7801fb → cf4a562b6, base cf4a562b6)
+
+This round's driver provided **no check-*.log files** (job dir contains only
+events.jsonl / manifest.json / prompt.txt / state.json), so the battery was
+re-executed fresh by the worker. The incoming "BLOCKED" block was **not a
+develop sync conflict**, but origin/develop had advanced by 2 commits since
+round 86, so the sync was performed.
+
+### Develop sync
+
+- `git fetch origin`: origin/develop advanced `4fd7801fb` → `cf4a562b6`
+  (`a80dcaba5` EPIC M4-C evolve population search #1739; `cf4a562b6` #1829
+  governed model tool-choice preservation #1875). Neither touches #777
+  surfaces and neither lands #804 Goal reconciliation.
+- Merged conflict-free at `7b1ab2600`
+  (`git merge --no-edit origin/develop`; working tree clean).
+- `quality/` integrity: `git diff HEAD^1 HEAD --numstat -- quality/` → **0
+  rows changed by the merge**; `git diff --numstat origin/develop --
+  quality/` → **0** (branch ledger byte-identical to develop; no row loss).
+
+### Validation battery (worker-executed at 7b1ab2600)
+
+- `uv run ruff check .` → EXIT 0, All checks passed!
+- `uv run ruff format --check .` → EXIT 0.
+- Vulture CI-exact arguments
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) → **EXIT 0**, 1355 = 1355 identities, base
+  cf4a562b65e, candidate 7b1ab26009f8. No ledger amendment (not an
+  exact-debt-ledger repair round; develop's tool-choice commit brought its
+  own green state).
+- Merged-code tests: `packages/maistro-core/tests/capabilities/test_governed_model_tool_choice.py`
+  → **15 passed**; `packages/maistro-evolve/tests` → **920 passed, 6
+  skipped**; `packages/maistro-rsi/tests` → **858 passed**.
+- Lane seams: `packages/maistro-design/tests` → **540 passed, 1 skipped**;
+  working_graph + no-second-design-product + #1336 public cancellation
+  fence → **52 passed**; hive backend workspace-agent-identity +
+  brief-interview + design-scope + design-service-startup → **75 passed**.
+- Gates: check-suite-inventory, check-backlog-consistency,
+  check-doc-links, check-cross-package-imports, verify-monorepo-layout →
+  all **EXIT 0** (layout gate re-run with `bash` after a bad `uv run python`
+  invocation — script is shell, not Python).
+
+### Blocker re-verification at 7b1ab2600
+
+- `grep -rnil GoalReconcil packages/*/src` → **exit 1** (still absent at
+  this head AND on origin/develop cf4a562b6).
+- `design_service.py` / `routes/design.py` consumption greps
+  (workspace_agent|CreativeBrief|GoalRevision) → **exit 1, 0 tokens**.
+- Landed dependency seams still present: #53
+  `backend/services/workspace_agent.py`; #458
+  `maistro/interop/contract.py`; #774/#775/#776 as recorded in round 86.
+
+### Verdict — unchanged
+
+Sole blocker is unchanged and external to this lane: #804/#805/#806
+persistent Goal reconciliation does not exist on origin/develop, and #777's
+stop condition forbids fabricating a Design-Studio-private reconciler/Goal
+owner. Verdict: **BLOCKED**, dependency-blocking.
