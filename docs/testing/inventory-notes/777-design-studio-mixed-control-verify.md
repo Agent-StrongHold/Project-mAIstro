@@ -5750,3 +5750,96 @@ Goal owner, or Agent runtime. The #776 Workspace-retrieval dependency and the
 #780 artifact-state dependency are now landed upstream, so the remaining
 blockers are exactly **#458, #804/#805/#806, #53**. Verdict: **BLOCKED**,
 dependency-blocking.
+
+## Round 84 (job d64fd488b009477ea552ab0011331aa9, head a27d5b303 + develop merge 55a647059)
+
+Context: prior job a899ac7055 died on a provider timeout before executing any
+check (`failure_kind: provider_error`, `checks: []`, empty report) — tree was
+clean at a27d5b303, nothing to salvage. `git fetch origin`: origin/develop
+advanced eb36d8061 → 55a647059 (one test-only commit: #1336 public runtime
+cancellation fence, PR #1876 — docs/adr + `tests/runtime/
+test_public_cancellation_fence.py`, 4 passed). Merged conflict-free; post-merge
+`git diff --numstat origin/develop -- quality/` is empty (ledgers
+byte-identical; vulture multiset 4 rows both sides).
+
+### Correction of Round 83's blocker list: 3 → 1
+
+Round 83 declared "remaining blockers exactly #458, #804/#805/#806, #53".
+Fresh, correctly-scoped inspection at this head shows two of those three had
+already landed at Round 83's own base (eb36d8061) — Round 83's greps scanned
+`packages/*/src` only, which cannot see `packages/hive-conductor/backend/`
+(hive has no `src/`), and dismissed #458 as "declared, not implemented":
+
+- **#53 persistent Workspace Agent front door: LANDED** (since develop 3054d5d28,
+  PR #1555, well before Round 83). `packages/hive-conductor/backend/services/
+  workspace_agent.py` — one stable `workspace-agent:`-namespaced Agent row per
+  Workspace (ADR-092326-7ed7), `resolve_workspace_agent`, persona swap,
+  conflict detection; consumed by `routes/agents.py` and `routes/workspaces.py`;
+  the Round-83 note's own earlier section already recorded it as "exists and
+  green", contradicting its Round-83 bullet.
+- **#458 canonical Goal seam: LANDED as the executable interop ontology**
+  (develop 0c4de536b, PR #997). `maistro/interop/contract.py` is
+  "Executable cross-product interoperability ontology (#458)" — `ConceptSpec`
+  validation with required `goal_id` / positive-integer `goal_revision`
+  fields, `validate_reference_set`, pinned `design_studio`/`workspace_agent`
+  as M3 consumers. What #458 does *not* yet include is a Goal-row store/writer
+  (see below); the brief interview's commit path still writes nothing
+  (`brief_chat.py`: "the Goal and CreativeBrief writers are #458 and #774, and
+  this draft is what they will consume" — stale w.r.t. #774, see next).
+- **#774 CreativeBrief: LANDED** (develop 33bcd3ce2, PR #1657) —
+  `maistro_design/brief.py` versioned-on-lineage CreativeBrief bound to one
+  canonical Goal revision with `BriefReference` persona/design-system
+  references, structural Workspace-scope rejection, `brief_store.py`
+  persistence (alembic `050_design_creative_briefs.py`), tests
+  `test_creative_brief*.py` (goal_revision=3 + persona-1 + design_system
+  binding asserted).
+- **#775 creative Graph: LANDED** — `maistro_design/creative_graph.py` +
+  `creative_nodes.py`: `plan_creative_graph` builds a canonical GraphTemplate
+  instance, `run_creative_graph` launches through the canonical run machinery
+  and stamps `goal_run_evidence` provenance (goal_id, goal_revision, brief_id,
+  goal_owner_agent_id, goal_delegation_ref); `dag_run_inspection.py` in hive
+  reads that provenance back. No private engine.
+
+### Remaining blocker: #804/#805/#806 persistent Goal reconciliation — still absent
+
+- `grep -rli GoalReconcil packages/*/src --include='*.py'` → **empty**.
+- `maistro/runs/reconciliation.py` is Attempt-lifecycle crash recovery only
+  (`container.py:1265` "Replay reconciliation for terminal Attempts a crash
+  interrupted (#804)") — not Goal reconciliation.
+- `CampaignSelector.eligible_items/select_next` are contract-first surfaces,
+  vulture-whitelisted as "public face (#804 ...) — consumers live outside this
+  scan until those issues land".
+- `backlog_history/__init__.py` names #804/#805/#806 as *future consumers*.
+- No delegation / ownership-transfer / Subgoal-reclaim implementation exists
+  anywhere; `design_service.py` and `routes/design.py` still carry **0**
+  tokens of workspace_agent/CreativeBrief/GoalRevision/reconcil/delegat/subgoal;
+  `maistro/memory/working_graph/` (#776) has zero hive-backend consumers;
+  e2e specs remain keyboard/truthfulness only (no mixed-control spec).
+
+### Validation battery (worker-executed, fresh, at merge head)
+
+- `uv run ruff check .` → All checks passed!; `uv run ruff format --check .`
+  → 2838 files already formatted.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → **EXIT=0**, 1359 = 1359.
+  No CI-gate repair, no ledger amendment.
+- mypy (six documented roots) → Success: no issues found in 767 source files.
+- Gates: check-ac-state, check-agent-store-writes, check-backlog-consistency,
+  check-contract-markers, check-convergence-matrix, check-execution-lifecycles,
+  check-doc-links, check-release-consistency → all **exit 0**.
+- `uv run pytest` working_graph + ontology + rubric + migration-parity →
+  **137 passed, 8 skipped**; `packages/maistro-design/tests` → **540 passed,
+  1 skipped**; `packages/hive-conductor/backend/tests -k 'design or
+  working_graph or rubric'` → **111 passed**; full hive backend →
+  **3293 passed, 6 skipped**; merged #1336 fence test → **4 passed**.
+
+### Acceptance — unchanged verdict, corrected blocker set
+
+Library-level foundations for criteria 2 (Goal-revision-bound CreativeBrief
+with Persona/Design-System references) are now provable via the landed #458
+ontology + #774 brief contract and its tests; criteria 1, 3–13 remain unmet
+at product level because #804/#805/#806 Goal reconciliation does not exist to
+consume and the stop condition forbids a Design-Studio-private reconciler,
+Goal owner, or Agent runtime. Remaining blocker is exactly **#804/#805/#806**
+(plus the product wiring and E2Es that consume it). Verdict: **BLOCKED**,
+dependency-blocking.
