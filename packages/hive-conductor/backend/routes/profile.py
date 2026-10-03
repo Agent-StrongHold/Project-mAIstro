@@ -23,6 +23,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from services.profile_store import ProfilePersistenceError, ProfileSchemaError
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["profile"])
 
@@ -36,11 +37,7 @@ def _user_id(request: Request) -> str:
     user-identifying content. `/v1/profile` is behind the auth middleware, so a
     request with no principal at all is already 401; this covers the rest.
     """
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user_id
+    return require_actor_id(request)
 
 
 class ProfileBody(BaseModel):
