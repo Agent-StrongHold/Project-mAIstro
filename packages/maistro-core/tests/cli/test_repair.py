@@ -15,7 +15,6 @@ import aiosqlite
 import pytest
 
 from maistro.cli._repair import _open_store, _report, attempt_outputs
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.graph import Graph, Node
 from maistro.runs.model import (
     AcceptedNodeOutcome,
@@ -24,6 +23,7 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.repair import Disposition, Finding, Survey
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
