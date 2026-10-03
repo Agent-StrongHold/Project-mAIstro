@@ -109,3 +109,71 @@ async def test_a_non_member_is_denied_like_a_missing_goal(world: _World) -> None
 @pytest.mark.parametrize("principal", ["", "   "])
 async def test_a_blank_principal_is_denied(world: _World, principal: str) -> None:
     await _denials(world.service, world.a, principal)
+
+
+async def test_a_member_with_no_membership_still_gets_goalnotvisible_for_a_missing_id(
+    world: _World,
+) -> None:
+    """A member in good standing, but the id itself does not exist."""
+    with pytest.raises(GoalNotVisible):
+        await world.service.get(world.a.workspace_id, "missing-goal", principal_id="alice")
+
+
+async def test_an_administrator_can_revise_transition_and_reassign(world: _World) -> None:
+    goal = world.a
+    revised = await world.service.revise(
+        goal.workspace_id,
+        goal.goal_id,
+        expected_revision=1,
+        revision=GoalRevision(
+            goal_id=goal.goal_id,
+            goal_revision=2,
+            desired_state="ship the revised thing",
+            author_id="alice",
+        ),
+        principal_id="alice",
+    )
+    assert revised.current_revision == 2
+
+    transitioned = await world.service.transition(
+        goal.workspace_id,
+        goal.goal_id,
+        expected_state=GoalState.ACTIVE,
+        state=GoalState.SATISFIED,
+        principal_id="alice",
+    )
+    assert transitioned.state is GoalState.SATISFIED
+
+    other = world.b
+    reassigned = await world.service.reassign(
+        other.workspace_id,
+        other.goal_id,
+        expected_agent_id=other.owner_agent_id,
+        owner_agent_id="workspace-agent:2",
+        principal_id="bob",
+    )
+    assert reassigned.owner_agent_id == "workspace-agent:2"
+
+
+async def test_revision_resolves_one_historical_revision_or_says_not_visible(
+    world: _World,
+) -> None:
+    found = await world.service.revision(
+        world.a.workspace_id, world.a.goal_id, 1, principal_id="alice"
+    )
+    assert found.goal_revision == 1
+
+    with pytest.raises(GoalNotVisible):
+        await world.service.revision(world.a.workspace_id, world.a.goal_id, 99, principal_id="alice")
+
+
+async def test_active_for_agent_and_children_resolve_for_a_member(world: _World) -> None:
+    active = await world.service.active_for_agent(
+        world.a.workspace_id, world.a.owner_agent_id, principal_id="carol"
+    )
+    assert [g.goal_id for g in active] == [world.a.goal_id]
+
+    children = await world.service.children(
+        world.a.workspace_id, world.a.goal_id, principal_id="carol"
+    )
+    assert children == []
