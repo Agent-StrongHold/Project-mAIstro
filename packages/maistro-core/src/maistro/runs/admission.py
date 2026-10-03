@@ -96,6 +96,8 @@ async def admit_direct_work(
     provenance: dict[str, Any] | None = None,
     retention_expires_at: datetime | None = None,
     initial_status: RunStatus = RunStatus.CREATED,
+    goal_id: str | None = None,
+    goal_revision: int | None = None,
 ) -> Run:
     """Admit directly-submitted work and return its canonical Run.
 
@@ -124,6 +126,8 @@ async def admit_direct_work(
         provenance={**(provenance or {}), ADMISSION_SOURCE: source},
         retention_expires_at=retention_expires_at,
         initial_status=initial_status,
+        goal_id=goal_id,
+        goal_revision=goal_revision,
     )
 
 

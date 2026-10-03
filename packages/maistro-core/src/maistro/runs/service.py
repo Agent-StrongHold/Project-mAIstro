@@ -76,6 +76,8 @@ class RunExecutionService:
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         """Create one canonical logical Run from an immutable Graph snapshot."""
 
@@ -88,6 +90,8 @@ class RunExecutionService:
             actor_principal_id=actor_principal_id,
             provenance=provenance,
             initial_status=initial_status,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
 
     async def execute_node(

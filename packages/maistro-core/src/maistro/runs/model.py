@@ -284,6 +284,14 @@ class Run(BaseModel):
     retention_expires_at: datetime | None = None
     result: Any | None = None
     error: str | None = None
+    #: Desired-outcome provenance (#1572): the Goal this Run pursues and the
+    #: exact revision admission read. Bound once, at admission, by `RunStore`
+    #: -- no store method revises it after, so a historical Run keeps the
+    #: revision it ran against even after the Goal moves on. `None` for work
+    #: with no Goal behind it; a backlog Run or a bare chat turn is not
+    #: required to name one.
+    goal_id: str | None = None
+    goal_revision: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _validate_run(self) -> Run:
@@ -297,6 +305,10 @@ class Run(BaseModel):
             finished_at=self.finished_at,
             subject="Run",
         )
+        if (self.goal_id is None) != (self.goal_revision is None):
+            raise ValueError("goal_id and goal_revision must be set together, or neither")
+        if self.goal_id is not None:
+            _require_non_empty(self.goal_id, "goal_id")
         return self
 
     def _validate_scope_identity(self) -> None:

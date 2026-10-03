@@ -50,6 +50,11 @@ RUNTIME_STATE_FIELDS: frozenset[str] = frozenset(
         "resume_checkpoint_id",
         "accepted_outcome",
         "retention_expires_at",
+        # the desired-outcome identity one Run was admitted against (#1572):
+        # bound once, at admission, like actor_principal_id above. A template
+        # carrying it would bind every later instantiation to one Goal.
+        "goal_id",
+        "goal_revision",
     }
 )
 

@@ -462,6 +462,8 @@ class RunStore(Protocol):
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run: ...
 
     async def purge_expired_runs(
@@ -505,6 +507,8 @@ class RunStore(Protocol):
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> RunEffectClaim: ...
 
     async def find_occurrence_run(
@@ -817,6 +821,8 @@ class InMemoryRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -843,6 +849,8 @@ class InMemoryRunStore:
             actor_principal_id=actor_principal_id,
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         run = admit_in_state(run, initial_status)
         self._claim_occurrence(run)
@@ -1217,6 +1225,8 @@ class InMemoryRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> RunEffectClaim:
         """Atomically claim a logical effect in the reference store.
 
@@ -1248,6 +1258,8 @@ class InMemoryRunStore:
                 actor_principal_id=actor_principal_id,
                 provenance={**dict(provenance or {}), "effect_key": effect_key},
                 retention_expires_at=retention_expires_at,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
             ),
             initial_status,
         )
