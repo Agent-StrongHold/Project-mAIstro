@@ -111,32 +111,42 @@ class WorkspaceWorkingMemory:
 
     # -- the working-set derivation ----------------------------------------
 
+    def _folded_ids(self, ordered: list[WorkspaceObservation]) -> set[str]:
+        """Entry ids folded away by post-reset cycle summaries."""
+        floor = self._last_reset_seq or 0
+        folded: set[str] = set()
+        for entry in ordered:
+            if entry.kind is not ObservationKind.SUMMARY:
+                continue
+            if entry.seq is not None and entry.seq <= floor:
+                continue
+            folded.update(str(v) for v in entry.meta.get("folds", []))
+        return folded
+
+    def _superseded(self, entry: WorkspaceObservation, folded: set[str]) -> bool:
+        """True when a non-surviving entry was folded into a summary or
+        predates the last reset. Folding applies from the log's start (a
+        summary with no reset behind it still folds); the seq floor needs a
+        reset to exist at all."""
+        if entry.entry_id in folded:
+            return True
+        if self._last_reset_seq is None or entry.seq is None:
+            return False
+        return entry.seq <= self._last_reset_seq
+
     def _recompute(self) -> None:
         ordered = sorted(
             (e for e in self._entries.values() if e.seq is not None),
             key=lambda e: e.seq if e.seq is not None else 0,
         )
-        folded: set[str] = set()
-        for entry in ordered:
-            if entry.kind is not ObservationKind.SUMMARY:
-                continue
-            if entry.seq is not None and entry.seq <= (self._last_reset_seq or 0):
-                continue
-            folded.update(str(v) for v in entry.meta.get("folds", []))
+        folded = self._folded_ids(ordered)
         active: list[WorkspaceObservation] = []
         for entry in ordered:
             if entry.kind is ObservationKind.RESET:
                 continue
-            in_survival = entry.survive_reset or entry.entry_id in self._survival
-            if not in_survival:
-                if (
-                    self._last_reset_seq is not None
-                    and entry.seq is not None
-                    and entry.seq <= self._last_reset_seq
-                ):
-                    continue
-                if entry.entry_id in folded:
-                    continue
+            survives = entry.survive_reset or entry.entry_id in self._survival
+            if not survives and self._superseded(entry, folded):
+                continue
             active.append(entry)
         self._active = active
         self._dirty = False
@@ -178,21 +188,13 @@ class WorkspaceWorkingMemory:
         if entry is None:
             return []
         found: dict[str, WorkspaceObservation] = {}
-        if entry.result_ref is not None:
-            found.update(
-                {
-                    e.entry_id: e
-                    for e in self._entries.values()
-                    if e.result_ref == entry.result_ref and e.entry_id != entry_id
-                }
-            )
-        found.update(
-            {
-                e.entry_id: e
-                for e in self._entries.values()
-                if e.digest == entry.digest and e.entry_id != entry_id and entry.digest
-            }
-        )
+        for candidate in self._entries.values():
+            if candidate.entry_id == entry_id:
+                continue
+            same_result = entry.result_ref is not None and candidate.result_ref == entry.result_ref
+            same_claim = bool(entry.digest) and candidate.digest == entry.digest
+            if same_result or same_claim:
+                found[candidate.entry_id] = candidate
         return sorted(found.values(), key=lambda e: e.seq if e.seq is not None else 0)
 
     def stats(self) -> ProjectionStats:
@@ -239,6 +241,65 @@ class WorkingMemoryManager:
         self.max_projections = max_projections
         self._projections: dict[str, WorkspaceWorkingMemory] = {}
 
+    async def _window_entries(
+        self,
+        projection: WorkspaceWorkingMemory,
+        workspace_id: str,
+        reset_marker: WorkspaceObservation | None,
+    ) -> list[WorkspaceObservation]:
+        """The post-reset window with the reset's survival set folded in.
+
+        Survival-set entries may sit anywhere in the log — after the
+        pagination point they arrive with the window above; before it
+        they are read explicitly: the ones the reset named by id, and
+        every entry flagged ``survive_reset``, which survives from any
+        position. Without the flag read a pre-reset pinned entry would
+        vanish on rebuild, breaking rebuild equivalence.
+        """
+        after = reset_marker.seq if reset_marker is not None and reset_marker.seq else 0
+        entries = await self.store.list_entries(workspace_id, after_seq=after)
+        if reset_marker is None:
+            return entries
+        projection.apply(reset_marker)
+        window_ids = {e.entry_id for e in entries}
+        pinned = await self.store.list_entries(workspace_id, survive_reset=True)
+        for entry in pinned:
+            if entry.entry_id in window_ids:
+                continue
+            entries.append(entry)
+            window_ids.add(entry.entry_id)
+        entries.extend(await self._named_survivors(workspace_id, reset_marker, window_ids))
+        return entries
+
+    async def _named_survivors(
+        self,
+        workspace_id: str,
+        reset_marker: WorkspaceObservation,
+        window_ids: set[str],
+    ) -> list[WorkspaceObservation]:
+        """The reset's named survival entries the window does not already hold."""
+        found: list[WorkspaceObservation] = []
+        for entry_id in (str(v) for v in reset_marker.meta.get("survival", [])):
+            if entry_id in window_ids:
+                continue
+            survivor = await self.store.get_entry(workspace_id, entry_id)
+            if survivor is not None:
+                found.append(survivor)
+                window_ids.add(entry_id)
+        return found
+
+    async def _attach_referenced_results(
+        self,
+        projection: WorkspaceWorkingMemory,
+        workspace_id: str,
+        window: list[WorkspaceObservation],
+    ) -> None:
+        """Materialise the full results the working set's entries reference."""
+        for ref in {e.result_ref for e in window if e.result_ref}:
+            result = await self.store.get_result(workspace_id, ref)
+            if result is not None:
+                projection.attach_result(result)
+
     async def projection(self, workspace_id: str) -> WorkspaceWorkingMemory:
         """Return the Workspace's projection, hydrating it on first use.
 
@@ -252,38 +313,11 @@ class WorkingMemoryManager:
             return existing
         projection = WorkspaceWorkingMemory(workspace_id)
         reset_marker = await self.store.latest_entry(workspace_id, kinds=(ObservationKind.RESET,))
-        after = reset_marker.seq if reset_marker is not None and reset_marker.seq else 0
-        entries = await self.store.list_entries(workspace_id, after_seq=after)
-        if reset_marker is not None:
-            projection.apply(reset_marker)
-            # Survival-set entries may sit anywhere in the log — after the
-            # pagination point they arrive with the window above; before it
-            # they are read explicitly: the ones the reset named by id, and
-            # every entry flagged ``survive_reset``, which survives from any
-            # position. Without the flag read a pre-reset pinned entry would
-            # vanish on rebuild, breaking rebuild equivalence.
-            window_ids = {e.entry_id for e in entries}
-            pinned = await self.store.list_entries(workspace_id, survive_reset=True)
-            for entry in pinned:
-                if entry.entry_id not in window_ids:
-                    entries.append(entry)
-                    window_ids.add(entry.entry_id)
-            named = [str(v) for v in reset_marker.meta.get("survival", [])]
-            for entry_id in named:
-                if entry_id in window_ids:
-                    continue
-                survivor = await self.store.get_entry(workspace_id, entry_id)
-                if survivor is not None:
-                    entries.append(survivor)
-                    window_ids.add(entry_id)
-        entries = [e for e in entries if e.seq is not None]
-        entries.sort(key=lambda e: e.seq if e.seq is not None else 0)
-        projection.hydrate(entries)
-        refs = {e.result_ref for e in entries if e.result_ref}
-        for ref in refs:
-            result = await self.store.get_result(workspace_id, ref)
-            if result is not None:
-                projection.attach_result(result)
+        entries = await self._window_entries(projection, workspace_id, reset_marker)
+        window = [e for e in entries if e.seq is not None]
+        window.sort(key=lambda e: e.seq if e.seq is not None else 0)
+        projection.hydrate(window)
+        await self._attach_referenced_results(projection, workspace_id, window)
         self._projections[workspace_id] = projection
         self.evict()
         return projection

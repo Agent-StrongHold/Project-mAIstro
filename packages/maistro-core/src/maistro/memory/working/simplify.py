@@ -28,6 +28,29 @@ from maistro.memory.working.types import (
 )
 
 
+def _foldable(
+    projection: WorkspaceWorkingMemory,
+    cycle: int,
+    kinds: tuple[ObservationKind, ...] | None,
+) -> list[WorkspaceObservation]:
+    """The cycle's active entries a rolling summary may fold."""
+    return [
+        e
+        for e in projection.active_entries()
+        if e.cycle == cycle
+        and e.kind is not ObservationKind.SUMMARY
+        and (kinds is None or e.kind in kinds)
+    ]
+
+
+def _cycle_shape(active: list[WorkspaceObservation]) -> str:
+    """One-line census of what the cycle held, e.g. ``2 observation, 1 tool_result``."""
+    counts: dict[str, int] = {}
+    for entry in active:
+        counts[entry.kind.value] = counts.get(entry.kind.value, 0) + 1
+    return ", ".join(f"{n} {kind}" for kind, n in sorted(counts.items()))
+
+
 async def append_cycle_summary(
     store: WorkspaceLogStore,
     projection: WorkspaceWorkingMemory,
@@ -42,20 +65,10 @@ async def append_cycle_summary(
     active to fold — a policy that appends empty summaries would be spam the
     working set then has to fold itself.
     """
-    active = [
-        e
-        for e in projection.active_entries()
-        if e.cycle == cycle
-        and e.kind is not ObservationKind.SUMMARY
-        and (kinds is None or e.kind in kinds)
-    ]
+    active = _foldable(projection, cycle, kinds)
     if not active:
         return None
-    counts: dict[str, int] = {}
-    for entry in active:
-        counts[entry.kind.value] = counts.get(entry.kind.value, 0) + 1
-    shape = ", ".join(f"{n} {kind}" for kind, n in sorted(counts.items()))
-    lines = [f"cycle {cycle}: {shape}"]
+    lines = [f"cycle {cycle}: {_cycle_shape(active)}"]
     lines.extend(f"- {entry.text}" for entry in active)
     summary = summary_entry(
         workspace_id=projection.workspace_id,

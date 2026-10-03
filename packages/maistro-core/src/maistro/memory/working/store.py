@@ -27,7 +27,14 @@ from maistro.memory.working.types import (
 
 @runtime_checkable
 class WorkspaceLogStore(Protocol):
-    """Append-only per-Workspace observation log + addressable results."""
+    """Append-only per-Workspace observation log + addressable results.
+
+    M1 product-local projection: Workspace
+
+    The log is keyed by ``workspace_id`` but is not the canonical Workspace
+    store — ``maistro.workspaces`` owns that. This is the #301 observation
+    log, a domain store projected onto the Workspace axis.
+    """
 
     async def append(self, entry: WorkspaceObservation) -> WorkspaceObservation:
         """Append one entry, assigning its log position (``seq``).
@@ -100,6 +107,8 @@ class InMemoryWorkspaceLogStore:
     Every durable twin must agree with this class on ordering, seq
     assignment, result dedup and purge counts, which is why the conformance
     suite runs both legs over the same calls.
+
+    M1 product-local projection: Workspace
     """
 
     def __init__(self) -> None:

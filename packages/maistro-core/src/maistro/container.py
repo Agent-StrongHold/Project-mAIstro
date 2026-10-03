@@ -554,36 +554,40 @@ class Container:
                 self.pg_pool = None
                 self.holds_pg_pool = False
         if self.holds_db_pool:
-            # Four connections, one ownership decision (#327, #1199, #101): the
-            # session, schedule and history stores' connections were opened by
-            # the same `_wire_sqlite_backend` call, so the same flag governs
-            # all of them. A close that raises must not strand the others -- the pg
-            # block above exists because a shutdown that stops at the first
-            # failure leaves the rest unreleased -- and must not leave the
-            # container looking open, though `closed` is already True, so no
-            # retry re-enters here.
-            for connection in (
-                self.db_pool,
-                self.session_conn,
-                self.schedule_conn,
-                self.history_conn,
-            ):
-                if connection is None:
-                    continue
-                try:
-                    # Drains queued operations before releasing: writes the
-                    # stores already issued complete (aiosqlite, Connection.close).
-                    await connection.close()
-                except Exception:
-                    logger.exception("container: the SQLite connection did not close cleanly")
-            # Gone either way: aiosqlite's close() spends the connection even
-            # when it raises, so a field still naming it would advertise a
-            # connection the next user would find dead.
-            self.db_pool = None
-            self.session_conn = None
-            self.schedule_conn = None
-            self.history_conn = None
-            self.holds_db_pool = False
+            await self._close_owned_sqlite_connections()
+
+    async def _close_owned_sqlite_connections(self) -> None:
+        """Close the four SQLite connections this container opened.
+
+        Four connections, one ownership decision (#327, #1199, #101): the
+        session, schedule and history stores' connections were opened by
+        the same `_wire_sqlite_backend` call, so one flag governs all of
+        them. A close that raises must not strand the others, and must not
+        leave the container looking open (``closed`` is already True, so no
+        retry re-enters).
+        """
+        for connection in (
+            self.db_pool,
+            self.session_conn,
+            self.schedule_conn,
+            self.history_conn,
+        ):
+            if connection is None:
+                continue
+            try:
+                # Drains queued operations before releasing: writes the
+                # stores already issued complete (aiosqlite, Connection.close).
+                await connection.close()
+            except Exception:
+                logger.exception("container: the SQLite connection did not close cleanly")
+        # Gone either way: aiosqlite's close() spends the connection even
+        # when it raises, so a field still naming it would advertise a
+        # connection the next user would find dead.
+        self.db_pool = None
+        self.session_conn = None
+        self.schedule_conn = None
+        self.history_conn = None
+        self.holds_db_pool = False
 
     @staticmethod
     def _chat_actor_principal(auth: Any) -> str | None:

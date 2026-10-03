@@ -85,6 +85,58 @@ class WorkingMemoryRecall:
         # in the ADR: hydration selects, it does not materialise everything).
         self._store = store if store is not None else manager.store
 
+    @staticmethod
+    def _within_kinds(
+        entries: list[WorkspaceObservation],
+        kinds: tuple[ObservationKind, ...] | None,
+    ) -> list[WorkspaceObservation]:
+        """The working-set entries whose kind a query admits."""
+        if kinds is None:
+            return list(entries)
+        return [e for e in entries if e.kind in kinds]
+
+    @staticmethod
+    def _rank(
+        candidates: list[WorkspaceObservation],
+        query_terms: set[str],
+    ) -> list[RecallHit]:
+        """Score the working set against the query, newest-favored.
+
+        Recency tiebreaker: later log positions are worth more, and equal
+        scores break toward the newest observation.
+        """
+        scored: list[RecallHit] = []
+        total = max(len(candidates), 1)
+        for position, entry in enumerate(candidates):
+            score, matched = score_entry(entry, query_terms)
+            if query_terms and score == 0.0:
+                continue
+            score += 0.01 * (position / total)
+            scored.append(RecallHit(entry=entry, result=None, score=score, matched=matched))
+        scored.sort(
+            key=lambda hit: (hit.score, hit.entry.seq if hit.entry.seq else 0), reverse=True
+        )
+        return scored
+
+    async def _resolve_results(
+        self,
+        workspace_id: str,
+        projection: WorkspaceWorkingMemory,
+        hits: list[RecallHit],
+    ) -> list[RecallHit]:
+        """Attach full results, hydrating from the store when the projection
+        has not materialised the referenced payload."""
+        resolved: list[RecallHit] = []
+        for hit in hits:
+            ref = hit.entry.result_ref
+            result: WorkingResult | None = projection.result(ref) if ref else None
+            if result is None and ref:
+                result = await self._store.get_result(workspace_id, ref)
+            resolved.append(
+                RecallHit(entry=hit.entry, result=result, score=hit.score, matched=hit.matched)
+            )
+        return resolved
+
     async def recall(
         self,
         workspace_id: str,
@@ -106,21 +158,8 @@ class WorkingMemoryRecall:
         entries to their newest observation.
         """
         projection = await self._manager.projection(workspace_id)
-        candidates = [e for e in projection.active_entries() if kinds is None or e.kind in kinds]
-        query_terms = _terms(query)
-        scored: list[RecallHit] = []
-        total = max(len(candidates), 1)
-        for position, entry in enumerate(candidates):
-            score, matched = score_entry(entry, query_terms)
-            if query_terms and score == 0.0:
-                continue
-            # Recency tiebreaker: later log positions are worth more, and
-            # equal scores break toward the newest observation.
-            score += 0.01 * (position / total)
-            scored.append(RecallHit(entry=entry, result=None, score=score, matched=matched))
-        scored.sort(
-            key=lambda hit: (hit.score, hit.entry.seq if hit.entry.seq else 0), reverse=True
-        )
+        candidates = self._within_kinds(projection.active_entries(), kinds)
+        scored = self._rank(candidates, _terms(query))
 
         if lineage:
             scored = self._expand(projection, scored)
@@ -130,16 +169,7 @@ class WorkingMemoryRecall:
 
         trimmed = scored[:limit]
         if with_results:
-            resolved: list[RecallHit] = []
-            for hit in trimmed:
-                ref = hit.entry.result_ref
-                result: WorkingResult | None = projection.result(ref) if ref else None
-                if result is None and ref:
-                    result = await self._store.get_result(workspace_id, ref)
-                resolved.append(
-                    RecallHit(entry=hit.entry, result=result, score=hit.score, matched=hit.matched)
-                )
-            return resolved
+            return await self._resolve_results(workspace_id, projection, trimmed)
         return trimmed
 
     def _expand(

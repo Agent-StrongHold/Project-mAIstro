@@ -101,7 +101,10 @@ def _entry_from_row(row: Any) -> WorkspaceObservation:
 
 class SqliteWorkspaceLogStore:
     """The durable twin. Must agree with :class:`InMemoryWorkspaceLogStore`
-    on every rule the conformance suite exercises."""
+    on every rule the conformance suite exercises.
+
+    M1 product-local projection: Workspace
+    """
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn

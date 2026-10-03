@@ -78,6 +78,43 @@ def _pack_lines(lines: list[str], budget_tokens: int | None) -> list[str]:
     return kept
 
 
+def _pack_working_rest(
+    rest: list[WorkspaceObservation],
+    pinned_lines: list[str],
+    budget_tokens: int | None,
+) -> list[str]:
+    """The un-pinned tail, whole entries only, under the same budget.
+
+    Starts from what the pinned head already spent — the budget is shared,
+    and the survival entries the head rendered are never given back to pay
+    for the tail.
+    """
+    spent = (
+        1
+        + _estimate_tokens(_WORKING_HEADER)
+        + sum(_estimate_tokens(line) + 1 for line in pinned_lines)
+    )
+    lines: list[str] = []
+    for entry in rest:
+        line = _entry_line(entry)
+        cost = _estimate_tokens(line) + 1
+        if budget_tokens is not None and spent + cost > budget_tokens:
+            continue
+        lines.append(line)
+        spent += cost
+    return lines
+
+
+def _guide_entries(
+    entries: list[WorkspaceObservation],
+) -> tuple[list[WorkspaceObservation], list[WorkspaceObservation]]:
+    """Split the log into addressable results and log-only observations
+    (rolling summaries are the GUIDE's own shape, not index rows)."""
+    addressed = [e for e in entries if e.result_ref]
+    log_only = [e for e in entries if not e.result_ref and e.kind is not ObservationKind.SUMMARY]
+    return addressed, log_only
+
+
 @dataclass(frozen=True)
 class RenderedWorkingContext:
     """Both prompt blocks plus what they cost and carried."""
@@ -105,20 +142,7 @@ def render_working(
     rest = [e for e in entries if not e.survive_reset]
     rest.reverse()  # newest first for the un-pinned tail
     pinned_lines = [_entry_line(e) for e in pinned]
-    spent = (
-        1
-        + _estimate_tokens(_WORKING_HEADER)
-        + sum(_estimate_tokens(line) + 1 for line in pinned_lines)
-    )
-    rest_lines: list[str] = []
-    for entry in rest:
-        line = _entry_line(entry)
-        cost = _estimate_tokens(line) + 1
-        if budget_tokens is not None and spent + cost > budget_tokens:
-            continue
-        rest_lines.append(line)
-        spent += cost
-    body = pinned_lines + rest_lines
+    body = pinned_lines + _pack_working_rest(rest, pinned_lines, budget_tokens)
     if not body:
         return ""
     return "\n".join([_WORKING_HEADER, *body])
@@ -136,8 +160,7 @@ def render_guide(
     can hint at cost before the model pays it.
     """
     sizes = sizes or {}
-    addressed = [e for e in entries if e.result_ref]
-    log_only = [e for e in entries if not e.result_ref and e.kind is not ObservationKind.SUMMARY]
+    addressed, log_only = _guide_entries(entries)
     lines = [_guide_line(e, sizes.get(e.result_ref or "", 0)) for e in addressed]
     lines += [_guide_line(e, 0) for e in log_only]
     lines = _pack_lines(lines, budget_tokens)
