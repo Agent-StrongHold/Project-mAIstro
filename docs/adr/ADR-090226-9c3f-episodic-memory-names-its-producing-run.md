@@ -32,6 +32,15 @@ owners:
 
 # ADR-090226-9c3f: An episodic memory names the execution that stored it
 
+## Storage scope clarification — 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md)
+governs production persistence. PostgreSQL is the sole canonical durable backend. “Both twins”
+below records the original implementation and preservation of historical SQLite records;
+it does not require new SQLite production parity. Retained SQLite conformance/import fixtures
+must keep producer identity, attribution and legacy-unknown semantics intact. No provenance
+requirement is waived, no historical record is discarded, and no runtime retirement is claimed.
+
 ## Context
 
 ADR-083026-e602 gave every durable record of what an execution learned,

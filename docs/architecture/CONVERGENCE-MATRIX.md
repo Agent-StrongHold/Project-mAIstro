@@ -25,6 +25,15 @@ It still **does not prove a prose ownership claim**. Reachability proves that co
 
 ## Ownership
 
+**Storage policy (2026-10-03).** [ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) makes PostgreSQL the sole
+canonical durable backend at every deployment size. The ownership table inventories reached
+code, including existing SQLite selectors; reachability is not production-backend endorsement.
+SQLite is limited to small bootstrap/configuration state, explicit tests and necessary
+historical-data import/readers. Retiring other writers requires preservation and verified
+migration of existing records, not deletion on the strength of this matrix. New canonical
+features do not require SQLite twins. Live PostgreSQL crash/replica evidence remains mandatory.
+
+
 `Lifecycle owner` is the authoritative “what state is this work in” record today. `Persistence owner` is what survives restart. `Authorization owner` is what decides whether the work is allowed.
 
 ### How to read an ownership cell (#378)
@@ -77,7 +86,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.pg_learnings`/`pg_outcomes` on a `postgresql://` URL, `sqlite_*` on SQLite, in-memory otherwise; pgvector embeddings live on learning rows when configured | `memory.scopes`, `memory.exposure` (unreachable) |
 | Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.pg_sessions` on PostgreSQL, `sqlite_sessions` on SQLite, in-memory otherwise | session trust floor |
 | Archive tier | `maistro.archive` | Cold storage for records that are still authoritative | n/a (placement, not lifecycle) | object storage or a local directory; tombstone stays in PostgreSQL where required | inherits record scope |
-| Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — `pg_*` is wired for PostgreSQL; SQLite remains for homelab/local use | — |
+| Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — PostgreSQL is canonical; existing SQLite wiring is transitional/test or historical-data support, not a production alternative | — |
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (unreachable; in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
@@ -149,7 +158,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Memory | `routes.memory`, `maistro.container` | `some` | KEEP — domain state; provenance and archive policy still converge | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104 | scoped pgvector recall is schema-ready and wired but not live by default: `learnings.embedding vector(1536)` + HNSW cosine exist and `DurableHybridLearningStore` composes scope with the search in one query, yet no production entrypoint constructs an embedding client, so the column stays NULL without one (#188); archive conformance passes; producing Run provenance/policy remain | #64, #133, #188 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `some` | KEEP — correlates to Runs, does not own them | ADR-048 | session id correlated on Run without owning lifecycle | #64 |
 | Archive tier | `maistro.container` when `archive_url` is set | `none` | KEEP — storage tier, not lifecycle | ADR-082226-5104 | filesystem + S3 conformance; archive-eligibility policy still open | #133 |
-| Relational persistence | `maistro.container` (both backends), Alembic | `none` | KEEP — PostgreSQL canonical stores and SQLite homelab adapters are wired | ADR-082226-5104, ADR-087, ADR-012 | container selects durable prompt/audit stores with backend conformance; zero relational modules unreachable | — |
+| Relational persistence | `maistro.container` (both backends), Alembic | `none` | MIGRATE — keep PostgreSQL canonical stores; retire alternate production writers only after data-preserving cutover | ADR-082226-5104, ADR-087, ADR-012 | PostgreSQL durable prompt/audit guarantees; explicit test/import scope for retained SQLite; zero relational modules unreachable | #1135 |
 | Local state writer | `maistro.reactor`, CLI | `none` | KEEP | — | single-writer concurrency tests | — |
 | Ontology | none | `all` | CONNECT — accepted design, no consumer | ADR-036 | subsystem resolves semantic object through registry | #34 |
 | Portability / backup | none | `all` | CONNECT | — | backup/restore preserves canonical correlated records | #62, #34 |
@@ -180,7 +189,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - maistro-server chat is now a real Container/Conduit product path (#222), while Hive/Conductor remains the product migration target (#53/#66).
 - PostgreSQL strike state is wired through the Gate-compatible tracker (#217); security convergence still has product-path work rather than a persistence fiction.
 - Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — leaving the in-process path only as the explicit no-Container standalone fallback (#1113).
-- Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
+- Relational persistence is fully reached, but reachability is not cutover completion: PostgreSQL is the sole canonical durable backend. Existing SQLite prompt/audit selectors are implementation history to scope to tests/imports or safely retire, not a supported single-instance/homelab alternative.
 - The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 30 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
 
 ## Related

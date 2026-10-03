@@ -142,7 +142,7 @@ its marker (per `check-ac-state.py --mandate`).
 - **AC-7** (AC-P7, #804): a process killed at any of the four named
   points leaves a Run that the next recovery tick settles or resumes; no Run is
   RUNNING with no live Attempt after one tick.
-<!-- ac-state: unproven AC-8 - proven by #364 (P0.8 store-boundary scope conformance per store, on all three backends) -->
+<!-- ac-state: unproven AC-8 - proven by #364 (P0.8 store-boundary scope conformance per store on real PostgreSQL; retained SQLite/in-memory legs are explicit fixtures) -->
 - **AC-8** (AC-P8, #364): workspaces, projects, runs and audit each have a
   store-boundary scope test; `actor_principal_id` is required and validated at
   admission; audit rows carry and filter by `org_id`.

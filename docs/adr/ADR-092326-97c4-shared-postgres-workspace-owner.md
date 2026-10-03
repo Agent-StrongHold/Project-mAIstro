@@ -19,7 +19,8 @@ history:
     date: 2026-09-23
 substrate: []
 implements: []
-related: []
+related:
+  - maistro-engine#ADR-082226-5104
 supersedes: []
 blocks: []
 blocked-by: []
@@ -35,6 +36,15 @@ owners:
 ---
 
 # ADR-092326-97c4: Shared PostgreSQL is the single owner of canonical Workspace identity
+
+## Storage scope clarification — 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) applies at every deployment size: the canonical durable owner is
+PostgreSQL. SQLite twins named in the evidence below are retained test infrastructure, not
+production alternatives. Decision 5 records the existing ephemeral development path; it grants
+no durable production guarantee or new mirror authority. Existing mirror/import data must be
+preserved while the remaining cutover defects described here are resolved. No runtime
+retirement, import completion or live PostgreSQL proof is claimed by this clarification.
 
 ## Context
 

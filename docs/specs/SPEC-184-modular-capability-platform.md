@@ -32,6 +32,14 @@ history:
 
 # SPEC-184: Modular Capability Platform
 
+## Storage boundary clarification — 2026-10-03
+
+Optional SQLite settings backing in this spec is bounded to small bootstrap/configuration
+state under [ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md). It must not own canonical Provider, Binding,
+Invocation or other durable domain records; those use PostgreSQL core stores and Alembic.
+The settings UI, validation and restart guarantees below remain unchanged. This boundary
+clarification does not assert current runtime retirement or authorize loss of existing records.
+
 ## Context
 
 A production "Conductor" AI stack (`/root/docker/conductor-router` + the `conductor-host-health`

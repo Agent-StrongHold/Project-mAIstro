@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Changed
 
+- **Canonical storage guidance reconciled (#1135).** Reaffirm PostgreSQL at every deployment
+  size, with separately owned MAIstro/LiteLLM/Langfuse databases and migrations. Amend conflicting
+  SQLite-twin ADR/spec clauses and cutover guidance without deleting historical data, weakening
+  behavioral guarantees or claiming runtime retirement. SQLite remains scoped to bootstrap/config,
+  explicit tests and necessary historical import/readers.
+
 - **v1.0 release contract consolidated into canonical planning docs (no linked issue:
   governance realignment).** Stakeholder decisions from the 2026-10-01 architecture
   review now live in [`ROADMAP.md`](ROADMAP.md) (release contract section),

@@ -37,9 +37,9 @@ See `blakematthews-dev/project_maistro` specs/conductor/S-143-1khz-reactor.md fo
 - [ ] Multiple event sources can fire concurrently without race conditions
 - [ ] Each source declares its capability-envelope policy at registration; spawner uses that policy to construct the AgentSpec
 - [ ] No event source bypasses the Bouncer; every event payload is screened before the handler runs
-- [ ] All state mutations from handlers go through `state.submit()` (SPEC-010); no direct write-mode SQLite connections
+- [ ] Bootstrap/configuration SQLite mutations from handlers go through `state.submit()` (SPEC-010); canonical durable domain writes use PostgreSQL core stores (ADR-082226-5104), not this singleton
 - [ ] Reactor handlers cannot block the loop — long-running handler work is offloaded to a worker pool; handler return must be ≤5ms p95
 - [ ] Telemetry: per-source event count and latency visible in the Console
 - [ ] Failing handler does not crash the reactor; reactor logs the error and continues
-- [ ] SIGTERM shutdown: reactor stops accepting new events, drains in-flight handlers within a configurable grace period (default 5 s), cancels remaining work and rolls back any partial state writes, then runs a WAL checkpoint (SPEC-010) before exit
-- [ ] Backpressure: when `state.submit()` queue depth exceeds the configured limit (default 10,000 items), the reactor pauses event delivery from the highest-volume sources rather than dropping events; handlers unable to submit state within the backpressure timeout (default 1 s) emit a `REACTOR_BACKPRESSURE_EVENT` alert
+- [ ] SIGTERM shutdown: reactor stops accepting new events, drains in-flight handlers within a configurable grace period (default 5 s), cancels remaining work and rolls back any partial state writes, then checkpoints the bootstrap/configuration SQLite store (SPEC-010), when enabled, before exit
+- [ ] Bootstrap/configuration backpressure: when `state.submit()` queue depth exceeds the configured limit (default 10,000 items), the reactor pauses event delivery from the highest-volume sources rather than dropping events; handlers unable to submit state within the backpressure timeout (default 1 s) emit a `REACTOR_BACKPRESSURE_EVENT` alert

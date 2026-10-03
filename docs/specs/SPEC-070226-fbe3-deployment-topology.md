@@ -77,7 +77,7 @@ Persistent layer (outside instances):
 ### Failover and recovery
 
 - **Primary PostgreSQL fails**: Sentinel/etcd promotes replica automatically (< 1s downtime).
-- **Instance fails**: load balancer removes it; no data loss (state is in PostgreSQL/Redis).
+- **Instance fails**: load balancer removes it; no data loss (canonical durable application state is in PostgreSQL; Redis holds operational state).
 - **Data corruption**: restore from backup (point-in-time recovery using WAL + RDB).
 - **Full disaster**: restore PostgreSQL from backup, Redis from snapshot, reboot all instances.
 
@@ -103,7 +103,7 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
 
 ## Acceptance criteria
 
-- [x] All persistent state (agents, sessions, memory, audit logs) is in PostgreSQL or Redis
+- [x] Canonical durable application state (agents, sessions, memory, audit logs) is in PostgreSQL; Redis is operational queue/cache state, not a parallel canonical owner (ADR-082226-5104). This existing acceptance mark is not proof of alternate-writer retirement.
       (no local files except config). *(Topology enforces this; instances are stateless.)*
 - [ ] PostgreSQL replicas are catching up (replication lag < 1s). *(Live-infra check.)*
 - [x] Backup test: restore yesterday's backup, verify data is present and consistent.

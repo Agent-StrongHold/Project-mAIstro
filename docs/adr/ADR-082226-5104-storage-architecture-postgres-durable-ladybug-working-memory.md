@@ -33,6 +33,22 @@ owners:
 
 # ADR-082226-5104: Storage architecture — PostgreSQL as durable system of record, LadybugDB as per-Workspace working memory
 
+## Storage-policy reconciliation — 2026-10-03
+
+The owner reaffirmed this decision for laptop, team and enterprise deployments. Sections 1
+and 9 govern canonical durability. The later SQLite-twin deployment clauses in
+[ADR-083026-a322](ADR-083026-a322-episodic-memory-is-durable.md) (§2–3) and
+[ADR-083026-427c](ADR-083026-427c-prompt-versions-and-labels-are-separate-facts.md)
+(SQLite single-instance paragraph) are superseded **only in their production-backend scope**.
+Their durability, scope, decay, transaction, version/label and data-preservation guarantees
+remain in force. Their dated amendments below retain the original implementation history;
+the ADRs are not wholly superseded. [ADR-092326-97c4](ADR-092326-97c4-shared-postgres-workspace-owner.md)
+reinforces the shared PostgreSQL owner.
+
+The original Context and implementation-gap observations below describe the August decision,
+not a fresh runtime audit. No runtime retirement or acceptance-criterion completion is claimed
+by this reconciliation.
+
 ## Context
 
 The engine's storage story has been undecided in committed form while being treated as
@@ -60,7 +76,9 @@ vector DB together.
 
 That calculation changed when the whole stack was considered rather than the engine alone.
 LiteLLM's richer gateway features (keys, spend, budgets, gateway state) use PostgreSQL, and
-self-hosted Langfuse requires PostgreSQL plus ClickHouse and Redis/Valkey. **PostgreSQL is
+the Langfuse v3 topology discussed here uses PostgreSQL plus ClickHouse and Redis/Valkey.
+This is not a claim that every LiteLLM configuration requires PostgreSQL. The checked-in
+root Compose uses Langfuse v2 with PostgreSQL; it does not deploy the v3 ClickHouse/Redis stack. **PostgreSQL is
 infrastructure the deployment already pays for.** The optimization target therefore moved from
 "replace PostgreSQL" to "make PostgreSQL the durable centre, and add another engine only where
 it earns a distinct job".
@@ -75,6 +93,11 @@ One PostgreSQL cluster hosts separate logical databases — `maistro`, `litellm`
 separation that matters is **ownership, not infrastructure**: the engine never shares LiteLLM's
 or Langfuse's tables or migration namespace, and each application owns its own schema lifecycle
 while sharing one HA, backup, monitoring and operational model.
+
+MAIstro uses core asyncpg stores and engine-owned Alembic migrations. Hive consumes that
+canonical persistence; it does not own a parallel PostgREST memory mirror or create canonical
+tables during runtime startup. LiteLLM and Langfuse retain their own migrations. This is the
+required target; removing existing alternate paths needs separately verified implementation.
 
 This makes the `pg_*` stores **work to connect, not debt to retire** — reversing the reading in
 [#122](https://github.com/Agent-StrongHold/Project-mAIstro/issues/122) before that issue's
@@ -183,8 +206,17 @@ This answers `ADR-091`'s deferred Layer 4 and `SPEC-244`'s knowledge-graph place
 SQLite began as the obvious lightweight local durable store. Once PostgreSQL is required anyway
 and Ladybug covers fast embedded working memory better than SQLite could, a third canonical store
 adds little. Small bootstrap or configuration uses of SQLite or a flat file remain acceptable —
-`state.py`'s single-writer local state (SPEC-010) is not in question — but SQLite should not be
-another canonical datastore without a concrete requirement.
+`state.py`'s single-writer bootstrap/configuration state (SPEC-010) is not in question. Explicit
+test infrastructure and necessary historical-data readers/importers also remain permitted.
+SQLite is **not a parallel canonical production backend**, including on laptops, single-instance
+or homelab installs. New canonical features must not add SQLite twins or schema-parity work.
+
+Existing SQLite data must be preserved. Before retiring a production writer, inventory its
+records, provide a verified import into the canonical PostgreSQL owner where needed, preserve
+identity/provenance and authorization semantics, and retain necessary historical readers.
+A docs change does not retire runtime code or prove that a migration has happened. Retained
+SQLite test legs remain useful for their stated test contracts; they do not replace live
+PostgreSQL crash/restart, concurrent-writer or replica evidence required for M1.
 
 ### 10. ArcadeDB is not the chosen architecture
 
@@ -199,8 +231,8 @@ Langfuse dependencies change.
 
 Large artifacts go to object/blob storage. Secrets stay in a dedicated secret store — OS keychain
 locally, a cloud secrets manager in hosted environments — never the application database
-(SPEC-011). Langfuse keeps its own ClickHouse for high-volume telemetry and Redis/Valkey for
-queues and cache.
+(SPEC-011). When deployed with Langfuse v3, Langfuse owns its ClickHouse telemetry and
+Redis/Valkey queues/cache; the root Compose Langfuse v2 profile does not include them.
 
 ### Decision summary
 

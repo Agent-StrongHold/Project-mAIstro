@@ -14,6 +14,20 @@ optional connector.
 
 ## 1. Topology
 
+**Storage policy.** [ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) applies to laptop, team and enterprise
+installs: PostgreSQL is the sole canonical durable application datastore. One cluster hosts
+separate `maistro`, `litellm` and `langfuse` logical databases, each with separately owned
+migrations. MAIstro uses core asyncpg + Alembic; no parallel PostgREST memory authority or
+SQLite production twin is part of the target. Redis is operational queue/cache state, not a
+second canonical owner. Existing alternate writers/data require verified, non-destructive
+cutover; this runbook does not declare that retirement complete.
+
+The root `docker-compose.yml` uses Langfuse v2 with PostgreSQL. Langfuse v3's additional
+ClickHouse/Redis services belong to that optional topology, not the current root stack.
+Backup/restore must cover each deployed application's logical database under its owner;
+a MAIstro-only dump is not evidence that LiteLLM or Langfuse was restored.
+
+
 ```
 load balancer (nginx, deploy/nginx.conf)
 ├── maistro-server replica 1 (stateless)
@@ -28,7 +42,7 @@ Persistent layer (outside instances):
 ```
 
 - **Instances are stateless — except the task queue.** Agents, sessions, memory,
-  audit and every canonical Run live in PostgreSQL/Redis; the only local files are
+  audit and every canonical Run have PostgreSQL as their canonical durable owner; the only local files are
   config (in git) and the shared file store. **The `/v1/tasks` queue does not:**
   `TaskQueue` is an in-process singleton, so a task is visible only on the replica
   that accepted it. Behind round-robin, a client that creates a task and polls
@@ -155,7 +169,7 @@ A failing drill is a paging alert: your backups are not restorable.
 
 ### 4.2 App-instance failure
 
-No action required for data: state is in PostgreSQL/Redis. nginx ejects the failing
+Canonical durable data remains in PostgreSQL; Redis owns only its operational state. nginx ejects the failing
 replica (`max_fails=3 fail_timeout=10s`); `restart: unless-stopped` brings it back.
 To replace manually: `docker compose -f deploy/docker-compose.prod.yml up -d --force-recreate maistro-server-1`.
 

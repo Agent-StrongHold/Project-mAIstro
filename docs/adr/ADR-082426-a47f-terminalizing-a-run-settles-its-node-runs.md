@@ -32,6 +32,16 @@ owners:
 
 # ADR-082426-a47f: Terminalizing a Run settles its open NodeRuns, and closes them to further movement
 
+## Storage scope clarification — 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md)
+governs production persistence: PostgreSQL is the sole canonical durable backend. References
+below to three backends record existing implementation/conformance coverage; retained SQLite
+and in-memory legs are explicit test infrastructure or historical-data support, not a mandate
+for production parity. Every Run/NodeRun/Attempt lifecycle, terminality, fairness and recovery
+guarantee below remains binding on canonical PostgreSQL, with live crash/replica proof where
+required. This clarification neither retires runtime code nor discards historical records.
+
 ## Context
 
 ADR-081226-a66b makes the Run the owner of universal logical lifecycle and says that
