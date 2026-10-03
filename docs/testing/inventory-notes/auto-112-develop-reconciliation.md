@@ -138,3 +138,47 @@ This round resolved it and re-proved every gate against the new trusted base:
    - `uv run python scripts/check-suite-inventory.py --suite
      packages/maistro-evolve/tests` → ok (882, matches the recorded inventory
      carried in by the merge).
+
+## Round 3 — merge-queue quality gate: superseded design_coverage grant pruned
+
+CI run 37134683032 (job 111236694429) failed the quality gate at head 21e3abd9
+in ONE step: `acceptance-state ratchet + mandate` — every step before it
+passed, every coverage job passed. The failure text:
+
+    FAIL: authorized floor(s) independent landings have superseded
+      - design_coverage: 3 note(s) already clear it on their own:
+          auto-101.json / auto-384.json / feat-cutover-p0-8-store-scope-burn.json
+
+**Reproduced locally first** at 21e3abd9 with the gate's exact invocation
+(`uv run python scripts/check-ac-state.py --run-tests --ratchet --mandate
+8c8fc8d6706a0837bd991c4e92138bf4d776ac9e` against a live pg18 container and
+`RATCHET_BASE_REV=origin/develop`) → identical exit-1 finding. The grant
+`ac-state.design_coverage@34.9711` (landed for #1841's P0.8 store-scope burn)
+was still needed when written, but three independently-landed notes now each
+clear the current floor (39.896) on their own, so per SPEC-083026-fcc9 the
+gate demands the row be pruned — this branch is the run that prunes it.
+
+**Fix:** removed the `design_coverage@34.9711` entry from the `ac-state`
+section of `quality/ratchet-authorizations.json` (section left as `{}`, the
+shape `_require_grant_section` accepts). No code, test, or note changed; the
+`wiring-reads` and `reachability` sections are untouched.
+
+**Re-proof:**
+- Same gate, same args, canonical develop-PR env → exit 0, ending
+  "review-time AC-state improvement observed; no bank is required." plus both
+  mandate halves OK — exactly the passing shape CI's own log prints before the
+  superseded-grant refusal it died on.
+- The file's other consumer: `check-wiring-reads.py` → exit 0 (11 unread,
+  ledger matches).
+- Grants-file unit tests (synthetic trees, none read the pruned row):
+  test_ac_state_authorized_floor.py, test_ratchet_provenance.py,
+  test_m1_542_review_regressions.py, test_autonomous_merge_quality_classes.py
+  → 162 passed.
+- Pillars the failed job never reached at this head, run locally: mypy
+  --strict core (667 files, 0 issues), formal/ hypothesis (663 passed, 1
+  skipped), fitness (23 passed), all 12 interrogate floors, pyright ratchet
+  (21 == baseline 21), vulture ledger (CI-exact args, exit 0, 1361 → 1360),
+  radon (145 → 145), ruff check + format.
+- Full evolve suite with a reachable Docker daemon: all green including the 13
+  Docker-boundary benchmark tests that fail only on a stale docker socket
+  (environment, not branch — see Round 2 evidence).
