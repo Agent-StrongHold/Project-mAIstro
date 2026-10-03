@@ -1,9 +1,22 @@
----
----
 # p0-1-principal-migration-wave2a
 
 Workspace cutover Wave 2 Lane A — burn P0.1 `state_user_access` debt on
 `develop`.
+
+## Inventory effect
+
+PR #1816 (`ef4871e3`) changed one existing test body in
+`packages/maistro-turing/backend/tests/test_chat.py` without adding, removing,
+renaming, or parametrizing tests. It records no suite-count delta. The paths
+below describe migrated source files and principal-identity debt, so they are
+prose rather than numeric `inventory-delta` entries.
+
+- `packages/hive-conductor/backend/middleware/auth.py`: migrated
+- `packages/hive-conductor/backend/routes/`: migrated (22 route modules)
+- `packages/hive-conductor/backend/services/`: migrated (3 modules)
+- `packages/maistro-core/src/maistro/identity/principal.py`: extended
+- `packages/maistro-turing/backend/`: migrated (middleware + security + chat)
+- `quality/principal-identity-baseline.json`: 32 -> 4
 
 ## What changed
 

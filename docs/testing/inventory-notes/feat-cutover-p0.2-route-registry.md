@@ -1,5 +1,3 @@
----
----
 # feat-cutover-p0.2-route-registry
 
 Workspace cutover Wave 2 Lane B — P0.2 route-permission registry burn (#53 AC-P2).
@@ -15,3 +13,7 @@ zero the baseline without widening the reviewed surface in one commit.
 
 No Python test delta — existing `tests/test_check_route_permissions.py` covers the
 registry contract; the repo-level gate runs in `quality.yml`.
+
+PR #1815 (`51a1a306`) changed the three quality ledgers described above, with no
+test changes. Those three files are not collected tests, and `quality/` is not a
+suite in the inventory. This note therefore records no suite-count delta.

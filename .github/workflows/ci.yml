@@ -87,6 +87,9 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The typed-client ratchet resolves the event's trusted base and ancestry.
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -1253,6 +1256,11 @@ jobs:
           python-version: "3.12"
       - name: Install PyYAML
         run: pip install pyyaml
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Integration scope judges the newest check attempt
+        run: node --test tests/ci/integration-scope.test.cjs
       # The check-name contract #162 pins branch protection against. It lives
       # in this job because it is a check about workflow shape, next to the
       # other one — and because a rename is only caught if the gate runs on the
