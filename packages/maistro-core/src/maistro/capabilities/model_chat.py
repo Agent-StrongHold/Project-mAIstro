@@ -176,7 +176,7 @@ class GovernedLLMClient:
         temperature: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        del tool_choice, stream, metadata
+        del stream, metadata
         if self._turn.get() is None:
             self.set_turn()
         self._sequence.set(self._sequence.get() + 1)
@@ -189,6 +189,7 @@ class GovernedLLMClient:
             temperature=0.7 if temperature is None else temperature,
             max_tokens=max_tokens,
             tools=[dict(tool) for tool in tools] if tools else None,
+            tool_choice=tool_choice,
         )
         result = await self._egress.complete(
             binding=Binding(
