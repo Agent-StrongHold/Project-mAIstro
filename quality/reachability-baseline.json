@@ -94,7 +94,6 @@
     "maistro.events.publisher",
     "maistro.events.recipes",
     "maistro.events.wiring",
-    "maistro.governance",
     "maistro.governance.conformance",
     "maistro.governance.conformance_types",
     "maistro.graph.compaction",

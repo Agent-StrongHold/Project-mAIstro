@@ -125,7 +125,6 @@
         "packages/maistro-core/src/maistro/agents/work_items.py::unused variable 'suggestion_reason'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'BINDING'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'CREDENTIAL'",
-        "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'POLICY'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'SUSPENDED'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'denied_permissions'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'effective_permissions'",
@@ -1298,7 +1297,10 @@
         "packages/maistro-core/src/maistro/vault.py::unused method 'use'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'",
-        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'"
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused method 'attach_effect'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused method 'mark_reversed'",
+        "packages/maistro-core/src/maistro/governance/promotion.py::unused method 'promote'"
       ]
     },
     {
