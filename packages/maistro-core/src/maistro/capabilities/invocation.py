@@ -19,6 +19,7 @@ Invocation stores.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -29,6 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapabilityProvider
 from maistro.capabilities.types import Unavailable
+
+logger = logging.getLogger("maistro.capabilities.invocation")
 
 
 def _id() -> str:
@@ -374,11 +377,51 @@ def _require_scope(invocation: Invocation, *, workspace_id: str, project_id: str
         raise ValueError("reconciliation scope does not match the Invocation")
 
 
+def _settlement_fields(
+    disposition: ReconciliationDisposition,
+    *,
+    result: Any | None,
+    reason: str,
+    usage: InvocationUsage | None,
+) -> dict[str, Any]:
+    """The terminal status fields one reconciliation disposition projects.
+
+    `APPLIED` completes the physical effect (adopting its result and, when the
+    provider reported one, its usage); `NOT_APPLIED` fails it with the
+    settlement reason; `INDETERMINATE` records the reason and leaves the
+    lifecycle where it is.
+    """
+    if disposition is ReconciliationDisposition.APPLIED:
+        fields: dict[str, Any] = {
+            "status": InvocationStatus.COMPLETED,
+            "result": result,
+            "error": None,
+            "finished_at": datetime.now(UTC),
+        }
+        if usage is not None:
+            fields["usage"] = usage
+        return fields
+    if disposition is ReconciliationDisposition.NOT_APPLIED:
+        return {
+            "status": InvocationStatus.FAILED,
+            "error": reason,
+            "finished_at": datetime.now(UTC),
+        }
+    return {"error": reason}
+
+
 @runtime_checkable
 class ProviderReconciliationAdapter(Protocol):
     """Provider-specific evidence seam; it cannot mutate Invocation state."""
 
     async def reconcile(self, invocation: Invocation) -> InvocationReconciliationEvidence: ...
+
+
+# Installed once by the composition root (see `effect_context`): every
+# terminal physical effect — completed directly, or settled `APPLIED` by a
+# reconciliation — crosses this hook so quota evidence is recorded by the
+# Invocation authority itself, never by a per-caller response callback.
+InvocationCompletionHook = Callable[["Invocation"], Awaitable[None]]
 
 
 class InvocationExecutionService:
@@ -389,8 +432,14 @@ class InvocationExecutionService:
     state.
     """
 
-    def __init__(self, *, store: InvocationStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: InvocationStore,
+        on_completed: InvocationCompletionHook | None = None,
+    ) -> None:
         self._store = store
+        self._on_completed = on_completed
         self._effect_lock = asyncio.Lock()
         # This process-local guard closes the window where an operator could
         # settle a dispatch that is still executing in any service instance in
@@ -417,6 +466,64 @@ class InvocationExecutionService:
             effect_scope=effect_scope,
         )
         return history[-1] if history else None
+
+    async def _notify_completion(self, completed: Invocation) -> None:
+        """Hand a terminal effect to the composition-root recorder, if any.
+
+        Branchless from the caller's side: `invoke` sits at the complexity
+        ceiling, and the recorder decision belongs to the hook owner.
+
+        A recorder failure is isolated rather than raised: the physical effect
+        is already terminal, so failing the caller now would misreport its
+        outcome and could drive a duplicate physical call under attempt retry.
+        The recorder only marks an Invocation recorded after its writes
+        succeed, so the next hand-out of the same completed effect re-confirms
+        evidence and repairs the ledger. The failure itself is surfaced as an
+        error event — it is never swallowed silently (#718).
+        """
+
+        if (on_completed := self._on_completed) is None:
+            return
+        try:
+            await on_completed(completed)
+        except Exception as exc:
+            logger.error(
+                "quota evidence recording failed for %s (effect %s, provider %s): %s",
+                completed.invocation_id,
+                completed.effect_key,
+                completed.binding.provider_name,
+                exc,
+            )
+
+    async def _completed_replay_after_admission_race(
+        self,
+        *,
+        run_id: str,
+        node_run_id: str,
+        binding: Binding,
+        effect_key: str,
+        effect_scope: str | None = None,
+    ) -> Invocation | None:
+        """Re-read canonical history after an admission race with another worker.
+
+        Another worker may have completed the effect between our initial
+        history read and the store-level admission guard. Returns the accepted
+        completed Invocation, or None when the race outcome is not a replay.
+        The re-read uses the caller's scope: an effect carrying a stable
+        logical scope re-reads that whole logical scope, so a completed
+        canonical row under a different NodeRun is a replay rather than a
+        re-raised race error (#1194).
+        """
+        latest_history = await self._store.list_effect(
+            run_id=run_id,
+            node_run_id=node_run_id,
+            binding_id=binding.binding_id,
+            effect_key=effect_key,
+            effect_scope=effect_scope,
+        )
+        if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
+            return latest_history[-1]
+        return None
 
     @staticmethod
     async def _resolve_provider(
@@ -452,6 +559,11 @@ class InvocationExecutionService:
         history blocks repetition because the remote outcome cannot be proven
         absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``,
         is eligible for a new physical Invocation under a later Attempt.
+
+        Admission is atomic against the same scope the caller declared: with a
+        stable ``effect_scope`` the persisted scope makes the store's admission
+        guard logical across NodeRuns, so two workers racing a retry under
+        different NodeRuns cannot both dispatch (#1194).
         """
 
         _require(effect_key, "effect_key")
@@ -466,6 +578,14 @@ class InvocationExecutionService:
             if history:
                 latest = history[-1]
                 if latest.status is InvocationStatus.COMPLETED:
+                    # A deduplicated hand-out re-confirms ledger evidence: a
+                    # recorder whose durable write failed transiently left
+                    # this Invocation unmarked, and this is the retry that
+                    # repairs it (the recorder and the durable tracker are
+                    # idempotent on Invocation identity, so a healthy ledger
+                    # sees a no-op). At-least-once recording, at-most-once
+                    # charging (#718).
+                    await self._notify_completion(latest)
                     return latest
                 if latest.status in {
                     InvocationStatus.CREATED,
@@ -498,15 +618,21 @@ class InvocationExecutionService:
                 # initial history read. Re-read the canonical row so a stale
                 # admission returns the accepted result instead of dispatching
                 # or surfacing a misleading race error.
-                latest_history = await self._store.list_effect(
+                replay = await self._completed_replay_after_admission_race(
                     run_id=run_id,
                     node_run_id=node_run_id,
-                    binding_id=binding.binding_id,
+                    binding=binding,
                     effect_key=effect_key,
                     effect_scope=effect_scope,
                 )
-                if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
-                    return latest_history[-1]
+                if replay is not None:
+                    # A deduplicated hand-out re-confirms ledger evidence
+                    # (#718): the recorder and the durable tracker are
+                    # idempotent on Invocation identity, so a healthy ledger
+                    # sees a no-op and one that missed the original
+                    # terminalization is repaired.
+                    await self._notify_completion(replay)
+                    return replay
                 raise
             running = invocation.model_copy(
                 update={
@@ -547,12 +673,14 @@ class InvocationExecutionService:
                 raise
 
             usage = usage_from(result) if usage_from is not None else None
-            return await self._terminalize(
+            completed = await self._terminalize(
                 invocation,
                 InvocationStatus.COMPLETED,
                 result=result,
                 usage=usage,
             )
+            await self._notify_completion(completed)
+            return completed
         finally:
             self._active_dispatches.discard(invocation.invocation_id)
             _PROCESS_ACTIVE_DISPATCHES.discard(invocation.invocation_id)
@@ -756,30 +884,29 @@ class InvocationExecutionService:
             update["workspace_id"] = workspace_id
         if not invocation.project_id and project_id:
             update["project_id"] = project_id
-        if disposition is ReconciliationDisposition.APPLIED:
-            update.update(
-                status=InvocationStatus.COMPLETED,
+        update.update(
+            _settlement_fields(
+                disposition,
                 result=result,
-                error=None,
-                finished_at=datetime.now(UTC),
+                reason=reason,
+                usage=usage,
             )
-            if usage is not None:
-                update["usage"] = usage
-        elif disposition is ReconciliationDisposition.NOT_APPLIED:
-            update.update(
-                status=InvocationStatus.FAILED,
-                error=reason,
-                finished_at=datetime.now(UTC),
-            )
-        else:
-            update["error"] = reason
+        )
         try:
-            return await self._store.save(invocation.model_copy(update=update))
+            settled = await self._store.save(invocation.model_copy(update=update))
         except StaleInvocationUpdate:
             current = await self._store.get(invocation.invocation_id)
             if current is None:
                 raise
             return current
+        if disposition is ReconciliationDisposition.APPLIED:
+            # `APPLIED` settles a physical call whose outcome had been UNKNOWN:
+            # its usage (or its explicit unreported marker) reaches the quota
+            # ledger here. The recorder deduplicates on Invocation identity and
+            # a COMPLETED row can never be reconciled again, so this stays
+            # at-most-once even across retries of the settlement itself.
+            await self._notify_completion(settled)
+        return settled
 
     async def _terminalize(
         self,
@@ -814,6 +941,7 @@ __all__ = [
     "EffectNotApplied",
     "InMemoryInvocationStore",
     "Invocation",
+    "InvocationCompletionHook",
     "InvocationExecutionService",
     "InvocationReconciliation",
     "InvocationReconciliationEvidence",

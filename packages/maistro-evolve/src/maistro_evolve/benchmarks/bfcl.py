@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from typing import Any
 
@@ -12,29 +11,18 @@ from .scoring import extract_json_from_response, function_call_match
 
 
 def _extract_tool_call(response: str) -> dict[str, Any] | None:
+    """Structured call extraction only (#852).
+
+    Only JSON-shaped calls count. The historical prose fallback parsed
+    ``call name(args...)`` out of free text, so a sentence mentioning the
+    tool name qualified as a call.
+    """
     data = extract_json_from_response(response)
     if data is not None:
         if isinstance(data, list) and len(data) > 0:
             data = data[0]
         if isinstance(data, dict):
             return data
-
-    action_match = re.search(
-        r"(?:call|invoke|use|execute)\s+(\w+)\s*\(([^)]*)\)",
-        response,
-        re.IGNORECASE,
-    )
-    if action_match:
-        name = action_match.group(1)
-        args_str = action_match.group(2).strip()
-        args: dict[str, Any] = {}
-        if args_str:
-            for pair in args_str.split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    args[k.strip()] = v.strip().strip("\"'")
-        return {"name": name, "parameters": args}
-
     return None
 
 
@@ -56,16 +44,19 @@ def _score_numeric_param(actual_val: Any, expected_val: Any) -> float:
             return 0.5
         return 0.0
     except (ValueError, TypeError):
-        if str(expected_val).lower() in str(actual_val).lower():
-            return 0.5
+        # #852: non-numeric observed values earn nothing — the old substring
+        # comparison awarded 0.5 for format coincidence, not a correct value.
         return 0.0
 
 
-def _score_single_param(actual_val: Any, expected_val: Any, response: str) -> float:
+def _score_single_param(actual_val: Any, expected_val: Any) -> float:
+    """Grade one parameter from the observed structured call only (#852).
+
+    A missing parameter scores 0.0; the historical fallback scanned the raw
+    response text for the expected value and awarded 0.5 for its mere
+    appearance anywhere in prose.
+    """
     if actual_val is None:
-        text = response.lower()
-        if isinstance(expected_val, str) and expected_val.lower() in text:
-            return 0.5
         return 0.0
     if isinstance(expected_val, bool):
         return 1.0 if str(actual_val).lower() == str(expected_val).lower() else 0.0
@@ -79,7 +70,7 @@ def _score_single_param(actual_val: Any, expected_val: Any, response: str) -> fl
     return 0.0
 
 
-def _param_score(call: dict[str, Any], expected_params: dict[str, Any], response: str) -> float:
+def _param_score(call: dict[str, Any], expected_params: dict[str, Any]) -> float:
     actual_params = call.get("parameters") or call.get("arguments") or call.get("args") or {}
     if not isinstance(actual_params, dict):
         actual_params = {}
@@ -90,7 +81,7 @@ def _param_score(call: dict[str, Any], expected_params: dict[str, Any], response
 
     matches = 0.0
     for key, expected_val in expected_params.items():
-        matches += _score_single_param(actual_params.get(key), expected_val, response)
+        matches += _score_single_param(actual_params.get(key), expected_val)
     return matches / total
 
 
@@ -98,7 +89,13 @@ def _score_tool_call(
     response: str,
     sample: dict[str, Any],
 ) -> float:
-    expected_name = sample["expected_name"].lower()
+    """Score a structured function call; prose mentions earn nothing (#852).
+
+    The primary path is structural: the response's JSON call is extracted and
+    its name/parameters compared against the expected call. The historical
+    fallback that awarded 0.25 for the expected name merely appearing in
+    prose is removed — a response with no structured call scores 0.0.
+    """
     expected_params = sample.get("expected_params")
 
     fc_score = function_call_match(response, sample["expected_name"], expected_params)
@@ -107,36 +104,26 @@ def _score_tool_call(
 
     call = _extract_tool_call(response)
     if call is None:
-        response_lower = response.lower()
-        if (
-            expected_name.replace("_", " ") in response_lower
-            or expected_name.replace("_", "") in response_lower
-        ):
-            return 0.5 * 0.5
         return 0.0
 
     actual_name = str(call.get("name") or call.get("function") or call.get("action") or "").lower()
-    name_score = _name_score(actual_name, expected_name)
+    name_score = _name_score(actual_name, sample["expected_name"].lower())
 
-    param_score = 1.0 if expected_params is None else _param_score(call, expected_params, response)
+    param_score = 1.0 if expected_params is None else _param_score(call, expected_params)
 
     return name_score * 0.4 + param_score * 0.6
 
 
 async def run_bfcl(genome: PipelineGenome, llm_call: Any) -> EvalResult:
-    """Score function-calling — structural when a call parses, text-mention otherwise.
+    """Score function-calling structurally, with no prose fallback (#852).
 
     Proxy-tier (SPEC-202): the samples are a small handcrafted set, not the
-    official BFCL corpus. The primary path is structural: the response's
-    function call is extracted (``extract_json_from_response``) and its name
-    and parameters compared field-by-field against the expected call
-    (``function_call_match``). But two real fallbacks are NOT structural: if
-    no call can be extracted at all, ``_score_tool_call`` still awards 0.25
-    for the expected function name merely appearing in prose; and within a
-    parsed call, ``_score_single_param`` awards 0.5 for a missing
-    parameter's value appearing anywhere in the raw response text. Because
-    the fitness hard-gate for this benchmark is 0.20, a response that never
-    produces a real function call can still clear it.
+    official BFCL corpus. Every point comes from a JSON-structured call: the
+    name (via ``function_call_match`` or the extracted call) and each
+    expected parameter's observed value. Prose mention of the function name,
+    and missing parameters whose value happens to appear in the response
+    text, earn nothing — the historical 0.25/0.5 fallbacks could clear the
+    0.20 hard gate without any real call.
     """
     if llm_call is None:
         raise ValueError(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from unittest.mock import patch
@@ -10,9 +11,16 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from maistro.agents.circuit_breaker import CircuitOpenError, llm_circuit
+from maistro.agents.circuit_breaker import (
+    CircuitOpenError,
+    CircuitState,
+    DomainCircuitBank,
+    llm_circuits,
+    resolve_failure_domain,
+)
 from maistro.agents.conductor import (
     ConductorCall,
+    _admit_call,
     _call_gateway,
     _get_tier_config,
     _is_retryable,
@@ -24,6 +32,10 @@ from maistro.agents.conductor import (
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.config.models import DEFAULT_TIERS, Tier
 from maistro.http import set_test_transport
+from maistro.providers.errors import ModelNotFoundError
+from maistro.providers.types import ModelMetadata
+from maistro.quota.tracker import InMemoryQuotaTracker
+from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.tasks.models import TaskCreate
 
 
@@ -35,7 +47,7 @@ def _dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_circuit() -> None:
-    llm_circuit.record_success()
+    llm_circuits.reset()
 
 
 def _patched_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -115,6 +127,32 @@ class TestCallGateway:
         call = ConductorCall(model="m", base_url=None, api_key="k", system_prompt="sys")
         with pytest.raises(LLMProviderError, match="no gateway base_url configured"):
             await _call_gateway(call, "hi", max_tokens=100, timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_governed_egress_returns_content_without_legacy_http(
+        self,
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        class _Egress:
+            async def complete(self, **kwargs: Any) -> Any:
+                captured.update(kwargs)
+                return type("Result", (), {"body": {"choices": [{"message": {"content": "{}"}}]}})()
+
+        call = ConductorCall(model="m", base_url=None, api_key="", system_prompt="sys")
+        result = await _call_gateway(
+            call,
+            "do thing",
+            max_tokens=512,
+            timeout=10,
+            governed_egress=_Egress(),  # type: ignore[arg-type]
+            invocation_identity=("run", "node", "attempt"),
+            invocation_number=2,
+        )
+
+        assert result == "{}"
+        assert captured["run_id"] == "run"
+        assert captured["effect_key"] == "conductor-llm-2"
 
     @pytest.mark.asyncio
     async def test_posts_and_returns_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,6 +237,226 @@ class TestCallGateway:
         assert result == '{"success": true}'
 
 
+@pytest.fixture
+def fallback_usage_log(monkeypatch: pytest.MonkeyPatch) -> InMemoryUsageLog:
+    """Isolate the conductor's ungoverned-fallback recording from the
+    process-wide default usage log singleton — and from the process default
+    quota ledger, which container-creating tests elsewhere in the same
+    process register via the composition root."""
+    log = InMemoryUsageLog()
+    monkeypatch.setattr("maistro.agents.conductor.get_default_usage_log", lambda: log)
+    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: None)
+    return log
+
+
+@pytest.fixture
+def fallback_quota_tracker(monkeypatch: pytest.MonkeyPatch) -> InMemoryQuotaTracker:
+    """Register an isolated quota ledger as the conductor module's process
+    default, for tests of the fallback's ledger evidence (#718)."""
+    tracker = InMemoryQuotaTracker()
+    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: tracker)
+    return tracker
+
+
+class TestUngovernedFallbackUsageEvidence:
+    """#718: the raw-gateway fallback crosses no canonical Invocation, so it
+    must leave its own usage evidence — reported tokens when the gateway said
+    them, an explicit unreported marker when it did not. Never invisible, and
+    never a fabricated Invocation identity."""
+
+    @pytest.mark.asyncio
+    async def test_reported_usage_is_recorded_with_provenance(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 5
+        assert event.output_tokens == 7
+        assert event.provider == "m"
+        assert event.usage_reported is True
+        assert event.invocation_id is None  # identity is never invented here
+
+    @pytest.mark.asyncio
+    async def test_missing_usage_is_an_unreported_marker_not_a_zero(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 0
+        assert event.output_tokens == 0
+        assert event.usage_reported is False
+
+    @pytest.mark.asyncio
+    async def test_governed_egress_leaves_no_fallback_evidence(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        """The canonical path owns recording; the fallback must stay silent
+        when an egress crossed the Invocation authority."""
+
+        class _Egress:
+            async def complete(self, **kwargs: Any) -> Any:
+                return type("Result", (), {"body": {"choices": [{"message": {"content": "{}"}}]}})()
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(
+            call,
+            "do thing",
+            max_tokens=512,
+            timeout=10,
+            governed_egress=_Egress(),  # type: ignore[arg-type]
+        )
+
+        assert fallback_usage_log.events_for("m") == ()
+
+    @pytest.mark.asyncio
+    async def test_run_task_raw_path_records_usage_evidence(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        """The ordinary entry point (``run_task`` without an egress) is the
+        call class the fallback evidence exists for."""
+        monkeypatch.setenv("MAISTRO_DRY_RUN", "0")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": '{"success": true, "final_answer": "ok"}'}}
+                    ],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        with patch(
+            "maistro.agents.conductor.resolve_model",
+            return_value=("m", "http://gw", False),
+        ):
+            task = TaskCreate(description="Implement feature")
+            result = await run_task(task)
+
+        assert result.success is True
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 3
+        assert event.output_tokens == 4
+        assert event.usage_reported is True
+
+    @pytest.mark.asyncio
+    async def test_registered_ledger_receives_reported_fallback_usage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+        fallback_quota_tracker: InMemoryQuotaTracker,
+    ) -> None:
+        """#718: when the process registered a quota ledger (the Container
+        composition root does), the raw fallback's reported tokens reach it
+        too — the call class can no longer be absent from the ledger a
+        process actually carries."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (row,) = await fallback_quota_tracker.get_all_usage()
+        assert row["provider"] == "m"
+        assert row["input_tokens"] == 5
+        assert row["output_tokens"] == 7
+        assert row["total_tokens"] == 12
+        assert row["request_count"] == 1
+        assert "usage_complete" not in row  # reported evidence, complete
+
+    @pytest.mark.asyncio
+    async def test_registered_ledger_gets_unreported_marker_not_zero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+        fallback_quota_tracker: InMemoryQuotaTracker,
+    ) -> None:
+        """A fallback call whose gateway reported no usage marks the ledger
+        incomplete — never a measured zero — so the provider's percentage
+        presents as unknown (#718)."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (row,) = await fallback_quota_tracker.get_all_usage()
+        assert row["provider"] == "m"
+        assert row["total_tokens"] == 0
+        assert row["unreported_count"] == 1
+        assert row["usage_complete"] is False
+        assert await fallback_quota_tracker.get_usage_pct("m", "monthly", 100) is None
+
+    @pytest.mark.asyncio
+    async def test_failing_ledger_does_not_take_down_the_fallback_call(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+    ) -> None:
+        """The ledger write is isolated: a ledger that blows up must not
+        crash a provider call that already succeeded — evidence stays on the
+        usage log and the failure is surfaced, not raised."""
+
+        class ExplodingTracker:
+            async def record_usage(self, *args: object, **kwargs: object) -> dict[str, object]:
+                raise RuntimeError("ledger unavailable")
+
+        monkeypatch.setattr(
+            "maistro.agents.conductor.get_default_quota_tracker", lambda: ExplodingTracker()
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        result = await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        assert result == '{"success": true}'
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.usage_reported is True
+
+
 class TestIsRetryable:
     def test_timeout_error_is_retryable(self) -> None:
         assert _is_retryable(TimeoutError()) is True
@@ -251,7 +509,7 @@ class TestParseJsonOutput:
 class TestRunWithRetry:
     @pytest.mark.asyncio
     async def test_raises_when_circuit_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(llm_circuit, "allow_request", lambda: False)
+        monkeypatch.setattr(llm_circuits, "admit", lambda _domain: False)
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD]
         with pytest.raises(CircuitOpenError):
@@ -334,6 +592,245 @@ class TestRunWithRetry:
             await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
 
 
+class TestRunScopedCircuits:
+    """#1203: breaker scope follows the call's failure domain, not one flag."""
+
+    @staticmethod
+    def _call(model: str, base_url: str = "http://gw") -> ConductorCall:
+        return ConductorCall(model=model, base_url=base_url, api_key="key", system_prompt="sys")
+
+    @pytest.mark.asyncio
+    async def test_failing_provider_does_not_block_healthy_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.read())
+            if body["model"] == "flaky-model":
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"success": true}'}}]},
+            )
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+
+        flaky = self._call("flaky-model")
+        with pytest.raises(LLMProviderError):
+            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+        with pytest.raises(LLMProviderError):
+            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+
+        # Two exhausted calls x 3 attempts = 6 failures: the flaky domain is open.
+        flaky_domain = resolve_failure_domain("flaky-model", "http://gw")
+        assert llm_circuits.breaker(flaky_domain).state is CircuitState.OPEN
+
+        # The healthy provider on the same gateway still admits and succeeds.
+        healthy = self._call("healthy-model")
+        result = await _run_with_retry(healthy, "p", tier_config, max_tokens=100)
+        assert result.success is True
+        healthy_domain = resolve_failure_domain("healthy-model", "http://gw")
+        assert llm_circuits.breaker(healthy_domain).state is CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_shared_gateway_failure_blocks_every_provider_behind_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+
+        for model in ("model-a", "model-b"):
+            with pytest.raises(LLMProviderError):
+                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+
+        # ConnectError is an explicit shared-dependency failure: the
+        # gateway-level breaker represents it for both providers.
+        for model in ("model-a", "model-b"):
+            with pytest.raises(CircuitOpenError):
+                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+        # ...while the provider-level breakers stayed closed (not their fault).
+        gw_domain = resolve_failure_domain("model-a", "http://gw")
+        assert llm_circuits.breaker(gw_domain).state is CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_router_fallback_selects_healthy_alternative(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        requested: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.read())
+            requested.append(body["model"])
+            if body["model"] == "flaky-model":
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"success": true}'}}]},
+            )
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+
+        flaky = self._call("flaky-model")
+        with pytest.raises(LLMProviderError):
+            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+        with pytest.raises(LLMProviderError):
+            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+
+        class _Router:
+            """Registry-declared chain: flaky-model falls back to healthy-model."""
+
+            async def fallback_chain(self, name: str) -> list[ModelMetadata]:
+                assert name == "flaky-model"
+                return [
+                    ModelMetadata(
+                        name="flaky-model",
+                        provider="flaky-inc",
+                        cost_per_1k_input=0,
+                        cost_per_1k_output=0,
+                        latency_p50_ms=1,
+                    ),
+                    ModelMetadata(
+                        name="healthy-model",
+                        provider="healthy-inc",
+                        cost_per_1k_input=0,
+                        cost_per_1k_output=0,
+                        latency_p50_ms=2,
+                    ),
+                ]
+
+        result = await _run_with_retry(flaky, "p", tier_config, max_tokens=100, router=_Router())
+        assert result.success is True
+        assert requested[-1] == "healthy-model"
+
+    @pytest.mark.asyncio
+    async def test_blocked_domain_without_router_raises_circuit_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503)
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+        call = self._call("flaky-model")
+        for _ in range(2):
+            with pytest.raises(LLMProviderError):
+                await _run_with_retry(call, "p", tier_config, max_tokens=100)
+        with pytest.raises(CircuitOpenError, match="flaky-model"):
+            await _run_with_retry(call, "p", tier_config, max_tokens=100)
+
+    @pytest.mark.asyncio
+    async def test_router_unknown_model_fails_closed_naming_the_blocked_domain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A router that cannot resolve the model is not a fallback path.
+
+        The registry raising ModelNotFoundError must degrade to the same
+        fail-fast CircuitOpenError as having no router at all — never to an
+        unhandled error, and never to silently widening the call.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503)
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+
+        class _UnknownModelRouter:
+            async def fallback_chain(self, name: str) -> list[ModelMetadata]:
+                raise ModelNotFoundError(name)
+
+        call = self._call("flaky-model")
+        for _ in range(2):
+            with pytest.raises(LLMProviderError):
+                await _run_with_retry(call, "p", tier_config, max_tokens=100)
+        with pytest.raises(CircuitOpenError, match="provider=flaky-model"):
+            await _run_with_retry(
+                call, "p", tier_config, max_tokens=100, router=_UnknownModelRouter()
+            )
+
+    @pytest.mark.asyncio
+    async def test_fallback_chain_exhaustion_fails_closed_on_primary_domain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every fallback candidate blocked: the call fails fast naming the
+        requested domain rather than retrying into a known-open breaker."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503)
+
+        _patched_client(monkeypatch, handler)
+        monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
+        tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
+
+        for model in ("flaky-model", "sibling-model"):
+            with pytest.raises(LLMProviderError):
+                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+            with pytest.raises(LLMProviderError):
+                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+
+        class _ExhaustedRouter:
+            """Registry chain: flaky-model -> sibling-model, itself blocked."""
+
+            async def fallback_chain(self, name: str) -> list[ModelMetadata]:
+                assert name == "flaky-model"
+                return [
+                    ModelMetadata(
+                        name="sibling-model",
+                        provider="sibling-model",
+                        cost_per_1k_input=0,
+                        cost_per_1k_output=0,
+                        latency_p50_ms=1,
+                    )
+                ]
+
+        with pytest.raises(CircuitOpenError, match="provider=flaky-model"):
+            await _run_with_retry(
+                self._call("flaky-model"),
+                "p",
+                tier_config,
+                max_tokens=100,
+                router=_ExhaustedRouter(),
+            )
+
+    @pytest.mark.asyncio
+    async def test_domain_recovering_during_fallback_resolution_proceeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The admission re-check absorbs the recovery race (#1203).
+
+        The domain was open when admission started, and recovered (crossed
+        its recovery timeout, entering HALF_OPEN) while the fallback chain
+        was resolving and admitted no candidate. The re-check must lease the
+        recovery probe and proceed on the ORIGINAL call — the fallback chain
+        is a detour, not a rerouting mandate.
+        """
+        bank = DomainCircuitBank(failure_threshold=1, recovery_timeout=0.05)
+        call = self._call("flaky-model")
+        domain = resolve_failure_domain(model=call.model, base_url=call.base_url)
+        bank.record_failure(domain)  # opens the provider breaker
+        assert not bank.admit(domain)
+
+        class _SlowEmptyRouter:
+            async def fallback_chain(self, name: str) -> list[ModelMetadata]:
+                await asyncio.sleep(0.1)  # recovery timeout elapses meanwhile
+                return []  # no candidate admits: _admitted_fallback_call -> None
+
+        admitted, admitted_domain = await _admit_call(call, bank, _SlowEmptyRouter())
+        assert admitted is call
+        assert admitted_domain.key() == domain.key()
+        # The probe lease was taken by this caller, per-domain.
+        assert bank.breaker(domain).state is CircuitState.HALF_OPEN
+
+
 async def _noop() -> None:
     return None
 
@@ -412,3 +909,60 @@ class TestRunTaskLive:
             result = await run_task(task, on_response=on_response)
         assert result.success is True
         assert captured["data"]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}  # type: ignore[index]
+
+
+class TestGovernedCompletionGuards:
+    """The governed gateway path must fail loudly on unusable bodies (#718).
+
+    A governed completion is the canonical Invocation's physical call; a
+    200 whose body carries no choices (or no message content) is provider
+    breakage, not an empty answer -- returning "" would terminalize the
+    Invocation as a successful zero-content call and record usage evidence
+    for a response the conductor never received.
+    """
+
+    async def test_no_choices_is_a_provider_error(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                return SimpleNamespace(body={"model": "m", "choices": []})
+
+        with pytest.raises(LLMProviderError, match="no choices"):
+            await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                ("run-1", "node-1", "attempt-1"),
+                1,
+                "ws-1",
+                "project-1",
+            )
+
+    async def test_no_content_is_a_provider_error(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                return SimpleNamespace(body={"model": "m", "choices": [{"message": {}}]})
+
+        with pytest.raises(LLMProviderError, match="no content"):
+            await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                ("run-1", "node-1", "attempt-1"),
+                1,
+                "ws-1",
+                "project-1",
+            )

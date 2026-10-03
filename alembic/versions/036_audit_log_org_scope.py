@@ -8,19 +8,27 @@ system/unscoped scope. A later contract migration may make the column
 non-nullable once old writers are retired.
 
 Revision ID: 036_audit_log_org_scope
-Revises: 042_task_receipt_dispatch_inputs
+Revises: 041_quota_invocation_evidence
 Create Date: 2026-09-10
 
-Re-parented three times, each time because develop or a sibling branch took
+Re-parented five times, each time because develop or a sibling branch took
 the same parent while this revision was open: first onto 038, then onto 039
 after `039_canvas_job_admission_key` landed (#1531), then onto develop's `040`
 (`down_revision = "039"`). Merging that state into the #1057 branch — which
 had already taken 040's child slot with `041_task_identity_provenance` —
-restored a two-head fork that fails every deployment's ``upgrade head`` with
-"Multiple head revisions are present". This revision now follows that
-branch's chain tip `042_task_receipt_dispatch_inputs`, keeping the chain
-linear with the audit scope migration as its single head — the same
-reconciliation revision 040's own docstring records for its two renumberings.
+restored a two-head fork; the #1057 side re-parented this revision onto its
+chain tip `042_task_receipt_dispatch_inputs`. The #1194 branch then took the
+same slot with its own `041` (the canonical Run effect claim) and re-parented
+this revision onto it, and develop wove those forks back into one line by
+re-parenting `041_task_identity_provenance` onto #1194's `041`. Syncing that
+develop state into the #718 branch — whose own quota-evidence migration
+(`041_quota_invocation_evidence`, re-ID'd twice for the same reason) had also
+taken 042's child slot — forked the chain once more, so the quota-evidence
+migration follows `042_task_receipt_dispatch_inputs` and this revision
+follows the quota-evidence migration, keeping the chain linear with the audit
+scope migration woven into the single line develop's #1319 additions
+(043/045) extend. The same reconciliation move revision 040's own docstring
+records for its two renumberings.
 """
 
 from __future__ import annotations
@@ -29,7 +37,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "036_audit_log_org_scope"
-down_revision = "042_task_receipt_dispatch_inputs"
+down_revision = "041_quota_invocation_evidence"
 branch_labels = None
 depends_on = None
 
