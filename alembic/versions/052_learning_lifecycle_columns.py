@@ -11,8 +11,8 @@ every other field (#1156's disposition contract now enforces exactly that).
 `created_at` already exists (migration 001) and is now written explicitly by
 the stores rather than left to the server default.
 
-Revision ID: 051
-Revises: 050
+Revision ID: 052
+Revises: 051
 Create Date: 2026-10-01
 """
 
@@ -20,8 +20,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "051"
-down_revision = "050"
+revision = "052"
+down_revision = "051"
 branch_labels = None
 depends_on = None
 

@@ -137,6 +137,14 @@
       "reason": "Reviewed per-surface disposition specification; changing a shipped surface's truth classification is the substantive change."
     },
     {
+      "id": "api-route-contracts",
+      "kind": "specification",
+      "paths": [
+        "quality/api-route-contracts.json"
+      ],
+      "reason": "Reviewed per-route contract specification; changing a shipped route's no-op disposition or contract is the substantive change."
+    },
+    {
       "id": "citation-baseline",
       "kind": "legacy_shared_aggregate",
       "paths": [
@@ -336,6 +344,14 @@
         "quality/route-permissions.json"
       ],
       "reason": "Reviewed authenticated-route permission registry: declaring a prefix permission or exemption is the substantive security change."
+    },
+    {
+      "id": "frontend-typed-client-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/frontend-typed-client-baseline.json"
+      ],
+      "reason": "Workspace cutover P0.3: raw fetch and hand-typed frontend entity debt is measured on the candidate and compared against the ledger resolved from the trusted base."
     }
   ]
 }

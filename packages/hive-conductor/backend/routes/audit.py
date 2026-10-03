@@ -8,6 +8,7 @@ from uuid import uuid4
 import stores
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
+from services.audit_bridge import hive_entry_to_core, list_core_audit_entries, write_core_audit_sync
 
 router = APIRouter(tags=["audit"])
 
@@ -38,6 +39,7 @@ def log_audit(
     severity: Literal["info", "warning", "critical"] = "info",
 ) -> None:
     entry_id = str(uuid4())
+    created_at = _now()
     entry = AuditEntry(
         id=entry_id,
         action=action,
@@ -45,15 +47,44 @@ def log_audit(
         target=target,
         detail=detail or {},
         severity=severity,
-        created_at=_now(),
+        created_at=created_at,
     )
     stores.audit_log[entry_id] = entry.model_dump(mode="json")
+    write_core_audit_sync(
+        hive_entry_to_core(
+            entry_id=entry_id,
+            action=action,
+            actor=actor,
+            target=target,
+            detail=detail,
+            severity=severity,
+            created_at=created_at,
+        )
+    )
 
 
 @router.get("")
-def list_entries(
+async def list_entries(
     action: str | None = None, severity: str | None = None, actor: str | None = None
 ) -> list[dict]:
+    return await audit_entries_view(action=action, severity=severity, actor=actor)
+
+
+async def audit_entries_view(
+    action: str | None = None, severity: str | None = None, actor: str | None = None
+) -> list[dict]:
+    """The one audit-log read every surface shares (#389).
+
+    `GET /v1/audit`, the settings-change trail and the schedule fire history
+    all serve the same durable log, so they share this read: the core
+    Sentinel store when a Container exposes one, otherwise the same rows from
+    the hive dict `log_audit` wrote (unit tests, boot ordering). Both legs
+    return the Hive HTTP shape, so callers filter and sort identically.
+    """
+    core_entries = await list_core_audit_entries(action=action, severity=severity, actor=actor)
+    if core_entries is not None:
+        return core_entries
+
     entries = list(stores.audit_log.values())
 
     def _field(e: object, name: str) -> str:

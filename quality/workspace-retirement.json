@@ -717,7 +717,8 @@
       "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
       "delete_by": "v1.0",
       "owner": "#1047",
-      "importers": []
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "store",

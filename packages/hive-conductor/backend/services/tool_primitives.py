@@ -16,6 +16,8 @@ from collections.abc import Awaitable, Callable, Hashable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
+from maistro.identity import Principal
+
 JIRA_PROVIDER_IDS: tuple[str, ...] = (
     "atlassian_server_jira",
     "jira",
@@ -49,7 +51,9 @@ class ToolCallContext:
 
     @classmethod
     def from_request_state(cls, state_user: object) -> ToolCallContext:
-        """Build context from FastAPI request state user data."""
+        """Build context from a canonical Principal or legacy session dict."""
+        if isinstance(state_user, Principal):
+            return cls(state_user.actor_id() or "dev")
         user = state_user if isinstance(state_user, dict) else {}
         return cls(str(user.get("id") or user.get("username") or "dev"))
 
