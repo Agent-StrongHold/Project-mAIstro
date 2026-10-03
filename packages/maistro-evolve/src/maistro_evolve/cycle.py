@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import random
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from .crossover import crossover_and_mutate
-from .fitness import compute_fitness
+from .fitness import compute_fitness, passes_hard_gate
 from .harness import EvalHarness, evidence_method
 from .hyper_mutator import entry_node, hyper_mutate, slot_lineage
 from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
@@ -23,6 +23,12 @@ from .promotion import (
     objective_version,
 )
 from .reflect import reflective_improve
+from .retrodiction import (
+    PrefilterConfig,
+    PrefilterDecision,
+    RetrodictionPrefilter,
+    TraceLedger,
+)
 from .tournament import EloTournament
 from .types import FitnessComponents, PipelineGenome
 
@@ -91,6 +97,15 @@ class EvolutionConfig(BaseModel):
     # agent-nondeterminism noise on repeat sampling (a genome scored 0.76 then
     # 0.0 across two identical evals in a live run).
     eval_ema_alpha: float = Field(default=0.5, gt=0.0, le=1.0)
+    # M4-A5 retrodiction prefilter: before spending a fresh isolated
+    # execution / frontier call, replay the candidate against prior cycle
+    # traces (content-addressed in a TraceLedger). "enforce" skips known
+    # total-failure repeats and deprioritizes low-information repeats;
+    # "shadow" records the same verdicts but still evaluates everything, so
+    # the false-negative rate is measured before the filter is trusted;
+    # "off" disables it. The prefilter never feeds promotion — winners still
+    # go through the real evaluator plus the human approval gate.
+    retrodiction: Literal["enforce", "shadow", "off"] = "enforce"
     # How many already-evaluated genomes get a FRESH independent sample per
     # cycle (#854). The cycle used to evaluate every genome exactly once —
     # a lucky first sample became permanent and the EMA never ran through the
@@ -157,6 +172,21 @@ class EvolutionCycle:
         self.fitness_evidence: dict[str, FitnessEvidenceRecord] = {}
         self._island_pop: IslandPopulation | None = None
         self._cycle_count: int = 0
+        # Prior-cycle trace evidence for the retrodiction prefilter (M4-A5).
+        # The ledger deliberately outlives individual run_cycle() calls — the
+        # point is replaying THIS cycle's candidates against traces recorded
+        # by PRIOR cycles. The prefilter itself is rebuilt per run_cycle()
+        # from EvolutionConfig (mode may change between cycles).
+        self._ledger = TraceLedger()
+        self._prefilter: RetrodictionPrefilter | None = None
+
+    @property
+    def prefilter_stats(self) -> dict[str, Any] | None:
+        """Cumulative prefilter accounting (decisions, measured savings,
+        measured false-negative risk), or None when the prefilter is off."""
+        if self._prefilter is None:
+            return None
+        return self._prefilter.stats.summary()
 
     @staticmethod
     def _fold_score(
@@ -201,9 +231,11 @@ class EvolutionCycle:
         genome: PipelineGenome,
         cfg: EvolutionConfig,
         llm_call: Any,
-    ) -> None:
+    ) -> list[Any]:
         """Evaluate one genome across the config's benchmarks, EMA-folding each
-        result into its evidence (shared by first-eval and reconfirmation)."""
+        result into its evidence (shared by first-eval, reconfirmation, and
+        the retrodiction-prefiltered eval path, which replays the returned
+        results into the trace ledger)."""
         results = await self.harness.evaluate_genome(genome, cfg.target_benchmarks, llm_call)
         for r in results:
             self._fold_score(
@@ -230,6 +262,49 @@ class EvolutionCycle:
             ) / max(len(genome.eval_scores), 1)
         self._stamp_evidence(genome, cfg)
         genome.updated_at = datetime.now(UTC).isoformat()
+        return results
+
+    def _decide_batch(
+        self,
+        batch: list[PipelineGenome],
+        config: EvolutionConfig,
+        population: PopulationStore,
+    ) -> dict[str, PrefilterDecision]:
+        """Run the retrodiction prefilter over the eval batch, recording each
+        decision (with trace-id evidence) on the genome."""
+        decisions: dict[str, PrefilterDecision] = {}
+        prefilter = self._prefilter
+        if prefilter is None:
+            return decisions
+        for genome in batch:
+            decision = prefilter.decide(genome, config.target_benchmarks)
+            decisions[genome.id] = decision
+            genome.harness_params["retrodiction"] = decision.summary()
+            population.add(genome)
+        return decisions
+
+    async def _evaluate_one(
+        self,
+        genome: PipelineGenome,
+        population: PopulationStore,
+        config: EvolutionConfig,
+        llm_call: Any,
+        prefilter: RetrodictionPrefilter | None,
+        decision: PrefilterDecision | None,
+    ) -> None:
+        results = await self._eval_and_fold(genome, config, llm_call)
+        population.add(genome)
+        if prefilter is not None:
+            # Real results become replayable evidence for later cycles (stub
+            # results are refused inside record()).
+            if results:
+                self._ledger.record(genome, results, cycle_index=self._cycle_count)
+            if decision is not None and decision.verdict != "allow":
+                # The filter tried to reject (shadow) or park (deprioritize)
+                # this candidate, yet it was fully evaluated: reconcile the
+                # outcome so the false-negative rate is measured against
+                # candidates that later succeed, not assumed away.
+                prefilter.observe_outcome(decision, passes_hard_gate(genome), genome_id=genome.id)
 
     async def _evaluate_unevaluated(
         self,
@@ -240,9 +315,40 @@ class EvolutionCycle:
         all_genomes = population.list_all()
         unevaluated = [g for g in all_genomes if g.fitness_score is None or not g.eval_scores]
         batch = unevaluated[: config.eval_batch_size]
-        for genome in batch:
-            await self._eval_and_fold(genome, config, llm_call)
-            population.add(genome)
+
+        # M4-A5 retrodiction prefilter: replay each proposed candidate against
+        # prior cycle traces BEFORE spending harness executions. Decisions are
+        # recorded on the genome (harness_params["retrodiction"]) with the
+        # trace ids and reason codes that caused them. Novel work runs first,
+        # low-information repeats are deprioritized to the back of the batch,
+        # and known-total-failure repeats are skipped in enforce mode. A
+        # candidate with no/partial evidence is never filtered, and nothing
+        # here touches promotion: winners still require the real evaluator
+        # path plus the human approval gate (promote_audited).
+        decisions = self._decide_batch(batch, config, population)
+        prefilter = self._prefilter
+
+        def _triage_rank(genome: PipelineGenome) -> int:
+            decision = decisions.get(genome.id)
+            if decision is not None and prefilter is not None and prefilter.deprioritizes(decision):
+                return 1
+            return 0
+
+        # Stable sort: novel candidates keep their original order and run
+        # before deprioritized repeats.
+        for genome in sorted(batch, key=_triage_rank):
+            decision = decisions.get(genome.id)
+            if decision is not None and prefilter is not None and prefilter.would_filter(decision):
+                # Enforce-rejected: an exact repeat of a payload whose recorded
+                # evidence already fails the hard gate on every requested
+                # benchmark. Its prior traces stay in the ledger; the skipped
+                # rerun is the measured saving, not a new evaluation result.
+                continue
+            await self._evaluate_one(genome, population, config, llm_call, prefilter, decision)
+
+        prefilter = self._prefilter
+        if prefilter is not None and prefilter.stats.candidates_seen:
+            logger.info("retrodiction_prefilter stats: %s", self.prefilter_stats)
 
     async def _reconfirm_candidates(
         self,
@@ -455,6 +561,7 @@ class EvolutionCycle:
             goal=config.goal,
             preferences=config.user_preferences,
             history=[(exc, sc) for exc, sc in stored][-window:] if window > 0 else [],
+            prefilter=self._prefilter,
         )
         if outcome is None:
             return
@@ -539,6 +646,8 @@ class EvolutionCycle:
 
             # Propose-then-verify (GEPA-style): the parent is never mutated in
             # place; an accepted challenger joins the pool as its child.
+            # The prefilter triages proposed challengers against prior traces
+            # before their verification evals (frontier-call spend).
             outcome = await reflective_improve(
                 genome,
                 self.harness,
@@ -548,6 +657,7 @@ class EvolutionCycle:
                 accept_margin=config.self_improve_accept_margin,
                 prompt_history=prompt_history,
                 node_attribution=config.node_attribution,
+                prefilter=self._prefilter,
             )
             if outcome is not None and outcome.accepted and outcome.challenger is not None:
                 # Winner's-curse provenance (#854) — same guard as the
@@ -592,6 +702,18 @@ class EvolutionCycle:
             genome.updated_at = datetime.now(UTC).isoformat()
             population.add(genome)
 
+    def _prefilter_for_mode(self, cfg: EvolutionConfig) -> RetrodictionPrefilter | None:
+        """Rebuild the M4-A5 prefilter per cycle from config.
+
+        The trace ledger persists across cycles on this EvolutionCycle
+        instance; only the mode wrapper is recreated.
+        """
+        if cfg.retrodiction == "off":
+            return None
+        if cfg.retrodiction == "shadow":
+            return RetrodictionPrefilter(self._ledger, PrefilterConfig(mode="shadow"))
+        return RetrodictionPrefilter(self._ledger, PrefilterConfig(mode="enforce"))
+
     async def run_cycle(
         self,
         population: PopulationStore,
@@ -599,6 +721,10 @@ class EvolutionCycle:
         config: EvolutionConfig | None = None,
     ) -> PopulationStore:
         cfg = config or EvolutionConfig()
+
+        # M4-A5: rebuild the prefilter per cycle from config; the trace ledger
+        # persists across cycles on this EvolutionCycle instance.
+        self._prefilter = self._prefilter_for_mode(cfg)
 
         if self.harness.fidelity != "real":
             logger.warning(
