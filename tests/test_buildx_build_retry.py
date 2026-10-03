@@ -36,7 +36,7 @@ log="{log}"
 count_file="{count_file}"
 count=$(cat "$count_file")
 count=$((count + 1))
-echo "$count" > "$count_file"
+printf '%s\n' "$count" > "${count_file}.tmp" && mv "${count_file}.tmp" "$count_file"
 echo "attempt $count: $*" >> "$log"
 if [[ "$1" == "buildx" && "$2" == "build" ]]; then
     if [[ $count -le {fail_count} ]]; then
@@ -55,7 +55,7 @@ set -euo pipefail
 count_file="{count_file}"
 count=$(cat "$count_file")
 count=$((count + 1))
-echo "$count" > "$count_file"
+printf '%s\n' "$count" > "${count_file}.tmp" && mv "${count_file}.tmp" "$count_file"
 if [[ "$1" == "buildx" && "$2" == "build" ]]; then
     exec /bin/sleep 60
 fi
