@@ -1472,6 +1472,7 @@ async def test_a_crash_between_mint_and_queue_is_resumed_not_stranded(scoped) ->
         name=work.name,
         source=TASK_QUEUE_SOURCE,
         description=request.description,
+        actor_principal_id="alice",
         provenance={TASK_ID_KEY: task_id},
     )
     assert run.status is RunStatus.CREATED

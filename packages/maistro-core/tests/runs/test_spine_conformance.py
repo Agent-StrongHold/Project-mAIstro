@@ -192,10 +192,13 @@ async def test_a_task_receipt_finds_its_run_and_only_that_run(spine: Any) -> Non
     store, workspace, project_id = spine
     named = await store.create_run(
         _graph(workspace, project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         provenance={"admission_source": "task_queue", "task_id": "receipt-1"},
     )
     # A neighbor the scan passes over without matching.
-    await store.create_run(_graph(workspace, project_id))
+    await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     found = await store.find_run_by_task_receipt("receipt-1")
 
