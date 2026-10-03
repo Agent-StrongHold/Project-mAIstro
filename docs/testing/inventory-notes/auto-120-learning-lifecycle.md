@@ -46,3 +46,22 @@ lint caught), its five acceptance bullets gained **AC-N** ids plus `ac-modules:`
 anchors, and the five AC test classes gained matching `@pytest.mark.ac` markers so
 the ac-state mandate proves each criterion. No tests were added or removed in this
 round — the suite delta above is unchanged.
+
+Third CI-repair round: the board's `integration-scope = failure` at 8ef23ff96 was a
+collective transient, not a branch defect — the aggregator's poll loop died on a
+github.com 503 (`No server is currently available to service your request`) while
+two required checks were still running, and every required specialized check on that
+SHA (docker-build, durable-events, strike-ladder, wheel-imports, postgres pg17/pg18,
+object storage MinIO, hive-conductor-e2e, hive-conductor-e2e-ui) ultimately concluded
+success per the checks API. The develop-sync block was likewise already resolved:
+8ef23ff96 *is* the merge of cf4a562b (origin/develop) and `git diff --numstat
+origin/develop -- quality/` shows only the appended ac-state note, no ledger rows
+lost. No production or test file changed in this round; validation re-proven locally:
+ruff check/format green, all 165 learnings tests green, suite inventory 12385 matches,
+vulture with CI's exact arguments exits 0 at 1355/1355 banked identities,
+check-ac-state exits 0, and the 18 check-integration-scope script tests pass. The
+load-bearing supersede/consolidate store-ordering regression guard was mutation-
+checked: inverting `supersede`'s deactivate-before-store ordering fails exactly
+`test_supersede_keeps_the_old_record_reachable` and
+`test_supersede_drops_the_old_side_from_retrieval_only`, so the tests catch the
+erase-in-place regression this lifecycle exists to prevent.
