@@ -27,6 +27,8 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from maistro.identity import Principal
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) in sys.path:
     sys.path.remove(str(_BACKEND))
@@ -38,10 +40,10 @@ _USER_ID = "cancel-route-user"
 
 
 class _ScopedRequest:
-    """Just what the dag-runs handlers read off a request: `state.user`."""
+    """Just what the dag-runs handlers read off a request: `state.principal`."""
 
     def __init__(self, user_id: str) -> None:
-        self.state = SimpleNamespace(user={"id": user_id, "username": user_id})
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id, username=user_id))
 
 
 async def _owned_workspace() -> Any:
@@ -89,7 +91,7 @@ async def _long_running_canonical_run(
         name="Long-running DAG",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=_USER_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
 
     provider_exits: list[str] = []
@@ -273,7 +275,7 @@ async def test_list_overlays_only_canonical_runs_the_caller_may_read(
             name="listed",
             nodes=[Node(node_id="n", node_type="agent")],
         )
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=_USER_ID)
         await store.transition_run(run.run_id, RunStatus.CANCELLED)
         return run.run_id
 

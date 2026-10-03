@@ -28,7 +28,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .fitness import hard_gate_threshold
-from .harness import EvalHarness
+from .harness import EvalHarness, evidence_method
 from .retrodiction import PrefilterDecision, RetrodictionPrefilter
 from .types import NodeGenome, PipelineGenome
 
@@ -348,6 +348,7 @@ async def _evaluate_candidates(
             prefilter.ledger.record(challenger, results)
         score = results[0].score
         challenger.eval_scores[weakest] = score
+        challenger.eval_evidence[weakest] = evidence_method(results[0])
         challenger.harness_params["total_cost_usd"] = results[0].cost_usd
         if best_score is None or score > best_score:
             best_score = score
