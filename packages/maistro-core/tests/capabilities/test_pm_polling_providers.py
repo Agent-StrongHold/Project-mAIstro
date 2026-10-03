@@ -109,8 +109,9 @@ async def test_execute_jira_rejects_a_provider_that_was_never_credential_routed(
     `CredentialRouting` before it reaches an executor; a bare Provider here
     means that seam was skipped, and the secret-bearing request must not go
     out regardless."""
-    provider = JiraProvider(base_url="https://jira.example.com", flavor="cloud", email=None,
-                             capability="jira.search")
+    provider = JiraProvider(
+        base_url="https://jira.example.com", flavor="cloud", email=None, capability="jira.search"
+    )
 
     with pytest.raises(TypeError, match="must be credential-routed"):
         await execute_jira(provider, JiraPollRequest(jql="x", max_results=1), timeout_s=1.0)

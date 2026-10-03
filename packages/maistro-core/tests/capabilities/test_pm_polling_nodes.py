@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
 import httpx
-
 import pytest
 
 from maistro.capabilities.binding import Binding
@@ -480,7 +480,9 @@ async def test_invoke_jira_poll_rejects_a_binding_resolved_for_another_capabilit
         provider_name="jira",
     )
 
-    with pytest.raises(ValueError, match="unexpected Jira capability 'airtable.records'"):
+    with pytest.raises(
+        ValueError, match=re.escape("unexpected Jira capability 'airtable.records'")
+    ):
         await invoke_jira_poll(
             effects,
             binding=binding,
@@ -505,7 +507,7 @@ async def test_invoke_airtable_poll_rejects_a_binding_resolved_for_another_capab
         provider_name="airtable",
     )
 
-    with pytest.raises(ValueError, match="unexpected Airtable capability 'jira.search'"):
+    with pytest.raises(ValueError, match=re.escape("unexpected Airtable capability 'jira.search'")):
         await invoke_airtable_poll(
             effects,
             binding=binding,

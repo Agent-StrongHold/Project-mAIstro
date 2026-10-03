@@ -82,9 +82,7 @@ async def _cleanup(pool: Any, suffix: str, budget_ids: list[str]) -> None:
             f"pg-invocation-%-{suffix}",
         )
         for budget_id in budget_ids:
-            await conn.execute(
-                "DELETE FROM invocation_quota_budgets WHERE budget_id=$1", budget_id
-            )
+            await conn.execute("DELETE FROM invocation_quota_budgets WHERE budget_id=$1", budget_id)
 
 
 @pytest.mark.asyncio

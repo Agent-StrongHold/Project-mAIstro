@@ -14,9 +14,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
-
 import aiosqlite
+import pytest
 
 from maistro.capabilities.approval_store import SqliteApprovalStore
 from maistro.capabilities.binding_store import InMemoryBindingStore, SqliteBindingStore
