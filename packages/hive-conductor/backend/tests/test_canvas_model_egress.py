@@ -31,6 +31,7 @@ from maistro.capabilities.providers.llm_gateway import (
 )
 from maistro.credentials.types import CredentialRecord
 from maistro.graph.definitions import Graph, Node
+from maistro.identity import Principal
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -879,7 +880,7 @@ def test_trusted_canvas_context_resolves_supplied_execution_identity(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "binding_id": context["binding_id"],
                 "run_id": context["run_id"],
@@ -914,7 +915,7 @@ def test_trusted_canvas_context_refuses_run_mismatch(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {"run_id": context["run_id"]},
         }
     )
@@ -933,7 +934,7 @@ def test_trusted_canvas_context_refuses_unknown_quality_node(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "run_id": context["run_id"],
                 "node_id": "not-a-quality-node",
@@ -955,7 +956,7 @@ def test_trusted_canvas_context_refuses_unknown_node_run(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "run_id": context["run_id"],
                 "node_run_id": "no-such-node-run",
@@ -984,7 +985,7 @@ def test_trusted_canvas_context_refuses_foreign_node_run(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "run_id": context["run_id"],
                 "node_run_id": other_node_run.node_run_id,
@@ -1012,7 +1013,7 @@ def test_trusted_canvas_context_refuses_foreign_attempt(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "run_id": context["run_id"],
                 "node_run_id": context["node_run_id"],
