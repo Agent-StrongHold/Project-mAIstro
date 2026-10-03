@@ -37,3 +37,33 @@ Seven tests added in `packages/hive-conductor/backend/tests/test_degraded_mode_s
 The product E2E half is `packages/hive-conductor/frontend/e2e/degraded-mode.spec.ts`
 (banner + `hctl status` against intercepted `/health` payloads); its
 execution in a deployed stack is tracked in KNOWN-GAPS under #302.
+
+## CI-repair addendum: frontend-typed-client ratchet
+
+The `frontend-typed-client` ratchet (#1048 P0.3) landed after this branch and
+flags it at the merge queue: the new `DegradedBanner` raw `fetch("/health")`
+and local `DegradedService` type are unbanked debt, and inserting the banner
+import/render plus the CLI degraded-status block shifted four pre-existing
+banked `raw_fetch` rows (`AppShell.tsx` logout, `CLI.tsx` agents/health/
+sessions) onto new line-keyed identities, which the gate reads as fix+new.
+
+Repair (all gate-sanctioned, no runtime behavior change to pre-existing code):
+
+- `DegradedBanner` now fetches through the shared client (`apiGet`), keeping
+  the deliberate silent-on-failure contract — new code adds no raw-fetch debt;
+- the local `DegradedService` type carries a `frontend-typed-client: allow`
+  waiver: `/health` returns a plain dict (no `response_model`), so no
+  generated OpenAPI type exists to import instead;
+- the four drifted pre-existing fetches carry waivers noting the drift cause
+  (migrating them to the typed client is #1048 cutover work, not #97);
+- `quality/frontend-typed-client-baseline.json` was rewritten with
+  `--write-baseline` so the candidate ledger matches the tree exactly. The
+  ratchet strictly shrinks against the base: raw fetch 64 → 60, hand-typed
+  142 → 142. No grant was needed (none exists for this ratchet, and grants
+  are read from the merge base anyway).
+
+Verified locally: `check-frontend-typed-client.py` exits 0;
+`check-frontend-api-routes.py` ok (230 routes); `tsc --noEmit` clean;
+`eslint` clean within the warning budget; the 7 degraded-mode backend tests
+still pass.
+

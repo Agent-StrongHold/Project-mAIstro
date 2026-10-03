@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { apiGet } from "../lib/api";
 
+// frontend-typed-client: allow /health returns a plain dict (no response_model), so no generated OpenAPI type exists yet for degraded services (#1048 cutover).
 type DegradedService = { service: string; reason: string };
 
 /** M3-B7 (#97): the user-facing half of Conductor degraded mode.
@@ -28,8 +30,10 @@ export function DegradedBanner() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/health")
-      .then((r) => (r.ok ? r.json() : null))
+    // Shared client (frontend-typed-client ratchet): still deliberately silent
+    // on failure — apiGet throws ApiError and the .catch keeps the banner
+    // (whose job is to report a degraded Conductor) out of a bad day's noise.
+    apiGet<{ degraded_services?: unknown }>("/health")
       .then((h) => {
         if (!cancelled && h && Array.isArray(h.degraded_services)) {
           setServices(h.degraded_services as DegradedService[]);

@@ -58,6 +58,7 @@ const fullNav = [
 
 async function logout() {
   try {
+    // frontend-typed-client: allow pre-existing banked raw fetch (was :60); line shifted by the #97 DegradedBanner import/render above.
     await fetch("/v1/auth/logout", { method: "POST", credentials: "same-origin" });
   } catch {
     // best effort — even if it fails, redirecting lets the user log in fresh.

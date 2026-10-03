@@ -51,13 +51,16 @@ export default function CLI() {
 
     try {
       if (c === "hctl agents") {
+        // frontend-typed-client: allow pre-existing banked raw fetch (was :44); line shifted by the #97 degraded-status block in load().
         const data = await fetch("/v1/agents").then((r) => r.json());
         setLines((prev) => [...prev, ...data.map((a: { name: string; status: string; model: string; tasks_completed: number }) => `  ${a.name.padEnd(20)} ${a.status.padEnd(10)} ${a.model.padEnd(30)} ${a.tasks_completed} tasks`)]);
       } else if (c === "hctl health") {
+        // frontend-typed-client: allow pre-existing banked raw fetch (was :47); line shifted by the #97 degraded-status block in load().
         const data = await fetch("/health").then((r) => r.json());
         const jsonLines = JSON.stringify(data, null, 2).split("\n").map((l: string) => `  ${l}`);
         setLines((prev) => [...prev, ...jsonLines]);
       } else if (c === "hctl sessions") {
+        // frontend-typed-client: allow pre-existing banked raw fetch (was :51); line shifted by the #97 degraded-status block in load().
         const data = await fetch("/v1/chat/sessions").then((r) => r.json());
         setLines((prev) => [...prev, ...data.map((s: { id: string; title: string; message_count: number }) => `  ${s.id.slice(0, 8)}  ${s.title.padEnd(30)} ${s.message_count} msgs`)]);
       } else if (c === "help" || c === "hctl") {
