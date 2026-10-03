@@ -20,7 +20,7 @@ from typing import Any
 from maistro.runs.aggregation import terminal_run_payload
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
-    attempt_lease_is_live,
+    has_live_execution_lease,
     settle_open_node_run,
     transition_node_run,
     transition_run,
@@ -562,9 +562,11 @@ class CanonicalDurableRunStore:
 
     def _has_stalled_active_frontier(self, record: DurableRunRecord, moment: datetime) -> bool:
         """Whether active NodeRuns exist with no live Attempt holding them."""
-        active_node_runs = self._active_node_runs(record)
-        if not active_node_runs:
-            return False
+        active_node_runs = [
+            node_run
+            for node_run in record.node_runs
+            if node_run.status in {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING}
+        ]
         for node_run in active_node_runs:
             attempts = [
                 attempt
@@ -573,18 +575,9 @@ class CanonicalDurableRunStore:
             ]
             if not attempts:
                 return True
-            if any(attempt_lease_is_live(attempt, moment) for attempt in attempts):
+            if has_live_execution_lease(attempts, moment):
                 return False
         return True
-
-    @staticmethod
-    def _active_node_runs(record: DurableRunRecord) -> list[NodeRun]:
-        """NodeRuns that still owe the spine an outcome."""
-        return [
-            node_run
-            for node_run in record.node_runs
-            if node_run.status in {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING}
-        ]
 
     def _terminal_long_observed(self, continuation: GraphContinuation, moment: datetime) -> bool:
         """Whether this terminal continuation version has been seen for the quiet period.
