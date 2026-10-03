@@ -119,6 +119,32 @@ def test_expander_raises_on_unusable_output(monkeypatch: pytest.MonkeyPatch, pay
         _expander().expand("q")
 
 
+def test_expander_rejects_non_string_completion_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-string completion payload is a failure, never a best guess."""
+    _install(monkeypatch, {"choices": [{"message": {"content": 123}}]})
+    with pytest.raises(ExpansionError, match="not a string"):
+        _expander().expand("q")
+
+
+def test_expander_drops_non_string_blank_and_duplicate_terms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Term cleanup: non-strings, blanks and duplicates never reach the index."""
+    _install(monkeypatch, _completion('["queue", 42, "  ", "queue", null]'))
+    assert _expander().expand("q") == ["queue"]
+
+
+def test_expander_rejects_fenced_prose_without_an_array(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fence whose chunks hold no array still ends in ExpansionError."""
+    _install(monkeypatch, _completion("```text\nplain prose, no brackets\n```"))
+    with pytest.raises(ExpansionError, match="no JSON array"):
+        _expander().expand("q")
+
+
 def test_expander_maps_gateway_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, error=LlmAuthError("llm_auth_failed status=401", status_code=401))
     with pytest.raises(ExpansionError, match="expansion request failed"):
