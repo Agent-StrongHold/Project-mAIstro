@@ -17,6 +17,29 @@ from maistro.types.memory import CONTRADICT_DELTA, REINFORCE_DELTA
 
 logger = logging.getLogger(__name__)
 
+
+def _consolidation_anchor(survivors: list[Learning], lr: Learning) -> Learning | None:
+    """The already-kept duplicate ``lr`` should be absorbed into, if any.
+
+    Duplicates share the tool and scope axes and overlap at least half of
+    their trigger keys (the same rule the store's write-path dedup uses).
+    Extracted from ``consolidate`` so the merge sweep reads as a sweep.
+    """
+    return next(
+        (
+            s
+            for s in survivors
+            if s.tool_name == lr.tool_name
+            and s.org_id == lr.org_id
+            and s.team_id == lr.team_id
+            and s.user_id == lr.user_id
+            and s.agent_id == lr.agent_id
+            and lifecycle.trigger_key_overlap(s.trigger_keys, lr.trigger_keys) >= 0.5
+        ),
+        None,
+    )
+
+
 MAX_LEARNINGS = 10_000
 
 
@@ -339,19 +362,7 @@ class InMemoryLearningStore:
         ]
         survivors: list[Learning] = []
         for lr in pool:
-            anchor = next(
-                (
-                    s
-                    for s in survivors
-                    if s.tool_name == lr.tool_name
-                    and s.org_id == lr.org_id
-                    and s.team_id == lr.team_id
-                    and s.user_id == lr.user_id
-                    and s.agent_id == lr.agent_id
-                    and lifecycle.trigger_key_overlap(s.trigger_keys, lr.trigger_keys) >= 0.5
-                ),
-                None,
-            )
+            anchor = _consolidation_anchor(survivors, lr)
             if anchor is None:
                 survivors.append(lr)
             else:

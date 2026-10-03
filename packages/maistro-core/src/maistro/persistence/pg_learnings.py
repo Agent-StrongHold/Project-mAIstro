@@ -174,7 +174,7 @@ class PgLearningStore:
                 # its default. `hit_count` is usually 0 on a new learning, but
                 # a caller that supplies one — a re-import, a merge — must get
                 # it back, and `find_relevant` orders by it. The lifecycle
-                # fields (ADR-092) are written for the same reason: a restart
+                # fields (ADR-100126-8c2d) are written for the same reason: a restart
                 # must not demote a validated learning back to a local belief.
                 """INSERT INTO learnings
                    (category, trigger_keys, learning, tool_name, source_query,
@@ -605,53 +605,66 @@ def _load_keys(raw: object) -> list[str]:
     return []
 
 
-def _row_to_learning(row: asyncpg.Record) -> Learning:
-    return Learning(
-        id=row["id"],
-        category=row.get("category") or "",
-        trigger_keys=_load_keys(row.get("trigger_keys")),
-        learning=row["learning"],
-        tool_name=row.get("tool_name", ""),
+def _provenance_fields(row: asyncpg.Record) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": _load_keys(row.get("trigger_keys")),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name", ""),
         # Preserve both the provenance query and team scope on reads; they are
         # part of the Learning contract, not write-only SQL columns.
-        source_query=row.get("source_query", ""),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=row.get("team_id") or "",
-        scope=MemoryScope(row.get("scope") or "agent"),
-        hit_count=row.get("hit_count", 0),
-        status=row.get("status", "active"),
-        rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention", ""),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
+        "source_query": row.get("source_query", ""),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": row.get("team_id") or "",
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status", "active"),
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention", ""),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
         # `or ""` because the columns are nullable and the dataclass fields are
         # not: a row with no producer comes back as a Learning naming none,
         # which is the same fact in the shape the caller expects (#709).
-        run_id=row.get("run_id") or "",
-        node_run_id=row.get("node_run_id") or "",
-        attempt_id=row.get("attempt_id") or "",
-        # Lifecycle + epistemics (ADR-092). Defaults mirror the dataclass so a
-        # row written before migration 048 reads back as the local empirical
-        # learning it was, not as something the system never claimed.
-        stage=LearningStage(row.get("stage") or "learning"),
-        epistemic_type=EpistemicType(row.get("epistemic_type") or "empirical"),
-        confidence=(
+        "run_id": row.get("run_id") or "",
+        "node_run_id": row.get("node_run_id") or "",
+        "attempt_id": row.get("attempt_id") or "",
+    }
+
+
+def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
+    """The lifecycle + epistemics columns (ADR-100126-8c2d) of a learnings row.
+
+    Defaults mirror the dataclass so a row written before migration 051 reads
+    back as the local empirical learning it was, not as something the system
+    never claimed.
+    """
+    return {
+        "stage": LearningStage(row.get("stage") or "learning"),
+        "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
+        "confidence": (
             float(row["confidence"])
             if row.get("confidence") is not None
             else DEFAULT_LEARNING_CONFIDENCE
         ),
-        applicability=_load_applicability(row.get("applicability")),
-        reinforcement_count=row.get("reinforcement_count") or 0,
-        contradiction_count=row.get("contradiction_count") or 0,
-        created_at=row.get("created_at") or datetime.now(UTC),
-        last_confirmed_at=row.get("last_confirmed_at"),
-        validated_by=row.get("validated_by") or "",
-        validated_at=row.get("validated_at"),
-        supersedes=row.get("supersedes"),
-        superseded_by=row.get("superseded_by"),
-    )
+        "applicability": _load_applicability(row.get("applicability")),
+        "reinforcement_count": row.get("reinforcement_count") or 0,
+        "contradiction_count": row.get("contradiction_count") or 0,
+        "created_at": row.get("created_at") or datetime.now(UTC),
+        "last_confirmed_at": row.get("last_confirmed_at"),
+        "validated_by": row.get("validated_by") or "",
+        "validated_at": row.get("validated_at"),
+        "supersedes": row.get("supersedes"),
+        "superseded_by": row.get("superseded_by"),
+    }
+
+
+def _row_to_learning(row: asyncpg.Record) -> Learning:
+    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
 
 
 def _load_applicability(raw: object) -> dict[str, list[str]]:

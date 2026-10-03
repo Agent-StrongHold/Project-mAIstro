@@ -59,7 +59,7 @@ FAST_DECAY: float = 2.0  # decay_rate multiplier on thumbs-down
 WISDOM_PROMOTE_THRESHOLD: int = 5  # reinforcement_count to promote -> WISDOM
 REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
 
-# Learning pipeline dynamics (ADR-092 / EPIC M4-B). A validated learning cannot
+# Learning pipeline dynamics (ADR-100126-8c2d / EPIC M4-B). A validated learning cannot
 # sit below the validation floor -- the Gauntlet accepted its evidence -- and
 # failure knowledge decays slowest: an anti-pattern cost a real failure to
 # learn, and forgetting it re-buys that failure (the Learning-side mirror of
@@ -95,7 +95,7 @@ SCOPE_RANK: dict[MemoryScope, int] = {
 
 
 class LearningStage(StrEnum):
-    """Stages of the learning pipeline (ADR-092, M4-B #117).
+    """Stages of the learning pipeline (ADR-100126-8c2d, M4-B #117).
 
     MEMORY -> LEARNING -> VALIDATED -> REPERTOIRE:
 
@@ -170,7 +170,7 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
-    # Pipeline + epistemics (ADR-092, EPIC M4-B). `stage` is the knowledge
+    # Pipeline + epistemics (ADR-100126-8c2d, EPIC M4-B). `stage` is the knowledge
     # pipeline position; `status` stays the store-level row state. They move
     # together only where they must: committing a learning to the repertoire
     # sets status="promoted" so existing promoted-only readers keep working.

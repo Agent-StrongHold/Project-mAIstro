@@ -4,7 +4,7 @@ When a learning's hit_count crosses the promotion threshold,
 it graduates to 'promoted' status and optionally triggers
 skill mutation via the SkillForge protocol.
 
-Ported from Stronghold. Since ADR-092 (M4-B #118), a configured Gauntlet
+Ported from Stronghold. Since ADR-100126-8c2d (M4-B #118), a configured Gauntlet
 stands between the threshold and the repertoire: hit_count alone only makes a
 learning a *candidate* -- it joins the collective repertoire when the
 Gauntlet accepts the outcome evidence later Runs recorded, and is left in
@@ -31,7 +31,7 @@ from maistro.types.memory import (
 
 if TYPE_CHECKING:
     from maistro.memory.learnings.approval import LearningApprovalGate
-    from maistro.memory.learnings.gauntlet import LearningGauntlet
+    from maistro.memory.learnings.gauntlet import GauntletVerdict, LearningGauntlet
     from maistro.memory.mutations import InMemorySkillMutationStore
     from maistro.protocols.memory import LearningStore
     from maistro.protocols.skills import SkillForge
@@ -95,17 +95,10 @@ class LearningPromoter:
         recorded better evidence.
         """
         assert self._gauntlet is not None
-        promoted: list[Learning] = []
 
         all_rows = await self._store.list_all(org_id=org_id, limit=10_000)
-        candidates = [
-            lr
-            for lr in all_rows
-            if (org_id or not lr.org_id)
-            and lr.status == "active"
-            and lr.hit_count >= self._threshold
-        ]
-        for lr in candidates:
+        promoted: list[Learning] = []
+        for lr in self._gauntlet_candidates(all_rows, org_id):
             verdict = await self._gauntlet.evaluate(lr, evidence=evidence_of(lr))
             if not verdict.ok:
                 logger.info(
@@ -114,22 +107,47 @@ class LearningPromoter:
                     verdict.reason,
                 )
                 continue
-            advance_stage(
-                lr,
-                LearningStage.VALIDATED,
-                gauntlet_name=self._gauntlet.name,
-            )
-            commit_to_repertoire(lr)
-            logger.info(
-                "Gauntlet-validated learning #%s joined the repertoire (%s)",
-                lr.id,
-                verdict.reason,
-            )
+            self._admit_validated(lr, verdict)
             if lr.tool_name and self._forge:
                 await self._try_mutate_skill(lr)
             promoted.append(lr)
 
         return promoted
+
+    def _gauntlet_candidates(self, all_rows: list[Learning], org_id: str) -> list[Learning]:
+        """Rows past the hit_count threshold in scope for this sweep.
+
+        Admin-operation scoping, like ``list_all``: a blank ``org_id`` sweeps
+        every org; otherwise only that org's active rows are candidates.
+        """
+        assert self._gauntlet is not None
+        return [
+            lr
+            for lr in all_rows
+            if (org_id or not lr.org_id)
+            and lr.status == "active"
+            and lr.hit_count >= self._threshold
+        ]
+
+    def _admit_validated(self, lr: Learning, verdict: GauntletVerdict) -> None:
+        """Move a Gauntlet-validated learning into the repertoire.
+
+        LEARNING -> VALIDATED records the Gauntlet provenance; VALIDATED ->
+        REPERTOIRE is the commit. Split from the sweep so the promotion
+        semantics stay readable apart from the candidate iteration.
+        """
+        assert self._gauntlet is not None
+        advance_stage(
+            lr,
+            LearningStage.VALIDATED,
+            gauntlet_name=self._gauntlet.name,
+        )
+        commit_to_repertoire(lr)
+        logger.info(
+            "Gauntlet-validated learning #%s joined the repertoire (%s)",
+            lr.id,
+            verdict.reason,
+        )
 
     async def capture_anti_patterns(
         self,

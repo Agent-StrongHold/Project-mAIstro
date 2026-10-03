@@ -2,7 +2,7 @@
 inventory-delta:
   packages/maistro-core/tests: +74
 ---
-# M4-B — validated collective learning (ADR-092, epic #22; children #117–#121)
+# M4-B — validated collective learning (ADR-100126-8c2d, epic #22; children #117–#121)
 
 Four new test files and one, plus contract updates, covering the learning
 pipeline semantics that previously had no tests because the semantics did not
@@ -76,3 +76,33 @@ Discriminating against the pre-change tree: on the base commit the new tests
 fail at import (`LearningStage`/`Gauntlet`/lifecycle module absent), and the
 two contract tests fail on the unpartitioned fields — the fixture that guards
 the persistence twins against silent field loss.
+
+## CI-repair round (develop reconciliation, #121)
+
+Develop landed its own ADR-092 (capability-vs-control posture) and migration
+`048` (canvas retry backoff) while this branch was open, colliding with this
+branch's ADR-092 and `048_learning_lifecycle_columns`. Per ADR-062026-9b30
+(new records take date-based IDs; migration collisions re-parent onto the
+develop chain head) this branch renumbers: the M4-B ADR is now
+`ADR-100126-8c2d` (all references updated, index row moved), and the
+lifecycle-columns migration is now `051` re-parented onto develop's `050`
+head. The migration chain-tip pin now asserts `get_heads() == ["051"]` —
+same test node, extended asserts, no node count change.
+
+The radon gate flagged four new C-grade blocks introduced by the M4-B code
+(`_check_with_gauntlet`, `consolidate`, two `_row_to_learning` twins); all
+four were refactored below the C boundary by extraction (`_gauntlet_candidates`,
+`_admit_validated`, `_consolidation_anchor`, `_provenance_fields`/
+`_lifecycle_fields`) — behavior-preserving, pinned by the same test nodes
+above (567 memory/persistence/agents tests re-run green after each refactor).
+No test nodes were added or removed in this round, so the delta above stands.
+
+Ledger deltas (exact-debt repair): `quality/vulture-baseline.json` banks the
+four reviewed M4-B public-surface identities (`OutcomeEvidenceGauntlet`,
+`ChainedGauntlet`, `effectiveness`, `LearningLifecycleStore`) and prunes
+`store.py::list_ineffective` (the promoter now calls it, so the debt was
+fixed, not retained); `quality/reachability-baseline.json` +
+`reachability-dispositions.json` bank `maistro.memory.learnings.gauntlet` as
+CONNECT library-only surface; matching reviewed grants are recorded in
+`quality/ratchet-authorizations.json`. Per the two-merge rule those grants
+take effect once they sit at the integration base, not in this change.

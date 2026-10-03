@@ -1,4 +1,4 @@
-"""Durable lifecycle state on the SQLite learning twin (M4-B / ADR-092).
+"""Durable lifecycle state on the SQLite learning twin (M4-B / ADR-100126-8c2d).
 
 The in-memory store loses its rows at process end, so "a restart must not
 demote a validated learning back to a local belief" is only provable against a

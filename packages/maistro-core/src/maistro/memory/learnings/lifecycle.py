@@ -1,6 +1,6 @@
 """Learning pipeline lifecycle: Memory -> Learning -> Validated -> Repertoire.
 
-ADR-092 / EPIC M4-B. A learning extracted from memory is local belief; it
+ADR-100126-8c2d / EPIC M4-B. A learning extracted from memory is local belief; it
 becomes validated knowledge only when an independent Gauntlet accepts the
 outcome evidence later Runs recorded (#118), and joins the collective
 repertoire only after that (#117). This module holds the pure transition,

@@ -75,7 +75,7 @@ _LEGACY_UPGRADE_COLUMNS = {
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
 
-#: The lifecycle + epistemics columns (ADR-092, EPIC M4-B). Scalar state gets
+#: The lifecycle + epistemics columns (ADR-100126-8c2d, EPIC M4-B). Scalar state gets
 #: NOT NULL DEFAULT so the ALTER is legal in SQLite; instants and supersession
 #: links stay nullable because an old row genuinely has none, and fabricating
 #: one would lie about when knowledge was confirmed or replaced.
@@ -168,7 +168,7 @@ class SqliteLearningStore:
             for column in _PROVENANCE_COLUMNS:
                 if column not in columns:
                     await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
-            # And for the lifecycle columns (ADR-092): a file created before
+            # And for the lifecycle columns (ADR-100126-8c2d): a file created before
             # M4-B holds rows whose pipeline state was implicit, so the ALTERs
             # stamp the defaults that state always meant.
             for column, column_type in _LIFECYCLE_UPGRADE_COLUMNS.items():
@@ -502,47 +502,60 @@ def _text(row: dict[str, Any], name: str) -> str:
     return str(row.get(name) or "")
 
 
-def _row_to_learning(row: dict[str, Any]) -> Learning:
-    return Learning(
-        id=row["id"],
-        category=row.get("category") or "",
-        trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
-        learning=row["learning"],
-        tool_name=row.get("tool_name") or "",
-        source_query=_text(row, "source_query"),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=_text(row, "team_id"),
-        scope=MemoryScope(row.get("scope") or "agent"),
-        hit_count=row.get("hit_count", 0),
-        status=row.get("status") or "active",
-        rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention") or "",
-        run_id=_text(row, "run_id"),
-        node_run_id=_text(row, "node_run_id"),
-        attempt_id=_text(row, "attempt_id"),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
-        # Lifecycle + epistemics (ADR-092). Defaults mirror the dataclass so a
-        # pre-M4B row reads back as the local empirical learning it was.
-        stage=LearningStage(row.get("stage") or "learning"),
-        epistemic_type=EpistemicType(row.get("epistemic_type") or "empirical"),
-        confidence=(
+def _provenance_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": json.loads(row.get("trigger_keys") or "[]"),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name") or "",
+        "source_query": _text(row, "source_query"),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": _text(row, "team_id"),
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status") or "active",
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention") or "",
+        "run_id": _text(row, "run_id"),
+        "node_run_id": _text(row, "node_run_id"),
+        "attempt_id": _text(row, "attempt_id"),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
+    }
+
+
+def _lifecycle_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The lifecycle + epistemics columns (ADR-100126-8c2d) of a learnings row.
+
+    Defaults mirror the dataclass so a pre-M4B row reads back as the local
+    empirical learning it was, not as something the system never claimed.
+    """
+    return {
+        "stage": LearningStage(row.get("stage") or "learning"),
+        "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
+        "confidence": (
             float(row["confidence"])
             if row.get("confidence") is not None
             else DEFAULT_LEARNING_CONFIDENCE
         ),
-        applicability=_load_applicability(row.get("applicability")),
-        reinforcement_count=row.get("reinforcement_count") or 0,
-        contradiction_count=row.get("contradiction_count") or 0,
-        created_at=_load_moment(row.get("created_at")) or datetime.now(UTC),
-        last_confirmed_at=_load_moment(row.get("last_confirmed_at")),
-        validated_by=_text(row, "validated_by"),
-        validated_at=_load_moment(row.get("validated_at")),
-        supersedes=row.get("supersedes"),
-        superseded_by=row.get("superseded_by"),
-    )
+        "applicability": _load_applicability(row.get("applicability")),
+        "reinforcement_count": row.get("reinforcement_count") or 0,
+        "contradiction_count": row.get("contradiction_count") or 0,
+        "created_at": _load_moment(row.get("created_at")) or datetime.now(UTC),
+        "last_confirmed_at": _load_moment(row.get("last_confirmed_at")),
+        "validated_by": _text(row, "validated_by"),
+        "validated_at": _load_moment(row.get("validated_at")),
+        "supersedes": row.get("supersedes"),
+        "superseded_by": row.get("superseded_by"),
+    }
+
+
+def _row_to_learning(row: dict[str, Any]) -> Learning:
+    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
 
 
 def _utc_text(moment: datetime) -> str:

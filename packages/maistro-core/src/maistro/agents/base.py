@@ -561,7 +561,7 @@ class Agent:
                 org_id=org_id,
             )
             if tool_had_failures and self._learning_promoter:
-                # Failure knowledge capture (#121, ADR-092): this turn's
+                # Failure knowledge capture (#121, ADR-100126-8c2d): this turn's
                 # recorded failure is the evidence that just moved. When a
                 # learning's recorded failures now dominate its successes,
                 # the promoter reclassifies it as retained ANTI_PATTERN
