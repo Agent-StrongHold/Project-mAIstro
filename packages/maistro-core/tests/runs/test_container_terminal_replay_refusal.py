@@ -13,6 +13,7 @@ from maistro.graph import Graph, Node
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 
@@ -38,7 +39,11 @@ async def test_terminal_replay_preserves_logical_cancellation(
             ],
         )
         store = container.run_store
-        run = await store.create_run(graph, initial_status=RunStatus.QUEUED)
+        run = await store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         run = await store.transition_run(run.run_id, RunStatus.RUNNING)
         node = await store.create_node_run(run.run_id, node_id="cancelled")
         await store.transition_node_run(node.node_run_id, RunStatus.QUEUED)
