@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 from config import get_settings
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from models.schemas import ReadyResponse
 
 _START = time.monotonic()
@@ -108,6 +109,74 @@ def _workspace_authority_available() -> bool:
         return False
 
 
+def _optional_routers_state(app: Any) -> dict[str, str | None]:
+    """`{module: error | None}` for the optional feature routers (M3-B7, #97).
+
+    `_include_optional_router` records every mount outcome on
+    `app.state.optional_routers` precisely so a caller can ask what happened;
+    a startup log line is not queryable. Defensive like every probe here:
+    /health must answer even if the attribute is missing (a process still
+    running older code) or holds something unexpected.
+    """
+    state = getattr(app.state, "optional_routers", None)
+    if not isinstance(state, dict):
+        return {}
+    return {str(module): (None if error is None else str(error)) for module, error in state.items()}
+
+
+def _degraded_services(
+    *,
+    llm_configured: bool,
+    memory_decay: dict,
+    memory_decay_enabled: bool,
+    log_redaction: bool,
+    identity: dict,
+    identity_required: bool,
+    optional_routers: dict[str, str | None],
+) -> list[dict[str, str]]:
+    """Name every degraded capability and why, in one stable shape (M3-B7, #97).
+
+    `degraded: true` answers *whether* the Conductor is diminished; a
+    user-facing operating state has to answer *what* and *why* — the UI banner
+    and `hctl status` render this list verbatim, so each reason is written to
+    be shown to a person. Order is stable: the always-present capability
+    checks first, then the optional routers alphabetically.
+    """
+    services: list[dict[str, str]] = []
+    if not llm_configured:
+        services.append(
+            {
+                "service": "llm_gateway",
+                "reason": "no LLM gateway configured (set LITELLM_API_BASE or LITELLM_PROXY_URL)",
+            }
+        )
+    if not memory_decay_enabled:
+        services.append(
+            {
+                "service": "memory_decay",
+                "reason": f"episodic decay is not running (state: {memory_decay.get('state', 'unknown')})",
+            }
+        )
+    if not log_redaction:
+        services.append(
+            {
+                "service": "log_redaction",
+                "reason": "ADR-064 redaction inactive; secrets may appear in logs",
+            }
+        )
+    if identity_required:
+        services.append(
+            {
+                "service": "identity",
+                "reason": f"identity module status: {identity.get('status', 'unknown')}",
+            }
+        )
+    for module, error in sorted(optional_routers.items()):
+        if error is not None:
+            services.append({"service": f"router:{module}", "reason": error})
+    return services
+
+
 def _persistence_status() -> dict:
     """Per-family durability/ack mode (#333, #1179).
 
@@ -140,7 +209,7 @@ def _persistence_status() -> dict:
 
 
 @router.get("/health")
-def health() -> dict:
+def health(request: Request) -> dict:
     settings = get_settings()
     uptime = time.monotonic() - _START
     try:
@@ -170,6 +239,16 @@ def health() -> dict:
     memory_decay = _memory_decay_state()
     memory_decay_enabled = _memory_decay_running(memory_decay)
     log_redaction = _log_redaction_active()
+    optional_routers = _optional_routers_state(request.app)
+    degraded_services = _degraded_services(
+        llm_configured=llm_configured,
+        memory_decay=memory_decay,
+        memory_decay_enabled=memory_decay_enabled,
+        log_redaction=log_redaction,
+        identity=identity,
+        identity_required=identity_required,
+        optional_routers=optional_routers,
+    )
     engine = _engine_state()
 
     return {
@@ -203,13 +282,22 @@ def health() -> dict:
         # #333/#1179: the durability/ack mode per store family — whether a
         # 2xx from a mutation route means the State writer committed it.
         "persistence": _persistence_status(),
+        # M3-B7 (#97): a user-facing operating state names what is degraded.
+        # `optional_routers` is the raw mount outcome per feature router;
+        # `degraded_services` is the human-readable rendering of every
+        # degraded capability, which the UI banner and `hctl status` show.
+        "optional_routers": optional_routers,
+        "degraded_services": degraded_services,
         # #1181: engine lifecycle visibility. Liveness stays 200 "ok" — it is
         # the readiness probe that takes a failed engine out of rotation.
         "engine": engine,
-        "degraded": (not llm_configured)
-        or (not memory_decay_enabled)
-        or (not log_redaction)
-        or identity_required
+        # Degraded iff any capability is diminished: the rendered #97 list
+        # covers llm/decay/redaction/identity/optional routers, and the #1181
+        # engine lifecycle closes the union (a failed boot or an unreadable
+        # engine probe is a degraded operating state even when every check
+        # above is green). A clean engine that never booted (`not_started`, as
+        # in tests and scripts) is not by itself a degraded operating state.
+        "degraded": bool(degraded_services)
         or engine["state"] in {"degraded", "startup_failed", "unknown"},
     }
 
