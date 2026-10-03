@@ -508,7 +508,12 @@ def register_runtime_source(*, container: Any, llm: Any, preamble: str) -> None:
 
 
 def reset_runtime_source() -> None:
-    """Forget the registered runtime. Test isolation; boot never calls this."""
+    """Forget the registered runtime.
+
+    Test isolation, and since #1181 the engine-start unwind: a boot that
+    fails after the bridge registered the runtime must not leave the
+    materialization seam pointing at a container nothing published.
+    """
     global _runtime_source
     _runtime_source = None
 

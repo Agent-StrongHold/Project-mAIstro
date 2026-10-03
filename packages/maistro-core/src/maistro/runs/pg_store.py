@@ -62,6 +62,7 @@ from maistro.runs.model import (
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
 )
 from maistro.runs.retention_scope import (
@@ -89,6 +90,7 @@ from maistro.runs.store import (
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_eval_score_spine,
 )
 
 #: The unique index migration 015 creates. Compared against
@@ -373,6 +375,13 @@ class PgRunStore:
             run_ids = [row["run_id"] for row in selected]
             if not run_ids:
                 return PurgeOutcome(scope=scope)
+            # Eval evidence is spine-attached (FK on run_id), so it dies with
+            # the Run tree, in the same transaction and before the rows it
+            # names (M7-A3).
+            await conn.execute(
+                "DELETE FROM canonical_run_eval_scores WHERE run_id = ANY($1::text[])",
+                run_ids,
+            )
             deleted_attempts = await conn.fetch(
                 """DELETE FROM canonical_attempts a
                    USING canonical_node_runs n
@@ -588,6 +597,7 @@ class PgRunStore:
                     f"cannot delete Run {run_id!r} while {int(children)} child Run(s) reference "
                     "it; delete the descendants first"
                 )
+            await conn.execute("DELETE FROM canonical_run_eval_scores WHERE run_id = $1", run_id)
             await conn.execute(
                 """DELETE FROM canonical_attempts a
                    USING canonical_node_runs n
@@ -597,6 +607,73 @@ class PgRunStore:
             await conn.execute("DELETE FROM canonical_node_runs WHERE run_id = $1", run_id)
             await conn.execute("DELETE FROM canonical_runs WHERE run_id = $1", run_id)
         return True
+
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
+        """Append one scored rubric dimension to the Run's durable evidence (M7-A3).
+
+        The insert runs inside a transaction that locks the Run row first, so a
+        concurrent delete cannot land between the spine checks and the insert;
+        the RESTRICT foreign keys are what catch whatever the checks cannot
+        cover. Append-only, exactly like the SQLite twin.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            if await conn.fetchval(
+                "SELECT 1 FROM canonical_run_eval_scores WHERE eval_id = $1",
+                eval_score.eval_id,
+            ):
+                raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
+            run_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_runs WHERE run_id = $1 FOR UPDATE",
+                eval_score.run_id,
+            )
+            if run_row is None:
+                raise RunNotFound(eval_score.run_id)
+            node_run_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_node_runs WHERE node_run_id = $1 FOR UPDATE",
+                eval_score.node_run_id,
+            )
+            if node_run_row is None:
+                raise NodeRunNotFound(eval_score.node_run_id)
+            attempt_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_attempts WHERE attempt_id = $1 FOR UPDATE",
+                eval_score.attempt_id,
+            )
+            if attempt_row is None:
+                raise AttemptNotFound(eval_score.attempt_id)
+            validate_eval_score_spine(
+                run=Run.model_validate(run_row["payload"]),
+                node_run=NodeRun.model_validate(node_run_row["payload"]),
+                attempt=Attempt.model_validate(attempt_row["payload"]),
+            )
+            await conn.execute(
+                """INSERT INTO canonical_run_eval_scores
+                   (eval_id, run_id, node_run_id, attempt_id, scored_at, payload)
+                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",
+                eval_score.eval_id,
+                eval_score.run_id,
+                eval_score.node_run_id,
+                eval_score.attempt_id,
+                eval_score.scored_at.isoformat(),
+                json_of(eval_score),
+            )
+        return eval_score.model_copy(deep=True)
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
+        await self._require_run(run_id)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT payload FROM canonical_run_eval_scores
+                   WHERE run_id = $1 ORDER BY scored_at, eval_id""",
+                run_id,
+            )
+        return [model_of(RunEvalScore, row["payload"]) for row in rows]
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT payload FROM canonical_run_eval_scores WHERE eval_id = $1", eval_id
+            )
+        return model_of(RunEvalScore, row["payload"]) if row is not None else None
 
     async def get_run(self, run_id: str) -> Run | None:
         payload = await self._payload(

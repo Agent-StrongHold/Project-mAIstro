@@ -15,6 +15,7 @@ from maistro.capabilities.authority import (
     verify_approval_authority,
 )
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.binding_store import BindingDisabled, PgBindingStore, SqliteBindingStore
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.discovery import discover_into
 from maistro.capabilities.governed_invocation import (
@@ -27,6 +28,16 @@ from maistro.capabilities.governed_invocation import (
 from maistro.capabilities.harness_manager import HarnessSessionManager
 from maistro.capabilities.http import AsyncHttp
 from maistro.capabilities.http_client import HttpxAsyncHttp
+from maistro.capabilities.image_generation import (
+    IMAGE_GENERATE_CAPABILITY,
+    ImageBlobStore,
+    ImageBlobUnavailable,
+    ImageGenerationEgress,
+    ImageGenerationRequest,
+    ImageGenerationResult,
+    ImageStorageError,
+    InMemoryImageBlobStore,
+)
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     EffectNotApplied,
@@ -77,11 +88,13 @@ from maistro.capabilities.types import (
 
 __all__ = [
     "HARNESS_RUNNER_SLOT",
+    "IMAGE_GENERATE_CAPABILITY",
     "ActionGate",
     "ApprovalAuthority",
     "ApprovalStatus",
     "AsyncHttp",
     "Binding",
+    "BindingDisabled",
     "CapabilityProvider",
     "CapabilityRegistry",
     "CapabilityUnavailable",
@@ -95,7 +108,14 @@ __all__ = [
     "HarnessRunner",
     "HarnessSessionManager",
     "HttpxAsyncHttp",
+    "ImageBlobStore",
+    "ImageBlobUnavailable",
+    "ImageGenerationEgress",
+    "ImageGenerationRequest",
+    "ImageGenerationResult",
+    "ImageStorageError",
     "InMemoryApprovalStore",
+    "InMemoryImageBlobStore",
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationApprovalPending",
@@ -107,6 +127,7 @@ __all__ = [
     "InvocationReconciliationEvidence",
     "InvocationStatus",
     "OpencodeHarnessRunner",
+    "PgBindingStore",
     "PgInvocationStore",
     "ProviderHealth",
     "ProviderReconciliationAdapter",
@@ -116,6 +137,7 @@ __all__ = [
     "SandboxExec",
     "SlotSpec",
     "SqliteApprovalStore",
+    "SqliteBindingStore",
     "SqliteInvocationStore",
     "StaleInvocationUpdate",
     "SubprocessHarnessRunner",
