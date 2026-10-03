@@ -31,16 +31,13 @@ from services.optimizer import (
     record_decision,
     run_optimizer,
 )
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["optimizer"])
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = str(user.get("id") or "")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return uid
+    return require_actor_id(request)
 
 
 @router.post("/{dag_id}/run")

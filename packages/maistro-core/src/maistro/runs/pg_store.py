@@ -36,6 +36,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
+
 from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
@@ -62,6 +65,7 @@ from maistro.runs.model import (
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
 )
 from maistro.runs.retention_scope import (
@@ -89,7 +93,9 @@ from maistro.runs.store import (
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_eval_score_spine,
 )
+from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 
 #: The unique index migration 015 creates. Compared against
 #: `UniqueViolationError.constraint_name` so a violation on any *other*
@@ -176,17 +182,26 @@ class PgRunStore:
         pool: asyncpg.Pool,
         *,
         project_store: ProjectScopeStore,
+        workspace_store: WorkspaceStore | None = None,
         archive_store: ArchiveStore | None = None,
         concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         self._pool = pool
         self._project_store = project_store
+        self._workspace_store = workspace_store
         self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # None means the tier is off (f436 decision 9). A store with archived
         # rows and no archive configured still reads correctly for everything
         # resident and raises `ArchivedPayloadUnavailable` -- never an empty
         # result -- for what moved.
         self._archive_store = archive_store
+
+    def _run_boundary(self) -> RunStoreBoundary:
+        if self._workspace_store is None:
+            from maistro.runs.scoped_reads import RunNotVisible
+
+            raise RunNotVisible
+        return RunStoreBoundary(self, self._workspace_store, self._project_store)
 
     # ── Run ───────────────────────────────────────────────────────
 
@@ -230,7 +245,7 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
         )
@@ -373,6 +388,13 @@ class PgRunStore:
             run_ids = [row["run_id"] for row in selected]
             if not run_ids:
                 return PurgeOutcome(scope=scope)
+            # Eval evidence is spine-attached (FK on run_id), so it dies with
+            # the Run tree, in the same transaction and before the rows it
+            # names (M7-A3).
+            await conn.execute(
+                "DELETE FROM canonical_run_eval_scores WHERE run_id = ANY($1::text[])",
+                run_ids,
+            )
             deleted_attempts = await conn.fetch(
                 """DELETE FROM canonical_attempts a
                    USING canonical_node_runs n
@@ -588,6 +610,7 @@ class PgRunStore:
                     f"cannot delete Run {run_id!r} while {int(children)} child Run(s) reference "
                     "it; delete the descendants first"
                 )
+            await conn.execute("DELETE FROM canonical_run_eval_scores WHERE run_id = $1", run_id)
             await conn.execute(
                 """DELETE FROM canonical_attempts a
                    USING canonical_node_runs n
@@ -598,11 +621,82 @@ class PgRunStore:
             await conn.execute("DELETE FROM canonical_runs WHERE run_id = $1", run_id)
         return True
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
+        """Append one scored rubric dimension to the Run's durable evidence (M7-A3).
+
+        The insert runs inside a transaction that locks the Run row first, so a
+        concurrent delete cannot land between the spine checks and the insert;
+        the RESTRICT foreign keys are what catch whatever the checks cannot
+        cover. Append-only, exactly like the SQLite twin.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            if await conn.fetchval(
+                "SELECT 1 FROM canonical_run_eval_scores WHERE eval_id = $1",
+                eval_score.eval_id,
+            ):
+                raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
+            run_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_runs WHERE run_id = $1 FOR UPDATE",
+                eval_score.run_id,
+            )
+            if run_row is None:
+                raise RunNotFound(eval_score.run_id)
+            node_run_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_node_runs WHERE node_run_id = $1 FOR UPDATE",
+                eval_score.node_run_id,
+            )
+            if node_run_row is None:
+                raise NodeRunNotFound(eval_score.node_run_id)
+            attempt_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_attempts WHERE attempt_id = $1 FOR UPDATE",
+                eval_score.attempt_id,
+            )
+            if attempt_row is None:
+                raise AttemptNotFound(eval_score.attempt_id)
+            validate_eval_score_spine(
+                run=Run.model_validate(run_row["payload"]),
+                node_run=NodeRun.model_validate(node_run_row["payload"]),
+                attempt=Attempt.model_validate(attempt_row["payload"]),
+            )
+            await conn.execute(
+                """INSERT INTO canonical_run_eval_scores
+                   (eval_id, run_id, node_run_id, attempt_id, scored_at, payload)
+                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",
+                eval_score.eval_id,
+                eval_score.run_id,
+                eval_score.node_run_id,
+                eval_score.attempt_id,
+                eval_score.scored_at.isoformat(),
+                json_of(eval_score),
+            )
+        return eval_score.model_copy(deep=True)
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
+        await self._require_run(run_id)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT payload FROM canonical_run_eval_scores
+                   WHERE run_id = $1 ORDER BY scored_at, eval_id""",
+                run_id,
+            )
+        return [model_of(RunEvalScore, row["payload"]) for row in rows]
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT payload FROM canonical_run_eval_scores WHERE eval_id = $1", eval_id
+            )
+        return model_of(RunEvalScore, row["payload"]) if row is not None else None
+
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         payload = await self._payload(
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
         )
-        return Run.model_validate(payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
+        return Run.model_validate(payload)
 
     async def _require_locked_parent_scope(
         self,
@@ -661,7 +755,7 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance={**dict(provenance or {}), "effect_key": effect_key},
             retention_expires_at=retention_expires_at,
         )
@@ -914,7 +1008,10 @@ class PgRunStore:
         at: datetime | None = None,
         result: object | None = None,
         error: str | None = None,
+        principal_id: str | None = None,
     ) -> Run:
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._pool.acquire() as conn, conn.transaction():
             run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
             # Read inside the Run's transaction, with its row already locked:
@@ -991,12 +1088,18 @@ class PgRunStore:
             )
         return node_run
 
-    async def get_node_run(self, node_run_id: str) -> NodeRun | None:
+    async def get_node_run(
+        self, node_run_id: str, *, principal_id: str | None = None
+    ) -> NodeRun | None:
         payload = await self._payload(
             "SELECT node_run_id, payload, archive_key FROM canonical_node_runs WHERE node_run_id = $1",
             node_run_id,
         )
-        return NodeRun.model_validate(payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_node_run(node_run_id, principal_id=principal_id)
+        return NodeRun.model_validate(payload)
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]:
         await self._require_run(run_id)
@@ -1120,12 +1223,18 @@ class PgRunStore:
                 raise _integrity_failure(exc, node_run_id) from exc
         return attempt
 
-    async def get_attempt(self, attempt_id: str) -> Attempt | None:
+    async def get_attempt(
+        self, attempt_id: str, *, principal_id: str | None = None
+    ) -> Attempt | None:
         payload = await self._payload(
             "SELECT attempt_id, payload, archive_key FROM canonical_attempts WHERE attempt_id = $1",
             attempt_id,
         )
-        return Attempt.model_validate(payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_attempt(attempt_id, principal_id=principal_id)
+        return Attempt.model_validate(payload)
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]:
         await self._require_node_run(node_run_id)

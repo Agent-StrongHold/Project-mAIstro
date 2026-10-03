@@ -11,6 +11,15 @@ from .scoring import judge_score
 
 
 def _score_faithfulness(response: str, context: str, expected_answer: str) -> float:
+    """DIAGNOSTIC ONLY — static word-overlap, earns no score (#384).
+
+    This is the historical word-set-overlap heuristic. Since #384 it is never
+    a credit path: ``run_ragas`` computes it purely to *report* what the
+    gameable static signal would have said, next to the verified judge
+    verdict (calibration visibility, same disposition as promotion_review's
+    logged-but-unused features). It is deliberately kept out of the score so
+    a response cannot pass on word overlap alone.
+    """
     resp_lower = response.lower()
     ctx_lower = context.lower()
     exp_lower = expected_answer.lower()
@@ -39,6 +48,11 @@ def _score_faithfulness(response: str, context: str, expected_answer: str) -> fl
 
 
 def _score_relevance(response: str, question: str, expected_answer: str) -> float:
+    """DIAGNOSTIC ONLY — static keyword coverage, earns no score (#384).
+
+    Same disposition as ``_score_faithfulness``: reported next to the judge
+    verdict for calibration, never credited.
+    """
     resp_lower = response.lower()
     exp_lower = expected_answer.lower()
 
@@ -132,25 +146,33 @@ async def _judge_rag_quality(
         return 0.0
 
 
-async def run_ragas(genome: PipelineGenome, llm_call: Any) -> EvalResult:
-    """Score RAG faithfulness/relevance — and be honest that this one IS keyword overlap.
+async def run_ragas(
+    genome: PipelineGenome,
+    llm_call: Any,
+    judge_llm_call: Any = None,
+) -> EvalResult:
+    """Score RAG faithfulness/relevance with a verified judge verdict only (#384).
 
     Proxy-tier (SPEC-202): the samples are a small handcrafted set, not the
-    official RAGAS methodology. Unlike this package's other proxy scorers,
-    the *primary* mechanism here (``_score_faithfulness`` / `_score_relevance`)
-    genuinely is word-set overlap between the response and the expected
-    answer/context — not a structural check. It escalates to a real
-    LLM-as-judge call (``_judge_rag_quality``) only when that static score
-    falls below 0.6, and even then takes ``max(static, judged)`` — so a
-    response can score highly on word overlap alone without ever reaching
-    the judge. Treat `proxy_ragas` scores as the least reliable proxy-tier signal
-    in this package for exactly that reason.
+    official RAGAS methodology. Since #384 the *only* credit path is the
+    LLM-as-judge call (``_judge_rag_quality``), which now runs for every
+    sample — the historical word-overlap primary score and its ``>= 0.6``
+    judge skip, and the ``max(static, judged)`` merge, are gone: a response
+    could previously score highly on word overlap alone, without any
+    verification. The static overlap features are still computed and reported
+    in metadata (``static_overlap_diagnostic_mean``) for calibration
+    visibility, explicitly marked diagnostic. Judge failure is fail-closed
+    (0.0), never a floor.
+
+    ``judge_llm_call`` optionally supplies a different verifier model than
+    the candidate's ``llm_call`` (#384) — see ``run_gaia``.
     """
     if llm_call is None:
         raise ValueError(
             "run_ragas requires an llm_call — there is no stub/heuristic "
             "fallback (SPEC-202: never produce a fabricated score)"
         )
+    judge = judge_llm_call if judge_llm_call is not None else llm_call
 
     start = time.monotonic()
     system_prompt = build_system_prompt(genome)
@@ -159,6 +181,7 @@ async def run_ragas(genome: PipelineGenome, llm_call: Any) -> EvalResult:
     total_score = 0.0
     evaluated = 0
     total_cost = 0.0
+    static_sum = 0.0
     samples = len(RAGAS_SAMPLES)
 
     for sample in RAGAS_SAMPLES:
@@ -190,15 +213,16 @@ async def run_ragas(genome: PipelineGenome, llm_call: Any) -> EvalResult:
                 static = _score_faithfulness(response, sample["context"], sample["expected_answer"])
             else:
                 static = _score_relevance(response, sample["question"], sample["expected_answer"])
+            static_sum += static
 
-            if static >= 0.6:
-                total_score += static
-            else:
-                judged = await _judge_rag_quality(
-                    sample["question"], sample["context"], response, eval_type, llm_call
-                )
-                total_score += max(static, judged)
-                total_cost += 0.0005
+            # The judge is the only credit path (#384): always runs, and its
+            # verdict is the score — never max()-ed with, replaced or excused
+            # by the static overlap diagnostic above.
+            judged = await _judge_rag_quality(
+                sample["question"], sample["context"], response, eval_type, judge
+            )
+            total_score += judged
+            total_cost += 0.0005
 
             evaluated += 1
         except (TimeoutError, Exception):
@@ -213,5 +237,15 @@ async def run_ragas(genome: PipelineGenome, llm_call: Any) -> EvalResult:
         cost_usd=round(total_cost, 4),
         duration_seconds=round(elapsed, 3),
         samples_evaluated=evaluated,
-        metadata={"total_samples": samples, "fidelity": "proxy"},
+        metadata={
+            "total_samples": samples,
+            "fidelity": "proxy",
+            # Champion-selection provenance (#384): every point came from the
+            # judge; the static overlap mean is reported diagnostic only.
+            "evidence": {
+                "method": "llm-judge",
+                "static_overlap_diagnostic_mean": round(static_sum / max(evaluated, 1), 4),
+                "diagnostic_credited": False,
+            },
+        },
     )
