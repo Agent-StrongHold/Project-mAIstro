@@ -407,7 +407,9 @@ async def test_frontier_recovery_respects_persisted_attempt_lease(
     """Only an unheld frontier is re-queued; recovery never rewrites its Attempt."""
     run_store, workspace_id, project_id = await _spine()
     graph = _graph(workspace_id, project_id)
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     run = await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     node = await run_store.create_node_run(run.run_id, node_id="step")
     await run_store.transition_node_run(node.node_run_id, RunStatus.QUEUED)
