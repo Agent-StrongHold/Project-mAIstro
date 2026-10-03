@@ -219,3 +219,48 @@ head:
 - Scope, unchanged and stated plainly: product-surface E2E and browser-refresh
   projection remain out of reach at this base (#774/#775/#777 not landed);
   AC-9 stands proven at store/service level (`TestOneMixedControlProject`).
+
+## CI-repair round: Gate C (canonical clean install) local proof (job e8bc3d9b, merge head f8e7402f)
+
+The merge-queue evaluation reported `Gate C — canonical clean install` as
+`in_progress` — the gate had not completed when the evaluation sampled it, so
+this round re-proved the whole gate contract locally at the merged head
+instead of trusting a stale/absent verdict. A prior interrupted round left an
+untracked `gatec-compose.override-tmp.yml` (auto780c-`*` container renames and
+shifted host ports) used to coexist with a live canonical
+`project-maistro` stack on the shared rootless daemon; that file is salvage,
+backed up to the job directory.
+
+- Clean state proven: `.env`/`.maistro-install` removed (prior Oct 2 copies
+  backed up first), `docker compose -p auto-780 down -v` no-op, then the
+  documented path `./install.sh --skip-wizard --no-cli --no-open` with
+  `MAISTRO_SKIP_WIZARD=1 MAISTRO_INSTALL_CLI=0 MAISTRO_OPEN_BROWSER=0
+  MAISTRO_START_STACK=1 MAISTRO_PORT=18000 HIVE_PORT=18101` and
+  `MAISTRO_INSTALL_PLAN_DIR=/tmp/gatec-auto780-plan`.
+- Override mechanism: a `compose.override.yml` placed in the plan dir is
+  appended by `install.sh`'s own `compose_files()` hook. The salvage override
+  failed its first attempt with `Bind for 127.0.0.1:5433 failed` because
+  compose **merges** `ports` sequences across files, so the base file's
+  hardcoded `5433`/`3100` bindings survived alongside the shifted ones; the
+  plan-dir copy now tags the postgres/litellm/langfuse `ports:` blocks with
+  compose's `!override` merge tag, and `docker compose config` shows exactly
+  one published port per service (18000/18101/14000/13100/15433).
+- `install.sh` exit 0 (source-build delivery; engine + hive images built).
+- Gate C assertions, all green at the first probe:
+  `/health/live` (engine), `/health/ready` (engine), `/health/ready`
+  (conductor), `SELECT version_num FROM alembic_version` → `051` matching
+  `^[0-9a-z_]+$` (the branch chain head, so 049 design_artifact_versions,
+  050 creative_briefs, and the renumbered 051 eval migration all applied on a
+  fresh cluster), re-curl of both ready endpoints, and the engine image
+  digest recorded to the gate's candidate artifact format.
+- Teardown: `docker compose -p auto-780 down -v --remove-orphans`; the
+  canonical stack on the same daemon was untouched throughout.
+- Gate battery re-run at this head: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0 (1368 reviewed →
+  1367 findings, 0 unbanked; no ledger amendment needed);
+  `ruff check .` / `ruff format --check .` clean;
+  `packages/maistro-design/tests` → 483 passed +1 skipped, AC classes
+  (`test_artifact_versions.py` + `test_creative_brief.py`) → 68 passed;
+  `tests/migrations` against an isolated pgvector:pg18 on 127.0.0.1:15436 →
+  100 passed; `check-suite-inventory.py --suite packages/maistro-design/tests`
+  → 484 collected, inventory matches.
