@@ -33,7 +33,6 @@ from maistro.runs.chat_execution import ChatAttemptExecutor
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
