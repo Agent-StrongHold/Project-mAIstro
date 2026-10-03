@@ -11,7 +11,7 @@ import pytest
 import maistro.tasks.queue as queue_mod
 from maistro.tasks.lanes import Lane
 from maistro.tasks.models import TaskCreate
-from maistro.tasks.queue import _build_unpublished_task, TaskQueue
+from maistro.tasks.queue import TaskQueue
 
 
 _FIXED_TIME = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
@@ -24,7 +24,7 @@ def _build(
     user_id: str = "",
     idempotency_key: str | None = None,
 ):
-    return _build_unpublished_task(
+    return queue_mod._build_unpublished_task(
         request,
         task_id=task_id,
         created_at=_FIXED_TIME,
@@ -83,7 +83,7 @@ def test_unpublished_builder_preserves_all_receipt_fields_and_defaults() -> None
         delegation_id="request-delegation",
         actor_kind="user",
     )
-    full = _build_unpublished_task(
+    full = queue_mod._build_unpublished_task(
         request,
         task_id="full-task",
         created_at=_FIXED_TIME,
@@ -169,7 +169,7 @@ def test_unpublished_builder_has_no_clock_id_or_publication_side_effects(
     monkeypatch.setattr(queue_mod, "datetime", _BombClock)
     monkeypatch.setattr(queue_mod, "get_async_session_factory", _bomb)
 
-    task = _build_unpublished_task(
+    task = queue_mod._build_unpublished_task(
         request,
         task_id="provided-id",
         created_at=_FIXED_TIME,
