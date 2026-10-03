@@ -425,8 +425,6 @@ class TestEntityGraph:
         with pytest.raises(RuntimeError, match="governed model path"):
             await failing.hydrate([_mem("some content", memory_id="m2")])
 
-
-
     async def test_project_layer4_skips_entities_with_no_citing_memories(self) -> None:
         projection = _projection()
         memories: list[EpisodicMemory] = []
@@ -465,6 +463,7 @@ class TestEntityGraph:
         unscoped = await projection.entity_context()
         assert len(unscoped) == 8
         assert all(e.entity.name.startswith("foreign entity") for e in unscoped)
+
 
 class TestWorkspaceIsolation:
     async def test_identical_ids_and_entities_do_not_cross_workspaces(self) -> None:
@@ -583,6 +582,36 @@ class TestEvictionAndRebuild:
         assert manager.active_workspace_ids == ["ws-hot"]
         assert manager.evictions == 1
 
+    async def test_access_sweeps_idle_projections_and_counts_them(self) -> None:
+        from maistro.memory.episodic.store import InMemoryEpisodicStore
+
+        class FakeClock:
+            now = 1000.0
+
+            @staticmethod
+            def monotonic() -> float:
+                return FakeClock.now
+
+        manager = WorkingMemoryManager(
+            workspace_id="ws-a",
+            episodic_store=InMemoryEpisodicStore(),
+            idle_ttl_seconds=100.0,
+            clock=FakeClock,
+        )
+        manager.projection("ws-hot")
+        FakeClock.now = 1200.0
+
+        # Serving one Workspace is the amortized sweep point: the graph being
+        # served never evicts itself, but the Workspace idle past the TTL is
+        # dropped on the way in, with the lifetime counters to show for it.
+        manager.projection("ws-a")
+        assert manager.active_workspace_ids == ["ws-a"]
+        assert manager.evictions == 1
+        # The evicted Workspace lazily rehydrates on next use; durable state
+        # is untouched by any of this.
+        assert manager.projection("ws-hot") is not None
+        assert manager.evictions == 1
+
 
 class TestFailureObservability:
     async def test_hydration_read_failure_is_recorded_not_swallowed(self) -> None:
@@ -661,8 +690,35 @@ class TestDreamingCandidates:
         assert [m.memory_id for m in candidates.hypotheses] == ["hyp-1"]
         assert [e.name for e in candidates.entities] == ["postgresql"]
         assert [(r.source, r.target, r.weight) for r in candidates.relations] == []
+        # A single entity is its own (singleton) co-occurrence cluster.
+        assert candidates.clusters == (("postgresql",),)
 
         # Reading candidates wrote nothing anywhere.
         assert await store.list_by_scope(limit=10) == []
         assert projection.stats.records == 2
         assert projection._records["les-1"] == durable_snapshot
+
+    async def test_candidate_set_groups_disjoint_entity_neighbourhoods(self) -> None:
+        projection = _projection()
+        await projection.hydrate(
+            [
+                _mem(
+                    "PostgreSQL needs pgvector",
+                    memory_id="m1",
+                    context={"entities": ["PostgreSQL", "pgvector"]},
+                ),
+                _mem(
+                    "Kafka partitions and brokers",
+                    memory_id="m2",
+                    context={"entities": ["Kafka", "brokers"]},
+                ),
+            ]
+        )
+
+        candidates = await collect_candidates(projection)
+        # Two memories that share no entity form two connected clusters, each
+        # discovered by bounded traversal from an unvisited entity.
+        assert sorted(frozenset(cluster) for cluster in candidates.clusters) == [
+            frozenset({"brokers", "kafka"}),
+            frozenset({"pgvector", "postgresql"}),
+        ]

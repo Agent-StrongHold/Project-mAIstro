@@ -36,7 +36,7 @@ from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import combinations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from maistro.memory.scopes import build_scope_filter, matches_scope
 from maistro.memory.working.extraction import LexicalEntityExtractor
@@ -338,31 +338,49 @@ class WorkspaceWorkingMemoryProjection:
         if not visible or not query.strip():
             return []
 
-        lex_raw = {
-            mid: score for mid, score in self._bm25(_tokenize(query)).items() if mid in visible
+        scope: dict[str, Any] = {
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "team_id": team_id,
+            "org_id": org_id,
+            "project_id": project_id,
+            "min_weight": min_weight,
         }
-        vec_raw = {
-            mid: score
-            for mid, score in (await self._query_similarities(query)).items()
-            if mid in visible
-        }
-        lex_max = max(lex_raw.values(), default=0.0)
-        # Both terms share [0, 1] before the weight multiplier, for the reason
-        # `ranking.py` documents: two terms only compose if they share a range.
-        combined = {
-            mid: (score / lex_max if lex_max > 0 else 0.0) + max(vec_raw.get(mid, 0.0), 0.0)
-            for mid, score in lex_raw.items()
-        }
-        for mid, score in vec_raw.items():
-            if mid not in combined:
-                combined[mid] = max(score, 0.0)
-        weighted = {mid: score * visible[mid].weight for mid, score in combined.items()}
+        # Each primitive ranks the whole visible corpus; the hybrid ranking
+        # below is what `limit` cuts, so a memory carried by its weaker term
+        # is not lost before the two terms are composed.
+        lexical = await self.recall_lexical(query, limit=len(visible), **scope)
+        vector = await self.recall_vector(
+            await self._query_embedding(query), limit=len(visible), **scope
+        )
+
+        memories: dict[str, EpisodicMemory] = {}
+        lexical_scores: dict[str, float] = {}
+        vector_scores: dict[str, float] = {}
+        weighted: dict[str, float] = {}
+        for hit in lexical:
+            memory_id = hit.memory.memory_id
+            memories[memory_id] = hit.memory
+            lexical_scores[memory_id] = hit.lexical_score
+            weighted[memory_id] = (
+                weighted.get(memory_id, 0.0) + hit.lexical_score * hit.memory.weight
+            )
+        for hit in vector:
+            memory_id = hit.memory.memory_id
+            memories[memory_id] = hit.memory
+            # recall_vector scores carry the weight multiplier; the reported
+            # vector score is the raw cosine, as the hybrid contract documents.
+            vector_scores[memory_id] = (
+                hit.vector_score / hit.memory.weight if hit.memory.weight > 0 else 0.0
+            )
+            weighted[memory_id] = weighted.get(memory_id, 0.0) + hit.vector_score
+
         ranked = sorted(weighted.items(), key=lambda pair: (-pair[1], pair[0]))
         return [
             ScoredWorkingMemory(
-                memory=visible[mid],
-                lexical_score=(lex_raw.get(mid, 0.0) / lex_max if lex_max > 0 else 0.0),
-                vector_score=max(vec_raw.get(mid, 0.0), 0.0),
+                memory=memories[mid],
+                lexical_score=lexical_scores.get(mid, 0.0),
+                vector_score=vector_scores.get(mid, 0.0),
             )
             for mid, total in ranked[:limit]
             if total > 0.0
@@ -451,7 +469,16 @@ class WorkspaceWorkingMemoryProjection:
         return self._entity_record(_normalize_entity(name))
 
     async def relations_for(self, name: str) -> list[RelationRecord]:
-        return self._relations_for(_normalize_entity(name))
+        """Every working-graph edge touching one entity, strongest first."""
+        key = _normalize_entity(name)
+        out: list[RelationRecord] = []
+        for (a, b), weight in self._relations.items():
+            if a == key:
+                out.append(RelationRecord(source=a, target=b, kind="co_occurs_with", weight=weight))
+            elif b == key:
+                out.append(RelationRecord(source=b, target=a, kind="co_occurs_with", weight=weight))
+        out.sort(key=lambda r: (-r.weight, r.target))
+        return out
 
     async def traverse(self, start_entity: str, *, max_depth: int = 2) -> TraversalResult:
         """Bounded BFS from one entity over working-graph edges.
@@ -532,7 +559,7 @@ class WorkspaceWorkingMemoryProjection:
             contexts.append(
                 EntityContext(
                     entity=record,
-                    relations=tuple(self._relations_for(key)[:5]),
+                    relations=tuple((await self.relations_for(key))[:5]),
                     memories=tuple(citing[:memories_per_entity]),
                 )
             )
@@ -600,23 +627,25 @@ class WorkspaceWorkingMemoryProjection:
                 scores[memory_id] = scores.get(memory_id, 0.0) + idf * tf * (_BM25_K1 + 1.0) / denom
         return scores
 
-    async def _query_similarities(self, query: str) -> dict[str, float]:
-        """Cosine against stored embeddings. The query embeds once; nothing else."""
+    async def _query_embedding(self, query: str) -> list[float]:
+        """Embed the query once per read; ``[]`` means "answer lexical-only".
+
+        Empty is returned — not raised — when no client is configured, the
+        projection holds no vectors yet, or the embedding call fails (counted
+        and logged, never silent): :meth:`recall_vector` answers an empty
+        embedding with an empty vector leg, which is that honest degradation.
+        """
         if self._embeddings_client is None or not self._embeddings:
-            return {}
+            return []
         try:
-            query_vec = await self._embeddings_client.embed(query)
+            return await self._embeddings_client.embed(query)
         except Exception:
             self._counters.embedding_failures += 1
             logger.warning(
                 "working-memory[%s]: query embedding failed; answering lexical-only",
                 self._workspace_id,
             )
-            return {}
-        return {
-            memory_id: max(_cosine(query_vec, stored), 0.0)
-            for memory_id, stored in self._embeddings.items()
-        }
+            return []
 
     async def _insert(
         self, memory: EpisodicMemory, *, reuse_embedding: tuple[float, ...] | None = None
@@ -735,16 +764,6 @@ class WorkspaceWorkingMemoryProjection:
             mention_count=len(mentions),
             memory_ids=tuple(sorted(mentions)),
         )
-
-    def _relations_for(self, key: str) -> list[RelationRecord]:
-        out: list[RelationRecord] = []
-        for (a, b), weight in self._relations.items():
-            if a == key:
-                out.append(RelationRecord(source=a, target=b, kind="co_occurs_with", weight=weight))
-            elif b == key:
-                out.append(RelationRecord(source=b, target=a, kind="co_occurs_with", weight=weight))
-        out.sort(key=lambda r: (-r.weight, r.target))
-        return out
 
     def _edge_record(self, a: str, b: str) -> RelationRecord:
         weight = self._relations.get((min(a, b), max(a, b)), 0.0)

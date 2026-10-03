@@ -131,6 +131,46 @@ class TestLayer1HotPath:
         )
         assert "pgvector" in text
 
+    async def test_mid_read_failure_heals_by_rebuild_for_the_next_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = InMemoryEpisodicStore()
+        await store.store(_mem("PostgreSQL needs pgvector", memory_id="pg"))
+        manager = _manager(store)
+        policy = _policy(store, manager=manager)
+        # Warm the projection so the failure below is a mid-read failure of a
+        # constructed graph (the corruption signal), not a construction one.
+        assert await manager.ensure_hydrated() is True
+        healthy = manager.projection()
+
+        original_recall = type(healthy).recall
+        calls = {"count": 0}
+
+        async def flaky_recall(self: Any, query: str, **kwargs: Any) -> Any:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("torn index")
+            return await original_recall(self, query, **kwargs)
+
+        monkeypatch.setattr(type(healthy), "recall", flaky_recall)
+
+        # The failing read is answered from the durable path...
+        first = await policy.layer1(
+            run_id="r1", agent_id="agent-1", session_id="s1", query="pgvector"
+        )
+        assert "pgvector" in first
+        assert calls["count"] == 1
+        # ...and ADR-082226-5104 §6's corruption answer ran: the projection
+        # was discarded and rebuilt from authoritative truth, so the next
+        # call is hot again with no recorded degradation and no durable write.
+        assert manager.projection() is not healthy
+        assert manager.degraded_reason() == ""
+        second = await policy.layer1(
+            run_id="r2", agent_id="agent-1", session_id="s1", query="pgvector"
+        )
+        assert "pgvector" in second
+        assert calls["count"] == 2
+
 
 class TestLayer4GraphContext:
     async def test_populated_workspace_gets_real_graph_context(self) -> None:

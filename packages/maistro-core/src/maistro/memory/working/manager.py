@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
     from maistro.memory.working.extraction import EntityExtractor
     from maistro.memory.working.protocol import (
-        HydrationReport,
         WorkingMemory,
     )
     from maistro.protocols.embeddings import EmbeddingClient
@@ -128,9 +127,24 @@ class WorkingMemoryManager:
         that cannot open its database, for instance). It is logged at error
         level with the reason, recorded in :meth:`degraded_reason`, and raised
         — callers that cannot have a working graph must know, not guess.
+
+        Every access is also the amortized idle-TTL sweep point (ADR-082226-5104
+        §5: "hydrate on demand, keep hot while active, evict on idle TTL").
+        The named Workspace is touched *before* the sweep, so the graph being
+        served can never evict itself mid-retrieval; only genuinely idle
+        Workspaces are dropped, and dropping one is logged with the lifetime
+        counters so eviction is observable, not silent.
         """
         wid = self._resolve(workspace_id)
         self._last_used[wid] = self._clock.monotonic()
+        evicted = self.evict_idle()
+        if evicted:
+            logger.info(
+                "working-memory: idle sweep evicted %s (lifetime evictions: %d, active: %s)",
+                evicted,
+                self.evictions,
+                self.active_workspace_ids,
+            )
         existing = self._projections.get(wid)
         if existing is not None:
             return existing
@@ -205,9 +219,7 @@ class WorkingMemoryManager:
             # The snapshot excludes deleted records, so hydrate() never sees
             # their tombstones; reconcile by ID instead (see docstring).
             durable_ids = {m.memory_id for m in memories}
-            stale = [
-                r.memory_id for r in projection.records() if r.memory_id not in durable_ids
-            ]
+            stale = [r.memory_id for r in projection.records() if r.memory_id not in durable_ids]
         await projection.hydrate(memories)
         if stale:
             for memory_id in stale:
@@ -218,18 +230,6 @@ class WorkingMemoryManager:
                 len(stale),
             )
         return True
-
-    async def hydrate_workspace(
-        self, memories: list[EpisodicMemory], *, workspace_id: str | None = None
-    ) -> HydrationReport:
-        """Hydrate from an explicit record list and surface the report.
-
-        This is the path that *raises*: a caller that handed over records
-        wants the ``HydrationReport``, and a backend failure here is an
-        exception, not a degraded boolean.
-        """
-        projection = self.projection(workspace_id)
-        return await projection.hydrate(memories)
 
     # ------------------------------------------------------------------
     # Eviction / rebuild

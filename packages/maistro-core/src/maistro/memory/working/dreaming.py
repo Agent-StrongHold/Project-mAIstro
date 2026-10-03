@@ -34,7 +34,10 @@ class DreamingCandidateSet:
     ``hypotheses`` are the subset still in the HYPOTHESIS tier — the
     "working hypothesis vs durable knowledge" separation ADR-082226-5104 §6
     draws. ``relations`` are the temporary associations a Dreaming Run may
-    consider promoting; nothing here is durable until that Run says so.
+    consider promoting; ``clusters`` group the entities into connected
+    co-occurrence neighbourhoods (bounded traversal, §7's "clustering"), so
+    a consolidation Graph sees association structure, not just an edge bag.
+    Nothing here is durable until that Run says so.
     """
 
     workspace_id: str
@@ -42,6 +45,7 @@ class DreamingCandidateSet:
     hypotheses: tuple[EpisodicMemory, ...]
     entities: tuple[EntityRecord, ...]
     relations: tuple[RelationRecord, ...]
+    clusters: tuple[tuple[str, ...], ...] = ()
 
 
 async def collect_candidates(
@@ -61,10 +65,25 @@ async def collect_candidates(
         RelationRecord(source=a, target=b, kind="co_occurs_with", weight=weight)
         for a, b, weight in projection.relation_pairs()
     ]
+    # Connected neighbourhoods, discovered by bounded BFS from each
+    # not-yet-visited entity (most-mentioned first, so cluster order is
+    # deterministic). Traversal cannot leave this projection, so clusters
+    # inherit the one-Workspace isolation the graph has.
+    clusters: list[tuple[str, ...]] = []
+    visited: set[str] = set()
+    depth = max(1, len(entities))
+    for name in projection.entity_names():
+        if name in visited:
+            continue
+        walk = await projection.traverse(name, max_depth=depth)
+        if walk.visited:
+            clusters.append(walk.visited)
+            visited.update(walk.visited)
     return DreamingCandidateSet(
         workspace_id=projection.workspace_id,
         memories=tuple(memories),
         hypotheses=hypotheses,
         entities=tuple(entities),
         relations=tuple(relations),
+        clusters=tuple(clusters),
     )

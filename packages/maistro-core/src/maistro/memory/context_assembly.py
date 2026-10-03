@@ -22,6 +22,7 @@ did not write and cannot check, spending budget to mislead.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from maistro.memory.episodic.retrieval import ScoredEpisodicRetrieval
@@ -49,6 +50,12 @@ _LAYER1_LIMIT = 50
 
 #: Per-entity content snippet cap in the Layer 4 rendering.
 _LAYER4_SNIPPET_CHARS = 160
+
+#: Minimum spacing between corruption-heal rebuild attempts per policy. A
+#: recall that fails deterministically must not turn every retrieval into a
+#: full discard-and-reindex; one rebuild per interval bounds that cost while
+#: still recovering a genuinely corrupted projection on the next call.
+_WORKING_REBUILD_MIN_INTERVAL_S = 60.0
 
 
 def _estimate_tokens(text: str) -> int:
@@ -135,6 +142,9 @@ class DefaultContextAssemblyPolicy:
         self.working_memory = working_memory
         self._retrieval = ScoredEpisodicRetrieval(episodic_store, embedding_client)
         self._embedding_client = embedding_client
+        # Monotonic timestamp of the last corruption-heal rebuild attempt, or
+        # None while the policy has not needed one (see _rebuild_after_failure).
+        self._working_rebuild_at: float | None = None
 
     async def layer0(self, project_id: str) -> str:
         project = await self.project_store.get(project_id)
@@ -221,6 +231,11 @@ class DefaultContextAssemblyPolicy:
             # store's weight-ordered scoped set is the answer, as before.
             return None
         if not await self.working_memory.ensure_hydrated():
+            logger.warning(
+                "working-memory[%s]: hot path unavailable (%s); using durable retrieval",
+                self.working_memory.workspace_id,
+                self.working_memory.degraded_reason() or "no recorded reason",
+            )
             return None
         projection = self.working_memory.projection()
         try:
@@ -235,8 +250,41 @@ class DefaultContextAssemblyPolicy:
                 "working-memory[%s]: hot recall failed; degrading to durable retrieval",
                 self.working_memory.workspace_id,
             )
+            await self._rebuild_after_failure()
             return None
         return [hit.memory for hit in scored]
+
+    async def _rebuild_after_failure(self) -> None:
+        """The ADR-082226-5104 §6 corruption path, wired to its trigger.
+
+        A projection that constructs fine but fails mid-read is the one
+        corruption signal this implementation can observe (a torn index, a
+        backend that died between construction and query). The ADR's answer —
+        "if a projection is corrupted, throw it away and rebuild it" — is
+        exactly :meth:`WorkingMemoryManager.rebuild`: discard the derived
+        state, rehydrate from authoritative PostgreSQL truth, touch nothing
+        durable. The current read is answered from the durable path either
+        way; the rebuild is for the *next* caller. Throttled so a
+        deterministically failing recall cannot turn every retrieval into a
+        full re-index.
+        """
+        assert self.working_memory is not None
+        now = time.monotonic()
+        if (
+            self._working_rebuild_at is not None
+            and now - self._working_rebuild_at < _WORKING_REBUILD_MIN_INTERVAL_S
+        ):
+            return
+        self._working_rebuild_at = now
+        try:
+            await self.working_memory.rebuild()
+        except Exception:
+            logger.exception(
+                "working-memory[%s]: corruption-heal rebuild failed (%s); staying on the "
+                "durable path",
+                self.working_memory.workspace_id,
+                self.working_memory.degraded_reason() or "no recorded reason",
+            )
 
     async def layer2(self, session_id: str, budget_tokens: int) -> str:
         return ""
@@ -289,6 +337,11 @@ class DefaultContextAssemblyPolicy:
         if self.working_memory is None:
             return ""
         if not await self.working_memory.ensure_hydrated():
+            logger.warning(
+                "working-memory[%s]: layer4 graph context unavailable (%s)",
+                self.working_memory.workspace_id,
+                self.working_memory.degraded_reason() or "no recorded reason",
+            )
             return ""
         projection = self.working_memory.projection()
         try:
@@ -298,6 +351,7 @@ class DefaultContextAssemblyPolicy:
                 "working-memory[%s]: layer4 graph context failed; serving none",
                 self.working_memory.workspace_id,
             )
+            await self._rebuild_after_failure()
             return ""
         return _render_graph_context(context)
 

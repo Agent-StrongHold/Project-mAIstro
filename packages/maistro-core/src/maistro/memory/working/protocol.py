@@ -22,7 +22,7 @@ holds the working graph. The invariants the protocol carries:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from maistro.types.memory import EpisodicMemory
@@ -289,4 +289,3 @@ class _WorkspaceCounters:
     embedding_failures: int = 0
     rebuilds: int = 0
     last_hydrated_at: datetime | None = None
-    degraded_reason: str = field(default="")

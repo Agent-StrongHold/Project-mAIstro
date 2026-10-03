@@ -7,9 +7,13 @@ usage is implicit through Pydantic or intentionally external through the public
 Invocation execution API.
 """
 
+from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.identity import Principal
+from maistro.identity._crypto import ConductorSeed, DerivedKey
+from maistro.memory.working.protocol import WorkingMemoryStats
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
@@ -80,4 +84,33 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
+    # Conductor identity extras (ADR-021): the BIP39/BIP32 seed API is the
+    # recoverability contract of the optional `identity` extra. Its consumers
+    # are downstream products and the identity suite
+    # (packages/maistro-core/tests/identity/test_seed.py, test_lifecycle.py,
+    # which pins restore/derive/DID/zeroize round-trips); no in-repo process
+    # derives keys yet. The lazy loader on maistro.identity is exercised by
+    # every `maistro.identity.ConductorSeed`-style access those consumers make.
+    ConductorSeed.from_mnemonic,
+    ConductorSeed.derive_named,
+    ConductorSeed.did_key,
+    ConductorSeed.mnemonic_words,
+    ConductorSeed.zero,
+    DerivedKey.curve,
+    identity_package.__getattr__,
+    # Principal's legacy-dict bridge (ADR-068 P0.1): converts hive's legacy
+    # `request.state.user` dicts at service boundaries until the cutover
+    # migration lands; pinned by tests/identity/test_extra_guard.py and
+    # tests/fitness/test_principal_identity.py.
+    Principal.from_legacy_dict,
+    Principal.to_legacy_dict,
+    # Working-memory observability snapshot (#301, ADR-082226-5104 §5): the
+    # frozen stats surface is read by operators and the conformance suite
+    # (stats.degraded_reason is the honest "what is not serving" field); no
+    # scanned src path reads every field. The references are static scanner
+    # input (this module never executes), so instance-only dataclass fields
+    # are fine to name directly.
+    WorkingMemoryStats.index_terms,  # type: ignore[misc]
+    WorkingMemoryStats.embedded_records,  # type: ignore[misc]
+    WorkingMemoryStats.degraded_reason,  # type: ignore[misc]
 )
