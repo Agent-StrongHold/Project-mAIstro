@@ -237,8 +237,9 @@ async def test_activate_route_delegates_to_governed_health_operation(
     settings = type("Settings", (), {"hive_default_workspace_id": "default"})()
     monkeypatch.setattr(config, "get_settings", lambda: settings)
 
-    from maistro.identity import Principal
     from starlette.requests import Request
+
+    from maistro.identity import Principal
 
     request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
     request.state.principal = Principal(user_id="test-admin")
