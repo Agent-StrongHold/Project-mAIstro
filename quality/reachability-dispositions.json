@@ -616,6 +616,16 @@
       "modules": [
         "maistro.runs.admission_identity"
       ]
+    },
+    {
+      "id": "tasks-admission-generation-assessor",
+      "subsystem": "Run / NodeRun / Attempt lifecycle",
+      "disposition": "CONNECT",
+      "rationale": "#1852 ships the pure replay-generation classifier (_assess: expiry-inclusive REPLACE_EXPIRED, fingerprint MISMATCH, bound REPLAYED, unbound-legacy LEGACY_UNRESOLVED, lapsed-lease TAKEOVER, else PENDING) as an inactive contract leaf of the #1845 integration: its scope forbids importing the live tasks/idempotency flow, the backend methods, the queue, or any wiring, so nothing reaches the module yet and it is expected to read as built-but-never-wired until the parent integration lands its consumer. The classifier reads only AdmissionRecordV2 envelopes or legacy top-level fields plus caller-supplied fingerprint/now_us; it acquires no claim and authorizes no write. CONNECT rather than LIBRARY because it is waiting on a named root, not retired as a library surface; this entry is expected to leave the baseline when the #1845 admission backend lands.",
+      "root": "the #1845 parent integration's admission backend — the transaction-side claim assessor that will call maistro.tasks.admission_generation._assess under row lock before any takeover/replacement write",
+      "modules": [
+        "maistro.tasks.admission_generation"
+      ]
     }
   ]
 }

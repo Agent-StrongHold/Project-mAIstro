@@ -206,3 +206,65 @@ or grants. The unblock sequence belongs to the separately scoped #1845
 integration change: land authorizations on the base (grant first, change
 second), wire the reviewed consumer, then converge the unchanged gates at
 its final head.
+
+## CI-repair round 3 (2026-10-04): repair executed — candidate ledger banked, base synced
+
+Round 2 left the `test` and Coverage-combine failures fixable in-leaf and
+misattributed the exact-debt-ledger repair to the vulture ledger. Round 3
+acted on the actual evidence:
+
+- **Repair (the only candidate-side defect):**
+  `maistro.tasks.admission_generation` was missing from the *candidate*
+  `quality/reachability-baseline.json` while the scan reported it — the
+  exact inconsistency the three meta-tests and the provenance line
+  "current unreachable module missing from candidate baseline" name. Banked
+  it (sorted position, after `maistro.skills.loader`), gave it a CONNECT
+  disposition group `tasks-admission-generation-assessor` naming the #1845
+  admission backend as the reaching root (mirroring round 0's #1851
+  `runs-root-admission-contracts` entry), and refreshed `_generated_from`
+  to the measured module count. This is record-keeping, not
+  self-authorization: the two-merge provenance failures below remain and
+  keep the stack unmergeable, exactly as the leaf requires. No production,
+  test, or whitelist file changed; the vulture ledger stays byte-identical
+  to the base.
+- **Base sync:** origin/develop advanced to 35f2e0158 (#1940 PG admission
+  atomicity, #1929 installed-proof validator, #22 validated collective
+  learning) without touching any of this stack's ten files; merged clean,
+  taking develop's post-merge reconciliations (ratchet-authorizations
+  −364, vulture-baseline −3) and verifying zero row loss in every merged
+  `quality/*.json`. `_generated_from` re-measured at 1265 on the merged
+  tree. All gates below were re-run against the new base (35f2e0158), which
+  is the base the next merge-queue evaluation will use.
+- **Fixed:** `check-reachability.py` exit 0 (176 unreachable of 1265);
+  `check-reachability-dispositions.py` exit 0 (51 groups, 152 CONNECT);
+  the three formerly-failing meta-tests now pass — reachability family
+  66/66 (`test_check_reachability.py`, `test_reachability_baseline_identity.py`,
+  `test_check_reachability_dispositions.py`, `test_reachability_scanner.py`,
+  `test_reachability_source_universe.py`). This retires the `test` job's
+  failure and the Coverage gate's combine failure (its only failures were
+  those same three meta-tests).
+- **Re-verified unchanged:** leaf suites 177/177; ruff check + format
+  clean; mypy `packages/maistro-core/src` clean (707 files, with the
+  `bootstrap` extra installed — the 5 `maistro_bootstrap` import-not-found
+  errors under a dev-only sync are environmental and predate this stack);
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exit 0 at exactly the base's 1339
+  identities (1339 → 1339, unclassified 0) — the prescribed vulture-ledger
+  amendment has an empty fix-list and stays contraindicated;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok
+  (13229 node IDs on the merged tree, baseline + folded deltas); single-file
+  raw vulture still names `_assess` (60%) but the scan-wide name is absorbed
+  by the unchanged live `tasks/idempotency.py::_assess`, which is why the
+  ledger is exact without whitelisting the classifier.
+- **Remaining, structural, unchanged in kind:** `check-ratchet-provenance.py`
+  (the step exact-debt-ledger actually fails at — vulture never runs) exits 1
+  on exactly `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` being NEW unreachable modules vs the
+  trusted base 35f2e0158 with no already-landed `reachability` authorization
+  (`load_authorizations` reads `quality/ratchet-authorizations.json` from the
+  base; develop has no such grants), and `check-radon-baseline.py` exits 1 on
+  exactly `admission_generation.py:62 _assess -> C (13)`, whose remedy is the
+  base-landed grant `<qualified-block>@13`. Both are the documented two-merge
+  path owned by the separately scoped #1845 integration change; the stack
+  stays unmerged per the leaf contract until that change lands its consumer
+  and converges the unchanged gates at its final head.
