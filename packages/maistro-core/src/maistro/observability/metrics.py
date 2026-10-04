@@ -566,6 +566,11 @@ maistro_security_block_total = registry.counter(
     "maistro_security_block_total",
     "Requests blocked at a security gate (ADR-037; labels: gate, reason)",
 )
+maistro_security_advisory_degraded_total = registry.counter(
+    "maistro_security_advisory_degraded_total",
+    "Advisory security layer unavailable, gate proceeded under its documented "
+    "degraded policy (#1191; labels: gate) — an availability alarm, not a block",
+)
 maistro_circuit_state = registry.gauge(
     "maistro_circuit_state",
     "Circuit state per dependency (ADR-037; 0=closed, 1=half-open, 2=open)",

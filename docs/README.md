@@ -25,7 +25,7 @@ Historical snapshots ([DECISION-BACKLOG.md](adr/DECISION-BACKLOG.md), [testing/i
 | [ci/](ci/) | 11 | Branch protection, merge queue, autonomous merges, ratchets |
 | [install/](install/) | 17 | Bootstrap, Copier answers, deployment topology |
 | [product/](product/) | 4 | Terminology, deployment stance, Design Studio |
-| [security/](security/) | 6 | Identity/sandbox matrices, rendering hardening |
+| [security/](security/) | 7 | Identity/sandbox matrices, rendering hardening, DAG-shape admission |
 | [testing/](testing/) | ~760 | Suite inventory + per-change `inventory-notes/` (CI ratchet evidence) |
 | [persistence/](persistence/) | 1 | Durable vs ephemeral container state |
 | [research/](research/) | 1 | Research notes (not governance) |
