@@ -32,8 +32,22 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "run_id",
         "node_run_id",
         "attempt_id",
+        # Knowledge-stage ladder + pipeline epistemics (ADR-103, ADR-100126-8c2d,
+        # EPIC M4-B). A restart must not demote a validated learning back to a
+        # local belief or resurrect a superseded one, so the lifecycle state is
+        # durable like every other field.
         "stage",
+        "epistemic_type",
+        "confidence",
+        "applicability",
+        "reinforcement_count",
+        "contradiction_count",
+        "created_at",
+        "last_confirmed_at",
         "validated_by",
+        "validated_at",
         "promoted_by",
+        "supersedes",
+        "superseded_by",
     }
 )
