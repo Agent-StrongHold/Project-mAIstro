@@ -110,7 +110,16 @@ _BASELINE_COLUMNS: tuple[tuple[str, str, bool], ...] = (
 #: already shipped it NOT NULL it is retained as found — every v2 insert
 #: supplies it, so the NOT NULL costs nothing. Its nullability is therefore
 #: not pinned (see _NULLABILITY_UNPINNED).
-_FORWARD_COLUMNS: tuple[tuple[str, str, bool], ...] = (
+#
+#: Deliberately a plain module-level assignment, not an annotated one: the
+#: retention-inventory scan (``check-durable-table-inventory``) resolves the
+#: loop-bound names of ``for name, ddl_type, nullable in _FORWARD_COLUMNS``
+#: only from unannotated module tuples, and an unresolved column name in an
+#: ``op.add_column`` is silently unverifiable. Keeping the literal shape here
+#: means a future ``run_id`` row in this tuple would be reported by that
+#: scan, not skipped — the same contract every other tuple-driven migration
+#: in this chain honors.
+_FORWARD_COLUMNS = (
     ("format_version", "SMALLINT", False),
     ("generation_id", "TEXT", True),
     ("claim_token", "TEXT", True),
@@ -160,6 +169,15 @@ _CHECK_REQUIRED_TOKENS = (
 
 _EXPIRY_INDEX = "ix_task_idempotency_expires"
 
+#: DDL type names (exactly what ``_validate_forward_columns`` compares against
+#: reflection) mapped to the SQLAlchemy types ``op.add_column`` compiles back
+#: to the same DDL on PostgreSQL.
+_SA_TYPES: dict[str, type[sa.types.TypeEngine]] = {
+    "TEXT": sa.Text,
+    "SMALLINT": sa.SmallInteger,
+    "BIGINT": sa.BigInteger,
+}
+
 _V2_CHECK_SQL = f"""
     ALTER TABLE task_idempotency ADD CONSTRAINT {_CHECK_NAME} CHECK (
         format_version <> 2
@@ -207,7 +225,7 @@ def upgrade() -> None:
     _validate_forward_columns(columns)
     _validate_primary_key(inspector)
     _validate_expiry_index(inspector)
-    _add_forward_columns(bind, columns)
+    _add_forward_columns(columns)
     _add_v2_check(bind)
 
 
@@ -238,9 +256,9 @@ def downgrade() -> None:
         )
     bind.execute(sa.text(f"ALTER TABLE task_idempotency DROP CONSTRAINT IF EXISTS {_CHECK_NAME}"))
     for name, _type, _nullable in _FORWARD_COLUMNS:
-        if name in _DOWNGRADE_RETAINED:
+        if name in _DOWNGRADE_RETAINED or name not in columns:
             continue
-        bind.execute(sa.text(f"ALTER TABLE task_idempotency DROP COLUMN IF EXISTS {name}"))
+        op.drop_column("task_idempotency", name)
     # Deliberately retained: claim_token (in _DOWNGRADE_RETAINED) and the
     # optional legacy completed_at. Their origin is not provable here (this
     # revision adds claim_token on baseline schemas but meets it pre-existing
@@ -351,16 +369,18 @@ def _validate_expiry_index(inspector: sa.Inspector) -> None:
         )
 
 
-def _add_forward_columns(bind: sa.Connection, columns: dict[str, dict[str, object]]) -> None:
+def _add_forward_columns(columns: dict[str, dict[str, object]]) -> None:
     for name, ddl_type, nullable in _FORWARD_COLUMNS:
         if name in columns:
             continue  # validated above; adoption adds nothing
-        null_sql = "" if nullable else " NOT NULL"
-        default_sql = " DEFAULT 1" if name == "format_version" else ""
-        bind.execute(
-            sa.text(
-                f"ALTER TABLE task_idempotency ADD COLUMN {name} {ddl_type}{null_sql}{default_sql}"
-            )
+        op.add_column(
+            "task_idempotency",
+            sa.Column(
+                name,
+                _SA_TYPES[ddl_type](),
+                nullable=nullable,
+                server_default=sa.text("1") if name == "format_version" else None,
+            ),
         )
 
 

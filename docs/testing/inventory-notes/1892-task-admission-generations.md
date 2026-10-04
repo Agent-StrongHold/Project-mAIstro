@@ -48,3 +48,18 @@ tests/migrations/test_migration_chain.py::TestTheChainApplies::test_the_chain_ro
 — 16 passed; the full `tests/migrations` package passes with the sentinel
 update; head re-stamped to `053` afterwards since the round-trip test ends at
 base.
+
+Repair at this lane (CI `coverage (PostgreSQL)` gate): the migration's raw
+`ALTER TABLE ... ADD/DROP COLUMN` f-strings interpolated loop-bound names the
+retention-inventory scan (`check-durable-table-inventory`, enforced by
+`test_retention_reference_inventory.py`) must resolve statically and so
+refused — `test_every_run_id_table_is_in_the_purge_inventory` and
+`test_scan_sees_the_known_reference_shapes` failed. Fixed by moving the
+dynamic column work to the scan-supported `op.add_column` / `op.drop_column`
+idiom (same DDL: TEXT/SMALLINT/BIGINT, `format_version DEFAULT 1`) and
+keeping `_FORWARD_COLUMNS` an unannotated module tuple so loop-bound names
+stay statically resolvable. No test added or removed — delta above unchanged.
+Re-validated on a fresh PostgreSQL database: `tests/migrations` 117 passed;
+CI's coverage-postgres step 2 suites 5077 passed, 8 skipped; canvas leg 516
+passed, 3 skipped; `scripts/check-durable-table-inventory.py` ok (89 durable
+tables); vulture ledger 1340/1340 with CI's exact arguments.
