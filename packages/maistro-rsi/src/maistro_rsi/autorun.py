@@ -59,6 +59,16 @@ from maistro_rsi.htr import (
     HypothesisNode,
     HypothesisTree,
 )
+from maistro_rsi.intervention import (
+    Intervention,
+    InterventionConfig,
+    InterventionPolicy,
+    LineageReviewContext,
+    LineageReviewer,
+    ObjectiveParked,
+    ReseedDirection,
+    template_lineage_reviewer,
+)
 from maistro_rsi.protocols import ApplyPatchFn
 from maistro_rsi.quarantine import QuarantineVerdict, quarantine_scan
 from maistro_rsi.quota_burn import QuotaBurnScheduler, discover_models
@@ -149,6 +159,13 @@ class AutorunConfig:
     learnings_path: str | None = None
     # How many prior insights to inject into proposer/prompt context.
     recall_top_k: int = 8
+    # -- stall intervention policy (M5-B) --------------------------------------
+    # N consecutive non-improving cycles that trigger a lineage review + reseed.
+    stall_threshold: int = 3
+    # K materially distinct directions requested from the lineage reviewer.
+    direction_count: int = 3
+    # Park the objective after this many interventions with no subsequent gain.
+    park_after: int = 2
 
 
 def build_prompt(context: HtrContext, prior_learnings: Sequence[str] = ()) -> str:
@@ -177,6 +194,126 @@ def template_proposer(context: HtrContext) -> str:
     """Deterministic fallback proposer: refine the seed hypothesis textually."""
     attempt = len(context.tree.nodes)
     return f"Refinement #{attempt} of: {context.node.hypothesis}"
+
+
+def _lineage_review_prompt(
+    context: LineageReviewContext,
+) -> tuple[str, list[str], list[str]]:
+    """Render the reviewer's prompt from the review context, returning the
+    prompt plus the lineage/archive renderings reused for the boundary scan."""
+    lineage_lines = [
+        f"- [{step.status}] {step.hypothesis} "
+        f"(tests_passed={step.tests_passed}, benchmarks "
+        f"{step.benchmarks_won}/{step.battles}, improved={step.improved})"
+        for step in context.lineage
+    ]
+    lesson_lines = [f"  lesson: {step.insight}" for step in context.lineage if step.insight]
+    archive_lines = [
+        f"- SEED={candidate.node_id} (score {candidate.score:.2f}, "
+        f"depth {candidate.depth}) {candidate.hypothesis}"
+        for candidate in context.archive
+    ]
+    prompt = (
+        f"An autonomous improvement loop stalled after "
+        f"{context.stalled_cycles} consecutive non-improving cycles.\n"
+        "Failed branch lineage, oldest first, with recorded evidence:\n"
+        + "\n".join(lineage_lines)
+        + "\n"
+        + "\n".join(lesson_lines)
+        + "\n\nArchived promising candidates available as reseed branch points:\n"
+        + ("\n".join(archive_lines) or "- (none)")
+        + "\n\nPropose materially distinct NEXT directions to reseed the loop "
+        "with — do not reword anything already tried above. One per line, "
+        "optionally prefixed with `SEED=<node_id> ` to branch from a named "
+        "archived candidate. Reply with the directions only."
+    )
+    return prompt, lineage_lines, archive_lines
+
+
+def make_llm_lineage_reviewer(
+    model: str | None = None,
+    audit_sink: Callable[[dict[str, object]], object] | None = None,
+    correlation: HarvestCorrelation | None = None,
+) -> LineageReviewer:
+    """An LLM-backed lineage reviewer for the stall-intervention policy.
+
+    Like `make_llm_proposer`, but grounded in the *whole* stalled lineage and
+    the archived promising candidates: the review context (every ancestor's
+    hypothesis, recorded evidence, and distilled lesson, plus the archive) is
+    scanned through the Warden harvest boundary before it is sent, and the
+    returned directions are scanned again before they can become node
+    hypotheses steering later prompts. Any failure or refusal degrades to the
+    deterministic template reviewer — a stalled loop must never be left with
+    nothing to reseed from, and must never accept unaudited model output as
+    its new directions.
+    """
+    boundary = WardenHarvestBoundary(Warden(), correlation=correlation, audit_sink=audit_sink)
+
+    async def _review(context: LineageReviewContext) -> Sequence[ReseedDirection]:
+        settings = get_settings()
+        configure_outbound_policy(settings.litellm.base_url)
+        valid_seed_ids = {candidate.node_id for candidate in context.archive}
+        prompt, lineage_lines, archive_lines = _lineage_review_prompt(context)
+        admission = await boundary.scan(
+            {
+                "failed_node_id": context.failed_node_id,
+                "lineage": lineage_lines,
+                "archive": archive_lines,
+                "prompt": prompt,
+            }
+        )
+        if not admission.admitted:
+            await logger.awarning("rsi_lineage_review_context_refused", outcome=admission.outcome)
+            return template_lineage_reviewer(context)
+        try:
+            response = _post(
+                settings.litellm.base_url.rstrip("/") + "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.litellm.master_key}"},
+                json={
+                    "model": model or "default",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 600,
+                },
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            text = str(response.json()["choices"][0]["message"]["content"]).strip()
+            directions = parse_review_directions(text, valid_seed_ids)
+            if directions:
+                # The directions become node hypotheses that steer later
+                # prompts — exactly the indirect-injection channel the
+                # boundary exists for. Scan them before returning.
+                egress = await boundary.scan("\n".join(d.text for d in directions))
+                if egress.admitted:
+                    return directions
+                await logger.awarning(
+                    "rsi_lineage_review_directions_refused", outcome=egress.outcome
+                )
+        except Exception as exc:
+            logger.warning("rsi_lineage_reviewer_failed", error=str(exc))
+        return template_lineage_reviewer(context)
+
+    return _review
+
+
+def parse_review_directions(text: str, valid_seed_ids: set[str]) -> list[ReseedDirection]:
+    """Parse a reviewer completion into directions — a `SEED=<node_id>` prefix
+    is always stripped from the hypothesis text but only *honored* (as the
+    reseed branch point) when it names a known archived candidate."""
+    directions: list[ReseedDirection] = []
+    for line in text.splitlines():
+        line = line.strip().lstrip("-•* ")
+        if not line:
+            continue
+        seed_id: str | None = None
+        marker = re.match(r"^SEED=([\w-]+)[:\s]+(.+)$", line)
+        if marker:
+            line = marker.group(2).strip()
+            if marker.group(1) in valid_seed_ids:
+                seed_id = marker.group(1)
+        if line:
+            directions.append(ReseedDirection(text=line[:500], seed_node_id=seed_id))
+    return directions
 
 
 class ProposerCircuitOpen(RuntimeError):
@@ -371,6 +508,22 @@ class AuditLog:
                 "outcome": "failed",
                 "error_type": type(error).__name__,
                 "error": str(error),
+            }
+        )
+
+    def record_parked(self, exc: ObjectiveParked) -> None:
+        """Record a parked objective with its full intervention provenance.
+
+        This is the hand-off artifact to the backlog policy: the objective is
+        not retried by this loop, and the trail preserves every intervention's
+        lineage review, returned directions, cost, and measured gain so a
+        later retry decision is evidence-grounded rather than guessed."""
+        self._append(
+            {
+                "ts": datetime.now(UTC).isoformat(),
+                "event_type": "objective.parked",
+                "objective": exc.objective,
+                "interventions": [i.to_dict() for i in exc.interventions],
             }
         )
 
@@ -723,6 +876,16 @@ def _load_or_create_tree(config: AutorunConfig, tree_path: Path) -> HypothesisTr
     return tree
 
 
+async def _record_objective_parked(audit: AuditLog, exc: ObjectiveParked) -> None:
+    """Log the park and append its provenance record to the audit trail."""
+    await logger.awarning(
+        "rsi_objective_parked",
+        objective=exc.objective,
+        interventions=len(exc.interventions),
+    )
+    audit.record_parked(exc)
+
+
 async def run_autonomous(
     config: AutorunConfig,
     *,
@@ -802,9 +965,28 @@ async def run_autonomous(
 
     tree = _load_or_create_tree(config, tree_path)
 
-    coordinator = HtrCoordinator(tree, active_executor)
+    # M5-B stall policy: N non-improving cycles trigger a lineage review over
+    # the stalled branch's full evidence + the archived promising candidates,
+    # reseeding the frontier from the returned distinct directions; repeated
+    # gainless interventions park the objective (ObjectiveParked) so the
+    # backlog policy — not this loop — decides on a retry.
+    intervention_policy = InterventionPolicy(
+        config=InterventionConfig(
+            stall_threshold=config.stall_threshold,
+            direction_count=config.direction_count,
+            park_after=config.park_after,
+        ),
+        reviewer=make_llm_lineage_reviewer(
+            config.model,
+            audit_sink=audit_sink,
+            correlation=run_correlation,
+        ),
+    )
+
+    coordinator = HtrCoordinator(tree, active_executor, policy=intervention_policy)
     started = time.monotonic()
     steps: list[str] = []
+    interventions: list[Intervention] = []
     for _ in range(config.num_cycles):
         budget = config.max_wall_clock_s
         if budget is not None and time.monotonic() - started >= budget:
@@ -830,7 +1012,22 @@ async def run_autonomous(
             # here and being logged as a clean stop.
             await logger.awarning("rsi_autorun_frontier_exhausted", steps=len(steps))
             break
+        except ObjectiveParked as exc:
+            # park_after interventions produced no gain: stop spending on this
+            # objective and hand it back to the backlog policy with full
+            # intervention provenance — the append-only audit trail carries the
+            # parked record (objective, every intervention's lineage review,
+            # directions, cost, and measured gain), so a later operator or
+            # backlog policy can decide whether and when to retry.
+            # The policy's records include interventions already collected
+            # from earlier per-cycle partial results — extend by identity, not
+            # blindly, or a park double-counts them.
+            known = {id(i) for i in interventions}
+            interventions.extend(i for i in exc.interventions if id(i) not in known)
+            await _record_objective_parked(active_audit, exc)
+            break
         steps.extend(partial.steps)
+        interventions.extend(partial.interventions)
         # Ledger first, then tree: if the process dies between these two
         # writes, at worst a node's insight is appended twice on a later
         # resume (recall() dedupes by insight text) rather than lost forever
@@ -855,7 +1052,7 @@ async def run_autonomous(
             )
         _atomic_write_json(tree_path, {"repo_url": config.repo_url, "tree": tree.to_dict()})
 
-    result = CoordinatorResult(tree=tree, steps=steps)
+    result = CoordinatorResult(tree=tree, steps=steps, interventions=interventions)
     best = result.best
     await logger.ainfo(
         "rsi_autorun_complete",
@@ -920,6 +1117,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="learnings ledger path (default: <workspace>/learnings.jsonl)",
     )
+    parser.add_argument(
+        "--stall-threshold",
+        type=int,
+        default=3,
+        help="N consecutive non-improving cycles that trigger a lineage review + reseed",
+    )
+    parser.add_argument(
+        "--direction-count",
+        type=int,
+        default=3,
+        help="K materially distinct directions requested from the lineage reviewer",
+    )
+    parser.add_argument(
+        "--park-after",
+        type=int,
+        default=2,
+        help="park the objective after this many interventions with no subsequent gain",
+    )
     return parser
 
 
@@ -941,6 +1156,9 @@ def main(argv: list[str] | None = None) -> int:
         fresh=args.fresh,
         tree_path=args.tree_path,
         learnings_path=args.learnings_path,
+        stall_threshold=args.stall_threshold,
+        direction_count=args.direction_count,
+        park_after=args.park_after,
     )
     result = asyncio.run(run_autonomous(config))
     best = result.best
@@ -958,6 +1176,7 @@ __all__ = [
     "build_prompt",
     "default_genome",
     "main",
+    "make_llm_lineage_reviewer",
     "make_llm_proposer",
     "run_autonomous",
     "template_proposer",
