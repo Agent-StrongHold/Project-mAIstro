@@ -146,6 +146,54 @@ The issue snapshot embedded in the repair job was truncated mid-enum. The
 full issue text (fetched read-only) specifies `REPLACE_EXPIRED =
 "replace_expired"` and `LEGACY_UNRESOLVED = "legacy_unresolved"`; the module
 implements all six members with those values, and its `__all__` is exactly
-the required 21 names. All 13 test functions named in the issue's
-"Prospective tests and acceptance" section exist and pass (73 tests,
-parametrized).
+the required 21 names. All **12** test functions named in the issue's
+"Prospective tests and acceptance" section exist and pass, alongside one
+extra issue-conformant rejection case the issue does not name
+(`test_canonical_json_rejects_non_string_constructor_input`); 73 tests
+total, parametrized. (An earlier revision of this note said "all 13 test
+functions named in the issue" — that overcounted; the issue names 12.)
+
+## Third repair round (convergence-matrix drift after the develop merge)
+
+At c43cac60 — the head that merged develop 91996e19 — the merge-queue
+evaluation failed the `test` job and the Quality gate (Pillars 1–4, 7, 8) on
+`scripts/check-convergence-matrix.py`: the "Run / NodeRun / Attempt
+lifecycle" row's Unreachable cell said `none` while the checker measured
+`few` (1 of 32 modules, 3.1%). The one baselined-unreachable module is
+`maistro.runs.admission_identity`, baselined in the first repair round; the
+census counts the baselined set
+(`check-convergence-matrix.py::unreachable_modules`), so the cell went stale
+the moment that row landed, and only the develop merge exposed it on the
+queue. Repaired in-leaf by updating the cell to `few` — the truthful share
+for an inactive contract leaf — with no code change. The same round
+corrected this note's two drifted claims: the test-function count above
+(12, not 13), and the second round's `check-convergence-matrix.py → rc=0`,
+which was true at eeb4c600 but did not survive the develop merge into
+c43cac60; it is rc=0 again at this round's head.
+
+Executed at this round's head with `RATCHET_BASE_REV` =
+`git merge-base HEAD origin/develop` = 91996e19223db61bab49ce2e8a8d5b8f6eb2728e:
+
+- `check-convergence-matrix.py` → rc=0 (52 subsystems classify all 1257
+  production modules; 175 unreachable attributed);
+  `pytest tests/test_check_convergence_matrix.py -q` → 60 passed;
+  `check-m1-convergence-freeze.py --base 91996e19` → rc=0.
+- `check-reachability.py` → rc=0 (1257 production modules, 175 unreachable,
+  baselined); `check-reachability-dispositions.py` → rc=0 (50 groups: 151
+  CONNECT, 22 LIBRARY, 2 RETIRE).
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI exact args) → rc=0, 1342 reviewed identities →
+  1342 findings, `unclassified: 0`, `never_allowlist: 0` — **no unbanked
+  identities**, so there is nothing to amend in `quality/vulture-baseline.json`
+  this round and no identity was eliminated by a fix.
+- `check-shipped-surface-truth.py` → rc=0.
+- `check-reachability-provenance.py` → rc=1,
+  `check-reachability-dispositions-provenance.py` → rc=1, and
+  `check-ratchet-provenance.py` → rc=1 failing on exactly those two
+  sub-gates ("NEW unreachable module / disposition absent from trusted base
+  and not previously authorized") — unchanged and unfixable in this leaf by
+  the two-merge rule; the unblock paths remain the grant-first develop merge
+  or the #1845 consumer, as recorded in the previous section.
+- Focused suite `packages/maistro-core/tests/runs/test_root_admission_identity.py`
+  → 73 passed; ruff check and `ruff format --check` clean; suite inventory
+  unchanged (no test files moved this round).
