@@ -89,7 +89,10 @@ def _items_from(document):
 def test_real_backlog_roundtrips_byte_for_byte() -> None:
     text = REAL_BACKLOG.read_text()
     document = parse_markdown(text)
-    assert len(document.items) == 151
+    # Pinned count: develop's landed lanes (#99/#100/#101) appended items to
+    # the canonical Markdown before the #102 cutover, as the interim authority
+    # allows; the byte-for-byte render below is the actual losslessness proof.
+    assert len(document.items) == 167
     rendered = render_document(document.tokens, _items_from(document))
     assert rendered == text
 

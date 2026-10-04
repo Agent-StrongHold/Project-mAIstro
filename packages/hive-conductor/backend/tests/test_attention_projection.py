@@ -25,6 +25,7 @@ from maistro.graph.nodes.base import (
 )
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 _NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 
@@ -51,6 +52,7 @@ def _paused_record(
         workspace_id=workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     if created_at is not None:
         run = run.model_copy(update={"created_at": created_at})
@@ -333,7 +335,9 @@ async def test_a_failed_run_is_queued_with_its_error(monkeypatch: pytest.MonkeyP
         name="failing",
         nodes=[Node(node_id="only", node_type="transform.alias_keys")],
     )
-    run = await container.run_store.create_run(graph)
+    run = await container.run_store.create_run(
+        graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await container.run_store.transition_run(run.run_id, status)
     await container.run_store.transition_run(

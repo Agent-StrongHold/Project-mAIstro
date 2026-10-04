@@ -66,6 +66,11 @@ from services import foundation as foundation_service
 from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
 
+from maistro.api_versioning import (
+    API_VERSIONS,
+    DEFAULT_API_VERSION,
+    VersionNegotiationMiddleware,
+)
 from maistro.observability.middleware import REQUEST_ID_HEADER, RequestIDMiddleware
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -107,6 +112,28 @@ def _include_optional_router(
             exc,
             exc_info=True,
         )
+        try:
+            # M3-B7 (#97): degraded entry is an operational event, not only a
+            # log line. The /v1/audit trail keeps it queryable next to the
+            # capability changes it resembles, and severity=warning separates
+            # it from routine operations. Wrapped defensively: an audit-store
+            # failure must never break startup the way the import failure
+            # itself deliberately does not.
+            from routes.audit import log_audit
+
+            log_audit(
+                "optional_router_degraded",
+                "system",
+                target=module_name,
+                detail={"error": state[module_name]},
+                severity="warning",
+            )
+        except Exception as audit_exc:
+            _log.warning(
+                "optional_router_audit_failed: module=%s error=%s",
+                module_name,
+                audit_exc,
+            )
     else:
         state[module_name] = None
     app.state.optional_routers = state
@@ -143,13 +170,16 @@ async def _shutdown_background_services() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    import asyncio
     import logging as _logging
 
+    from services.audit_bridge import bind_audit_event_loop
     from settings_defaults import apply_default_settings_if_needed
 
     from maistro.security.transport import assert_session_transport_is_safe
 
     _lifespan_log = _logging.getLogger("hive.lifespan")
+    bind_audit_event_loop(asyncio.get_running_loop())
 
     # Before anything else, and deliberately NOT inside a try/except (#369).
     # Every other start-up step below degrades on failure, because a Conductor
@@ -292,6 +322,20 @@ def create_app() -> FastAPI:
     # (see `maistro.observability.middleware`), never an unvalidated pass-through.
     app.add_middleware(RequestIDMiddleware)
 
+    # API version negotiation (ADR-076) — the same maistro-core middleware
+    # maistro-server wires: the negotiated version is selected by Accept
+    # media type / api_version query / api_version JSON body field, the
+    # default is advertised on every response, and an unsupported selector
+    # is a 406 that never reaches a route handler. Infrastructure paths
+    # (health, docs) pass through untouched. Added before the security
+    # headers so it stays inside them: even a 406 carries the header set.
+    app.add_middleware(
+        VersionNegotiationMiddleware,
+        versions=API_VERSIONS,
+        default_version=DEFAULT_API_VERSION,
+        skip_prefixes=("/health", "/docs", "/redoc", "/openapi.json"),
+    )
+
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the
     # middlewares added above (e.g. 401s from AuthMiddleware).
@@ -377,7 +421,10 @@ def create_app() -> FastAPI:
 
         static_root = STATIC_DIR.resolve()
 
-        @app.get("/{full_path:path}")
+        # Out of the schema: it is not an API, and listing it would make the
+        # OpenAPI document (and `frontend/src/api/types.gen.ts`) depend on
+        # whether the frontend happens to be built.
+        @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str):
             # Do not return the SPA shell for unknown API paths (avoids JSON parse errors in the UI).
             if full_path.startswith("v1/"):

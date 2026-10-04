@@ -1,7 +1,7 @@
 """Durable tables for the canonical Workspace BacklogItem work-source (#82).
 
-Attaches after the trunk chain tip `048` (develop's `048_canvas_job_retry_backoff`,
-#398) as `052` per the convention 046 records: the branch's original `048`/
+Attaches after the trunk chain tip `051` (`051_canonical_run_eval_scores`)
+as `052` per the convention 046 records: the branch's original `048`/
 `049` slots were renumbered after develop landed its own `048` (and later
 `049`-`051`), because a landed trunk migration never moves — the numbering
 tracks the chain, not the issue number, so the chain stays linear with exactly
@@ -26,7 +26,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "052"
-down_revision = "048"
+down_revision = "051"
 branch_labels = None
 depends_on = None
 

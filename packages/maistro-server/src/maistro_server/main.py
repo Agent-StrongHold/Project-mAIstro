@@ -19,6 +19,11 @@ import maistro.config.settings as settings_module
 import maistro.memory.store as memory_store
 import maistro.persistence as persistence
 from maistro.agents.types import ConductorOutput
+from maistro.api_versioning import (
+    API_VERSIONS,
+    DEFAULT_API_VERSION,
+    VersionNegotiationMiddleware,
+)
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container
@@ -111,6 +116,48 @@ def _validate_startup(settings: Settings) -> None:
             "Container so that every chat turn reaches the Conduit, and that "
             "requires it. Set ROUTER_API_KEY."
         )
+
+
+def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
+    """Bind the shipped Canvas store to ``app.state.canvas_store`` (#851).
+
+    The ``/v2/canvas`` surface is mounted and authenticated unconditionally, and
+    every one of its routes answers 503 until a store is injected — so a default
+    startup shipped a permanently-unavailable product surface. When the shared
+    engine exists (a PostgreSQL database is configured — the same resolver
+    alembic and the canonical spine read), the real ``PgCanvasStore`` backs the
+    routes; without a database the surface keeps answering 503, which is the
+    truthful answer, and the log says which of the two happened.
+
+    Import is lazy on purpose: ``maistro_server.api.canvas`` duck-types the
+    store so the server package carries no import-time dependency on
+    maistro-canvas. In the shipped workspace the package is always present;
+    a leaner environment simply keeps the 503 rather than failing startup.
+
+    An already-injected store is never replaced — deployments and tests that
+    compose their own keep theirs.
+
+    Returns whether a store is (now) present.
+    """
+    if getattr(app.state, "canvas_store", None) is not None:
+        return True
+    if engine is None:
+        logger.info(
+            "canvas_store_unavailable",
+            detail="no PostgreSQL database is configured; /v2/canvas answers 503",
+        )
+        return False
+    try:
+        from maistro_canvas.canvas.store import PgCanvasStore
+    except ImportError as exc:  # pragma: no cover - shipped envs always have it
+        logger.error(
+            "canvas_store_unavailable",
+            detail=f"maistro-canvas is not installed; /v2/canvas answers 503 ({exc})",
+        )
+        return False
+    app.state.canvas_store = PgCanvasStore(engine)
+    logger.info("canvas_store_wired", backend="postgresql")
+    return True
 
 
 async def _run_store_pool() -> Any:
@@ -337,7 +384,11 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_outbound_policy(*configured_endpoints(settings))
 
     # Initialise database engine (no-op if DATABASE_URL unset)
-    memory_store.get_engine()
+    engine = memory_store.get_engine()
+    # The shipped Canvas surface gets its store from this same engine (#851):
+    # /v2/canvas is mounted and authenticated either way, and only this wiring
+    # decides whether it is operable or a wall of 503s.
+    _wire_canvas_ability(app, engine)
 
     # Canonical execution identity (#41): every task submitted through /tasks
     # gets a Run over a one-node Graph, and the response carries its run_id.
@@ -549,6 +600,27 @@ app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     PayloadSizeLimitMiddleware,
     max_bytes=_settings.max_request_body_bytes,
+)
+
+# API version negotiation (ADR-076) — the negotiated version is selected by
+# Accept media type / api_version query / api_version JSON body field, the
+# default is advertised on every response, and an unsupported selector is a
+# 406 that never reaches a route handler. Infrastructure paths (health,
+# metrics, OpenAPI/docs) and A2A (whose versioning the ADR scopes out) pass
+# through untouched. Added before the security headers so it stays inside
+# them: even a 406 carries the security header set.
+app.add_middleware(
+    VersionNegotiationMiddleware,
+    versions=API_VERSIONS,
+    default_version=DEFAULT_API_VERSION,
+    skip_prefixes=(
+        "/health",
+        "/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/a2a",
+    ),
 )
 
 # Security headers — the true outermost middleware (added last), so headers

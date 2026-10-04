@@ -20,6 +20,7 @@ from services.backlog import (
     BacklogNotFoundError,
     VersionConflictError,
 )
+from services.request_principal import require_actor_id
 
 from routes.audit import log_audit
 
@@ -31,8 +32,7 @@ def _actor(request: Request) -> str:
 
     Fail closed: no session, no list, no detail, no edit.
     """
-    user = getattr(request.state, "user", None) or {}
-    actor = str(user.get("id") or "").strip()
+    actor = require_actor_id(request).strip()
     if not actor:
         raise HTTPException(status_code=401, detail="authentication required")
     return actor

@@ -9,18 +9,26 @@ inputs, not promises that the capability is complete in v1.
 
 ### Task queue persistence
 
-The live task queue is in memory. When a database is configured, every
-submit and status change now upserts a `TaskRecord` row per
-[ADR-018](docs/adr/ADR-018-task-record-persistence.md) (best-effort,
-fire-and-forget), so task history survives a restart — but the queue does
-not yet *recover* from those rows: queued and active tasks are still
-discarded on restart, and no requeue/fail-over policy for interrupted tasks
-has been decided.
+Updated by #91 (M3-B1): with a database configured, the queue is now durable
+and recoverable. Admission commits a QUEUED canonical Run before the `202`,
+lifespan startup rehydrates those Runs through `queue.recover` (announcing
+each as `task_recovered`), RUNNING residue with no execution evidence is
+failed visibly instead of stranding, terminal receipts the shutdown abandoned
+are reconciled from the Run (#849), and a resubmission under the same
+idempotency key replays the original admission through the durable claim
+store (#1176). The product path across a forced (SIGKILL) restart — recover,
+execute exactly once on the same Run, idempotent replay — is pinned by
+`packages/maistro-server/tests/test_task_restart_recovery.py`.
 
-Tracking: decide and implement the recovery policy (requeue vs. fail
-interrupted tasks; relationship to
-[ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s checkpoint-based
-design).
+What remains limited: the task *receipt* a fresh process serves is still the
+living queue's answer (ADR-018 best-effort rows), so terminal state after a
+restart is read through the canonical Run (`GET /v1/runs/{run_id}`) and
+idempotent resubmission rather than rehydrating every historical receipt
+into memory; and without a database the spine is in-process only, so
+admitted tasks are still lost on restart (`run_store_in_process_only`).
+Wave-level crash recovery (crash-loop quarantine, checkpoint version
+gating) remains [ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s
+orchestrator path.
 
 ### Canvas background job runner
 
@@ -58,11 +66,29 @@ under #773 (Design Studio cutover #95 wires the exporter in deployed stacks).
 
 ### Conductor degraded modes
 
-The Conductor can continue in a degraded state when optional services are
-unavailable. Startup now makes optional-router failures observable, but the
-degraded state is not yet a complete user-facing operating mode.
+Updated by #97 (M3-B7): degradation is now a complete user-facing operating
+state, not only startup logging. `/health` answers *what* is degraded and
+*why*: `degraded_services` names every diminished capability (LLM gateway,
+memory decay, ADR-064 log redaction, identity, and each optional feature
+router that failed to mount) with an actionable reason, alongside the raw
+`optional_routers` mount outcomes; `degraded` remains the boolean liveness
+signal. A degraded router entry is also written to the `/v1/audit` trail as a
+warning, so entry is queryable next to the capability changes it resembles.
+The UI surfaces the same facts: an app-shell banner (rendered from
+`degraded_services`, disappearing on its own when `/health` recomputes clean)
+and `hctl status` on the CLI page print the degraded list verbatim.
+Unsupported actions still refuse honestly rather than fake success: an
+unmounted route family answers 404, the LLM refusal names both fixes
+(`StubLLMNotAllowedError`), capability routes degrade with cause, and
+`/health`'s `task_clear_supported` gates the missions bulk-clear UI.
+Recovery is defined on the same surfaces: `/health` recomputes per request
+(so the banner and CLI follow on the next poll when a service returns),
+capability providers re-enter via `/v1/capabilities/discover` without a
+restart, and an optional router recovers by the restart re-running its mount.
 
-Tracking: finish the visible degraded-mode behavior in F3 (#302).
+Tracking: close this entry when the degraded-mode product E2E
+(`frontend/e2e/degraded-mode.spec.ts`, banner + `hctl status` halves) passes
+in a deployed stack under F3 (#302).
 
 ### Design Studio production availability and Canvas boundary
 
@@ -96,12 +122,16 @@ product identity.
 
 ### HTTP API content negotiation
 
-[ADR-076](docs/adr/ADR-076-http-api-versioning.md) is not implemented across
-the business API. Canvas has a narrow `/v2` response-format mechanism, but
-the business routes remain mounted under `/v1` and do not provide the ADR's
-general content-negotiation scheme.
-
-Tracking: implement ADR-076's API-wide version negotiation in v1.1.
+Closed by #96 (M3-B6): [ADR-076](docs/adr/ADR-076-http-api-versioning.md) is
+now implemented across the business API. Both `maistro-server` and
+`hive-conductor` run the shared `maistro.api_versioning` middleware: a request
+selects a version via `Accept: application/vnd.maistro.vN`, an `api_version`
+query parameter, or an `api_version` JSON body field; every response advertises
+`Maistro-API-Version` / `Maistro-API-Default`; an unsupported selector is a
+`406`. Business routes remain on their stable `/v1` mounts — the ADR's stable
+resource mount with negotiated behavior — and the canvas
+`application/vnd.canvas+json;version=2` media-type check stays a canvas-local
+mechanism, distinct from the general scheme.
 
 ### Recurring schedules created through the API do not survive a restart
 
@@ -185,5 +215,4 @@ The following text is intended to be copied verbatim into the release notes.
 > default shipped service and return `503`. Design Studio can discover
 > resources and select artifact modes, but visual generation and
 > editing/preview still need wired providers. Conductor can run in degraded
-> mode when optional services are unavailable, and API-wide HTTP content
-> negotiation from ADR-076 is deferred to v1.1.
+> mode when optional services are unavailable.

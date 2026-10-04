@@ -20,7 +20,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from maistro_rsi.competitors import parse_competitors
 from maistro_rsi.export_policy import (
@@ -41,6 +41,7 @@ from maistro_rsi.model_identifiers import (
 )
 
 if TYPE_CHECKING:
+    from maistro_evolve.population import PopulationStore
     from maistro_rsi.harvest import PromotedPatch
 
 
@@ -56,6 +57,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--test-cmd",
         required=True,
         help="Shell command that passes (exit 0) iff the repo is healthy.",
+    )
+    run.add_argument(
+        "--test-argv",
+        default="",
+        help=(
+            "JSON argument vector that WINS over --test-cmd and runs with no "
+            "shell at all. This is how a policy-resolved test profile (#305) "
+            "crosses a dispatch boundary: the launcher forwards the vector it "
+            "resolved, so no shell parses the command on either side of it."
+        ),
     )
     run.add_argument("--cycles", type=int, default=3, help="Hard cap on cycles (default: 3).")
     run.add_argument(
@@ -316,6 +327,50 @@ def _build_parser() -> argparse.ArgumentParser:
         "simply proposes nothing.",
     )
 
+    calibrate = sub.add_parser(
+        "calibrate",
+        help="Run the #384 adversarial narration calibration against a stored "
+        "genome and print each proxy scorer's narration false-positive rate "
+        "over the held-out fixtures. Reports; it does not gate — fitness.py's "
+        "hard gates stay the only scoring authority.",
+    )
+    calibrate.add_argument(
+        "--db",
+        default=None,
+        help="PopulationStore path holding the genome to calibrate (default: in-memory).",
+    )
+    calibrate.add_argument(
+        "--genome-id",
+        default=None,
+        help="Genome id to calibrate (default: the store's fitness champion).",
+    )
+    calibrate.add_argument(
+        "--model",
+        default=None,
+        help="Model the candidate responder calls (default: MAISTRO_OPENAI_MODEL/OPENAI_MODEL).",
+    )
+    calibrate.add_argument(
+        "--base-url",
+        default=None,
+        help="OpenAI-compatible base URL "
+        "(default: MAISTRO_OPENAI_BASE_URL/OPENAI_BASE_URL/LITELLM_BASE_URL).",
+    )
+    calibrate.add_argument(
+        "--api-key",
+        default=None,
+        help="API key (default: MAISTRO_OPENAI_API_KEY/OPENAI_API_KEY/LITELLM_* env).",
+    )
+    calibrate.add_argument(
+        "--allow-unauthenticated-provider",
+        action="store_true",
+        help="Allow a local gateway that needs no API key.",
+    )
+    calibrate.add_argument(
+        "--json",
+        action="store_true",
+        help="Print only the machine-readable calibration report.",
+    )
+
     review = sub.add_parser(
         "review",
         help="List/approve/deny promotions the checkpoint reviewer reverted "
@@ -337,6 +392,61 @@ def _build_parser() -> argparse.ArgumentParser:
     deny.add_argument("sha", help="Commit sha (or its 12-char prefix) of the flagged promotion.")
 
     return parser
+
+
+def _print_promotion_evidence(store: Any, champ: Any) -> None:
+    """Print the champion's verified-evidence trail and proxy-scorer calibration.
+
+    The live loop's promotion evidence (#384/#853), for the operator reading
+    the run summary. ``PopulationStore.champion_provenance()`` names, for
+    every benchmark score the champion's fitness rests on, the verified
+    method that produced it — a score with no evidence record reads
+    "unverified" instead of passing silently. The offline adversarial
+    calibration (``calibrate_proxy_scorers``) then measures how much
+    narration-only output leaks through the proxy scorers that shaped this
+    run's fitness. Both surfaces report; neither gates (#853: promotion
+    semantics stay in fitness.py), so an evidence-collection failure is
+    printed and the run still exits 0.
+    """
+    provenance = store.champion_provenance()
+    if provenance is not None:
+        print("champion evidence:")
+        _print_champion_provenance(store)
+
+    import asyncio
+
+    from maistro_evolve.benchmarks.calibration import calibrate_proxy_scorers
+
+    try:
+        # The calibration fixtures play the candidate themselves (deterministic
+        # narration/verified responders), so no live model is contacted and
+        # ``llm_call`` is None exactly as in the calibration suite.
+        report = asyncio.run(calibrate_proxy_scorers(champ, None))
+    except Exception as exc:  # evidence, not gate: never fail the run over it
+        print(f"calibration evidence: unavailable ({exc})")
+        return
+    print(f"proxy-scorer calibration ({report['calibration']}):")
+    for scorer, rates in report["scorers"].items():
+        print(
+            f"  {scorer}: narration_fpr={rates['narration_false_positive_rate']} "
+            f"verified_rate={rates['verified_positive_rate']}"
+        )
+
+
+def _print_champion_provenance(store: PopulationStore) -> None:
+    """Print the verified-evidence trail behind champion selection (#384).
+
+    The champion's fitness is a weighted fold of benchmark scores; this names,
+    for every scored benchmark, the verified method that produced the score
+    (``exact_match``, ``llm_judge``, ... — or the explicit ``unverified``). A
+    champion that got there by narrating shows up here instead of being
+    silently trusted.
+    """
+    provenance = store.champion_provenance()
+    if provenance is None:
+        return
+    for bench, record in provenance["benchmarks"].items():
+        print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
 
 
 def _evolve(args: argparse.Namespace) -> int:
@@ -463,6 +573,56 @@ def _evolve(args: argparse.Namespace) -> int:
     champ = store.get_champion()
     if champ is not None:
         print(f"champion: {champ.name} (fitness={champ.fitness_score})")
+        _print_promotion_evidence(store, champ)
+    return 0
+
+
+def _calibrate(args: argparse.Namespace) -> int:
+    """`calibrate` — the offline promotion-evidence surface for #384.
+
+    Drives the real `calibrate_proxy_scorers` harness (held-out narration
+    fixtures that do no work, plus verified fixtures that do) with an
+    OpenAI-compatible provider as the candidate responder, and prints each
+    scorer's `narration_false_positive_rate`. Per benchmarks/calibration.py's
+    contract this REPORTS — it never rewrites scores or gates; the fitness
+    hard gates remain non-tradeable and the candidate cannot touch the
+    scorer (sensitive_paths).
+    """
+    import asyncio
+
+    from maistro_evolve.benchmarks.calibration import calibrate_proxy_scorers
+    from maistro_evolve.providers.openai_compatible import OpenAICompatibleProvider
+    from maistro_rsi.evolve_bridge import open_population
+
+    store = open_population(args.db)
+    genome = store.get(args.genome_id) if args.genome_id else store.get_champion()
+    if genome is None:
+        where = f"id {args.genome_id!r}" if args.genome_id else "no scored champion"
+        print(
+            f"error: no genome to calibrate ({where}); pass --db/--genome-id",
+            file=sys.stderr,
+        )
+        return 2
+    llm_call = OpenAICompatibleProvider(
+        model=args.model,
+        base_url=args.base_url,
+        api_key=args.api_key,
+        allow_unauthenticated=args.allow_unauthenticated_provider,
+    )
+    report = asyncio.run(calibrate_proxy_scorers(genome, llm_call))
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    print(f"calibration {report['calibration']} against genome {genome.id} ({genome.name})")
+    for scorer, result in report["scorers"].items():
+        fpr = result["narration_false_positive_rate"]
+        vpr = result["verified_positive_rate"]
+        verdict = "LEAK" if fpr > 0 else "clean"
+        print(
+            f"  {scorer}: narration_fpr={fpr} ({result['narration_false_positives_implied']}"
+            f"/{result['narration_fixtures']}) verified_positive={vpr} [{verdict}]"
+        )
+    print("report only — scoring authority stays with fitness.py's non-tradeable gates")
     return 0
 
 
@@ -735,6 +895,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "evolve":
         return _evolve(args)
 
+    if args.command == "calibrate":
+        return _calibrate(args)
+
     if args.command == "review":
         return _review(args)
 
@@ -807,6 +970,27 @@ def _model_arguments(args: argparse.Namespace) -> _ModelArguments:
     )
 
 
+def _test_argv(raw: str) -> tuple[str, ...]:
+    """The `--test-argv` JSON vector, or exit-2 refuse.
+
+    A dispatching caller forwards a vector it already resolved (#305); a
+    malformed one is a launcher bug, and the honest answer is a refusal before
+    any cycle starts rather than a run that quietly fell back to the shell
+    string every dispatching caller just promised not to use.
+    """
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        print(f"error: --test-argv must be a JSON array of strings: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    if not isinstance(parsed, list) or not all(isinstance(t, str) and t for t in parsed):
+        print("error: --test-argv must be a JSON array of non-empty strings", file=sys.stderr)
+        raise SystemExit(2)
+    return tuple(parsed)
+
+
 def _run(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser()
     # `.git` is a dir in a normal checkout, a file in a linked worktree.
@@ -834,6 +1018,9 @@ def _run(args: argparse.Namespace) -> int:
     config = LocalRsiConfig(
         repo_path=str(repo),
         test_command=args.test_cmd,
+        # The dispatch form (#509): when a policy-resolved vector is
+        # forwarded, it WINS over the shell string, exactly as in-process.
+        test_argv=_test_argv(args.test_argv),
         work_root=work_root,
         max_cycles=args.cycles,
         # Only override the config's own default objective when one is given.

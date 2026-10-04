@@ -30,6 +30,7 @@ from maistro.runs import (
 )
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.store import ActiveAttemptExists, RunIntegrityError, StaleExecutionFence
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _bound_store() -> tuple[
@@ -47,7 +48,7 @@ async def _bound_store() -> tuple[
         name="Attempt boundary",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await run_store.create_run(graph)
+    run = await run_store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await run_store.transition_run(run.run_id, RunStatus.QUEUED)
     run = await run_store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -276,7 +277,7 @@ async def test_losing_the_settle_race_reports_the_winner_rather_than_raising() -
         name="Attempt boundary",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await run_store.create_run(graph)
+    run = await run_store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await run_store.transition_run(run.run_id, RunStatus.QUEUED)
     run = await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await run_store.create_node_run(run.run_id, node_id="node-1")

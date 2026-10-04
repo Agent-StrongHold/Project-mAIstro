@@ -43,10 +43,12 @@ state:
 - ``app.state.canvas_asset_registry`` — optional; an ``AssetRegistry``
   (``list_by_kind``). Backs GET /v2/canvas/assets; 501 when absent.
 
-Content negotiation (ADR-076, minimal mechanism): requests may send
-``Accept: application/vnd.canvas+json;version=2`` and receive the same body
+Content negotiation (canvas-local, distinct from ADR-076's general scheme):
+requests may send ``Accept: application/vnd.canvas+json;version=2`` and receive the same body
 with that content type; plain ``application/json`` is the default. Unknown
-requested versions get 406.
+requested versions get 406. The repository-wide ADR-076 version negotiation
+(``application/vnd.maistro.vN`` / ``api_version``) is a separate mechanism in
+``maistro.api_versioning``; the two never rewrite each other's media types.
 
 A "design" in the /v2 surface is a canvas ability ``CanvasRecord``;
 soft-delete maps to the record's ``archived_at`` marker (the ability's own
@@ -72,7 +74,8 @@ from maistro_server.api.principal import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/v2/canvas", tags=["canvas"])
 
-# ── Content negotiation (ADR-076) ────────────────────────────────────
+# ── Content negotiation (canvas-local; see maistro.api_versioning for the
+# ── repository-wide ADR-076 mechanism) ──────────────────────────────────
 
 CANVAS_MEDIA_TYPE = "application/vnd.canvas+json"
 _SUPPORTED_VERSION = "2"
@@ -160,7 +163,9 @@ def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
 
 
 async def _require_design(store: Any, design_id: str, org_id: str) -> _DesignRecord:
-    record = await store.get_canvas(design_id)
+    # Scoped read (#857): the org rides into the SQL predicate, so another
+    # org's canvas reads as absent rather than as a filtered row.
+    record = await store.get_canvas(design_id, org_id=org_id)
     if (
         record is None
         or record.org_id != org_id
@@ -227,7 +232,7 @@ async def get_design(request: Request, design_id: str, auth: RequireAuth) -> JSO
     body = _design_dict(record)
     body["layers"] = [
         layer.to_dict() if hasattr(layer, "to_dict") else asdict(layer)
-        for layer in await store.list_layers(design_id)
+        for layer in await store.list_layers(design_id, org_id=_owner_id(auth))
         if hasattr(layer, "to_dict") or is_dataclass(layer)
     ]
     return _json(request, body)
@@ -243,7 +248,7 @@ async def update_design(
         record.name = body.name
     if body.background_color is not None:
         record.background_color = body.background_color
-    updated = await store.update_canvas(record)
+    updated = await store.update_canvas(record, org_id=_owner_id(auth))
     await _emit(request, "design.updated", {"design_id": design_id, "org_id": record.org_id})
     return _json(request, _design_dict(updated))
 
@@ -256,7 +261,7 @@ async def delete_design(request: Request, design_id: str, auth: RequireAuth) -> 
     store = _store(request)
     record = await _require_design(store, design_id, _owner_id(auth))
     record.archived_at = datetime.now(UTC)
-    await store.update_canvas(record)
+    await store.update_canvas(record, org_id=_owner_id(auth))
     await _emit(request, "design.deleted", {"design_id": design_id, "org_id": record.org_id})
     return _json(request, {"deleted": True, "id": design_id})
 
@@ -336,7 +341,7 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
     failure propagates as a truthful 502 — a configured provider failing is
     never converted into fake success.
     """
-    composite = await store.latest_composite(design_id)
+    composite = await store.latest_composite(design_id, org_id=org_id)
     if composite is None:
         compositor = getattr(request.app.state, "canvas_compositor", None)
         if compositor is None:
@@ -348,7 +353,7 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
         try:
             composite = await compositor.composite(
                 await _require_design(store, design_id, org_id),
-                await store.list_layers(design_id),
+                await store.list_layers(design_id, org_id=org_id),
             )
         except HTTPException:
             raise
@@ -419,7 +424,7 @@ async def publish_design(
     exporter = _exporter(request)
     _validate_format(exporter, body.format)
     composite = await _pinned_composite(request, store, design_id, _owner_id(auth))
-    layers = await store.list_layers(design_id)
+    layers = await store.list_layers(design_id, org_id=_owner_id(auth))
     try:
         version = await exporter.export_canvas(
             record,
@@ -467,7 +472,7 @@ async def export_design(
     fmt = format.lower()
     _validate_format(exporter, fmt)
     composite = await _pinned_composite(request, store, design_id, _owner_id(auth))
-    layers = await store.list_layers(design_id)
+    layers = await store.list_layers(design_id, org_id=_owner_id(auth))
     try:
         version = await exporter.export_canvas(
             record,

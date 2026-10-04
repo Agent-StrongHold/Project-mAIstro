@@ -26,6 +26,11 @@ except ModuleNotFoundError as exc:  # covered by tests/identity/test_extra_guard
 # Multicodec prefix for an Ed25519 public key: varint(0xed) = 0xed 0x01.
 _ED25519_MULTICODEC_PREFIX = b"\xed\x01"
 
+# ADR-021 fixed curve identifiers for BIP32/SLIP-0010 path routing (not runtime
+# agility). Bitcoin/EVM BIP44 coin types use secp256k1; identity/signing use Ed25519.
+CURVE_ED25519 = "ed25519"  # DevSkim: ignore DS440100 until 2027-12-31 -- ADR-021 Ed25519 paths
+CURVE_SECP256K1 = "secp256k1"  # DevSkim: ignore DS440100 until 2027-12-31 -- BIP44 secp256k1
+
 _SECP256K1_COIN_TYPES = {"0'", "60'"}
 
 
@@ -38,8 +43,8 @@ def _curve_for_path(path: str) -> str:
         and parts[1] == "44'"
         and parts[2] in _SECP256K1_COIN_TYPES
     ):
-        return "secp256k1"
-    return "ed25519"
+        return CURVE_SECP256K1
+    return CURVE_ED25519
 
 
 _PATHS = {
@@ -57,7 +62,7 @@ _PATHS = {
 class DerivedKey:
     path: str
     public_key: bytes
-    curve: str = "ed25519"
+    curve: str = CURVE_ED25519
 
 
 class ConductorSeed:
@@ -79,13 +84,13 @@ class ConductorSeed:
         return ConductorSeed(mnemonic)
 
     def derive(self, path: str) -> DerivedKey:
-        if _curve_for_path(path) == "secp256k1":
+        if _curve_for_path(path) == CURVE_SECP256K1:
             node = self._require_secp_root().DerivePath(path)
             pub = node.PublicKey().RawCompressed().ToBytes()
-            return DerivedKey(path=path, public_key=pub, curve="secp256k1")
+            return DerivedKey(path=path, public_key=pub, curve=CURVE_SECP256K1)
         node = self._require_root().DerivePath(path)
         pub = node.PublicKey().RawCompressed().ToBytes()
-        return DerivedKey(path=path, public_key=pub[1:], curve="ed25519")
+        return DerivedKey(path=path, public_key=pub[1:], curve=CURVE_ED25519)
 
     def derive_named(self, name: str) -> DerivedKey:
         path = _PATHS.get(name)
@@ -141,10 +146,10 @@ class ConductorSeed:
 
     @staticmethod
     def _require_ed25519_path(path: str, op: str) -> None:
-        if _curve_for_path(path) != "ed25519":
+        if _curve_for_path(path) != CURVE_ED25519:
             raise ValueError(
                 f"{op}() supports only Ed25519 identity/signing paths, "
-                f"not the secp256k1 wallet path {path!r}"
+                f"not the {CURVE_SECP256K1} wallet path {path!r}"
             )
 
 

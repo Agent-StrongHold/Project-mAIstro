@@ -32,6 +32,12 @@ class TestStore:
         id_ = await store.store(lr)
         assert id_ > 0
 
+    async def test_get_returns_none_for_an_unknown_id(self) -> None:
+        store = InMemoryLearningStore()
+        id_ = await store.store(_lr())
+        assert store.get(id_) is not None
+        assert store.get(id_ + 999) is None
+
     async def test_store_dedup_same_org_same_tool_overlapping_keys(self) -> None:
         store = InMemoryLearningStore()
         lr1 = _lr(keys=["foo", "bar"])

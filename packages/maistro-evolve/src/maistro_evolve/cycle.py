@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .archive import CandidateArchive, apply_objective
+from .attribution import EvalContext, ProducerKind, ProducerLedger, producer_identity
 from .crossover import crossover_and_mutate
-from .fitness import compute_fitness
-from .harness import EvalHarness
+from .fitness import compute_fitness, passes_hard_gate
+from .harness import EvalHarness, evidence_method
 from .hyper_mutator import entry_node, hyper_mutate, slot_lineage
+from .mutate import MUTATION_OPERATOR_NAMES
 from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
 from .optimizer import extract_signal, optimize_topology
 from .population import IslandPopulation, PopulationStore, migrate_islands
@@ -23,6 +27,12 @@ from .promotion import (
     objective_version,
 )
 from .reflect import reflective_improve
+from .retrodiction import (
+    PrefilterConfig,
+    PrefilterDecision,
+    RetrodictionPrefilter,
+    TraceLedger,
+)
 from .tournament import EloTournament
 from .types import FitnessComponents, PipelineGenome
 
@@ -91,6 +101,36 @@ class EvolutionConfig(BaseModel):
     # agent-nondeterminism noise on repeat sampling (a genome scored 0.76 then
     # 0.0 across two identical evals in a live run).
     eval_ema_alpha: float = Field(default=0.5, gt=0.0, le=1.0)
+    # M4-A8 producer attribution (#115): stamp every candidate with the
+    # generator/mutation/prompt/search operator that produced it and credit
+    # evaluation results back to those producers in an append-only ledger.
+    # Bookkeeping only — changes no selection/breeding behavior on its own.
+    producer_attribution: bool = True
+    # Favor productive operators: when True, breeding draws a weighted SUBSET
+    # of the mutation operators per child (ledger-ranked, exploration-floored)
+    # instead of always applying every operator. Opt-in because it changes
+    # search dynamics; attribution bookkeeping works with it on or off.
+    favor_productive_operators: bool = False
+    # Diversity floor for operator favoring: collectively the non-favored
+    # operators keep at least this share of selection probability, so a
+    # productive operator can never starve the others of exploration.
+    producer_exploration_floor: float = Field(default=0.2, ge=0.0, le=1.0)
+    # Regressions at/above this count (with regression-majority signal) mark a
+    # producer as a repeated regressor: its weight is demoted, never zeroed,
+    # and the negative credit is never decayed away.
+    producer_regression_limit: int = Field(default=3, ge=1)
+    # Size of the mutation-operator subset drawn per child when
+    # favor_productive_operators is enabled (clamped to the registry size).
+    mutation_operators_per_child: int = Field(default=3, ge=1)
+    # M4-A5 retrodiction prefilter: before spending a fresh isolated
+    # execution / frontier call, replay the candidate against prior cycle
+    # traces (content-addressed in a TraceLedger). "enforce" skips known
+    # total-failure repeats and deprioritizes low-information repeats;
+    # "shadow" records the same verdicts but still evaluates everything, so
+    # the false-negative rate is measured before the filter is trusted;
+    # "off" disables it. The prefilter never feeds promotion — winners still
+    # go through the real evaluator plus the human approval gate.
+    retrodiction: Literal["enforce", "shadow", "off"] = "enforce"
     # How many already-evaluated genomes get a FRESH independent sample per
     # cycle (#854). The cycle used to evaluate every genome exactly once —
     # a lucky first sample became permanent and the EMA never ran through the
@@ -143,10 +183,17 @@ class EvolutionCycle:
         self,
         harness: EvalHarness | None = None,
         tournament: EloTournament | None = None,
+        archive: CandidateArchive | None = None,
+        ledger: ProducerLedger | None = None,
         objective: EvaluationObjective | None = None,
     ) -> None:
         self.harness = harness or EvalHarness()
         self.tournament = tournament or EloTournament()
+        # M4-A6 candidate archive. Optional: ``None`` preserves the exact
+        # pre-archive library behavior; when supplied, culled genomes are
+        # archived (inspectable/branchable) and every created child is
+        # snapshotted so lineage survives population turnover.
+        self.archive = archive
         # Campaign-owned scoring objective (#853): every genome in the
         # population is measured with THIS ruler, never with a genome-carried
         # weight vector. Pass a custom objective per campaign/cycle to change
@@ -155,8 +202,46 @@ class EvolutionCycle:
         # Latest fitness evidence per genome id (#853): the cross-cycle
         # determinism guard's memory — see _check_fitness_recomputability.
         self.fitness_evidence: dict[str, FitnessEvidenceRecord] = {}
+        # M4-A8: append-only producer credit ledger (process-local, same
+        # posture as the Elo tournament — see attribution.ProducerLedger).
+        self.ledger = ledger or ProducerLedger()
         self._island_pop: IslandPopulation | None = None
         self._cycle_count: int = 0
+        # Prior-cycle trace evidence for the retrodiction prefilter (M4-A5).
+        # The ledger deliberately outlives individual run_cycle() calls — the
+        # point is replaying THIS cycle's candidates against traces recorded
+        # by PRIOR cycles. The prefilter itself is rebuilt per run_cycle()
+        # from EvolutionConfig (mode may change between cycles).
+        self._ledger = TraceLedger()
+        self._prefilter: RetrodictionPrefilter | None = None
+
+    @property
+    def prefilter_stats(self) -> dict[str, Any] | None:
+        """Cumulative prefilter accounting (decisions, measured savings,
+        measured false-negative risk), or None when the prefilter is off."""
+        if self._prefilter is None:
+            return None
+        return self._prefilter.stats.summary()
+
+    def _eval_context(self, config: EvolutionConfig) -> EvalContext:
+        """The comparable evaluation scope of this cycle's harness + targets."""
+        return EvalContext.from_harness(self.harness, config.target_benchmarks)
+
+    def _register_child(
+        self,
+        population: PopulationStore,
+        child: PipelineGenome,
+        objective: str = "",
+    ) -> PipelineGenome:
+        """Admit one newly-created candidate: stamp the run's source objective,
+        add it to the population, and snapshot it into the archive (M4-A6) so
+        its record — parents, operator, objective, prompt version — outlives
+        whatever the cull later does to it."""
+        apply_objective(child, objective)
+        population.add(child)
+        if self.archive is not None:
+            self.archive.record(child, event="created")
+        return child
 
     @staticmethod
     def _fold_score(
@@ -201,9 +286,11 @@ class EvolutionCycle:
         genome: PipelineGenome,
         cfg: EvolutionConfig,
         llm_call: Any,
-    ) -> None:
+    ) -> list[Any]:
         """Evaluate one genome across the config's benchmarks, EMA-folding each
-        result into its evidence (shared by first-eval and reconfirmation)."""
+        result into its evidence (shared by first-eval, reconfirmation, and
+        the retrodiction-prefiltered eval path, which replays the returned
+        results into the trace ledger)."""
         results = await self.harness.evaluate_genome(genome, cfg.target_benchmarks, llm_call)
         for r in results:
             self._fold_score(
@@ -213,14 +300,79 @@ class EvolutionCycle:
                 bool(r.metadata.get("stub")),
                 cfg.eval_ema_alpha,
             )
+            # Fold the score's verification provenance alongside it
+            # (#384): champion selection must be able to name the
+            # evidence behind every number in ``eval_scores``. A result
+            # without an evidence record is recorded as "unverified"
+            # rather than silently dropped — the absence itself is the
+            # provenance. Shared by first-eval and reconfirmation, so a
+            # fresh #854 sample refreshes the evidence it was measured
+            # with instead of leaving stale provenance behind.
+            genome.eval_evidence[r.benchmark] = evidence_method(r)
             genome.harness_params["total_cost_usd"] = (
                 genome.harness_params.get("total_cost_usd", 0.0) + r.cost_usd
             )
             genome.harness_params["avg_latency_seconds"] = (
                 genome.harness_params.get("avg_latency_seconds", 0.0) + r.duration_seconds
             ) / max(len(genome.eval_scores), 1)
+            # M4-A8: credit the producing operator for this verified result.
+            # Append-only on the ledger side; the candidate's own history
+            # (origin, lineage) is never rewritten by it. Shared by first
+            # evals and #854 reconfirmations alike — every verified sample is
+            # evidence about the producer that built the candidate.
+            if cfg.producer_attribution:
+                self.ledger.credit(
+                    genome,
+                    r.benchmark,
+                    r.score,
+                    context=self._eval_context(cfg),
+                    stub=bool(r.metadata.get("stub")),
+                )
         self._stamp_evidence(genome, cfg)
         genome.updated_at = datetime.now(UTC).isoformat()
+        return results
+
+    def _decide_batch(
+        self,
+        batch: list[PipelineGenome],
+        config: EvolutionConfig,
+        population: PopulationStore,
+    ) -> dict[str, PrefilterDecision]:
+        """Run the retrodiction prefilter over the eval batch, recording each
+        decision (with trace-id evidence) on the genome."""
+        decisions: dict[str, PrefilterDecision] = {}
+        prefilter = self._prefilter
+        if prefilter is None:
+            return decisions
+        for genome in batch:
+            decision = prefilter.decide(genome, config.target_benchmarks)
+            decisions[genome.id] = decision
+            genome.harness_params["retrodiction"] = decision.summary()
+            population.add(genome)
+        return decisions
+
+    async def _evaluate_one(
+        self,
+        genome: PipelineGenome,
+        population: PopulationStore,
+        config: EvolutionConfig,
+        llm_call: Any,
+        prefilter: RetrodictionPrefilter | None,
+        decision: PrefilterDecision | None,
+    ) -> None:
+        results = await self._eval_and_fold(genome, config, llm_call)
+        population.add(genome)
+        if prefilter is not None:
+            # Real results become replayable evidence for later cycles (stub
+            # results are refused inside record()).
+            if results:
+                self._ledger.record(genome, results, cycle_index=self._cycle_count)
+            if decision is not None and decision.verdict != "allow":
+                # The filter tried to reject (shadow) or park (deprioritize)
+                # this candidate, yet it was fully evaluated: reconcile the
+                # outcome so the false-negative rate is measured against
+                # candidates that later succeed, not assumed away.
+                prefilter.observe_outcome(decision, passes_hard_gate(genome), genome_id=genome.id)
 
     async def _evaluate_unevaluated(
         self,
@@ -231,9 +383,40 @@ class EvolutionCycle:
         all_genomes = population.list_all()
         unevaluated = [g for g in all_genomes if g.fitness_score is None or not g.eval_scores]
         batch = unevaluated[: config.eval_batch_size]
-        for genome in batch:
-            await self._eval_and_fold(genome, config, llm_call)
-            population.add(genome)
+
+        # M4-A5 retrodiction prefilter: replay each proposed candidate against
+        # prior cycle traces BEFORE spending harness executions. Decisions are
+        # recorded on the genome (harness_params["retrodiction"]) with the
+        # trace ids and reason codes that caused them. Novel work runs first,
+        # low-information repeats are deprioritized to the back of the batch,
+        # and known-total-failure repeats are skipped in enforce mode. A
+        # candidate with no/partial evidence is never filtered, and nothing
+        # here touches promotion: winners still require the real evaluator
+        # path plus the human approval gate (promote_audited).
+        decisions = self._decide_batch(batch, config, population)
+        prefilter = self._prefilter
+
+        def _triage_rank(genome: PipelineGenome) -> int:
+            decision = decisions.get(genome.id)
+            if decision is not None and prefilter is not None and prefilter.deprioritizes(decision):
+                return 1
+            return 0
+
+        # Stable sort: novel candidates keep their original order and run
+        # before deprioritized repeats.
+        for genome in sorted(batch, key=_triage_rank):
+            decision = decisions.get(genome.id)
+            if decision is not None and prefilter is not None and prefilter.would_filter(decision):
+                # Enforce-rejected: an exact repeat of a payload whose recorded
+                # evidence already fails the hard gate on every requested
+                # benchmark. Its prior traces stay in the ledger; the skipped
+                # rerun is the measured saving, not a new evaluation result.
+                continue
+            await self._evaluate_one(genome, population, config, llm_call, prefilter, decision)
+
+        prefilter = self._prefilter
+        if prefilter is not None and prefilter.stats.candidates_seen:
+            logger.info("retrodiction_prefilter stats: %s", self.prefilter_stats)
 
     async def _reconfirm_candidates(
         self,
@@ -362,6 +545,69 @@ class EvolutionCycle:
             population.add(g)
         return population.list_all()
 
+    def _select_mutation_operators(self, config: EvolutionConfig) -> list[str] | None:
+        """Draw the mutation-operator subset for one child when operator
+        favoring is enabled: ledger-weighted (productive operators drawn more
+        often), sequentially without replacement, with the exploration floor
+        keeping every operator selectable (diversity preservation). None ⇒
+        the legacy apply-everything path.
+        """
+        if not config.favor_productive_operators:
+            return None
+        context_key = self._eval_context(config).key()
+        chosen: list[str] = []
+        pool = list(MUTATION_OPERATOR_NAMES)
+        k = min(config.mutation_operators_per_child, len(pool))
+        while len(chosen) < k and pool:
+            pick = self.ledger.select_operator(
+                pool,
+                context_key,
+                kind=ProducerKind.MUTATION_OPERATOR,
+                exploration_floor=config.producer_exploration_floor,
+                repeated_regression_limit=config.producer_regression_limit,
+                rng=random,
+            )
+            chosen.append(pick)
+            pool = [name for name in pool if name != pick]
+        return chosen
+
+    def _spawn_island_child(
+        self,
+        pa: PipelineGenome | None,
+        pb: PipelineGenome | None,
+        config: EvolutionConfig,
+        operators: Sequence[str] | None,
+        origin_context: EvalContext | None,
+        population: PopulationStore,
+        island_pop: IslandPopulation,
+        island_id: int,
+    ) -> bool:
+        """Crossover two parents and register the child on its island.
+
+        Returns False when either parent is missing (tournament sampling can
+        yield fewer distinct genomes than slots to fill); otherwise True.
+        Shared by both breeding paths so attribution stamping, registration,
+        and island placement cannot drift apart.
+        """
+        if pa is None or pb is None:
+            return False
+        child = crossover_and_mutate(
+            pa,
+            pb,
+            config.mutation_rate,
+            models=config.allowed_models or None,
+            operators=operators,
+            origin_context=origin_context,
+        )
+        # _register_child stamps the run's source objective and snapshots the
+        # child into the candidate archive (M4-A6) before admission.
+        self._register_child(population, child, objective=config.goal)
+        # Use force_assign: mutation chains rewrite parent_a_id, so
+        # assign() would fall back to round-robin and place the child
+        # on the wrong island.
+        island_pop.force_assign(child.id, island_id)
+        return True
+
     def _breed_island(
         self,
         island_pop: IslandPopulation,
@@ -377,6 +623,8 @@ class EvolutionCycle:
             return
 
         genome_map = {g.id: g for g in population.list_all()}
+        origin_context = self._eval_context(config) if config.producer_attribution else None
+        operators = self._select_mutation_operators(config)
 
         if self.tournament.get_stats()["total_genomes_rated"] >= 2:
             parent_ids: list[str] = []
@@ -389,15 +637,9 @@ class EvolutionCycle:
             for i in range(0, min(needed, len(parent_ids) - 1), 2):
                 a = genome_map.get(parent_ids[i])
                 b = genome_map.get(parent_ids[i + 1] if i + 1 < len(parent_ids) else parent_ids[0])
-                if a and b:
-                    child = crossover_and_mutate(
-                        a, b, config.mutation_rate, models=config.allowed_models or None
-                    )
-                    population.add(child)
-                    # Use force_assign: mutation chains rewrite parent_a_id, so
-                    # assign() would fall back to round-robin and place the child
-                    # on the wrong island.
-                    island_pop.force_assign(child.id, island_id)
+                self._spawn_island_child(
+                    a, b, config, operators, origin_context, population, island_pop, island_id
+                )
         else:
             island_scored = [
                 g
@@ -415,12 +657,9 @@ class EvolutionCycle:
                 else:
                     pa = breeding_pool[0] if breeding_pool else None
                     pb = None
-                if pa and pb:
-                    child = crossover_and_mutate(
-                        pa, pb, config.mutation_rate, models=config.allowed_models or None
-                    )
-                    population.add(child)
-                    island_pop.force_assign(child.id, island_id)
+                self._spawn_island_child(
+                    pa, pb, config, operators, origin_context, population, island_pop, island_id
+                )
 
     async def _hyper_mutate_one(
         self,
@@ -446,9 +685,16 @@ class EvolutionCycle:
             goal=config.goal,
             preferences=config.user_preferences,
             history=[(exc, sc) for exc, sc in stored][-window:] if window > 0 else [],
+            prefilter=self._prefilter,
         )
         if outcome is None:
             return
+        self._credit_verified_outcome(
+            outcome,
+            config,
+            producer_name="hyper_mutator",
+            kind=ProducerKind.SEARCH_OPERATOR,
+        )
         if outcome.accepted and outcome.challenger is not None:
             # Winner's-curse provenance (#854): this challenger was selected as
             # the max of N siblings — exactly the genome most likely to be a
@@ -463,7 +709,7 @@ class EvolutionCycle:
                     outcome.challenger.harness_params.get(SAMPLES_KEY, {})
                 ),
             }
-            population.add(outcome.challenger)
+            self._register_child(population, outcome.challenger, objective=config.goal)
         if window > 0 and outcome.best_candidate_slots and outcome.best_candidate_score is not None:
             import json as _json
 
@@ -478,6 +724,41 @@ class EvolutionCycle:
         genome.harness_params["last_hyper_mutation"] = outcome.summary()
         genome.updated_at = datetime.now(UTC).isoformat()
         population.add(genome)
+
+    def _credit_verified_outcome(
+        self,
+        outcome: Any,
+        config: EvolutionConfig,
+        *,
+        producer_name: str,
+        kind: ProducerKind,
+    ) -> None:
+        """M4-A8: credit a propose-then-verify outcome (reflect/hyper-mutator)
+        to its producing operator. An accepted challenger earns improvement
+        credit; a verified-but-rejected best proposal retains its negative or
+        neutral credit, so repeated failed proposals demote the operator just
+        like persisted regressions do."""
+        if not config.producer_attribution or outcome is None:
+            return
+        if outcome.best_candidate_score is None:
+            return
+        context = self._eval_context(config)
+        if outcome.accepted and outcome.challenger is not None:
+            self.ledger.credit(
+                outcome.challenger,
+                outcome.benchmark,
+                outcome.best_candidate_score,
+                context=context,
+                accepted=True,
+            )
+        elif not outcome.accepted and outcome.challenger_id is None:
+            self.ledger.credit_rejected_proposal(
+                producer_identity(producer_name, kind),
+                context,
+                outcome.benchmark,
+                outcome.baseline_score,
+                outcome.best_candidate_score,
+            )
 
     async def _self_improve_top(
         self,
@@ -530,6 +811,8 @@ class EvolutionCycle:
 
             # Propose-then-verify (GEPA-style): the parent is never mutated in
             # place; an accepted challenger joins the pool as its child.
+            # The prefilter triages proposed challengers against prior traces
+            # before their verification evals (frontier-call spend).
             outcome = await reflective_improve(
                 genome,
                 self.harness,
@@ -539,6 +822,13 @@ class EvolutionCycle:
                 accept_margin=config.self_improve_accept_margin,
                 prompt_history=prompt_history,
                 node_attribution=config.node_attribution,
+                prefilter=self._prefilter,
+            )
+            self._credit_verified_outcome(
+                outcome,
+                config,
+                producer_name="reflective_improve",
+                kind=ProducerKind.PROMPT_OPERATOR,
             )
             if outcome is not None and outcome.accepted and outcome.challenger is not None:
                 # Winner's-curse provenance (#854) — same guard as the
@@ -551,7 +841,7 @@ class EvolutionCycle:
                         outcome.challenger.harness_params.get(SAMPLES_KEY, {})
                     ),
                 }
-                population.add(outcome.challenger)
+                self._register_child(population, outcome.challenger, objective=config.goal)
 
             # Persist new (benchmark, excerpt, score) entry so future cycles have a
             # coherent per-benchmark trajectory (window=0 disables persistence entirely).
@@ -583,6 +873,18 @@ class EvolutionCycle:
             genome.updated_at = datetime.now(UTC).isoformat()
             population.add(genome)
 
+    def _prefilter_for_mode(self, cfg: EvolutionConfig) -> RetrodictionPrefilter | None:
+        """Rebuild the M4-A5 prefilter per cycle from config.
+
+        The trace ledger persists across cycles on this EvolutionCycle
+        instance; only the mode wrapper is recreated.
+        """
+        if cfg.retrodiction == "off":
+            return None
+        if cfg.retrodiction == "shadow":
+            return RetrodictionPrefilter(self._ledger, PrefilterConfig(mode="shadow"))
+        return RetrodictionPrefilter(self._ledger, PrefilterConfig(mode="enforce"))
+
     async def run_cycle(
         self,
         population: PopulationStore,
@@ -590,6 +892,10 @@ class EvolutionCycle:
         config: EvolutionConfig | None = None,
     ) -> PopulationStore:
         cfg = config or EvolutionConfig()
+
+        # M4-A5: rebuild the prefilter per cycle from config; the trace ledger
+        # persists across cycles on this EvolutionCycle instance.
+        self._prefilter = self._prefilter_for_mode(cfg)
 
         if self.harness.fidelity != "real":
             logger.warning(
@@ -610,7 +916,7 @@ class EvolutionCycle:
 
         self._compute_all_fitness(population)
 
-        population.cull_bottom(cfg.cull_pct)
+        population.cull_bottom(cfg.cull_pct, archive=self.archive)
 
         # Initialize or reset island population when island_count changes.
         if self._island_pop is None or self._island_pop.island_count != cfg.island_count:

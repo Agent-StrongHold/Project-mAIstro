@@ -129,12 +129,28 @@
       "reason": "The operator-owned backlog authority marker (#102): the current authority (markdown or database) with its ledger revision, read by the Conductor service and the consistency gate and written only by scripts/backlog_cutover.py at the recorded cutover. Changing the authority it states is the substantive change, reviewed as such; a prior-tree oracle would predate the cutover this tree ships."
     },
     {
+      "id": "image-pin-registry",
+      "kind": "specification",
+      "paths": [
+        "quality/image-pins.json"
+      ],
+      "reason": "Reviewed digest-pin approval authority (#349): a base/tool image update is the substantive, reviewable registry-plus-Dockerfile change, not a repository-wide measurement that unrelated branches must rewrite."
+    },
+    {
       "id": "shipped-surface-truth",
       "kind": "specification",
       "paths": [
         "quality/shipped-surface-truth.json"
       ],
       "reason": "Reviewed per-surface disposition specification; changing a shipped surface's truth classification is the substantive change."
+    },
+    {
+      "id": "api-route-contracts",
+      "kind": "specification",
+      "paths": [
+        "quality/api-route-contracts.json"
+      ],
+      "reason": "Reviewed per-route contract specification; changing a shipped route's no-op disposition or contract is the substantive change."
     },
     {
       "id": "citation-baseline",
@@ -304,6 +320,46 @@
         "quality/wiring-reads-baseline.json"
       ],
       "reason": "The wiring-reads gate measures the candidate but resolves its comparison ledger and authorizations from the trusted base, so editing the candidate copy cannot authorize new unread wiring."
+    },
+    {
+      "id": "workspace-retirement",
+      "kind": "base_derived",
+      "paths": [
+        "quality/workspace-retirement.json"
+      ],
+      "reason": "The retirement ledger records reviewed cutover dispositions while check-workspace-retirement.py resolves importer tolerances and untrack grants from the trusted base, so a candidate edit cannot authorize new consumers of a retiring surface."
+    },
+    {
+      "id": "principal-identity-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/principal-identity-baseline.json"
+      ],
+      "reason": "Workspace cutover P0.1: parallel principal identities are measured on the candidate and compared against the ledger resolved from the trusted base."
+    },
+    {
+      "id": "route-permissions-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/route-permissions-baseline.json"
+      ],
+      "reason": "Workspace cutover P0.2: undeclared route prefixes are measured on the candidate and compared against the ledger resolved from the trusted base."
+    },
+    {
+      "id": "route-permissions-registry",
+      "kind": "specification",
+      "paths": [
+        "quality/route-permissions.json"
+      ],
+      "reason": "Reviewed authenticated-route permission registry: declaring a prefix permission or exemption is the substantive security change."
+    },
+    {
+      "id": "frontend-typed-client-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/frontend-typed-client-baseline.json"
+      ],
+      "reason": "Workspace cutover P0.3: raw fetch and hand-typed frontend entity debt is measured on the candidate and compared against the ledger resolved from the trusted base."
     }
   ]
 }

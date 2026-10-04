@@ -1,53 +1,68 @@
 #!/usr/bin/env python3
-"""Ratchet authenticated Conductor route prefixes (Workspace cutover P0.2 / #53 AC-P2).
+"""Ratchet authenticated Conductor route prefixes (Workspace cutover P0.2, #53 AC-P2).
 
-Every ``/v1/{segment}`` prefix mounted on the hive app must appear in
-``quality/route-permissions.json`` with either:
+Every ``/v1/{segment}`` prefix mounted on the hive app must be declared in
+``quality/route-permissions.json`` with exactly one of:
 
-  * a ``permission`` (``scope.verb`` vocabulary), or
-  * an ``exempt_reason`` plus ``owner``, ``disposition``, and for temporary
-    exemptions ``issue`` + ``expires``
+  * ``permission`` -- the ``scope.verb`` the prefix requires, or
+  * ``exempt_reason`` -- why it needs none (owner, disposition, and for a
+    ``temporary`` exemption an ``issue`` and unexpired ``expires`` date).
 
-Public paths (declared in ``quality/public-routes.json`` / auth middleware) are
-out of scope — this gate covers authenticated surface only.
+Paths declared public in ``quality/public-routes.json`` are out of scope; that
+registry has its own gate.
 
-Baseline: ``quality/route-permissions-baseline.json``. New undeclared prefixes
-fail CI; fixed prefixes must drop their baseline row.
+An undeclared prefix is tolerated only while it is in
+``quality/route-permissions-baseline.json`` *as of the trusted merge base*
+(docs/ci/RATCHET-PROVENANCE.md). Declaring a permission is a tightening and needs
+nothing more. Declaring a new exemption widens the reviewed surface, so it needs
+an ``exempt::<prefix>`` grant already landed in
+``quality/ratchet-authorizations.json`` -- the same rule check-public-routes.py
+applies to a new public path. A malformed or stale registry entry always fails.
 
-Run: ``python scripts/check-route-permissions.py``
-Bank: ``python scripts/check-route-permissions.py --write-baseline``
+Run:  uv run python scripts/check-route-permissions.py
+Bank: uv run python scripts/check-route-permissions.py --write-baseline
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
-from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "quality" / "route-permissions.json"
 BASELINE = ROOT / "quality" / "route-permissions-baseline.json"
 PUBLIC_REGISTRY = ROOT / "quality" / "public-routes.json"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
+RATCHET = "route-permissions"
+METRIC_DEFINITION_VERSION = "1"
 
 REQUIRED = ("owner", "disposition", "reason")
-REQUIRED_PERMISSION = ("permission", *REQUIRED)
-REQUIRED_EXEMPT = ("exempt_reason", *REQUIRED)
 REQUIRED_TEMPORARY = ("issue", "expires")
 DISPOSITIONS = frozenset({"permanent", "temporary"})
 
 
-@dataclass(frozen=True)
-class Gap:
-    prefix: str
-    detail: str
-
-    def key(self) -> str:
-        return self.prefix
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
 
 
 def _v1_prefix(path: str) -> str | None:
@@ -57,137 +72,133 @@ def _v1_prefix(path: str) -> str | None:
     return None
 
 
-def _collect_prefixes() -> tuple[set[str], str | None]:
+def mounted_prefixes() -> set[str]:
+    """Every /v1/{segment} the real hive app mounts (raises if it cannot import)."""
     backend = ROOT / "packages" / "hive-conductor" / "backend"
-    if not backend.is_dir():
-        return set(), "hive-conductor backend not present"
-
     for src_root in sorted((ROOT / "packages").glob("*/src")):
         sys.path.insert(0, str(src_root))
     sys.path.insert(0, str(backend))
     os.environ.setdefault("CONDUCTOR_DATA_DIR", "/tmp/route-perm-check-data")
-    try:
-        from main import app  # type: ignore[import-not-found]
+    from main import app  # type: ignore[import-not-found]
 
-        from maistro_server.api.route_table import iter_effective_routes
-    except Exception as exc:  # pragma: no cover - reported, never swallowed
-        return set(), f"could not import the app ({type(exc).__name__}: {exc})"
+    from maistro_server.api.route_table import iter_effective_routes
 
     prefixes: set[str] = set()
     for route in iter_effective_routes(app.routes):
         path = getattr(route, "path", None)
-        if not isinstance(path, str):
-            continue
-        prefix = _v1_prefix(path)
+        prefix = _v1_prefix(path) if isinstance(path, str) else None
         if prefix is not None:
             prefixes.add(prefix)
-    return prefixes, None
+    return prefixes
 
 
-def _public_paths() -> set[str]:
-    if not PUBLIC_REGISTRY.is_file():
-        return set()
-    loaded = json.loads(PUBLIC_REGISTRY.read_text(encoding="utf-8"))
-    routes = loaded.get("routes")
-    if not isinstance(routes, dict):
-        return set()
-    return {str(path) for path in routes}
+def _object(payload: object, key: str) -> dict[str, Any]:
+    value = payload.get(key) if isinstance(payload, dict) else None
+    return dict(value) if isinstance(value, dict) else {}
 
 
-def _load_registry() -> dict[str, Any]:
-    if not REGISTRY.is_file():
-        return {}
-    loaded = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    prefixes = loaded.get("prefixes")
-    return dict(prefixes) if isinstance(prefixes, dict) else {}
+def _read(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
-def _entry_problems(prefix: str, entry: Any, today: date) -> list[str]:
+def entry_problems(prefix: str, entry: Any, today: date) -> list[str]:
     if not isinstance(entry, dict):
         return [f"{prefix}: registry entry is not an object"]
     has_permission = bool(entry.get("permission"))
     has_exempt = bool(entry.get("exempt_reason"))
     if has_permission == has_exempt:
-        return [
-            f"{prefix}: declare exactly one of 'permission' or 'exempt_reason', not "
-            f"{'both' if has_permission else 'neither'}"
-        ]
-    required = REQUIRED_PERMISSION if has_permission else REQUIRED_EXEMPT
-    missing = [f"{prefix}: missing {field!r}" for field in required if not entry.get(field)]
+        which = "both" if has_permission else "neither"
+        return [f"{prefix}: declare exactly one of 'permission' or 'exempt_reason', not {which}"]
+    missing = [f"{prefix}: missing {field!r}" for field in REQUIRED if not entry.get(field)]
     if missing:
         return missing
-    if entry.get("disposition") not in DISPOSITIONS:
+    if entry["disposition"] not in DISPOSITIONS:
         return [f"{prefix}: disposition must be one of {sorted(DISPOSITIONS)}"]
-    if entry.get("disposition") == "temporary":
-        missing_temp = [
-            f"{prefix}: temporary exemption must name {field!r}"
-            for field in REQUIRED_TEMPORARY
-            if not entry.get(field)
-        ]
-        if missing_temp:
-            return missing_temp
-        try:
-            expires = date.fromisoformat(str(entry["expires"]))
-        except ValueError:
-            return [f"{prefix}: expires {entry['expires']!r} is not YYYY-MM-DD"]
-        if expires < today:
-            return [f"{prefix}: exemption expired on {expires.isoformat()}"]
+    if entry["disposition"] != "temporary":
+        return []
+    missing = [
+        f"{prefix}: a temporary entry must name {field!r}"
+        for field in REQUIRED_TEMPORARY
+        if not entry.get(field)
+    ]
+    if missing:
+        return missing
+    try:
+        expires = date.fromisoformat(str(entry["expires"]))
+    except ValueError:
+        return [f"{prefix}: expires {entry['expires']!r} is not YYYY-MM-DD"]
+    if expires < today:
+        return [f"{prefix}: expired on {expires.isoformat()} -- close it or re-justify it"]
     return []
 
 
-def collect_gaps(today: date | None = None) -> tuple[list[Gap], str | None]:
-    today = today or date.today()
-    prefixes, import_error = _collect_prefixes()
-    if import_error is not None:
-        return [], import_error
-
-    registry = _load_registry()
-    public = _public_paths()
-    gaps: list[Gap] = []
-    for prefix in sorted(prefixes):
-        if prefix in public:
-            continue
-        entry = registry.get(prefix)
-        if entry is None:
-            gaps.append(Gap(prefix, "authenticated prefix absent from route-permissions.json"))
-            continue
-        problems = _entry_problems(prefix, entry, today)
-        if problems:
-            gaps.append(Gap(prefix, "; ".join(problems)))
-    for prefix in sorted(set(registry) - prefixes):
-        gaps.append(Gap(prefix, "declared in registry but not mounted on the app"))
-    return gaps, None
+def registry_problems(
+    mounted: set[str], registry: dict[str, Any], public: set[str], today: date
+) -> list[str]:
+    """Hard failures: malformed entries, and entries for prefixes nobody mounts."""
+    problems: list[str] = []
+    for prefix, entry in sorted(registry.items()):
+        if prefix not in mounted:
+            problems.append(f"{prefix}: declared but not mounted -- a stale entry pre-approves it")
+        elif prefix in public:
+            problems.append(f"{prefix}: public in public-routes.json; it does not belong here")
+        else:
+            problems.extend(entry_problems(prefix, entry, today))
+    return problems
 
 
-def _load_baseline() -> dict[str, str]:
-    if not BASELINE.is_file():
-        return {}
-    loaded = json.loads(BASELINE.read_text(encoding="utf-8"))
-    tolerated = loaded.get("tolerated")
-    if not isinstance(tolerated, dict):
-        return {}
-    return {str(key): str(value) for key, value in tolerated.items()}
+def undeclared(mounted: set[str], registry: dict[str, Any], public: set[str]) -> set[str]:
+    return {prefix for prefix in mounted if prefix not in registry and prefix not in public}
 
 
-def audit() -> tuple[list[Gap], list[str], list[str], str | None]:
-    gaps, import_error = collect_gaps()
-    if import_error is not None:
-        return [], [], [], import_error
-    baseline = _load_baseline()
-    current = {item.key(): item.detail for item in gaps}
-    new_keys = sorted(set(current) - set(baseline))
-    stale_keys = sorted(set(baseline) - set(current))
-    new_gaps = [item for item in gaps if item.key() in new_keys]
-    return new_gaps, stale_keys, sorted(baseline.keys()), None
+def new_exemptions(candidate: dict[str, Any], trusted: dict[str, Any]) -> set[str]:
+    """``exempt::<prefix>`` keys for exemptions the trusted registry did not grant."""
+
+    def exempt(registry: dict[str, Any]) -> set[str]:
+        return {p for p, e in registry.items() if isinstance(e, dict) and e.get("exempt_reason")}
+
+    return {f"exempt::{prefix}" for prefix in exempt(candidate) - exempt(trusted)}
 
 
-def write_baseline(gaps: list[Gap]) -> None:
+def compare(
+    current: set[str],
+    candidate: set[str],
+    trusted: set[str],
+    exemptions: set[str],
+    authorized: set[str],
+) -> list[str]:
+    added = current - trusted
+    failures = [
+        f"{key}: NEW undeclared route prefix absent from the trusted base and not "
+        "previously authorized"
+        for key in sorted(added - authorized)
+    ]
+    failures.extend(
+        f"{key}: authorized new gap is not recorded in the candidate ledger"
+        for key in sorted((added & authorized) - candidate)
+    )
+    failures.extend(
+        f"{key}: NEW exemption needs an already-landed authorization"
+        for key in sorted(exemptions - authorized)
+    )
+    failures.extend(
+        f"{key}: current gap missing from candidate ledger" for key in sorted(current - candidate)
+    )
+    failures.extend(
+        f"{key}: declared now -- delete it from the candidate ledger"
+        for key in sorted(candidate - current)
+    )
+    return failures
+
+
+def write_baseline(gaps: set[str]) -> None:
     payload = {
         "_comment": (
-            "Undeclared authenticated route prefixes for P0.2. New gaps fail CI; "
-            "fixed gaps must delete their row."
+            "Undeclared authenticated route prefixes for Workspace cutover P0.2 (#53). "
+            "Judged against the trusted merge base; a declared prefix must be deleted here."
         ),
-        "tolerated": {item.key(): item.detail for item in gaps},
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
+        "tolerated": dict.fromkeys(sorted(gaps), "absent from quality/route-permissions.json"),
     }
     BASELINE.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -197,45 +208,72 @@ def main() -> int:
     parser.add_argument(
         "--write-baseline",
         action="store_true",
-        help="record the current gap set as the tolerated baseline",
+        help="record the current undeclared prefixes in the candidate ledger",
     )
     args = parser.parse_args()
 
-    gaps, import_error = collect_gaps()
-    if import_error is not None:
-        print(f"FAIL: {import_error}", file=sys.stderr)
+    try:
+        mounted = mounted_prefixes()
+    except Exception as exc:  # reported, never swallowed into a pass
+        print(f"FAIL: could not import the hive app ({type(exc).__name__}: {exc})", file=sys.stderr)
         return 1
 
+    registry = _object(_read(REGISTRY), "prefixes")
+    public = set(_object(_read(PUBLIC_REGISTRY), "routes"))
+    current = undeclared(mounted, registry, public)
     if args.write_baseline:
-        write_baseline(gaps)
-        print(f"wrote {len(gaps)} tolerated gap(s) to {BASELINE.relative_to(ROOT)}")
+        write_baseline(current)
+        print(f"wrote {len(current)} undeclared prefix(es) to {BASELINE.relative_to(ROOT)}")
         return 0
 
-    new_gaps, stale_keys, tolerated_keys, import_error = audit()
-    if import_error is not None:
-        print(f"FAIL: {import_error}", file=sys.stderr)
+    candidate = set(_object(_read(BASELINE), "tolerated"))
+    prov = _provenance()
+    try:
+        prov.require_measurement(mounted, ratchet=RATCHET, what="mounted /v1/ prefixes")
+        trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
+        trusted_payload = trusted_ref.loads(default={})
+        prov.require_metric_version(
+            METRIC_DEFINITION_VERSION,
+            recorded=trusted_payload.get("metric_definition_version")
+            if isinstance(trusted_payload, dict)
+            else None,
+            ratchet=RATCHET,
+            baseline=trusted_ref,
+        )
+        trusted = set(_object(trusted_payload, "tolerated"))
+        trusted_registry = _object(
+            prov.resolve_baseline(REGISTRY, root=ROOT).loads(default={}), "prefixes"
+        )
+        authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
-    print(f"scanned authenticated /v1/ prefixes: {len(gaps)} current gap(s)")
-    if tolerated_keys:
-        print(f"tolerated (baselined): {len(tolerated_keys)}")
-        for key in tolerated_keys[:10]:
-            print(f"  · {key}")
-        if len(tolerated_keys) > 10:
-            print(f"  · … and {len(tolerated_keys) - 10} more")
+    exemptions = new_exemptions(registry, trusted_registry)
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=trusted_ref,
+            tool="hive app route table",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{len(trusted)} tolerated undeclared prefixes",
+            new_value=f"{len(current)} undeclared of {len(mounted)} mounted",
+            candidate_sha=prov.head_sha(ROOT),
+            authorizations=tuple(
+                f"{key}: {authorized[key]}"
+                for key in sorted((current - trusted) | exemptions)
+                if key in authorized
+            ),
+        ).render()
+    )
 
-    failures: list[str] = []
-    if new_gaps:
-        failures.extend(f"NEW  {item.key()}: {item.detail}" for item in new_gaps)
-    if stale_keys:
-        failures.extend(f"STALE {key} (fixed — delete from baseline)" for key in stale_keys)
-
+    failures = registry_problems(mounted, registry, public, date.today())
+    failures.extend(compare(current, candidate, trusted, exemptions, set(authorized)))
     if failures:
-        print(f"\nFAIL: {len(failures)} route-permission ratchet problem(s):\n")
-        print("\n".join(failures))
+        print(f"\nFAIL: {len(failures)} route-permission problem(s):\n", file=sys.stderr)
+        print("\n".join(f"  - {failure}" for failure in failures), file=sys.stderr)
         return 1
-
-    print("ok: no new route-permission gaps")
+    print(f"ok: {len(registry)} declared, {len(current)} tolerated undeclared prefix(es), none new")
     return 0
 
 
