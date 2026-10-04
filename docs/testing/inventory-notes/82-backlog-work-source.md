@@ -595,3 +595,95 @@ test, migration, or grant changed.
   `check-suite-inventory.py` confirms against the merged baseline);
   the `inventory-delta:` block above still describes the branch's +54
   backlog nodes.
+
+## Eighth CI-repair addendum (develop-sync completion round at 7dc5e4c7a)
+
+Merge-queue evaluation flagged `Supply chain (pip-audit)`; the prior salvage
+run died to a provider timeout mid-merge. This round completes the in-flight
+merge of `45cc96326` (M4-A3 promotion/review split, M5-B RSI stall lineage
+review + reseeding, M6 dead `install-maestro.sh` removal) and merges
+`origin/develop` at `086ad7708` (Compose v1 fallback drop, pool-exhaustion
+one-clock-sample #1911, CLAUDE.md drift fix). No backlog source, test,
+migration, or grant changed; the diff is the two merge resolutions plus the
+exact ledger re-bank below.
+
+- **Both sync conflicts resolved in place, same file, same arithmetic:** each
+  merge's only unmerged path was `quality/vulture-baseline.json`. Resolved
+  per rule as a true multiset union (per-identity max count; no `set()`
+  passes) and committed as `d086d8c1b` / `7dc5e4c7a`. The second merge
+  auto-resolved; a post-merge script asserted the merged ledger equals the
+  multiset union of both parents for **all 15 rules** (no silently lost
+  rows — the AGENTS.md `quality/*.json` failure mode).
+- **exact-debt-ledger re-banked for the merged tree:** the post-merge union
+  carried 564 rows the merged tree no longer produces under the candidate
+  classification (both sides' reclassifications; develop wiring real callers
+  for more rows). `check-vulture-baseline.py` with CI's exact scan args +
+  `--update` re-banked exactly (−564/+5). Re-running enforce: **0
+  unclassified, 0 never-allowlist, no candidate-added/removed/unbanked** —
+  the candidate leg is exact. The trusted leg still reports the documented,
+  unfixable-branch-side residual: **50 NEW `maistro.backlog.*` identities**
+  (all in `model.py`/`pg_store.py`, exercised by
+  `test_backlog_store_conformance.py`), unauthorized at merge base
+  `086ad7708` per the #534 two-merge rule (re-verified: `origin/develop`'s
+  `quality/ratchet-authorizations.json` carries 61 vulture grants, **0**
+  backlog keys).
+- **The four unregistered ratchet-provenance reads stay fixed without this
+  branch re-touching them:** develop's later commits re-landed
+  `check-principal-identity.py`/`check-route-permissions.py` with their own
+  provenance registration, so `check-ratchet-provenance.py` at the merged
+  head runs every leg; all legs OK except the two reachability provenance
+  gates it aggregates (below).
+- **Named merge-queue failure (Supply chain / pip-audit) re-proven at the
+  merged head, both CI job shapes:** ci.yml `security` (`--extra dev`) and
+  security.yml `Supply chain (pip-audit)` (`uv sync --locked --all-extras`,
+  217 distributions frozen) — `pip-audit --strict --format=json` exit 1 with
+  a complete report (2× `ecdsa==0.19.2 PYSEC-2026-1325`),
+  `pip_audit_gate.py` **exit 0** both times (ALLOWED triage;
+  direct-dependency usage OK: 10 packages / 61 runtime deps / 4
+  dispositions). `uv.lock` and `packages/*/pyproject.toml` moved in neither
+  merge (empty diff vs `3789ff11b`).
+- **Migration chain re-proven at `052` on a fresh database:** pgvector:pg18
+  (`pg-auto82`, port 55433, pristine database `mb_pristine_r8`):
+  `tests/migrations/test_migration_chain.py` **13 passed**; the **whole
+  `tests/migrations` directory 100 passed**; `alembic upgrade head` ran the
+  full chain to a single `052 (head)` (049→050→051→052 tail observed);
+  backlog conformance against the migrated DSN **53 passed / 1 skipped**
+  (the structural memory-reference reopen skip, unchanged).
+- **New wheel-gate checks from the sync are green (after eliminating a
+  local-cache artifact):** the merge adds two cross-package imports —
+  `maistro_server.api.backlog_history` → `maistro.workspaces.backlog_history`
+  and `maistro_rsi.candidate_fitness` → `maistro_evolve.scenario_objective`
+  — which `verify-wheel-imports.py` auto-discovers. First local run failed
+  those two imports; diagnosis showed both built wheels DO contain the
+  modules (zipfile-verified) and a `--reinstall-package`/fresh
+  `UV_CACHE_DIR` resolution installs them correctly: the failure was a stale
+  pre-merge `maistro-core`/`maistro-evolve` 0.9.0 wheel in this machine's uv
+  cache winning the same-version tie. With a fresh cache the exact gate is
+  green: **10/10 distributions, all extras (Python 3.12)**, including
+  `maistro-server: 28` and `maistro-rsi: 42` checks. CI builds `dist/`
+  fresh per run, so no tree change is needed.
+- **Merge fallout battery, all green at `7dc5e4c7a` + ledger commit:**
+  `ruff check .` / `ruff format --check .` clean; mypy clean across the six
+  canonical packages (791 files); `check-suite-inventory.py` 14/14 (24,842
+  node IDs, 0 duplicates); `check-shipped-surface-truth.py` OK;
+  `check-workflow-inventory.py` OK (22 workflows — develop's new gate);
+  `check-backlog-consistency.py` OK (167 items);
+  `check-durable-table-inventory.py` OK (91 tables);
+  `check-reachability.py` OK (1251 production modules, 179 unreachable) and
+  `check-reachability-dispositions.py` OK (all 179 dispositioned);
+  hive-conductor `test_backlog_routes.py` **36 passed**; backlog suite
+  without a DSN **38 passed / 16 skipped**.
+- **Remaining red is unchanged in kind and still driver-side:**
+  `check-vulture-baseline.py` (exact CI args) exits 1 solely on the 50 NEW
+  `maistro.backlog.*` identities, and `check-reachability-provenance.py` /
+  `check-reachability-dispositions-provenance.py` (aggregated by
+  `check-ratchet-provenance.py`; every other leg OK) exit 1 solely on the
+  five `maistro.backlog.*` modules — all unauthorized at merge base
+  `086ad7708` per the #534 two-merge rule. No candidate-side edit can clear
+  this; the driver must land the staged grants (+41 vulture, +5
+  reachability) from this branch's `quality/ratchet-authorizations.json`
+  onto develop in a grants-only merge, then re-queue. No GitHub mutations
+  are permitted from this worker.
+- **Test inventory delta:** none — no test added, removed, or retagged in
+  this round; the `inventory-delta:` block above still describes the
+  branch's +54 backlog nodes.
