@@ -7880,3 +7880,72 @@ writer, #775 creative Graph, #776 product-path wiring are all still absent,
 so all 13 acceptance criteria remain unverifiable against reachable
 production behavior; the stop condition forbids private substitutes. Verdict:
 **BLOCKED** (Refs #777).
+
+## Round 117 (repair) — head `b4df3affd` = round 116 end head, tree clean; prior block was a provider timeout (`checks=[]`), not a validation failure; origin/develop still unmoved at `e067b7b0a`; blockers re-proven fresh; battery re-run green
+
+**Starting state (not trusted, verified):** job `95917e98` dispatches on
+`b4df3affdd5c549f15ad107d2e9f027d5fea34d9`, exactly round 116's committed end
+head; `git status` clean, nothing to salvage. The immediately prior attempt
+(job `d2a2102a`, `result.json`) died on `provider_error … Request timed out`
+with `checks: []` — **no deterministic check ran there, so nothing to repair**;
+the older referenced failure (job `53d5e08b` `check-2.log`, ruff-format on
+`builders/agent_loop.py`) remains fixed, re-proven below. `git fetch origin` →
+`origin/develop` still `e067b7b0aca01b578f0bf2446dc0864fc4d88d15` (lane base);
+no sync applicable.
+
+**Dependency audit re-run fresh at `b4df3affd` (own greps):**
+
+- `GoalReconciler|delegate_goal` → **0 files** in `packages/*/src` (no #804
+  reconciliation/delegation API exists to consume).
+- `maistro.goals` module **absent**; #458 remains declaration-only —
+  `projects/rubric_store.py:20-22,59-79` `GoalRevisionSnapshot` /
+  `GoalRevisionCatalog` is a resolution-only Protocol over an externally
+  supplied catalog, not a Goal store.
+- `ControlMode|BranchControl` → **0 files** outside `packages/maistro-design`
+  (searched `*.py` + `*.ts` across `packages/`): defined and persisted only in
+  `maistro_design/versions.py` / `version_store.py`, no product-path consumer.
+- Design product path (`hive-conductor/backend/routes/design.py`,
+  `services/design_service.py`, `packages/maistro-design/src`) → **0 refs** to
+  `workspace_agent`/`WorkspaceAgent`/`WorkingMemory` (only backend *tests* and
+  a stale `maistro_design/__pycache__/workspace_agent.*.pyc` bytecode fossil
+  with no corresponding source). `routes/design.py` exposes projects / skills /
+  packs / systems / discovery / render / consistency only — no agent, Goal,
+  control-mode, delegation, or lock endpoints.
+- Core `delegat*` matches are security/sentinel delegability modules only
+  (`security/delegability/evaluator.py`, `sentinel/{rlphd,authz_types,
+  approver_graph,policy}.py`) — permission evaluation, not Goal delegation.
+- `hive-conductor/backend/services/brief_chat.py:64-67` `_NOT_WRITTEN` stands
+  verbatim ("the Goal and CreativeBrief writers are #458 and #774").
+- Landed-in-the-meantime (from develop, not this lane): `maistro-design`
+  `brief.py`/`brief_store.py`/`creative_graph.py`/`creative_nodes.py` and
+  `maistro-core/src/maistro/memory/working{,_graph}` exist as seams, but with
+  #804/#458 absent there is still no canonical reconciliation to consume.
+
+**Battery re-run at `b4df3affd` (all fresh, this round):**
+
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (2882 files already formatted)
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI-exact) → EXIT 0; base `e067b7b0aca0` vs candidate
+  `b4df3affdd5c`, 1342 reviewed → 1341 findings, `unclassified: 0` — no ledger
+  amendment (none permitted: gate green)
+- `check-suite-inventory` → EXIT 0 (14 suites match); `check-backlog-
+  consistency` → EXIT 0 (167 items)
+- pytest `maistro-design/tests` + `maistro-core/tests/memory` → **1186
+  passed / 1 skipped** (19.0s; larger than round 116's 700P because the whole
+  `tests/memory` tree was scoped in, incl. `eval_workspace`/`workspaces`)
+- pytest `maistro-bootstrap/tests` → **237 passed / 1 skipped** (11.2s)
+- pytest `hive-conductor/backend/tests -k "design or brief or workspace"` →
+  **378 passed / 5 skipped** (18.1s)
+
+No production or test code changed this round; front-matter deltas stay +0.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+`origin/develop` has not moved since `e067b7b0a`; none of #804/#805/#806
+(persistent Workspace Agent + Goal reconciliation/delegation), #458 (canonical
+Goal writer), #774 (CreativeBrief writer), #775 (creative Graph), or #776
+product-path wiring exists on the branch or upstream. All 13 acceptance
+criteria remain unverifiable against reachable production behavior, and the
+issue's stop condition forbids private substitutes. Verdict: **BLOCKED**
+(Refs #777).
