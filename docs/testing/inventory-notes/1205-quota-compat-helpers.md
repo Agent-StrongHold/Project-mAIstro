@@ -44,3 +44,21 @@ treat-as-monthly fallback #1205 removes. Node-ID counts there are unchanged.
 The tracker/recorder/recording half of quota is production authority
 (#718/#1196); these tests cover the compatibility helpers feeding it, not a
 second authority.
+
+## CI-repair amendment (merge-queue evaluation at 9d391160)
+
+CI failed three tests that still fed precomputed bucket keys into the
+`billing_cycle` parameter — the exact silent-fallback shape this issue
+retires (`record_usage("openai", "2026-06", …)` relied on non-`"daily"`
+silently meaning monthly, and since the key is derived from *now*, it never
+actually pinned June). No node IDs added or removed; all three were in-body
+fixes to the validated vocabulary (`"monthly"`):
+
+- `packages/maistro-core/tests/test_container_sqlite_backend.py::
+  test_sqlite_backend_quota_tracker_write_then_read_back`
+- `tests/migrations/test_pg_store_wiring.py::TestStoresRunAgainstTheMigrated
+  Schema::test_quota_accumulates_across_calls`
+- `tests/migrations/test_quota_and_session_stores.py::
+  TestQuotaTrackerRunsAgainstTheMigration::test_usage_accumulates_rather_than_raising`
+
+`inventory-delta` above is unchanged: no suite gained or lost a node.
