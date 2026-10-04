@@ -18,13 +18,13 @@ assembly always reads the status back from it.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.graph.execution_state import GraphExecutionState
-from maistro.graph.traversal_commit import TraversalCheckpoint, TraversalCommit
+from maistro.graph.traversal_commit import TraversalCheckpoint, TraversalCommit, graph_state_hash
 from maistro.runs.model import RunStatus
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
@@ -38,6 +38,38 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
 
 
+class GraphStateEpoch(BaseModel):
+    """One full durable GraphExecutionState, recorded at a per-Run event position.
+
+    TraversalCommit/TraversalCheckpoint facts are content-addressed hashes, so
+    on their own they can verify a state but not reconstruct one. The epoch is
+    the persisted full content for its position (#1612): ``state_hash`` ties it
+    to whichever traversal fact claimed the same content, and
+    ``graph_snapshot_hash`` ties it to the Run's admitted Graph revision, so a
+    timeline can never quietly describe a different Graph.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    sequence: int = Field(ge=1)
+    state: GraphExecutionState
+    state_hash: str
+    graph_snapshot_hash: str
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Linked traversal fact, when this state was a commit result or a captured
+    # checkpoint. An intermediate persisted checkpoint may have neither.
+    commit_sequence: int | None = Field(default=None, ge=1)
+    checkpoint_sequence: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_content(self) -> GraphStateEpoch:
+        if not self.state_hash.strip() or not self.graph_snapshot_hash.strip():
+            raise ValueError("GraphStateEpoch hashes must be non-empty")
+        if graph_state_hash(self.state) != self.state_hash:
+            raise ValueError("GraphStateEpoch state_hash must match its state content")
+        return self
+
+
 class GraphContinuation(BaseModel):
     """Graph traversal state for one canonical Run, and its lookup columns."""
 
@@ -47,6 +79,10 @@ class GraphContinuation(BaseModel):
     graph_state: GraphExecutionState
     traversal_checkpoints: tuple[TraversalCheckpoint, ...] = Field(default_factory=tuple)
     traversal_commits: tuple[TraversalCommit, ...] = Field(default_factory=tuple)
+    #: Full state content per distinct persisted state, sequence 1..N (#1612).
+    #: Appended only at the canonical store's persistence boundary; positions
+    #: are stable once recorded.
+    state_timeline: tuple[GraphStateEpoch, ...] = Field(default_factory=tuple)
     resume_at: datetime | None = None
     # Lookup projection only; the pause entry in graph_state remains authoritative.
     hitl_deadline_at: datetime | None = None
@@ -437,6 +473,16 @@ class SqliteGraphContinuationStore:
 __all__ = [
     "GraphContinuation",
     "GraphContinuationStore",
+    "GraphStateEpoch",
     "InMemoryGraphContinuationStore",
     "SqliteGraphContinuationStore",
 ]
+
+
+if TYPE_CHECKING:
+
+    def _vulture_pydantic_contract_usage(epoch: GraphStateEpoch) -> None:
+        _ = epoch._validate_content
+
+    _: object
+    _ = _vulture_pydantic_contract_usage

@@ -984,6 +984,119 @@ jobs:
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
 
+      # The selected-model-call validator (#1879) is release tooling, and the
+      # ratchet above counts a scripts/ module as wired only when a workflow
+      # names its file — so this step is its call path, not an ornament. It
+      # exercises the real CLI end to end, which the in-process tests in
+      # tests/release/test_installed_workspace_request_chain.py cannot: a
+      # synthetic, fully consistent selected-call document passes while a
+      # dispatch spliced onto a foreign Invocation fails with the first
+      # ordered join code, asserted through actual process exit codes. This
+      # checks record consistency only; it never asserts that a model call
+      # occurred or that any evidence is authentic.
+      - name: selected model-call validator fails closed via CLI (#1879)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          uv run python - "$tmp" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          doc = {
+              "schema_version": 1,
+              "evidence_kind": "synthetic",
+              "request": {
+                  "request_id": "req-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "actor_principal_id": "principal-ci-1879",
+                  "agent_id": "agent-ci-1879",
+              },
+              "run": {
+                  "run_id": "run-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "actor_principal_id": "principal-ci-1879",
+              },
+              "node_run": {
+                  "node_run_id": "nr-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "node_id": "node-ci-1879",
+              },
+              "attempt": {
+                  "attempt_id": "att-ci-1879",
+                  "node_run_id": "nr-ci-1879",
+                  "ordinal": 1,
+              },
+              "invocation": {
+                  "invocation_id": "inv-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "node_run_id": "nr-ci-1879",
+                  "attempt_id": "att-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "effect_key": "effect-ci-1879",
+                  "logical_effect": True,
+                  "status": "completed",
+                  "binding": {
+                      "binding_id": "bind-ci-1879",
+                      "workspace_id": "ws-ci-1879",
+                      "project_id": "proj-ci-1879",
+                      "capability": "model.chat",
+                      "provider_name": "synthetic-provider",
+                  },
+                  "usage": {
+                      "units": "tokens",
+                      "input_units": 11,
+                      "output_units": 7,
+                      "cost_cents": None,
+                      "model": "synthetic-model",
+                      "model_version": "synthetic-model-2026-01-01",
+                      "provider": "synthetic-provider",
+                  },
+              },
+              "dispatch": {
+                  "dispatch_id": "disp-ci-1879",
+                  "invocation_id": "inv-ci-1879",
+                  "provider_name": "synthetic-provider",
+                  "requested_model": "synthetic-model",
+                  "provider_request_id": None,
+                  "response_kind": "provider",
+                  "result_present": True,
+                  "usage_provenance": {"source": "reported", "evidence_ref": "usage.json"},
+              },
+              "expected_model": {
+                  "provider_name": "synthetic-provider",
+                  "requested_model": "synthetic-model",
+              },
+          }
+          (root / "call.json").write_text(json.dumps(doc, indent=2) + "\n")
+          # Splice the dispatch onto a foreign Invocation: the first ordered
+          # join failure must be DISPATCH_LINK_MISMATCH, nothing else.
+          spliced = json.loads(json.dumps(doc))
+          spliced["dispatch"]["invocation_id"] = "inv-other"
+          (root / "spliced.json").write_text(json.dumps(spliced, indent=2) + "\n")
+          print(f"synthetic selected-call documents written to {root}")
+          PY
+          uv run python scripts/installed_workspace_proof_contract.py \
+            "$tmp/call.json" > "$tmp/valid-report.json"
+          grep -q '"valid": true' "$tmp/valid-report.json"
+          if uv run python scripts/installed_workspace_proof_contract.py \
+              "$tmp/spliced.json" > "$tmp/spliced-report.json"; then
+            echo "::error::spliced selected-call document passed — validator is not fail-closed"
+            exit 1
+          fi
+          grep -q "DISPATCH_LINK_MISMATCH" "$tmp/spliced-report.json" || {
+            echo "::error::spliced document failed without DISPATCH_LINK_MISMATCH:"
+            cat "$tmp/spliced-report.json"
+            exit 1
+          }
+          echo "selected model-call validator fails closed: valid document exit 0, spliced dispatch exit 1 (DISPATCH_LINK_MISMATCH)"
+
       # Credential authority is checked against the same reachable module graph;
       # a renamed unscoped store must fail before it can become a route dependency.
       - name: credential authority (reachable stores are classified and scoped)
@@ -1220,6 +1333,13 @@ jobs:
       # enforceable meanwhile is that the set of direct callers cannot grow.
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
+
+      # M1-D (#1613): foreign harnesses are admitted as governed graph nodes —
+      # Provider -> Binding -> Invocation. A product module that references
+      # OpenClaw/Pi and performs its own HTTP/subprocess transport is a raw
+      # side door: same harness, no Binding, no Invocation, no parent Run.
+      - name: foreign-harness egress (OpenClaw/Pi transport stays inside the Provider boundary)
+        run: uv run python scripts/check-foreign-harness-egress.py
 
       - name: Architecture fitness functions
         env:
