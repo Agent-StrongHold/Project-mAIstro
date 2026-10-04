@@ -703,3 +703,56 @@ Battery, all CI-exact, all green on the merged tree:
 
 No test files added or removed this round (suite inventory unchanged), so no
 inventory note is required by the testing-inventory rule.
+
+## Round 13 (CI-repair round, job c941854e): convergence-matrix drift — RESOLVED
+
+Head f530a6153 (merge of develop 91996e192). Driver's deterministic checks all
+green (ruff, format, 32 governance tests, suite inventory 12831). CI at this
+head failed three gates — `test`, `Quality gate (Pillars 1–4, 7, 8)`,
+`Coverage gate` — and the job logs show **all three share one root cause**:
+`tests/test_check_convergence_matrix.py::test_the_shipped_matrix_matches_the_shipped_code`
+(quality.yml's own convergence-matrix step; the coverage job re-runs the same
+test inside its suite).
+
+- **Root cause**: this branch's feature change wired `maistro.governance` (the
+  graph template promotion gate now imports it) and added
+  `maistro.governance.promotion`, moving the "Authorization, privilege,
+  governance" census from 3-of-9 unreachable (`some`) to 2-of-10 = 20.0%
+  (`few`, boundary inclusive per SPEC-082926-061d). The matrix doc still said
+  `some`. Reproduced locally: `python scripts/check-convergence-matrix.py`
+  named exactly that row before the fix.
+- **Fix (one doc line)**: `docs/architecture/CONVERGENCE-MATRIX.md` governance
+  disposition row `some` → `few`, with an evidence-bearing parenthetical on
+  the denominator/numerator movement, following the Memory row's precedent
+  wording. No code or ledger change this round; vulture/reachability ledgers
+  untouched (vulture CI-exact re-run EXIT 0, 1342 reviewed → 1341).
+- **Proof**: convergence gate EXIT 0 (52 subsystems, 1257 modules, 173
+  unreachable); `tests/test_check_convergence_matrix.py` 60/60; full root
+  suite `pytest tests/ --ignore=tests/tools/registry` → 4244 passed + the
+  branch-independence test passing once the session-generated (gitignored,
+  .gitignore:81) `quality/ac-state.json` is absent, as it always is in CI's
+  fresh test-job checkout; full core suite 12050 passed / 780 skipped.
+- **Downstream quality-gate steps CI never reached** (it died at the
+  convergence step), all run CI-exact and green: reachability-dispositions,
+  security-inventory, image-inventory, image-pins, workflow-inventory,
+  backlog-consistency, execution-lifecycles, model-egress, reachability
+  (1257/173), doc-links, mypy --strict (0 issues / 701 files after
+  `uv sync --locked --all-extras` — the plain dev sync lacks
+  maistro_bootstrap and reports 5 import-not-found errors CI cannot see),
+  pyright ratchet (21 == baseline 21), interrogate all four floors
+  (46% package floor at 56.3% actual), fitness 23/23, formal/ 663 passed
+  1 skipped (after `uv pip install -e packages/maistro-evolve`).
+- **ac-state parity caveat for future rounds**: `check-ac-state.py
+  --run-tests` measures design coverage from tests that actually pass. Without
+  `DATABASE_URL`/`MAISTRO_TEST_PG_DSN` (CI: quality.yml:659-661) plus
+  `uv run alembic upgrade head` (quality.yml:1245-1246), the PG-backed
+  criterion tests skip and the measurement reads ~37.4-37.8 against the
+  42.1466/42.506 floors — an environment artifact, not a regression (the
+  identical artifact appears measuring the base commit itself; CI's own run
+  at 91996e192 measured 42.1466, log 111493475264). With CI's env restored
+  locally: candidate measures **42.506 over 161 taken (88 at zero)** — exactly
+  the banked note — and the PR-exact step
+  `--run-tests --ratchet --mandate 4010e69f62cf` is **EXIT 0** (10 ceilings +
+  1 floor exact, mandate 7/7 proven, chain 0/0/0).
+- No test files added or removed this round (suite inventory unchanged), so
+  no inventory-note delta is required.
