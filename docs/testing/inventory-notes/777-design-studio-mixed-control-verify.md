@@ -8067,3 +8067,59 @@ acceptance criteria remain unverifiable against reachable production behavior,
 and the issue's stop condition forbids Design-Studio-private substitutes
 (Goal owner, reconciler, memory system, permissions model). Verdict:
 **BLOCKED** (Refs #777).
+
+## Round 120 — re-validation after driver provider timeout (head `0f8cc882052d`)
+
+The immediately preceding repair job (`e8277d7c6c38`) died on a model-provider
+request timeout with `checks: []` — no deterministic checks actually ran — so
+this round re-executed the full battery and re-proved every blocker fresh at
+head `0f8cc882052d760f47000da1e684a57c16363440` (working tree clean; branch
+contains the round-119 sync merge `a1239f33e`). Nothing was assumed from
+earlier claims.
+
+Blockers re-proven fresh (grep over `packages/`, this round):
+
+- `GoalReconciler` → **0 files**; `delegate_goal` → **0 files**;
+  `maistro.goals` module → **absent**
+- `packages/maistro-core/src/maistro/projects/rubric_store.py:22` →
+  `GoalRevisionCatalog` is a resolution-only Protocol, explicitly "not a Goal
+  store"
+- `ControlMode`/`BranchControl` → consumers only inside
+  `packages/maistro-design` itself (private seam, 0 external consumers)
+- `workspace_agent`/`WorkingMemory` → **0 refs** in
+  `packages/maistro-design/src` (Design Studio does not consume the persistent
+  Workspace Agent; the only `workspace_agent` product code is the hive
+  front-door service, which contains no Goal/reconciliation logic)
+- `packages/hive-conductor/backend/services/brief_chat.py:64` → `_NOT_WRITTEN`
+  still declares the Goal (#458) and CreativeBrief (#774) writers not landed
+- `BACKLOG.md` (conductor-404): "Workspace Agent chat — **Proposed**;
+  `gap-impl` — v1.0 M3-D" with #1037/#804 persistent goals + reconciliation as
+  the unimplemented path
+
+Battery re-run at `0f8cc882052d` (all fresh, this round):
+
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (2883 files already formatted)
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI-exact) → EXIT 0; base `00aafef9b75a` vs candidate
+  `0f8cc882052d`, 1342 reviewed → 1341 findings, `unclassified: 0`,
+  `never_allowlist: 0` — the round-119 CI repair (restore `system_prompt` —
+  reader proven fresh at
+  `packages/maistro-rsi/src/maistro_rsi/local_loop.py:755`; delete dead
+  `tool_definitions` — no remaining readers; drop its ledger row) holds
+- `check-suite-inventory` → EXIT 0 (14 suites match); `check-backlog-
+  consistency` → EXIT 0 (167 items); `check-branch-independence` → EXIT 0
+- pytest `packages/maistro-design/tests` → **540 passed / 1 skipped** (17.7s)
+- pytest `packages/maistro-bootstrap/tests` → **237 passed / 1 skipped**
+  (16.7s)
+- pytest `packages/hive-conductor/backend/tests -k "design or brief or
+  workspace"` → **378 passed / 5 skipped** (20.6s)
+
+No production or test code changed this round; front-matter deltas stay +0.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+All 13 acceptance criteria still require the absent #804/#805/#806
+reconciliation/delegation machinery, the absent #458 canonical Goal writer,
+and the absent #774/#775/#776 product-path wiring; the stop condition forbids
+Design-Studio-private substitutes. Verdict: **BLOCKED** (Refs #777).
