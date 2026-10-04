@@ -570,6 +570,101 @@ class TestAutorunStallWiring:
         resumed = HypothesisTree.from_dict(snapshot)
         assert not executed_set & {n.id for n in resumed.pending()}
 
+    @pytest.mark.asyncio
+    async def test_resume_restores_policy_state(self, monkeypatch, tmp_path):
+        """autorun-15: the intervention policy's mutable state (stall streak,
+        intervention records, next index) rides in the tree snapshot, so a
+        resumed campaign keeps its ``park_after`` accounting, its streak, and
+        never reissues an ``intervention_id`` — a fresh policy per
+        ``run_autonomous`` call would reset all three at every wall-clock or
+        cycle-budget boundary."""
+        monkeypatch.setattr(
+            "maistro_rsi.autorun._post", lambda *a, **k: (_ for _ in ()).throw(ConnectionError())
+        )
+
+        async def executor(context: HtrContext) -> ExecutionReport:
+            return _report(improved=False)
+
+        tree_path = tmp_path / "tree.json"
+        ledger_path = tmp_path / "learnings.jsonl"
+
+        def make_config(**overrides):
+            return _autorun_config(
+                tmp_path,
+                stall_threshold=1,
+                direction_count=1,
+                park_after=3,
+                tree_path=str(tree_path),
+                learnings_path=str(ledger_path),
+                **overrides,
+            )
+
+        # Run 1 stops at the cycle budget mid-campaign: two gainless
+        # interventions recorded, indices 0 and 1 consumed.
+        first = await run_autonomous(
+            make_config(num_cycles=2), executor=executor, proposer=lambda ctx: "next"
+        )
+        assert [i.index for i in first.interventions] == [0, 1]
+        persisted = json.loads(tree_path.read_text())["policy"]
+        assert persisted["next_index"] == 2
+        assert len(persisted["interventions"]) == 2
+
+        # Run 2 resumes the same tree: the two prior gainless interventions
+        # still count toward park_after (firing on the third), and the next
+        # intervention continues the index sequence instead of colliding.
+        second = await run_autonomous(
+            make_config(num_cycles=10), executor=executor, proposer=lambda ctx: "next"
+        )
+        # The two prior gainless interventions still count toward park_after
+        # (the park fires on the third) and the index sequence continued —
+        # neither reused nor reset. Arrival order is partial-then-parked.
+        assert sorted(i.index for i in second.interventions) == [0, 1, 2]
+        assert len({i.index for i in second.interventions}) == 3
+        assert all(i.directions for i in second.interventions)
+        assert any(
+            node.artifacts.get("intervention_id") == "2" for node in second.tree.nodes.values()
+        )
+
+    @pytest.mark.asyncio
+    async def test_resume_restores_mid_streak_count(self, monkeypatch, tmp_path):
+        """autorun-15: a non-improving streak spanning a run boundary is not
+        reset — run 1 ends two cycles into a threshold-3 streak, and run 2's
+        very first non-improving cycle completes it and intervenes."""
+        monkeypatch.setattr(
+            "maistro_rsi.autorun._post", lambda *a, **k: (_ for _ in ()).throw(ConnectionError())
+        )
+
+        async def executor(context: HtrContext) -> ExecutionReport:
+            return _report(improved=False)
+
+        tree_path = tmp_path / "tree.json"
+        ledger_path = tmp_path / "learnings.jsonl"
+
+        def make_config(**overrides):
+            return _autorun_config(
+                tmp_path,
+                stall_threshold=3,
+                direction_count=1,
+                park_after=5,
+                tree_path=str(tree_path),
+                learnings_path=str(ledger_path),
+                **overrides,
+            )
+
+        await run_autonomous(
+            make_config(num_cycles=2), executor=executor, proposer=lambda ctx: "next"
+        )
+        persisted = json.loads(tree_path.read_text())["policy"]
+        assert persisted["tracker"]["consecutive_non_improving"] == 2
+
+        second = await run_autonomous(
+            make_config(num_cycles=2), executor=executor, proposer=lambda ctx: "next"
+        )
+        # Two cycles into a threshold-3 streak: a fresh policy would intervene
+        # zero times; the restored streak completes on the first resumed cycle.
+        assert len(second.interventions) == 1
+        assert second.interventions[0].stalled_cycles == 3
+
 
 class TestLlmLineageReviewer:
     def test_degrades_to_template_on_gateway_failure(self, monkeypatch):

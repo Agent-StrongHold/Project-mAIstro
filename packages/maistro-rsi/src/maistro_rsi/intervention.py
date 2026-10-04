@@ -94,6 +94,35 @@ class LineageStep:
             improved=evidence.improved if evidence else None,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        """Plain-data form for intervention-state checkpoints."""
+        return {
+            "node_id": self.node_id,
+            "hypothesis": self.hypothesis,
+            "depth": self.depth,
+            "status": self.status,
+            "insight": self.insight,
+            "tests_passed": self.tests_passed,
+            "benchmarks_won": self.benchmarks_won,
+            "battles": self.battles,
+            "improved": self.improved,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LineageStep:
+        """Rebuild from :meth:`to_dict` output."""
+        return cls(
+            node_id=data["node_id"],
+            hypothesis=data["hypothesis"],
+            depth=int(data["depth"]),
+            status=data["status"],
+            insight=data.get("insight"),
+            tests_passed=data.get("tests_passed"),
+            benchmarks_won=data.get("benchmarks_won"),
+            battles=data.get("battles"),
+            improved=data.get("improved"),
+        )
+
 
 @dataclass(frozen=True)
 class ArchiveCandidate:
@@ -231,6 +260,40 @@ class Intervention:
             "stalled_cycles": self.stalled_cycles,
             "reviewer_seconds": self.reviewer_seconds,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Intervention:
+        """Rebuild from :meth:`to_dict` output (intervention-state resume)."""
+        return cls(
+            index=int(data["index"]),
+            trigger_node_id=data["trigger_node_id"],
+            stalled_cycles=int(data["stalled_cycles"]),
+            stall_threshold=int(data["stall_threshold"]),
+            lineage=tuple(LineageStep.from_dict(step) for step in data["lineage"]),
+            archive=tuple(
+                ArchiveCandidate(
+                    node_id=candidate["node_id"],
+                    hypothesis=candidate["hypothesis"],
+                    score=float(candidate["score"]),
+                    depth=int(candidate["depth"]),
+                )
+                for candidate in data["archive"]
+            ),
+            directions=tuple(
+                ReseedDirection(
+                    text=direction["text"],
+                    seed_node_id=direction.get("seed_node_id"),
+                )
+                for direction in data["directions"]
+            ),
+            seed_node_ids=tuple(data.get("seed_node_ids", ())),
+            reviewer_seconds=float(data.get("reviewer_seconds", 0.0)),
+            best_score_at_trigger=float(data.get("best_score_at_trigger", 0.0)),
+            subsequent_gain=(
+                float(data["subsequent_gain"]) if data.get("subsequent_gain") is not None else None
+            ),
+            created_at=float(data.get("created_at", time.time())),
+        )
 
 
 class StallTracker:
@@ -373,6 +436,38 @@ class InterventionPolicy:
         self.tracker = StallTracker(self.config.stall_threshold)
         self.interventions: list[Intervention] = []
         self._next_index = 0
+
+    # -- durable state (resume) -----------------------------------------------
+
+    @property
+    def next_index(self) -> int:
+        """Index the next intervention will get (for resume logging)."""
+        return self._next_index
+
+    def state_dict(self) -> dict[str, Any]:
+        """Plain-data snapshot of the policy's *mutable* state for the tree
+        checkpoint: the stall streak, every intervention record, and the next
+        intervention index. Resumable campaigns persist this beside the tree so
+        a boundary (wall-clock, cycle budget, crash) never resets a non-
+        improving streak to zero, drops prior gainless interventions from the
+        ``park_after`` accounting, or reissues an already-used
+        ``intervention_id``."""
+        return {
+            "tracker": {
+                "consecutive_non_improving": self.tracker.consecutive_non_improving,
+            },
+            "interventions": [intervention.to_dict() for intervention in self.interventions],
+            "next_index": self._next_index,
+        }
+
+    def restore_state(self, state: dict[str, Any]) -> None:
+        """Restore from :meth:`state_dict` output on a resumed tree. The
+        configuration (thresholds) always comes from the *current* run; only
+        the accumulated state crosses the boundary."""
+        tracker = state["tracker"]
+        self.tracker.consecutive_non_improving = int(tracker["consecutive_non_improving"])
+        self.interventions = [Intervention.from_dict(record) for record in state["interventions"]]
+        self._next_index = int(state["next_index"])
 
     # -- stall detection ------------------------------------------------------
 

@@ -860,13 +860,23 @@ def build_executor(
     return _execute
 
 
-def _load_or_create_tree(config: AutorunConfig, tree_path: Path) -> HypothesisTree:
+def _load_or_create_tree(
+    config: AutorunConfig, tree_path: Path
+) -> tuple[HypothesisTree, dict[str, Any] | None]:
     """Resume the persisted tree when one exists (and ``fresh`` is unset), else
     start a new one. Seeds are expanded only on a NEW tree — on resume they are
     already nodes and re-expanding would duplicate them (autorun-8).
 
-    The snapshot is a small envelope (``{"repo_url", "tree"}``), not the bare
-    tree dict: a persisted tree whose ``repo_url`` OR root hypothesis differs
+    Returns the tree plus the persisted intervention-policy state (``None`` for
+    a new tree): the stall streak, intervention records, and next intervention
+    index ride in the snapshot envelope beside the tree so a resumed campaign
+    keeps its ``park_after`` accounting and never reissues an
+    ``intervention_id`` (autorun-15). Missing ``policy`` — snapshots written
+    before the field existed — restores as None, i.e. the pre-policy resume
+    behavior.
+
+    The snapshot is a small envelope (``{"repo_url", "tree", "policy"}``), not
+    the bare tree dict: a persisted tree whose ``repo_url`` OR root hypothesis differs
     from the configured one is refused with a clear error. Namespacing the
     default path by repo (see ``run_autonomous``) already keeps different
     repos from colliding; this envelope check is defense-in-depth for the
@@ -879,7 +889,7 @@ def _load_or_create_tree(config: AutorunConfig, tree_path: Path) -> HypothesisTr
         tree = HypothesisTree(config.root_hypothesis)
         for hypothesis in config.seed_hypotheses:
             tree.expand(tree.root_id, hypothesis)
-        return tree
+        return tree, None
 
     raw = json.loads(tree_path.read_text(encoding="utf-8"))
     # Snapshots written before the envelope existed are the bare tree dict
@@ -914,7 +924,9 @@ def _load_or_create_tree(config: AutorunConfig, tree_path: Path) -> HypothesisTr
         tree_path=str(tree_path),
         **tree.summary(),
     )
-    return tree
+    raw_policy = envelope.get("policy")
+    policy_state = raw_policy if isinstance(raw_policy, dict) else None
+    return tree, policy_state
 
 
 async def _record_objective_parked(audit: AuditLog, exc: ObjectiveParked) -> None:
@@ -936,6 +948,7 @@ async def _checkpoint_steps(
     run_id: str,
     ledger: LearningsLedger,
     ledger_boundary: WardenHarvestBoundary,
+    policy: InterventionPolicy,
 ) -> None:
     """Ledger the executed steps' insights, then checkpoint the tree snapshot.
 
@@ -962,7 +975,17 @@ async def _checkpoint_steps(
             warden_flags=flags,
             warden_admitted=admitted,
         )
-    _atomic_write_json(tree_path, {"repo_url": repo_url, "tree": tree.to_dict()})
+    _atomic_write_json(
+        tree_path,
+        {
+            "repo_url": repo_url,
+            "tree": tree.to_dict(),
+            # The intervention policy's mutable state rides beside the tree so
+            # a resumed run keeps its streak, ``park_after`` accounting, and
+            # intervention_id sequence (autorun-15).
+            "policy": policy.state_dict(),
+        },
+    )
 
 
 async def run_autonomous(
@@ -1037,7 +1060,7 @@ async def run_autonomous(
         correlation=run_correlation,
     )
 
-    tree = _load_or_create_tree(config, tree_path)
+    tree, policy_state = _load_or_create_tree(config, tree_path)
 
     # M5-B stall policy: N non-improving cycles trigger a lineage review over
     # the stalled branch's full evidence + the archived promising candidates,
@@ -1056,6 +1079,16 @@ async def run_autonomous(
             correlation=run_correlation,
         ),
     )
+    if policy_state is not None:
+        # Configuration comes from this run; only the accumulated state (streak,
+        # intervention records, next index) crosses the resume boundary.
+        intervention_policy.restore_state(policy_state)
+        await logger.ainfo(
+            "rsi_autorun_policy_state_restored",
+            interventions=len(intervention_policy.interventions),
+            next_index=intervention_policy.next_index,
+            consecutive_non_improving=(intervention_policy.tracker.consecutive_non_improving),
+        )
 
     coordinator = HtrCoordinator(tree, active_executor, policy=intervention_policy)
     started = time.monotonic()
@@ -1113,6 +1146,7 @@ async def run_autonomous(
                 run_id=run_id,
                 ledger=active_ledger,
                 ledger_boundary=ledger_boundary,
+                policy=intervention_policy,
             )
             await _record_objective_parked(active_audit, exc)
             break
@@ -1126,6 +1160,7 @@ async def run_autonomous(
             run_id=run_id,
             ledger=active_ledger,
             ledger_boundary=ledger_boundary,
+            policy=intervention_policy,
         )
 
     result = CoordinatorResult(tree=tree, steps=steps, interventions=interventions)
