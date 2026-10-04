@@ -37,8 +37,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "maistro-core" / "src"))
 
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
+from maistro.memory.working.indexed import WorkspaceWorkingMemoryProjection
 from maistro.memory.working.manager import WorkingMemoryManager
-from maistro.memory.working.projection import WorkspaceWorkingMemoryProjection
 
 _WORD = re.compile(r"[a-z]+")
 _VOCAB = [

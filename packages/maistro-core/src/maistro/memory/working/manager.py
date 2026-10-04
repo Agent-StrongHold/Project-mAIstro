@@ -19,7 +19,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Protocol
 
-from maistro.memory.working.projection import WorkspaceWorkingMemoryProjection
+from maistro.memory.working.indexed import WorkspaceWorkingMemoryProjection
 from maistro.memory.working.protocol import DEFAULT_EMBEDDING_MODEL
 
 if TYPE_CHECKING:

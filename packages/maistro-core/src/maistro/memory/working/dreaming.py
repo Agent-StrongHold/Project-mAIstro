@@ -21,7 +21,7 @@ from maistro.memory.working.protocol import RelationRecord
 from maistro.types.memory import MemoryTier
 
 if TYPE_CHECKING:
-    from maistro.memory.working.projection import WorkspaceWorkingMemoryProjection
+    from maistro.memory.working.indexed import WorkspaceWorkingMemoryProjection
     from maistro.memory.working.protocol import EntityRecord
     from maistro.types.memory import EpisodicMemory
 

@@ -28,8 +28,8 @@ import pytest
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 from maistro.memory.working.dreaming import collect_candidates
 from maistro.memory.working.extraction import GovernedEntityExtractor
+from maistro.memory.working.indexed import WorkspaceWorkingMemoryProjection
 from maistro.memory.working.manager import WorkingMemoryError, WorkingMemoryManager
-from maistro.memory.working.projection import WorkspaceWorkingMemoryProjection
 from maistro.memory.working.protocol import WorkingMemory
 
 
