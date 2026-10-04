@@ -49,3 +49,18 @@ ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test
 cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:276
 cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:319
 43d02d6398a465e92321d241a2d237ec7428e017:packages/maistro-core/tests/tasks/test_idempotency.py:generic-api-key:754
+# ---- M4-A8 producer-attribution tests (#115) ----
+# gitleaks' generic-api-key rule matches a keyword-argument call shape in
+# the ledger's operator-weighting tests: a parameter whose name ends in
+# "key" is passed alongside a ProducerKind qualifier, and the rule reads
+# that pairing as an assignment of a key-like value. What follows the
+# qualifier is a class name, not a value — there is no secret on the line
+# (gitleaks' own --redact output shows only the argument text). The tests
+# are fingerprinted at their introducing commit rather than reworded.
+# The third entry is this file itself: an earlier wording of the comment
+# above quoted the flagged call shape verbatim, so the ignore file tripped
+# the same rule when the range scan reached commit b5c22a358. That wording
+# is now paraphrased; the fingerprint keeps the historical commit clean.
+bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:361
+bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:375
+b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54

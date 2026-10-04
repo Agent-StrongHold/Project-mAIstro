@@ -33,6 +33,16 @@ class _SuspiciousWarden:
 
 
 class GateMachine(RuleBasedStateMachine):
+    """Gate pipeline against an independent strike-count model.
+
+    Model semantics (per gate.py): a blocked scan records exactly one strike
+    while the account is not locked; once the second strike locks the account
+    the lock short-circuit blocks every input (clean or hostile) WITHOUT
+    recording further strikes. Every rule asserts the transition; the
+    invariant asserts the store matches the model, so "clean input silently
+    records strikes" or "blocked input stops recording them" fails here.
+    """
+
     def __init__(self):
         super().__init__()
         self.tracker = InMemoryStrikeTracker()
@@ -41,7 +51,8 @@ class GateMachine(RuleBasedStateMachine):
         self.user = "gate-user"
         self.auth = AuthContext(user_id=self.user, roles=frozenset({"user"}))
         self.blocked_count = 0
-        self.passed_count = 0
+        self.model_strikes = 0
+        self.model_locked = False
 
     @rule(
         content=st.text(min_size=1, max_size=200),
@@ -57,10 +68,14 @@ class GateMachine(RuleBasedStateMachine):
                 auth=self.auth,
             )
         )
-        if not result.blocked:
-            self.passed_count += 1
+        if self.model_locked:
+            # Safety: the lock short-circuit fires BEFORE the scan, so even
+            # clean input is refused while locked (and records no strike).
+            assert result.blocked
         else:
-            self.blocked_count += 1
+            # Liveness: clean input passes and must never escalate strikes.
+            assert not result.blocked
+            assert result.strike_number == 0
 
     @rule(
         content=st.text(min_size=1, max_size=200),
@@ -77,13 +92,28 @@ class GateMachine(RuleBasedStateMachine):
             )
         )
         assert result.blocked
+        if not self.model_locked:
+            self.model_strikes += 1
+            if self.model_strikes >= 2:
+                self.model_locked = True
+        # The lock short-circuit blocks WITHOUT recording a further strike.
+        assert result.strike_number == self.model_strikes
         self.blocked_count += 1
 
     @invariant()
-    def tracker_consistency(self):
+    def tracker_matches_model(self):
+        """State-transition property replacing `strike_count >= 0`.
+
+        Counterexample class: the gate recording a strike on clean input,
+        recording two strikes for one block, or continuing to strike an
+        already-locked account all diverge from the model here.
+        """
         rec = _run(self.tracker.get(self.user))
-        if rec is not None:
-            assert rec.strike_count >= 0
+        if self.model_strikes == 0:
+            assert rec is None, f"no strike modeled but store holds strike_count={rec.strike_count}"
+            return
+        assert rec is not None
+        assert rec.strike_count == self.model_strikes
 
 
 TestGateMachine = GateMachine.TestCase

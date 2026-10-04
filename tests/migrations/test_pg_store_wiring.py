@@ -321,8 +321,10 @@ class TestStoresRunAgainstTheMigratedSchema:
         ]
 
     async def test_quota_accumulates_across_calls(self, container) -> None:
-        await container.quota_tracker.record_usage("openai", "2026-08", 10, 5)
-        totals = await container.quota_tracker.record_usage("openai", "2026-08", 1, 2)
+        # `record_usage` takes a billing cycle from the validated vocabulary
+        # (#1205) and derives the cycle key itself.
+        await container.quota_tracker.record_usage("openai", "monthly", 10, 5)
+        totals = await container.quota_tracker.record_usage("openai", "monthly", 1, 2)
         assert totals["total_tokens"] == 18
         assert totals["request_count"] == 2
 

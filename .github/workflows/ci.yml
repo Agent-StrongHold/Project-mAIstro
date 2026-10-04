@@ -142,6 +142,14 @@ jobs:
       # quality.yml beside the other Phase 0 debt gates.
       - name: Frontend typed-client debt (raw fetch + hand-typed — ratchet)
         run: uv run python scripts/check-frontend-typed-client.py
+      # One lie further: a route that answers 200 without doing the operation
+      # it names. `/v1/settings/reload` said "reloaded" for years without
+      # reloading anything, and `fetch` never rejects on a canned payload
+      # (#389). This refuses any handler whose every return is a pure literal
+      # with no operation behind it, and holds the audited inventory
+      # (quality/api-route-contracts.json) against the live route table.
+      - name: No canned no-op route handlers ship
+        run: python3 scripts/check-api-route-contracts.py
       # The same failure mode one layer out: a document naming a component that
       # does not exist. DEPLOYMENT-STANCE.md listed a `maistro-sandbox-worker`
       # in all four supported profiles and offered Kata and gVisor as backends;
@@ -423,6 +431,8 @@ jobs:
             sleep 2
           done
           echo "minio did not become ready" >&2
+          # Best-effort dump: the explicit exit 1 below is the verdict; a
+          # failed log cat must not shadow it.
           cat "$RUNNER_TEMP/minio.log" >&2 || true
           exit 1
       - name: Archive conformance against MinIO
@@ -586,6 +596,8 @@ jobs:
           MAISTRO_DRY_RUN: "1"
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
+      - name: No byte-identical test files without a generated-test contract (#396)
+        run: python scripts/check-test-duplicates.py
 
   durable-events:
     needs: workflow-lint
@@ -732,16 +744,24 @@ jobs:
         if: always()
         working-directory: packages/hive-conductor
         run: |
+          # Diagnostics only: the verdict came from the e2e step above, so
+          # each dump tolerates its own failure rather than shadowing the
+          # real one with a second error (#400: every swallow says why).
           echo "::group::compose ps (did hive ever start and report healthy?)"
-          docker compose -f docker-compose.test.yml ps -a || true
+          docker compose -f docker-compose.test.yml ps -a || true # a stack that never started has no state to print
           echo "::endgroup::"
           echo "::group::hive service logs"
-          docker compose -f docker-compose.test.yml logs --no-color --tail=300 hive || true
+          docker compose -f docker-compose.test.yml logs --no-color --tail=300 hive || true # logs vanish when the stack was torn down mid-failure
           echo "::endgroup::"
           echo "::group::e2e-tests (playwright) logs"
-          docker compose -f docker-compose.test.yml logs --no-color --tail=200 e2e-tests || true
+          docker compose -f docker-compose.test.yml logs --no-color --tail=200 e2e-tests || true # same: the reporter container may be gone
           echo "::endgroup::"
           echo "::group::is the app reachable, and what does GET / return?"
+          # the probe prints its own exit=$?; unreachable is itself the finding.
+          # `|| true` below tolerates a failed probe, not a wedged compose. The
+          # reason sits here rather than on the flagged line so DevSkim DS137138
+          # (the URL is the compose-internal hive hostname; no TLS exists to
+          # prefer) keeps attributing it to the commit that introduced it.
           docker compose -f docker-compose.test.yml run --rm --no-deps -T \
             --entrypoint sh e2e-tests -c \
             'wget -S -T 10 -O /dev/null http://hive:8101/ 2>&1 | head -40; echo "exit=$?"' || true
@@ -783,8 +803,9 @@ jobs:
         if: always()
         working-directory: packages/hive-conductor
         run: |
-          docker compose -f docker-compose.test.yml ps -a || true
-          docker compose -f docker-compose.test.yml logs --no-color --tail=200 || true
+          # Diagnostics only: the verdict came from the api-tests step above.
+          docker compose -f docker-compose.test.yml ps -a || true # a stack that never started has no state to print
+          docker compose -f docker-compose.test.yml logs --no-color --tail=200 || true # logs vanish when the stack was torn down mid-failure
       - name: Tear down
         if: always()
         working-directory: packages/hive-conductor
@@ -828,6 +849,13 @@ jobs:
       - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev
       - run: uv pip install pip-audit
+      # #406: the synced environment is the one place the reviewed
+      # pytoniq-core-fork `examples` namespace is allowed to exist. The gate
+      # inventories every distribution's top-level surface and rejects any
+      # generic/colliding/unreviewed name, so a new dependency cannot add an
+      # importable namespace without a written review.
+      - name: Dependency wheels install no unreviewed top-level namespaces (#406)
+        run: uv run python scripts/check-dependency-namespaces.py
       - run: uv pip freeze --exclude-editable > /tmp/deps.txt
       # Same retry contract as security.yml's supply-chain job (single gate
       # script, same failure mode): retry only an unusable report — a crashed
@@ -921,6 +949,13 @@ jobs:
           -f Dockerfile -t maistro-engine:test
           --load --cache-from type=gha,scope=engine
           --cache-to type=gha,scope=engine,mode=max .
+      # #406: the image's own build layer prunes the pytoniq-core-fork
+      # `examples` namespace and asserts it gone; this runs the shipped image
+      # itself so the assertion covers the artifact, not just the layer.
+      - name: Shipped engine image carries no examples namespace (#406)
+        run: >-
+          docker run --rm --entrypoint python maistro-engine:test
+          -c "import importlib.util; assert importlib.util.find_spec('examples') is None, 'unpruned pytoniq examples namespace'"
       - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
         shell: bash
         run: |
@@ -932,14 +967,16 @@ jobs:
 
           cleanup() {
             status=$?
+            # Cleanup must never mask the real exit status: every command
+            # below is best-effort, and `exit "$status"` preserves the verdict.
             if [[ $status -ne 0 ]]; then
-              docker logs "$engine" 2>&1 || true
-              docker logs "$postgres" 2>&1 || true
-              docker ps -a || true
+              docker logs "$engine" 2>&1 || true # the container may already be gone
+              docker logs "$postgres" 2>&1 || true # same
+              docker ps -a || true # state dump, not the verdict
             fi
-            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true
-            docker network rm "$network" >/dev/null 2>&1 || true
-            docker volume rm "$volume" >/dev/null 2>&1 || true
+            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true # nothing to remove on an early failure
+            docker network rm "$network" >/dev/null 2>&1 || true # already absent
+            docker volume rm "$volume" >/dev/null 2>&1 || true # already absent
             exit "$status"
           }
           trap cleanup EXIT
@@ -1041,6 +1078,10 @@ jobs:
           -f packages/hive-conductor/Dockerfile -t hive-conductor:ci
           --load --cache-from type=gha,scope=hive-conductor
           --cache-to type=gha,scope=hive-conductor,mode=max .
+      - name: Shipped conductor image carries no examples namespace (#406)
+        run: >-
+          docker run --rm --entrypoint python hive-conductor:ci
+          -c "import importlib.util; assert importlib.util.find_spec('examples') is None, 'unpruned pytoniq examples namespace'"
       # The static gate above reads the ignore files. This one builds the
       # actual RSI runner from a context carrying canary secrets and proves
       # none is in any layer -- because the question is what Docker did, not
