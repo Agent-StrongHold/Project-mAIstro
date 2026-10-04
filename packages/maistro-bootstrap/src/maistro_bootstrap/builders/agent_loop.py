@@ -83,6 +83,17 @@ class AgentLoopConfig:
     # None → resolved per-worker via model_for_worker(); set explicitly to override.
     model: str | None = None
     worker: str = "frank"
+    # Restored at the #777 develop sync (352aea3f4): `system_prompt` had no
+    # readers when the dead-code pass removed it, but M5-B evaluator-oracle
+    # immunity introduced one — maistro_rsi.local_loop.make_builders_apply_patch
+    # falls back to `config.system_prompt` when no genome strategy prompt is
+    # supplied (packages/maistro-rsi/src/maistro_rsi/local_loop.py:755).
+    system_prompt: str = (
+        "You are a precise coding assistant working inside an isolated git worktree. "
+        "Use the provided tools to read files, write changes, and run commands. "
+        "Always confirm destructive actions before executing them. "
+        "Never access paths outside the workspace root."
+    )
 
     def resolved_model(self) -> str:
         return self.model or model_for_worker(self.worker)

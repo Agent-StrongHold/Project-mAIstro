@@ -7598,3 +7598,80 @@ trace to absent canonical owners; the stop condition forbids
 Design-Studio-private substitutes. Repair this round was confined to reconciling
 a stale verification note; the implementation block itself is dependency-based
 and outside this lane's scope. Verdict: **BLOCKED** (Refs #777).
+
+## Round 113 (repair) — develop sync 97c05e0f1 → 352aea3f4 + semantic merge-conflict repair
+
+**Trigger:** lane re-dispatch after the round-112 BLOCKED, with the lane base
+updated to `352aea3f4` (develop head). Round 112 had proven the block was
+dependency-based, not a sync conflict, because develop was unmoved at the then
+merge-base `97c05e0f1`. This round develop **moved** two commits
+(`5d944201f` #402 MAISTRO_ACCESS_TOKEN removal; `352aea3f4` M5-B
+evaluator-oracle immunity), so the sync-merge path now applies.
+
+**Merge:** `git merge origin/develop` → conflict-free (rsi/evolve, compose
+secrets, scripts, `quality/radon-baseline.json`; no #777 dependency surface
+touched). Quality-ledger integrity per the AGENTS.md rule:
+`git diff --numstat origin/develop -- quality/` → exactly `0 1
+quality/vulture-baseline.json`, the branch's own round-110 row removal; no
+rows lost or replaced by the merge.
+
+**Semantic merge conflict found and repaired (real regression, caught by
+tests, not the scanner):** the round-110 dead-code removal deleted
+`AgentLoopConfig.system_prompt` on the strength of zero readers. Develop's
+M5-B commit introduced the first genuine reader —
+`packages/maistro-rsi/src/maistro_rsi/local_loop.py:755`
+(`system_content = system_prompt or config.system_prompt`), the fallback to
+the builders default when no genome strategy prompt is supplied. At the merge
+head, `packages/maistro-rsi/tests/test_local_loop.py` failed 3 cases with
+`AttributeError: 'AgentLoopConfig' object has no attribute 'system_prompt'`
+(`test_apply_patch_cycle_model_used_when_factory_model_unset`,
+`test_apply_patch_factory_model_beats_cycle_model`,
+`test_exhausted_tool_budget_resumes_with_transcript_not_sentinel`).
+Fail-before/pass-after is the regression proof. Repair: restored the field
+verbatim from `origin/develop` (same default prompt text) with a comment
+recording why it is no longer dead. `tool_definitions` stays removed — fresh
+grep over `packages/*/src` + `hive-conductor/backend` post-merge shows zero
+readers of `config.tool_definitions`/`.tool_definitions` (the only
+`config.system_prompt` hit besides `local_loop.py:755` is an unrelated
+`node_config.system_prompt` in `maistro-core/graph/node.py:137`). No test
+counts changed (front-matter deltas unchanged); develop's new tests arrived
+with their own note (`109-evaluator-oracle-immunity.md`).
+
+**Battery at repaired head (all fresh runs):**
+- `uv sync --locked --extra dev` → resolved 246 / checked 204, ok
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (2869 files already formatted)
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → EXIT 0; base reads
+  `352aea3f427e` (merge base, not candidate), 1342 reviewed → 1341 findings,
+  unclassified 0, never_allowlist 0 — restored `system_prompt` is banked by
+  its rsi reader, no baseline row needed
+- `check-dependency-namespaces` / `check-suite-inventory` (14 suites) /
+  `check-branch-independence` / `check-backlog-consistency` (167 items) → all
+  EXIT 0
+- pytest `packages/maistro-rsi/tests` → **968 passed** (was 4 failed at merge
+  head); `packages/maistro-bootstrap/tests` → **237 passed / 1 skipped**;
+  `packages/maistro-design/tests` → **540 passed / 1 skipped**; hive
+  design/brief/workspace/goal slice → **379 passed / 5 skipped**
+- canonical mypy (`maistro-core/server/turing/canvas/bootstrap/registry` src)
+  → "Success: no issues found in 786 source files"; `check-doc-links` → EXIT 0
+
+**Dependency audit re-run fresh at repaired head (outcome unchanged from
+rounds 108–112):** `GoalReconcil|delegate_goal` → 0 files; `maistro.goals`
+absent; `working_graph` 0 refs outside `maistro-core`; `ControlMode`/
+`BranchControl` 0 consumers outside `maistro-design`; 0 `WorkspaceAgent`
+tokens in `maistro-design/src` + `design_service.py`;
+`packages/hive-conductor/backend/services/brief_chat.py:64` `_NOT_WRITTEN`
+stands verbatim. Neither of develop's two new commits lands any #777
+dependency (#804/#805/#806 Goal reconciliation + delegation, #458 canonical
+Goal writer, #774 brief writer, #775 creative Graph, #776 product wiring).
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+The branch is now synced to develop `352aea3f4` and fully green (lint,
+format, vulture per-identity ledger at CI-exact args, structural gates, 2124+
+tests across the touched packages), but all 13 #777 acceptance criteria still
+trace to canonical owners that do not exist on develop. The stop condition
+forbids Design-Studio-private substitutes (private Agent runtime, Goal owner,
+reconciliation loop, memory system, permissions model). Verdict: **BLOCKED**
+(Refs #777).
