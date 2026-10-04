@@ -52,6 +52,9 @@ CORE_PUBLIC_SURFACE = [
     "maistro.a2a",
     "maistro.agents",
     "maistro.agents.intents",
+    # ADR-076 API-wide HTTP version negotiation (shared by maistro-server and
+    # hive-conductor); shipped public surface since #96.
+    "maistro.api_versioning",
     # The S3-compatible archive tier (ADR-082226-f436). Importable from a bare
     # install: the module resolves and raises a clear error when the `s3` extra
     # is absent, rather than failing at import.

@@ -23,6 +23,25 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Added
+
+- **API-wide HTTP content negotiation (ADR-076) is implemented (#96).**
+  `maistro-server` and hive-conductor now run the shared
+  `maistro.api_versioning.VersionNegotiationMiddleware` from `maistro-core`.
+  A request selects an API version via `Accept: application/vnd.maistro.vN`,
+  an `api_version` query parameter, or an `api_version` JSON body field (in
+  that precedence order); every response advertises `Maistro-API-Version`
+  and `Maistro-API-Default`; an unsupported selector is answered `406` and a
+  malformed one `400` before any route handler runs. A plain-JSON response to
+  an Accept-negotiated request is returned as
+  `application/vnd.maistro.vN+json`; other media types (including the
+  canvas-local `application/vnd.canvas+json;version=2`) are never rewritten.
+  Deprecation signalling (`Deprecation`/`Sunset`/`Link`) is wired behind the
+  version table; nothing is deprecated. Requests without a selector behave
+  exactly as before, plus the two advertisement headers. Health, metrics,
+  OpenAPI/docs, and A2A paths do not negotiate. Business routes stay on their
+  stable `/v1` mounts; no `/vN` path duplication exists.
+
 ### Changed
 
 - **v1.0 release contract consolidated into canonical planning docs (no linked issue:
@@ -1976,15 +1995,22 @@ workflow, and no changelog; `develop` was the only integration point.
 
 ### API compatibility
 
-**The stable HTTP surface in 1.0.0 is the `/v1` route mount.** Clients should
-address `/v1/...` paths directly.
+**The stable HTTP surface is the `/v1` route mount.** Clients should
+address `/v1/...` paths directly. The `/v1` path segment is the stable
+resource mount; the *behavioral* version is negotiated, not taken from the
+path.
 
-[ADR-076](docs/adr/ADR-076-http-api-versioning.md) specifies version selection
-by **content negotiation** (`Accept: application/vnd.maistro.vN+json`). **That
-scheme is not implemented.** No server in this release performs it; the only
-negotiation code anywhere in the tree is a narrow, canvas-specific
-`/v2/canvas` media-type check unrelated to the general scheme. Do not write
-clients against it. Implementation is deferred to v1.1.
+[ADR-076](docs/adr/ADR-076-http-api-versioning.md) version selection is
+**implemented** on both business HTTP surfaces (`maistro-server` and
+hive-conductor) by the shared `maistro.api_versioning` middleware: a request
+selects a version via the `Accept: application/vnd.maistro.vN` media type, an
+`api_version` query parameter, or an `api_version` JSON body field; every
+response states the served version (`Maistro-API-Version`) and the default
+(`Maistro-API-Default`); an unsupported version is refused with `406`. Only
+version 1 exists today; a client that sends no selector gets version 1 and
+plain `application/json`. The canvas `application/vnd.canvas+json;version=2`
+media-type check at `/v2/canvas` is a canvas-local response-format mechanism,
+not the general API-version scheme. Do not treat it as one.
 
 The API version axis is independent of the package version: a `1.x` package
 release does not imply a `/v2` HTTP surface.
@@ -2006,8 +2032,7 @@ register:
 > unconfigured in the default shipped service and return `503`. Design Studio
 > can discover resources and select artifact modes, but visual generation,
 > editing/preview, and publish/export are not available. Conductor can run in
-> degraded mode when optional services are unavailable, and API-wide HTTP
-> content negotiation from ADR-076 is deferred to v1.1.
+> degraded mode when optional services are unavailable.
 
 [Unreleased]: https://github.com/Agent-StrongHold/Project-mAIstro/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/Agent-StrongHold/Project-mAIstro/releases/tag/v1.0.0
