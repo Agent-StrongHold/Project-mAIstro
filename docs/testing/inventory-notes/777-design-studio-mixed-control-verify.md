@@ -8740,3 +8740,57 @@ no ledger amendment); suite-inventory **14/14** EXIT 0; backlog-consistency
 Verdict: **BLOCKED** (dependency-blocking), unchanged. #804/#805/#806 remain
 unlanded in develop; all 13 acceptance criteria stay unprovable; the stop
 condition forbids private substitutes (Refs #777).
+
+## Round 131 — repair round at 75c6f23e (job 1b9c01514e0445d3a3a224f9f579f224)
+
+This round's driver ran zero deterministic checks (`checks: []` in the job
+manifest), so the entire battery below was executed by the worker at this
+head. Both incoming signals from the lane brief were re-resolved first:
+
+1. Prior validation failure `53d5e08bf/check-2.log` (ruff-format,
+   `agent_loop.py`) — **stale**, re-confirmed: fresh `ruff format --check .`
+   EXIT 0, **2895 files already formatted** (file fixed in round 110,
+   2f054b614).
+2. Prior result artifact `538c80f6f6d149538850412bbe67cc63/result.json`
+   (round 130) — verdict-only BLOCKED record with `checks: []`; no new
+   failure content. Its findings were re-proven rather than assumed.
+
+Develop sync check: `git fetch origin` → `origin/develop` **unmoved** at
+91996e192 (branch ahead by its own 208 commits, `nothing to commit, working
+tree clean` at 75c6f23e1). No sync conflict applicable.
+
+Blockers re-proven fresh by grep at this head (not assumed):
+
+- `GoalReconciler` across `packages/*/src` → **0** lines;
+  `delegate_goal` → **0** lines.
+- `maistro.goals` module → **absent** (no `goal*` entry under
+  `packages/maistro-core/src/maistro/`).
+- `workspace_agent` in `packages/maistro-design/src` → **0**;
+  `maistro.memory.working` in design src → **0**.
+- `ControlMode` consumers → **only** `maistro-design`
+  (`versions.py:77`, `version_store.py`); zero canonical-owner consumers.
+- `BACKLOG.md:348` conductor-404: "[#1037], [#804]: persistent goals +
+  reconciliation" still **Proposed** (v1.0 M3-D), not landed.
+- Branch's own projection surfaces re-confirmed at this head:
+  `packages/maistro-design/src/maistro_design/brief.py` pins
+  `goal_id`/`goal_revision`/`goal_owner_agent_id`/`persona_id`/
+  `persona_version`/`design_system_slug`/`design_system_version` in
+  `PROTECTED_PROJECTION_FIELDS` (projection, not a second Goal); no #458
+  producer exists to bind them to.
+
+Fresh battery, all executed this round at 75c6f23e1: `ruff check .` EXIT 0
+("All checks passed!"); `ruff format --check .` EXIT 0 (2895 files); vulture
+CI-exact (`scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`) EXIT 0 — 1342 reviewed →
+1341 findings, unclassified 0, never-allowlist 0 (no unbanked identities, no
+ledger amendment); suite-inventory **14/14** EXIT 0; backlog-consistency
+**167 items** EXIT 0; branch-independence PASS EXIT 0; pytest
+`packages/maistro-design/tests packages/maistro-bootstrap/tests`
+**777 passed / 2 skipped** (35.1s); pytest hive backend from repo root
+`-k "design or brief or workspace or agent"` **508 passed / 5 skipped**
+(24.3s, 2831 deselected).
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds 123–130.
+#804/#805/#806 remain unlanded in origin/develop; all 13 acceptance criteria
+stay unprovable against reachable production behavior; the stop condition
+forbids Design-Studio-private substitutes (Refs #777).
