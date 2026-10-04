@@ -7,32 +7,121 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
 
-from maistro.security.sentinel.pii_filter import PIIMatch, redact, scan_and_redact, scan_for_pii
+from maistro.security.sentinel.pii_filter import (
+    PIIMatch,
+    normalize_for_scan,
+    redact,
+    scan_and_redact,
+    scan_for_pii,
+)
 
 
 class PIIScanMachine(RuleBasedStateMachine):
+    """Span-integrity properties for PII detection.
+
+    The old `match_count_non_negative` invariant counted the machine's own
+    accumulator (`total_matches >= 0`) — true of any integer. The properties
+    below pin the detector's OUTPUT geometry instead: every reported span
+    must lie inside the scanned text, and an embedded, known credential must
+    be localized (some match covers it).
+    """
+
+    # Real credential shapes from the governed oracle space (masked preview
+    # not required here — the raw sample never enters the model state).
+    _SAMPLES = [
+        ("aws_key", "AKIAIOSFODNN7EXAMPLE"),
+        ("github_token", "ghp_" + "aBcDeFgHiJkLmNoPqRsTtUvWxYz0123456789"[:36]),
+        ("email", "alice@example.com"),
+    ]
+
     def __init__(self):
         super().__init__()
-        self.scanned_count = 0
-        self.total_matches = 0
+        self.last_text: str | None = None
+        self.last_matches: list | None = None
 
     @rule(
         text=st.text(min_size=0, max_size=500),
     )
     def scan_text(self, text):
         matches = scan_for_pii(text)
-        self.scanned_count += 1
-        self.total_matches += len(matches)
         for m in matches:
             assert isinstance(m, PIIMatch)
             assert isinstance(m.pii_type, str)
             assert isinstance(m.value, str)
             assert isinstance(m.start, int)
             assert isinstance(m.end, int)
+        self.last_text = text
+        self.last_matches = matches
+
+    @rule(
+        prefix=st.text(
+            min_size=0,
+            max_size=40,
+            alphabet=st.characters(min_codepoint=32, max_codepoint=126).filter(lambda c: c.isalnum() or c == " "),
+        ),
+        sample=st.sampled_from([s for _, s in _SAMPLES]),
+        suffix=st.text(
+            min_size=0,
+            max_size=40,
+            alphabet=st.characters(min_codepoint=32, max_codepoint=126).filter(lambda c: c.isalnum() or c == " "),
+        ),
+    )
+    def scan_embedded_credential(self, prefix, sample, suffix):
+        """Localization + bounds + redaction on one known credential.
+
+        Prefix/suffix are printable ASCII alphanumerics, which
+        `normalize_for_scan` leaves unchanged, so canonical offsets equal raw
+        offsets here and the sample sits at `len(prefix)` in BOTH coordinate
+        systems. Counterexample classes: a span computed on a derived view
+        whose length differs from canonical (bounds fail); an off-by-one that
+        shrinks the span fails to cover the sample; a detector that silently
+        misses its own pattern fails coverage; a redactor that mis-slices its
+        own spans leaves part of the credential behind and fails the
+        leak-prevention assertion.
+        """
+        parts = [p for p in (prefix, sample, suffix) if p]
+        text = " ".join(parts)
+        matches = scan_for_pii(text)
+        pos = len(prefix) + (1 if prefix else 0)
+        canonical_len = len(normalize_for_scan(text))
+        for m in matches:
+            assert 0 <= m.start < m.end <= canonical_len, (
+                f"span [{m.start},{m.end}) outside canonical text of length {canonical_len}"
+            )
+        assert any(m.start < pos + len(sample) and m.end > pos for m in matches), (
+            f"no detector even overlaps the embedded credential at [{pos},{pos + len(sample)}); got {matches!r}"
+        )
+        # Leak prevention: redaction must shred the credential — no 8-char
+        # window of it may survive contiguously. (Detectors legitimately
+        # absorb overlapping sibling matches, so the surviving span may be
+        # offset; what may never happen is a long plaintext fragment left
+        # behind.) Counterexample class: a redactor that mis-slices its own
+        # spans (off-by-one, wrong coordinate system) leaves a long
+        # reconstructable run of the secret in its output.
+        redacted = redact(text, matches)
+        for i in range(len(sample) - 8):
+            assert sample[i : i + 8] not in redacted, (
+                f"redaction left fragment {sample[i : i + 8]!r} of the embedded credential"
+            )
+        self.last_text = text
+        self.last_matches = matches
 
     @invariant()
-    def match_count_non_negative(self):
-        assert self.total_matches >= 0
+    def last_matches_respect_canonical_bounds(self):
+        """Bounds property over the most recent scan.
+
+        Spans index the CANONICAL string (normalize_for_scan), per the
+        documented contract — that is the coordinate system redact() slices
+        in. Counterexample class: any span extending past the canonical text
+        (or ending before it starts) fails here.
+        """
+        if self.last_text is None or self.last_matches is None:
+            return
+        canonical_len = len(normalize_for_scan(self.last_text))
+        for m in self.last_matches:
+            assert 0 <= m.start < m.end <= canonical_len, (
+                f"span [{m.start},{m.end}) outside canonical text of length {canonical_len}"
+            )
 
 
 TestPIIScanMachine = PIIScanMachine.TestCase
