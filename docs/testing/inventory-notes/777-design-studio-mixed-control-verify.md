@@ -8123,3 +8123,83 @@ All 13 acceptance criteria still require the absent #804/#805/#806
 reconciliation/delegation machinery, the absent #458 canonical Goal writer,
 and the absent #774/#775/#776 product-path wiring; the stop condition forbids
 Design-Studio-private substitutes. Verdict: **BLOCKED** (Refs #777).
+
+## Round 121 — develop sync a58656017 + fresh blocker re-proof (repair job 92d094e3)
+
+Prior block (job `443e5274408745009878e46a332db988`) was a provider timeout with
+`checks: []` — no validation failure existed to repair. This round re-ran
+everything fresh.
+
+**Develop sync.** `origin/develop` advanced one commit to `a586560170a9` (M4-B1
+learning-stage-ladder, #1754) — exactly the manifest's declared lane base.
+Merged conflict-free into `auto-777`. Ledger-integrity check per AGENTS.md:
+develop's commit does not touch `quality/vulture-baseline.json`
+(`git diff 00aafef9b a58656017 -- quality/vulture-baseline.json` is empty);
+the 1-line HEAD-vs-develop delta in that file is this branch's own prior
+genuine-dead-code removal (commit `a99c6bd78`), not a merge loss. The merge
+commit itself (`git diff HEAD~1 HEAD -- quality/`) only adds develop's new
+`quality/ac-state-notes/auto-117.json` and `quality/durable-table-retention.json`.
+
+**Dependency state at the merge head (re-proven by direct inspection, not
+inherited from rounds 117–120):**
+
+- **#804/#805/#806 Goal reconciliation — still absent.** `GoalReconciler`/
+  `delegate_goal`: 0 files under `packages/`. No goal services in
+  `packages/hive-conductor/backend/services/`. "reconcil" hits in
+  maistro-canvas are physical executor reconciliation, and
+  `packages/maistro-core/src/maistro/security/sentinel/permission_source.py`
+  still describes #804 governed tool-use as a future PermissionSource plug-in.
+- **#458 canonical Goal — still declared, not implemented.** No
+  `maistro.goals` module; `Subgoal` appears only in the interop ontology
+  declaration (`maistro/interop/contract.py`) and as BriefReference provenance
+  fields in `maistro_design/brief.py`; `GoalRevisionSnapshot`/
+  `GoalRevisionCatalog` in
+  `packages/maistro-core/src/maistro/projects/rubric_store.py:59,71` remain a
+  resolution-only Protocol, not a Goal store/owner.
+- **#774/#775 — landed upstream on develop** (confirmed via
+  `git ls-tree origin/develop`): `maistro_design/brief.py` (CreativeBrief,
+  versioned BriefReference to Persona/Design System, structural scope
+  rejection) and `maistro_design/creative_graph.py` (planner around canonical
+  `maistro.graph`). These are present and tested (540 design tests).
+- **#776 — still not consumed by the design path.** "Ladybug" matches under
+  `packages/*/src` are LadybugDB docstring references only
+  (`maistro/memory/working_graph/wiring.py:219`,
+  `maistro/memory/working/protocol.py:3`); `maistro-design` imports nothing
+  from `maistro.memory.working*` (0 refs), so no Workspace-context retrieval
+  through the working graph exists in the product path.
+- **#53 front door — exists but unconsumed by Design Studio.**
+  `packages/hive-conductor/backend/services/workspace_agent.py` exists;
+  `routes/design.py` and `services/design_service.py` contain 0 references to
+  `workspace_agent`/`agent_materialization`.
+- **Mixed-control surface — defined, unconsumed.** `ControlMode`
+  (`maistro_design/versions.py:77`) and `BranchControl`
+  (`versions.py:355`) have zero references outside the maistro-design package;
+  hive-conductor and canvas production code never import them. Delegation
+  matches in `test_creative_graph.py` are provenance *recording*
+  (BriefReference values), not delegation mechanics.
+
+**Battery re-run at the merge head (all fresh, this round):**
+
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (2889 files already formatted)
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI-exact) → EXIT 0; base `a586560170a9`, 1342 reviewed
+  → 1341 findings
+- `check-suite-inventory` → EXIT 0 (14 suites); `check-backlog-consistency`
+  → EXIT 0 (167 items); `check-branch-independence` → EXIT 0
+- pytest `packages/maistro-design/tests` → **540 passed / 1 skipped** (19.7s)
+- pytest `packages/maistro-bootstrap/tests` → **237 passed / 1 skipped** (18.5s)
+- pytest `packages/hive-conductor/backend/tests -k "design or brief or
+  workspace"` → **378 passed / 5 skipped** (25.0s)
+- pytest merge-touched (core `memory/learnings`, learning-stage persistence,
+  `tests/migrations`) → **214 passed / 84 skipped** (2.2s)
+
+No production or test code changed this round; front-matter deltas stay +0.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+With #774/#775 landed, the remaining 11 of 13 acceptance criteria still
+require the absent #804/#805/#806 reconciliation/delegation machinery and the
+absent #458 canonical Goal writer (plus #776 product-path wiring and #53
+front-door consumption by Design Studio); the stop condition forbids
+Design-Studio-private substitutes. Verdict: **BLOCKED** (Refs #777).
