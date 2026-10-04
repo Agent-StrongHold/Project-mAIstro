@@ -60,10 +60,20 @@ from maistro.capabilities.providers.harness_safety import (
     DenyAllGate,
     SafeHarnessRunner,
 )
+from maistro.capabilities.providers.openclaw import (
+    OpenClawHarnessRunner,
+    openclaw_microvm_factory,
+    openclaw_microvm_runner,
+)
 from maistro.capabilities.providers.opencode import (
     OpencodeHarnessRunner,
     opencode_microvm_factory,
     opencode_microvm_runner,
+)
+from maistro.capabilities.providers.pi import (
+    PiHarnessRunner,
+    pi_microvm_factory,
+    pi_microvm_runner,
 )
 from maistro.capabilities.providers.subprocess_harness import (
     SandboxExec,
@@ -126,9 +136,11 @@ __all__ = [
     "InvocationReconciliation",
     "InvocationReconciliationEvidence",
     "InvocationStatus",
+    "OpenClawHarnessRunner",
     "OpencodeHarnessRunner",
     "PgBindingStore",
     "PgInvocationStore",
+    "PiHarnessRunner",
     "ProviderHealth",
     "ProviderReconciliationAdapter",
     "ReconciliationDisposition",
@@ -146,8 +158,12 @@ __all__ = [
     "approval_signing_secret",
     "default_capability_registry",
     "discover_into",
+    "openclaw_microvm_factory",
+    "openclaw_microvm_runner",
     "opencode_microvm_factory",
     "opencode_microvm_runner",
+    "pi_microvm_factory",
+    "pi_microvm_runner",
     "resolve_harness_runner",
     "sign_approval_authority",
     "verify_approval_authority",
