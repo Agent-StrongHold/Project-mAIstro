@@ -111,6 +111,8 @@ The **current reviewed floor is always the fold over `quality/ac-state-notes/`**
 
 Security scanning (Bandit, Semgrep, gitleaks), dependency audit, container/SBOM/signing checks, and mutation testing live in their dedicated workflows. `SECURITY.md` has its own inventory consistency gate under #157; a green security-document check is limited to the claims that checker can mechanically verify.
 
+Workflow files have their own inventory gate (#400): `quality/workflow-inventory.json` gives every file under `.github/workflows/` a reviewed disposition — `ACTIVE` (event-triggered gate or automation), `MANUAL_DIAGNOSTIC` (`workflow_dispatch`-only, an on-demand measurement) or `RETIRED` (removed, naming its successors, owner and removal issue) — and `scripts/check-workflow-inventory.py` holds the inventory and the tree to each other in both directions. The same gate rejects the three rots that let `stream1-diagnostic.yml` sit always-green: a trigger branch deleted from the remote (unless a reviewed `retained_branches` row claims it), a 40-hex commit pin this checkout no longer contains, and an error swallow (`|| true`, `continue-on-error: true`) with no written reason within six lines. A `RETIRED` file that reappears fails the gate: coming back is a reviewed reclassification, not a copy-paste.
+
 ## Running the architecture/governance gates locally
 
 ```bash
@@ -125,6 +127,7 @@ uv run python scripts/check-execution-lifecycles.py
 uv run python scripts/check-model-egress.py
 uv run pytest packages/maistro-core/tests/fitness -v --timeout=30
 uv run python scripts/check-suite-inventory.py
+uv run python scripts/check-workflow-inventory.py
 uv run python scripts/check-doc-links.py
 uv run python scripts/bump_version.py --check
 uv run python scripts/check-vulture-baseline.py packages/*/src \
