@@ -147,3 +147,62 @@ NEWLY UNREACHABLE module (`maistro.tasks.admission_generation`);
 `check-radon-baseline.py` exits 1 listing exactly
 `admission_generation.py:62 _assess -> C (13)` — both stand as the documented
 blocker, nothing else drifted.
+
+## CI-repair round 2 at 90cafe9db (2026-10-04, all four red jobs bound to steps)
+
+All four failing required checks were bound to their exact failing steps from
+the Actions API (read-only) and each reproduced locally with CI's command:
+
+- `exact-debt-ledger` (job 111501147324): fails at "Require enforced ratchet
+  provenance policy" only; both other steps skipped. Local reproduction at
+  this head, byte-equivalent findings: the #1851 candidate-authored
+  disposition + baseline row for `maistro.runs.admission_identity` are absent
+  from the trusted ledger and unauthorized (`NEW disposition absent from
+  trusted ledger`, `NEW unreachable ... not previously authorized`), and
+  `maistro.tasks.admission_generation` is flagged twice — against the trusted
+  baseline (`NEW unreachable`) and against the candidate baseline (`missing
+  from candidate baseline`) — plus `provenance inventory is incomplete`.
+- `test` (job 111501147399): the only failures in the whole root suite are
+  the three reachability-baseline identity meta-tests
+  (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries` (assert 1 == 0),
+  `test_the_baseline_is_exactly_the_unreachable_set` (extra item:
+  `maistro.tasks.admission_generation`)). Reproduced locally: 3 failed,
+  12 passed in that selection.
+- `Quality gate (Pillars 1–4, 7, 8)` (job 111501147586): fails at the
+  "radon CC ratchet" step; all later steps skipped. Local: exactly one new
+  C-or-worse block vs the trusted baseline, `admission_generation.py:62
+  _assess -> C (13)`; the gate's own remedy is "Land a grant keyed as
+  '<qualified-block>@<new-complexity>' first" — the two-merge path, not a
+  candidate-side edit.
+- `Coverage gate` (job 111503034878): fails in its `combine` step, whose
+  covered root-suite pytest reports `3 failed, 4307 passed` — the same three
+  reachability meta-tests as the `test` job. No coverage defect.
+
+Base independence was re-proven after origin/develop advanced to 928993dda
+(2026-10-04): `git diff 91996e192 928993dda -- quality/` is empty, so the
+two-merge blocker and every finding above are identical under either base,
+and the divergence (8 local / 1 remote commits) is not a sync conflict — CI
+ran to completion at b4d3ae948 with content failures, so the conditional
+merge-remedy does not apply and the stack stays as reviewable diff.
+
+Why no in-leaf radon repair exists: the leaf scope pins every input
+validation (two exact record classes, lowercase `[0-9a-f]{64}`, int-not-bool
+int64 `now_us`) and the fixed six-outcome decision order inside the module's
+sole production function, which puts `_assess` at an irreducible CC >= 12 —
+above the gate's free threshold (B <= 10) and inside C regardless of style.
+Ducking the counter (helper functions would break "sole production function";
+boolean-op laundering via `all((...))` tuples is cosmetic) is out of scope,
+and even a green radon step would leave the same job red at the reachability
+and disposition steps that currently run after it. The vulture ledger was
+re-verified exact at this head with CI's exact arguments (rc=0, 1342 -> 1342,
+unclassified 0), so the prescribed amendment stays contraindicated: any row
+change would desync the multiset and fail the same gate.
+
+Net: every red step traces to the two intentionally unwired modules meeting
+ledgers that (by this leaf's own scope) cannot gain candidate-authored rows
+or grants. The unblock sequence belongs to the separately scoped #1845
+integration change: land authorizations on the base (grant first, change
+second), wire the reviewed consumer, then converge the unchanged gates at
+its final head.
