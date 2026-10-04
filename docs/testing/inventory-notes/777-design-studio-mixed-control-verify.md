@@ -6584,3 +6584,99 @@ naming, and the issue's stop condition forbids Design-Studio-private
 substitutes for the unlanded canonical owners. All 13 acceptance criteria
 remain unverifiable against reachable production behavior. Verdict:
 **BLOCKED** (Refs #777).
+
+## Round 97 (repair round, driver job 637be965) — evidence correction + re-verification
+
+### Trigger and branch state
+
+Driver block: "worker requested attention: BLOCKED — if develop sync conflict,
+merge origin/develop." `git fetch origin` then `git rev-parse origin/develop`
+→ `1e4933e2a1b` — **unmoved**, identical to the lane base, so no merge is
+applicable and the sync resolution path is N/A (same finding as round 96).
+Starting head `ac3d158812c8` matched the assignment exactly; tree clean.
+
+### CORRECTION: rounds 94–96's upstream sweep was a pathspec false negative
+
+The broadened sweep those rounds recorded — `git grep -liE
+'GoalReconcil|Reconcil|CreativeBrief|GoalRevision|delegate_goal|reassign|reclaim|workspace_agent'
+origin/develop -- 'packages/*/src'` — silently matches **no files**: a git
+pathspec of the form `packages/*/src` does not select files nested below that
+depth, so "zero files" was an artifact of the command, not evidence about
+upstream. Re-running with `:(glob)packages/*/src/**` (or bare `packages/`) on
+the *same* origin/develop head `1e4933e2a` that rounds 95/96 examined shows:
+
+- `CreativeBrief`: 24 files, incl. real implementations
+  `packages/maistro-design/src/maistro_design/brief.py`, `brief_store.py`,
+  `creative_graph.py`, `creative_nodes.py` + tests (`test_creative_brief*.py`,
+  `test_creative_graph.py`) and hive `services/brief_store.py`,
+  `services/brief_chat.py`, `routes/program.py`.
+- `workspace_agent`: `packages/hive-conductor/backend/services/workspace_agent.py`
+  ("the one stable Workspace Agent per Workspace", ADR-092326-7ed7),
+  `services/agent_materialization.py`, `routes/workspaces.py`,
+  `routes/agents.py`.
+- `GoalRevision`: `packages/maistro-core/src/maistro/projects/rubric_store.py`
+  (`GoalRevisionSnapshot`, `GoalRevisionCatalog`).
+
+The tree already contains all of it: `git diff --stat origin/develop..HEAD` is
+14 files — the salvage/ research docs, three inventory notes, and a 2-line
+comment change in `design_service.py`. No product code diverges from develop.
+
+### Corrected dependency map at `1e4933e2a` (in-tree identical)
+
+- **#53 persistent Workspace Agent — LANDED.** Front door exists
+  (`resolve_workspace_agent`, roster materialization).
+- **#774 CreativeBrief — LANDED as schema + store.** `CreativeBrief` binds
+  `goal_id`/`goal_revision`/`goal_owner_agent_id`/`persona_id(+version)`/
+  `design_system_slug(+version)` as `BriefReference`s; `PgCreativeBriefStore`
+  persists versions per lineage. Nothing in the product *writes* briefs yet:
+  the interview draft still defers (`brief_chat.py:64` `_NOT_WRITTEN`
+  "the Goal and CreativeBrief writers are #458 and #774"; `routes/program.py`:
+  "`/brief/draft` … returns the draft the Goal [writer] will consume"), and no
+  route or service constructs a `CreativeBrief`.
+- **#458 canonical Goal writer — STILL ABSENT.** `GoalRevisionCatalog` is an
+  explicitly minimal consumer-side Protocol (`rubric_store.py:71`:
+  "Accountability, lifecycle, and Goal persistence stay with the canonical
+  Goal system (#458)"). `git grep -nE 'class (Goal|GoalRevision)\b'
+  origin/develop -- packages/maistro-core` → zero. No Goal record, revision
+  writer, ownership transfer, or Subgoal lineage implementation exists.
+- **#804/#805/#806 Goal reconciliation + delegation — STILL ABSENT.**
+  `GoalReconcil` 0 files and `delegate_goal` 0 files across all of
+  `packages/` on origin/develop. The `reassign` (16) / `reclaim` (63) hits are
+  infra-unrelated (OAuth reassignable email ADR-059, durable-run executor
+  claims, memory store type reassignment, Warden DAN patterns, eval warm-pool
+  reclaim). `sentinel/permission_source.py` still marks #804 governed tool-use
+  as future work.
+- **#776 working_graph retrieval — STILL UNWIRED.** Zero non-core, non-test
+  consumers of `working_graph` upstream and in-tree.
+- Design Studio routes (`routes/design.py`) resolve **no agent at all** — no
+  `workspace_agent` consumption, no brief consumption of the CreativeBrief
+  kind; `design_service.py` wires engine + project store only.
+
+### Battery re-executed fresh at `ac3d158812c8` (driver checks=[] again)
+
+- `uv run ruff check .` EXIT 0; `uv run ruff format --check .` EXIT 0 (2865
+  files).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` EXIT 0 — 1345 reviewed
+  identities = 1345 findings; gate green, **no ledger amendment** (nothing
+  genuinely dead surfaced by the CI-args scan).
+- Gates EXIT 0: suite-inventory (14 suites), backlog (167 items), doc-links,
+  cross-package-imports (2868 files), api-route-contracts (279 handlers),
+  monorepo layout.
+- `pytest packages/hive-conductor/backend/tests` **3305P/6S** (153s);
+  `packages/maistro-design/tests` **540P/1S** (24s).
+
+### Verdict — BLOCKED (dependency-blocking), evidence corrected
+
+Despite the corrected map, every acceptance criterion's core semantics still
+traces to an absent canonical owner: (1) needs #804 reconciliation APIs —
+absent; (2) needs #458's Goal revision writer — a brief written today would
+carry unresolvable `goal_id`/`goal_revision` references, and `brief_chat`/`program`
+routes defer exactly this commit; (3) needs #776 wiring — absent; (4)–(13)
+need #804 delegation/reconciliation and canonical Goal lineage — absent. The
+stop condition forbids Design-Studio-private substitutes, and speculative
+wiring of the landed #53/#774 halves without their canonical counterparts
+would fabricate unanchored state (briefs naming non-existent Goal revisions).
+Verdict: **BLOCKED** (Refs #777). Next actionable step for the lane: re-run
+this dependency map after #804/#458-writer land on origin/develop, using
+`:(glob)` pathspecs.
