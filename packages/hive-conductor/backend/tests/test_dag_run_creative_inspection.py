@@ -229,6 +229,9 @@ async def test_detail_of_a_non_creative_run_gains_no_creative_block(
         status = SimpleNamespace(value="completed")
         result = None
         error = None
+        # Declared on the canonical Run model and read by the #1877 overlay;
+        # the double carries the nonterminal-shaped None.
+        finished_at = None
 
         def __init__(self) -> None:
             self.provenance: dict[str, Any] = {"executor": "durable_graph"}
