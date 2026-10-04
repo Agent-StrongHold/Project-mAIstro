@@ -367,5 +367,8 @@ def test_the_gate_scripts_themselves_are_reachable(check):
         "check-wiring-reads",
         "check-citation-status",
         "check_direct_effects",
+        # Wired via the quality.yml CLI conformance step (#1879), which is
+        # also how the reachability ratchet sees it: a workflow-named file.
+        "installed_workspace_proof_contract",
     ):
         assert f"@tool/{gate}" not in unreachable
