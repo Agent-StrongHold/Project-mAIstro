@@ -126,6 +126,43 @@ def _write_legacy_v1_binary(shim_dir: Path) -> None:
     legacy.chmod(0o755)
 
 
+def _write_podman_shim(
+    shim_dir: Path,
+    *,
+    compose_ok: bool = True,
+    version_output: str = "Docker Compose version v2.39.2",
+) -> None:
+    """A stub `podman` binary implementing just the compose subcommand.
+
+    GitHub-hosted runners ship a working podman, and a host may too; without
+    shadowing it, a test that means to model a podman-less host measures the
+    runner image instead of install.sh (the leak behind a red root-suite
+    run). `compose_ok=False` models podman with no working compose provider
+    — e.g. only the v1-generation podman-compose — which
+    `detect_compose_cmd` must treat as no front-end at all.
+    """
+    lines = ["#!/usr/bin/env bash", 'if [[ "${1:-}" == "compose" ]]; then']
+    if compose_ok:
+        lines += [
+            '    case " $* " in',
+            '        *" version "*)',
+            f"            echo {shlex.quote(version_output)}",
+            "            exit 0",
+            "            ;;",
+            "    esac",
+            "    exit 0",
+        ]
+    else:
+        lines += [
+            '    echo "podman: no compose provider configured" >&2',
+            "    exit 125",
+        ]
+    lines += ["fi", "exit 0"]
+    shim = shim_dir / "podman"
+    shim.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    shim.chmod(0o755)
+
+
 def test_the_floor_constant_is_present_and_pins_compose_2_17() -> None:
     body = INSTALL_SH.read_text(encoding="utf-8")
     match = re.search(r'^MIN_COMPOSE_VERSION="([0-9.]+)"$', body, re.M)
@@ -139,6 +176,7 @@ def test_detect_compose_cmd_never_selects_the_v1_spelling(tmp_path: Path) -> Non
     """A host whose only compose is the legacy v1 binary must find nothing —
     not fall back to an engine the stack's schema breaks on."""
     _write_docker_shim(tmp_path, compose_plugin=False)
+    _write_podman_shim(tmp_path, compose_ok=False)
     _write_legacy_v1_binary(tmp_path)
     result = _run(
         tmp_path,
@@ -156,6 +194,24 @@ def test_detect_compose_cmd_selects_the_v2_plugin(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "SELECTED: docker compose", result.stdout
+
+
+def test_detect_compose_cmd_selects_podman_compose_when_docker_lacks_the_plugin(
+    tmp_path: Path,
+) -> None:
+    """`podman compose` — a v2 front-end — is a supported selection when
+    docker cannot serve compose and the legacy v1 binaries sit on PATH: the
+    alternative to `docker compose` is the other v2 front-end, never the
+    v1-generation engines the fallback used to reach."""
+    _write_docker_shim(tmp_path, compose_plugin=False)
+    _write_podman_shim(tmp_path)
+    _write_legacy_v1_binary(tmp_path)
+    result = _run(
+        tmp_path,
+        'if detect_compose_cmd; then echo "SELECTED: ${COMPOSE_CMD[*]}"; else echo NONE; fi\n',
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "SELECTED: podman compose", result.stdout
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +21
-  tests/: +17
+  tests/: +18
 ---
 
 # 407 compose v2 floor
@@ -28,16 +28,24 @@ minimum Compose v2 in both reachable compose-driving installers:
 
 ## Test deltas
 
-- `tests/`: new `tests/test_install_compose_floor.py` (+17 collected node
+- `tests/`: new `tests/test_install_compose_floor.py` (+18 collected node
   IDs), modeled on `tests/test_install_engine_floor.py`: the real functions
-  are lifted verbatim out of `install.sh` and driven against a stub `docker`
-  binary — v1/below-floor rejections with upgrade instructions, supported
-  versions at/above the floor, feature-detection on unparseable version
-  strings (including surfacing the compose error so a missing .env variable
-  is distinguishable from a v1-generation engine's schema gap),
-  platform-specific instruction checks, the no-v1-fallback behavior of
-  `detect_compose_cmd`, and the `start_engine` ordering (gate after
-  `compose_files`, before `up`).
+  are lifted verbatim out of `install.sh` and driven against stub `docker`
+  and `podman` binaries — v1/below-floor rejections with upgrade
+  instructions, supported versions at/above the floor, feature-detection on
+  unparseable version strings (including surfacing the compose error so a
+  missing .env variable is distinguishable from a v1-generation engine's
+  schema gap), platform-specific instruction checks, the no-v1-fallback
+  behavior of `detect_compose_cmd` (including that a working `podman
+  compose` is the supported alternative when docker lacks the plugin), and
+  the `start_engine` ordering (gate after `compose_files`, before `up`).
+
+  CI-repair note (#407): the v1-fallback test originally left the host's
+  real `podman` reachable, so on podman-equipped runners (ubuntu-latest
+  ships one) `detect_compose_cmd` legitimately selected `podman compose`
+  and the NONE assertion measured the runner image instead of install.sh.
+  Both front-end-probing tests now stub `podman` too; the +1 node ID is the
+  podman-selection test that pins that behavior deliberately.
 - `packages/maistro-core/tests` (+21): `test_compose_runtime_resolution` now
   pins that a docker-compose-only host resolves to the default v2 front-end
   (the v1 expectation is gone), plus new unit tests for
