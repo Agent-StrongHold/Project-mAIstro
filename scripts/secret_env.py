@@ -4,7 +4,7 @@
 The installer used to do this:
 
     cat > "$ENV_FILE" <<EOF
-    MAISTRO_ACCESS_TOKEN=${token}
+    MAISTRO_ROUTER_API_KEY=${token}
     ...
     EOF
     chmod 600 "$ENV_FILE"
@@ -247,6 +247,27 @@ def ensure_api_keys(path: Path, token: str) -> None:
     write(path, _rendered(lines))
 
 
+def remove_key(path: Path, key: str) -> bool:
+    """Drop every ``key=...`` line from `path`. True if any line was removed.
+
+    For renames (#402): when the installer stops writing a setting under one
+    name and starts writing it under another, the migration carries the value
+    to the new name and deletes the old line. Leaving it would keep a
+    credential-shaped alias in the operator's `.env` that nothing reads --
+    exactly the false confidence this removal exists to prevent.
+
+    A key that is absent is a no-op that does not touch the file: the ordinary
+    second install must not rewrite (and re-fsync) a file it did not change.
+    """
+    prefix = f"{key}="
+    lines = _lines(path)
+    kept = [line for line in lines if not line.startswith(prefix)]
+    if len(kept) == len(lines):
+        return False
+    write(path, _rendered(kept))
+    return True
+
+
 def migrate_api_keys(path: Path, secret: str, principal: str) -> None:
     """#843 migration: rewrite a legacy plain API_KEYS entry in place.
 
@@ -426,6 +447,10 @@ def main(argv: list[str] | None = None) -> int:
     p_migrate.add_argument("secret")
     p_migrate.add_argument("principal")
 
+    p_remove = sub.add_parser("remove-key", help="drop a key's line if present")
+    p_remove.add_argument("path", type=Path)
+    p_remove.add_argument("key")
+
     p_check = sub.add_parser("check", help="validate the target without writing")
     p_check.add_argument("path", type=Path)
 
@@ -451,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
         "append-once": lambda a: append_once(a.path, a.key, a.value),
         "ensure-api-keys": lambda a: ensure_api_keys(a.path, a.token),
         "migrate-api-keys": lambda a: migrate_api_keys(a.path, a.secret, a.principal),
+        "remove-key": lambda a: remove_key(a.path, a.key),
         "check": lambda a: validate_target(a.path),
         "reserve": lambda a: reserve(a.path),
         "purge": lambda a: purge(a.path),
