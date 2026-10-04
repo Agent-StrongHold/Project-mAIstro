@@ -907,7 +907,8 @@ jobs:
             packages/maistro-core/src packages/maistro-design/src \
             packages/maistro-evolve/src packages/maistro-registry/src \
             packages/maistro-rsi/src packages/maistro-server/src \
-            packages/maistro-turing/src > xenon.log 2>&1 || true
+            packages/maistro-turing/src > xenon.log 2>&1 || true # the exit code is re-derived from xenon.log below
+          # grep -c exits 1 on a zero count, which here is the passing case.
           count=$(grep -c '^ERROR:xenon:block' xenon.log || true)
           average=$(grep -c '^ERROR:xenon:average' xenon.log || true)
           cat xenon.log
@@ -1085,6 +1086,19 @@ jobs:
       # silent tag move.
       - name: image pins (release bases digest-pinned; no mutable :latest anywhere)
         run: uv run python scripts/check-image-pins.py
+
+      # stream1-diagnostic.yml sat pinned to a branch deleted after #373
+      # landed, with a baseline SHA the repository no longer contained and
+      # every step ending in `|| true` -- unable to run, unable to fail, and
+      # reading to every agent as an active workflow pattern (#400). Every
+      # workflow now carries a reviewed disposition (ACTIVE,
+      # MANUAL_DIAGNOSTIC, RETIRED), and the same gate rejects the three rots
+      # that let stream1 go unnoticed: trigger branches that no longer exist
+      # (unless a reviewed retained_branches row says otherwise), pinned
+      # commits this checkout does not contain, and error swallowing with no
+      # written reason.
+      - name: workflow inventory (every workflow dispositioned; references live; swallows reasoned)
+        run: uv run python scripts/check-workflow-inventory.py
 
       # BACKLOG.md is the hand-maintained work-source of record until the DB
       # backlog is live (#50), and agents read it as well as people. The gate

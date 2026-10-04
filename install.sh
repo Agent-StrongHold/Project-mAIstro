@@ -55,6 +55,15 @@ ARCHIVE_MARKER="${MAISTRO_ARCHIVE_MARKER:-.maistro-archive-install}"
 # fixed CVE-2025-68121 (+21 HIGHs) in the previously embedded go1.22.11 CLI.
 MIN_DOCKER_API_VERSION="1.44"
 
+# Compose floor the stack's schema needs. The compose files use conditional
+# `depends_on` (service_healthy / service_completed_successfully), healthcheck
+# wiring and secrets — Compose v2 features the legacy python `docker-compose`
+# (v1, EOL) cannot parse, which is why install.sh no longer falls back to it
+# (#407). The floor is a preflight convenience, not the real contract: when a
+# front-end hides a parseable version, the schema-parse probe in
+# ensure_compose_supported decides instead.
+MIN_COMPOSE_VERSION="2.17.0"
+
 # Container tag the generated image_pull compose pins to (E5/#298). get.sh
 # exports this to match the release it just checked out; when install.sh is run
 # directly out of a tree, derive it from the tag that tree is sitting on so a
@@ -202,6 +211,39 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# --- answers-file preflight (issue #409) ------------------------------------
+#
+# Validate the answers contract before anything is installed, so an unattended
+# run fails once with every problem named instead of after a mutation it
+# cannot take back. get.ps1 runs the equivalent checks on the Windows side
+# before WSL2 setup or an elevation prompt; this is the common mutation point
+# for both entrypoints. Schema-level unknown-key and type validation happens
+# in maistro-install (InstallAnswersV1, extra="forbid") once Python is up;
+# everything checkable without it is checked here.
+ANSWERS_PROBLEMS=()
+if [[ -n "$ANSWERS_FILE" ]]; then
+    if [[ "$SKIP_WIZARD" == "1" || "$SKIP_WIZARD" == "true" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "--answers-file is set together with --skip-wizard (or MAISTRO_SKIP_WIZARD=1): a skipped questionnaire never reads the answers file, so the install would silently ignore it. Remove one of the two."
+        )
+    fi
+    if [[ -d "$ANSWERS_FILE" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "answers file '$ANSWERS_FILE' is a directory. Pass the YAML file itself (template: docs/install/examples/answers-v1-minimal.yaml)."
+        )
+    elif [[ ! -f "$ANSWERS_FILE" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "answers file '$ANSWERS_FILE' does not exist (cwd: $PWD). Pass the path to a v1 answers file (template: docs/install/examples/answers-v1-minimal.yaml), or drop --answers-file to install interactively."
+        )
+    fi
+fi
+if [[ ${#ANSWERS_PROBLEMS[@]} -gt 0 ]]; then
+    for problem in "${ANSWERS_PROBLEMS[@]}"; do
+        echo -e "${RED}[error]${NC} $problem" >&2
+    done
+    exit 1
+fi
 
 ensure_python() {
     if [[ ${#PYTHON_CMD[@]} -gt 0 ]]; then
@@ -586,7 +628,7 @@ append_env_once() {
     local key="$1"
     local value="$2"
     if ! env_has "$key"; then
-        secret_env_run append-once "$key" "$value"
+        secret_env_run append-once -- "$key" "$value"
     fi
 }
 
@@ -594,18 +636,28 @@ append_env_once() {
 # Use for secrets that compose requires non-empty; a prior install may have
 # written the key with an empty value as a placeholder.
 fill_env_value() {
-    secret_env_run set-key "$1" "$2" --only-if-blank
+    # `--` ends option parsing: a generated or carried-over value may start
+    # with '-' (random_secret emits urlsafe text), and argparse would read
+    # such a value as an option string — "the following arguments are
+    # required: value" on ~1 run in 8 before this marker was here.
+    secret_env_run set-key --only-if-blank -- "$1" "$2"
 }
 
 # Ensure API_KEYS (a JSON array) contains token. Preserves other existing keys.
 ensure_api_keys_contains() {
-    secret_env_run ensure-api-keys "$1"
+    secret_env_run ensure-api-keys -- "$1"
 }
 
 # Insert or replace a key in $ENV_FILE. Unlike append_env_once this keeps the
 # key's position and overwrites whatever value is there.
 set_env_value() {
-    secret_env_run set-key "$1" "$2"
+    secret_env_run set-key -- "$1" "$2"
+}
+
+# Drop a key's line from $ENV_FILE if present (#402 renames). No-op when the
+# key is absent, so the ordinary re-run never rewrites the file.
+remove_env_key() {
+    secret_env_run remove-key -- "$1"
 }
 
 append_provider_placeholders() {
@@ -659,7 +711,11 @@ write_new_env() {
 # Regenerate with: rm .env && ./install.sh
 
 # API access
-MAISTRO_ACCESS_TOKEN=${token}
+# MAISTRO_ROUTER_API_KEY is the Conductor's credential for calling the engine:
+# the conductor presents it as a bearer token and the engine matches it against
+# the secret half of the API_KEYS entry below. Nothing reads MAISTRO_ACCESS_TOKEN
+# (#402 removed that alias), so the credential lives under its consumer's name.
+MAISTRO_ROUTER_API_KEY=${token}
 API_KEYS=["conductor:${token}"]
 ROUTER_API_KEY=${router_key}
 TASK_DELEGATION_KEY=${delegation_key}
@@ -723,11 +779,20 @@ repair_existing_env() {
 
     warn "$ENV_FILE exists; preserving values and appending missing installer keys."
 
-    token="$(env_get MAISTRO_ACCESS_TOKEN)"
+    # #402 rename: the conductor's engine credential used to be written as
+    # MAISTRO_ACCESS_TOKEN. Carry the existing value over to its real name
+    # rather than rotating it, so clients already presenting the token keep
+    # authenticating, then delete the old line -- a dead credential-shaped
+    # alias in .env is exactly the false confidence #402 removes.
+    token="$(env_get MAISTRO_ROUTER_API_KEY)"
+    if [[ -z "$token" ]]; then
+        token="$(env_get MAISTRO_ACCESS_TOKEN)"
+    fi
     if [[ -z "$token" ]]; then
         token="$(random_secret "" 32)"
-        fill_env_value MAISTRO_ACCESS_TOKEN "$token"
     fi
+    fill_env_value MAISTRO_ROUTER_API_KEY "$token"
+    remove_env_key MAISTRO_ACCESS_TOKEN
 
     router_key="$(env_get ROUTER_API_KEY)"
     if [[ -z "$router_key" ]]; then
@@ -759,7 +824,7 @@ repair_existing_env() {
     # every entry needs an explicit principal — the installer's key is the
     # Conductor service's credential. Migrate a legacy plain entry written by
     # an older install (same secret, now attributed), then ensure membership.
-    secret_env_run migrate-api-keys "$token" "conductor"
+    secret_env_run migrate-api-keys -- "$token" "conductor"
     ensure_api_keys_contains "conductor:${token}"
     append_env_once REQUIRE_AUTH "true"
     append_env_once MAISTRO_BIND_HOST "$BIND_HOST"
@@ -842,9 +907,12 @@ for position, entry in enumerate(api_keys, start=1):
             "docs/install/api-key-identity.md."
         )
 
-access_token = values.get("MAISTRO_ACCESS_TOKEN", "")
-if not access_token or access_token not in (_entry_secret(e) for e in api_keys):
-    raise SystemExit("MAISTRO_ACCESS_TOKEN must be present in API_KEYS.")
+# The conductor's bearer credential must be one of API_KEYS' secrets, or
+# every engine call it makes gets 401 (#402: it used to be validated under
+# the name MAISTRO_ACCESS_TOKEN, which nothing reads any more).
+routing_key = values.get("MAISTRO_ROUTER_API_KEY", "")
+if not routing_key or routing_key not in (_entry_secret(e) for e in api_keys):
+    raise SystemExit("MAISTRO_ROUTER_API_KEY must be present in API_KEYS.")
 router_key = values.get("ROUTER_API_KEY", "")
 if len(router_key) < 32:
     raise SystemExit("ROUTER_API_KEY must contain at least 32 characters.")
@@ -861,16 +929,15 @@ sync_env_file() {
     fi
 }
 
-# Locate a compose front-end and set COMPOSE_CMD. Returns 1 if none is present.
-# This only checks the CLI; daemon readiness is verified separately.
+# Locate a Compose v2 front-end and set COMPOSE_CMD. Returns 1 if none is
+# present. This only checks the CLI; daemon readiness is verified separately.
+# Deliberately no `docker-compose`/`podman-compose` fallback (#407): those are
+# Compose v1-generation engines the stack's conditional `depends_on` schema
+# breaks on, and a front-end the full stack has not been tested with must
+# never be advertised as one.
 detect_compose_cmd() {
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
         COMPOSE_CMD=(docker compose)
-        return 0
-    fi
-
-    if command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE_CMD=(docker-compose)
         return 0
     fi
 
@@ -879,12 +946,59 @@ detect_compose_cmd() {
         return 0
     fi
 
-    if command -v podman-compose >/dev/null 2>&1; then
-        COMPOSE_CMD=(podman-compose)
-        return 0
+    return 1
+}
+
+# First dotted-numeric token in the selected front-end's `version` output, if
+# it prints one. Output shapes vary across front-ends and providers ("Docker
+# Compose version v2.39.2", "v2.24.6-desktop.1"), so scan rather than parse a
+# fixed layout. Returns 1 when nothing parseable comes back; the schema probe
+# in ensure_compose_supported decides in that case.
+compose_reported_version() {
+    local out
+    out="$("${COMPOSE_CMD[@]}" version 2>/dev/null || true)"
+    out="$(grep -oE '[0-9]+(\.[0-9]+)+' <<<"$out" | head -n 1 || true)"
+    [[ -n "$out" ]] || return 1
+    echo "$out"
+}
+
+# Platform-specific pointer to a modern Compose v2, phrased for where the
+# installer is actually running (macOS, WSL2, plain Linux).
+compose_upgrade_instructions() {
+    if is_macos; then
+        echo "On macOS: update Docker Desktop (Settings > Software updates), or install the standalone plugin with 'brew install docker-compose'."
+    elif is_wsl; then
+        echo "In WSL2: add Docker's apt repository, then 'sudo apt-get install -y docker-compose-plugin' (https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository), or update Docker Desktop on the Windows side."
+    else
+        echo "On Linux: install the compose plugin — Debian/Ubuntu: 'sudo apt-get install -y docker-compose-plugin'; Fedora/RHEL: 'sudo dnf install docker-compose-plugin'; or see https://docs.docker.com/compose/install/linux/."
+    fi
+}
+
+# Refuse any compose front-end known unable to parse/run the stack (#407).
+# Two gates, in order of certainty:
+#   1. a parseable version below MIN_COMPOSE_VERSION fails outright;
+#   2. a missing or unparseable version string proves nothing by itself, so
+#      the front-end is feature-probed against the real compose files —
+#      parsing the stack's schema is exactly the capability the version
+#      floor stands in for.
+# Runs after compose_files(), so the probe sees the same file set `up` gets.
+ensure_compose_supported() {
+    local version
+    if version="$(compose_reported_version)"; then
+        if version_ge "$version" "$MIN_COMPOSE_VERSION"; then
+            ok "Compose $version meets the required minimum $MIN_COMPOSE_VERSION."
+            return 0
+        fi
+        fail "Compose v$MIN_COMPOSE_VERSION+ is required; detected version $version is below the floor and cannot reliably run this stack's schema. $(compose_upgrade_instructions) Then re-run ./install.sh."
     fi
 
-    return 1
+    local probe_err
+    probe_err="$("${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" config --quiet 2>&1 >/dev/null | head -n 2 || true)"
+    if "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" config --quiet >/dev/null 2>&1; then
+        warn "${COMPOSE_CMD[*]} did not report a usable version, but it parses the stack compose files; proceeding on that evidence."
+        return 0
+    fi
+    fail "${COMPOSE_CMD[*]} reported no usable Compose version and could not be verified against the stack compose files (conditional depends_on and related schema need Compose v2 >= $MIN_COMPOSE_VERSION). The compose error was: ${probe_err:-none}. $(compose_upgrade_instructions) Then re-run ./install.sh."
 }
 
 # True when the docker CLI exists and the daemon answers.
@@ -1208,7 +1322,7 @@ ensure_compose_runtime() {
         return
     fi
 
-    fail "No compose runtime found. Install Docker Desktop, Docker Engine with compose, or Podman, then retry."
+    fail "No Compose v2 runtime found. Install Docker Desktop, Docker Engine with the compose plugin, or Podman, then retry."
 }
 
 run_feature_wizard() {
@@ -1438,8 +1552,11 @@ start_engine() {
     check_docker_credential_helper
     record_docker_sock
     # compose_files first: report_arch reads the image list from the same
-    # file set `up` will use, so an addon's images are checked too.
+    # file set `up` will use, so an addon's images are checked too — and
+    # ensure_compose_supported feature-probes that same set before anything
+    # is built or started.
     compose_files
+    ensure_compose_supported
     report_arch
     info "Starting maistro-engine..."
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_UP_ARGS[@]}"
@@ -1846,7 +1963,7 @@ print_success() {
     echo "maistro-engine is ready"
     echo "  Engine API:  ${ENGINE_BASE_URL}"
     echo "  Conductor:   ${CONDUCTOR_BASE_URL}  (chat, DAGs, deck builder)"
-    echo "  Token:       stored in $ENV_FILE as MAISTRO_ACCESS_TOKEN (not printed)"
+    echo "  Token:       stored in $ENV_FILE as MAISTRO_ROUTER_API_KEY (not printed)"
     echo "  Install dir: $PWD"
     echo "  Plan dir:    $PLAN_DIR"
     echo ""

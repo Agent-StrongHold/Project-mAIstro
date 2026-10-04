@@ -279,12 +279,12 @@ async def test_wait_poll_assigns_a_new_effect_key_to_each_resume(monkeypatch: An
     monkeypatch.setattr(httpx, "AsyncClient", Client)
     node = JiraWaitForSubtasksNode(effect_context=effects)
     first = await node.run(
-        {"binding_id": "jira-binding", "parent_key": "P-1", "poll_interval_seconds": 1},
+        {"binding_id": "jira-binding", "parent_key": "P-1", "poll_interval_seconds": 5},
         _ctx(),
     )
     assert first.status == "paused"
     second = await node.run(
-        {"binding_id": "jira-binding", "parent_key": "P-1", "poll_interval_seconds": 1},
+        {"binding_id": "jira-binding", "parent_key": "P-1", "poll_interval_seconds": 5},
         _ctx(
             attempt_id="attempt-2",
             metadata={

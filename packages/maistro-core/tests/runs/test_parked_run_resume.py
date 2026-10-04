@@ -782,6 +782,7 @@ class TestThePollDeadlineCanNowBeReached:
                 "binding_id": "test-jira-subtasks-binding",
                 "parent_key": "PROJ-100",
                 "timeout_seconds": 60,
+                "poll_interval_seconds": 60,
             },
             ctx,
         )

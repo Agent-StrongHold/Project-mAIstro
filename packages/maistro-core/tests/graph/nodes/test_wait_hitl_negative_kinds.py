@@ -233,6 +233,7 @@ async def test_wait_for_subtasks_timeout_returns_timed_out(
             "parent_key": "PROJ-100",
             "target_statuses": ["Done"],
             "timeout_seconds": 60,
+            "poll_interval_seconds": 60,
         },
         ctx,
     )

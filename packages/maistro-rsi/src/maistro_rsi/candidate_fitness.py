@@ -102,6 +102,12 @@ _MUTATION_MAX_MUTANTS = 6
 # rides along as ``deleted_count``.
 _DELETED_TRACE_CAP = 20
 
+# How many mutated-oracle paths the evaluator-integrity gate's reason names —
+# the full list always rides in the gate detail (and the promotion record),
+# but the one-line reason should survive a hostile mass-edit of the oracle
+# surface without bloating the scorecard explain().
+_EVIDENCE_PATH_CAP = 5
+
 
 def _is_test(path: str) -> bool:
     return any(h in path.replace("\\", "/") for h in _TEST_HINTS)
@@ -298,6 +304,20 @@ class FitnessInputs:
     declared_kind: str | None = None
     fail_first: FailFirstEvidence | None = None
     baseline_quality_composite: float | None = None
+    # Evaluator-oracle integrity (#109). ``evaluator_digest`` pins the SHA-256
+    # of the score-defining artifacts (scorer, pinning tests, scenario corpora,
+    # ratchet baselines, AC trees) at the TRUSTED base revision into the
+    # scorecard provenance — every acceptance decision records exactly which
+    # evaluator version judged it. ``evaluator_mutations`` lists the oracle
+    # paths this candidate's own diff touched; non-empty vetoes (see
+    # ``evaluator_integrity_gate``) because a candidate may not be judged by
+    # the oracle it just changed. ``evaluator_mutation_authorized`` is the
+    # explicit human governance override (LocalRsiConfig.
+    # allow_evaluator_mutation, the #306 precedent): the gate then passes WITH
+    # the mutation recorded, never silently.
+    evaluator_digest: str | None = None
+    evaluator_mutations: list[str] = field(default_factory=list)
+    evaluator_mutation_authorized: bool = False
     # The weighted proven-scenario objective (M5-B, #108): the immutable,
     # versioned scenario ruler the loop evaluates candidates with, plus the
     # prior proven scores (best-ever per scenario, archive.proven_scenario_scores
@@ -312,6 +332,49 @@ class FitnessInputs:
     scenario_proven_scores: dict[str, float] = field(default_factory=dict)
     scenario_candidate_scores: dict[str, float] = field(default_factory=dict)
     scenario_correctness: CorrectnessResult | None = None
+
+
+def evaluator_integrity_gate(inp: FitnessInputs) -> GateResult:
+    """The oracle-immunity veto (#109): a candidate may not edit the evaluator
+    it is scored by.
+
+    RSI may satisfy the oracle — the scorer, its pinning tests, the scenario
+    corpus, the ratchet baselines, the AC trees — but may never change it in
+    the diff that is judged against it: acceptance evidence produced by a
+    mutated oracle is manufactured, not measured. Non-empty
+    ``evaluator_mutations`` therefore vetoes. Under the explicit human
+    governance override (``evaluator_mutation_authorized``) the gate passes
+    WITH the mutation recorded in detail — the authorized path is visible,
+    never silent — and the ``evaluator_digest`` provenance still names the
+    trusted base definition every other candidate was scored against.
+    """
+    detail: dict[str, object] = {
+        "evaluator_digest": inp.evaluator_digest,
+        "mutations": list(inp.evaluator_mutations),
+        "authorized": inp.evaluator_mutation_authorized,
+    }
+    if not inp.evaluator_mutations:
+        reason = (
+            f"oracle pinned at {inp.evaluator_digest[:12]}"
+            if inp.evaluator_digest
+            else "no baseline to diff against — unchecked"
+        )
+        return GateResult("evaluator_integrity", True, reason, detail=detail)
+    if inp.evaluator_mutation_authorized:
+        return GateResult(
+            "evaluator_integrity",
+            True,
+            "AUTHORIZED oracle mutation — recorded for governance review: "
+            + ", ".join(inp.evaluator_mutations[:_EVIDENCE_PATH_CAP]),
+            detail=detail,
+        )
+    return GateResult(
+        "evaluator_integrity",
+        False,
+        "candidate mutated the scoring oracle — evidence withheld (#109): "
+        + ", ".join(inp.evaluator_mutations[:_EVIDENCE_PATH_CAP]),
+        detail=detail,
+    )
 
 
 def _ladder_signals(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
@@ -604,6 +667,11 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
     # recorded separately from the work-signal composite.
     scenario_eval = _scenario_objective_eval(inp)
     gates = [
+        # The oracle-immunity veto leads (#109): a candidate that mutated the
+        # evaluator it is scored by is rejected on this gate before any other
+        # signal is consulted, and its ``accepted`` can never come from the
+        # evidence its own mutation manufactured.
+        evaluator_integrity_gate(inp),
         GateResult(
             "tests_pass",
             inp.tests_passed,
@@ -703,11 +771,16 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
                 inp.code_quality_detail or "changed-source quality composite",
             )
         )
-    return Scorecard(
+    scorecard = Scorecard(
         gates=gates,
         scores=scores,
         scenario_objective=scenario_eval,
     )
+    # Provenance (#109): the scorecard records the trusted evaluator digest it
+    # was judged against, so an acceptance decision is replayable against the
+    # exact oracle version that produced it.
+    scorecard.evaluator_digest = inp.evaluator_digest
+    return scorecard
 
 
 def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) -> tuple[bool, str]:
@@ -868,6 +941,20 @@ def _mean_assertion(cwd: Path, test_files: list[str]) -> tuple[float | None, str
     return round(mean, 4), f"mean assertion strength over {len(scores)} changed test file(s)"
 
 
+def _baseline_quality_at_base(
+    cwd: Path, baseline_ref: str | None, src_files: list[str], contract: EvidenceContract
+) -> float | None:
+    """The refactor contract's left side (#392): the changed source's mean
+    quality at the base revision. Only a declared REFACTOR contract measures
+    it — the behavior contract's delta is fail-first evidence, not quality —
+    and with no baseline there is nothing to diff against (fail closed:
+    ``None``). Named so ``evaluate_candidate`` reads as measurement intake
+    rather than contract arithmetic."""
+    if contract is not EvidenceContract.REFACTOR or not baseline_ref:
+        return None
+    return _mean_quality_at_base(cwd, baseline_ref, src_files)
+
+
 def _mean_quality_at_base(cwd: Path, baseline_ref: str, src_files: list[str]) -> float | None:
     """Mean code-quality composite of the changed source files AS THEY WERE on
     ``baseline_ref`` — the left side of the refactor contract's quality delta.
@@ -910,8 +997,48 @@ def _vacuous_test_reasons(src: list[str], tests: list[str], tdd: TddEvidence) ->
     return []
 
 
-def _gather_tdd_evidence(
+def _resolve_evaluator_evidence(
     cwd: Path,
+    changed_files: list[str],
+    *,
+    baseline_ref: str | None,
+    declared: str | None,
+    evaluator_digest: str | None,
+    evaluator_mutations: list[str] | None,
+    evaluator_mutation_authorized: bool,
+    weights: FitnessWeights | None,
+) -> tuple[str | None, list[str], Scorecard | None]:
+    """The #109 preamble: resolve oracle-integrity evidence and, when a
+    non-authorized mutation is found, the scorecard that withholds ALL other
+    evidence (returned third). A helper so the ordering contract — integrity
+    resolved BEFORE the oracle runs — reads as one named step."""
+    if evaluator_mutations is None and baseline_ref:
+        from maistro_rsi.evaluator_oracle import oracle_digest, oracle_mutations
+
+        evaluator_mutations = oracle_mutations(cwd, baseline_ref, changed_files)
+        evaluator_digest = evaluator_digest or oracle_digest(cwd, baseline_ref)
+    mutations = list(evaluator_mutations or [])
+    withheld: Scorecard | None = None
+    if mutations and not evaluator_mutation_authorized:
+        withheld = compose_scorecard(
+            FitnessInputs(
+                tests_passed=False,
+                test_reason="withheld: candidate mutated the scoring oracle (#109)",
+                changed_src=[f for f in changed_files if f.endswith(".py") and not _is_test(f)],
+                changed_tests=changed_test_paths(changed_files),
+                declared_kind=declared,
+                evaluator_digest=evaluator_digest,
+                evaluator_mutations=mutations,
+                evaluator_mutation_authorized=False,
+            ),
+            weights,
+        )
+    return evaluator_digest, mutations, withheld
+
+
+def _resolve_tdd_evidence(
+    cwd: Path,
+    *,
     baseline_ref: str | None,
     src: list[str],
     tests: list[str],
@@ -919,13 +1046,12 @@ def _gather_tdd_evidence(
     config_changed: list[str],
     tdd: TddEvidence | None,
 ) -> tuple[TddEvidence, FailFirstEvidence | None]:
-    """Resolve the TDD view (and, when derivable, the fail-first evidence).
-
-    Callers with an explicit ``tdd`` win untouched — the loop injects one when
-    it already gathered fail-first evidence itself. Without one, a baseline
-    ref plus changed tests buys a real fail-first probe against the base
-    revision; anything less is recorded as no-evidence rather than invented.
-    """
+    """The #392 evidence contract's collection step: when the caller supplies
+    no ``tdd`` view, probe the base revision for fail-first evidence (a source
+    change owes a changed test that is red on the exact base for the intended
+    reason). Returns ``(tdd, fail_first)`` — the probe record is None when no
+    probe ran, which the fail-first gate treats as missing evidence (fail
+    closed) under the behavior contract."""
     if tdd is not None:
         return tdd, None
     if not (baseline_ref and tests):
@@ -1024,6 +1150,9 @@ def evaluate_candidate(
     baseline_inventory: InventoryResult | None = None,
     allow_test_inventory_shrink: bool = False,
     declared_kind: ImprovementKind | str | None = None,
+    evaluator_digest: str | None = None,
+    evaluator_mutations: list[str] | None = None,
+    evaluator_mutation_authorized: bool = False,
     scenario_objective: ScenarioObjective | None = None,
     scenario_proven_scores: dict[str, float] | None = None,
     scenario_candidate_scores: dict[str, float] | None = None,
@@ -1058,6 +1187,17 @@ def evaluate_candidate(
     When it does run, an unavailable verdict fails the candidate (fail
     closed, #307) — the score of a judge that never ruled is None, not a
     number.
+
+    Evaluator-oracle integrity (#109): with a ``baseline_ref`` and no explicit
+    ``evaluator_mutations``, the candidate's diff is checked against the
+    score-defining artifact surface BEFORE any oracle run — a candidate that
+    mutated ``candidate_fitness.py``, its pinning tests, a ratchet baseline or
+    the AC tree is rejected (or, under ``evaluator_mutation_authorized``,
+    scored WITH the mutation recorded) without its modified oracle ever
+    producing acceptance evidence. ``evaluator_digest`` pins the trusted base
+    oracle's SHA-256 into the scorecard provenance; when not supplied it is
+    computed from the same baseline revision, so every scorecard names the
+    evaluator version that judged it.
     """
     cwd = Path(candidate_dir)
     src = [f for f in changed_files if f.endswith(".py") and not _is_test(f)]
@@ -1068,13 +1208,30 @@ def evaluate_candidate(
     # alternative (declared refactor/doc polish).
     declared = declared_kind.value if isinstance(declared_kind, ImprovementKind) else declared_kind
     contract = resolve_contract(declared, src, tests)
-    baseline_quality: float | None = None
-    if contract is EvidenceContract.REFACTOR and baseline_ref:
-        baseline_quality = _mean_quality_at_base(cwd, baseline_ref, src)
+    baseline_quality = _baseline_quality_at_base(cwd, baseline_ref, src, contract)
     # Test-config surfaces touched by this diff — the shared taint signal for
     # the protected-inventory gate (#306) and the fail-first contract (#392):
     # a config edit can both hide inventory shrinkage and manufacture a red.
     config_changed = changed_config_files(changed_files)
+
+    # Oracle immunity (#109) — enforced BEFORE any oracle run. Unless the
+    # caller already resolved the integrity evidence, derive it from the
+    # trusted baseline revision. A candidate that mutated the evaluator oracle
+    # is rejected WITHOUT executing the mutated tree: its modified oracle must
+    # not contribute acceptance evidence. The digest still pins the trusted
+    # base definition into the scorecard provenance either way.
+    evaluator_digest, evaluator_mutations, withheld = _resolve_evaluator_evidence(
+        cwd,
+        changed_files,
+        baseline_ref=baseline_ref,
+        declared=declared,
+        evaluator_digest=evaluator_digest,
+        evaluator_mutations=evaluator_mutations,
+        evaluator_mutation_authorized=evaluator_mutation_authorized,
+        weights=weights,
+    )
+    if withheld is not None:
+        return withheld
 
     tests_passed, test_reason = _run(test_command, cwd, timeout, argv=test_argv)
     cand_cov, missing = measure_coverage_detailed(
@@ -1082,8 +1239,14 @@ def evaluate_candidate(
     )
     cq, cq_detail = _mean_quality(cwd, src)
     astr, astr_detail = _mean_assertion(cwd, tests)
-    tdd, fail_first = _gather_tdd_evidence(
-        cwd, baseline_ref, src, tests, timeout, config_changed, tdd
+    tdd, fail_first = _resolve_tdd_evidence(
+        cwd,
+        baseline_ref=baseline_ref,
+        src=src,
+        tests=tests,
+        timeout=timeout,
+        config_changed=config_changed,
+        tdd=tdd,
     )
     net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
     doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
@@ -1140,6 +1303,9 @@ def evaluate_candidate(
         declared_kind=declared,
         fail_first=fail_first,
         baseline_quality_composite=baseline_quality,
+        evaluator_digest=evaluator_digest,
+        evaluator_mutations=evaluator_mutations,
+        evaluator_mutation_authorized=evaluator_mutation_authorized,
         scenario_objective=scenario_objective,
         scenario_proven_scores=scenario_proven_scores or {},
         scenario_candidate_scores=scenario_candidate_scores or {},

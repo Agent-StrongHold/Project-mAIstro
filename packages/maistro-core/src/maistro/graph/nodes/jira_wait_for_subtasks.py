@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -27,14 +27,33 @@ from .base import (
     resumed_pause,
 )
 
+#: Host-approved floor for `poll_interval_seconds`. The host, not the DAG
+#: author, owns this bound: a zero or negative interval turns the node into a
+#: hot loop against an external Jira API (one HTTP poll per wake, waking
+#: immediately), and the wake cadence is the runtime's, not the author's, to
+#: make safe. Raise it here if external-poll politeness ever demands more.
+MIN_POLL_INTERVAL_SECONDS = 5
+
 
 class WaitForSubtasksIn(BaseModel):
     binding_id: str = Field(description="Pre-authorized Jira Binding for this workspace/project")
     parent_key: str = Field(description="e.g. PROJ-100")
     target_statuses: list[str] = Field(default_factory=lambda: ["Done", "Closed"])
-    timeout_seconds: int = Field(default=86_400 * 7)
-    poll_interval_seconds: int = Field(default=900)
-    timeout_s: float = Field(default=8.0, description="HTTP timeout per poll")
+    timeout_seconds: int = Field(
+        default=86_400 * 7,
+        gt=0,
+        description="Overall wait budget in seconds; must be positive.",
+    )
+    poll_interval_seconds: int = Field(
+        default=900,  # 15 min
+        ge=MIN_POLL_INTERVAL_SECONDS,
+        description=(
+            "Seconds between polls; floored by the host at "
+            f"{MIN_POLL_INTERVAL_SECONDS} so a bad config cannot request "
+            "a hot external polling loop."
+        ),
+    )
+    timeout_s: float = Field(default=8.0, gt=0, description="HTTP timeout per poll")
 
 
 class WaitForSubtasksOut(BaseModel):
@@ -67,6 +86,19 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
         self._effects = effect_context or default_effect_context()
 
     async def _execute(self, inputs: WaitForSubtasksIn, ctx: NodeContext) -> WaitForSubtasksOut:
+        # A cadence that can never re-check inside the budget is a
+        # contradiction between two values the same author configured: with
+        # `poll_interval_seconds > timeout_seconds` the node wakes once, after
+        # its own deadline has already passed, and reports a timeout it never
+        # had a second look to avoid. Enforced here — the single entry every
+        # execution reaches — so a failed Attempt names both fields instead of
+        # a week-long wait ending in an unexplained timeout.
+        if inputs.timeout_seconds < inputs.poll_interval_seconds:
+            raise ValueError(
+                f"timeout_seconds ({inputs.timeout_seconds}) must be >= "
+                f"poll_interval_seconds ({inputs.poll_interval_seconds}) or the "
+                "deadline passes before the first poll can re-check"
+            )
         binding = await self._authorized_binding(inputs, ctx)
         poll_number = int(resumed_pause(ctx).get("poll_number", 0) or 0)
         statuses = await _fetch_subtask_statuses(
@@ -125,11 +157,11 @@ def _wait_again_or_time_out(
     forever one interval at a time.
     """
 
-    first_seen = _first_seen(ctx)
+    raw_first_seen = _first_seen(ctx)
     now = now_utc()
-    if first_seen is not None and (now - _parsed(first_seen, now)).total_seconds() >= (
-        inputs.timeout_seconds
-    ):
+    anchor, repair = _resolve_anchor(raw_first_seen, now)
+
+    if raw_first_seen is not None and (now - anchor).total_seconds() >= inputs.timeout_seconds:
         return WaitForSubtasksOut(
             parent_key=inputs.parent_key,
             subtask_keys=list(statuses.keys()),
@@ -141,11 +173,18 @@ def _wait_again_or_time_out(
     metadata: dict[str, Any] = {
         "parent_key": inputs.parent_key,
         "current_statuses": statuses,
-        "first_seen": first_seen if first_seen is not None else now.isoformat(),
+        "first_seen": anchor.isoformat(),
         "poll_number": poll_number + 1,
     }
-    if first_seen is None:
+    if raw_first_seen is None:
         metadata["deadline"] = (now + timedelta(seconds=inputs.timeout_seconds)).isoformat()
+    if repair is not None:
+        metadata["first_seen_repair"] = repair
+        # Converge the legacy sidecar key onto the same canonical value so a
+        # later resume that reads the fallback (no carried pause) finds the
+        # repaired anchor, not the corrupt string that caused this.
+        if ctx.metadata is not None:
+            ctx.metadata[f"wait_first_seen:{ctx.node_id}"] = anchor.isoformat()
     pause_until(
         PAUSE_WAITING_ON_JIRA_SUBTASKS,
         resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
@@ -154,18 +193,51 @@ def _wait_again_or_time_out(
     return WaitForSubtasksOut(parent_key=inputs.parent_key)
 
 
-def _parsed(first_seen: Any, fallback: datetime) -> datetime:
-    """The carried timestamp, or ``fallback`` when it cannot be read.
+def _resolve_anchor(raw_first_seen: Any, now: datetime) -> tuple[datetime, dict[str, Any] | None]:
+    """The elapsed-time anchor to measure against, and repair evidence if any.
 
-    An unreadable timestamp restarts the clock rather than timing the wait out
-    immediately: the node's job is to wait, so a corrupt marker must not be
-    read as "the deadline already passed".
+    A missing anchor (true first reach) or an unparseable one both resolve to
+    `now`, but only the latter is a repair: the old behaviour substituted
+    `now` silently *and re-persisted the corrupt string*, so every evaluation
+    reset the elapsed clock and the deadline could never arrive. The repair
+    recorded here is explicit and one-shot — the pause carries the canonical
+    timestamp plus what it replaced, so the next evaluation reads a parseable
+    anchor instead of restarting the clock again.
     """
+    if raw_first_seen is None:
+        return now, None
+    parsed = _parse_first_seen(raw_first_seen)
+    if parsed is not None:
+        return parsed, None
+    repair = {
+        "reason": "unparseable_first_seen",
+        "replaced": raw_first_seen if isinstance(raw_first_seen, str) else repr(raw_first_seen),
+        "repaired_at": now.isoformat(),
+    }
+    return now, repair
 
-    try:
-        return datetime.fromisoformat(str(first_seen))
-    except Exception:
-        return fallback
+
+def _parse_first_seen(value: Any) -> datetime | None:
+    """Parse a persisted first-seen anchor, or ``None`` if it is corrupt.
+
+    "Corrupt" covers both an unparseable string and a parseable-but-naive
+    one: elapsed time is computed against a tz-aware UTC clock, and a naive
+    value would make that subtraction a ``TypeError`` mid-poll. Neither
+    shape can anchor a deadline, so both route to the same explicit repair
+    path instead of one failing loudly and the other crashing the run.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _first_seen(ctx: NodeContext) -> Any:

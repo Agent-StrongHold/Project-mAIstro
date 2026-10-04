@@ -149,7 +149,7 @@ _JQL_INPUTS: dict[str, Any] = {
 _SUBTASK_INPUTS: dict[str, Any] = {
     "binding_id": "jira-binding",
     "parent_key": "P-100",
-    "poll_interval_seconds": 1,
+    "poll_interval_seconds": 5,
 }
 
 _AIRTABLE_INPUTS: dict[str, Any] = {
