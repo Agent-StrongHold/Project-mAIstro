@@ -932,6 +932,10 @@ def evaluate_candidate(
     baseline_inventory: InventoryResult | None = None,
     allow_test_inventory_shrink: bool = False,
     declared_kind: ImprovementKind | str | None = None,
+    scenario_objective: ScenarioObjective | None = None,
+    scenario_proven_scores: dict[str, float] | None = None,
+    scenario_candidate_scores: dict[str, float] | None = None,
+    scenario_correctness: CorrectnessResult | None = None,
 ) -> Scorecard:
     """Run the local signals for a candidate and compose the Scorecard.
 
@@ -946,6 +950,14 @@ def evaluate_candidate(
     ``allow_test_inventory_shrink`` is the explicit governance override (#306):
     when True, deletions pass the gate with a WARNING and are recorded, never
     silently absorbed.
+
+    The four ``scenario_*`` arguments are the M5-B proven-scenario evidence
+    (#108), gathered by the caller (the loop runs the scenario suite and reads
+    the archive's proven scores — no measurement happens here). Passing an
+    objective enables the ``no_proven_scenario_regression`` veto and the
+    dominant ``proven_scenarios`` signal; omitting it leaves both absent
+    (identical semantics to the ``FitnessInputs`` fields, never a false
+    rejection or a silent zero).
 
     ``regression_judge_fn`` (diff_text, target) -> JudgeVerdict is called
     lazily, and ONLY if every other gate already passes: a candidate that's
@@ -1051,6 +1063,10 @@ def evaluate_candidate(
         declared_kind=declared,
         fail_first=fail_first,
         baseline_quality_composite=baseline_quality,
+        scenario_objective=scenario_objective,
+        scenario_proven_scores=scenario_proven_scores or {},
+        scenario_candidate_scores=scenario_candidate_scores or {},
+        scenario_correctness=scenario_correctness,
     )
     prelim = compose_scorecard(inputs, weights)
     if not prelim.gates_passed:

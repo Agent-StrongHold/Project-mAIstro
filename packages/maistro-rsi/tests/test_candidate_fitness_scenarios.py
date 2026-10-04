@@ -12,6 +12,8 @@ Pure ``compose_scorecard`` tests — no tool runs.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from maistro_evolve.scenario_objective import (
@@ -22,6 +24,7 @@ from maistro_evolve.scenario_objective import (
 )
 from maistro_evolve.scorecard import FitnessWeights
 from maistro_evolve.tdd_gate import TddEvidence
+from maistro_rsi import candidate_fitness
 from maistro_rsi.candidate_fitness import FitnessInputs, compose_scorecard
 
 
@@ -223,3 +226,55 @@ def test_gate_detail_records_gate_and_scalar_separately() -> None:
     assert gate.detail["objective_score"] == pytest.approx(5.0 / 7.0)
     assert gate.detail["raw_weighted_score"] == pytest.approx(5.0 / 7.0)
     assert gate.detail["objective_version"] == "scenario-obj-v1"
+
+
+def test_evaluate_candidate_passes_scenario_evidence_through(tmp_path: Path, monkeypatch) -> None:
+    """Production paths score via ``evaluate_candidate`` (local_loop's
+    _fitness_decision, code_fixer), so the M5-B evidence must be accepted —
+    and propagated — there, not only by direct ``FitnessInputs`` callers.
+    With the objective injected, the veto gate and dominant signal appear on
+    the returned Scorecard; without one they stay absent."""
+
+    def _git(cwd: Path, *args: str) -> None:
+        candidate_fitness.subprocess.run(
+            ["git", *args], cwd=str(cwd), check=True, capture_output=True
+        )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "rsi@test.local")
+    _git(repo, "config", "user.name", "RSI Test")
+    (repo / "value.txt").write_text("0\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+    (repo / "value.txt").write_text("1\n", encoding="utf-8")  # doc-only diff, no test roots
+
+    monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
+    monkeypatch.setattr(
+        candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {})
+    )
+
+    def _score(**kwargs: object) -> object:
+        return candidate_fitness.evaluate_candidate(
+            str(repo),
+            ["value.txt"],
+            test_command="exit 0",
+            baseline_ref="HEAD",
+            **kwargs,
+        )
+
+    bare = _score()
+    assert bare.scenario_objective is None  # type: ignore[attr-defined]
+    assert "no_proven_scenario_regression" not in {g.name for g in bare.gates}  # type: ignore[attr-defined]
+
+    wired = _score(
+        scenario_objective=_scenario_objective(),
+        scenario_proven_scores=_PROVEN,
+        scenario_candidate_scores=_CANDIDATE,
+    )
+    gate = next(g for g in wired.gates if g.name == "no_proven_scenario_regression")  # type: ignore[attr-defined]
+    assert gate.passed is True
+    assert "proven_scenarios" in {s.name for s in wired.scores}  # type: ignore[attr-defined]
+    assert wired.scenario_objective is not None  # type: ignore[attr-defined]
+    assert wired.scenario_objective.objective_score == pytest.approx(5.0 / 7.0)  # type: ignore[attr-defined]
