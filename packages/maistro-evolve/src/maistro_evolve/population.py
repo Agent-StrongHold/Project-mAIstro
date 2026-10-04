@@ -6,6 +6,15 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .archive import (
+    CandidateArchive,
+    GovernanceDecision,
+    HistoricalRegressionBlocked,
+    RetentionGate,
+    RetentionReport,
+    evaluate_retention,
+    resolve_lineage,
+)
 from .audit import GenomeAuditTrail
 from .fitness import _check_hard_gate
 from .promotion import (
@@ -278,6 +287,10 @@ class PopulationStore:
         audit: GenomeAuditTrail,
         policy: PromotionPolicy | None = None,
         current_cycle: int | None = None,
+        *,
+        archive: CandidateArchive | None = None,
+        gate: RetentionGate | None = None,
+        governance: GovernanceDecision | None = None,
     ) -> PipelineGenome:
         """Promote, under the governed promotion contract (#21, #854), with a
         mandatory audit record preceding and confirming the state change.
@@ -307,10 +320,25 @@ class PopulationStore:
         guarantee — the raw ``promote()``/``rollback()`` transitions this
         wraps are private (#342), so an unaudited promotion cannot be
         constructed, only forgotten.
+
+        M4-A6 historical retention runs on this same path — there is exactly
+        one promotion path, so retention cannot be bypassed by calling around
+        a wrapper. With ``archive`` wired, the candidate must carry complete
+        provenance and must not regress against (or skip) the prior proven
+        scenario set under the declared :class:`RetentionGate` — checked
+        BEFORE the attempt is recorded, so a blocked promotion writes no
+        audit entries, changes no state, and lands in the archive as
+        inspectable ``blocked`` evidence. Only an explicit
+        :class:`GovernanceDecision` that *changes* the objective unlocks the
+        block, and the governed promotion policy (approval, evidence, margin)
+        still applies afterwards. ``archive=None`` preserves the exact
+        pre-archive library behavior for callers that never record lineage
+        (the same contract as ``EvolveCycle(archive=None)``).
         """
         pol = policy or PromotionPolicy()
-        await audit.record("promotion_attempt", genome_id)
         candidate = self.get(genome_id)
+        retention_report = self._retention_precondition(candidate, archive, gate, governance)
+        await audit.record("promotion_attempt", genome_id)
         incumbent = self.get_active()
         if candidate is None:
             detail = json.dumps(
@@ -367,7 +395,68 @@ class PopulationStore:
                 self.add(genome)
             raise
         logger.info("governed promotion committed: %s", record.summary())
+        self._record_promotion_in_archive(archive, genome, retention_report)
         return genome
+
+    def _retention_precondition(
+        self,
+        candidate: PipelineGenome | None,
+        archive: CandidateArchive | None,
+        gate: RetentionGate | None,
+        governance: GovernanceDecision | None,
+    ) -> RetentionReport | None:
+        """The M4-A6 historical-retention precondition, run before promotion is
+        even attempted.
+
+        ``archive=None`` (or an unknown candidate) skips the check: retention
+        is enforced where lineage is recorded, never faked where it is not —
+        the same contract as ``EvolveCycle(archive=None)``. Otherwise the
+        candidate must carry complete provenance (raises
+        :class:`ProvenanceIncomplete`) and must not regress against, or skip,
+        the prior proven scenario set under ``gate``: a blocked candidate is
+        recorded in the archive as inspectable ``blocked`` evidence and
+        :class:`HistoricalRegressionBlocked` is raised — no audit entry, no
+        state change — unless ``governance`` is an explicit decision that
+        *changes* the objective.
+        """
+        if archive is None or candidate is None:
+            return None
+        retention_gate = gate or RetentionGate()
+        report = evaluate_retention(self, archive, candidate, retention_gate)
+        if report is None or not report.blocked:
+            return report
+        report.governance = governance
+        if retention_gate.governance_overrides(report, report.objective):
+            return report
+        archive.record(
+            candidate,
+            event="blocked",
+            detail=f"promotion blocked: {report.summary()}",
+        )
+        raise HistoricalRegressionBlocked(report)
+
+    def _record_promotion_in_archive(
+        self,
+        archive: CandidateArchive | None,
+        genome: PipelineGenome,
+        report: RetentionReport | None,
+    ) -> None:
+        """Record the promotion's provenance analysis on the archive (M4-A6).
+
+        No-op without an archive. The promoted record carries how deep the
+        recorded lineage runs (across retirement) and which archive event
+        preceded this promotion — a retry after a ``blocked`` entry is exactly
+        the history an auditor needs to see on the promotion record itself.
+        """
+        if archive is None:
+            return
+        lineage_depth = len(resolve_lineage(self, archive, genome.id))
+        prior_event = archive.latest_event(genome.id)
+        detail = f"retention: {report.summary()}" if report is not None else "no prior proven set"
+        detail += f"; lineage_depth={lineage_depth}"
+        if prior_event is not None:
+            detail += f"; prior_archive_event={prior_event}"
+        archive.record(genome, event="promoted", detail=detail)
 
     async def rollback_audited(self, audit: GenomeAuditTrail) -> PipelineGenome | None:
         """Roll back, with a mandatory audit record preceding and confirming
@@ -415,7 +504,15 @@ class PopulationStore:
             current = self.get(parent_id)
         return chain
 
-    def cull_bottom(self, pct: float) -> int:
+    def cull_bottom(self, pct: float, archive: Any | None = None) -> int:
+        """Remove the weakest ``pct`` of the scored population.
+
+        With ``archive`` (a ``CandidateArchive``, typed as Any to avoid an
+        import cycle — population.py is imported BY archive.py), every removed
+        genome is snapshotted as ``retired`` first: culling stops being
+        destruction and becomes archival (M4-A6 — retired candidates remain
+        inspectable and branchable for provenance/analysis).
+        """
         all_genomes = self.list_all()
         scored = [g for g in all_genomes if g.fitness_score is not None]
         if not scored:
@@ -424,6 +521,8 @@ class PopulationStore:
         cutoff = max(1, int(len(scored) * pct))
         to_remove = scored[:cutoff]
         for g in to_remove:
+            if archive is not None:
+                archive.record(g, event="retired")
             self.remove(g.id)
         return len(to_remove)
 

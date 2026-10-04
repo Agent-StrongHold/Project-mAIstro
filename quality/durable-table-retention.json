@@ -126,7 +126,19 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#82",
-      "notes": "Canonical Workspace BacklogItem work-source rows (alembic 049 on PostgreSQL, ensure_schema on SQLite). Work-source history is deliberately append-and-revise; closure/reopen keeps the row. No DELETE path exists yet; a Workspace deletion cascade is an owner decision this service does not make."
+      "notes": "Canonical Workspace BacklogItem work-source rows (alembic 052 on PostgreSQL, ensure_schema on SQLite). Work-source history is deliberately append-and-revise; closure/reopen keeps the row. No DELETE path exists yet; a Workspace deletion cascade is an owner decision this service does not make."
+    },
+    {
+      "table": "candidate_archive",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-evolve/src/maistro_evolve/archive.py",
+      "data_class": "event_history",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#113",
+      "notes": "Optional SQLite mirror of the in-memory CandidateArchive (M4-A6): the append-only ledger of candidate lifecycle events (created/retired/promoted/branched/blocked). Kept forever on purpose — deleting a lineage row erases the provenance the archive exists to preserve, so archive.py has no deletion path; retention evaluation and non-champion branching read retired snapshots forever. Bounded by the candidates a deployment actually creates."
     },
     {
       "table": "books",
@@ -567,6 +579,54 @@
       "deletion_path": "maistro_design.stores:PgDesignProjectStore.delete",
       "issue": "#325",
       "notes": "Deleted only on explicit request; no retention sweep."
+    },
+    {
+      "table": "design_artifact_versions",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Append-only version ledger (#780): history is the product, rows are never rewritten and have no DELETE; project deletion cascades via design_projects. Retention undecided on #325 like design_outputs."
+    },
+    {
+      "table": "design_artifact_locks",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Lock history including released locks (#780); released rows are retained for audit of who unlocked what. Project deletion cascades via design_projects. Retention undecided on #325."
+    },
+    {
+      "table": "design_project_guidance",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Durable user guidance (#780); superseded rows stay readable by design — invalidation is supersession, never deletion. Project deletion cascades via design_projects. Retention undecided on #325."
+    },
+    {
+      "table": "design_branch_controls",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Per-branch control mode (#780), one mutable row per (project, lineage), updated in place. Project deletion cascades via design_projects. Retention undecided on #325."
     },
     {
       "table": "durable_graph_runs",

@@ -7,7 +7,11 @@ linear with exactly one head. Originally filed as ``048`` alongside develop's
 and renumbered to ``049``; when develop then landed its own ``049``
 (``049_canonical_run_eval_scores``) and ``050`` through the 045cfdfbe sync, this
 migration re-attached after that tip as ``051`` so the chain again keeps exactly
-one head.
+one head; and when the 829de3dac sync brought develop's renumbered
+``051_canonical_run_eval_scores`` (which had re-parented onto develop's own
+``050``) onto the same parent this migration had taken, it collided with the
+``051`` this branch already held and re-attached after that tip as ``052`` --
+the same move one more time, keeping exactly one head.
 
 The DDL is guarded (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
 EXISTS`), matching the SQLite twin's `ensure_schema`
@@ -27,8 +31,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "051"
-down_revision = "050"
+revision = "052"
+down_revision = "051"
 branch_labels = None
 depends_on = None
 
