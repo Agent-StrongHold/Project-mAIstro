@@ -26,6 +26,9 @@ evaluator oracle?** It detects, specifically:
   ``sitecustomize``/``usercustomize`` hooks (``GENERATED_ORACLE_PATTERNS``) —
   a crafted ``.pyc`` with a matching source header or an import-time hook can
   hijack the oracle's own execution without any listed path looking edited.
+  The same patterns are also matched against the worktree's *ignored* files
+  (layer 4), so bytecode that ``.gitignore`` keeps out of every diff, tree
+  listing and porcelain report is still vetoed before scoring.
 
 The verdict is paired with a **trusted digest** (:func:`oracle_digest`): a
 SHA-256 over the oracle definition *at the base revision*. The loop pins that
@@ -200,6 +203,30 @@ def _diff_layer_violations(tree: Path, baseline_ref: str) -> list[str]:
     return violations
 
 
+def _ignored_layer_violations(tree: Path) -> list[str]:
+    """Layer 4: generated artifacts git ignores but the worktree still holds.
+
+    A crafted ``__pycache__/*.pyc`` appears in no committed diff, no ``HEAD``
+    tree and no porcelain-derived path list — the root ``.gitignore`` excludes
+    it — yet it stays on disk and is importable by the very ``test_command``
+    process the oracle gates. Enumerate exactly those files (``git ls-files
+    --others --ignored --exclude-standard -z``, which lists ignored files
+    individually even under ignored directories) and veto the generated-artifact
+    ones. Fail-closed like every layer: a probe failure is itself a violation.
+    """
+    proc = _git(tree, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    if proc.returncode != 0:
+        return [f"<evaluator integrity check failed: {proc.stderr.strip()}>"]
+    violations: list[str] = []
+    for path in proc.stdout.split("\0"):
+        if not path:
+            continue
+        norm = normalize_touched_path(path)
+        if _matches_generated(norm) and f"ignored:{norm}" not in violations:
+            violations.append(f"ignored:{norm}")
+    return violations
+
+
 def _reported_layer_violations(changed_files: list[str], base_oracle: set[str]) -> list[str]:
     """Layer 3: the caller-reported paths (rename entries split), so
     enforcement holds even when the diff is not yet committed. The caller
@@ -243,10 +270,15 @@ def oracle_mutations(
     3. **Caller-reported paths** — the ``changed_files`` list (rename entries
        split), so enforcement holds even for callers whose diff is not yet
        committed.
+    4. **Ignored worktree artifacts** — files ``.gitignore`` excludes from
+       every diff, ``HEAD`` tree and porcelain report, matched against the
+       generated-artifact patterns so a crafted ``__pycache__/*.pyc`` left
+       importable in the candidate tree cannot hide behind being untracked.
 
     Diff-found oracle mutations are prefixed with their status letter
     (``M:``, ``A:``, ``D:``, ``T:``) so the evidence names what was done;
-    generated-artifact hits are prefixed ``generated:``. Fail-closed: if any
+    generated-artifact hits are prefixed ``generated:``; ignored worktree
+    artifacts ``ignored:``. Fail-closed: if any
     git probe fails, the returned "mutation" names the failure, because a
     candidate that can break the integrity check can break it in exactly the
     direction that hides its edit.
@@ -266,4 +298,5 @@ def oracle_mutations(
 
     violations.extend(_diff_layer_violations(tree, baseline_ref))
     violations.extend(_reported_layer_violations(changed_files or [], set(base_oracle)))
+    violations.extend(_ignored_layer_violations(tree))
     return violations

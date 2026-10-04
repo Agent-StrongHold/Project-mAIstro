@@ -254,6 +254,32 @@ class TestOracleMutationSpells:
             "generated:sitecustomize.py" in v for v in oracle_mutations(repo2, "rsi-baseline")
         )
 
+    def test_ignored_worktree_artifact_is_flagged(self, tmp_path: Path) -> None:
+        """The committed-diff blind spot: a crafted .pyc the root .gitignore
+        excludes never reaches any diff, HEAD tree or porcelain-derived path
+        list, yet it stays importable by the test command. The worktree scan
+        must veto it before scoring."""
+        repo = _oracle_repo(tmp_path / "r")
+        (repo / ".gitignore").write_text("__pycache__/\n*.py[oc]\n", encoding="utf-8")
+        _commit(repo, "gitignore")
+        pyc = repo / "src/__pycache__/app.cpython-312.pyc"
+        pyc.parent.mkdir(parents=True)
+        pyc.write_bytes(b"\x00\x01\x02poison")
+        # Ordinary tracked edit beside it: exactly the mixing spell.
+        (repo / "src/app.py").write_text("VALUE = 1\n", encoding="utf-8")
+        _commit(repo, "candidate")
+        violations = oracle_mutations(repo, "rsi-baseline")
+        assert any(v.startswith("ignored:") and "__pycache__" in v for v in violations)
+
+    def test_clean_ignored_output_is_not_flagged(self, tmp_path: Path) -> None:
+        """Benign ignored build output absent from the generated patterns —
+        e.g. a scratch log — must not veto a clean candidate."""
+        repo = _oracle_repo(tmp_path / "r")
+        (repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        _commit(repo, "gitignore")
+        (repo / "scratch.log").write_text("noise\n", encoding="utf-8")
+        assert oracle_mutations(repo, "rsi-baseline") == []
+
     def test_integrity_failure_fails_closed(self, tmp_path: Path) -> None:
         """A candidate that can break the check must not slip through it: an
         unusable baseline ref is a violation naming the failure, not silence."""
