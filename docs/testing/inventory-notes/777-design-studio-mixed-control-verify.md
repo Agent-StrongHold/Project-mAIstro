@@ -7675,3 +7675,73 @@ trace to canonical owners that do not exist on develop. The stop condition
 forbids Design-Studio-private substitutes (private Agent runtime, Goal owner,
 reconciliation loop, memory system, permissions model). Verdict: **BLOCKED**
 (Refs #777).
+
+## Round 114 (repair) — develop sync 352aea3f4 → e067b7b0a (7 commits); blockers hold; nearest-yet #776 dependency landed in core but not in the product path
+
+**Trigger:** lane re-dispatch after round 113's BLOCKED, lane base updated to
+`e067b7b0a` (develop head). Starting head was exactly round 113's end head
+`b154ad0f9`, tree clean — nothing to salvage.
+
+**Merge:** `git merge origin/develop` → conflict-free (EXIT 0). Seven develop
+commits landed: `e067b7b0a` (#1905 get.ps1 answers parity), `135bffda9`
+(#1908 get.sh channel switch), `558d39a3d` (#1910 model-egress fixture
+cleanup), `249c12d11` (#1917 HANDOFF-415 docs), `830669b9e` (#1733/#301
+per-Workspace Ladybug working-memory projection), `e760eb7cf` (#1915
+proportionality-judge failure semantics), `c73562e37` (#1916 quota compat
+helpers). Quality-ledger merge integrity per the AGENTS.md rule:
+`git diff --numstat origin/develop -- quality/` → exactly `0 1
+quality/vulture-baseline.json`, the branch's own round-110 row removal; no
+rows lost or replaced by the merge.
+
+**Notable develop movement — closest #776 dependency yet, still not a #777
+dependency:** `830669b9e` lands a real per-Workspace working-memory
+projection (`maistro/memory/working/{protocol,indexed,manager,extraction}.py`,
+BM25 + embeddings + entity graph, per-Workspace isolation, ADR-082226-5104
+Layer 4) with 46 conformance tests. Post-merge grep: `WorkingMemory` refs
+outside `maistro-core` exist only as a `WorkingMemoryStore` protocol seam in
+`packages/maistro-turing/src/maistro_turing/protocols.py:79` — zero refs in
+`packages/maistro-design/src` or `design_service.py`. The #777 criterion
+("Relevant Workspace context is retrieved through #776" in the Design Studio
+product path) therefore remains UNMET: the primitive now exists in core, but
+no Design-Studio consumption, and the persistent Workspace Agent + Goal
+reconciliation it would serve still does not exist.
+
+**Dependency audit re-run fresh at merge head `a74877296` (outcome unchanged
+from rounds 108–113):** `GoalReconcil|delegate_goal` → 0 files in
+`packages/*/src`; `maistro.goals` absent; `ControlMode`/`BranchControl` → 0
+consumers outside `maistro-design`; 0 `WorkspaceAgent` tokens in
+`packages/maistro-design/src` + `design_service.py`; `brief_chat.py:64`
+`_NOT_WRITTEN` stands verbatim.
+
+**Battery at merge head (all fresh runs):**
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (2882 files already formatted)
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → EXIT 0; base reads
+  `e067b7b0aca0` (new merge base), 1342 reviewed → 1341 findings,
+  unclassified 0, never_allowlist 0
+- `check-suite-inventory` (14 suites match develop's own updated baseline —
+  the merge's new tests arrived with their inventory rows) /
+  `check-dependency-namespaces` / `check-branch-independence` /
+  `check-backlog-consistency` (167 items) → all EXIT 0
+- pytest `packages/maistro-core/tests/memory/working` +
+  `packages/maistro-design/tests` → **595 passed / 1 skipped**; hive
+  design/brief/workspace/agent_loop slice → **378 passed / 5 skipped**;
+  `packages/maistro-bootstrap/tests` → **237 passed / 1 skipped**
+- canonical mypy (core/server/turing/canvas/bootstrap/registry src) →
+  "Success: no issues found in 791 source files"
+
+No test code changed in this lane this round (front-matter deltas stay +0);
+all new test counts arrived from develop with their own notes and are already
+matched by the recorded inventory.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+Branch synced to develop `e067b7b0a` and fully green (lint, format, vulture
+per-identity ledger at CI-exact args, structural gates, 1200+ tests across
+touched packages, canonical mypy). All 13 #777 acceptance criteria still
+trace to canonical owners absent from develop: #804/#805/#806 persistent
+Workspace Agent + Goal reconciliation/delegation, #458 canonical Goal
+writer/ownership seam, #774 CreativeBrief writer, #775 creative Graph, #53
+front-door product wiring. The stop condition forbids Design-Studio-private
+substitutes. Verdict: **BLOCKED** (Refs #777).
