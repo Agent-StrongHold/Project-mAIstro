@@ -95,6 +95,16 @@ class _Store:
         self._record("list_all", org_id, limit)
         return [_learning(13)]
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        self._record("list_ineffective", min_uses)
+        return [_learning(14)]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        self._record("mark_anti_pattern", learning_id, confidence_floor, org_id=org_id)
+        return True
+
 
 class _Embeddings:
     dimension = EMBEDDING_DIMENSIONS
@@ -166,6 +176,28 @@ async def test_list_all_forwards_positionally_and_returns(wrapped) -> None:
 
     assert store.calls == [("list_all", ("org-1", 5), {})]
     assert [item.id for item in listed] == [13]
+
+
+async def test_list_ineffective_forwards_the_threshold_and_returns(wrapped) -> None:
+    """The #121 capture sweep's read goes to the durable twin it was handed,
+    not to some in-memory side channel -- the twin is the store that survives
+    the process, so it is the one whose ineffective rows answer."""
+    hybrid, store = wrapped
+
+    ineffective = await hybrid.list_ineffective(3)
+
+    assert store.calls == [("list_ineffective", (3,), {})]
+    assert [item.id for item in ineffective] == [14]
+
+
+async def test_mark_anti_pattern_forwards_id_floor_and_org(wrapped) -> None:
+    """`org_id` binds the reclassification: dropping it on the way through
+    would let a guessed id from another scope be reclassified."""
+    hybrid, store = wrapped
+
+    assert await hybrid.mark_anti_pattern(9, 0.6, org_id="org-9") is True
+
+    assert store.calls == [("mark_anti_pattern", (9, 0.6), {"org_id": "org-9"})]
 
 
 # --- the merge bound -------------------------------------------------------

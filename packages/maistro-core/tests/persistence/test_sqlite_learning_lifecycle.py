@@ -196,3 +196,64 @@ async def test_pre_m4b_rows_upgrade_to_the_defaults_they_always_meant(
     assert old.superseded_by is None
     # The upgrade must not have invented Gauntlet provenance.
     assert old.stage is not LearningStage.VALIDATED
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_instant_column_costs_that_instant_nothing_more(
+    tmp_path: Path,
+) -> None:
+    """A row whose instant text cannot parse reads back as the default, not as
+    a crash of every read that touches it -- the same tolerance the JSON
+    columns get. One bad row must not turn the capture sweep (which reads the
+    whole twin) into an outage of the whole store."""
+    db = tmp_path / "learnings.db"
+    async with aiosqlite.connect(db) as conn:
+        store = SqliteLearningStore(conn)
+        await store.ensure_schema()
+        await conn.execute(
+            """INSERT INTO learnings (learning, run_id, org_id, created_at,
+                                      last_confirmed_at, validated_at)
+               VALUES ('unparseable instants', 'run-bad', 'org-1',
+                       'not-a-timestamp', 'also-not', 'still-not')"""
+        )
+        await conn.commit()
+
+    async with aiosqlite.connect(db) as conn:
+        [revived] = await SqliteLearningStore(conn).produced_by("run-bad", org_id="org-1")
+
+    assert revived.validated_at is None
+    assert revived.last_confirmed_at is None
+    # created_at falls back to read time rather than inventing an instant.
+    assert (datetime.now(UTC) - revived.created_at).total_seconds() < 60
+
+
+def test_the_instant_and_applicability_decoders_tolerate_every_shape_a_row_holds() -> None:
+    """Mirrors the pg twins' decoder contracts (#121 touched both).
+
+    `applicability` is NOT NULL today, but `_row_to_learning` also builds rows
+    from dictionaries that may lack the key -- a row written before migration
+    052 read through the upgrade path -- so `None` decodes to no applicability
+    rather than raising. `_utc_text` accepts naive datetimes because the
+    aiosqlite default adapter era wrote some; they name UTC, the same instant
+    an aware writer would have stored.
+    """
+    from maistro.persistence.sqlite_learnings import (
+        _load_applicability,
+        _load_moment,
+        _utc_text,
+    )
+
+    assert _load_applicability(None) == {}
+    assert _load_applicability({"task_types": ["deploy"]}) == {"task_types": ["deploy"]}
+    assert _load_applicability('{"task_types": ["deploy"]}') == {"task_types": ["deploy"]}
+    assert _load_applicability("not json at all") == {}
+    assert _load_applicability('["not", "a", "dict"]') == {}
+    assert _load_applicability(42) == {}
+
+    assert _load_moment(None) is None
+    assert _load_moment(42) is None
+    assert _load_moment("2026-01-01T12:00:00+00:00") == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    naive = datetime(2026, 1, 1, 12, 0, 0)
+    assert _utc_text(naive) == "2026-01-01T12:00:00+00:00"
+    assert _utc_text(naive.replace(tzinfo=UTC)) == "2026-01-01T12:00:00+00:00"

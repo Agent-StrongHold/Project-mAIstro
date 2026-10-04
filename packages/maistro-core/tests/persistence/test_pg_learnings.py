@@ -18,7 +18,7 @@ from maistro.persistence.pg_learnings import (
     PgLearningStore,
     similarity_query,
 )
-from maistro.types.memory import Learning, MemoryScope
+from maistro.types.memory import EpistemicType, Learning, MemoryScope
 
 from .conftest import requires_postgres
 
@@ -656,6 +656,133 @@ async def test_list_all_maps_rows_to_learning_dataclasses(
     assert learning.rca_prevention == "validate first"
     assert learning.success_after_use == 2
     assert learning.failure_after_use == 1
+
+
+# --- the #121 ineffective read and anti-pattern reclassification ------------
+
+
+async def test_list_ineffective_applies_the_ineffective_predicate_in_sql(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetch(
+        [
+            {
+                "id": 5,
+                "category": "tool",
+                "trigger_keys": ["force-push"],
+                "learning": "force-pushing over the protected branch",
+                "tool_name": "git",
+                "org_id": "org-1",
+                "success_after_use": 1,
+                "failure_after_use": 4,
+                "epistemic_type": "empirical",
+                "applicability": '{"task_types": ["deploy"]}',
+            }
+        ]
+    )
+
+    [learning] = await store.list_ineffective(min_uses=3)
+
+    # The same predicate the in-memory store and the SQLite twin apply: enough
+    # recorded outcomes, and strictly more failures than successes. A backend
+    # that answered a different question would be a different store (#121).
+    [call] = conn.calls
+    assert "success_after_use + failure_after_use >= $1" in call.query
+    assert "failure_after_use > success_after_use" in call.query
+    assert call.args == (3,)
+
+    assert learning.id == 5
+    assert learning.epistemic_type is EpistemicType.EMPIRICAL
+    assert learning.applicability == {"task_types": ["deploy"]}
+
+
+async def test_mark_anti_pattern_writes_the_reclassification_scoped_to_org(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow({"id": 5})
+
+    assert await store.mark_anti_pattern(5, 0.6, org_id="org-1") is True
+
+    [call] = conn.calls
+    assert call.method == "fetchrow"
+    assert "epistemic_type = 'anti_pattern'" in call.query
+    assert "GREATEST(confidence, $2)" in call.query
+    assert "WHERE id = $1 AND org_id = $3" in call.query
+    assert call.args == (5, 0.6, "org-1")
+
+
+async def test_mark_anti_pattern_reports_a_miss_when_the_org_hides_the_row(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow(None)
+
+    assert await store.mark_anti_pattern(999, 0.6, org_id="org-1") is False
+
+
+def test_applicability_decodes_from_every_shape_a_pool_can_hand_back() -> None:
+    """The column is JSONB: asyncpg's default codec hands back `str`, a pool
+    that registered its own JSON codec hands back `dict` (the same store class
+    runs against both — `maistro.persistence._register_json_codecs` is exactly
+    such a pool), and a row from before migration 052 may hold anything.
+    A malformed column costs that column, never the read."""
+    from maistro.persistence.pg_learnings import _load_applicability
+
+    assert _load_applicability(None) == {}
+    assert _load_applicability({"task_types": ["deploy"]}) == {"task_types": ["deploy"]}
+    assert _load_applicability('{"task_types": ["deploy"]}') == {"task_types": ["deploy"]}
+    assert _load_applicability("not json at all") == {}
+    assert _load_applicability('["not", "a", "dict"]') == {}
+    assert _load_applicability(42) == {}
+
+
+# --------------------------------------------------------------------------
+# real-PostgreSQL leg: the #121 capture sweep's read and write
+#
+# The fakes above pin the SQL strings; only a server proves they run. A typo
+# in `list_ineffective`'s two-column predicate or `mark_anti_pattern`'s
+# GREATEST lift would fail every production capture sweep while the
+# fake-verified strings stayed green, so this leg binds them against the
+# migrated chain — same contract as the similarity legs below.
+# --------------------------------------------------------------------------
+
+
+@requires_postgres
+async def test_the_ineffective_read_and_the_anti_pattern_write_bind_against_a_real_server(
+    pg_pool: Any,
+) -> None:
+    store = PgLearningStore(pg_pool)
+    org = "org-anti-real"
+
+    chronic = await store.store(
+        make_learning(
+            learning="force-pushing over the protected branch",
+            trigger_keys=["force-push"],
+            org_id=org,
+            success_after_use=1,
+            failure_after_use=4,
+        )
+    )
+    healthy = await store.store(
+        make_learning(
+            learning="snapshot before deploying",
+            trigger_keys=["snapshot"],
+            org_id=org,
+            success_after_use=4,
+            failure_after_use=1,
+        )
+    )
+
+    assert [lr.id for lr in await store.list_ineffective(min_uses=3)] == [chronic]
+
+    # The org binds the write, as it binds every scoped write on this store:
+    # an id whose row lives under another scope updates nothing.
+    assert await store.mark_anti_pattern(healthy, 0.6, org_id="") is False
+
+    assert await store.mark_anti_pattern(chronic, 0.6, org_id=org) is True
+    rows = {lr.id: lr for lr in await store.list_all(org)}
+    assert rows[chronic].epistemic_type is EpistemicType.ANTI_PATTERN
+    assert rows[chronic].confidence >= 0.6
+    assert rows[healthy].epistemic_type is EpistemicType.EMPIRICAL
 
 
 # --- trigger_keys decoding -------------------------------------------------
