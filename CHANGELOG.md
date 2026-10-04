@@ -44,6 +44,17 @@ or placeholder-only section.
 
 ### Changed
 
+- **One product across Workspace UI, CLI and API (no linked issue: owner architecture
+  clarification).** Record shared Agent/tool/capability and business-rule authority, integrated
+  Builders/Evolve/RSI, near API/Workspace parity and CLI functional parity. Preserve specialized
+  domain state, security gates and existing release milestones; parity remains to be proven.
+
+- **Canonical storage guidance reconciled (#1135).** Reaffirm PostgreSQL at every deployment
+  size, with separately owned MAIstro/LiteLLM/Langfuse databases and migrations. Amend conflicting
+  SQLite-twin ADR/spec clauses and cutover guidance without deleting historical data, weakening
+  behavioral guarantees or claiming runtime retirement. SQLite remains scoped to bootstrap/config,
+  explicit tests and necessary historical import/readers.
+
 - **v1.0 release contract consolidated into canonical planning docs (no linked issue:
   governance realignment).** Stakeholder decisions from the 2026-10-01 architecture
   review now live in [`ROADMAP.md`](ROADMAP.md) (release contract section),

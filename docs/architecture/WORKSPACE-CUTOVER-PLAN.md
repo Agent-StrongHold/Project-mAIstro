@@ -36,7 +36,7 @@ split cleanly:
 | J — frontend has no typed contract (75 hand-typed entities, 67 raw `fetch`) | A — canonical effect ledger is in-memory on every backend (`container.py:1443`) |
 | C — Conductor route table is default-allow (18/37 routers unscoped) | B — three flat-layout apps collide on `config`/`main`/`middleware`/`routes` |
 | D (Conductor half) — `request.state.user` dict, `"dags.write"` vocabulary | D (Turing/canvas halves), the unwired core `AuthProvider` framework |
-| E (Conductor half) — `log_audit` writes to an in-memory `JsonStore` | F — PostgREST vs asyncpg persistence, SQLite/Alembic schema parity |
+| E (Conductor half) — `log_audit` writes to an in-memory `JsonStore` | F — core asyncpg + Alembic persistence; preserve historical data while retiring alternate production writers |
 | G — `EngineService` fallback registries/stores, if Conductor's backend routes retire too | H — governance cost, `Literal`-status blind spot in the lifecycle checker |
 | The 29 Conductor pages and the in-memory `stores.py` dicts | Warden absent from A2A inbound, RSI harvest, Turing backend (#66 in principle) |
 
@@ -188,9 +188,11 @@ through the core `AuditLog` on the configured backend; `routes/audit.py` reads f
 
 ### P0.5 Backend-selected effect context (depends on A)
 
-**Invariant.** On a `postgresql://` or `sqlite:` configuration the Container's
-`capability_effects` uses the durable Binding/Invocation/Approval stores; in-memory only on
-`memory://`. One effect context per process — `default_effect_context()` is the Container's
+**Invariant.** Canonical production `capability_effects` uses PostgreSQL-backed durable
+Binding/Invocation/Approval stores at every deployment size (ADR-082226-5104). In-memory
+contexts are explicitly ephemeral; retained SQLite contexts are test/import infrastructure or
+transitional wiring to retire safely, not a production-backend requirement. One effect context
+per process — `default_effect_context()` is the Container's
 instance, not a second `lru_cache`d one.
 
 **Today (2026-10-02, after #1321/#1760).** Backend selection exists:
@@ -203,7 +205,7 @@ durable on any backend. And `effect_context.default_effect_context()` is still i
 the Container's instance.
 
 **Check.** `packages/maistro-core/tests/test_container_postgres.py` sibling asserting the
-store classes by backend; `test_effect_context_identity.py` asserting
+PostgreSQL store classes and retained test-fixture wiring; `test_effect_context_identity.py` asserting
 `default_effect_context() is container.capability_effects`.
 
 **AC text (for #804).** "AC-P5: a Workspace Agent Invocation survives process restart and is
@@ -261,7 +263,8 @@ unvalidated optional string that becomes accounting `user_id` (`runs/model.py:27
 not exist (`pg_audit.py:13-18`, migration 005).
 
 **Check.** A conformance test per store that a principal outside the scope cannot read or
-mutate by id, run against all three backends.
+mutate by id, run against real PostgreSQL. Retained SQLite/in-memory conformance fixtures
+remain explicit tests and do not establish a second canonical production backend.
 
 **AC text (for #364).** "AC-P8: workspaces, projects, runs and audit each have a
 store-boundary scope test; `actor_principal_id` is required and validated at admission;
@@ -410,9 +413,14 @@ fails startup (#122 fixed this for the memory stores; P0.5 extends it to the eff
    selection; process-default identity. Blocks P0.5 and #804.
 2. **Flat-layout module collisions** — B. Decide the package name for the Conductor backend;
    until then P0.6 forbids growth.
-3. **One persistence mechanism for Conductor** — F. PostgREST HTTP layer vs core asyncpg
-   stores; SQLite/Alembic parity check (a script that diffs `CREATE TABLE` columns against
-   the Alembic head); `DurableRunStore` conformance suite; `list_due` on the legacy twins.
+3. **One persistence mechanism for Conductor** — F (#1135). Use core asyncpg stores and
+   engine-owned Alembic migrations; retire the extra PostgREST memory mirror and runtime
+   canonical-schema creation only after data-preserving cutover. PostgreSQL is canonical on
+   laptops, team servers and enterprise deployments; do not create SQLite/Alembic production
+   parity work. Preserve small bootstrap/configuration state, explicit SQLite tests and needed
+   historical import/readers. Keep canonical `DurableRunStore` conformance and schedule
+   `list_due` behavior, with real PostgreSQL restart/concurrency/replica proof. LiteLLM and
+   Langfuse retain separate database/migration ownership.
 4. **Lifecycle checker: `Literal` status types** — H. `services.rsi.RunStatus` evades
    `check-execution-lifecycles.py:30`.
 5. **Warden at the remaining inbound boundaries** — A2A inbound, RSI harvest, Turing backend.
@@ -530,3 +538,41 @@ Workspace + user + **global** for v1.0. Team axis returns `NotImplemented` or hi
 | Canvas | #735, #851, #93 |
 | Capabilities | #59, #848 |
 | Security on Agent | #66, #1171, #1202 |
+
+
+## 10. Unified product access — owner clarification 2026-10-03
+
+There is one product, accessed through Workspace UI, CLI and API. Workspace encompasses
+all product UI surfaces; Builders, Evolve and RSI are integrated features of the same Agent
+and tool/capability system. Their package boundaries preserve specialized algorithms and
+domain records, not independent products, executors or business-rule owners. See the
+[authoritative interface contract](PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03).
+
+The API and Workspace UI target near feature parity. CLI commands expose the same
+functionality with interface-appropriate output and interaction. UI/CLI/API entry adapters
+must delegate to the same scoped application services and canonical Agent/tool authority;
+a new route or command is not permission to duplicate admission, authorization, approvals,
+execution, retry/cancel, storage or observation. All feature work enters canonical Runs,
+NodeRuns, Attempts and governed Invocations, and appears in the single Run browser.
+
+For each feature cutover, identify its equivalent API, Workspace and CLI operation (or a
+named temporary presentation gap), and verify the same allowed/refused result, canonical
+identity, durable effect and observable state. Existing P0 scope/security and M1 crash/replica
+proof remain required. Interface parity does not bypass sandbox isolation, approvals or
+feature-availability gates. Preserve domain-specific Builders artifacts, Evolve evaluations
+and RSI quarantine/provenance rather than flattening them into one generic record.
+
+**Release scope is unchanged here.** Section 9's v1.0 replacement/deletion rules and the
+Evolution UI return in v1.2 remain recorded milestones. They are staged delivery of one
+product, not permission for a separate Evolution product. The owner explicitly retained
+v1.2 staging on 2026-10-03: build against canonical shared services directly, without an
+interim compatibility layer, duplicate feature backend or private Agent/tool authority to
+bridge later. This does not remove necessary historical-data migration/import, external-protocol
+adapters, domain algorithms or security boundaries, and it does not claim parity is implemented.
+
+
+The [interface gap matrix](PRODUCT-ACCESS-POLICY.md#interface-gap-ownership--2026-10-03)
+records verified existing owners and staged gaps. [#1874](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1874)
+owns the complete entry-point/gap inventory; the bounded CLI page #292 and external CLI bundle
+work do not own full-product parity. Phase/release closure needs actual feature evidence rather
+than treating the matrix or the existence of #1874 as completion.

@@ -104,8 +104,9 @@ The following rules apply:
 - **PostgreSQL is the system of record.** Following ADR-082226-5104 §§1, 5 and 6, the fact lives
   in PostgreSQL, survives restart, backup and restore, and is keyed to the canonical user id.
   Ladybug may cache a projection of it and is never authoritative for it. This ADR does not add a
-  SQLite twin; ADR-082226-5104 §9 requires a concrete requirement before SQLite becomes another
-  canonical store, and that is a separate decision.
+  SQLite twin; ADR-082226-5104 §9, clarified 2026-10-03, restricts SQLite to small
+  bootstrap/configuration state, explicit tests and necessary historical import/readers.
+  It is not another canonical production store.
 
 ### 2. Same-user promotion is automatic, audited self-consent
 

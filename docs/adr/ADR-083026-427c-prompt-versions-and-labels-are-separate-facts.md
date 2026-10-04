@@ -15,6 +15,7 @@ substrate:
   - maistro-engine#ADR-081226-9944
 implements: []
 related:
+  - maistro-engine#ADR-082226-5104
   - maistro-engine#ADR-019
 supersedes: []
 blocks: []
@@ -29,6 +30,16 @@ owners:
 ---
 
 # ADR-083026-427c: A prompt version and a prompt label are separate facts, written in one transaction
+
+## Amendment — 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) governs deployment storage. The original SQLite single-instance
+paragraph below is superseded only as production-backend guidance: PostgreSQL is the sole
+canonical durable prompt store at every deployment size. The SQLite implementation records
+history and may support explicit tests or necessary historical-data import; it is not a reason
+to build new production parity. Version/label separation, atomicity, serialization, idempotency
+and preservation of existing records are unchanged. Runtime retirement remains separate work;
+this amendment does not change the ADR's Accepted lifecycle or mark that work complete.
 
 ## Context
 
@@ -119,9 +130,10 @@ A client that times out and retries therefore does not double the version
 history, and the operation is idempotent as #328 requires. Different content is
 a different version, which is the point of a version.
 
-**The SQLite twin takes the same schema**, and gets the same properties from
-`BEGIN IMMEDIATE` — its writer lock is the whole database, which is exactly
-right for the single-instance deployment it serves.
+**Historical SQLite implementation (deployment scope superseded above).** The twin took
+the same schema and used `BEGIN IMMEDIATE` for its whole-database writer lock. Retained
+tests and historical-data handling must preserve the version/label guarantees; this is not
+a supported alternative canonical single-instance deployment.
 
 ## Consequences
 

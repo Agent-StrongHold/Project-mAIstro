@@ -5,6 +5,25 @@ together: a variant is a Copier template plus the packages it turns on, not a
 separate repository. [`BACKLOG.md`](BACKLOG.md) is the item-level companion; the
 substrate-vs-variant split is [`engine#ADR-019`](docs/adr/ADR-019-canonical-source-split.md).
 
+## Unified access contract — 2026-10-03
+
+One product has three access paths: Workspace UI, CLI and API use the same Agent, tools,
+capabilities and canonical business-rule services. Workspace encompasses all product UI
+surfaces. Builders, Evolve and RSI are integrated feature families, not independent products.
+API/Workspace UI target near parity; CLI exposes the same functionality with presentation
+suited to commands and structured output. See the [full authority and proof contract](docs/architecture/PRODUCT-ACCESS-POLICY.md#one-product-three-access-paths--owner-clarification-2026-10-03).
+
+The existing v1.0/v1.2 milestones below are unchanged. In particular, the recorded Evolution
+UI deferral remains approved for v1.2. Build its eventual Workspace surface directly against
+the shared canonical services; do not build an interim compatibility layer, duplicate feature
+backend or private Agent/tool registry to bridge later. Necessary historical-data import,
+external-protocol adapters and security boundaries remain. No parity implementation is claimed.
+Package/variant names below describe composition and downstream boundaries, not separate
+UI/CLI/API feature authorities.
+[The interface gap matrix](docs/architecture/PRODUCT-ACCESS-POLICY.md#interface-gap-ownership--2026-10-03)
+names current feature owners; [#1874](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1874)
+owns the missing holistic inventory without changing these release scopes.
+
 ## Item ID convention (per [`engine#ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md))
 
 Every roadmap and backlog item is tagged by the part of the product it belongs to:

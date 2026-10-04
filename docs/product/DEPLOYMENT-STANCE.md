@@ -19,6 +19,13 @@
 
 ## Supported profiles
 
+All durable profiles use PostgreSQL as the sole canonical application datastore, including
+single-host installs ([ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md)). SQLite bootstrap/configuration state,
+explicit tests and historical imports are separate from production-backend support. The
+[durable-state matrix](../persistence/durable-state-contract.md) distinguishes this policy from
+still-present runtime wiring; it does not certify retirement completion.
+
+
 The sandbox is a library inside whatever process executes work
 (`maistro.sandbox`), so it is not a row in this table. It is present in every
 profile by construction.

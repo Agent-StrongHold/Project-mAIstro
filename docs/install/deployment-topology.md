@@ -14,6 +14,20 @@ optional connector.
 
 ## 1. Topology
 
+**Storage policy.** [ADR-082226-5104](../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) applies to laptop, team and enterprise
+installs: PostgreSQL is the sole canonical durable application datastore. One cluster hosts
+separate `maistro`, `litellm` and `langfuse` logical databases, each with separately owned
+migrations. MAIstro uses core asyncpg + Alembic; no parallel PostgREST memory authority or
+SQLite production twin is part of the target. Redis is operational queue/cache state, not a
+second canonical owner. Existing alternate writers/data require verified, non-destructive
+cutover; this runbook does not declare that retirement complete.
+
+The root `docker-compose.yml` uses Langfuse v2 with PostgreSQL. Langfuse v3's additional
+ClickHouse/Redis services belong to that optional topology, not the current root stack.
+Backup/restore must cover each deployed application's logical database under its owner;
+a MAIstro-only dump is not evidence that LiteLLM or Langfuse was restored.
+
+
 ```
 load balancer (nginx, deploy/nginx.conf)
 ├── maistro-server replica 1 (stateless)
@@ -28,7 +42,7 @@ Persistent layer (outside instances):
 ```
 
 - **Instances are stateless — except the task queue.** Agents, sessions, memory,
-  audit and every canonical Run live in PostgreSQL/Redis; the only local files are
+  audit and every canonical Run have PostgreSQL as their canonical durable owner; the only local files are
   config (in git) and the shared file store. **The `/v1/tasks` queue does not:**
   `TaskQueue` is an in-process singleton, so a task is visible only on the replica
   that accepted it. Behind round-robin, a client that creates a task and polls
@@ -94,10 +108,43 @@ second command with `required variable POSTGRES_PASSWORD is missing a value`.
 | Files | copy/rsync of the file-store volume | nightly |
 | Config | version-controlled in git; backup records the deployed ref | on change |
 
-All of this is one script: [`deploy/scripts/backup.sh`](../../deploy/scripts/backup.sh)
-(cron it daily). It writes a self-contained backup under `${BACKUP_ROOT}/YYYY-MM-DD/`
-including a plain-SQL dump + `sha256` used by the verify drill, and optionally ships
-off-host (`REMOTE_TARGET` — rsync/S3/wal-g, per the ADR-081 pluggable-connector rule).
+[`deploy/scripts/backup.sh`](../../deploy/scripts/backup.sh) handles **one selected PostgreSQL
+database per invocation**, plus the reference stack's Redis/files/config snapshot. Its public
+selector is `POSTGRES_DB` (default `maistro`), with `POSTGRES_USER` selecting an existing
+authorized backup role; internal `PG_DB`/`PG_USER` shell variables are not configuration inputs.
+A default run is not a backup of LiteLLM or Langfuse. Each application owner must include its
+deployed database and verify its restore separately. The per-database archives do not
+provision cluster roles or credentials. Before relying on disaster recovery, each owner must
+retain an approved recovery manifest naming its database/owner, required roles and privileges,
+PostgreSQL/extension versions and database encoding/locale settings. Keep credential material
+in the authorized secret-recovery system, not in this runbook or a plaintext repository file.
+`backup.sh` does not produce that owner/security manifest; a missing manifest is a recovery
+blocker, not permission to guess roles or reuse another application's credentials. The script writes
+`${BACKUP_ROOT}/YYYY-MM-DD/postgres-${POSTGRES_DB}.dump`, a plain SQL dump and its SHA-256.
+
+For the reference production Compose topology, repeat the existing script per deployed
+database, with a separate `BACKUP_ROOT` to isolate database artifacts and retention. The
+following is an operator template, not an executed backup receipt. `BACKUP_ROLE` must already
+be authorized for all listed databases; otherwise invoke each database separately with its
+owner's existing role. Both loops stop on the first failed database rather than letting a
+later success hide it. Do not create grants or expose credentials as part of this procedure.
+
+```bash
+# Use only databases actually deployed; use their actual names if customized.
+for db in maistro litellm langfuse; do
+  POSTGRES_DB="$db" POSTGRES_USER="${BACKUP_ROLE:?set an authorized role}" \
+    BACKUP_ROOT="/var/backups/maistro/$db" \
+    bash deploy/scripts/backup.sh || exit "$?"
+done
+```
+
+The script defaults to `deploy/docker-compose.prod.yml`/`postgres-primary`; it also assumes
+the reference `deploy_wal-archive`, `deploy_redis-data` and file-store volumes. It is **not**
+a drop-in root-Compose/Langfuse-v3 backup command. Use this template only where those
+reference services/volumes exist; other topologies need an owner-verified procedure before
+claiming backup coverage. Repeating it also repeats shared Redis/file snapshots. Optional
+off-host shipping remains deployment-specific (`REMOTE_TARGET` placeholders must be completed);
+the script does not implement an off-host transfer merely by setting the variable.
 
 Monitoring: alert on backup-script failure (non-zero exit / missing today's directory)
 and on replication lag > 5s:
@@ -111,18 +158,67 @@ SELECT client_addr, write_lag, replay_lag FROM pg_stat_replication;
 
 ## 3. Weekly restore-and-verify drill
 
-Run [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh) weekly
-(cron). It:
+The existing [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh)
+can collect scratch-restore diagnostics per database using matching `POSTGRES_DB`,
+`POSTGRES_USER`, `BACKUP_ROOT` and backup date, subject to its role and verification limits below.
+It cannot yet discharge the weekly recovery proof required by #88/#1881. `PG_IMAGE` must match the source PostgreSQL major version and
+required extensions; its default is `pgvector/pgvector:pg17`. It restores only to its uniquely
+named scratch container and removes that container on exit, never into the running application.
 
-1. Takes yesterday's dump, restores it into a throwaway scratch PostgreSQL container.
-2. Re-runs `pg_dump` on the restored DB and compares its SHA-256 to the hash recorded
-   at backup time — the spec's property: *backup restore always produces bit-for-bit
-   identical state (via pg_dump hash)*.
-3. Prints per-table row counts and fails if zero user tables were restored.
-4. (staging extension) Point a staging maistro-server at the scratch DB and check
-   `GET /health/ready` + a smoke request.
+**Scratch-role limitation.** The script initializes only `POSTGRES_USER`. Its `--no-owner`
+option does not suppress archived ACL/grant restoration, so an archive referencing other roles
+can fail before verification. The loop below does not provision those roles. Such archives need
+an owner-provisioned isolated destination with all recorded roles/privileges/extensions, using
+the prerequisites and per-owner restore in §§4.3–4.4, adapted to a distinct isolated project/
+endpoint rather than the running production containers. That is a separate manual drill, not a
+capability of this script. Do not add `--no-acl` or skip security evidence to manufacture a pass.
+Even an archive compatible with its single-role scratch cluster is **not proven** by a PASS:
+the snapshot/raw-hash limitations below remain. #1881 owns the verifier repair; #88 owns full
+backup/security-state coverage.
 
-A failing drill is a paging alert: your backups are not restorable.
+```bash
+# BACKUP_DATE is an existing YYYY-MM-DD directory under each database's root.
+for db in maistro litellm langfuse; do
+  POSTGRES_DB="$db" POSTGRES_USER="${BACKUP_ROLE:?set the matching role}" \
+    BACKUP_ROOT="/var/backups/maistro/$db" \
+    PG_IMAGE="${RESTORE_PG_IMAGE:?set the matching version/extensions image}" \
+    bash deploy/scripts/verify-restore.sh "${BACKUP_DATE:?set backup date}" || exit "$?"
+done
+```
+
+Record each database's dump path/date, script exit and restore result; one `maistro` PASS
+cannot discharge the other owners' requirements. These are parameterized invocations supported
+by the scripts, not evidence that a restore has been performed. The script:
+
+1. Takes the selected date's dump (yesterday by default) and restores it into a throwaway
+   scratch PostgreSQL container.
+2. Re-runs `pg_dump` on the restored DB and compares raw SHA-256 with the separately
+   captured plain-SQL dump. This is the script's current behavior, **not a valid proof of
+   bit-identical restored state**; see the verification limitation below.
+3. Prints `pg_stat_user_tables.n_live_tup` estimates and fails if zero user tables were
+   reported. Those statistics are not an independent complete data comparison.
+4. Does **not** run application-level smoke tests. Before declaring application recovery proven,
+   each owner separately restores into an isolated staging environment and checks its own
+   application/version/migration compatibility and representative reads. For MAIstro include
+   `GET /health/ready` and a smoke request; LiteLLM and Langfuse require their own owner checks.
+   The script's scratch container is already cleaned up on exit, so it cannot serve that step.
+
+**Known verification limitation — [#1881](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1881),
+under the [#88](https://github.com/Agent-StrongHold/Project-mAIstro/issues/88) backup/restore proof.**
+`backup.sh` takes the custom archive and plain-SQL dump in separate `pg_dump` calls, so
+concurrent writes can make their source snapshots differ. [PostgreSQL 17 documents](https://www.postgresql.org/docs/17/app-pgdump.html)
+that plain dumps generate a random `\restrict` key by default; a fresh dump's bytes can
+therefore differ without a data change. Do not disable this protection or reuse a known
+`--restrict-key` in production to force equal hashes; PostgreSQL warns against that use.
+The required repair is same-snapshot backup evidence plus safe schema/data verification,
+not a more permissive hash check.
+
+A failed drill is an alert to investigate, not proof from a hash mismatch alone that the
+backup is unrestorable. Distinguish restore-command failure, missing/corrupt artifacts,
+actual schema/data mismatch and verifier noise. Until the verifier is repaired, record this
+comparison as insufficient evidence rather than ignoring its failure or claiming recovery
+proved. A script PASS also does not discharge #88's wider authoritative-state and credential-
+escrow coverage; each owner's supported recovery claim still needs trustworthy evidence.
 
 ---
 
@@ -144,10 +240,24 @@ A failing drill is a paging alert: your backups are not restorable.
    docker compose -f deploy/docker-compose.prod.yml exec postgres-replica \
      psql -U maistro -c "SELECT pg_promote();"
    ```
-4. Repoint the app: set `DB_HOST=postgres-replica` for both `maistro-server-*`
-   services (env/.env) and `docker compose ... up -d maistro-server-1 maistro-server-2`.
-   (With Patroni/pgbouncer this step is automatic.)
-5. Verify: `curl -fsS http://localhost:8080/health/ready`.
+4. Repoint **every deployed client of the shared cluster**, not only MAIstro. Promotion does
+   not move the failed `postgres-primary` hostname. For the two `maistro-server-*` services,
+   set `DB_HOST=postgres-replica` in their configuration and recreate them with
+   `docker compose ... up -d maistro-server-1 maistro-server-2`. If Hive embeds a Container,
+   its owner updates the same canonical database endpoint too. LiteLLM and Langfuse owners
+   update their own PostgreSQL connection endpoint to the promoted host, keeping each
+   logical database, role and migration ownership unchanged, and restart/reload their clients
+   using the deployed version's procedure. Do not copy one application's credentials into
+   another or change grants to complete failover.
+   A stable failover endpoint can avoid per-client host edits only if **all** clients already
+   use it and its owner has verified that it routes to the newly writable primary; merely
+   deploying Patroni/pgbouncer does not prove this. Inventory and record each client endpoint.
+5. Verify each application's actual connection and representative read/write against the
+   promoted database through its owner. MAIstro includes
+   `curl -fsS http://localhost:8080/health/ready`; Hive, LiteLLM and Langfuse require their own
+   version-appropriate health/application checks. A passing MAIstro health check alone is not
+   shared-cluster recovery evidence. Do not declare recovery complete while any deployed
+   client still targets the failed primary.
 6. Rebuild a new standby from the promoted node before considering the incident closed:
    wipe the old primary volume, then re-run its container with the `pg_basebackup -R`
    bootstrap pattern (see the `postgres-replica` command in `docker-compose.prod.yml`)
@@ -155,30 +265,54 @@ A failing drill is a paging alert: your backups are not restorable.
 
 ### 4.2 App-instance failure
 
-No action required for data: state is in PostgreSQL/Redis. nginx ejects the failing
+Canonical durable data remains in PostgreSQL; Redis owns only its operational state. nginx ejects the failing
 replica (`max_fails=3 fail_timeout=10s`); `restart: unless-stopped` brings it back.
 To replace manually: `docker compose -f deploy/docker-compose.prod.yml up -d --force-recreate maistro-server-1`.
 
 ### 4.3 Data corruption — point-in-time restore (PITR)
 
-1. Stop writes: `docker compose -f deploy/docker-compose.prod.yml stop maistro-server-1 maistro-server-2`.
+1. Stop writes to each database being restored. For MAIstro: `docker compose -f deploy/docker-compose.prod.yml stop maistro-server-1 maistro-server-2`. LiteLLM/Langfuse owners stop their own writers before their database restore; stopping MAIstro alone is insufficient.
 2. Preserve the corrupted data directory (copy the `pgdata-primary` volume aside for forensics).
-3. Restore the last daily base into a fresh data directory. Simple path (logical, loses
-   sub-day changes unless you replay WAL):
+3. Select the database owner, matching dump date and destination explicitly. For the per-database
+   roots in §2, the logical dump is `/var/backups/maistro/<DB>/<DATE>/postgres-<DB>.dump`;
+   legacy single-database backups may still use the old root, so verify the actual path.
+   Logical restore loses changes after the dump; WAL cannot be replayed onto a logical dump.
+   First provision/verify an empty destination through the owner prerequisites in §4.4 step 4;
+   `pg_restore -d` below does not create it. Never run this over an unverified live database.
+   Each owner sets its own database, authorized restore role and trusted dump path:
    ```bash
-   pg_restore -U maistro -d maistro --clean --if-exists --no-owner \
-     /var/backups/maistro/<DATE>/postgres-maistro.dump
+   docker compose -f deploy/docker-compose.prod.yml exec -T postgres-primary \
+     pg_restore --exit-on-error --no-owner \
+       --username="${APP_RESTORE_ROLE:?set the authorized role for this database}" \
+       --dbname="${APP_DB_NAME:?set the application database}" \
+     < "${APP_DUMP_PATH:?set the verified matching dump path}" || exit "$?"
    ```
-   PITR path (physical): restore a `pg_basebackup` base, then create
+   `--no-owner` creates restored objects as the restore role; the owner must verify that this
+   is the intended object/migration owner (or use its approved owner-specific restore procedure).
+   This fresh-destination example deliberately omits `--clean`, so it does not drop/recreate
+   provisioned extensions or destroy unrelated objects. Inspect the archive's extension/ACL
+   requirements first; all referenced roles and required extensions must already be available.
+   A permission/role/extension error stops the restore; do not invent grants to make it pass. `--exit-on-error`
+   does not make the restore atomic: this command has no `--single-transaction`, so failure
+   may leave a partially populated target. Stop and inspect it; do not blindly rerun or drop
+   it. Its owner must re-establish a verified empty target or an approved recovery procedure
+   before retrying, and recovery remains incomplete until that restore and verification pass.
+   PITR requires an independently captured compatible physical `pg_basebackup` base and
+   its matching cluster WAL; `backup.sh` does not create that physical base. Do not claim
+   PITR readiness from its logical dumps alone. Restore the verified physical base, then create
    `recovery.signal` and set in `postgresql.conf`:
    ```
-   restore_command = 'cp /var/backups/maistro/<DATE>/wal_archive/%f %p'
+   restore_command = 'cp <VERIFIED_MATCHING_WAL_ARCHIVE>/%f %p'
    recovery_target_time = '<timestamp just before corruption>'
    ```
    Start postgres; it replays WAL to the target, then pauses for promotion
    (`SELECT pg_wal_replay_resume();` / `pg_promote()`).
-4. Run the §3 verify steps (pg_dump hash + row counts) against the restored DB.
-5. Restart the app replicas and check `/health/ready`.
+4. Each owner verifies its restored database and application state. The §3 script tests a
+   separate scratch restore of the selected dump, not this operational destination; for PITR,
+   validate the intended recovery point rather than expecting equality with an earlier dump.
+5. Restart each restored application only after its owner checks pass. For MAIstro restart
+   its replicas and check `/health/ready`; LiteLLM/Langfuse use their own version/migration and
+   representative-read checks. Preserve their separate migration ownership.
 
 ### 4.4 Full disaster — rebuild from scratch
 
@@ -189,13 +323,51 @@ To replace manually: `docker compose -f deploy/docker-compose.prod.yml up -d --f
    ```bash
    docker compose -f deploy/docker-compose.prod.yml up -d postgres-primary redis
    ```
-4. Restore PostgreSQL from the latest backup (§4.3 step 3).
-5. Restore Redis: stop redis, copy `redis-dump.rdb` from the backup into the
+4. **Provision every restore target before `pg_restore`.** The production Compose primary
+   initializes only `${POSTGRES_DB:-maistro}`; it mounts `init-replication.sh`, not the root
+   `init-db.sql`. Starting it does not create `litellm` or `langfuse`.
+   - Each deployed application's owner restores/provisions its recorded roles, credentials,
+     privileges and compatible extension prerequisites through its authorized deployment
+     procedure. Neither the database dumps nor this runbook create missing roles or grant
+     access. Stop if that prerequisite or appropriate administrative authority is unavailable.
+   - For a missing database, an already authorized provisioning operator can use PostgreSQL 17
+     [`createdb`](https://www.postgresql.org/docs/17/app-createdb.html) with the already-existing
+     application owner. Set the following **per database**; use the recorded encoding/locale
+     creation options as required by its recovery manifest, rather than guessing defaults:
+     ```bash
+     docker compose -f deploy/docker-compose.prod.yml exec -T postgres-primary \
+       createdb --maintenance-db=postgres --template=template0 \
+         --username="${RESTORE_OPERATOR:?set an already authorized provisioning operator}" \
+         --owner="${APP_DB_OWNER:?set the existing application database owner}" \
+         "${APP_DB_NAME:?set the missing application database}" || exit "$?"
+     ```
+     This needs existing database-creation/ownership authority; it does not acquire it.
+     Do not run `createdb` for an existing target or blindly drop that target on an error.
+   - Verify each target exists, has its intended database owner and compatible encoding/locale,
+     and contains no application data before restoring. Required extension binaries/versions
+     must exist in the server image; any privileged extension creation must be completed by
+     its authorized owner/operator. Verify the restore role can perform the intended restore
+     without broadening privileges. The initial `maistro` target must pass these checks too.
+5. Restore **each deployed logical database** through its application owner using its matching
+   `/var/backups/maistro/<DB>/<DATE>/postgres-<DB>.dump` (§4.3). An explicitly provisioned
+   database is required because the documented [`pg_restore --dbname`](https://www.postgresql.org/docs/17/app-pgrestore.html)
+   invocation does not use `--create`. A restored `maistro` database alone does not recover
+   LiteLLM or Langfuse. Physical cluster recovery instead requires the separately verified
+   base/WAL procedure described there; do not mix it with this logical-target sequence.
+6. Choose the matching reference-stack shared snapshot (with the §2 layout, under
+   `/var/backups/maistro/maistro/<DATE>/`). Restore Redis: stop redis, copy `redis-dump.rdb` into the
    `redis-data` volume as `/data/dump.rdb`, start redis.
-6. Restore the file store: copy the backup's `files/` into the `file-store` volume.
-7. Start the standby, replicas, and LB:
+7. Restore the file store from that same shared snapshot's `files/` into the `file-store` volume.
+8. Start the standby, replicas, and LB only after every required database restore succeeds:
    ```bash
    docker compose -f deploy/docker-compose.prod.yml up -d
    ```
-8. Verify: `curl -fsS http://localhost:8080/health/ready`, replication catching up
-   (`pg_stat_replication`), and run the §3 drill against the restored state.
+   LiteLLM/Langfuse owners start their own application services using the restored endpoints
+   and their recorded versions/migration procedures; they are not services in this production
+   Compose file. Do not launch unreviewed application upgrades during recovery.
+9. Verify MAIstro readiness (`curl -fsS http://localhost:8080/health/ready`) and replication
+   (`pg_stat_replication`); each other deployed application owner verifies its own restored
+   state and representative reads/writes. Run §3 separately for each saved dump as the
+   scratch-restore drill, not as evidence that all running application databases were restored.
+   Missing owner prerequisites, a skipped database or a failed verification keeps disaster
+   recovery incomplete; these instructions are not a report that it has been executed.

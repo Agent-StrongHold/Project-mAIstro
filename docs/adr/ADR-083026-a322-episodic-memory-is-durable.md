@@ -17,6 +17,7 @@ substrate:
   - maistro-engine#ADR-080
 implements: []
 related:
+  - maistro-engine#ADR-082226-5104
   - maistro-engine#ADR-082926-0b72
 supersedes: []
 blocks: []
@@ -32,6 +33,17 @@ owners:
 ---
 
 # ADR-083026-a322: Episodic memory is durable, and the scope rule has one meaning in two languages
+
+## Amendment — 2026-10-03
+
+[ADR-082226-5104](ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md) governs deployment storage. Decision 2's original SQLite twin and
+Decision 3's backend selection below record the August implementation; they no longer authorize
+SQLite as a canonical production backend. PostgreSQL is the sole canonical durable episodic
+store on laptops, team servers and enterprise deployments. SQLite/in-memory conformance legs
+may remain explicit test infrastructure; existing SQLite records require safe historical import
+and necessary readers before runtime retirement. All scope, decay, retention, ranking and
+provenance guarantees remain binding. This scoped amendment leaves the ADR's lifecycle and
+unrelated decisions unchanged; it does not claim the current runtime wiring has been retired.
 
 ## Context
 
@@ -81,13 +93,14 @@ Episodic memory becomes durable. The table is not dropped.
 columns are added nullable-with-default rather than backfilled: no row exists to
 backfill.
 
-**2. Two stores, one protocol pair.** `PgEpisodicStore` over asyncpg and
+**2. Original implementation: two stores, one protocol pair (deployment scope amended above).**
+`PgEpisodicStore` over asyncpg and
 `SqliteEpisodicStore` over aiosqlite, the same twin arrangement `learnings` and
 `outcomes` already use. Both satisfy `EpisodicStore` *and*
 `DecayableEpisodicStore`: a durable store that could not sweep would move the
 decay ladder from "process-local" to "never runs", which is not an improvement.
 
-**3. The backend selects the store, in the place that already selects stores.**
+**3. Original backend wiring (deployment scope amended above).**
 `_wire_episodic_store(pg_pool=..., db_pool=...)`, shaped exactly like
 `_wire_prompt_manager` and for the reason stated there — adding a backend must
 not grow `create_container`'s branch count. A `memory://` URL still gets
