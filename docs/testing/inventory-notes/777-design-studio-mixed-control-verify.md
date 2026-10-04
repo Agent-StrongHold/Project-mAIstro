@@ -7280,3 +7280,67 @@ No #777 dependency landed on either side since round 106: #804/#805/
 all still absent. All 13 acceptance criteria still trace to absent
 canonical owners; the stop condition forbids Design-Studio-private
 substitutes. Verdict: **BLOCKED** (Refs #777).
+
+## Round 108 (job bc84694e, repair round, lane base 9522eb57d) — prior block was dependency-blocking BLOCKED, not a sync conflict; develop synced (cfb6c3b64 -> 086ad7708) conflict-free; blockers hold; battery re-run green
+
+Prior block resolved first: lane block was "worker requested attention:
+BLOCKED" — round-107 verdict (job `012e85e1` `result.json`) was
+dependency-blocking (all 13 criteria trace to absent canonical owners),
+not a develop sync conflict. This round `git fetch origin` shows
+origin/develop **moved** `cfb6c3b64714` -> `086ad770863b`
+(`014245aa5` #1909 CLAUDE.md drift removal; `9522eb57d` #1906 drop
+compose v1 fallback; `086ad7708` #1911 one clock sample for
+pool-exhaustion accounting). Merged conflict-free into `auto-777` at
+merge commit `c137d2ff0` (branch now ahead 171 / behind 0); `quality/`
+byte-identical to develop post-merge (empty `git diff --numstat
+origin/develop -- quality/`), so no ledger amendment.
+
+None of the three new develop commits lands a #777 dependency
+(diff touches only `install.sh`, `CLAUDE.md`,
+`maistro/cli/_upgrade.py`, `maistro/credentials/pool.py` and their
+tests + inventory notes).
+
+Dependency audit re-run fresh at `c137d2ff0`:
+
+- `grep -rlE "GoalReconcil|delegate_goal" packages/*/src`: **0 files**
+  (#804/#805/#806 persistent Workspace Agent + Goal reconciliation
+  absent).
+- `packages/maistro-core/src/maistro/goals`: **absent** (#458 canonical
+  Goal writer absent).
+- `working_graph`: **0 refs** outside `packages/maistro-core` (#776
+  product wiring absent).
+- `ControlMode|BranchControl`: **0 consumers** outside `maistro-design`.
+- Production consumption tokens (`WorkspaceAgent` in
+  `design_service.py` + `packages/maistro-design/src`): **0**.
+- `brief_chat.py:64` `_NOT_WRITTEN` stands verbatim ("the Goal and
+  CreativeBrief writers are #458 and #774").
+- `reconcile` hits in `maistro-canvas` are provider-admission job
+  reconciliation (`executor.py:392 reconcile_admissions`), not #804
+  Goal reconciliation.
+- Branch's only production delta vs develop is a trailing period in a
+  comment (`design_service.py:238`).
+
+Battery re-run at merge head `c137d2ff0`: `ruff check .` EXIT 0;
+`ruff format --check .` EXIT 0 (2864 files); vulture gate CI-exact args
+EXIT 0 — **1342 = 1342 exact multiset** (base `086ad7708`, no
+amendment); gates EXIT 0: workflow-inventory, suite-inventory,
+test-duplicates, cross-package-imports, api-route-contracts,
+backlog-consistency, doc-links, branch-independence,
+verify-monorepo-layout.sh, check-install-functions.py (newly in lane
+after #1906). Pytest: merge-touched
+`maistro-core/tests/credentials/test_pool.py` +
+`cli/test_upgrade.py` + `tests/test_install_compose_floor.py` **140
+passed** (3.5s); `packages/maistro-design/tests` **540 passed / 1
+skipped** (21.5s); hive design/brief/workspace surface (19 modules
+incl. `test_workspace_agent_identity.py`,
+`test_production_workspace_scope.py`) **286 passed / 5 skipped**
+(16.7s).
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+No #777 dependency landed on either side since round 107: #804/#805/
+#806 reconciliation + delegation, #458 Goal writer, #774 brief
+writer, #776 product wiring all still absent. All 13 acceptance
+criteria still trace to absent canonical owners; the stop condition
+forbids Design-Studio-private substitutes. Verdict: **BLOCKED** (Refs
+#777).
