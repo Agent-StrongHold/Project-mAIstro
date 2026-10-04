@@ -464,7 +464,12 @@ def test_the_documented_invocation_renders_the_real_stack(tmp_path: Path) -> Non
             "DB_PASSWORD": "test-db-password",
             "LITELLM_MASTER_KEY": "sk-test-litellm-key",
             "API_KEYS": '["conductor:test-token"]',
+            # Both spellings are required interpolations now: ROUTER_API_KEY
+            # for the engine, MAISTRO_ROUTER_API_KEY for the Conductor bridge
+            # (#402 made it mandatory -- an empty key means the bridge never
+            # starts -- so the render must carry it under its own name).
             "ROUTER_API_KEY": "test-router-key-0123456789abcdef",
+            "MAISTRO_ROUTER_API_KEY": "test-router-key-0123456789abcdef",
             "TASK_DELEGATION_KEY": "test-delegation-key",
             "LANGFUSE_NEXTAUTH_SECRET": "test-langfuse-secret",
             "LANGFUSE_SALT": "test-langfuse-salt",
