@@ -168,3 +168,43 @@ again independently this round, plus the fix behavior:
   config (e.g. a bare `git clone` run by an unrelated tool inside the
   workspace) is outside the pin's reach — the source policy's authority is
   the clone gate plus these two layers.
+
+## Independent verification round (head 44a36c4bc73e, post develop-sync merge)
+
+Executed fresh at the assigned head (prior claims not carried forward). The
+develop-sync block from the previous round is resolved: `origin/develop`
+(35f2e0158a91) is an ancestor of HEAD, which is a merge commit of exactly that
+SHA, with no merge in progress and a clean worktree. `git diff --numstat
+origin/develop HEAD -- quality/` shows only the additive
+`quality/ac-state-notes/auto-404.json` (17 added rows, 0 removed) — no
+multiset loss across the merge.
+
+- Driver checks re-executed at this head: `ruff check .` clean; 120 passed in
+  `packages/maistro-core/tests/tools/git` (including the real-git
+  `test_pinned_workspace_refuses_submodule_update_over_git_protocol`); 77
+  passed in the targeted set (`test_server_security.py` + RSI
+  `test_cli.py`/`test_selfbranch.py`); `check-suite-inventory.py` matches for
+  `packages/maistro-core/tests` (13089) and `packages/maistro-rsi/tests`
+  (968). No closure keywords in branch commit messages or the PR body
+  ("Refs #404" only).
+- Independent mechanism probe with git 2.53.0 (separate sandbox, hand-written
+  `.gitmodules` + gitlink so setup never touches the network): with
+  `-c protocol.*` on the outer `submodule update --init`, the inner clone is
+  refused client-side (`fatal: transport 'git' not allowed`); with the same
+  keys present only in the superproject's local config and no `-c`, the inner
+  clone attempts the actual connection (probe timed out attempting it). This
+  confirms both the GIT_CONFIG_PARAMETERS propagation claim in the rewritten
+  comments and that the persisted-config layer alone cannot protect a
+  server-issued submodule update — both repair layers are required.
+- Agent-reachable clone path audit re-run at this head: `maistro_rsi
+  .selfbranch` uses the hardened `git_clone`; remaining raw `git clone` sites
+  (`_builders_tui.py`, `rsi harvest --clone-url`/`--repo-dir`,
+  `local_loop.py` repo_path) are operator CLI trust domain, outside the
+  candidate-source policy surface.
+- CI on PR #1729 at this head: Quality gate, security, SAST,
+  exact-debt-ledger, lint-and-type-check, formal-conformance, Compliance
+  registry, postgres (pg17/pg18), MinIO, durable-events all SUCCESS — but
+  `test`, `integration-scope`, `coverage (no services)`, `coverage
+  (PostgreSQL)`, and `docker-build` were IN_PROGRESS and `gates-ran` PENDING
+  at review time. CI is therefore not green on this head yet and is recorded
+  UNVERIFIED rather than inferred.
