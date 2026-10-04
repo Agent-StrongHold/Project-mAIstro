@@ -75,6 +75,12 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # The services package initializer, on the same reasoning as the others
     # below: a docstring today, on the runtime import path regardless.
     "hive-conductor/backend/services/__init__.py",
+    # The acceptance-criteria trees (#109): docs/specs/SPEC-*.md enumerate the
+    # ACs the loop's spec-completion signal is scored against. A candidate that
+    # can rewrite the contract can manufacture its own success evidence, so the
+    # trees escalate here AND sit on the stricter evaluator-oracle surface
+    # below, where a candidate diff touching them is vetoed before scoring.
+    "docs/specs/",
     # Package initializers on the promotion path. Python executes these before
     # the module actually imported, so they are on the runtime import path even
     # when they only re-export. They are re-export shims *today*, and a
@@ -190,6 +196,68 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
 )
 
 
+# The evaluator-oracle surface (#109): the artifacts that DEFINE what success
+# means for a candidate -- the scorer, the scenario corpus it is judged
+# against, the ratchet baselines, and the acceptance-criteria trees. This is a
+# STRICTER tier than ``SENSITIVE_PATH_PATTERNS``: sensitive paths escalate a
+# diff to adversarial review before it may leave the sandbox, while a candidate
+# that edits the oracle it is scored against must be vetoed BEFORE the mutated
+# oracle produces its acceptance evidence (``LocalRsiLoop`` enforces this at
+# scoring time, see ``evaluator_oracle.py``). RSI may satisfy the oracle; it
+# may not edit it. Human governance changes remain possible through the
+# explicit ``allow_evaluator_mutation`` override (recorded, never silent) and
+# through ordinary reviewed PRs, which never pass through the loop.
+#
+# Entries here follow the same segment-boundary matching rules as
+# ``SENSITIVE_PATH_PATTERNS``. Keep the list derived from what the scoring
+# path actually consumes; every entry must match tracked files (the generated-
+# artifact guard patterns live in ``evaluator_oracle.GENERATED_ORACLE_PATTERNS``
+# because they deliberately match untracked output).
+EVALUATOR_ORACLE_PATTERNS: tuple[str, ...] = (
+    # The scoring machine, whole: candidate_fitness, fail_first, regression
+    # judge, test inventory, spec tracker, scorecard, benchmark harnesses. A
+    # candidate that edits any of them is judged by the thing it just changed.
+    "maistro_rsi/",
+    "maistro_evolve/",
+    # The tests that pin the evaluator: same one-diff authorization hole the
+    # sensitive list closes, one tier stricter -- the mutated tests ARE the
+    # acceptance evidence the test command produces.
+    "maistro-rsi/tests/",
+    "maistro-evolve/tests/",
+    # The vendored graders carry the pinned digests of the scenario corpora;
+    # weakening one is editing the exam.
+    "scripts/vendor_ifeval.py",
+    "scripts/vendor_bfcl.py",
+    # Ratchet baselines: the recorded floors the quality gates score against.
+    "quality/",
+    # The acceptance-criteria trees (docs/specs/SPEC-*.md): the contracts the
+    # spec-completion signal scores against. Additions are the designed
+    # spec_proposed contribution and stay allowed -- the enforcement layer
+    # (evaluator_oracle.py) vetoes MUTATIONS of oracle files tracked at the
+    # base revision, so a candidate can contract new work but cannot rewrite
+    # the definition of done it inherits.
+    "docs/specs/",
+)
+
+# Generated artifacts a candidate diff may never carry (#109): compiled
+# bytecode, package build output and import-time hook files can hijack the
+# oracle's own execution (a crafted .pyc with a matching source header, a
+# sitecustomize.py imported before the scorer) without any listed path looking
+# edited. A leading ``*`` marks a SUBSTRING pattern (``*.egg-info/`` matches
+# any ``<pkg>.egg-info/`` directory — segment-boundary matching can't express
+# a suffix inside a segment); everything else matches at segment boundaries
+# like the sensitive tier. They live here rather than in
+# EVALUATOR_ORACLE_PATTERNS because they are untracked by design — a
+# dead-pattern ratchet over them would fail on exactly the property that
+# makes them dangerous.
+GENERATED_ORACLE_PATTERNS: tuple[str, ...] = (
+    "__pycache__/",
+    "*.egg-info/",
+    "sitecustomize.py",
+    "usercustomize.py",
+)
+
+
 def normalize_touched_path(path: str) -> str:
     """A diff path in the one spelling the patterns are written against."""
     normalized = path.replace("\\", "/")
@@ -201,6 +269,34 @@ def normalize_touched_path(path: str) -> str:
     return normalized
 
 
+def _matches_segment_patterns(path: str, patterns: tuple[str, ...]) -> bool:
+    """Segment-boundary matching shared by both pattern tiers.
+
+    Directory patterns match at the path start or after a ``/``; file patterns
+    must match a whole trailing path segment. Raw ``pattern in path`` accepted
+    ``notmaistro/security/x`` and rejected nothing adjacent — both directions
+    were wrong.
+    """
+    for pattern in patterns:
+        if pattern.endswith("/"):
+            if path.startswith(pattern) or f"/{pattern}" in path:
+                return True
+        elif path == pattern or path.endswith(f"/{pattern}"):
+            return True
+    return False
+
+
+def matches_evaluator_oracle_pattern(path: str) -> bool:
+    """True if ``path`` sits on the evaluator-oracle surface (#109).
+
+    Same matcher semantics as :func:`matches_sensitive_pattern` (including
+    :func:`normalize_touched_path`), over the stricter oracle tier -- kept as a
+    separate function so the two surfaces can drift deliberately, not
+    accidentally.
+    """
+    return _matches_segment_patterns(normalize_touched_path(path), EVALUATOR_ORACLE_PATTERNS)
+
+
 def matches_sensitive_pattern(path: str) -> bool:
     """True if ``path`` falls on the containment surface.
 
@@ -209,11 +305,4 @@ def matches_sensitive_pattern(path: str) -> bool:
     path segment. Raw ``pattern in path`` accepted ``notmaistro/security/x``
     and rejected nothing adjacent — both directions were wrong.
     """
-    normalized = normalize_touched_path(path)
-    for pattern in SENSITIVE_PATH_PATTERNS:
-        if pattern.endswith("/"):
-            if normalized.startswith(pattern) or f"/{pattern}" in normalized:
-                return True
-        elif normalized == pattern or normalized.endswith(f"/{pattern}"):
-            return True
-    return False
+    return _matches_segment_patterns(normalize_touched_path(path), SENSITIVE_PATH_PATTERNS)
