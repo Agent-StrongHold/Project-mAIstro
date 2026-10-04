@@ -50,6 +50,11 @@ RUNTIME_STATE_FIELDS: frozenset[str] = frozenset(
         "resume_checkpoint_id",
         "accepted_outcome",
         "retention_expires_at",
+        # the runtime cancellation evidence of one physical Attempt (#1884):
+        # which of the two meanings AttemptStatus.CANCELLED carries -- requested
+        # stop vs process-death recovery. A compound execution-outcome name,
+        # like accepted_outcome, with no reading as reusable definition data
+        "cancellation_cause",
     }
 )
 
