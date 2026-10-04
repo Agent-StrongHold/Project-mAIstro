@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from .scenario_objective import ScenarioEvaluation
+
 
 class MeasureKind(StrEnum):
     CALCULATED = "calculated"
@@ -74,6 +76,12 @@ class FitnessWeights:
     # highest-value move in the system; formalising a genuinely new idea into a
     # well-formed spec (backlog → contract) is deliberately just barely below
     # it — proposing new work never outranks finishing promised work.
+    # The criticality-weighted proven-scenario objective (M5-B, #108) outranks
+    # every work signal when its evidence is present: keeping the proven
+    # product/security scenarios green IS the objective the work signals
+    # serve. The scenario gate stays a gate regardless of this weight — the
+    # weight only ranks candidates that already cleared it.
+    proven_scenarios: float = 0.50
     spec_completion: float = 0.45  # net-new @pytest.mark.ac claims, tests green
     spec_proposed: float = 0.40  # a new well-formed docs/specs/ contract (≥2 ACs)
     new_test: float = 0.30  # a genuinely new, green, coverage-raising test
@@ -93,6 +101,11 @@ class FitnessWeights:
 class Scorecard:
     gates: list[GateResult] = field(default_factory=list)
     scores: list[SignalScore] = field(default_factory=list)
+    # The weighted proven-scenario evaluation (M5-B, #108) when the caller
+    # supplied scenario evidence — the separate record of the correctness
+    # gate and the scalar objective. ``None`` when no scenario objective was
+    # configured (the gate and signal are then simply absent).
+    scenario_objective: ScenarioEvaluation | None = None
 
     @property
     def gates_passed(self) -> bool:
