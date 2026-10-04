@@ -173,6 +173,20 @@ class InMemoryLearningStore:
             if learning.id in id_set:
                 learning.hit_count += 1
 
+    def get(self, learning_id: int) -> Learning | None:
+        """Return the stored learning with this id, or None.
+
+        Synchronous by the same reasoning as `list_all`: it answers from the
+        list already in hand. Callers that hold an id from `store` use this to
+        get back the *store's* instance — after a dedup hit, `store` returns
+        the surviving row's id and keeps the pre-existing object, so a caller
+        that kept its own copy is holding an orphan.
+        """
+        for learning in self._learnings:
+            if learning.id == learning_id:
+                return learning
+        return None
+
     async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
         """Return the learnings this Run produced, newest first.
 
