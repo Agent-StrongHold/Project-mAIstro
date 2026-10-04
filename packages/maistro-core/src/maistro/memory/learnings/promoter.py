@@ -82,6 +82,35 @@ class LearningPromoter:
             return await self._check_with_gate(org_id)
         return await self._check_auto(org_id)
 
+    def _gauntlet_candidates(self, all_rows: list[Learning], org_id: str) -> list[Learning]:
+        """The active rows past the promotion threshold the Gauntlet may judge.
+
+        Scope rule matches ``list_all``: a blank ``org_id`` sweeps every org;
+        otherwise only that org's rows are candidates (#120/#118).
+        """
+        return [
+            lr
+            for lr in all_rows
+            if (org_id or not lr.org_id)
+            and lr.status == "active"
+            and lr.hit_count >= self._threshold
+        ]
+
+    def _promote_through_gauntlet(self, lr: Learning, verdict_ok_reason: str) -> None:
+        """Move one Gauntlet-accepted candidate LEARNING -> VALIDATED -> REPERTOIRE."""
+        assert self._gauntlet is not None
+        advance_stage(
+            lr,
+            LearningStage.VALIDATED,
+            gauntlet_name=self._gauntlet.name,
+        )
+        commit_to_repertoire(lr)
+        logger.info(
+            "Gauntlet-validated learning #%s joined the repertoire (%s)",
+            lr.id,
+            verdict_ok_reason,
+        )
+
     async def _check_with_gauntlet(self, org_id: str = "") -> list[Learning]:
         """Gauntlet-gated promotion: threshold makes a candidate, evidence decides.
 
@@ -98,13 +127,7 @@ class LearningPromoter:
         promoted: list[Learning] = []
 
         all_rows = await self._store.list_all(org_id=org_id, limit=10_000)
-        candidates = [
-            lr
-            for lr in all_rows
-            if (org_id or not lr.org_id)
-            and lr.status == "active"
-            and lr.hit_count >= self._threshold
-        ]
+        candidates = self._gauntlet_candidates(all_rows, org_id)
         for lr in candidates:
             verdict = await self._gauntlet.evaluate(lr, evidence=evidence_of(lr))
             if not verdict.ok:
@@ -114,17 +137,7 @@ class LearningPromoter:
                     verdict.reason,
                 )
                 continue
-            advance_stage(
-                lr,
-                LearningStage.VALIDATED,
-                gauntlet_name=self._gauntlet.name,
-            )
-            commit_to_repertoire(lr)
-            logger.info(
-                "Gauntlet-validated learning #%s joined the repertoire (%s)",
-                lr.id,
-                verdict.reason,
-            )
+            self._promote_through_gauntlet(lr, verdict.reason)
             if lr.tool_name and self._forge:
                 await self._try_mutate_skill(lr)
             promoted.append(lr)

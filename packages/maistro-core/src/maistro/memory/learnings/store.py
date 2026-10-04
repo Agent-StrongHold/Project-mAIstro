@@ -317,6 +317,26 @@ class InMemoryLearningStore:
                 decayed += 1
         return decayed
 
+    def _consolidation_anchor(self, survivors: list[Learning], lr: Learning) -> Learning | None:
+        """The already-kept row ``lr`` is a near-duplicate of, or None.
+
+        Same bucket = identical tool and scope axes and at least half of the
+        trigger keys overlapping (the rule ``store`` dedup uses).
+        """
+        return next(
+            (
+                s
+                for s in survivors
+                if s.tool_name == lr.tool_name
+                and s.org_id == lr.org_id
+                and s.team_id == lr.team_id
+                and s.user_id == lr.user_id
+                and s.agent_id == lr.agent_id
+                and lifecycle.trigger_key_overlap(s.trigger_keys, lr.trigger_keys) >= 0.5
+            ),
+            None,
+        )
+
     async def consolidate(
         self,
         *,
@@ -339,19 +359,7 @@ class InMemoryLearningStore:
         ]
         survivors: list[Learning] = []
         for lr in pool:
-            anchor = next(
-                (
-                    s
-                    for s in survivors
-                    if s.tool_name == lr.tool_name
-                    and s.org_id == lr.org_id
-                    and s.team_id == lr.team_id
-                    and s.user_id == lr.user_id
-                    and s.agent_id == lr.agent_id
-                    and lifecycle.trigger_key_overlap(s.trigger_keys, lr.trigger_keys) >= 0.5
-                ),
-                None,
-            )
+            anchor = self._consolidation_anchor(survivors, lr)
             if anchor is None:
                 survivors.append(lr)
             else:

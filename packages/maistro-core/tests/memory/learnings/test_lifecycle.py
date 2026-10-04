@@ -35,6 +35,11 @@ from maistro.types.memory import (
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
+# The behavioral-contract evidence ADR-100126-9a4b and SPEC-283 name in their
+# `tests:` front matter (ADR-032): these tests pin the observable stage-ladder,
+# dynamics, supersession and consolidation behavior the two documents declare.
+pytestmark = [pytest.mark.contract("behavioral")]
+
 
 def _lr(**overrides: object) -> Learning:
     kwargs: dict[str, object] = {

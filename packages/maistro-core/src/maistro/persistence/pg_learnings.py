@@ -6,7 +6,7 @@ import itertools
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
 from maistro.observability.correlation import observed_provenance
@@ -561,6 +561,50 @@ def _load_keys(raw: object) -> list[str]:
     return []
 
 
+class _LifecycleRowFields(TypedDict):
+    """The lifecycle + epistemics kwargs (ADR-100126-9a4b) decoded from a row."""
+
+    stage: LearningStage
+    epistemic_type: EpistemicType
+    confidence: float
+    applicability: dict[str, list[str]]
+    reinforcement_count: int
+    contradiction_count: int
+    created_at: datetime
+    last_confirmed_at: datetime | None
+    validated_by: str
+    validated_at: datetime | None
+    supersedes: int | None
+    superseded_by: int | None
+
+
+def _lifecycle_row_fields(row: asyncpg.Record) -> _LifecycleRowFields:
+    """The lifecycle + epistemics columns (ADR-100126-9a4b), pre-migration safe.
+
+    Defaults mirror the dataclass so a row written before the lifecycle
+    migration reads back as the local empirical learning it was, not as
+    something the system never claimed.
+    """
+    return {
+        "stage": LearningStage(row.get("stage") or "learning"),
+        "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
+        "confidence": (
+            float(row["confidence"])
+            if row.get("confidence") is not None
+            else DEFAULT_LEARNING_CONFIDENCE
+        ),
+        "applicability": _load_applicability(row.get("applicability")),
+        "reinforcement_count": row.get("reinforcement_count") or 0,
+        "contradiction_count": row.get("contradiction_count") or 0,
+        "created_at": row.get("created_at") or datetime.now(UTC),
+        "last_confirmed_at": row.get("last_confirmed_at"),
+        "validated_by": row.get("validated_by") or "",
+        "validated_at": row.get("validated_at"),
+        "supersedes": row.get("supersedes"),
+        "superseded_by": row.get("superseded_by"),
+    }
+
+
 def _row_to_learning(row: asyncpg.Record) -> Learning:
     return Learning(
         id=row["id"],
@@ -588,25 +632,7 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         run_id=row.get("run_id") or "",
         node_run_id=row.get("node_run_id") or "",
         attempt_id=row.get("attempt_id") or "",
-        # Lifecycle + epistemics (ADR-100126-9a4b). Defaults mirror the dataclass so a
-        # row written before migration 048 reads back as the local empirical
-        # learning it was, not as something the system never claimed.
-        stage=LearningStage(row.get("stage") or "learning"),
-        epistemic_type=EpistemicType(row.get("epistemic_type") or "empirical"),
-        confidence=(
-            float(row["confidence"])
-            if row.get("confidence") is not None
-            else DEFAULT_LEARNING_CONFIDENCE
-        ),
-        applicability=_load_applicability(row.get("applicability")),
-        reinforcement_count=row.get("reinforcement_count") or 0,
-        contradiction_count=row.get("contradiction_count") or 0,
-        created_at=row.get("created_at") or datetime.now(UTC),
-        last_confirmed_at=row.get("last_confirmed_at"),
-        validated_by=row.get("validated_by") or "",
-        validated_at=row.get("validated_at"),
-        supersedes=row.get("supersedes"),
-        superseded_by=row.get("superseded_by"),
+        **_lifecycle_row_fields(row),
     )
 
 
