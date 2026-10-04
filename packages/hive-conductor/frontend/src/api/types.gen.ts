@@ -3288,7 +3288,14 @@ export interface paths {
         put?: never;
         /**
          * Decide Review
-         * @description Approve or deny a promotion. Trains Ralph + (on approve) opens a PR.
+         * @description Rule on a promotion in the review inbox (#110).
+         *
+         *     Deterministic per verb: approve/reject are verdicts (train RLPHD, settle
+         *     the item; approve also opens a PR); revise sends the candidate back for
+         *     another attempt (slot stays open, nothing trained or exported); resume
+         *     re-queues the reverted patch for harvest WITHOUT a verdict (review stays
+         *     open). The file-level mechanics live in ``maistro_rsi.promotion_review``
+         *     so the CLI, this API and any future surface cannot drift apart.
          */
         post: operations["decide_review_v1_rsi_runs__run_id__reviews__sha__post"];
         delete?: never;
@@ -6305,7 +6312,7 @@ export interface components {
              * Decision
              * @enum {string}
              */
-            decision: "approve" | "deny";
+            decision: "approve" | "reject" | "revise" | "resume" | "deny";
             /** Reason */
             reason?: string | null;
             /** Repo Path */

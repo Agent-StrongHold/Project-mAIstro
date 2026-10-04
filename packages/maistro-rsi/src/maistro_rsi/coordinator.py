@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from maistro_rsi.htr import HypothesisEvidence, HypothesisNode, HypothesisTree
+from maistro_rsi.intervention import Intervention, InterventionPolicy, ObjectiveParked
 
 if TYPE_CHECKING:
     from maistro_rsi.runner import RsiCycleResult
@@ -72,10 +73,13 @@ HypothesisProposer = Callable[[HtrContext], str]
 @dataclass
 class CoordinatorResult:
     """The outcome of a coordinator run: the tree it grew, the best node found,
-    and the per-step node ids in execution order."""
+    the per-step node ids in execution order, and — when an intervention policy
+    is wired in — the stall interventions performed, each preserving its
+    lineage/evidence review, returned directions, cost, and subsequent gain."""
 
     tree: HypothesisTree
     steps: list[str] = field(default_factory=list)
+    interventions: list[Intervention] = field(default_factory=list)
 
     @property
     def best(self) -> HypothesisNode | None:
@@ -84,11 +88,26 @@ class CoordinatorResult:
 
 class HtrCoordinator:
     """Drives ``num_cycles`` short-lived executors against a growing hypothesis
-    tree, refining the frontier from each returned result."""
+    tree, refining the frontier from each returned result.
 
-    def __init__(self, tree: HypothesisTree, executor: ExecutorFn) -> None:
+    With a ``policy`` (M5-B), consecutive non-improving cycles trigger a stall
+    intervention: a lineage review over the stalled branch's full evidence and
+    the tree's archived promising candidates, reseeding the frontier from the
+    returned materially-distinct directions. Without one, the coordinator
+    behaves exactly as before (the policy is opt-in so existing callers and
+    tests are untouched).
+    """
+
+    def __init__(
+        self,
+        tree: HypothesisTree,
+        executor: ExecutorFn,
+        *,
+        policy: InterventionPolicy | None = None,
+    ) -> None:
         self._tree = tree
         self._executor = executor
+        self._policy = policy
 
     def _next_node(self, propose: HypothesisProposer) -> HypothesisNode:
         """The node to act on this step: drain queued hypotheses first, then
@@ -132,6 +151,32 @@ class HtrCoordinator:
                 score=node.score,
                 **self._tree.summary(),
             )
+            if self._policy is None:
+                continue
+            # Measure first, detect second: the gain of the latest intervention
+            # must include this cycle's outcome before a possible new stall
+            # fires another intervention.
+            self._policy.observe_post_intervention_cycle(self._tree, report.evidence.improved)
+            if self._policy.observe(report.evidence.improved):
+                await logger.ainfo(
+                    "htr_stall_detected",
+                    node_id=node.id,
+                    stall_threshold=self._policy.config.stall_threshold,
+                    consecutive_non_improving=(self._policy.tracker.consecutive_non_improving),
+                    **self._tree.summary(),
+                )
+                try:
+                    intervention = await self._policy.intervene(self._tree, node.id)
+                except ObjectiveParked as exc:
+                    # The park fires AFTER this cycle executed and recorded
+                    # `node`, so the raised exception must carry the steps this
+                    # run completed: the loop driver merges steps only from a
+                    # returned CoordinatorResult, and dropping the executed
+                    # cycle here would leave its node OPEN in the on-disk
+                    # snapshot for a later resume to run again.
+                    exc.steps = tuple(result.steps)
+                    raise
+                result.interventions.append(intervention)
         return result
 
 
