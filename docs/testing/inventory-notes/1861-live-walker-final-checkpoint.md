@@ -86,3 +86,17 @@ documented full-package `mypy` command clean (792 files); CI-repair round
 no unbanked identities and no `quality/` delta vs develop
 (`git diff --numstat origin/develop -- quality/` empty), so the per-identity
 ledger needed no amendment for this change.
+
+Independent re-verification (L1861 verify @ `decb1fbb62a1`): fix content is
+byte-identical to `cccf9d49a7f8` (the docs commit adds only this note). The
+exact acceptance battery plus the new file, run against the lane pgvector
+(`MAISTRO_TEST_PG_DSN=127.0.0.1:55186`, alembic head `052`) = **107 passed,
+0 skipped**; full `packages/maistro-core/tests/graph/durable_runs` = **648
+passed**. Fail-before re-proved without touching the tree: `git archive` of
+develop base `928993dda1c9` plus this test file — the named regression failed
+all three backends at `assert await recovery.reconcile_persistence(...) == 0`
+→ `assert 1 == 0` (one tick claimed the live continuation) while the companion
+crashed-walker case passed there; the repaired tree passes. Also re-run clean:
+`ruff check .`, `ruff format --check .`, the CI-exact vulture ratchet
+(1342 reviewed identities = 1342 findings, no `quality/` delta vs develop),
+and the documented nine-package `mypy` command (792 source files).
