@@ -7,8 +7,10 @@ let the resolver's generic fallback build a success-shaped node that did no
 work. The repair is structural: a node declares its authorities on the class,
 `register_node` refuses a declaration the resolver could not honour, and
 `compose_node` refuses to build a kind whose required authority is missing.
-The guards here enumerate every registered kind, so the next node cannot
-recreate the class of defect without failing this file.
+The guards here enumerate every registered kind through the reconciled
+production registration universe (`_production_registration`: source
+identities, the reachability ledger and the live registry must agree), so the
+next node cannot recreate the class of defect without failing this file.
 """
 
 from __future__ import annotations
@@ -32,6 +34,13 @@ from maistro.graph.nodes import (
     register_node,
 )
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+
+# Importing the helper performs the production loading itself (the reachable
+# registration modules, `maistro_design.creative_nodes` included), so the
+# parametrizations below cover the reconciled universe regardless of which
+# test modules this process happened to collect first. The universe's
+# completeness is proven in test_production_registration_universe.
+from ._production_registration import LOADED_REGISTRATION_MODULES  # noqa: F401
 
 _SYNTH_DAG = {"nodes": [{"id": "s", "kind": "agent.synth_dag"}]}
 
