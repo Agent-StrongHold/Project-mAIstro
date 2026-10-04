@@ -7949,3 +7949,64 @@ product-path wiring exists on the branch or upstream. All 13 acceptance
 criteria remain unverifiable against reachable production behavior, and the
 issue's stop condition forbids private substitutes. Verdict: **BLOCKED**
 (Refs #777).
+
+---
+
+## Round 118 (job 0f60996e) — re-verify; blockers re-proven fresh, battery green
+
+Prior-block context resolved: the referenced deterministic-check failure
+(`53d5e08b/check-2.log`, ruff-format on `agent_loop.py`) was already proven
+fixed (round 117; re-confirmed below), and this round's driver produced **no
+`check-*.log` files** — the prior BLOCKED was a dependency verdict, not a
+validation failure. `git fetch origin` → `origin/develop` still exactly the
+lane base `e067b7b0a` (no upstream movement; no sync applicable; HEAD
+`e8bc5af3` clean).
+
+**Blockers re-proven fresh at `e8bc5af3` (not trusted from round 117):**
+
+- `grep -rlE 'GoalReconciler|delegate_goal' packages/*/src` → **0 files**
+- `packages/maistro-core/src/maistro/goals` → **absent** (`ls`: No such file)
+- `grep -rlE 'ControlMode|BranchControl' packages/*/src | grep -v
+  maistro-design` → **0 files** (exit 1)
+- `workspace_agent` under `packages/hive-conductor/backend` → **tests only**
+  (`test_agent_invocation.py`, `test_chat_run_admission.py`,
+  `test_default_workspace.py`, `test_workspace_agent_identity.py`,
+  `test_agent_materialization.py`) — product path (`routes/`, `services/`)
+  has zero refs
+- `grep -rln WorkingMemory packages/hive-conductor/backend
+  packages/maistro-design/src` → **0 files**
+- `hive-conductor/backend/services/brief_chat.py:64` `_NOT_WRITTEN` stands
+  verbatim ("the Goal and CreativeBrief writers are #458 and #774")
+- branch diff vs base remains the 16-file docs/salvage + gate-fix set
+  (`git diff --stat e067b7b0a...HEAD`: 16 files, +10115/−4; salvage tree is
+  outside `packages/*/src`, invisible to vulture/pytest/mypy — stop condition
+  respected)
+
+**Battery re-run at `e8bc5af3` (all fresh, this round):**
+
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (2882 files already formatted)
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI-exact) → EXIT 0; base `e067b7b0aca0` vs candidate
+  `e8bc5af3ef65`, 1342 reviewed → 1341 findings, `never_allowlist: 0` — gate
+  green, no ledger amendment needed or made
+- `check-suite-inventory` → EXIT 0 (14 suites match); `check-backlog-
+  consistency` → EXIT 0 (167 items); `check-branch-independence` → EXIT 0
+- pytest `maistro-design/tests` + `maistro-core/tests/memory` → **1186
+  passed / 1 skipped** (23.9s)
+- pytest `maistro-bootstrap/tests` → **237 passed / 1 skipped** (15.1s)
+- pytest `hive-conductor/backend/tests -k "design or brief or workspace"` →
+  **378 passed / 5 skipped** (22.4s)
+
+No production or test code changed this round; front-matter deltas stay +0.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+`origin/develop` unmoved at the lane base; none of #804/#805/#806 (persistent
+Workspace Agent + Goal reconciliation/delegation), #458 (canonical Goal
+writer), #774 (CreativeBrief writer), #775 (creative Graph), or #776
+product-path wiring exists on the branch or upstream. All 13 acceptance
+criteria remain unverifiable against reachable production behavior, and the
+issue's stop condition forbids Design-Studio-private substitutes (Goal owner,
+reconciler, memory system, permissions model). Verdict: **BLOCKED** (Refs
+#777).
