@@ -20,7 +20,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from maistro_rsi.competitors import parse_competitors
 from maistro_rsi.export_policy import (
@@ -373,8 +373,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     review = sub.add_parser(
         "review",
-        help="List/approve/deny promotions the checkpoint reviewer reverted "
-        "pending human judgment (SPEC-248 RLPHD). Pure host-side file "
+        help="List/approve/reject/revise/resume promotions in the checkpoint "
+        "review inbox (SPEC-248 RLPHD + #110 path split). Pure host-side file "
         "operations — no running container needed.",
     )
     review.add_argument(
@@ -382,14 +382,35 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     review_sub = review.add_subparsers(dest="review_action", required=True)
     review_sub.add_parser("list", help="List promotions still pending a decision.")
-    approve = review_sub.add_parser(
-        "approve", help="Approve a flagged promotion — re-queues its patch for the next harvest."
+
+    def _decision_verb(name: str, help_text: str) -> argparse.ArgumentParser:
+        p = review_sub.add_parser(name, help=help_text)
+        p.add_argument("sha", help="Commit sha (or its 12-char prefix) of the flagged promotion.")
+        p.add_argument("--reason", default="", help="Why — persisted with the decision record.")
+        return p
+
+    _decision_verb(
+        "approve", "Approve a flagged promotion — re-queues its patch for the next harvest."
     )
-    approve.add_argument("sha", help="Commit sha (or its 12-char prefix) of the flagged promotion.")
-    deny = review_sub.add_parser(
-        "deny", help="Deny a flagged promotion — it stays reverted; the patch is kept for audit."
+    _decision_verb(
+        "reject",
+        "Reject a flagged promotion — it stays reverted; the patch is kept for audit. "
+        "('deny' is kept as an alias.)",
     )
-    deny.add_argument("sha", help="Commit sha (or its 12-char prefix) of the flagged promotion.")
+    _decision_verb(
+        "revise",
+        "Send a flagged promotion back for another attempt — the inbox slot stays "
+        "open for the revised candidate; nothing is exported or trained.",
+    )
+    _decision_verb(
+        "resume",
+        "Put a reverted promotion back on the forward path (patch re-queued for "
+        "harvest) WITHOUT a verdict — the review stays open for approve/reject.",
+    )
+    _decision_verb(
+        "deny",
+        "(deprecated alias of reject) Deny a flagged promotion — it stays reverted.",
+    )
 
     return parser
 
@@ -1082,6 +1103,7 @@ def _review(args: argparse.Namespace) -> int:
     from maistro_rsi.promotion_review import (
         load_kept_reviews,
         load_pending_reviews,
+        normalize_decision,
         resolve_review,
     )
 
@@ -1110,30 +1132,39 @@ def _review(args: argparse.Namespace) -> int:
                     f"    predicted_p={r.predicted_p:.3f} theta={r.theta:.3f}  {r.note}"
                 )
         print(
-            "\nTo decide: python -m maistro_rsi review approve <sha> --report-dir <dir>\n"
-            "            python -m maistro_rsi review deny <sha> --report-dir <dir>"
+            "\nTo decide: python -m maistro_rsi review approve|reject|revise|resume <sha> "
+            "--report-dir <dir>\n            ('deny' is kept as an alias of reject)"
         )
         return 0
 
     sha = args.sha
-    decision: Literal["approve", "deny"] = "approve" if args.review_action == "approve" else "deny"
+    verb = args.review_action
     # resolve from flagged OR kept dir — the review data has the same shape
     for d in (flagged_dir, kept_dir):
         if (d / f"{sha[:12]}.json").is_file():
             try:
                 review = resolve_review(
-                    d, report_dir / "export", report_dir / "rlphd_state.json", sha, decision
+                    d,
+                    report_dir / "export",
+                    report_dir / "rlphd_state.json",
+                    sha,
+                    verb,
+                    reason=getattr(args, "reason", ""),
+                    records_dir=report_dir / "promotions",
                 )
             except FileNotFoundError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
-            verb = (
-                "approved — patch re-queued for the next harvest"
-                if decision == "approve"
-                else "denied"
-            )
+            outcome = {
+                "approve": "approved — patch re-queued for the next harvest",
+                "reject": "rejected — stays reverted; patch kept for audit",
+                "revise": f"revision requested (#{review.revision}) — inbox slot stays open",
+                "resume": "resumed — patch re-queued for harvest; review still open",
+            }[normalize_decision(verb)]
+            trained = normalize_decision(verb) in ("approve", "reject")
             print(
-                f"{review.sha[:12]} ({review.target}) {verb}. RLPHD model updated for {review.action_class}."
+                f"{review.sha[:12]} ({review.target}) {outcome}."
+                + (" RLPHD model updated." if trained else "")
             )
             return 0
     print(
