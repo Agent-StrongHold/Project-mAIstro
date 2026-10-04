@@ -4,7 +4,7 @@ When a learning's hit_count crosses the promotion threshold,
 it graduates to 'promoted' status and optionally triggers
 skill mutation via the SkillForge protocol.
 
-Ported from Stronghold. Since ADR-092 (M4-B #118), a configured Gauntlet
+Ported from Stronghold. Since ADR-100126-9a4b (M4-B #118), a configured Gauntlet
 stands between the threshold and the repertoire: hit_count alone only makes a
 learning a *candidate* -- it joins the collective repertoire when the
 Gauntlet accepts the outcome evidence later Runs recorded, and is left in

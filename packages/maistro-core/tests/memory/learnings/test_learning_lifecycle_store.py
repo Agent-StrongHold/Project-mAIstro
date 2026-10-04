@@ -1,4 +1,4 @@
-"""Store-level lifecycle operations (ADR-092, M4-B #120).
+"""Store-level lifecycle operations (ADR-100126-9a4b, M4-B #120).
 
 The rules live in lifecycle.py; these tests pin how InMemoryLearningStore
 applies them to real rows, including the scope rules the other store methods

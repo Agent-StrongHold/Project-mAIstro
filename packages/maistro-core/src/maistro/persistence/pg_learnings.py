@@ -174,7 +174,7 @@ class PgLearningStore:
                 # its default. `hit_count` is usually 0 on a new learning, but
                 # a caller that supplies one — a re-import, a merge — must get
                 # it back, and `find_relevant` orders by it. The lifecycle
-                # fields (ADR-092) are written for the same reason: a restart
+                # fields (ADR-100126-9a4b) are written for the same reason: a restart
                 # must not demote a validated learning back to a local belief.
                 """INSERT INTO learnings
                    (category, trigger_keys, learning, tool_name, source_query,
@@ -588,7 +588,7 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         run_id=row.get("run_id") or "",
         node_run_id=row.get("node_run_id") or "",
         attempt_id=row.get("attempt_id") or "",
-        # Lifecycle + epistemics (ADR-092). Defaults mirror the dataclass so a
+        # Lifecycle + epistemics (ADR-100126-9a4b). Defaults mirror the dataclass so a
         # row written before migration 048 reads back as the local empirical
         # learning it was, not as something the system never claimed.
         stage=LearningStage(row.get("stage") or "learning"),

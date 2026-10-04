@@ -1,5 +1,5 @@
 ---
-id: ADR-092
+id: ADR-100126-9a4b
 title: Validated collective learning — Memory → Learning → Validated Learning → Repertoire
 repo: maistro-engine
 kind: adr
@@ -35,7 +35,7 @@ history:
     date: 2026-10-01
 ---
 
-# ADR-092: Validated collective learning
+# ADR-100126-9a4b: Validated collective learning
 
 ## Context
 

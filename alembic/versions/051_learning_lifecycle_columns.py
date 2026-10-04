@@ -1,4 +1,4 @@
-"""Learning lifecycle + epistemics columns (M4-B / ADR-092).
+"""Learning lifecycle + epistemics columns (M4-B / ADR-100126-9a4b).
 
 The `learnings` table gains the pipeline state the in-memory store already
 carries on the row: stage (memory -> learning -> validated -> repertoire),
@@ -11,8 +11,8 @@ every other field (#1156's disposition contract now enforces exactly that).
 `created_at` already exists (migration 001) and is now written explicitly by
 the stores rather than left to the server default.
 
-Revision ID: 048
-Revises: 047
+Revision ID: 051
+Revises: 050
 Create Date: 2026-10-01
 """
 
@@ -20,8 +20,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "048"
-down_revision = "047"
+revision = "051"
+down_revision = "050"
 branch_labels = None
 depends_on = None
 

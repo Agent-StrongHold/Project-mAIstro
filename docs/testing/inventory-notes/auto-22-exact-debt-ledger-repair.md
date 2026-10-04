@@ -92,7 +92,7 @@ as actual evidence for the round that owns the Quality gate:
   it. Eliminating it means wiring `LearningPromoter` into a process entry
   point — a #118/#450 product decision, not a repair-lane one.
 - **contract-markers ratchet** (RC 1):
-  `declared-kind-unproven::docs/adr/ADR-092-validated-collective-learning.md
+  `declared-kind-unproven::docs/adr/ADR-100126-9a4b-validated-collective-learning.md
   [behavioral]` — the #22 ADR's declared behavioral claims are unproven and
   unbanked. Corresponds to the failing "Validate ADR/spec front-matter" CI
   job.

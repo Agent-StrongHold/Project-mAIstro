@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from itertools import count
+from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs import model as run_model
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro_canvas.canvas.canonical_execution import (
@@ -793,11 +797,22 @@ class _StallThenSucceedImageClient(_ImageClient):
         return await super().generate(**kwargs)
 
 
-async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation() -> None:
+@pytest.mark.parametrize("id_marker", ["401", "403", "429", "503", "402"])
+async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation(
+    monkeypatch: pytest.MonkeyPatch, id_marker: str
+) -> None:
     """Codex #1560: a stalled provider call hitting ``max_execution_seconds``
     must be recorded canonically as a timed-out Attempt the NodeRun can retry,
     never as a requested cancellation that terminalizes the Run and breaks
     every remaining retry."""
+    sequence = count()
+
+    def controlled_uuid() -> UUID:
+        # #1762: random Attempt IDs containing 401/403 were misclassified as
+        # permanent auth faults. Keep IDs unique, but reproduce the marker.
+        return UUID(f"16e5402cfaec{id_marker}0ba717ef5{next(sequence):08x}")
+
+    monkeypatch.setattr(run_model, "uuid", SimpleNamespace(uuid4=controlled_uuid))
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
     runs = InMemoryRunStore(project_store=projects)
@@ -810,7 +825,8 @@ async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation
         run_store=runs,
         workspace_id="workspace-1",
         project_id=root.project_id,
-        max_execution_seconds=0.3,
+        # Exercise the real runtime deadline without changing its existing budget.
+        max_execution_seconds=2.0,
     )
     job = await runtime.executor.start_job(
         org_id=_CanvasStore.ORG,
@@ -822,11 +838,16 @@ async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation
     runner = runtime.runner
     assert isinstance(runner, CanvasJobRunner)
 
-    assert await asyncio.wait_for(runner.tick_once(), timeout=5) is True
-    assert job.status == JobStatus.PENDING
-    assert job.error_message is None
+    assert await asyncio.wait_for(runner.tick_once(), timeout=10) is True
+    assert job.attempts == 1
+    assert job.max_attempts == 2
     run_id = canonical_run_id(job.params)
     assert run_id is not None
+    first_nodes = await runs.list_node_runs(run_id)
+    first_attempts = await runs.list_attempts(first_nodes[0].node_run_id)
+    assert [attempt.status for attempt in first_attempts] == [AttemptStatus.TIMED_OUT]
+    assert job.status == JobStatus.PENDING
+    assert job.error_message is None
     parked = await runs.get_run(run_id)
     assert parked is not None
     assert parked.status is not RunStatus.CANCELLED

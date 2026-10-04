@@ -2,7 +2,7 @@
 inventory-delta:
   packages/maistro-core/tests: +67
 ---
-# M4-B — validated collective learning (ADR-092, epic #22; children #117–#121)
+# M4-B — validated collective learning (ADR-100126-9a4b, epic #22; children #117–#121)
 
 Four new test files and one, plus contract updates, covering the learning
 pipeline semantics that previously had no tests because the semantics did not

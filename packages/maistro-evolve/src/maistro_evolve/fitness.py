@@ -4,6 +4,7 @@ import hashlib
 import json
 from typing import Any
 
+from .curriculum import RESERVED_BENCHMARK_PREFIX
 from .diversity import trait_vector
 from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
 from .types import FitnessComponents, PipelineGenome
@@ -90,6 +91,46 @@ _ELO_FLOOR = 1000.0
 _ELO_SPREAD = 400.0
 
 
+def _curriculum_gate_failure(scores: dict[str, float]) -> str | None:
+    """Name the curriculum-score violation, or ``None`` if there is none.
+
+    M4-D (#24, SPEC-282): self-generated curriculum practice scores are not
+    external evaluation. They cannot satisfy the hard gate, however high they
+    are — a genome scored ONLY on its own generated challenges has no external
+    evidence and must not breed.
+    """
+    reserved = sorted(b for b in scores if b.startswith(RESERVED_BENCHMARK_PREFIX))
+    if not reserved:
+        return None
+    return (
+        "self-generated curriculum scores ("
+        + ", ".join(reserved)
+        + ") are not external evaluation — they cannot satisfy the hard gate"
+    )
+
+
+def _external_gate_failures(external_scores: dict[str, float]) -> list[str]:
+    """Gate every externally-scored benchmark against its threshold.
+
+    **Every scored benchmark is gated.** Iterating `_HARD_GATE_THRESHOLDS` and
+    testing `if bench in scores` silently passed anything absent from that
+    dict — including `code_rsi`, the only benchmark the RSI loop scores.
+    Unlisted benchmarks fall back to `_DEFAULT_GATE_FLOOR` instead of being
+    waved through.
+    """
+    failures: list[str] = []
+    for bench, score in sorted(external_scores.items()):
+        tuned = _HARD_GATE_THRESHOLDS.get(bench)
+        threshold = _DEFAULT_GATE_FLOOR if tuned is None else tuned
+        if score < threshold:
+            # Name which kind of threshold fired: a genome blocked by an
+            # untuned default floor is a different conversation from one that
+            # missed a benchmark's real minimum.
+            kind = " (default floor — no tuned threshold)" if tuned is None else ""
+            failures.append(f"{bench} score {score:.3f} below gate {threshold}{kind}")
+    return failures
+
+
 def _check_hard_gate(genome: PipelineGenome) -> tuple[bool, list[str]]:
     """Gate every benchmark the genome actually ran, fail-closed.
 
@@ -99,28 +140,33 @@ def _check_hard_gate(genome: PipelineGenome) -> tuple[bool, list[str]]:
     1. **A subset run is not penalised for what it skipped.** A code_rsi-only RSI
        run must not fail because it has no ifeval score. So iterate the genome's
        *scores*, never the full threshold list.
-    2. **Every scored benchmark is gated.** Iterating `_HARD_GATE_THRESHOLDS` and
-       testing `if bench in scores` satisfied (1) but silently passed anything
-       absent from that dict — including `code_rsi`, the only benchmark the RSI
-       loop scores. Unlisted benchmarks now fall back to `_DEFAULT_GATE_FLOOR`
-       instead of being waved through.
+    2. **Every scored benchmark is gated.** See `_external_gate_failures`:
+       unlisted benchmarks fall back to `_DEFAULT_GATE_FLOOR` instead of being
+       waved through.
     """
     failures: list[str] = []
     scores = genome.eval_scores
 
-    # A genome must have been evaluated on *something* to be gated meaningfully.
-    if not scores:
-        return False, ["no benchmarks evaluated"]
+    curriculum_failure = _curriculum_gate_failure(scores)
+    if curriculum_failure is not None:
+        failures.append(curriculum_failure)
 
-    for bench, score in sorted(scores.items()):
-        tuned = _HARD_GATE_THRESHOLDS.get(bench)
-        threshold = _DEFAULT_GATE_FLOOR if tuned is None else tuned
-        if score < threshold:
-            # Name which kind of threshold fired: a genome blocked by an
-            # untuned default floor is a different conversation from one that
-            # missed a benchmark's real minimum.
-            kind = " (default floor — no tuned threshold)" if tuned is None else ""
-            failures.append(f"{bench} score {score:.3f} below gate {threshold}{kind}")
+    external_scores = {
+        b: s for b, s in scores.items() if not b.startswith(RESERVED_BENCHMARK_PREFIX)
+    }
+
+    # A genome must have been evaluated on *something* external to be gated
+    # meaningfully. Curriculum-only scores are not that something, and the two
+    # empty cases are named distinctly: no evidence at all vs no external
+    # evidence (#24/SPEC-282 — self-generated scores are not external).
+    if not external_scores:
+        if scores:
+            failures.append("no external benchmarks evaluated")
+        else:
+            failures.append("no benchmarks evaluated")
+        return False, failures
+
+    failures.extend(_external_gate_failures(external_scores))
 
     return len(failures) == 0, failures
 
@@ -148,7 +194,17 @@ def _weighted_eval_score(
     total_weight = 0.0
     # Weight only the benchmarks that actually ran, renormalising over them, so a
     # subset run isn't penalised for the benchmarks it deliberately skipped.
+    # Iteration is over ``sorted`` items so the float sum is independent of
+    # dict insertion order.
+    #
+    # M4-D (#24, SPEC-282): scores under the reserved self-generated namespace
+    # are excluded outright — they must not drive the weighted eval score, not
+    # even through the objective's default weight for benchmarks it does not
+    # name, and they must not shift the renormalisation denominator for the
+    # benchmarks that legitimately ran.
     for bench, score in sorted(scores.items()):
+        if bench.startswith(RESERVED_BENCHMARK_PREFIX):
+            continue
         weight = objective.weight_for(bench)
         total += weight * score
         total_weight += weight

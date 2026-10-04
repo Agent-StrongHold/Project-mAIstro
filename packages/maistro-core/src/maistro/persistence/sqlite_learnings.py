@@ -75,7 +75,7 @@ _LEGACY_UPGRADE_COLUMNS = {
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
 
-#: The lifecycle + epistemics columns (ADR-092, EPIC M4-B). Scalar state gets
+#: The lifecycle + epistemics columns (ADR-100126-9a4b, EPIC M4-B). Scalar state gets
 #: NOT NULL DEFAULT so the ALTER is legal in SQLite; instants and supersession
 #: links stay nullable because an old row genuinely has none, and fabricating
 #: one would lie about when knowledge was confirmed or replaced.
@@ -168,7 +168,7 @@ class SqliteLearningStore:
             for column in _PROVENANCE_COLUMNS:
                 if column not in columns:
                     await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
-            # And for the lifecycle columns (ADR-092): a file created before
+            # And for the lifecycle columns (ADR-100126-9a4b): a file created before
             # M4-B holds rows whose pipeline state was implicit, so the ALTERs
             # stamp the defaults that state always meant.
             for column, column_type in _LIFECYCLE_UPGRADE_COLUMNS.items():
@@ -482,7 +482,7 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         attempt_id=_text(row, "attempt_id"),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
-        # Lifecycle + epistemics (ADR-092). Defaults mirror the dataclass so a
+        # Lifecycle + epistemics (ADR-100126-9a4b). Defaults mirror the dataclass so a
         # pre-M4B row reads back as the local empirical learning it was.
         stage=LearningStage(row.get("stage") or "learning"),
         epistemic_type=EpistemicType(row.get("epistemic_type") or "empirical"),

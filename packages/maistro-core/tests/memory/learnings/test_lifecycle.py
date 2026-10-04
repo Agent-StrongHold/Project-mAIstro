@@ -1,4 +1,4 @@
-"""Learning pipeline lifecycle semantics (ADR-092, EPIC M4-B #117/#120).
+"""Learning pipeline lifecycle semantics (ADR-100126-9a4b, EPIC M4-B #117/#120).
 
 Covers the Memory -> Learning -> Validated -> Repertoire stage ladder, the
 reinforce/contradict/decay dynamics, supersession, consolidation, and the
