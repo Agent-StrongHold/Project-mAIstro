@@ -53,7 +53,7 @@ Operators need a **repeatable** path from feature intent → printed or applied 
 ## Out of scope
 
 - **Stronghold / multi-tenant product** code in this repo (per resolver-matrix): print Copier hints only.
-- **`curl | bash` remote fetch** of a pinned installer payload: `scripts/install-maestro.sh` documents clone + `uv` only for now.
+- **`curl | bash` remote fetch inside the wizard**: the shell entrypoints own remote fetch. `get.sh` resolves a pinned release ref and verifies the downloaded `install.sh` against the published `SHA256SUMS` before executing it; `get.ps1` boots WSL, hands off to `get.sh` inside the distro, and forwards `MAISTRO_SHA256SUMS_URL` so the same verification applies. `maistro-install` plans from an on-disk checkout. (The placeholder helper `scripts/install-maestro.sh`, which advertised a `<YOUR_REPO_URL>`/`<org>` one-liner and installed nothing, was removed by #401.)
 - **Automatic OS package installation** (brew, dnf, …): wizard prints hints; execution stays explicit.
 
 ## Acceptance Criteria
