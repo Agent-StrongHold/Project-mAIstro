@@ -27,7 +27,6 @@ from maistro.ontology.rubric import (
     RubricSemantic,
 )
 from maistro.projects.rubric_store import RubricStore
-from maistro.runs.admission_identity import AdmissionAssessment
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
@@ -63,14 +62,6 @@ _VULTURE_REFERENCES = (record_exception, set_status_on_exception)
 # through this module variable instead. The name is distinctive enough to be
 # safe at name level.
 latest_by_dimension = "latest_by_dimension"
-
-# Root-admission envelope snapshot fields (#1851, parent #1845). Frozen-dataclass
-# instance attributes like latest_by_dimension above: a class-object reference
-# would not typecheck, so they are named through these module variables instead.
-# The names are distinctive enough to be safe at name level.
-receipt_snapshot = "receipt_snapshot"
-provenance_snapshot = "provenance_snapshot"
-format_version = "format_version"
 
 _VULTURE_WHITELIST = (
     # P0.1 identity split (#53): Principal is always importable; crypto and lifecycle
@@ -233,27 +224,4 @@ _VULTURE_WHITELIST = (
     RubricStore.instantiate_from_catalog,
     RubricStore.record_run_binding,
     RubricStore.binding_for_run,
-    # Root-admission identity contracts (#1851, parent #1845): the inactive
-    # contract leaf ships the types first, and production activation is a
-    # separately scoped #1845 integration step — no scanned call site reads
-    # these names yet, the exact "contract ships first by design" posture of
-    # CampaignSelector and the learning lifecycle above. The snapshot fields
-    # are validated by name in __post_init__ (a getattr loop the scanner
-    # cannot see through) and consumed by the future admission backend; they
-    # are named through the module variables above. format_version is the
-    # decoder discriminator every record stamps via field(init=False). The
-    # StrEnum members are the prospective C2 assessment vocabulary — serialized
-    # values that need not appear as static reads, the same posture as the
-    # HarnessTargetKind and EvalMethod members above. This is scanner input
-    # only (this module never executes and ships in no wheel); it is not a
-    # caller of the contract and wires nothing.
-    receipt_snapshot,
-    provenance_snapshot,
-    format_version,
-    AdmissionAssessment.MISMATCH,
-    AdmissionAssessment.REPLAYED,
-    AdmissionAssessment.PENDING,
-    AdmissionAssessment.TAKEOVER,
-    AdmissionAssessment.REPLACE_EXPIRED,
-    AdmissionAssessment.LEGACY_UNRESOLVED,
 )
