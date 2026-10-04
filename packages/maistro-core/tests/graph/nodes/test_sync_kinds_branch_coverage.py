@@ -1,7 +1,7 @@
 """Branch-coverage closers for the 4 nodes below the 95/95 gate.
 
 Targets the specific uncovered lines reported by `coverage report -m`:
-- jira_wait_for_subtasks: 101, 107-108, 119-128, 144-147, 157, 159
+- jira_wait_for_subtasks: 109-116, 150-165, 127-135, 166-176, 246-249, 252-255
 - llm_summarize: 89, 93, 114, 116, 118
 - transform_format_markdown: 60, 67-70, 76, 93, 95
 - airtable_poll: 81, 83, 85
@@ -469,7 +469,7 @@ async def test_format_markdown_render_with_attribute_access() -> None:
 async def test_wait_for_subtasks_resume_within_deadline_pauses_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Covers lines 119-128: resume path where some subtasks still not done
+    """Covers lines 166-189: resume path where some subtasks still not done
     and the deadline has NOT yet been reached → pauses again."""
     _patch_httpx(
         monkeypatch,
@@ -497,10 +497,12 @@ async def test_wait_for_subtasks_resume_within_deadline_pauses_again(
     assert out.metadata["first_seen"] == ctx.metadata[f"wait_first_seen:{ctx.node_id}"]
 
 
-async def test_wait_for_subtasks_resume_with_bad_first_seen_falls_back_to_now(
+async def test_wait_for_subtasks_resume_with_bad_first_seen_repairs_with_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Covers lines 107-108: ValueError on fromisoformat → first = now."""
+    """Covers lines 150-165: corrupt `first_seen` → explicit repair, not a
+    silent `now` substitution that re-persists the corrupt string and resets
+    the elapsed clock on every evaluation forever (#1206)."""
     _patch_httpx(
         monkeypatch,
         payload={"fields": {"subtasks": [{"key": "S1", "fields": {"status": {"name": "Open"}}}]}},
@@ -519,14 +521,23 @@ async def test_wait_for_subtasks_resume_with_bad_first_seen_falls_back_to_now(
         },
         ctx,
     )
-    # Bad first_seen → falls back to now → since < timeout → pauses again.
+    # Corrupt first_seen → one explicit repair: the pause carries a canonical
+    # parseable anchor plus the evidence of what it replaced, and the legacy
+    # sidecar is converged onto the same value (no corrupt string survives).
     assert out.status == "paused"
+    repaired = datetime.fromisoformat(out.metadata["first_seen"])
+    assert out.metadata["first_seen_repair"]["reason"] == "unparseable_first_seen"
+    assert out.metadata["first_seen_repair"]["replaced"] == "not-an-iso-date"
+    assert ctx.metadata[f"wait_first_seen:{ctx.node_id}"] == out.metadata["first_seen"]
+    # The anchor is parseable and tz-aware, so the next evaluation can do
+    # elapsed-time math against it instead of restarting the clock again.
+    assert repaired.tzinfo is not None
 
 
 async def test_wait_for_subtasks_cloud_flavor_with_email_uses_basic_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Covers lines 144-147: cloud flavor + email → Basic auth path."""
+    """Covers lines 246-255: cloud flavor + email → Basic auth path."""
     seen: dict[str, Any] = {}
 
     class _Resp:
