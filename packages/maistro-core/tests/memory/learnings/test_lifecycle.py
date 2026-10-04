@@ -34,6 +34,7 @@ from maistro.memory.learnings.lifecycle import (
     contradict,
     decay,
     effectiveness,
+    reinforce,
     supersede,
     trigger_key_overlap,
 )
@@ -771,7 +772,9 @@ class TestStageLadder:
 
     def test_validation_records_gauntlet_provenance(self) -> None:
         lr = _row()
-        advance_stage(lr, LearningStage.VALIDATED, gauntlet_name="outcome-evidence", now=PIPELINE_NOW)
+        advance_stage(
+            lr, LearningStage.VALIDATED, gauntlet_name="outcome-evidence", now=PIPELINE_NOW
+        )
         assert lr.stage is LearningStage.VALIDATED
         assert lr.validated_by == "outcome-evidence"
         assert lr.validated_at == PIPELINE_NOW
@@ -825,7 +828,7 @@ class TestReinforceContradict:
 
 class TestDecay:
     def test_decay_anchors_at_last_confirmation(self) -> None:
-        lr = _row(created_at=NOW - timedelta(days=100))
+        lr = _row(created_at=PIPELINE_NOW - timedelta(days=100))
         reinforce(lr, now=PIPELINE_NOW - timedelta(days=1))
         decay(lr, now=PIPELINE_NOW)
         # One day past the last confirmation, not 100 past creation: at a
@@ -838,7 +841,9 @@ class TestDecay:
         assert lr.confidence == pytest.approx(0.25)
 
     def test_decay_toward_floor_never_through_it(self) -> None:
-        lr = _row(epistemic_type=EpistemicType.ANTI_PATTERN, confidence=0.9, created_at=PIPELINE_NOW)
+        lr = _row(
+            epistemic_type=EpistemicType.ANTI_PATTERN, confidence=0.9, created_at=PIPELINE_NOW
+        )
         decay(lr, now=PIPELINE_NOW + timedelta(days=10_000))
         # Approaches the floor asymptotically; float64 arrives there.
         assert lr.confidence >= ANTI_PATTERN_CONFIDENCE_FLOOR
@@ -846,8 +851,10 @@ class TestDecay:
 
     def test_anti_pattern_decays_on_the_slow_clock(self) -> None:
         fast = _row(confidence=0.8, created_at=PIPELINE_NOW)
-        slow = _row(epistemic_type=EpistemicType.ANTI_PATTERN, confidence=0.8, created_at=PIPELINE_NOW)
-        moment = NOW + timedelta(days=30)
+        slow = _row(
+            epistemic_type=EpistemicType.ANTI_PATTERN, confidence=0.8, created_at=PIPELINE_NOW
+        )
+        moment = PIPELINE_NOW + timedelta(days=30)
         decay(fast, now=moment)
         decay(slow, now=moment)
         assert slow.confidence > fast.confidence

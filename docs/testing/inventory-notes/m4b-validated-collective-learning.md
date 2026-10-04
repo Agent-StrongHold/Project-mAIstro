@@ -104,12 +104,14 @@ four were refactored below the C boundary by extraction (`_gauntlet_candidates`,
 above (567 memory/persistence/agents tests re-run green after each refactor).
 No test nodes were added or removed in this round, so the delta above stands.
 
-Ledger deltas (exact-debt repair): `quality/vulture-baseline.json` banks the
-four reviewed M4-B public-surface identities (`OutcomeEvidenceGauntlet`,
-`ChainedGauntlet`, `effectiveness`, `LearningLifecycleStore`) and prunes
+Ledger deltas (exact-debt repair): `quality/vulture-baseline.json` prunes
 `store.py::list_ineffective` (the promoter now calls it, so the debt was
-fixed, not retained); `quality/reachability-baseline.json` +
-`reachability-dispositions.json` bank `maistro.memory.learnings.gauntlet` as
-CONNECT library-only surface; matching reviewed grants are recorded in
-`quality/ratchet-authorizations.json`. Per the two-merge rule those grants
-take effect once they sit at the integration base, not in this change.
+fixed, not retained). `quality/reachability-baseline.json` +
+`reachability-dispositions.json` and the matching grants in
+`quality/ratchet-authorizations.json` were **removed in the develop-sync
+round** (auto-121-develop-sync-m4b4-ledger-lifecycle.md): the Gauntlet and
+the other three M4-B public-surface identities are now declared importable
+package surface (`maistro.memory.learnings.__all__`, `maistro.protocols.__all__`,
+the same declaration `InMemoryLearningLifecycle` already had), so the module
+is reachable, the identities are used, and neither the rows nor grants are
+debt any more — the ratchet shrank instead of being authorized upward.

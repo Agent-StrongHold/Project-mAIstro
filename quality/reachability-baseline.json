@@ -111,7 +111,6 @@
     "maistro.memory.episodic.sharing",
     "maistro.memory.exposure",
     "maistro.memory.learnings.approval",
-    "maistro.memory.learnings.gauntlet",
     "maistro.memory.learnings.promoter",
     "maistro.memory.mutations",
     "maistro.orchestrator.waves.fan_in",

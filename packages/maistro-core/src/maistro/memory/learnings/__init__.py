@@ -1,5 +1,11 @@
 """Self-improving memory from tool call patterns."""
 
-from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
+from maistro.memory.learnings.gauntlet import ChainedGauntlet, OutcomeEvidenceGauntlet
+from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle, effectiveness
 
-__all__ = ["InMemoryLearningLifecycle"]
+__all__ = [
+    "ChainedGauntlet",
+    "InMemoryLearningLifecycle",
+    "OutcomeEvidenceGauntlet",
+    "effectiveness",
+]
