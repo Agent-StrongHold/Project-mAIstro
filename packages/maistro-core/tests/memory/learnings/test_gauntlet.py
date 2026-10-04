@@ -254,7 +254,11 @@ class TestPromoterWithGauntlet:
 
     async def test_legacy_path_unchanged_without_gauntlet(self) -> None:
         store = InMemoryLearningStore()
-        lr = _used_learning(hit_count=10, run_id="")
+        # No Gauntlet means no validation ceremony — but not a pass on the
+        # M4-B3 evidence contract either: the fixture carries the source Run
+        # and measured confidence that any promotion requires, so this test
+        # isolates exactly the ceremony the legacy path skips.
+        lr = _used_learning(hit_count=10, run_id="run-1", confidence=0.8)
         await store.store(lr)
 
         promoter = LearningPromoter(store, threshold=5)

@@ -19,7 +19,12 @@ from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.learnings.wisdom import learning_from_wisdom
 from maistro.observability.correlation import bind_execution_context
 from maistro.persistence.sqlite_learnings import SqliteLearningStore
-from maistro.types.memory import EpistemicType, Learning, MemoryScope
+from maistro.types.memory import (
+    DEFAULT_LEARNING_CONFIDENCE,
+    EpistemicType,
+    Learning,
+    MemoryScope,
+)
 
 
 @pytest.mark.ac("SPEC-100126-5445/AC-6")
@@ -282,7 +287,9 @@ class TestSqliteEpistemicRoundTrip:
             Learning(trigger_keys=["deploy"], learning="x", tool_name="bash", org_id="org-1")
         )
         (row,) = await store.list_all(org_id="org-1")
-        assert row.confidence is None  # unmeasured before any outcome
+        # A fresh row starts at the default prior (0.5, at/below the promotion
+        # floor); measurement overwrites it from the outcome counters.
+        assert row.confidence == pytest.approx(DEFAULT_LEARNING_CONFIDENCE)
         await store.mark_outcome([lid], success=False, org_id="org-1")
         await store.mark_outcome([lid], success=True, org_id="org-1")
         await store.mark_outcome([lid], success=True, org_id="org-1")
@@ -291,8 +298,10 @@ class TestSqliteEpistemicRoundTrip:
 
     @pytest.mark.ac("SPEC-100126-5445/AC-6")
     async def test_legacy_file_upgrades_with_epistemic_columns(self) -> None:
-        """A database written before M4-B3 gains the columns in place; legacy
-        rows read back observed with no applicability and no measurement."""
+        """A database written before M4-B gains the columns in place; legacy
+        rows read back as the local empirical learning at the default prior,
+        with no applicability recorded — the state they implicitly had, never
+        a fabricated measurement or validation claim."""
         conn = await aiosqlite.connect(":memory:")
         store = SqliteLearningStore(conn)
         await conn.execute(
@@ -316,7 +325,9 @@ class TestSqliteEpistemicRoundTrip:
 
         await store.ensure_schema()
         (row,) = await store.list_all(org_id="org-1")
-        assert row.epistemic_type == EpistemicType.OBSERVED
+        assert row.epistemic_type == EpistemicType.EMPIRICAL
         assert row.works_when == []
-        assert row.confidence is None
+        # The legacy row's physical NULL decodes to the default prior (the
+        # state it implicitly had), not to a measurement.
+        assert row.confidence == pytest.approx(DEFAULT_LEARNING_CONFIDENCE)
         await conn.close()

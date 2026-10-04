@@ -125,7 +125,10 @@ class TestDistillationIsNotEvidence:
             "call the api", [{"tool_name": "api", "arguments": {}, "result": "Error: 429"}]
         )
         assert learning is not None
-        assert learning.epistemic_type == EpistemicType.INFERRED
+        # Reconciled member name (ADR-100126-8c2d): an RCA diagnosis is
+        # INFERENTIAL — the same distillation-is-not-evidence reading as
+        # M4-B3's INFERRED, named for its RCA source.
+        assert learning.epistemic_type == EpistemicType.INFERENTIAL
 
         store = InMemoryLearningStore()
         await store.store(learning)

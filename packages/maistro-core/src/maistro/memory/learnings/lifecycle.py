@@ -1177,7 +1177,7 @@ def absorb(survivor: Learning, absorbed: Learning) -> Learning:
     survivor.failure_after_use += absorbed.failure_after_use
     survivor.reinforcement_count += absorbed.reinforcement_count
     survivor.contradiction_count += absorbed.contradiction_count
-    survivor.confidence = max(survivor.confidence, absorbed.confidence)
+    survivor.confidence = max(survivor.confidence or 0.0, absorbed.confidence or 0.0)
     absorbed.status = "consolidated"
     absorbed.superseded_by = survivor.id
     return survivor
