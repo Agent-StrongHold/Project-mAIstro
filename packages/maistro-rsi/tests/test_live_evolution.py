@@ -338,6 +338,69 @@ def test_local_fallback_unset_keeps_probe_behaviour(tmp_path: Path) -> None:
     assert loop._emergency_model(index=1) == "down-x"
 
 
+def _variant_for(genome_id: str, slot: int, composite: float) -> _VariantResult:
+    return _VariantResult(
+        branch=f"rsi-{genome_id}",
+        cycle_dir=Path("."),
+        label=genome_id,
+        composite=composite,
+        tests_passed=True,
+        accepted=True,
+        note="ok",
+        slot=slot,
+        model="testmodel",
+        genome_id=genome_id,
+    )
+
+
+def test_battle_evidence_is_recorded_and_persisted(tmp_path: Path) -> None:
+    # #853's battle-evidence gate, end to end on a sqlite-backed population
+    # (the live mode's population.db): a genome that FOUGHT carries both
+    # avg_elo and its battle count, and the write survives a fresh
+    # list_all() read — fitness re-reads the store, so an in-memory-only
+    # mutation would hand it nothing.
+    loop = LocalRsiLoop(_live_config(tmp_path), apply_patch=_make_apply(_bump))
+    ga, gb, _rest = loop._population.list_all()[:3]
+
+    loop._record_cycle_battles(
+        [
+            _variant_for(ga.id, slot=0, composite=0.9),
+            _variant_for(gb.id, slot=0, composite=0.3),
+        ]
+    )
+
+    by_id = {g.id: g for g in loop._population.list_all()}
+    assert by_id[ga.id].harness_params["elo_battles"] == 1
+    assert by_id[gb.id].harness_params["elo_battles"] == 1
+    assert "avg_elo" in by_id[ga.id].harness_params
+    assert "avg_elo" in by_id[gb.id].harness_params
+
+
+def test_zero_battle_genome_carries_no_elo_evidence(tmp_path: Path) -> None:
+    # The gate a8568f29b fixed: a genome that sat in `fought` but never
+    # actually battled (no same-slot partner) inherits NOTHING — neither
+    # avg_elo nor elo_battles — so tenure in the population cannot
+    # manufacture Elo evidence fitness would reward.
+    loop = LocalRsiLoop(_live_config(tmp_path), apply_patch=_make_apply(_bump))
+    ga, _gb, gc = loop._population.list_all()[:3]
+
+    loop._record_cycle_battles(
+        [
+            _variant_for(ga.id, slot=0, composite=0.9),
+            _variant_for(gc.id, slot=2, composite=0.5),  # no same-slot partner
+        ]
+    )
+
+    by_id = {g.id: g for g in loop._population.list_all()}
+    assert "avg_elo" not in by_id[gc.id].harness_params
+    assert "elo_battles" not in by_id[gc.id].harness_params
+
+
+# --------------------------------------------------------------------------
+# Battle-evidence gate (#853): harness Elo evidence exists only for genomes
+# that actually fought. _record_cycle_battles is narrow enough to unit-test
+# over a bare loop object (precedent: test_no_host_shell_execution.py).
+# --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
 # Battle-evidence gate (#853): harness Elo evidence exists only for genomes
 # that actually fought. _record_cycle_battles is narrow enough to unit-test

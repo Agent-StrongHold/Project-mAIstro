@@ -35,6 +35,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from .attribution import CandidateOrigin, EvalContext, ProducerKind, producer_identity, stamp_origin
 from .fitness import hard_gate_threshold
 from .fixer_genome import FixerGenome, render_system_prompt, to_prompt_payload
 from .harness import EvalHarness, evidence_method
@@ -207,6 +208,8 @@ def spawn_fixer_challenger(genome: PipelineGenome, new_fixer: FixerGenome) -> Pi
     The entry node's ``system_prompt`` is re-rendered from the new slots so the
     visible prompt and the typed genome can never drift apart.
     """
+    from .archive import OperatorKind, stamp_provenance
+
     child = genome.model_copy(deep=True)
     now = datetime.now(UTC).isoformat()
     child.id = uuid.uuid4().hex[:12]
@@ -224,7 +227,22 @@ def spawn_fixer_challenger(genome: PipelineGenome, new_fixer: FixerGenome) -> Pi
             node.fixer = new_fixer
             node.system_prompt = render_system_prompt(new_fixer)
             break
-    return child
+    # M4-A6 candidate record, then M4-A8 producer attribution: the guided
+    # search operator that produced this challenger (structured twin of the
+    # harness_params marker above).
+    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.HYPER_MUTATION, base=genome)
+    producer = producer_identity("hyper_mutator", ProducerKind.SEARCH_OPERATOR)
+    return stamp_origin(
+        child,
+        CandidateOrigin(
+            producer=producer,
+            parents=(genome.id,),
+            chain=(producer.key(),),
+            baseline_scores=dict(genome.eval_scores),
+            context=EvalContext(),
+            note="guided slot-proposal hyper-mutation",
+        ),
+    )
 
 
 def _weakest(genome: PipelineGenome, benchmarks: list[str] | None) -> str | None:

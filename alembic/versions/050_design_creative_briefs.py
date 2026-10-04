@@ -38,12 +38,13 @@ from __future__ import annotations
 
 from alembic import op
 
-# Renumbered from `047` to `048` after a develop collision (#1133's durable
-# Binding revocations took 047 first), then to `049` after #398's canvas
-# retry backoff claimed `048`, and finally to `050` after the #792 merge
-# collision in which both this revision and the canonical Run eval-score
-# evidence took `049` on the same parent `048` — the same renumbering every
-# develop collision performs so the chain keeps exactly one linear head.
+# Renumbered from `047` to `049` as develop collisions claimed 047 and 048
+# (#1133's durable Binding revocations, #398's Canvas job retry backoff), then
+# to `050` when #780's design-artifact version ledger took `049` first — the
+# same renumbering every develop collision performs so the chain keeps exactly
+# one linear head. The eval-score evidence (#792), which had taken `049` on
+# develop before this branch's ledger claimed the same number on the same
+# parent, re-parents onto this `050` as `051`.
 revision = "050"
 down_revision = "049"
 branch_labels = None
