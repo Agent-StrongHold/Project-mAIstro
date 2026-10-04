@@ -77,3 +77,31 @@ one dialect-neutral spec (column sets, nullability, integer/timestamptz/doc
 types, keys, the self-referential lineage cascade, and the project index),
 so the two descriptions of the same tables cannot drift the way the scope
 tables once did (#1135).
+
+## Repair-round validation evidence (2026-10-04, head d635a9c90)
+
+Re-proven on a fresh PG18 container (`pgvector/pgvector:pg18`) after
+`alembic upgrade head` (000→053) with `MAISTRO_REQUIRE_PG_LEGS=1` and
+`MAISTRO_TEST_PG_DSN` set — no leg skipped:
+
+- `pytest packages/maistro-core/tests/goals
+  packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py`
+  → 56 passed (all three conformance legs, PG Run-binding leg, PG wiring leg,
+  restart read-back, parity).
+- `pytest packages/maistro-core/tests/runs` → 1362 passed, 3 skipped
+  (Run-spine regression over the binding change).
+- CI-exact gates: `ruff check .`, `ruff format --check .`,
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (1342 reviewed = 1342 findings, unclassified
+  0 — no ledger amendment owed), `check-m1-convergence-freeze.py --base
+  928993d`, `check-reachability.py`, `check-promotion-surface.py`,
+  `check-suite-inventory.py`, `check-radon-baseline.py`,
+  `check-durable-table-inventory.py` — all exit 0. `mypy
+  packages/maistro-core/src`: only the 5 pre-existing `maistro_bootstrap`
+  import-not-found errors in untouched `maistro/cli/` files.
+- Still red by design of the two-merge rule, unchanged from the disclosure
+  in commit 9ce54854f: `check-execution-lifecycles.py` refuses
+  `maistro.goals.model::GoalStatus` until the DOMAIN classification grant
+  lands in `quality/execution-lifecycles.json` via a separate earlier PR
+  (the gate reads authorizations from the merge base `91996e192`, so no edit
+  on this branch can satisfy it). This ledger stays untouched here.
