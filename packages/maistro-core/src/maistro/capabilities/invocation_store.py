@@ -274,21 +274,31 @@ class SqliteInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
         effect_scope: str | None = None,
     ) -> list[Invocation]:
-        if effect_scope is None:
+        params: tuple[str, ...]
+        if effect_scope is not None:
+            query = """SELECT payload_json FROM capability_invocations
+               WHERE run_id = ? AND effect_scope = ? AND binding_id = ? AND effect_key = ?
+               ORDER BY created_at ASC, invocation_id ASC"""
+            params = (run_id, effect_scope, binding_id, effect_key)
+        elif node_run_id is not None:
             query = """SELECT payload_json FROM capability_invocations
                WHERE run_id = ? AND node_run_id = ? AND binding_id = ? AND effect_key = ?
                ORDER BY created_at ASC, invocation_id ASC"""
             params = (run_id, node_run_id, binding_id, effect_key)
         else:
+            # ``node_run_id=None`` spans every node run under the run for this
+            # binding+effect_key pair (the develop list_effect contract). In
+            # SQL the discriminator is dropped rather than bound to NULL: an
+            # ``= NULL`` comparison matches no row at all.
             query = """SELECT payload_json FROM capability_invocations
-               WHERE run_id = ? AND effect_scope = ? AND binding_id = ? AND effect_key = ?
+               WHERE run_id = ? AND binding_id = ? AND effect_key = ?
                ORDER BY created_at ASC, invocation_id ASC"""
-            params = (run_id, effect_scope, binding_id, effect_key)
+            params = (run_id, binding_id, effect_key)
         cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
         return [Invocation.model_validate_json(str(row[0])) for row in rows]

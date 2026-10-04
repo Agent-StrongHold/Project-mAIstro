@@ -169,6 +169,20 @@ class _FakePgInvocationPool:
         if "effect_scope=$2" in query:
             run_id, scope_value, binding_id, effect_key = args
             scope_field = "effect_scope"
+        elif "binding_id=$2 AND effect_key=$3" in query:
+            # The node_run_id=None audit read: the discriminator is dropped
+            # from the SQL entirely (binding it to NULL would match no row),
+            # so three bound params select every node run under the run.
+            run_id, binding_id, effect_key = args
+            matches = [
+                row
+                for row in self._rows.values()
+                if row["run_id"] == run_id
+                and row["binding_id"] == binding_id
+                and row["effect_key"] == effect_key
+            ]
+            # Insertion order stands in for the real query's `ORDER BY created_at`.
+            return [_Row(payload=row["payload"]) for row in matches]
         else:
             run_id, scope_value, binding_id, effect_key = args
             scope_field = "node_run_id"
@@ -287,6 +301,48 @@ async def test_pg_invocation_store_list_effect_filters_and_orders_rows() -> None
     )
 
     assert [item.invocation_id for item in history] == ["inv-1"]
+
+
+async def test_pg_invocation_store_list_effect_without_a_node_run_spans_node_runs() -> None:
+    """The pg twin of the develop contract: ``node_run_id=None`` spans every
+    node run under the run for the binding+effect_key pair. The store must
+    drop the discriminator from the SQL rather than bind NULL (an
+    ``= NULL`` comparison matches no row), mirroring the SQLite store."""
+
+    pool = _FakePgInvocationPool()
+    store = PgInvocationStore(pool)
+    # Only a proven-FAILED prior admits a second claim under the same logical
+    # identity (the emulated migration-035 partial unique index), so the
+    # first visit is a recorded failure and the retry lands under a new node
+    # run -- exactly the history the audit read must span.
+    await store.create(
+        _invocation(
+            invocation_id="inv-1",
+            effect_key="test:pg-store",
+            status=InvocationStatus.FAILED,
+            error="EffectNotApplied: the provider proved nothing was applied",
+            finished_at=_finished_at(),
+        )
+    )
+    await store.create(
+        _invocation(
+            invocation_id="inv-2",
+            node_run_id="node-run-2",
+            effect_key="test:pg-store",
+        )
+    )
+    await store.create(
+        _invocation(invocation_id="inv-3", effect_key="test:other-effect"),
+    )
+
+    spanned = await store.list_effect(
+        run_id="run-1",
+        node_run_id=None,
+        binding_id="binding-1",
+        effect_key="test:pg-store",
+    )
+
+    assert [item.invocation_id for item in spanned] == ["inv-1", "inv-2"]
 
 
 async def test_pg_invocation_store_rejects_cross_node_run_active_effect_claim() -> None:

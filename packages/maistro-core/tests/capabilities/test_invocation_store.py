@@ -504,6 +504,69 @@ async def test_sqlite_list_effect_with_stable_scope_spans_node_runs(tmp_path) ->
 
 
 @pytest.mark.asyncio
+async def test_list_effect_without_a_node_run_spans_every_node_run(tmp_path) -> None:
+    """``node_run_id=None`` (no scope) is the cross-node audit read.
+
+    The develop contract — exercised by hive-conductor's real-model e2e —
+    spans every node run under the run for the binding+effect_key pair. SQL
+    stores must DROP the discriminator rather than bind NULL: an
+    ``= NULL`` comparison matches no row at all, which silently reported
+    recorded effects as missing evidence (regression caught by
+    test_canonical_llm_node_crosses_the_governed_invocation_seam).
+    Pinned across both durable and in-memory store implementations.
+    """
+    binding = Binding(
+        binding_id="binding-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+    resolved = ResolvedBinding.from_provider(binding, _Provider())
+
+    async def seed(store: Any) -> None:
+        for invocation_id, node_run_id, effect_key in (
+            ("inv-a1", "node-run-1", "llm.summarize.complete:m"),
+            ("inv-a2", "node-run-2", "llm.summarize.complete:m"),
+            ("inv-a3", "node-run-1", "llm.summarize.complete:other"),
+            ("inv-b1", "node-run-9", "llm.summarize.complete:m"),
+        ):
+            await store.create(
+                Invocation(
+                    invocation_id=invocation_id,
+                    run_id="run-2" if invocation_id == "inv-b1" else "run-1",
+                    node_run_id=node_run_id,
+                    attempt_id=f"attempt-{invocation_id}",
+                    binding=resolved,
+                    effect_key=effect_key,
+                )
+            )
+
+    async with aiosqlite.connect(tmp_path / "invocations.db") as conn:
+        sqlite_store = SqliteInvocationStore(conn)
+        await sqlite_store.ensure_schema()
+        await seed(sqlite_store)
+        spanned = await sqlite_store.list_effect(
+            run_id="run-1",
+            node_run_id=None,
+            binding_id="binding-1",
+            effect_key="llm.summarize.complete:m",
+        )
+
+    in_memory = InMemoryInvocationStore()
+    await seed(in_memory)
+    in_memory_spanned = await in_memory.list_effect(
+        run_id="run-1",
+        node_run_id=None,
+        binding_id="binding-1",
+        effect_key="llm.summarize.complete:m",
+    )
+
+    expected = ["inv-a1", "inv-a2"]
+    assert [item.invocation_id for item in spanned] == expected
+    assert [item.invocation_id for item in in_memory_spanned] == expected
+
+
+@pytest.mark.asyncio
 async def test_invoke_race_reread_without_a_completed_winner_re_raises() -> None:
     """A stale admission is only replayable when the winner is provably done.
 

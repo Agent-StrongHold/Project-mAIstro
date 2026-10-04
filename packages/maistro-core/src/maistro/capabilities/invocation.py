@@ -309,11 +309,18 @@ class InvocationStore(Protocol):
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
         effect_scope: str | None = None,
-    ) -> list[Invocation]: ...
+    ) -> list[Invocation]:
+        """Chronological effect history for one logical or physical effect.
+
+        ``effect_scope`` keys the logical effect identity when given.
+        Otherwise ``node_run_id`` discriminates: a concrete id scopes to that
+        node run, and ``None`` spans every node run under the run for the
+        binding+effect_key pair (the cross-node audit read).
+        """
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]: ...
 
@@ -375,11 +382,21 @@ class InMemoryInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
         effect_scope: str | None = None,
     ) -> list[Invocation]:
+        if effect_scope is None and node_run_id is None:
+            # ``node_run_id=None`` spans every node run under the run for this
+            # binding+effect_key pair (the cross-node audit read).
+            return [
+                item.model_copy(deep=True)
+                for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
+                if item.run_id == run_id
+                and item.binding.binding_id == binding_id
+                and item.effect_key == effect_key
+            ]
         scope = effect_scope or node_run_id
         identity = (run_id, scope, binding_id, effect_key)
         return [

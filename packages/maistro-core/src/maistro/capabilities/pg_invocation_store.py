@@ -165,12 +165,22 @@ class PgInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
         effect_scope: str | None = None,
     ) -> list[Invocation]:
-        if effect_scope is None:
+        if effect_scope is not None:
+            rows = await self._pool.fetch(
+                """SELECT payload FROM capability_invocations
+                   WHERE run_id=$1 AND effect_scope=$2 AND binding_id=$3 AND effect_key=$4
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                run_id,
+                effect_scope,
+                binding_id,
+                effect_key,
+            )
+        elif node_run_id is not None:
             rows = await self._pool.fetch(
                 """SELECT payload FROM capability_invocations
                    WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
@@ -181,12 +191,15 @@ class PgInvocationStore:
                 effect_key,
             )
         else:
+            # ``node_run_id=None`` spans every node run under the run for this
+            # binding+effect_key pair (the develop list_effect contract). The
+            # discriminator is dropped rather than bound to NULL: in SQL an
+            # ``= NULL`` comparison matches no row at all.
             rows = await self._pool.fetch(
                 """SELECT payload FROM capability_invocations
-                   WHERE run_id=$1 AND effect_scope=$2 AND binding_id=$3 AND effect_key=$4
+                   WHERE run_id=$1 AND binding_id=$2 AND effect_key=$3
                    ORDER BY created_at ASC, invocation_id ASC""",
                 run_id,
-                effect_scope,
                 binding_id,
                 effect_key,
             )
