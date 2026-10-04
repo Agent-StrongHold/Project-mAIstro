@@ -80,6 +80,10 @@ class _AmbiguousCharge(BaseNode[_In, _Out]):
     input_schema: ClassVar[type[BaseModel]] = _In
     output_schema: ClassVar[type[BaseModel]] = _Out
 
+    def logical_effect_key(self, inputs: _In, ctx: NodeContext) -> str:
+        del inputs
+        return f"{ctx.run_id}:charge:customer-42"
+
     def __init__(self, service: InvocationExecutionService) -> None:
         self.service = service
         self.dispatches = 0
@@ -102,7 +106,8 @@ class _AmbiguousCharge(BaseNode[_In, _Out]):
                 node_run_id=ctx.node_run_id,
                 attempt_id=ctx.attempt_id,
                 effect_key="charge:customer-42",
-                effect_scope=f"{ctx.run_id}:charge:customer-42",
+                # The durable executor supplies the node's logical scope;
+                # node code must not have to repeat it at every Invocation.
                 request={"amount": 10},
                 resolver=_resolver,
                 executor=ambiguous,

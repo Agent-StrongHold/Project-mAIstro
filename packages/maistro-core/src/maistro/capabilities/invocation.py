@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -34,6 +36,30 @@ from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapab
 from maistro.capabilities.types import Unavailable
 
 logger = logging.getLogger("maistro.capabilities.invocation")
+
+# The durable Graph executor binds its node's stable logical-effect key while
+# node code runs. This keeps an omitted per-call scope from silently degrading
+# a graph retry into a new per-NodeRun effect identity. Explicit scopes still
+# win, and non-Graph callers retain the node-run fallback below.
+_logical_effect_scope: ContextVar[str | None] = ContextVar(
+    "maistro_logical_effect_scope", default=None
+)
+
+
+@contextmanager
+def bind_logical_effect_scope(effect_scope: str | None) -> Iterator[None]:
+    """Bind a Graph node's stable effect scope for nested Invocations.
+
+    The binding is context-local, so concurrent frontier nodes cannot borrow
+    each other's identity. It deliberately accepts ``None``: nodes without a
+    usable key continue to use their physical NodeRun identity.
+    """
+
+    token = _logical_effect_scope.set(effect_scope)
+    try:
+        yield
+    finally:
+        _logical_effect_scope.reset(token)
 
 
 def _id() -> str:
@@ -703,20 +729,22 @@ class InvocationExecutionService:
         absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``,
         is eligible for a new physical Invocation under a later Attempt.
 
-        Admission is atomic against the same scope the caller declared: with a
-        stable ``effect_scope`` the persisted scope makes the store's admission
-        guard logical across NodeRuns, so two workers racing a retry under
-        different NodeRuns cannot both dispatch (#1194).
+        Admission is atomic against the same scope the caller or enclosing
+        Graph node declared: with a stable ``effect_scope`` the persisted scope
+        makes the store's admission guard logical across NodeRuns, so two
+        workers racing a retry under different NodeRuns cannot both dispatch
+        (#1194).
         """
 
         _require(effect_key, "effect_key")
+        resolved_effect_scope = effect_scope or _logical_effect_scope.get() or node_run_id
         async with self._effect_lock:
             history = await self._store.list_effect(
                 run_id=run_id,
                 node_run_id=node_run_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
-                effect_scope=effect_scope,
+                effect_scope=resolved_effect_scope,
             )
             if history:
                 latest = history[-1]
@@ -750,7 +778,7 @@ class InvocationExecutionService:
                 project_id=binding.project_id,
                 binding=resolved,
                 effect_key=effect_key,
-                effect_scope=effect_scope or node_run_id,
+                effect_scope=resolved_effect_scope,
                 request=request,
             )
             invocation = await self._admit_effect(candidate)

@@ -327,15 +327,18 @@ class TestProvidersThroughInvocationPath:
             run_id="r1",
             node_run_id="nr1",
             binding_id="b-openclaw",
-            effect_key=str(first.metadata["replay_effect_key"]),
+            effect_key=str(first.metadata["effect_key"]),
+            effect_scope=str(first.metadata["effect_key"]),
         )
         pi_history = await effects.invocation_store.list_effect(
             run_id="r1",
             node_run_id="nr1",
             binding_id="b-pi",
-            effect_key=str(second.metadata["replay_effect_key"]),
+            effect_key=str(second.metadata["effect_key"]),
+            effect_scope=str(second.metadata["effect_key"]),
         )
         assert len(openclaw_history) == len(pi_history) == 1
+        assert first.metadata["effect_key"] != second.metadata["effect_key"]
         for invocation in (*openclaw_history, *pi_history):
             assert invocation.status is InvocationStatus.COMPLETED
             assert invocation.run_id == "r1"
@@ -394,7 +397,8 @@ class TestProvidersThroughInvocationPath:
             run_id="r1",
             node_run_id="nr1",
             binding_id="b1",
-            effect_key=str(result.metadata["replay_effect_key"]),
+            effect_key=str(result.metadata["effect_key"]),
+            effect_scope=str(result.metadata["effect_key"]),
         )
         assert len(history) == 1
         invocation = history[0]

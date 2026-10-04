@@ -313,6 +313,11 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 "harness_type": str(result["harness_type"]),
                 "binding_id": binding.binding_id,
                 "invocation_id": invocation.invocation_id,
+                # The paused Graph state must retain the same logical-effect
+                # identity that admitted the Invocation, not only its first
+                # physical row. A resumed/recovered visit can then correlate
+                # the wait with the canonical replay contract (#1194).
+                "effect_key": effect_key,
                 "timeout_seconds": inputs.timeout_seconds,
             },
         )

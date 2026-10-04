@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from maistro.capabilities.invocation import bind_logical_effect_scope
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import (
@@ -699,7 +700,12 @@ async def _execute_frontier(
             if interrupted and not semantics.retryable:
                 raw_result = _replay_refused(node_id, attempts[-1], semantics)
                 return raw_result
-            result: NodeResult = await node.run(work_item, execution_context)
+            # Nested capability Invocations inherit this stable scope when
+            # their node omits an explicit one. Without the binding, their
+            # default per-NodeRun scope turns each graph retry into a fresh
+            # external effect despite this node's EFFECT_KEY contract (#1194).
+            with bind_logical_effect_scope(logical_effect_key):
+                result: NodeResult = await node.run(work_item, execution_context)
             raw_result = result
             return result
 
