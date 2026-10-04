@@ -128,3 +128,39 @@ snapshot unchanged. Gates re-run clean at this head: `ruff check .`,
 `ruff format --check .` (2889 files already formatted),
 `check-suite-inventory.py --suite packages/maistro-core/tests` (ok). No
 closure keywords in the branch's commit messages or the PR body.
+
+Independent re-verification (L1861 verify @ `e1c8fa19651a`): the assigned head
+`e1c8fa19651a0636c1d906a2c3b6c690e01f0000` (merge of develop base
+`4010e69f62cf` into auto-1861) keeps the fix module and this test file
+byte-identical to `e30ca1a216fe` — the merge brings in develop's
+foreign-harness content only; no `durable_runs`/`runs` store file changes.
+Re-ran at this exact head against the lane pgvector (`pg-l1861`,
+`127.0.0.1:55186`, alembic head `052` confirmed via `alembic_version`): the
+exact acceptance battery plus the new file = **107 passed, 0 skipped**; the
+new file verbose = 6 passed —
+`test_live_walker_final_checkpoint_is_not_claimed_by_recovery[memory|sqlite|postgres]`
+and
+`test_crashed_empty_frontier_walker_is_still_recovered_after_quiet_period[memory|sqlite|postgres]`;
+full `packages/maistro-core/tests/graph/durable_runs` with real PG = **648
+passed** (postgres legs: real `PgRunStore` + `PgGraphContinuationStore`,
+recovery instance on an independent asyncpg pool). Fail-before re-proved
+without touching the tree: `git archive` of this head with only
+`canonical_store.py` reverted to the base `4010e69f62cf` module — the named
+regression failed all three backends at the barrier assertion
+(`assert await recovery.reconcile_persistence(...) == 0` → `assert 1 == 0`,
+one tick claimed the live continuation) while the companion crashed-walker
+case passed there, so the repair is not a bare early return. Observed no-op
+snapshots (direct observation run at this head, memory composition): barrier
+continuation `version=7, status=running, resume_at=null, active_node_ids=[]`
+→ recovery tick returns 0 with the continuation model-dump identical →
+released walker returns COMPLETED with 1 counted execution, 1 NodeRun with
+accepted outcome, exactly 1 Attempt ordinal 1 COMPLETED with result set →
+final continuation `version=8, status=completed, resume_at=null` → second
+recovery tick returns 0, snapshot identical, canonical Run COMPLETED. Gates
+re-run clean at this head: `ruff check .`, `ruff format --check .` (2898
+files), `check-suite-inventory.py --suite packages/maistro-core/tests` (ok),
+CI-exact vulture ratchet `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` exit 0 (1340 reviewed
+identities = 1340 findings; `git diff --numstat 4010e69f62cf -- quality/`
+empty), documented `mypy` command clean (794 source files). No closure
+keywords in the branch's commit messages or the PR body.
