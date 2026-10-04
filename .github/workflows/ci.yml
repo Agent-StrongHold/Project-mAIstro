@@ -431,6 +431,8 @@ jobs:
             sleep 2
           done
           echo "minio did not become ready" >&2
+          # Best-effort dump: the explicit exit 1 below is the verdict; a
+          # failed log cat must not shadow it.
           cat "$RUNNER_TEMP/minio.log" >&2 || true
           exit 1
       - name: Archive conformance against MinIO
@@ -742,16 +744,24 @@ jobs:
         if: always()
         working-directory: packages/hive-conductor
         run: |
+          # Diagnostics only: the verdict came from the e2e step above, so
+          # each dump tolerates its own failure rather than shadowing the
+          # real one with a second error (#400: every swallow says why).
           echo "::group::compose ps (did hive ever start and report healthy?)"
-          docker compose -f docker-compose.test.yml ps -a || true
+          docker compose -f docker-compose.test.yml ps -a || true # a stack that never started has no state to print
           echo "::endgroup::"
           echo "::group::hive service logs"
-          docker compose -f docker-compose.test.yml logs --no-color --tail=300 hive || true
+          docker compose -f docker-compose.test.yml logs --no-color --tail=300 hive || true # logs vanish when the stack was torn down mid-failure
           echo "::endgroup::"
           echo "::group::e2e-tests (playwright) logs"
-          docker compose -f docker-compose.test.yml logs --no-color --tail=200 e2e-tests || true
+          docker compose -f docker-compose.test.yml logs --no-color --tail=200 e2e-tests || true # same: the reporter container may be gone
           echo "::endgroup::"
           echo "::group::is the app reachable, and what does GET / return?"
+          # the probe prints its own exit=$?; unreachable is itself the finding.
+          # `|| true` below tolerates a failed probe, not a wedged compose. The
+          # reason sits here rather than on the flagged line so DevSkim DS137138
+          # (the URL is the compose-internal hive hostname; no TLS exists to
+          # prefer) keeps attributing it to the commit that introduced it.
           docker compose -f docker-compose.test.yml run --rm --no-deps -T \
             --entrypoint sh e2e-tests -c \
             'wget -S -T 10 -O /dev/null http://hive:8101/ 2>&1 | head -40; echo "exit=$?"' || true
@@ -793,8 +803,9 @@ jobs:
         if: always()
         working-directory: packages/hive-conductor
         run: |
-          docker compose -f docker-compose.test.yml ps -a || true
-          docker compose -f docker-compose.test.yml logs --no-color --tail=200 || true
+          # Diagnostics only: the verdict came from the api-tests step above.
+          docker compose -f docker-compose.test.yml ps -a || true # a stack that never started has no state to print
+          docker compose -f docker-compose.test.yml logs --no-color --tail=200 || true # logs vanish when the stack was torn down mid-failure
       - name: Tear down
         if: always()
         working-directory: packages/hive-conductor
@@ -942,14 +953,16 @@ jobs:
 
           cleanup() {
             status=$?
+            # Cleanup must never mask the real exit status: every command
+            # below is best-effort, and `exit "$status"` preserves the verdict.
             if [[ $status -ne 0 ]]; then
-              docker logs "$engine" 2>&1 || true
-              docker logs "$postgres" 2>&1 || true
-              docker ps -a || true
+              docker logs "$engine" 2>&1 || true # the container may already be gone
+              docker logs "$postgres" 2>&1 || true # same
+              docker ps -a || true # state dump, not the verdict
             fi
-            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true
-            docker network rm "$network" >/dev/null 2>&1 || true
-            docker volume rm "$volume" >/dev/null 2>&1 || true
+            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true # nothing to remove on an early failure
+            docker network rm "$network" >/dev/null 2>&1 || true # already absent
+            docker volume rm "$volume" >/dev/null 2>&1 || true # already absent
             exit "$status"
           }
           trap cleanup EXIT
