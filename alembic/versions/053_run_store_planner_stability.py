@@ -69,8 +69,14 @@ conditional add also spares an adopted database the constraint's validation
 scan: an existing CHECK is left exactly as it stands rather than dropped and
 rebuilt.
 
-Revision ID: 052
-Revises: 051
+Numbered 052 when written; develop's M4-B1 knowledge-stage ladder
+(ADR-103) claimed that id on the same `051` parent while this branch was
+open, so per this chain's collision convention the revision re-parented
+onto that `052_learning_stage_ladder` tip as 053. One linear head, no
+duplicate revision ids.
+
+Revision ID: 053
+Revises: 052
 Create Date: 2026-10-04
 """
 
@@ -78,8 +84,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "052"
-down_revision = "051"
+revision = "053"
+down_revision = "052"
 branch_labels = None
 depends_on = None
 

@@ -61,16 +61,18 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) continues the chain after this
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
-    # that; #398's `048_canvas_job_retry_backoff` continues it, and
-    # `049_design_artifact_versions` (#780) continues that; #774's
+    # that; #398's `048_canvas_job_retry_backoff` continues it, and #780's
+    # `049_design_artifact_versions` continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
     # #780 claimed them — continues after that. #792's eval-score evidence,
     # which had taken `049` on develop while this branch's artifact-version
     # ledger took the same number on the same parent, re-parents onto that
-    # `050` as `051_canonical_run_eval_scores`. #863's planner-stability
-    # revision continues from that `051`, so the single linear head is
-    # `052`.
-    walked = {item.revision for item in directory.walk_revisions("base", "052")}
+    # `050` as `051_canonical_run_eval_scores`. Develop's knowledge-stage
+    # ladder (M4-B1, ADR-103) then took `052` on that same parent, and
+    # #863's planner-stability revision — numbered `052` when written —
+    # re-parented onto that tip as `053`, so the single linear head is
+    # `053`.
+    walked = {item.revision for item in directory.walk_revisions("base", "053")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -81,7 +83,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "049" in walked
     assert "050" in walked
     assert "051" in walked
-    assert directory.get_heads() == ["052"]
+    assert "052" in walked
+    assert "053" in walked
+    assert directory.get_heads() == ["053"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

@@ -18,7 +18,7 @@ unconstrained status column is not an error — it is silence. Add
   while every sweep reports an empty backlog. No error, no log line, just a
   table that grows.
 
-Migration 052 closes the front door with CHECK constraints pinned to the model
+Migration 053 closes the front door with CHECK constraints pinned to the model
 enums — a status outside the domain cannot be *written*, so the gap between
 "model" and "database" can only be closed by a migration, and that migration is
 the one place the predicates get revised. This suite holds the pairing shut
@@ -85,41 +85,41 @@ def _load_revision(stem: str):
 
 
 @pytest.fixture(scope="module")
-def revision_052():
-    return _load_revision("052_run_store_planner_stability")
+def revision_053():
+    return _load_revision("053_run_store_planner_stability")
 
 
 class TestMigrationDomainsMatchTheModel:
-    def test_the_run_domain_is_the_model_enum(self, revision_052) -> None:
+    def test_the_run_domain_is_the_model_enum(self, revision_053) -> None:
         """A migration cannot import the model — it must keep meaning what it
         meant on the day it ran — so the pairing is held by this test instead:
         if the enum grows, this file fails until a revision extends the DDL."""
-        assert set(revision_052._RUN_STATUS_VALUES) == RUN_DOMAIN
+        assert set(revision_053._RUN_STATUS_VALUES) == RUN_DOMAIN
 
-    def test_the_attempt_domain_is_the_model_enum(self, revision_052) -> None:
-        assert set(revision_052._ATTEMPT_STATUS_VALUES) == ATTEMPT_DOMAIN
+    def test_the_attempt_domain_is_the_model_enum(self, revision_053) -> None:
+        assert set(revision_053._ATTEMPT_STATUS_VALUES) == ATTEMPT_DOMAIN
 
-    def test_the_check_constraints_pin_each_spine_table_to_its_domain(self, revision_052) -> None:
+    def test_the_check_constraints_pin_each_spine_table_to_its_domain(self, revision_053) -> None:
         """Both Run-status tables and the continuation table share the Run
         domain (continuations store a `RunStatus` — `pg_continuation` writes
         `status.value` straight from the model). Attempts have their own.
         The DDL strings must also follow the model's *declaration* order: the
         revision is hand-written to mirror the enum, and an exact comparison
         is what turns a reordered or half-copied domain into a failure."""
-        assert [status.value for status in RunStatus] == list(revision_052._RUN_STATUS_VALUES)
+        assert [status.value for status in RunStatus] == list(revision_053._RUN_STATUS_VALUES)
         assert [status.value for status in AttemptStatus] == list(
-            revision_052._ATTEMPT_STATUS_VALUES
+            revision_053._ATTEMPT_STATUS_VALUES
         )
         assert (
             "status IN ({})".format(", ".join(f"'{status.value}'" for status in RunStatus))
-            == revision_052._RUN_STATUS_CHECK
+            == revision_053._RUN_STATUS_CHECK
         )
         assert (
             "status IN ({})".format(", ".join(f"'{status.value}'" for status in AttemptStatus))
-            == revision_052._ATTEMPT_STATUS_CHECK
+            == revision_053._ATTEMPT_STATUS_CHECK
         )
-        source = (VERSIONS / "052_run_store_planner_stability.py").read_text(encoding="utf-8")
-        # The constrained add rides 052's guarded helper (the adoption-safe
+        source = (VERSIONS / "053_run_store_planner_stability.py").read_text(encoding="utf-8")
+        # The constrained add rides 053's guarded helper (the adoption-safe
         # form the chain's re-application contract needs), so the spelling
         # this greps for is the helper call with the same constant the
         # assertions above pin to the model.
@@ -170,7 +170,7 @@ class TestPartialIndexPredicatesStayInsideTheDomain:
 class TestNoStatusColumnEscapesTheLedger:
     def test_every_text_status_column_in_the_chain_is_accounted_for(self) -> None:
         """The tripwire: any new `sa.Column("status", sa.Text)` in the chain
-        must be spine (and therefore CHECK-constrained from migration 052 on)
+        must be spine (and therefore CHECK-constrained from migration 053 on)
         or declared non-spine here, with a domain and an owner of its own."""
         declared: dict[str, set[str]] = {}
         column = re.compile(r'sa\.Column\("status",\s*sa\.Text')
@@ -197,7 +197,7 @@ class TestNoStatusColumnEscapesTheLedger:
 
         assert spine_with_status == set(SPINE_TABLES), (
             "spine tables with a text status column must be exactly the four "
-            f"migration 052 constrains; got {sorted(spine_with_status)}"
+            f"migration 053 constrains; got {sorted(spine_with_status)}"
         )
         accounted = {name for _, name in NON_SPINE_STATUS_TABLES}
         assert non_spine_with_status <= accounted, (
