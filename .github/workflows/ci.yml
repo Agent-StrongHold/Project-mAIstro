@@ -838,6 +838,13 @@ jobs:
       - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev
       - run: uv pip install pip-audit
+      # #406: the synced environment is the one place the reviewed
+      # pytoniq-core-fork `examples` namespace is allowed to exist. The gate
+      # inventories every distribution's top-level surface and rejects any
+      # generic/colliding/unreviewed name, so a new dependency cannot add an
+      # importable namespace without a written review.
+      - name: Dependency wheels install no unreviewed top-level namespaces (#406)
+        run: uv run python scripts/check-dependency-namespaces.py
       - run: uv pip freeze --exclude-editable > /tmp/deps.txt
       # Same retry contract as security.yml's supply-chain job (single gate
       # script, same failure mode): retry only an unusable report — a crashed
@@ -931,6 +938,13 @@ jobs:
           -f Dockerfile -t maistro-engine:test
           --load --cache-from type=gha,scope=engine
           --cache-to type=gha,scope=engine,mode=max .
+      # #406: the image's own build layer prunes the pytoniq-core-fork
+      # `examples` namespace and asserts it gone; this runs the shipped image
+      # itself so the assertion covers the artifact, not just the layer.
+      - name: Shipped engine image carries no examples namespace (#406)
+        run: >-
+          docker run --rm --entrypoint python maistro-engine:test
+          -c "import importlib.util; assert importlib.util.find_spec('examples') is None, 'unpruned pytoniq examples namespace'"
       - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
         shell: bash
         run: |
@@ -1051,6 +1065,10 @@ jobs:
           -f packages/hive-conductor/Dockerfile -t hive-conductor:ci
           --load --cache-from type=gha,scope=hive-conductor
           --cache-to type=gha,scope=hive-conductor,mode=max .
+      - name: Shipped conductor image carries no examples namespace (#406)
+        run: >-
+          docker run --rm --entrypoint python hive-conductor:ci
+          -c "import importlib.util; assert importlib.util.find_spec('examples') is None, 'unpruned pytoniq examples namespace'"
       # The static gate above reads the ignore files. This one builds the
       # actual RSI runner from a context carrying canary secrets and proves
       # none is in any layer -- because the question is what Docker did, not
