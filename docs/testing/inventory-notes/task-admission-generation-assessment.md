@@ -61,3 +61,51 @@ reviewed runtime consumer and pass the unchanged full quality gates at its
 exact final head, including these tests and this note (banking the radon
 identity via its own pre-landed grant, and pruning the reachability entry the
 moment the consumer wires the module).
+
+## CI-repair round at 927a3adf8 (2026-10-04)
+
+The merge-queue run at this head failed four jobs. Root-caused locally with
+each job's own invocations:
+
+- `exact-debt-ledger` (vulture-ratchet.yml): the named vulture repair
+  procedure has an empty fix-list — `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exits 0 with 1342
+  reviewed identities -> 1342 findings, so `quality/vulture-baseline.json` is
+  exact and untouched. The job actually fails earlier, in
+  `check-ratchet-provenance.py`: its `reachability` and
+  `reachability-dispositions` sub-gates compare the candidate ledgers against
+  the trusted base, and `maistro.runs.admission_identity` (baselined and
+  dispositioned by the #1851 sibling commit 9a15e6830) plus
+  `maistro.tasks.admission_generation` are NEW unreachable/dispositioned
+  identities the base never authorized. That is the two-merge rule doing its
+  job (a candidate ledger row cannot approve itself); it stands as the
+  documented blocker above.
+- `Quality gate (Pillars 1–4, 7, 8)`: `check-reachability.py` and
+  `check-radon-baseline.py` fail as documented above. `check-convergence-matrix.py`
+  additionally failed because the #1851 sibling's baseline row moved
+  `maistro.runs.admission_identity` into the Run / NodeRun / Attempt
+  lifecycle row while the matrix still said `none`. Repaired here the way
+  the gate itself prescribes — the row now says `few` and names the
+  baselined-unreachable contract leaf — a planning-surface doc update, not a
+  waiver; the gate still recomputes shares from the live import graph and
+  `tests/test_check_convergence_matrix.py` passes (60/60).
+- `test` (ci.yml root suite): 4 failures, all one root cause — the new
+  module is not in the reachability baseline
+  (`test_check_reachability.py::test_baseline_matches_the_tree`, both
+  `test_reachability_baseline_identity.py` gate-identity tests) plus the
+  convergence-matrix drift test fixed above. The three baseline-identity
+  failures stand as the documented blocker; they disappear only when the
+  #1845 integration consumer wires the module (or a base-landed
+  authorization lands first).
+- `Coverage gate`: replicated CI's per-file diff-coverage locally
+  (`coverage run --branch --source=packages/maistro-core/src/maistro -m
+  pytest packages/maistro-core/tests`, then `check-diff-coverage.py
+  coverage.xml --base 91996e19`): both new modules are at or above 90% lines
+  / 80% branch arcs, exit 0. The CI job failed in its root-suite coverage
+  producer, which runs the same `tests/` suite as the `test` job — same
+  reachability root cause, no coverage defect.
+
+One local-only red herring:
+`packages/maistro-core/tests/test_container_postgres.py::
+test_an_unreachable_server_is_an_error_not_a_fallback` needs a reachable
+Docker daemon (passes with `DOCKER_HOST` set; green in CI, which has one).
