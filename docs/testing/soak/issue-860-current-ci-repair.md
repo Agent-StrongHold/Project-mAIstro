@@ -1,6 +1,62 @@
 # Issue #860 — current CI repair
 
-## Latest checkpoint — job `9ca96a35080a4b3f8c7ea6d01dc083aa`
+## Latest checkpoint — job `8c939288e0f948ee8ecd7c21abb76db9`
+
+Only #860, writer CI-repair, assigned worktree `/home/dev/Git/wt/auto-860`.
+Verified clean starting HEAD `cffdf7caf4427ed2f5c4737c371f162364890280`;
+assigned base `b35c76e035b3ee60789f9eac3e82526e23aba2e1` resolves.
+No conflict or salvage edits were present. Prior `c99b4bd1` result read;
+no driver `check-*.log` files were present in the job-directory snapshot.
+
+Fresh validation (1200-second timeouts except initial Vulture scan: 1000):
+
+- `uv sync --locked --extra dev`: PASS.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, **1345 findings / 1345 reviewed identities**, zero unclassified or never-allowlist. The checker reports comparison base `1e4933e2a1b7`. No actual debt mismatch exists, so **no ledger amendment or code deletion is justified**.
+- `uv run ruff check .`: PASS; `uv run ruff format --check .`: PASS, 2859 files.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`: **88 passed, 5 skipped** (missing `MAISTRO_TEST_PG_DSN`). No live PostgreSQL proof claimed.
+- `uv run python scripts/check-suite-inventory.py`: PASS, 14 suites.
+- `uv run python scripts/check-deployment-claims.py`: PASS.
+- `uv run python scripts/check-compose-secrets.py`: PASS, 8 Compose files.
+- `uv run python scripts/check-merge-markers.py`: PASS.
+- Inline `uv run python` imported the current runner and asserted that all four historical packs in the table below fail both duration and exact-artifact checks: PASS. Run 6 remains 90.43 seconds versus 14400 required. This is evidence evaluation, **not a fresh soak**.
+
+Fresh transcripts are `worker-ruff-{check,format}.log`, `worker-pytest.log`,
+`worker-check-*.py.log` and `worker-evidence.log` in the supplied job directory.
+Initial Vulture output is in the tool transcript (also `/tmp/pi-bash-96319284b9bf785c.log`).
+
+Re-read repository instructions, the load profile, evidence pack, current runner,
+adjacent tests and production limiter. Accepted ADR-085 defines principal keys,
+not shared replica state; accepted ADR-081626-f383 and ADR-082526-b36a require
+canonical fencing and lease renewal/reclaim. Accepted ADR-082426-82c7 makes the
+occurrence the Run admission identity, not proof of physical effects. ADR-081
+remains Proposed. No alternative execution or authorization authority introduced.
+
+The acceptance table below remains **BLOCKED**. Executed production-middleware
+regressions reproduce independent allowances on both replicas for authenticated
+and pre-auth identities (`rate_limit.py:25-30,72`; middleware installed in
+`maistro_server/main.py:593`). The old shared-store claim is already corrected.
+`run_soak.py:635-646` explicitly rejects host-preflight artifact equivalence;
+no designated immutable RC image/configuration/provider manifest was supplied.
+No live RC replicas, sustained workload or active-work restart ran this round.
+Full profile, physical-work uniqueness, application telemetry, recovery, external
+finding filing and hash-bound promotion evidence therefore remain UNVERIFIED,
+not inferred from passing unit tests.
+
+Only this checkpoint changes. No tests added, so no inventory delta is needed;
+no code/runtime configuration, ledger, grants or historical evidence changed.
+Commit locally; no GitHub mutations. Next: release-owner designation of the exact
+RC, completion of production workload/telemetry and physical-effect oracles,
+resolution of the replica-budget mismatch at the canonical policy seam, then
+≥14400 seconds on that unchanged artifact/configuration. Another host preflight
+or speculative ledger edit cannot resolve the block.
+
+Progress: checked 1 issue, done 0 acceptance-complete, skipped 0 issues,
+errors 0 validation commands; 5 database tests skipped. CI debt failure did not
+reproduce; issue #860 remains unresolved.
+
+---
+
+## Historical checkpoint — job `9ca96a35080a4b3f8c7ea6d01dc083aa`
 
 Frozen item: #860 only, branch `auto-860`, verified clean starting HEAD
 `62b69b3f500e40fa65e2ab91663e10083d3a544b`. Assigned develop base remains
