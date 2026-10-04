@@ -2860,13 +2860,14 @@ class LocalRsiLoop:
             logger.warning("rsi_local_checkpoint_error", label=label, error=str(exc))
 
     def _review_promotions(self, result: LocalRsiResult, report_dir: Path) -> None:
-        """Checkpoint-time RLPHD gate (promotion_review.py / SPEC-248): any
-        promotion since the last review pass whose predicted approval
-        confidence falls below its action-class's adaptive theta is REVERTED
-        NOW — so nothing keeps building on top of it — but the original patch
-        is saved to ``report_dir/flagged/``, queued for a human decision that
-        feeds straight back into the same dual-signal, surprise-weighted
-        update RLPHD already uses for tool-call approval.
+        """Checkpoint-time review pass (#110 / M4-A3): promotions are split by
+        classification into the mechanical non-judgment path (quarantine-clean,
+        protected gates and ratchets green, decisive evidence — no LLM and no
+        human judge, kept with its evidence) and the judgment path (sensitive
+        surface, governance override, or weak evidence — RLPHD predicts, and a
+        low-confidence promotion is REVERTED NOW — so nothing keeps building
+        on top of it — with the original patch saved to ``report_dir/flagged/``
+        for a human approve/reject/revise/resume ruling).
 
         A promotion a LATER commit already depends on (touched the same file)
         is never reverted: supersession makes a clean revert impossible
@@ -2877,7 +2878,7 @@ class LocalRsiLoop:
         if not self._config.promotion_review or self._last_reviewed_ref is None:
             return
         try:
-            from maistro_rsi.promotion_review import RlphdStateStore
+            from maistro_rsi.promotion_review import RlphdStateStore, classify_promotion
 
             revs = _git(
                 self._baseline,
@@ -2908,12 +2909,37 @@ class LocalRsiLoop:
                 for later_sha in revs[i + 1 :]:
                     later_files |= files_by_sha.get(later_sha, set())
                 superseded = bool(files_by_sha[sha] & later_files)
-                self._review_one_promotion(outcome, sha, superseded, state, report_dir)
+                touched_paths = sorted(files_by_sha[sha])
+                classification = classify_promotion(
+                    touched_paths=touched_paths,
+                    judge_score=outcome.regression_judge_score,
+                    composite=outcome.composite,
+                    governance_override=self._promotion_override(sha),
+                )
+                self._review_one_promotion(
+                    outcome,
+                    sha,
+                    superseded,
+                    state,
+                    report_dir,
+                    classification=classification,
+                    touched_paths=touched_paths,
+                )
             self._last_reviewed_ref = _git(
                 self._baseline, "rev-parse", self._config.baseline_branch
             ).stdout.strip()
         except Exception as exc:
             logger.warning("rsi_local_review_error", error=str(exc))
+
+    def _promotion_override(self, sha: str) -> bool:
+        """Whether the promotion's trace note records an exercised
+        test-inventory governance override (#306 evidence rides the note)."""
+        from maistro_rsi.trace_notes import read_trace_note
+
+        note = read_trace_note(self._baseline, sha)
+        if note is None or note.inventory is None:
+            return False
+        return bool(note.inventory.get("override"))
 
     def _review_one_promotion(
         self,
@@ -2922,18 +2948,29 @@ class LocalRsiLoop:
         superseded: bool,
         state: Any,
         report_dir: Path,
+        *,
+        classification: Any,
+        touched_paths: list[str],
     ) -> None:
-        """One commit's RLPHD verdict: keep, observe-but-skip (superseded), or
-        revert-and-flag. Split out of _review_promotions to keep that method's
-        branching within the project's complexity budget."""
+        """One commit's review verdict: mechanical keep (no judge), observe-but-
+        skip (superseded), judgment keep, or revert-and-flag. Split out of
+        _review_promotions to keep that method's branching within the
+        project's complexity budget."""
+        from dataclasses import asdict
+
         from maistro_rsi.promotion_review import (
+            MECHANICAL_COMPOSITE_FLOOR,
             PendingReview,
+            PromotionRecord,
             action_class_for,
             extract_features,
             flag_for_review,
             now_iso,
+            promotions_dir,
             save_kept_review,
+            write_promotion_record,
         )
+        from maistro_rsi.trace_notes import read_trace_note
 
         action_class = action_class_for(outcome.kind)
         features = extract_features(
@@ -2941,6 +2978,84 @@ class LocalRsiLoop:
             composite=outcome.composite,
             kind=outcome.kind,
         )
+        note = read_trace_note(self._baseline, sha)
+
+        def _record(decision: dict[str, Any], resulting_ref: str) -> None:
+            """The promotion record binding candidate ↔ evaluation ↔ decision
+            ↔ version (#110) — written for every review outcome."""
+            built_on = ""
+            parent = _git(self._baseline, "rev-parse", f"{sha}^", check=False)
+            if parent.returncode == 0:
+                built_on = parent.stdout.strip()
+            write_promotion_record(
+                promotions_dir(report_dir),
+                PromotionRecord(
+                    candidate={
+                        "sha": sha,
+                        "cycle": outcome.index,
+                        "target": outcome.target,
+                        "kind": outcome.kind.value,
+                        "touched_paths": touched_paths,
+                    },
+                    evaluation={
+                        "gates": dict(note.gates) if note else {},
+                        "reward": asdict(note.reward) if note else {},
+                        "inventory": dict(note.inventory) if note and note.inventory else None,
+                        "model": note.model if note else "",
+                        "composite": outcome.composite,
+                        "judge_score": outcome.regression_judge_score,
+                        "source": "refs/notes/rsi trace note on the candidate commit",
+                    },
+                    classification={
+                        "review_path": classification.review_path,
+                        "reason": classification.reason,
+                        "sensitive_paths": list(classification.sensitive_paths),
+                        "governance_override": classification.governance_override,
+                    },
+                    decision=decision,
+                    version={"built_on": built_on, "resulting_ref": resulting_ref},
+                ),
+            )
+
+        if classification.review_path == "mechanical":
+            # The common safe path (#110): decisive deterministic evidence —
+            # no RLPHD prediction, no revert, no human. The review record is
+            # still saved (kept/) so a human can override after the fact.
+            kept_review = PendingReview(
+                sha=sha,
+                index=outcome.index,
+                target=outcome.target,
+                kind=outcome.kind.value,
+                action_class=action_class,
+                features=features,
+                predicted_p=1.0,
+                theta=MECHANICAL_COMPOSITE_FLOOR,
+                flagged_at=now_iso(),
+                note="mechanical non-judgment path: quarantine-clean, protected "
+                f"gates and ratchets green ({classification.reason}); no judge required",
+                review_path="mechanical",
+                classification_reason=classification.reason,
+            )
+            save_kept_review(
+                report_dir / "kept", kept_review, _git(self._baseline, "show", sha).stdout
+            )
+            _record(
+                {
+                    "outcome": "auto_keep_mechanical",
+                    "at": now_iso(),
+                    "reason": classification.reason,
+                    "rlphd_trained": False,
+                },
+                sha,
+            )
+            logger.info(
+                "rsi_local_review_mechanical_keep",
+                sha=sha,
+                index=outcome.index,
+                reason=classification.reason,
+            )
+            return
+
         p, theta = state.predict(action_class, features)
         if superseded:
             logger.info(
@@ -2950,6 +3065,16 @@ class LocalRsiLoop:
                 predicted_p=p,
                 theta=theta,
                 note="later work depends on this file — cannot cleanly revert",
+            )
+            _record(
+                {
+                    "outcome": "observed_superseded",
+                    "at": now_iso(),
+                    "predicted_p": p,
+                    "theta": theta,
+                    "rlphd_trained": False,
+                },
+                sha,
             )
             return
         if p >= theta:
@@ -2964,9 +3089,23 @@ class LocalRsiLoop:
                 theta=theta,
                 flagged_at=now_iso(),
                 note=f"auto-kept (p={p:.3f} >= theta={theta:.3f}); composite={outcome.composite} judge_score={outcome.regression_judge_score}",
+                review_path="judgment",
+                classification_reason=classification.reason,
+                sensitive_paths=list(classification.sensitive_paths),
+                governance_override=classification.governance_override,
             )
             save_kept_review(
                 report_dir / "kept", kept_review, _git(self._baseline, "show", sha).stdout
+            )
+            _record(
+                {
+                    "outcome": "auto_keep_judgment",
+                    "at": now_iso(),
+                    "predicted_p": p,
+                    "theta": theta,
+                    "rlphd_trained": False,
+                },
+                sha,
             )
             logger.info(
                 "rsi_local_review_kept", sha=sha, index=outcome.index, predicted_p=p, theta=theta
@@ -3002,8 +3141,22 @@ class LocalRsiLoop:
             theta=theta,
             flagged_at=now_iso(),
             note=f"composite={outcome.composite} judge_score={outcome.regression_judge_score}",
+            review_path="judgment",
+            classification_reason=classification.reason,
+            sensitive_paths=list(classification.sensitive_paths),
+            governance_override=classification.governance_override,
         )
         flag_for_review(report_dir / "flagged", review, patch_text)
+        _record(
+            {
+                "outcome": "escalated",
+                "at": now_iso(),
+                "predicted_p": p,
+                "theta": theta,
+                "rlphd_trained": False,
+            },
+            revert_sha,
+        )
         logger.warning(
             "rsi_local_review_reverted",
             sha=sha,
@@ -3011,6 +3164,7 @@ class LocalRsiLoop:
             target=outcome.target,
             predicted_p=p,
             theta=theta,
+            reason=classification.reason,
             note="reverted pending human review — patch saved, not discarded",
         )
 
