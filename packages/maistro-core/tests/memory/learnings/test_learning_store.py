@@ -34,7 +34,7 @@ class TestStore:
         assert id_ > 0
 
     async def test_get_returns_none_for_an_unknown_id(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr())
         assert store.get(id_) is not None
         assert store.get(id_ + 999) is None
