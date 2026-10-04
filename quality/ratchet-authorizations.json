@@ -903,6 +903,26 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1817",
       "reason": "Post-merge reconciliation, the same #1817 gap as the grant above: this block landed in the same commit with no radon grant. Decides whether a durable Run's active NodeRuns have gone quiet with no Attempt still holding them -- short-circuiting on no active NodeRuns, then per NodeRun checking for zero Attempts (stalled) or a live, unexpired lease (not stalled) before concluding every active NodeRun is abandoned. This grant authorizes this one complexity identity only, at its already-merged value."
+    },
+    "packages/maistro-core/src/maistro/backlog/agent_surface.py::AgentBacklogSurface.select@11": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#102",
+      "reason": "Deterministic claim selector for the ordinary Workspace Agent (#102 acceptance: an authorized agent lists/selects/claims against the same DB-backed service). Priority, rank, age, id tie-breaking, active-claim skipping and fail-closed dependency resolution are the reviewed behavior test_agent_surface.py pins; collapsing the branches would trade determinism guarantees for a lower scorecard. Post-merge carry for the #102 authority-cutover surface (issue #102): the block ships with maistro.backlog's reviewed implementation and is banked at its measured value in quality/radon-baseline.json in the same change. Grants are read from the merge base per the two-merge rule, so this grant takes effect when this merge lands; it authorizes this one complexity identity only, at its already-reviewed value."
+    },
+    "packages/maistro-core/src/maistro/backlog/cutover.py::export_authoritative@14": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#102",
+      "reason": "The post-cutover DB->Markdown generator (#102): replays the persisted token stream verbatim, appends database-created items exactly once in item-id order, and refuses an unimported document id. The branches are the determinism guarantee the cutover acceptance criterion (deterministic, reviewable export) is tested against. Post-merge carry for the #102 authority-cutover surface (issue #102): the block ships with maistro.backlog's reviewed implementation and is banked at its measured value in quality/radon-baseline.json in the same change. Grants are read from the merge base per the two-merge rule, so this grant takes effect when this merge lands; it authorizes this one complexity identity only, at its already-reviewed value."
+    },
+    "packages/maistro-core/src/maistro/backlog/markdown_io.py::parse_markdown@14": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#102",
+      "reason": "The single-pass canonical importer for the #102 DB import: one walk separates furniture from item bodies, preserves the token stream the export replays, and fails closed on unparsable headers and duplicate ids, as the migration proof requires. Splitting the pass would scatter the byte-for-byte round-trip invariants. Post-merge carry for the #102 authority-cutover surface (issue #102): the block ships with maistro.backlog's reviewed implementation and is banked at its measured value in quality/radon-baseline.json in the same change. Grants are read from the merge base per the two-merge rule, so this grant takes effect when this merge lands; it authorizes this one complexity identity only, at its already-reviewed value."
+    },
+    "packages/maistro-core/src/maistro/backlog/store.py::InMemoryBacklogStore.list_items@11": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#102",
+      "reason": "The reference store's composing list filter: every optional filter joins one pass so each returned row is a deep copy (callers cannot mutate store state through a listed item) under the (created_at, item_id) ordering the conformance suite pins. Post-merge carry for the #102 authority-cutover surface (issue #102): the block ships with maistro.backlog's reviewed implementation and is banked at its measured value in quality/radon-baseline.json in the same change. Grants are read from the merge base per the two-merge rule, so this grant takes effect when this merge lands; it authorizes this one complexity identity only, at its already-reviewed value."
     }
   },
   "contract-markers": {

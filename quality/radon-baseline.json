@@ -253,6 +253,46 @@
       "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
     },
     {
+      "key": "packages/maistro-core/src/maistro/backlog/agent_surface.py::AgentBacklogSurface.select",
+      "path": "packages/maistro-core/src/maistro/backlog/agent_surface.py",
+      "line": 98,
+      "name": "select",
+      "classname": "AgentBacklogSurface",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "New on the #102 authority-cutover surface: the ordinary Workspace Agent's deterministic claim selector. Priority is the item's explicit human priority, then rank, then age, then id, so two agents asking the same question get the same answer and contend on the claim rather than on interpretation; it skips actively claimed items and treats unresolved dependencies fail-closed instead of silently selecting a blocked item. Recorded at its measured value; test_agent_surface.py pins the selection order."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/backlog/cutover.py::export_authoritative",
+      "path": "packages/maistro-core/src/maistro/backlog/cutover.py",
+      "line": 482,
+      "name": "export_authoritative",
+      "classname": null,
+      "rank": "C",
+      "complexity": 14,
+      "rationale": "New on the #102 authority-cutover surface: generates BACKLOG.md from the database alone after the recorded flip. It replays the persisted token stream verbatim, appends database-created items under the generated heading exactly once and in item-id order, and refuses to invent a document for an id never imported -- the branching is the determinism guarantee test_authority_cutover.py pins (byte-stable export across restarts)."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/backlog/markdown_io.py::parse_markdown",
+      "path": "packages/maistro-core/src/maistro/backlog/markdown_io.py",
+      "line": 196,
+      "name": "parse_markdown",
+      "classname": null,
+      "rank": "C",
+      "complexity": 14,
+      "rationale": "New on the #102 authority-cutover surface: the single-pass importer that turns the canonical hand-maintained BACKLOG.md into a token stream plus structured items. One walk must separate furniture from item bodies, keep the token stream the deterministic export replays, and fail closed on unparsable headers and duplicate ids -- the migration proof requires missing, duplicated, conflicting and unparseable rows to be reported, never silently skipped. Splitting the pass would scatter the round-trip invariants test_markdown_migration.py pins byte-for-byte."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/backlog/store.py::InMemoryBacklogStore.list_items",
+      "path": "packages/maistro-core/src/maistro/backlog/store.py",
+      "line": 271,
+      "name": "list_items",
+      "classname": "InMemoryBacklogStore",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "New on the #98/#102 DB-backed backlog surface: the reference store's list filter. Each optional filter (status, tag, parent, roots-only) composes into a single pass so every returned row is a deep copy -- callers must not be able to mutate store state through a listed item -- and the (created_at, item_id) ordering is part of the reviewed contract the three-backend conformance suite pins."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService.invoke",
       "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
       "line": 544,
