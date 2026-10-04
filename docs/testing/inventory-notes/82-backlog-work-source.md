@@ -451,3 +451,68 @@ candidate ledger for the merged tree, and re-prove the named merge-queue failure
   capability-invocation test edit changes two assertion values inside an
   existing test (the documented head-pin reconciliation), leaving its suite
   count at 2.
+
+## Sixth CI-repair addendum (develop-sync round at a0f8b8c27, 829de3dac)
+
+Merge-queue evaluation flagged `Supply chain (pip-audit)` and a preserved
+develop-sync conflict. This round merges origin/develop `829de3dac` (nine
+commits: working graph M3-E0, Rubric ontology M7-A2, versioned artifact state
+#780, candidate archive M4-A6, cancellation fence #1336, eval workspaces
+M4-J, contradiction lifecycle M4-B4) and resolves the fallout:
+
+- **051 collision, resolved as 052.** develop's renumbered
+  `051_canonical_run_eval_scores` (re-parented onto develop's own `050` after
+  #780 took `049`) collided with the `051` the 045cfdfbe sync gave the backlog
+  work source — two revisions, both `down_revision = "050"`. The backlog
+  migration re-attaches after the trunk tip as `052_backlog_work_source`
+  (`revision = "052"`, `down_revision = "051"`), the same move one more time.
+  Production docstrings updated (`backlog/model.py`, `backlog/pg_store.py`);
+  the capability-invocation chain test's narration extended with the 049/050
+  history and its head pin moved `051` → `052` with `051`/`052` membership
+  asserts. `alembic heads` = single `052 (head)`; `alembic upgrade head` ran
+  `050 → 051 → 052` against the round's pg18 (`migr82r6-pg`, port 55433).
+- **`quality/durable-table-retention.json`** union: the three `backlog_*`
+  rows (#82) plus develop's `candidate_archive` (#113) and four `design_*`
+  rows (#780/#325); the `backlog_items` note now cites alembic `052` instead
+  of the stale `049`. `check-durable-table-inventory.py` OK (89 tables).
+- **`quality/vulture-baseline.json`** resolved as a multiset union (559
+  develop-side rows across six categories, no `set()` passes), then exact
+  re-bank with CI's scan args: delta −574/+6 lines — dominated by
+  reclassification into develop's `dataclass-declarative-field` rule and
+  de-banking of rows the merged tree no longer produces (develop's own code
+  changes; spot-checked `lanes.py::held` — now called by
+  `tests/tasks/test_runner.py`). `unclassified: 0`, `never_allowlist: 0`.
+- **Structural trusted-leg residual, unchanged in kind:** vulture enforce and
+  both reachability provenance gates still exit 1 on exactly the backlog
+  identities (50 vulture NEWs in `core-public-api-surface`; the five
+  `maistro.backlog.*` reachability modules) — unauthorized at merge base
+  `829de3dac` per the #534 two-merge rule; the grants-only merge must land
+  first. The bank itself is exact: the ledger contains all 50 rows.
+- **pip-audit re-proof at the merged head:** `uv.lock` unchanged by this
+  merge (empty diff vs first parent), so the audit surface equals the
+  previous round's. security.yml sequence run verbatim:
+  `uv sync --locked --all-extras`, freeze 217 deps,
+  `pip-audit --strict --format=json` exit 1 with a complete report — 2×
+  `ecdsa==0.19.2 PYSEC-2026-1325`, both triaged — `pip_audit_gate.py` exit 0
+  (ALLOWED; direct-dependency usage OK: 10 packages / 61 runtime deps / 4
+  dispositions).
+- **Merge fallout battery, all green at `a0f8b8c27`:**
+  `check-reachability.py` OK (1227 production modules; develop's removal of
+  the four `maistro.ontology*` baseline rows is consistent — the modules are
+  now genuinely reached through the Rubric→Goal wiring, and all 179
+  unreachable modules carry a disposition per
+  `check-reachability-dispositions.py`); `ruff check .` /
+  `ruff format --check .` clean; `check-suite-inventory.py` 14/14;
+  `check-shipped-surface-truth.py` OK; `check-backlog-consistency.py` OK
+  (167 items); migration chain **13 passed** on a pristine pg18; whole
+  `tests/migrations` **100 passed** with `MAISTRO_TEST_DATABASE_URL`; backlog
+  conformance with a migrated `MAISTRO_TEST_PG_DSN` **53 passed / 1 skipped**
+  (the structural memory-reference reopen skip, same as previous rounds);
+  backlog-history suites **58 passed** + history API **6 passed** (= 64,
+  same total as the previous round's count);
+  hive-conductor `test_backlog_routes.py` **36 passed**; mypy clean across
+  the six canonical packages (772 files, +9 from the merge).
+- **Test inventory delta:** none — no test added, removed, or retagged; the
+  capability-invocation edit extends narration and assertion values inside
+  the existing test, leaving its suite count at 2. The `inventory-delta:`
+  block above still describes the branch's +54 backlog nodes.
