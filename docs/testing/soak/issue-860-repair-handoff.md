@@ -179,3 +179,93 @@ Progress: checked 1, done 0, skipped 0 issues; 1 environment failure (Docker),
 infrastructure and designated immutable RC/configuration, resolve the aggregate
 rate-limit acceptance mismatch, and run a production-topology workload with
 physical Attempt correlation and complete metrics for at least four hours.
+
+---
+
+# Issue #860 CI repair checkpoint
+
+## Frozen scope
+
+- Assigned issue only: #860, branch `auto-860`, starting HEAD
+  `c5f6519ed7cc31d802fb664d1963bdc048df36a2`, supplied develop base
+  `b35c76e035b3ee60789f9eac3e82526e23aba2e1`.
+- Worktree `/home/dev/Git/wt/auto-860` was clean at entry. No salvage required.
+- Process the explicit vulture exact-debt-ledger repair and verify existing soak
+  acceptance evidence; no new production concurrency architecture or invented RC.
+- Candidate edit scope: reviewed findings in `quality/vulture-baseline.json`,
+  genuinely dead code identified by the requested scan, existing soak documentation,
+  this handoff; any necessary regression tests require inventory notes.
+- Job directory contains no `check-*.log` files at initial inspection. Driver
+  validation claims are not accepted as evidence.
+- Ambiguity: assignment is a writer/repair lane despite generic verifier text.
+  Proceed as writer, perform local validation, and commit locally. A missing
+  four-hour exact-RC soak remains a release blocker, not something a ledger repair
+  can certify.
+
+## Progress
+
+Entry state verified; repository instructions read. Validation pending.
+
+Requested vulture gate independently passed: 1,345 findings / 1,345 reviewed
+identities, zero unclassified and zero forbidden findings. No ledger edit is
+justified. Prior H3 overclaim is already corrected in current evidence.
+The existing historical handoff was recovered byte-for-byte from HEAD after
+an initial filename collision; all earlier content is preserved above.
+
+Focused pytest (the two changed-package modules plus soak promotion and production
+boot-contract tests) passed: **88 passed, 5 skipped** in 3.20s. All five skips
+require `MAISTRO_TEST_PG_DSN`; they are not live PostgreSQL evidence. Ruff check
+passed and format check passed (2,859 files). Existing production-middleware
+regressions reproduce independent allowances for the same identity on both
+replicas; sampler tests observe a real subprocess, not production RC telemetry.
+No tests were added or changed, so no inventory delta is required.
+
+Reviewed accepted runtime/fencing/rate-limit ADRs and proposed deployment ADR.
+Attempt remains the physical identity; accepted fencing explicitly does not grant
+lease-expiry takeover authority. No alternative scheduler, store or authorization
+path is introduced. The reference Compose has two services but mutable images
+and a local application build, not a designated immutable promotion RC.
+
+## Current validation and acceptance disposition
+
+Commands executed this round:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, 1,345 reviewed identities/findings. No unbanked identity to repair; ledger unchanged.
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS, 2,859 files.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`: 88 passed, 5 skipped (missing migrated PostgreSQL DSN).
+- `uv run python scripts/check-deployment-claims.py`: PASS.
+- `uv run python scripts/check-execution-lifecycles.py`: PASS, 19/19 classified.
+- `uv run python scripts/check-merge-markers.py`: PASS.
+- `uv run python` imported the current harness and reevaluated the four fixed historical JSON evidence packs: all rejected on duration and exact artifact; round 5 records 90.17 seconds and round 6 records 90.43 seconds. This checks summary flags, not raw physical-work traces.
+- `DOCKER_HOST=unix:///var/run/docker.sock timeout 90 docker info --format '{{.ServerVersion}}'`: PASS, server 29.7.2. Earlier rounds' Docker-unavailable finding does **not** apply to this round. No services were started or stopped.
+
+| Acceptance criterion | Current evidence / remaining gap |
+|---|---|
+| Representative RC workload | Profile inspected; multi-user/Workspace, fan-out, successful tools/models, Design/Canvas and background workload applicability remains UNVERIFIED. |
+| Two application replicas | Compose defines two; boot-contract tests pass. Two deployed exact-RC replicas UNVERIFIED. |
+| Sustained saturation/reclaim/backoff/leaks | All four historical packs fail duration/artifact gates; long-window behavior UNVERIFIED. |
+| Exactly-once/fenced physical work and Goal reconciliation | Admission-oracle regressions pass, but physical Attempt uniqueness and sustained Goal reconciliation UNVERIFIED. |
+| Rate/security/degraded concurrency, replica non-bypass | Executed real middleware regression reproduces another allowance after replica selection for both identity classes; aggregate non-bypass unmet. Exact-RC security/degraded load UNVERIFIED. |
+| Complete metrics and thresholds | Live subprocess sampler regression passes; full RC database/application-loop/worker/queue/error/timeout observations UNVERIFIED. |
+| Kill/restart during active work | Physical fencing/recovery/loss prevention UNVERIFIED; no new deployed restart. |
+| Long-running exact RC/configuration | No designated immutable RC and no qualifying four-hour soak. Host driver always rejects exact artifact; UNVERIFIED. |
+| Findings filed/reclassified | Local M3-A evidence-validity classifications inspected; external filing UNVERIFIED and prohibited in this lane. |
+| Hash-bound machine/human soak evidence | Historical preflight evidence preserved and rejected for promotion; qualifying RC evidence UNVERIFIED. |
+
+## Current handoff
+
+**BLOCKED.** No actual failing vulture identity or unrepaired H3 documentation
+claim was found. No speculative code, ledger or cosmetic evidence repair made.
+Only this checkpoint changes; all prior implementation and historical evidence
+remain intact. Docker is reachable, but infrastructure availability alone cannot
+supply a designated RC, representative production runner or four-hour evidence.
+
+Next: promotion owner designates immutable artifact/configuration and applicable
+workloads, resolves the replica-selection allowance mismatch, supplies a
+production-topology runner with physical Attempt correlation and full telemetry,
+then performs the qualifying soak on the unchanged RC. No issue closure or remote
+mutation performed. This local commit is a validation handoff, not approval.
+
+Progress: checked 1 assigned issue, done 0 (acceptance incomplete), skipped 0
+issues, errors 0 validation commands; 5 explicitly skipped PostgreSQL cases.
