@@ -61,17 +61,19 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) continues the chain after this
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
-    # that; #398's `048_canvas_job_retry_backoff` continues it, and
-    # `049_design_artifact_versions` (#780) continues that; #774's
+    # that; #398's `048_canvas_job_retry_backoff` continues it, and #780's
+    # `049_design_artifact_versions` continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
-    # #780 claimed them — continues after that, and #792's eval-score
-    # evidence — which had taken `049` on develop while this branch's
-    # artifact-version ledger took the same number on the same parent —
-    # re-parents onto that `050` as `051_canonical_run_eval_scores`. This
-    # branch's `043_invocation_quota_door` (#1196/#718) is re-parented onto
-    # whichever of them is develop's head at merge time -- 046, then 047,
-    # 048, 050, now 051 -- so the single linear head is that quota-door
-    # revision.
+    # #780 claimed them — continues after that; and #792's eval-score
+    # evidence, which had taken `049` on this branch while develop's
+    # artifact-version ledger took the same number on the same parent,
+    # re-parents onto that `050` as `051_canonical_run_eval_scores`.
+    # Develop's knowledge-stage ladder — numbered 048 when written —
+    # re-parented onto that chain tip as `052_learning_stage_ladder`
+    # (M4-B1, ADR-103). This branch's `043_invocation_quota_door`
+    # (#1196/#718) is re-parented onto whichever of them is develop's head
+    # at merge time -- 046, then 047, 048, 050, 051, now 052 -- so the
+    # single linear head is that quota-door revision.
     walked = {
         item.revision for item in directory.walk_revisions("base", "043_invocation_quota_door")
     }
@@ -85,6 +87,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "049" in walked
     assert "050" in walked
     assert "051" in walked
+    assert "052" in walked
     assert directory.get_heads() == ["043_invocation_quota_door"]
 
 
