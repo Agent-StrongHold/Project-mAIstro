@@ -1,8 +1,10 @@
-"""Migration 051 lands the knowledge-stage ladder, and un-lands it (M4-B1/ADR-103).
+"""Migration 052 lands the knowledge-stage ladder, and un-lands it (M4-B1/ADR-103).
 
 Numbered 048 when written; develop's #398 claimed that id, and develop's own
-#792/#774 then took 049/050, so the revision re-parents onto the chain tip
-`050_design_creative_briefs` as 051 — the same renumbering
+#780/#774 then took 049/050, so the revision re-parented onto that chain —
+and develop's #792 eval evidence re-parented onto the same `050` as 051,
+making it the chain tip, so the ladder lands one rung higher:
+`052_learning_stage_ladder` (`down_revision = "051"`) — the same renumbering
 every develop collision in this chain has gone through.
 
 The upgrade/downgrade round trip against a real PostgreSQL — the same shape
@@ -73,7 +75,7 @@ def _ledger_table() -> str | None:
 
 
 def test_upgrade_lands_the_stage_columns_and_the_ledger() -> None:
-    result = _alembic("upgrade", "051")
+    result = _alembic("upgrade", "052")
     assert result.returncode == 0, result.stderr
 
     columns = _learning_stage_columns()
@@ -87,8 +89,8 @@ def test_upgrade_lands_the_stage_columns_and_the_ledger() -> None:
 
 
 def test_downgrade_unlands_the_whole_ladder() -> None:
-    _alembic("upgrade", "051")
-    result = _alembic("downgrade", "050")
+    _alembic("upgrade", "052")
+    result = _alembic("downgrade", "051")
     assert result.returncode == 0, result.stderr
 
     assert _learning_stage_columns() == {}
@@ -96,8 +98,8 @@ def test_downgrade_unlands_the_whole_ladder() -> None:
 
 
 def test_re_upgrading_over_a_downgraded_schema_restores_the_ladder() -> None:
-    _alembic("downgrade", "050")
-    result = _alembic("upgrade", "051")
+    _alembic("downgrade", "051")
+    result = _alembic("upgrade", "052")
     assert result.returncode == 0, result.stderr
     assert set(_learning_stage_columns()) == set(_STAGE_COLUMNS)
     assert _ledger_table() is not None

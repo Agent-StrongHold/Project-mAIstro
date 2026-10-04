@@ -16,14 +16,16 @@ reusable institutional knowledge on the one ``Learning`` record:
 
 Numbered 048 when written; develop claimed that id for #398
 (`048_canvas_job_retry_backoff`) while this branch was open, so per this
-chain's collision convention the revision re-parented onto it as 049 — and
-when develop's own `049_canonical_run_eval_scores` (#792) and
-`050_design_creative_briefs` (#774) took 049/050 in the same window, it
-re-parented once more onto the `050` chain tip as 051. One linear head, no
-duplicate revision ids.
+chain's collision convention the revision re-parented onto it — and develop
+kept colliding while the branch stayed open: `049_design_artifact_versions`
+(#780), `050_design_creative_briefs` (#774), and — re-parented onto that
+`050` by its own branch's develop sync —
+`051_canonical_run_eval_scores` (#792) each took the next id in turn. The
+ladder therefore re-parents onto the `051_canonical_run_eval_scores` chain
+tip as 052. One linear head, no duplicate revision ids.
 
-Revision ID: 051
-Revises: 050
+Revision ID: 052
+Revises: 051
 Create Date: 2026-10-01
 """
 
@@ -31,8 +33,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "051"
-down_revision = "050"
+revision = "052"
+down_revision = "051"
 branch_labels = None
 depends_on = None
 

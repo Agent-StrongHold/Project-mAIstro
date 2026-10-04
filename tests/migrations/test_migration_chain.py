@@ -88,7 +88,7 @@ EXPECTED_TABLES = frozenset(
         "canonical_project_resources",
         "canonical_projects",
         "canonical_runs",
-        # Eval scores as durable Run evidence on the spine (049, #792): a
+        # Eval scores as durable Run evidence on the spine (051, #792): a
         # score names the Run, NodeRun and Attempt it scored, so it is
         # execution evidence, not a sidecar lifecycle.
         "canonical_run_eval_scores",
@@ -98,7 +98,14 @@ EXPECTED_TABLES = frozenset(
         "canonical_workspaces",
         "canonical_workspace_memberships",
         "child_profiles",
-        # Versioned CreativeBrief lineages (#774) — the immutable creative
+        # The versioned creative artifact state (#780, 049): the append-only
+        # version ledger, its explicit user locks, durable project guidance,
+        # and per-branch control rows projected onto canonical execution.
+        "design_artifact_versions",
+        "design_artifact_locks",
+        "design_branch_controls",
+        "design_project_guidance",
+        # Versioned CreativeBrief lineages (#774, 050) — the immutable creative
         # provenance Runs/artifacts cite; append-only by contract.
         "design_creative_briefs",
         "design_outputs",

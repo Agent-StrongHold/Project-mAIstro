@@ -30,6 +30,13 @@ htmlcov/
 # that produced it — a green local run turning the shared gate red.
 .coverage.*
 coverage.xml
+# Local re-runs of the coverage producer (quality.yml `coverage-unit`) and the
+# vulture ledger scan write these next to the tracked tree. Same class as
+# `coverage.xml` above: regenerable gate scratch, never source — ignore them so
+# a `git add -A` cannot ship one (an untracked copy of each sat in a #776
+# worktree across two rounds, repeatedly misread as uncommitted work).
+coverage-core.xml
+vulture_output.txt
 .hypothesis/
 
 # Claude Code — share project skills + hooks, keep personal/runtime files local
