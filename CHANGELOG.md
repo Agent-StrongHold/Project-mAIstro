@@ -23,7 +23,37 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Added
+
+- **API-wide HTTP content negotiation (ADR-076) is implemented (#96).**
+  `maistro-server` and hive-conductor now run the shared
+  `maistro.api_versioning.VersionNegotiationMiddleware` from `maistro-core`.
+  A request selects an API version via `Accept: application/vnd.maistro.vN`,
+  an `api_version` query parameter, or an `api_version` JSON body field (in
+  that precedence order); every response advertises `Maistro-API-Version`
+  and `Maistro-API-Default`; an unsupported selector is answered `406` and a
+  malformed one `400` before any route handler runs. A plain-JSON response to
+  an Accept-negotiated request is returned as
+  `application/vnd.maistro.vN+json`; other media types (including the
+  canvas-local `application/vnd.canvas+json;version=2`) are never rewritten.
+  Deprecation signalling (`Deprecation`/`Sunset`/`Link`) is wired behind the
+  version table; nothing is deprecated. Requests without a selector behave
+  exactly as before, plus the two advertisement headers. Health, metrics,
+  OpenAPI/docs, and A2A paths do not negotiate. Business routes stay on their
+  stable `/v1` mounts; no `/vN` path duplication exists.
+
 ### Changed
+
+- **Advisory DAG-shape proportionality judge failures are explicit, not silent allows (#1191).**
+  `LLMProportionalityJudge` no longer collapses a timeout, provider error, malformed response
+  envelope, or malformed judgment into `justified=True`. `ProportionalityVerdict` now carries a
+  `disposition` (`allow`/`deny`/`unavailable`): every failure path yields `unavailable` with
+  `justified=False`, so it can never read as affirmative approval evidence. `evaluate_dag_shape`
+  records the degraded policy as a distinct `approved_degraded` `DagShapeVerdict` status (logged,
+  counted in the new `maistro_security_advisory_degraded_total` metric,
+  `proportionality_disposition="unavailable"`; `can_execute` still true — the critic stays
+  advisory and is not an availability dependency). `agent.synth_dag` threads the disposition into
+  the child Run's provenance. Hard Warden/Sentinel gates are unchanged and remain authoritative.
 
 - **v1.0 release contract consolidated into canonical planning docs (no linked issue:
   governance realignment).** Stakeholder decisions from the 2026-10-01 architecture
@@ -686,6 +716,30 @@ or placeholder-only section.
   `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
+
+- **Evolve proxy fitness no longer credits text narration (#384).** The
+  `proxy_gaia` scorer lost its fuzzy fallbacks (0.9 raw-substring, 0.85
+  digit-set, 0.7 word-overlap, and the `max(exact, judged)` merge): only a
+  normalized/numeric exact match earns unjudged score, everything else is
+  verified solely by the LLM judge (fail-closed 0.0 on judge failure), with an
+  optional `judge_llm_call` to verify with a different model than the candidate
+  answered with. The `proxy_ragas` scorer's word-overlap primary score, its
+  `>= 0.6` judge-skip and its `max(static, judged)` merge are gone — the judge
+  runs for every sample and is the only credit path; the static overlap is
+  reported as an explicitly uncredited diagnostic. `proxy_bfcl` and
+  `proxy_tau_bench` (already structured-call-only since #852) and the two fixed
+  scorers now record evidence provenance in `EvalResult.metadata["evidence"]`,
+  folded into the new `PipelineGenome.eval_evidence` and surfaced by the new
+  `PopulationStore.champion_provenance()`. Stored genomes gain an
+  `eval_evidence` field (defaults to `{`). New `benchmarks/calibration.py`
+  measures each scorer's narration false-positive rate against held-out
+  adversarial fixtures (`calibrate_proxy_scorers`). Serialized-genome consumers
+  that rejected unknown fields must tolerate the new key. Both acceptance
+  surfaces are operator-reachable: `python -m maistro_rsi evolve` prints the
+  champion's per-benchmark score→evidence provenance, and a new
+  `python -m maistro_rsi calibrate` runs the harness offline against a stored
+  genome and reports each scorer's narration false-positive rate (reporting
+  only — the fitness hard gates stay the only scoring authority).
 
 - **Terminal BACKLOG.md items must carry closure evidence (#101, partial).**
   `scripts/check-backlog-consistency.py` now fails an `Implemented` item with
@@ -1952,15 +2006,22 @@ workflow, and no changelog; `develop` was the only integration point.
 
 ### API compatibility
 
-**The stable HTTP surface in 1.0.0 is the `/v1` route mount.** Clients should
-address `/v1/...` paths directly.
+**The stable HTTP surface is the `/v1` route mount.** Clients should
+address `/v1/...` paths directly. The `/v1` path segment is the stable
+resource mount; the *behavioral* version is negotiated, not taken from the
+path.
 
-[ADR-076](docs/adr/ADR-076-http-api-versioning.md) specifies version selection
-by **content negotiation** (`Accept: application/vnd.maistro.vN+json`). **That
-scheme is not implemented.** No server in this release performs it; the only
-negotiation code anywhere in the tree is a narrow, canvas-specific
-`/v2/canvas` media-type check unrelated to the general scheme. Do not write
-clients against it. Implementation is deferred to v1.1.
+[ADR-076](docs/adr/ADR-076-http-api-versioning.md) version selection is
+**implemented** on both business HTTP surfaces (`maistro-server` and
+hive-conductor) by the shared `maistro.api_versioning` middleware: a request
+selects a version via the `Accept: application/vnd.maistro.vN` media type, an
+`api_version` query parameter, or an `api_version` JSON body field; every
+response states the served version (`Maistro-API-Version`) and the default
+(`Maistro-API-Default`); an unsupported version is refused with `406`. Only
+version 1 exists today; a client that sends no selector gets version 1 and
+plain `application/json`. The canvas `application/vnd.canvas+json;version=2`
+media-type check at `/v2/canvas` is a canvas-local response-format mechanism,
+not the general API-version scheme. Do not treat it as one.
 
 The API version axis is independent of the package version: a `1.x` package
 release does not imply a `/v2` HTTP surface.
@@ -1982,8 +2043,7 @@ register:
 > unconfigured in the default shipped service and return `503`. Design Studio
 > can discover resources and select artifact modes, but visual generation,
 > editing/preview, and publish/export are not available. Conductor can run in
-> degraded mode when optional services are unavailable, and API-wide HTTP
-> content negotiation from ADR-076 is deferred to v1.1.
+> degraded mode when optional services are unavailable.
 
 [Unreleased]: https://github.com/Agent-StrongHold/Project-mAIstro/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/Agent-StrongHold/Project-mAIstro/releases/tag/v1.0.0

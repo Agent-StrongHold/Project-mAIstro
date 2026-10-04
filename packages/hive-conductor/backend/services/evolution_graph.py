@@ -530,7 +530,10 @@ async def _apply_finalize_mutations(
     before = {genome.id for genome in population.list_all()}
     _publish_tournament_elos(cycle, population)
     cycle._compute_all_fitness(population)
-    population.cull_bottom(config.cull_pct)
+    # Archive (M4-A6): cull becomes archival — every removed genome keeps an
+    # immutable, inspectable snapshot; None (no archive on this cycle) is the
+    # exact pre-archive behavior.
+    population.cull_bottom(config.cull_pct, archive=getattr(cycle, "archive", None))
 
     if cycle._island_pop is None or cycle._island_pop.island_count != config.island_count:
         cycle._island_pop = IslandPopulation(config.island_count)
@@ -855,8 +858,15 @@ async def run_canonical_evolution_cycle(
     actor_principal_id: str | None = None,
     cycle_number: int | None = None,
     container: Any | None = None,
+    archive: Any | None = None,
 ) -> DurableRunRecord:
-    """Execute one Evolve cycle as canonical Graph -> Run -> NodeRun -> Attempt work."""
+    """Execute one Evolve cycle as canonical Graph -> Run -> NodeRun -> Attempt work.
+
+    ``archive`` (a ``maistro_evolve.archive.CandidateArchive``) is Evolve
+    domain state like the population/tournament: when supplied, the cycle's
+    finalize step archives culled genomes and snapshots created children, so
+    candidate lineage and retirement survive population turnover (M4-A6).
+    """
     from maistro_evolve.cycle import EvolutionCycle
 
     owner = canonical_execution_owner(container)
@@ -866,7 +876,7 @@ async def run_canonical_evolution_cycle(
 
     workspace_id = str(owner.config.workspace_id)
     project = await owner.project_scope_store.root_for_workspace(workspace_id)
-    cycle = EvolutionCycle(harness=harness, tournament=tournament)
+    cycle = EvolutionCycle(harness=harness, tournament=tournament, archive=archive)
     if cycle.harness.fidelity != "real":
         logger.warning(
             "evolve_cycle_fidelity: this run's fitness signal is '%s' — "
@@ -1028,7 +1038,11 @@ def _recovery_resolver(run: Run) -> NodeResolver:
 
     config = EvolutionConfig(self_improve=True, self_improve_top_n=3)
     harness = EvalHarness(benchmark_fidelity="proxy")
-    cycle = EvolutionCycle(harness=harness, tournament=tournament)
+    # getattr, not the property: an archive-less service (double or a service
+    # initialized before M4-A6) recovers exactly as pre-archive runs did —
+    # archiving is optional domain state, never a recovery prerequisite.
+    archive = getattr(service, "archive", None)
+    cycle = EvolutionCycle(harness=harness, tournament=tournament, archive=archive)
     llm_call = service.build_llm_call()
 
     return _resolver(

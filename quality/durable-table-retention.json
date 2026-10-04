@@ -90,6 +90,18 @@
       "notes": "Append-only audit trail with no retention. Legal hold and tamper-evidence are the importing product's (owner decision on #325)."
     },
     {
+      "table": "candidate_archive",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-evolve/src/maistro_evolve/archive.py",
+      "data_class": "event_history",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#113",
+      "notes": "Optional SQLite mirror of the in-memory CandidateArchive (M4-A6): the append-only ledger of candidate lifecycle events (created/retired/promoted/branched/blocked). Kept forever on purpose — deleting a lineage row erases the provenance the archive exists to preserve, so archive.py has no deletion path; retention evaluation and non-champion branching read retired snapshots forever. Bounded by the candidates a deployment actually creates."
+    },
+    {
       "table": "books",
       "backends": [
         "postgres"
@@ -528,6 +540,54 @@
       "deletion_path": "maistro_design.stores:PgDesignProjectStore.delete",
       "issue": "#325",
       "notes": "Deleted only on explicit request; no retention sweep."
+    },
+    {
+      "table": "design_artifact_versions",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Append-only version ledger (#780): history is the product, rows are never rewritten and have no DELETE; project deletion cascades via design_projects. Retention undecided on #325 like design_outputs."
+    },
+    {
+      "table": "design_artifact_locks",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Lock history including released locks (#780); released rows are retained for audit of who unlocked what. Project deletion cascades via design_projects. Retention undecided on #325."
+    },
+    {
+      "table": "design_project_guidance",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Durable user guidance (#780); superseded rows stay readable by design — invalidation is supersession, never deletion. Project deletion cascades via design_projects. Retention undecided on #325."
+    },
+    {
+      "table": "design_branch_controls",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Per-branch control mode (#780), one mutable row per (project, lineage), updated in place. Project deletion cascades via design_projects. Retention undecided on #325."
     },
     {
       "table": "durable_graph_runs",
@@ -1033,6 +1093,30 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "No DELETE, and restore full-scans the table. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity; retention itself stays open on #325."
+    },
+    {
+      "table": "workspace_working_log",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/working/sqlite_store.py",
+      "data_class": "memory",
+      "retention": "undecided",
+      "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
+      "issue": "#325",
+      "notes": "The lossless per-Workspace observation log (#301, M4-H). Simplification and hard resets APPEND SUMMARY/RESET markers rather than updating or deleting rows, so nothing in production edits an entry; the one driven deletion is purge_workspace when the Workspace itself is deleted -- the same explicit-delete-without-sweep shape as canonical_workspaces. Losslessness is the feature, so the open decision is indefinite_by_decision versus a retention horizon for abandoned Workspaces."
+    },
+    {
+      "table": "workspace_working_results",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/working/sqlite_store.py",
+      "data_class": "memory",
+      "retention": "undecided",
+      "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
+      "issue": "#325",
+      "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (put_result is INSERT OR IGNORE on the content address). Deleted by the same purge_workspace that removes the log entries referencing them; the lifetime question is the log's."
     },
     {
       "table": "workspace_backlog_history",

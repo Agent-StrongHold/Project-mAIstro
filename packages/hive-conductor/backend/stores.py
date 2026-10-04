@@ -30,7 +30,6 @@ from models.schemas import (
     MCPServer,
     MCPTool,
     MemoryEntry,
-    MemoryNamespace,
     Mission,
     MissionStep,
     Schedule,
@@ -84,9 +83,6 @@ mcp_servers: ModelStore = ModelStore("mcp_servers", MCPServer)
 mcp_tools: ModelStore = ModelStore("mcp_tools", MCPTool)
 containers: ModelStore = ModelStore("containers", Container)
 memory_entries: ModelStore = ModelStore("memory_entries", MemoryEntry)
-memory_namespaces: dict[str, MemoryNamespace] = {
-    "default": MemoryNamespace(name="default", entry_count=1, size_bytes=1024)
-}
 # Persona/Workspace system — a user's live instantiations of adopted personas.
 workspaces: ModelStore = ModelStore("workspaces", Workspace)
 # Phase I: thumbs +/- + comment feedback, persisted per-persona (see
@@ -569,15 +565,28 @@ def _seed_dags() -> None:
 
 
 def _seed_messages() -> None:
+    """Fabricated inbox chatter -- demo mode only (#399).
+
+    One of these rows used to be a fabricated CRITICAL security finding
+    ("XSS in /v1/auth/callback" from "RedTeam"), so every fresh install
+    booted looking compromised and no reviewer could tell fiction from a
+    real finding. Production now seeds nothing here -- an empty inbox
+    renders as "no messages", the same honesty rule the audit log already
+    follows -- while the explicit demo mode (``hive_mode == "demo"``) keeps
+    the fixture, every row stamped machine-readably as synthetic and
+    carrying a deterministic ``msg-seed-*`` id so it is unmistakable and
+    trivially removable.
+    """
+    from config import get_settings
+
+    if get_settings().hive_mode != "demo":
+        return
     if len(messages) == 0:
         from routes.messages import Message
 
         t = now()
-        m1_id = str(uuid4())
-        m2_id = str(uuid4())
-        m3_id = str(uuid4())
-        messages[m1_id] = Message(
-            id=m1_id,
+        messages["msg-seed-1"] = Message(
+            id="msg-seed-1",
             from_agent="RedTeam",
             to="admin",
             subject="Vulnerability found in auth flow",
@@ -586,9 +595,10 @@ def _seed_messages() -> None:
             read=False,
             category="security",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
-        messages[m2_id] = Message(
-            id=m2_id,
+        messages["msg-seed-2"] = Message(
+            id="msg-seed-2",
             from_agent="DreamLoop",
             to="all",
             subject="DreamLoop cycle 47 complete",
@@ -597,9 +607,10 @@ def _seed_messages() -> None:
             read=False,
             category="mission",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
-        messages[m3_id] = Message(
-            id=m3_id,
+        messages["msg-seed-3"] = Message(
+            id="msg-seed-3",
             from_agent="Conductor",
             to="admin",
             subject="Anthropic quota at 25%",
@@ -608,6 +619,7 @@ def _seed_messages() -> None:
             read=True,
             category="quota",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
 
 

@@ -91,7 +91,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-073 | v2 | Accepted | 2026-05-30 | 2026-05-30† | 2026-09-20 22:38 CDT | Warden + Sentinel — threat detection and the policy decision/enforcement substrate. |
 | ADR-074 | v4 | Accepted | 2026-05-30 | 2026-05-30† | 2026-09-20 22:38 CDT | Policy ⇄ ADR Deconfliction — the governance dialectic (declared intent vs revealed preference). |
 | ADR-075 | v2 | Accepted | 2026-05-30 | 2026-06-10 | 2026-09-20 22:38 CDT | Universal Artifact Versioning and Release Channels. |
-| ADR-076 | v2 | Accepted | 2026-05-30 | 2026-06-10 | 2026-07-29 | HTTP API versioning via content negotiation on `Accept`/`api_version` — not yet implemented; business routes remain plain `/v1`-path-mounted (tracked in KNOWN-GAPS.md). |
+| ADR-076 | v2 | Implemented | 2026-05-30 | 2026-06-10 | 2026-10-01 | HTTP API versioning via content negotiation on `Accept`/`api_version` — implemented across maistro-server and hive-conductor by the shared `maistro.api_versioning` middleware; routes stay on stable `/v1` mounts. |
 | ADR-077 | v3 | Accepted | 2026-05-30 | 2026-06-10 | 2026-09-25 22:40 CDT | Web and Session Security. |
 | ADR-078 | v2 | Accepted | 2026-05-30 | 2026-06-10 | 2026-09-20 22:38 CDT | Configuration Management — DB source of truth, RBAC online edit, file export. |
 | ADR-079 | v1 | Proposed | 2026-05-30 | — | 2026-08-20 21:03 CDT | LLM Provider / Model Registry, Routing, and Embeddings. |
