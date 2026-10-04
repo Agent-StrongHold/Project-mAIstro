@@ -860,6 +860,23 @@ def build_executor(
     return _execute
 
 
+def _tree_envelope(raw: Any) -> Any:
+    """Normalize a persisted snapshot into the envelope shape.
+
+    Snapshots written before the envelope existed are the bare tree dict
+    (``{"root_id", "nodes"}``). The ``repo_url`` check in the caller already
+    tolerates a missing ``repo_url`` — i.e. it already declares those snapshots
+    readable — so raising ``KeyError`` on the missing "tree" key was an
+    inconsistency rather than a policy, and it made every pre-envelope resume
+    crash instead of continuing. Accept the legacy shape; the root-hypothesis
+    check still catches a mismatched tree, which is the only check available
+    for a snapshot that never recorded its repo.
+    """
+    if isinstance(raw, dict) and "nodes" in raw and "tree" not in raw:
+        return {"repo_url": None, "tree": raw}
+    return raw
+
+
 def _load_or_create_tree(
     config: AutorunConfig, tree_path: Path
 ) -> tuple[HypothesisTree, dict[str, Any] | None]:
@@ -892,18 +909,7 @@ def _load_or_create_tree(
         return tree, None
 
     raw = json.loads(tree_path.read_text(encoding="utf-8"))
-    # Snapshots written before the envelope existed are the bare tree dict
-    # (`{"root_id", "nodes"}`). The repo_url check below already tolerates a
-    # missing repo_url, i.e. it already declares those snapshots readable — so
-    # raising KeyError on the missing "tree" key was an inconsistency rather
-    # than a policy, and it made every pre-envelope resume crash instead of
-    # continuing. Accept the legacy shape; the root-hypothesis check still
-    # catches a mismatched tree, which is the only check available for a
-    # snapshot that never recorded its repo.
-    if isinstance(raw, dict) and "nodes" in raw and "tree" not in raw:
-        envelope: dict[str, Any] = {"repo_url": None, "tree": raw}
-    else:
-        envelope = raw
+    envelope = _tree_envelope(raw)
     restored_repo = envelope.get("repo_url")
     if restored_repo is not None and restored_repo != config.repo_url:
         raise ValueError(

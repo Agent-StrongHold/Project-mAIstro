@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +26
+  packages/maistro-rsi/tests: +28
 ---
 # 111 — RSI stall detection, lineage review, and reseeding (M5-B)
 
@@ -52,3 +52,14 @@ CI-repair round (radon D(22→C(17)) refactor + diff-coverage arcs), +8 more:
 - `_checkpoint_steps` degenerate scans: an empty-insight node appends as
   unscanned (the ledger skips it) and a verdict-less scan still records the
   insight with its admission outcome.
+
+Autorun-15 snapshot-persistence round, +2 more (missed when the round landed,
+caught by the suite-inventory gate as +2 drift):
+
+- `test_resume_restores_policy_state` — the persisted intervention-policy state
+  (`streak`/`interventions`/`next_index` beside the tree) round-trips through a
+  boundary: a resumed run restores the prior intervention records and never
+  reissues an `intervention_id`;
+- `test_resume_restores_mid_streak_count` — a boundary taken mid-stall restores
+  the non-improving streak, so a resumed run does not need N fresh failures to
+  re-detect the same stall.
