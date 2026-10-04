@@ -94,7 +94,7 @@ tui = [
 ]
 builders = [
     "textual>=0.61,<9",
-    "anthropic>=0.28,<1",
+    "anthropic>=0.28,<2",
     "maistro-bootstrap[builders]",
 ]
 # Homelab/single-instance persistence backend (no Postgres server required).

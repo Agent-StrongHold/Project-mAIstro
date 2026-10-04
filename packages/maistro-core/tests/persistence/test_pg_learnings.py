@@ -18,7 +18,7 @@ from maistro.persistence.pg_learnings import (
     PgLearningStore,
     similarity_query,
 )
-from maistro.types.memory import EpistemicType, Learning, MemoryScope
+from maistro.types.memory import EpistemicType, Learning, LearningStage, MemoryScope
 
 from .conftest import requires_postgres
 
@@ -197,12 +197,13 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         None,
         None,
         None,
-        # Lifecycle + epistemics (ADR-100126-8c2d): written like every other durable
-        # field so a restart cannot demote a validated learning back to a
-        # local belief. A fresh learning is a local empirical one at the
-        # default confidence, naming no validator, no confirmation instant,
+        # Knowledge-stage ladder + lifecycle/epistemics (ADR-103, ADR-100126-8c2d):
+        # written like every other durable field so a restart cannot demote a
+        # validated learning back to a local belief. A fresh learning lands on
+        # the bottom rung as a local empirical one at the default confidence,
+        # naming no validator, no promotion actor, no confirmation instant,
         # and no supersession lineage.
-        "learning",
+        LearningStage.MEMORY,
         "empirical",
         0.5,
         "{}",
@@ -214,6 +215,7 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         None,
         None,
         None,
+        "",
     )
 
 

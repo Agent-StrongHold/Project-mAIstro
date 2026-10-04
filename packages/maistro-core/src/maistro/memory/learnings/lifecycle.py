@@ -1,21 +1,29 @@
-"""Learning lifecycle: pipeline transitions over the row, and the evidence ledger.
+"""Learning lifecycle: the stage ladder, the pipeline rules, and the evidence ledger.
 
-Two layers sit deliberately beside each other, the same way the episodic tiers
-live beside the episodic rows (ADR-080 parts A/B, applied to learnings):
+Three layers sit deliberately beside each other, the same way the episodic
+tiers live beside the episodic rows (ADR-080 parts A/B, applied to learnings):
 
-- **Pipeline rules** (`#117`/`#121`, ADR-100126-8c2d): pure transitions on a
-  :class:`~maistro.types.memory.Learning` row — the Memory -> Learning ->
-  Validated -> Repertoire stage ladder, reinforce/contradict/decay toward an
-  epistemic floor (failure knowledge is structurally unforgettable), row-level
-  supersession and consolidation, and the measured-effectiveness read. The
-  stores apply these; nothing here reaches into a store.
+- **Knowledge-stage ladder** (M4-B1 / ADR-103): pure, auditable transitions on
+  a :class:`~maistro.types.memory.Learning` row — ``MEMORY -> LEARNING ->
+  VALIDATED -> REPERTOIRE``, forward-only and single-step, with the actor of
+  every rung recorded in :class:`StageTransition` rows. A stage is metadata
+  about knowledge: it never grants permissions or execution authority, and the
+  Sentinel never reads it (ADR-103).
+- **Pipeline rules** (`#117`/`#121`, ADR-100126-8c2d): pure transitions on the
+  same row — reinforce/contradict/decay toward an epistemic floor (failure
+  knowledge is structurally unforgettable), row-level supersession and
+  consolidation, and the measured-effectiveness read. The stores apply these;
+  nothing here reaches into a store.
 - **Evidence ledger** (`#120`, SPEC-283): :class:`InMemoryLearningLifecycle`
   tracks the learnings it observed in append-only evidence, revision, conflict
   and consolidation ledgers, so every confidence move names the exact Run or
   evaluation that drove it and no update ever erases the prior version or the
   evidence. ADR-015 made learnings accumulated corrections; this gives them
-  revisability with attribution. Durable twins of the ledger follow, as they
-  did for the episodic store.
+  revisability with attribution. The ledger owns the revisable confidence and
+  the exact-Run/evaluation evidence that the ``Learning`` row does not carry,
+  the same way the episodic store's tier dynamics live in
+  ``maistro.memory.episodic.tiers`` beside the row. Durable twins of the
+  ledger follow, as they did for the episodic store.
 """
 
 from __future__ import annotations
@@ -33,13 +41,151 @@ from maistro.types.memory import (
     ANTI_PATTERN_CONFIDENCE_FLOOR,
     ANTI_PATTERN_HALF_LIFE_DAYS,
     EMPIRICAL_HALF_LIFE_DAYS,
+    LEARNING_STAGE_ORDER,
     VALIDATED_CONFIDENCE_FLOOR,
     EpistemicType,
     LearningStage,
 )
 
+#: Inverse of ``LEARNING_STAGE_ORDER``: rank back to stage, for naming the
+#: expected next rung in rejection messages.
+_STAGE_BY_RANK: dict[int, LearningStage] = {
+    rank: stage for stage, rank in LEARNING_STAGE_ORDER.items()
+}
+
+__all__ = [
+    "InvalidStageTransition",
+    "StageTransition",
+    "plan_advance",
+]
+
 if TYPE_CHECKING:
+    # Type-only: `store` imports this module for the ladder machinery
+    # (StageTransition, plan_advance), so a runtime import here would close
+    # the cycle `store -> lifecycle -> store` and ImportError whichever the
+    # interpreter loads first.
     from maistro.memory.learnings.store import InMemoryLearningStore
+
+
+class InvalidStageTransition(ValueError):
+    """A stage transition that the ladder forbids was attempted.
+
+    Raised for unknown stages, backward moves, skips, and promotions that
+    name no actor. The store surfaces it to the caller instead of silently
+    keeping or half-applying the move: a transition that did not happen must
+    not appear in the audit ledger, and a transition that did must not be
+    deniable.
+    """
+
+
+@dataclass(frozen=True)
+class StageTransition:
+    """One durable, auditable ladder transition.
+
+    ``actor`` names whoever or whatever performed the transition (an
+    evaluator id for VALIDATED, a promotion actor for REPERTOIRE). ``reason``
+    is free text for the audit ledger. Rows are append-only: the ledger is
+    the provenance of how a claim came to be believed.
+    """
+
+    learning_id: int | None
+    org_id: str
+    from_stage: LearningStage
+    to_stage: LearningStage
+    actor: str
+    reason: str = ""
+
+
+def _require_next_rung(learning: Learning, to_stage: LearningStage) -> LearningStage:
+    """Return the current stage once ``to_stage`` is proven exactly one rung above.
+
+    Raises :class:`InvalidStageTransition` for an unknown current stage, a
+    backward move, or a skip. Split from :func:`plan_advance` so the rule
+    stays one readable paragraph and the planner stays a short composition of
+    check -> replace -> stamp -> record.
+    """
+    current = learning.stage
+    if current not in LEARNING_STAGE_ORDER:
+        raise InvalidStageTransition(
+            f"learning #{learning.id} carries an unknown stage {current!r}; "
+            "refusing to build on a value the ladder does not define"
+        )
+    expected_next = LEARNING_STAGE_ORDER[current] + 1
+    target = LEARNING_STAGE_ORDER[to_stage]
+    if target == expected_next:
+        return current
+    if target < LEARNING_STAGE_ORDER[current]:
+        raise InvalidStageTransition(
+            f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
+            "transitions are forward-only; the ladder never demotes"
+        )
+    if expected_next in _STAGE_BY_RANK:
+        raise InvalidStageTransition(
+            f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
+            "transitions are forward-only and single-step "
+            f"(expected {_STAGE_BY_RANK[expected_next]})"
+        )
+    raise InvalidStageTransition(
+        f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
+        f"{current} is the top of the ladder"
+    )
+
+
+def plan_advance(
+    learning: Learning,
+    *,
+    to_stage: LearningStage,
+    actor: str,
+    reason: str = "",
+) -> tuple[Learning, StageTransition]:
+    """Validate one ladder step and return the updated Learning plus its record.
+
+    Pure: no store, no I/O. The stores call this and then persist both the
+    row update and the ledger row, so the in-memory, SQLite and PostgreSQL
+    backends cannot drift on the rules.
+
+    Rules (ADR-103):
+
+    - forward-only: ``to_stage`` must sit exactly one rung above the current
+      stage. Backward moves and skips raise ``InvalidStageTransition`` — a
+      demotion would rewrite history the ledger already recorded, and a skip
+      would let a claim reach the repertoire without the rung that gives the
+      promotion its meaning.
+    - ``actor`` is required for every transition: provenance without an actor
+      is not provenance.
+    - reaching ``VALIDATED`` stamps ``validated_by``; reaching ``REPERTOIRE``
+      stamps ``promoted_by`` and flips ``status`` to ``promoted``.
+    """
+    if not isinstance(to_stage, LearningStage):
+        raise InvalidStageTransition(
+            f"unknown learning stage: {to_stage!r} (expected a LearningStage)"
+        )
+    if not actor or not actor.strip():
+        raise InvalidStageTransition(
+            "a stage transition must name its actor; anonymous provenance is no provenance"
+        )
+
+    current = _require_next_rung(learning, to_stage)
+
+    updated = dataclasses.replace(learning, stage=to_stage)
+    if to_stage is LearningStage.VALIDATED:
+        updated.validated_by = actor
+    elif to_stage is LearningStage.REPERTOIRE:
+        updated.promoted_by = actor
+        # The one behavioural promotion side effect: promoted-only readers
+        # (`get_promoted`, prompt injection) select on `status`, so a
+        # repertoire commit that did not flip it would promote nothing.
+        updated.status = "promoted"
+
+    transition = StageTransition(
+        learning_id=learning.id,
+        org_id=learning.org_id or "",
+        from_stage=current,
+        to_stage=to_stage,
+        actor=actor,
+        reason=reason,
+    )
+    return updated, transition
 
 
 def _now() -> datetime:
@@ -893,13 +1039,6 @@ def _clamp(value: float) -> float:
 #: are skipped by consolidation sweeps.
 TERMINAL_ROW_STATUSES: tuple[str, ...] = ("superseded", "consolidated")
 
-_STAGE_ORDER: dict[LearningStage, int] = {
-    LearningStage.MEMORY: 0,
-    LearningStage.LEARNING: 1,
-    LearningStage.VALIDATED: 2,
-    LearningStage.REPERTOIRE: 3,
-}
-
 
 def confidence_floor(learning: Learning) -> float:
     """The lowest confidence this learning's epistemic type may decay to.
@@ -988,8 +1127,8 @@ def advance_stage(
     """
     if to_stage is LearningStage.MEMORY:
         raise ValueError("MEMORY is the source tier; a Learning never carries it")
-    current = _STAGE_ORDER.get(learning.stage, _STAGE_ORDER[LearningStage.LEARNING])
-    target = _STAGE_ORDER[to_stage]
+    current = LEARNING_STAGE_ORDER.get(learning.stage, LEARNING_STAGE_ORDER[LearningStage.LEARNING])
+    target = LEARNING_STAGE_ORDER[to_stage]
     if target <= current:
         raise ValueError(f"stage only moves forward: {learning.stage} -> {to_stage}")
     if target > current + 1:

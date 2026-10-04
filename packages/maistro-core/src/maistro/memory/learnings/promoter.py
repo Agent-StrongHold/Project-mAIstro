@@ -25,6 +25,7 @@ from maistro.persistence.learning_scope import matches_learning_scope
 from maistro.protocols.memory import AntiPatternSink, IneffectiveLearningSource
 from maistro.types.memory import (
     ANTI_PATTERN_CONFIDENCE_FLOOR,
+    LEARNING_STAGE_ORDER,
     EpistemicType,
     LearningStage,
 )
@@ -132,16 +133,18 @@ class LearningPromoter:
     def _admit_validated(self, lr: Learning, verdict: GauntletVerdict) -> None:
         """Move a Gauntlet-validated learning into the repertoire.
 
-        LEARNING -> VALIDATED records the Gauntlet provenance; VALIDATED ->
-        REPERTOIRE is the commit. Split from the sweep so the promotion
-        semantics stay readable apart from the candidate iteration.
+        ADR-103: the ladder is walked rung by rung even on the fast path — a
+        claim is asserted (LEARNING) before it is validated, and validated
+        before it is committed. Reaching VALIDATED records the Gauntlet
+        provenance; VALIDATED -> REPERTOIRE is the commit. Split from the
+        sweep so the promotion semantics stay readable apart from the
+        candidate iteration.
         """
         assert self._gauntlet is not None
-        advance_stage(
-            lr,
-            LearningStage.VALIDATED,
-            gauntlet_name=self._gauntlet.name,
-        )
+        current = LEARNING_STAGE_ORDER.get(lr.stage, LEARNING_STAGE_ORDER[LearningStage.LEARNING])
+        for rung in (LearningStage.LEARNING, LearningStage.VALIDATED):
+            if LEARNING_STAGE_ORDER[rung] > current:
+                advance_stage(lr, rung, gauntlet_name=self._gauntlet.name)
         commit_to_repertoire(lr)
         logger.info(
             "Gauntlet-validated learning #%s joined the repertoire (%s)",
@@ -160,9 +163,10 @@ class LearningPromoter:
         Failure knowledge is retained, not discarded: the learning is
         reclassified ``ANTI_PATTERN`` and its confidence is lifted to the
         anti-pattern floor, because it cost real failures to learn and a later
-        Run must not re-buy them. The row stays ``active`` at stage LEARNING --
-        reclassification is not validation; joining the repertoire still
-        requires the Gauntlet like any other learning.
+        Run must not re-buy them. The row stays ``active`` at its captured
+        stage (``MEMORY`` under ADR-103: reclassification is not assertion) --
+        joining the repertoire still requires the Gauntlet like any other
+        learning.
 
         Requires a store that can name its ineffective learnings; one that
         cannot simply yields nothing to capture. A store that also implements

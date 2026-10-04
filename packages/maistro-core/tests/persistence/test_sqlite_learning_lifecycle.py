@@ -183,7 +183,9 @@ async def test_pre_m4b_rows_upgrade_to_the_defaults_they_always_meant(
     assert len(rows) == 1
     old = rows[0]
     assert old.learning == "an old belief"
-    assert old.stage is LearningStage.LEARNING
+    # ADR-103: a pre-ladder row lands on the bottom rung with no actors --
+    # nothing validated or promoted it, and fabricating one would lie.
+    assert old.stage is LearningStage.MEMORY
     assert old.epistemic_type is EpistemicType.EMPIRICAL
     assert old.confidence == 0.5
     assert old.applicability == {}

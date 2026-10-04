@@ -71,6 +71,46 @@ EMPIRICAL_HALF_LIFE_DAYS: float = 30.0
 ANTI_PATTERN_HALF_LIFE_DAYS: float = 120.0
 
 
+class LearningStage(StrEnum):
+    """Knowledge-stage ladder over a Learning record (M4-B1 / ADR-103).
+
+    The four semantic states between local execution memory and reusable
+    institutional knowledge, in ascending order:
+
+    - ``MEMORY`` — execution/agent-local remembered evidence/context. The
+      record was captured with its producer provenance but has not been
+      asserted as a reusable claim.
+    - ``LEARNING`` — a claim inferred from that evidence: the correction a
+      later execution is allowed to consider.
+    - ``VALIDATED`` — a claim that survived independent evaluation. Whoever
+      or whatever evaluated it is recorded in ``Learning.validated_by``; the
+      evaluator is not the producer of the claim.
+    - ``REPERTOIRE`` — validated learning explicitly promoted for reuse in
+      shared knowledge. Promotion flips ``status`` to ``promoted`` so every
+      existing promoted-only reader keeps working.
+
+    Not a runtime: the ladder is fields on the one ``Learning`` record plus
+    the transition functions in :mod:`maistro.memory.learnings.lifecycle`.
+    A stage is metadata about knowledge, and it never grants permissions or
+    execution authority — the Sentinel never reads it (ADR-103).
+    """
+
+    MEMORY = "memory"
+    LEARNING = "learning"
+    VALIDATED = "validated"
+    REPERTOIRE = "repertoire"
+
+
+#: Position of each stage on the ladder. Transitions are forward-only and
+#: single-step; the lifecycle functions derive both rules from this map.
+LEARNING_STAGE_ORDER: dict[LearningStage, int] = {
+    LearningStage.MEMORY: 0,
+    LearningStage.LEARNING: 1,
+    LearningStage.VALIDATED: 2,
+    LearningStage.REPERTOIRE: 3,
+}
+
+
 class MemoryScope(StrEnum):
     """Memory visibility scopes — hierarchical from broadest to narrowest."""
 
@@ -92,28 +132,6 @@ SCOPE_RANK: dict[MemoryScope, int] = {
     MemoryScope.AGENT: 1,
     MemoryScope.SESSION: 0,
 }
-
-
-class LearningStage(StrEnum):
-    """Stages of the learning pipeline (ADR-100126-8c2d, M4-B #117).
-
-    MEMORY -> LEARNING -> VALIDATED -> REPERTOIRE:
-
-    - ``MEMORY`` names the source tier: episodic records of what a Run
-      observed. A :class:`Learning` never carries this stage -- it marks where
-      the pipeline starts, so the stage ladder is total.
-    - ``LEARNING``: an extracted correction held locally by one scope. Local
-      belief, not yet reusable knowledge.
-    - ``VALIDATED``: an independent Gauntlet accepted the outcome evidence
-      later Runs recorded (#118). Still scoped, now believed.
-    - ``REPERTOIRE``: collective, reusable knowledge committed for injection
-      into later Runs. The only door in is through VALIDATED.
-    """
-
-    MEMORY = "memory"
-    LEARNING = "learning"
-    VALIDATED = "validated"
-    REPERTOIRE = "repertoire"
 
 
 class EpistemicType(StrEnum):
@@ -170,11 +188,14 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
-    # Pipeline + epistemics (ADR-100126-8c2d, EPIC M4-B). `stage` is the knowledge
-    # pipeline position; `status` stays the store-level row state. They move
-    # together only where they must: committing a learning to the repertoire
-    # sets status="promoted" so existing promoted-only readers keep working.
-    stage: LearningStage = LearningStage.LEARNING
+    # Knowledge-stage ladder (M4-B1 / ADR-103) with the pipeline epistemics
+    # (#117/#121, ADR-100126-8c2d). `stage` is the knowledge pipeline position;
+    # `status` stays the read surface (`promoted`-only readers keep working).
+    # They move together only where they must: committing a learning to the
+    # repertoire sets status="promoted" so those readers keep working.
+    # `validated_by`/`promoted_by` name the actor of the corresponding
+    # transition — blank means "never happened", never a fabricated default.
+    stage: LearningStage = LearningStage.MEMORY
     epistemic_type: EpistemicType = EpistemicType.EMPIRICAL
     #: 0..1 belief strength, decayed toward the epistemic floor over time.
     confidence: float = DEFAULT_LEARNING_CONFIDENCE
@@ -188,6 +209,8 @@ class Learning:
     #: Gauntlet provenance (#118): which independent validator accepted, and when.
     validated_by: str = ""
     validated_at: datetime | None = None
+    #: Promotion actor (ADR-103): who committed the validated claim for reuse.
+    promoted_by: str = ""
     #: Supersession links (#120). Both rows survive: institutional knowledge is
     # retained, so later Runs can ask what used to be believed.
     supersedes: int | None = None

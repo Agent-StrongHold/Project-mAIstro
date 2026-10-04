@@ -750,7 +750,9 @@ def _row(**overrides: object) -> Learning:
 class TestStageLadder:
     def test_fresh_learning_starts_local_and_empirical(self) -> None:
         lr = _row()
-        assert lr.stage is LearningStage.LEARNING
+        # ADR-103: a newly captured record is execution-local memory; asserting
+        # it as a claim (LEARNING) is a ladder transition, not a default.
+        assert lr.stage is LearningStage.MEMORY
         assert lr.epistemic_type is EpistemicType.EMPIRICAL
         assert lr.confidence == DEFAULT_LEARNING_CONFIDENCE
 
@@ -760,18 +762,18 @@ class TestStageLadder:
             advance_stage(lr, LearningStage.MEMORY)
 
     def test_stage_moves_forward_only(self) -> None:
-        lr = _row()
+        lr = _row(stage=LearningStage.LEARNING)
         advance_stage(lr, LearningStage.VALIDATED, gauntlet_name="g")
         with pytest.raises(ValueError, match="forward"):
             advance_stage(lr, LearningStage.LEARNING)
 
     def test_stage_cannot_skip_validation(self) -> None:
-        lr = _row()
+        lr = _row(stage=LearningStage.LEARNING)
         with pytest.raises(ValueError, match="skip"):
             commit_to_repertoire(lr)
 
     def test_validation_records_gauntlet_provenance(self) -> None:
-        lr = _row()
+        lr = _row(stage=LearningStage.LEARNING)
         advance_stage(
             lr, LearningStage.VALIDATED, gauntlet_name="outcome-evidence", now=PIPELINE_NOW
         )
@@ -785,12 +787,12 @@ class TestStageLadder:
         assert lr.status == "active"
 
     def test_validation_lifts_low_confidence_to_floor(self) -> None:
-        lr = _row(confidence=0.1)
+        lr = _row(confidence=0.1, stage=LearningStage.LEARNING)
         advance_stage(lr, LearningStage.VALIDATED, gauntlet_name="g")
         assert lr.confidence == VALIDATED_CONFIDENCE_FLOOR
 
     def test_repertoire_commit_flips_status_to_promoted(self) -> None:
-        lr = _row()
+        lr = _row(stage=LearningStage.LEARNING)
         advance_stage(lr, LearningStage.VALIDATED, gauntlet_name="g")
         commit_to_repertoire(lr, now=PIPELINE_NOW)
         assert lr.stage is LearningStage.REPERTOIRE

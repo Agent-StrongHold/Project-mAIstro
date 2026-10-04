@@ -170,7 +170,10 @@ class TestPromoterWithGauntlet:
         promoted = await promoter.check_and_promote()
 
         assert promoted == []
-        assert lr.stage is LearningStage.LEARNING
+        # ADR-103: a rejected candidate was never asserted as a claim, so it
+        # stays on the bottom rung it was stored at -- local memory, not a
+        # learning the collective may reuse.
+        assert lr.stage is LearningStage.MEMORY
         assert lr.status == "active"
         assert lr.validated_by == ""
         assert await store.get_promoted() == []
@@ -182,7 +185,7 @@ class TestPromoterWithGauntlet:
 
         promoter = LearningPromoter(store, threshold=5, gauntlet=OutcomeEvidenceGauntlet())
         assert await promoter.check_and_promote() == []
-        assert lr.stage is LearningStage.LEARNING
+        assert lr.stage is LearningStage.MEMORY
 
     async def test_gauntlet_gates_skill_mutation(self) -> None:
         store = InMemoryLearningStore()
@@ -275,7 +278,7 @@ class TestCaptureAntiPatterns:
         assert lr.confidence == ANTI_PATTERN_CONFIDENCE_FLOOR
         # Reclassification is not validation: still local, still promotable.
         assert lr.status == "active"
-        assert lr.stage is LearningStage.LEARNING
+        assert lr.stage is LearningStage.MEMORY
 
     async def test_effective_and_unmeasured_learnings_are_left_alone(self) -> None:
         store = InMemoryLearningStore()
