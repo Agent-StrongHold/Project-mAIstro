@@ -6743,3 +6743,97 @@ Design-Studio-private Agent runtime / Goal owner / reconciliation loop /
 memory substitutes. Verdict: **BLOCKED** (Refs #777). Next actionable step for
 the lane: re-run this dependency map after #804/#805/#806 + #458-writer +
 #776-wiring land on `origin/develop`.
+
+## Round 99 (job 5004391600b943c1b735c17a5d2785dd, head 801719c0b1b90cfc9341273f81e959e9058057d4, 2026-10-03) — post-merge re-verification; blockers hold, one stale prior finding corrected
+
+Prior repair job a160a595fa18 requested attention (BLOCKED). This round
+re-derived every claim independently instead of trusting rounds 96–98.
+
+### Upstream state
+
+`git fetch origin` → `origin/develop` = `b35c76e035b3ee60789f9eac3e82526e23aba2e1`
+— exactly the commit round 98 already merged as `801719c0b1b9` ("Merge
+remote-tracking branch 'origin/develop' into auto-777"). No sync conflict is
+outstanding and no new upstream commit landed, so no merge is applicable this
+round. The develop advance itself (1e4933e2a..b35c76e03) was test-dedup only
+(#1889: `scripts/check-test-duplicates.py` + byte-identical test deletions;
+zero `packages/*/src` changes), so it could not have landed any dependency.
+
+### Stale prior finding corrected: `rubric_store.py` exists
+
+Round 98's finding "rubric_store.py:22 'That module does not exist yet at this
+head'" quoted the file's own docstring but read it as absence of the file. The
+file **does exist** at this head (landed earlier on develop via M7-A2 #1678,
+`eb36d8061`). Substantively the blocker is unchanged and the file convicts
+itself: `rubric_store.py:21-25` — "canonical Goal identity is `maistro.goals`
+... **That module does not exist yet at this head** ... when the canonical Goal
+persistence lands (#458) it implements the Protocol and is injected".
+`GoalRevisionCatalog` (line 71) remains a resolution-only Protocol
+("Accountability, lifecycle, and Goal persistence stay with the canonical Goal
+system (#458)"). Fresh `find packages -path '*maistro/goals*'` → no module;
+`grep -rl GoalReconcil packages/*/src` → 0 files.
+
+### Dependency map re-verified fresh at `801719c0b1b9`
+
+- **#804/#805/#806 reconciliation + delegation — absent.** `GoalReconcil` → 0
+  files under `packages/*/src`; `delegate_goal` → 0 files; Subgoal
+  reclaim/reassign ownership seam → 0 (remaining `reclaim` hits are
+  Attempt-lease/cursor infra, `maistro-core/src/maistro/runs/execution.py`).
+- **#458 canonical Goal writer — absent** (see rubric_store.py:21-25 above;
+  `maistro.goals` does not exist).
+- **#776 Workspace memory — unwired.** `working_graph` → 0 references in
+  hive-conductor / maistro-server / maistro-design product code; the module
+  lives only under `maistro-core/src/maistro/memory/working_graph/`.
+- **Mixed-control state machine — no consumer.** `ControlMode`
+  (`maistro-design/versions.py:77`) / `BranchControl` (line 355) have 0
+  references outside `maistro-design`.
+- **#53 front door landed but unconsumed by Design Studio.**
+  `packages/hive-conductor/backend/services/workspace_agent.py:126`
+  (`resolve_workspace_agent`) exists with 0 reconciliation tokens;
+  `design_service.py` (376 lines) has 0 `workspace_agent`/`Goal`/
+  `CreativeBrief`/`reconcil` references and its only branch delta vs develop
+  is a one-word comment punctuation change (line 238).
+- **#774 landed with real consumers** (`brief_store.py`, `brief_chat.py`,
+  `dag_run_inspection.py`, `program.py`) but `brief_chat.py:64` still carries
+  `_NOT_WRITTEN` — the Goal/CreativeBrief writers it defers to (#458/#774
+  writer side) do not exist; `maistro-design/brief.py:282-284` records
+  `goal_id`/`goal_revision`/`goal_owner_agent_id` as data with no canonical
+  producer of those revisions.
+- **No mixed-lineage product E2E exists** (Canvas + Builders/code +
+  specialized media under one Goal lineage): hive-conductor design tests are
+  route-level (`test_design_*_route.py`); nothing exercises delegated
+  branches, because no delegation machinery exists to exercise.
+
+### Battery re-executed fresh at `801719c0b1b9` (no driver check logs present)
+
+- `uv sync --locked --extra dev` → environment OK (246 packages resolved).
+- `uv run ruff check .` EXIT 0; `uv run ruff format --check .` EXIT 0 (2841
+  files already formatted).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` EXIT 0 — **1345 reviewed
+  identities = 1345 findings, exact multiset match; no ledger amendment**
+  (not a CI-repair round; nothing genuinely dead surfaced; branch diff vs
+  develop is docs + a comment).
+- Gates EXIT 0: suite-inventory (**14 suites, 24495 = 24495**, run via
+  `uv run python` — bare `python3` lacks the venv deps and is not CI's
+  environment), test-duplicates (1348 files, 0 byte-identical groups),
+  cross-package-imports (2844 files), api-route-contracts (279 handlers),
+  backlog-consistency, doc-links, `verify-monorepo-layout.sh`.
+- CI's one-process combination `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1
+  uv run pytest packages/maistro-design/tests
+  packages/hive-conductor/backend/tests -q --timeout=60 -x` →
+  **3845 passed, 7 skipped** (2m35s).
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+All 13 acceptance criteria still trace to canonical owners that do not exist
+at this head or on `origin/develop` (#804/#805/#806 reconciliation +
+delegation, #458 Goal writer, #776 wiring into product). The stop condition
+forbids Design-Studio-private Agent runtime / Goal owner / reconciliation
+loop / memory / Persona-variant substitutes; the archived draft under
+`docs/research/777-design-studio-salvage/` documents why a prior attempt that
+did fabricate those was not shipped. Verdict: **BLOCKED** (Refs #777). Next
+actionable step for the lane: re-run this dependency map after
+#804/#805/#806 + #458-writer + #776-wiring land on `origin/develop`; the
+salvage draft's shape (CreativeBrief projection, ControlManager,
+StudioToolSelector) is reusable then, without its fabrication bugs.
