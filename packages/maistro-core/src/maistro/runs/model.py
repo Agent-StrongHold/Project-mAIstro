@@ -8,7 +8,17 @@ from datetime import UTC, datetime
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetJsonSchemaHandler,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.graph.definitions import Graph
@@ -462,6 +472,8 @@ class Attempt(BaseModel):
     node_run_id: str
     ordinal: int = Field(ge=1)
     status: AttemptStatus = AttemptStatus.CREATED
+    # Staged evidence only: existing writers continue to leave the cause unknown.
+    cancellation_cause: CancellationCause | None = Field(default=None, frozen=True)
     runtime_id: str = "python"
     executor_id: str = ""
     execution_lease: ExecutionLease | None = None
@@ -477,6 +489,8 @@ class Attempt(BaseModel):
     @model_validator(mode="after")
     def _validate_attempt(self) -> Attempt:
         _require_non_empty(self.node_run_id, "node_run_id")
+        if self.cancellation_cause is not None and self.status is not AttemptStatus.CANCELLED:
+            raise ValueError("cancellation_cause requires a CANCELLED Attempt")
         if self.execution_lease is not None:
             if self.execution_lease.attempt_id != self.attempt_id:
                 raise ValueError("ExecutionLease.attempt_id must match Attempt.attempt_id")
@@ -488,6 +502,37 @@ class Attempt(BaseModel):
             subject="Attempt",
         )
         return self
+
+    def _serialize_cancellation_cause(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Keep unknown causes off the wire without dropping other null evidence."""
+        payload: dict[str, Any] = handler(self)
+        if self.cancellation_cause is None:
+            payload.pop("cancellation_cause", None)
+        return payload
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Describe the declared fields, not the wrapper's generic dict return."""
+        if handler.mode == "validation":
+            return handler(core_schema)
+        while (
+            core_schema["type"] == "function-before"
+            or core_schema["type"] == "function-after"
+            or core_schema["type"] == "function-wrap"
+        ):
+            core_schema = core_schema["schema"]
+        # Only this model's output wrapper is removed from a shallow schema copy.
+        # Nested field schemas and the runtime serializer remain untouched.
+        field_schema = dict(core_schema)
+        field_schema.pop("serialization", None)
+        return handler(field_schema)
+
+    # Register the actual serializer explicitly so static readers see its use.
+    _serialize_cancellation_cause = model_serializer(mode="wrap")(_serialize_cancellation_cause)
 
 
 class EvalMethod(StrEnum):
