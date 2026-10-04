@@ -1,6 +1,88 @@
 # Issue #860 — current CI repair
 
-## Latest checkpoint — job `8c939288e0f948ee8ecd7c21abb76db9`
+## Latest checkpoint — job `cdbeb34bb1d745d28f39fedf9c3bb57b`
+
+Frozen scope: issue #860 only, assigned branch/worktree `auto-860`, clean
+starting HEAD `278a8a53763fcd5dd7a76a69133ca69cf16525e8`; assigned base
+`c0441cf94b9a8e58517da0f4159070b97ea6a706` verified locally. No conflicts or
+uncommitted salvage were present. Prior job `30440cfa` result inspected;
+no driver `check-*.log` files existed in the supplied job-directory snapshot.
+Candidate edit is this checkpoint only unless fresh validation exposes a real
+repair. No immutable RC image/configuration was designated in the assignment;
+assumption: a host preflight cannot substitute for the required production soak.
+
+Fresh commands, not inherited verification (1000/1200-second timeouts):
+
+- Exact requested Vulture command: PASS, 1345 findings / 1345 reviewed identities,
+  zero unclassified or never-allowlist. Actual comparison base `1e4933e2a1b7`.
+  No unbanked identities exist; no ledger amendment or dead-code removal is justified.
+- `uv sync --locked --extra dev`: PASS.
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS, 2859 files.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`:
+  **88 passed, 5 skipped** (no `MAISTRO_TEST_PG_DSN`). No live PostgreSQL proof.
+
+Architecture reviewed: accepted ADR-085 defines principal-keyed rate limiting,
+not shared state; ADR-081626-f383 defines canonical durable Attempt fences;
+ADR-082426-82c7 defines occurrence-keyed Run admission, not physical-effect
+uniqueness. ADR-081 is Proposed. Preserve Goal → Graph → Run → NodeRun → Attempt;
+no scheduler, execution, event, store or authorization authority changes.
+
+The prior shared-store H3 claim is already corrected in `m3a-soak-evidence.md`.
+Production `RateLimitMiddleware` still constructs independent in-memory limits;
+the executed middleware regression demonstrates another allowance on replica 2.
+The load profile explicitly records missing users/Workspaces, Graph fan-out,
+successful model/tool, Design/Canvas and Goal/background workloads. These are
+real remaining acceptance gaps, not Vulture debt or merge conflicts.
+
+Additional fresh validation (1200-second timeout):
+
+- `uv run python scripts/check-suite-inventory.py`: PASS, all 14 suites.
+- `uv run python scripts/check-deployment-claims.py`: PASS.
+- `uv run python scripts/check-compose-secrets.py`: PASS, 8 Compose files.
+- `uv run python scripts/check-merge-markers.py`: PASS.
+- `git diff --check`: PASS.
+- Inline `uv run python` imported the current driver and evaluated the fixed four
+  historical packs: `m3a-soak-evidence.json`, `m3a-repair-validation.json`,
+  `m3a-round5-final.json`, `m3a-round6-shakedown.json`. Assertions that each fails
+  both `sustain_duration` and `exact_rc_artifact` passed. Run 5/6 record 90.17 /
+  90.43 seconds, not 14400. This is not a new soak.
+
+Command outputs are in this job's tool transcript; initial Vulture output is
+also `/tmp/860-vulture.log`. Inspected reachable middleware installation at
+`packages/maistro-server/src/maistro_server/main.py:593`, constructor at
+`api/rate_limit.py:72`, real middleware tests at
+`tests/test_soak_promotion_gates.py:435`, and production Compose's two-server
+reference build/external model-gateway contract. No exact-RC deployment ran.
+
+### Acceptance disposition for this checkpoint
+
+| Criterion | Executed evidence or remaining gap |
+|---|---|
+| Representative profile | PARTIAL: inspected documented request mix and gaps; RC users/Workspaces and applicable execution/product surfaces UNVERIFIED. |
+| Two application replicas | Boot-contract tests pass; two deployed exact-RC replicas UNVERIFIED. |
+| Sustained saturation/reclaim/retry/leaks | UNVERIFIED; no sustained run performed. |
+| No duplicate physical work / Goal reconciliation | UNVERIFIED; occurrence admission is not physical execution or recovery proof. |
+| Rate/security/degraded non-bypass | Independent replica allowance reproduced by production-middleware tests; aggregate non-bypass unmet. Full RC security/degraded behavior UNVERIFIED. |
+| Complete telemetry and thresholds | Sampler regression passes; application-loop/worker/RC telemetry coverage UNVERIFIED. |
+| Active-work kill/restart and recovery | UNVERIFIED; no live replica restart performed. |
+| Long-running exact-RC soak | All four historical packs fail duration and artifact gates; qualifying run UNVERIFIED. |
+| Findings classified/filed | Local F11/F12 M3-A classifications inspected; external filing UNVERIFIED and prohibited in this lane. |
+| Hash-bound machine/human evidence | Historical packs evaluated; qualifying RC evidence UNVERIFIED. |
+
+**BLOCKED**: no evidenced CI ledger failure or sync conflict to repair. No source,
+config, ledger, grant, tests or raw evidence changed; no inventory delta needed.
+Only this checkpoint is committed. No GitHub mutations or integration approval.
+Next: designate the immutable RC image/configuration, complete production-profile
+workloads and telemetry/physical-effect oracles, resolve the replica-budget
+contract mismatch, then run ≥14400 seconds on that unchanged artifact. Another
+host preflight or speculative ledger amendment cannot satisfy the acceptance.
+Progress: checked 1 issue, done 0 acceptance-complete, skipped 0 issues,
+errors 0 validation commands; 5 database tests skipped.
+
+---
+
+## Historical checkpoint — job `8c939288e0f948ee8ecd7c21abb76db9`
 
 Only #860, writer CI-repair, assigned worktree `/home/dev/Git/wt/auto-860`.
 Verified clean starting HEAD `cffdf7caf4427ed2f5c4737c371f162364890280`;
