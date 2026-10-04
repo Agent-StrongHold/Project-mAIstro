@@ -1,17 +1,19 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +9
 ---
 # Live-walker final-checkpoint recovery regression (#1861)
 
 ## What moved
 
-`packages/maistro-core/tests/graph/durable_runs` gains six collected node IDs:
+`packages/maistro-core/tests/graph/durable_runs` gains nine collected node IDs:
 `test_live_walker_final_checkpoint.py` adds one named regression
-(`test_live_walker_final_checkpoint_is_not_claimed_by_recovery`) and one
+(`test_live_walker_final_checkpoint_is_not_claimed_by_recovery`), one
 companion crash-oracle case
 (`test_crashed_empty_frontier_walker_is_still_recovered_after_quiet_period`),
-each parametrized over `memory` / `sqlite` / `postgres` backends. The
+and one quiet-period boundary case
+(`test_live_walker_held_past_quiet_period_is_claimed_and_refused`), each
+parametrized over `memory` / `sqlite` / `postgres` backends. The
 PostgreSQL parametrization runs a real `PgRunStore` plus
 `PgGraphContinuationStore`, with the recovery instance on its own asyncpg pool
 so the tick reads the walker's writes through an independent connection.
@@ -43,6 +45,20 @@ frontier only once the spine has been quiet past
 assumed anywhere else in the store. Both tests count one physical node
 execution and exactly one Attempt with an accepted outcome, so a duplicate
 effect or a second Attempt cannot hide behind a green assertion.
+
+The quiet period is an elapsed-time assumption, not evidence that a walker
+stopped, so the third case closes the review's unresolved live-owner question:
+it holds a walker alive at the same barrier while recovery evaluates exactly
+one tick at an explicit moment past the period (no sleep, no killed walker,
+no extra ticks), asserts the claim wins that race (version `v → v+1`,
+`resume_at` set), releases the walker, and asserts its own final checkpoint is
+refused with `version regression` — while the spine still shows exactly one
+terminal NodeRun, one Attempt and one counted execution, and the continuation
+is exactly the claim, so a later canonical resume owns the same lineage. The
+case passes on the pre-fix tree too (the fall-through predicate claims at any
+age), which is what makes it a boundary statement rather than a pass-after
+oracle: the guarantee this repair adds is bounded by the settle period, and
+that bound is now executed evidence instead of a docstring claim.
 
 ## Verification record (L1861 verify @ cccf9d49a7f8)
 
@@ -164,3 +180,53 @@ CI-exact vulture ratchet `check-vulture-baseline.py packages/*/src
 identities = 1340 findings; `git diff --numstat 4010e69f62cf -- quality/`
 empty), documented `mypy` command clean (794 source files). No closure
 keywords in the branch's commit messages or the PR body.
+
+Repair round (L1861 repair @ `ad0a29201a44`): closes the PR-#1942 proof
+checkpoint's unresolved live-owner case. The production module is
+byte-identical to `e1c8fa196` (`git diff e1c8fa196..HEAD --
+packages/maistro-core/src` empty); this round adds only the deterministic
+live-after-quiet-period case
+`test_live_walker_held_past_quiet_period_is_claimed_and_refused` (three new
+collected legs, one per backend) and this note — exactly the case the
+checkpoint specified: the existing final-empty-frontier barrier, the walker
+never killed, no sleeps, and exactly one recovery tick evaluated at an
+explicit `now` past `TERMINAL_SETTLE_QUIET_PERIOD` via
+`reconcile_persistence(now=…)`. Executed at lane pgvector `pg-l1861`
+(`127.0.0.1:55186`, alembic head `052` confirmed via `alembic_version`):
+
+- New file `uv run --frozen pytest
+  packages/maistro-core/tests/graph/durable_runs/test_live_walker_final_checkpoint.py
+  -q -ra` = **9 passed, 0 skipped** (three cases × memory/sqlite/postgres;
+  postgres legs real `PgRunStore` + `PgGraphContinuationStore`, recovery on
+  its own asyncpg pool).
+- Exact acceptance battery plus the new file (`test_crash_window_invariants.py`
+  + `test_recovery_completion_budget.py` +
+  `test_cross_store_crash_reconciliation.py` +
+  `test_canonical_recovery_contract.py` + this file, `-q -ra`) = **110
+  passed, 0 skipped**; full `packages/maistro-core/tests/graph/durable_runs`
+  with real PG = **651 passed**.
+- Fail-before re-proved without touching the tree (`git archive` of this head
+  with only `canonical_store.py` reverted to the develop base `2ef76025`
+  module): the named regression failed all three backends at
+  `assert await recovery.reconcile_persistence(now=...) == 0` → `assert 1 == 0`
+  while the crashed companion and the new boundary case passed there — the
+  boundary case is a statement about the quiet-period race, which the
+  fall-through predicate loses identically, so it is expected to pass on both
+  trees.
+- Observed claim-race snapshots (direct observation run at this tree, memory
+  composition): barrier continuation `version=7, status=running,
+  resume_at=null` → one tick at `now = wall clock + 1h` returns 1 and stores
+  `version=8, status=running, resume_at=<that moment>` → released live walker
+  raises `version regression: stored=8 incoming=8` (the historical #1715
+  signature, now deterministically reproduced against a live walker) → spine
+  after refusal: Run `running`, 1 terminal NodeRun, exactly 1 Attempt
+  `completed` ordinal 1, 1 counted execution → continuation equals the claim
+  exactly → a second tick past the period returns 0 with the snapshot
+  identical.
+- Gates re-run at this tree: `ruff check .` clean; `ruff format --check .`
+  (2898 files); `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok against the updated `+9` delta; documented
+  six-package `mypy` command clean (794 source files); CI-exact vulture
+  ratchet exit 0 (1340 reviewed identities = 1340 findings, `git diff
+  --numstat origin/develop -- quality/` empty — no ledger amendment needed;
+  this round touches `packages/*/src` not at all).

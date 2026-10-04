@@ -16,6 +16,14 @@ behind, and the dead one must still be recovered — so the companion case kills
 the walker at the barrier and proves recovery resumes it once the spine has
 been quiet past the terminal-settle period. That is the oracle a bare
 `if not active_node_runs: return False` would silently break.
+
+The quiet period is an elapsed-time assumption, not evidence the walker
+stopped, so the third case holds a walker alive at the same barrier while
+recovery evaluates one tick past the period: from source, the claim wins that
+race and the released walker's final checkpoint is refused. The case pins that
+boundary — claimed continuation, refused terminal checkpoint, and still
+exactly one Attempt and one physical execution — so the guarantee's limit is
+executed evidence rather than a docstring claim.
 """
 
 from __future__ import annotations
@@ -365,3 +373,72 @@ async def test_crashed_empty_frontier_walker_is_still_recovered_after_quiet_peri
     final = await spine.walker_continuations.get(run_id)
     assert final is not None and final.status is RunStatus.COMPLETED
     assert final.resume_at is None
+
+
+async def test_live_walker_held_past_quiet_period_is_claimed_and_refused(
+    spine: _Spine,
+) -> None:
+    """The quiet-period boundary: elapsed silence, not liveness, decides.
+
+    `TERMINAL_SETTLE_QUIET_PERIOD` is an elapsed-time assumption, not evidence
+    that the walker stopped: nothing on the spine distinguishes a walker
+    paused at the barrier from one that died there. Once the spine has been
+    quiet past the period the store claims the continuation even though this
+    walker is still alive — the same posture every quiet-period repair in the
+    store takes — so one tick past the period advances the version under it
+    and the released walker's own final checkpoint is refused. The refusal is
+    clean: `CanonicalDurableRunStore.update` writes the continuation first, so
+    the rejected version never mirrors to the spine — the Run stays RUNNING
+    with its one terminal NodeRun and one Attempt, and no physical work is
+    duplicated. The claim itself still settles the run; that no-stranding
+    half is the crashed companion's oracle above.
+    """
+    _CountedStep.executions = 0
+    graph = _graph(spine)
+    run_id = await _admit(spine, graph)
+    walker = _BarrierStore(spine.walker_run_store, spine.walker_continuations)
+    recovery = CanonicalDurableRunStore(spine.recovery_run_store, spine.recovery_continuations)
+
+    walk = asyncio.create_task(
+        run_durable_graph(
+            graph,
+            store=walker,
+            node_resolver=lambda _node_id, _graph: _CountedStep(),
+            run_id=run_id,
+            run_store=spine.walker_run_store,
+        )
+    )
+    await asyncio.wait_for(walker.at_barrier.wait(), timeout=10)
+    at_barrier = await spine.walker_continuations.get(run_id)
+    assert at_barrier is not None
+    assert at_barrier.status is RunStatus.RUNNING
+    assert at_barrier.resume_at is None
+
+    # Exactly one recovery tick, evaluated at an explicit moment past the
+    # terminal-settle period — no sleep, and the walker is never killed.
+    moment = datetime.now(UTC) + _RESTART_DELAY
+    assert await recovery.reconcile_persistence(now=moment) == 1
+    claimed = await spine.recovery_continuations.get(run_id)
+    assert claimed is not None
+    assert claimed.status is RunStatus.RUNNING
+    assert claimed.version == at_barrier.version + 1
+    assert claimed.resume_at is not None
+
+    walker.release.set()
+    with pytest.raises(ValueError, match="version regression"):
+        await asyncio.wait_for(walk, timeout=10)
+
+    # The refused write never reached the spine: one counted execution, one
+    # terminal NodeRun, exactly one Attempt — and the continuation is exactly
+    # the recovery claim, so a later canonical resume owns the same lineage.
+    assert _CountedStep.executions == 1
+    node_runs, attempts = await _physical_evidence(spine, run_id)
+    assert len(node_runs) == 1
+    assert node_runs[0].status in TERMINAL_RUN_STATUSES
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
+    assert attempts[0].ordinal == 1
+    canonical = await spine.recovery_run_store.get_run(run_id)
+    assert canonical is not None and canonical.status is RunStatus.RUNNING
+    final = await spine.walker_continuations.get(run_id)
+    assert final == claimed
