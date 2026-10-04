@@ -197,3 +197,44 @@ Executed at this round's head with `RATCHET_BASE_REV` =
 - Focused suite `packages/maistro-core/tests/runs/test_root_admission_identity.py`
   → 73 passed; ruff check and `ruff format --check` clean; suite inventory
   unchanged (no test files moved this round).
+
+## Fourth repair round (merge-queue re-evaluation at the advanced develop base, 2026-10-04)
+
+At HEAD ac0b821acc4f with `origin/develop` advanced to
+928993dda1c958ada2e6f8e54b5e5c04bf86bf77 (the merge-queue base; `git
+merge-base HEAD origin/develop` is still 91996e19):
+
+- Ledger integrity across the develop merges: `git diff --numstat
+  origin/develop -- quality/` shows this branch adds one reachability
+  baseline row and one disposition group relative to develop and removes
+  nothing — the merges did not silently drop `quality/*.json` rows.
+- Develop's new commit (#1934) touches `maistro/graph/durable_runs/**` and
+  its tests only, with no overlap with this leaf's seven files, so no
+  develop merge was performed: there is no sync conflict, and the merge
+  queue evaluates the merged result itself.
+- `check-ratchet-provenance.py` executed with **both**
+  `RATCHET_BASE_REV=928993dd…` and `RATCHET_BASE_REV=91996e19…`: identical
+  outcome — rc=1 failing on exactly the two reachability provenance
+  sub-gates; the other nine sub-ratchets (including vulture,
+  promotion-surface, contract-markers) all report OK. The red is
+  base-independent and structural for an inactive contract module.
+- The lane's CI-repair step, `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: rc=0, 1342 reviewed
+  identities → 1342 findings, `unclassified: 0`, `never_allowlist: 0` —
+  **zero unbanked identities**, so `quality/vulture-baseline.json` required
+  no amendment and no fix eliminated an identity this round.
+- First-hand read-only fetch of issue #1851 confirms the 12 named test
+  functions from the issue's acceptance section (all present; the extra
+  `test_canonical_json_rejects_non_string_constructor_input` remains the
+  only unnamed case).
+- Re-executed green: `check-reachability.py`,
+  `check-reachability-dispositions.py`, `check-shipped-surface-truth.py`,
+  `check-convergence-matrix.py` (+ its 60-test suite),
+  `check-m1-convergence-freeze.py --base 91996e19`, the focused suite (73
+  passed), `tests/test_check_reachability.py` (24 passed), ruff
+  check/format, and mypy on the module (no issues).
+- Residual, unchanged: the two trusted-base provenance sub-gates stay red
+  until the grant-first develop merge or the #1845 consumer lands (handoff
+  above); the `_vulture_whitelist.py` references and the candidate
+  baseline/disposition rows are deleted in that same parent-integration
+  change.
