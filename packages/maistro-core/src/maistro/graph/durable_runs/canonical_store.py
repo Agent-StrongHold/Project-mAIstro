@@ -50,6 +50,14 @@ from .hitl import (
 )
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
+from .time_travel import (
+    GraphStateLoad,
+    UnknownGraphRunError,
+    fork_provenance,
+    forked_child_state,
+    load_state,
+    state_epoch_appended,
+)
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
@@ -238,7 +246,13 @@ class CanonicalDurableRunStore:
                 f"Run {record.run_id!r} is not on the canonical spine; durable graph "
                 "execution must obtain its Run from RunStore before checkpointing"
             )
-        await self._continuations.create(GraphContinuation.of(record))
+        await self._continuations.create(
+            state_epoch_appended(
+                GraphContinuation.of(record),
+                previous=None,
+                graph_snapshot_hash=record.run.graph.content_hash,
+            )
+        )
         await mirror_lifecycle(record, run_store=self._run_store)
         return await self._require(record.run_id)
 
@@ -267,9 +281,90 @@ class CanonicalDurableRunStore:
 
     async def update(self, record: DurableRunRecord) -> DurableRunRecord:
         async with self._lock:
-            await self._continuations.update(GraphContinuation.of(record))
+            await self._continuations.update(
+                state_epoch_appended(
+                    GraphContinuation.of(record),
+                    previous=await self._continuations.get(record.run_id),
+                    graph_snapshot_hash=record.run.graph.content_hash,
+                )
+            )
             await mirror_lifecycle(record, run_store=self._run_store)
             return await self._require(record.run_id)
+
+    async def load_state(self, run_id: str, sequence: int) -> GraphStateLoad:
+        """Read the durable Graph state at event position ``sequence`` (#1612).
+
+        Observation only: no provider call, no tool dispatch, no lease claim,
+        no store write. Deterministic -- the same persisted timeline yields the
+        same result, and pruned or tampered evidence fails closed.
+        """
+        return await load_state(
+            run_id=run_id,
+            sequence=sequence,
+            continuations=self._continuations,
+            run_store=self._run_store,
+        )
+
+    async def fork_from_state(
+        self,
+        run_id: str,
+        sequence: int,
+        reason: str,
+        *,
+        actor_principal_id: str | None = None,
+    ) -> DurableRunRecord:
+        """Fork a child Run from the state at event position ``sequence`` (#1612).
+
+        The fork always creates a child Run -- never a new Attempt on the
+        source, which is reserved for recovery and HITL resume -- and it never
+        writes the source Run: its history, settled or live, stays exactly as
+        it is. The child is admitted QUEUED with the fork fact in its
+        provenance and a continuation whose first timeline epoch is the
+        historical state, all before this call returns; the fork itself starts
+        no work. New effects begin only when the child is explicitly resumed
+        through the ordinary durable executor, under the canonical
+        Attempt/Invocation firewall.
+
+        A crash between the child Run's spine row and its continuation write
+        leaves the same admission window every admitted Run has: the queued
+        child bootstrap-recovers from its recorded launch provenance.
+        """
+        if not reason.strip():
+            raise ValueError("a fork requires a non-blank reason")
+        snapshot = await self.load_state(run_id, sequence)
+        parent = await self._run_store.get_run(run_id)
+        if parent is None:  # pragma: no cover - load_state already verified this
+            raise UnknownGraphRunError(f"run {run_id!r} is not on the canonical spine")
+        scores = await self._run_store.list_eval_scores(run_id)
+        latest_eval = (
+            {
+                key: getattr(max(scores, key=lambda item: (item.scored_at, item.eval_id)), key)
+                for key in ("goal_id", "goal_revision", "rubric_id", "rubric_revision")
+            }
+            if scores
+            else None
+        )
+        child = await self._run_store.create_run(
+            parent.graph.materialize(),
+            parent_run_id=run_id,
+            actor_principal_id=actor_principal_id or parent.actor_principal_id,
+            provenance=fork_provenance(
+                parent=parent,
+                source_sequence=snapshot.sequence,
+                source_state_hash=snapshot.state_hash,
+                reason=reason,
+                latest_eval=latest_eval,
+                forked_at=datetime.now(UTC),
+            ),
+            initial_status=RunStatus.QUEUED,
+        )
+        return await self.create(
+            DurableRunRecord(
+                run=child,
+                graph_state=forked_child_state(snapshot.graph_state, child_run_id=child.run_id),
+                version=1,
+            )
+        )
 
     async def reconcile_run(self, run_id: str) -> bool:
         """Repair one known Run without depending on scan ordering."""
@@ -935,7 +1030,13 @@ class CanonicalDurableRunStore:
             ):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = mutate(current)
-            await self._continuations.update(GraphContinuation.of(updated))
+            await self._continuations.update(
+                state_epoch_appended(
+                    GraphContinuation.of(updated),
+                    previous=await self._continuations.get(run_id),
+                    graph_snapshot_hash=updated.run.graph.content_hash,
+                )
+            )
             await mirror_lifecycle(updated, run_store=self._run_store)
             return await self._require(run_id)
 
