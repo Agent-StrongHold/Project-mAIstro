@@ -30,6 +30,7 @@ from maistro.capabilities.effect_context import (
     new_in_memory_effect_context,
 )
 from maistro.capabilities.invocation import InvocationStatus
+from maistro.capabilities.types import Unavailable
 from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus
 from maistro.graph.harness import (
     HarnessAdapter,
@@ -116,12 +117,18 @@ class _ScriptedRunner:
     the turn raises, and stop must still run (the no-orphan-session guarantee).
     """
 
-    def __init__(self, *, fail_send: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_send: bool = False,
+        unavailable_send: bool = False,
+    ) -> None:
         self.name = "scripted"
         self.slot = "harness_runner"
         self.trust_tier = "t2"
         self.stopped: list[str] = []
         self.fail_send = fail_send
+        self.unavailable_send = unavailable_send
 
     def requires(self) -> tuple[str, ...]:
         return ("scripted",)
@@ -133,6 +140,10 @@ class _ScriptedRunner:
         return "scripted-session-1"
 
     async def send(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        if self.unavailable_send:
+            # The session-protocol's other terminal shape: the provider answers
+            # with a typed Unavailable instead of a turn envelope.
+            return Unavailable(slot=self.slot, reason="gateway session lost")
         if self.fail_send:
             raise TimeoutError("harness turn exceeded its bound")
         return {
@@ -223,6 +234,34 @@ class TestHarnessRunnerDispatchAdapter:
             raise AssertionError("dispatch must surface the harness failure")
         # the bounded-turn finally stopped the session — no orphan harness
         assert runner.stopped == ["scripted-session-1"]
+
+    async def test_unavailable_turn_stops_the_session_and_raises(self) -> None:
+        """A typed ``Unavailable`` turn is terminal too, not a silent success.
+
+        The provider answering ``Unavailable`` (rather than raising) must read
+        exactly like the failure it is: dispatch surfaces the reason, the
+        ``finally`` stops the session so no orphan harness process outlives the
+        Attempt, and nothing is memoized for a later ``poll`` to replay as a
+        completed turn.
+        """
+        runner = _ScriptedRunner(unavailable_send=True)
+        adapter = HarnessRunnerDispatchAdapter(runner)
+        try:
+            await adapter.dispatch(HarnessRequest(harness_type="scripted", task="t"))
+        except RuntimeError as exc:
+            assert "gateway session lost" in str(exc)
+        else:
+            raise AssertionError("dispatch must surface the harness unavailability")
+        # the bounded-turn finally stopped the session — no orphan harness
+        assert runner.stopped == ["scripted-session-1"]
+        # a turn that never completed memoizes nothing: poll reports the
+        # unknown handle as still-nothing instead of replaying a fake success
+        assert (
+            await adapter.poll(
+                HarnessHandle(handle_id="harness-scripted-session-1", harness_type="scripted")
+            )
+            is None
+        )
 
     def test_satisfies_the_graph_adapter_protocol(self) -> None:
         adapter: HarnessAdapter = HarnessRunnerDispatchAdapter(_ScriptedRunner())

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +33
+  packages/maistro-core/tests: +34
   tests/: +12
 ---
 # Foreign harnesses as governed graph nodes (#1613, M1-D)
@@ -11,7 +11,7 @@ provider through the shipped `agent.spawn_harness` governed Invocation seam, a C
 gate that rejects product callers doing OpenClaw/Pi transport outside the Provider
 boundary, and the wrap-don't-clone architecture note.
 
-The twenty-nine new maistro-core node IDs cover each acceptance seam directly:
+The thirty-four new maistro-core node IDs cover each acceptance seam directly:
 
 - `tests/capabilities/test_foreign_harness_providers.py` (18): the OpenClaw and
   Pi adapters at the real provider seam with a fake far side — one outbound
@@ -21,11 +21,14 @@ The twenty-nine new maistro-core node IDs cover each acceptance seam directly:
   healthchecks, and microVM wiring that points each harness at the caller's
   workspace with operator-wired (never request-wired) credentials.
 
-- `tests/graph/nodes/test_foreign_harness_invocation.py` (15): the governed
+- `tests/graph/nodes/test_foreign_harness_invocation.py` (16): the governed
   path. The `HarnessRunnerDispatchAdapter` bridge performs exactly one bounded
   turn per dispatch — start_session, send, stop in a `finally` — so a failed
   turn still stops the session (no orphan claw session survives as canonical
-  success), `poll` replays the memoized completed turn without re-dispatch,
+  success), whether the far side fails by raising or answers with a typed
+  `Unavailable` envelope — dispatch surfaces the `Unavailable` reason as the
+  RuntimeError it is and memoizes nothing for a later poll to replay as
+  success. `poll` replays the memoized completed turn without re-dispatch,
   and the adapter satisfies the full `HarnessAdapter` protocol (dispatch,
   poll, cancel). Both OpenClaw and Pi dispatch through Binding -> governed Invocation, and the
   persisted Invocation rows carry the harness id, the session/workspace hint
