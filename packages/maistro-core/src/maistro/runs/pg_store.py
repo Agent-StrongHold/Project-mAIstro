@@ -216,7 +216,7 @@ def _list_by_status_query(
 
     `status = $1` stays a parameter on purpose: it is caller input. That is
     precisely why the index serving it (`ix_canonical_runs_status_created`,
-    migration 052) is unconditional — a partial status index could not be
+    migration 053) is unconditional — a partial status index could not be
     proven under a generic prepared plan, and the queue cursor would pay a
     scan-plus-sort per tick. The `ORDER BY` names the same payload expression
     the index carries, so the plan needs no Sort node at any cardinality, and
