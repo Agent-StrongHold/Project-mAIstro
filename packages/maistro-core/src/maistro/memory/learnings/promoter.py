@@ -128,8 +128,7 @@ class LearningPromoter:
                 verdict = await self._gauntlet.evaluate(lr)
             except Exception:
                 logger.exception(
-                    "Gauntlet evaluation failed for learning #%s; "
-                    "leaves it active for retry",
+                    "Gauntlet evaluation failed for learning #%s; leaves it active for retry",
                     lr.id,
                 )
                 continue

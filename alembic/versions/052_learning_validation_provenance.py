@@ -12,26 +12,31 @@ validation is a *known* fact — it was never validated — so `''`/`0`/`'[]'` a
 the honest values, unlike producer provenance where NULL preserves "no
 execution was in scope".
 
-Revision ID: 051
-Revises: 050
+Revision ID: 052
+Revises: 051
 Create Date: 2026-10-01
 
-Renumbered 048 -> 051 during the develop integration: while this branch was
-open, develop's `048_canvas_job_retry_backoff` (#398) claimed the numeric slot
-(and `049_canonical_run_eval_scores` #792 and `050_design_creative_briefs`
-#774 chained onto it), which left the tree with a duplicate "048" and two
-heads. Re-parenting onto develop's chain tip 050 keeps exactly one linear
-head; a string-suffixed id like `048_learning_validation_provenance` was
-rejected because it exceeds alembic's 32-character
-`alembic_version.version_num` limit (see 041_quota_invocation_evidence).
+Renumbered twice during develop integrations. First 048 -> 051: while this
+branch was open, develop's `048_canvas_job_retry_backoff` (#398) claimed the
+numeric slot (and `049_canonical_run_eval_scores` #792 and
+`050_design_creative_briefs` #774 chained onto it), which left the tree with
+a duplicate "048" and two heads; re-parenting onto that chain tip 050 kept
+exactly one linear head. Then 051 -> 052: the M4-A6 integration renumbered
+#792's eval-score evidence onto this branch's old 051 slot (parented on the
+same 050, after #780's `049_design_artifact_versions` claimed 049 and pushed
+#774's briefs to 050), which left two revisions both named "051" on parent
+"050" — two heads again. This revision now follows the merged chain tip 051.
+A string-suffixed id like `048_learning_validation_provenance` remains
+rejected: it exceeds alembic's 32-character `alembic_version.version_num`
+limit (see 041_quota_invocation_evidence).
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "051"
-down_revision = "050"
+revision = "052"
+down_revision = "051"
 branch_labels = None
 depends_on = None
 
