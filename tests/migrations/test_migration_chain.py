@@ -58,8 +58,8 @@ EXPECTED_TABLES = frozenset(
         "books",
         # The canonical Workspace BacklogItem work-source (#98/#102): the
         # item/board state, its append-only event history, the imported
-        # document records and the claim leases (048), plus the authority
-        # ledger that records which work source is authoritative (049).
+        # document records and the claim leases (052), plus the authority
+        # ledger that records which work source is authoritative (053).
         "backlog_authority",
         "backlog_claims",
         "backlog_documents",
@@ -129,6 +129,12 @@ EXPECTED_TABLES = frozenset(
         "prompt_labels",
         "prompts",
         "quota_usage",
+        # One immutable evidence row per canonical physical Invocation (041,
+        # #718): at-most-once quota accounting and explicit unreported usage
+        # evidence, projected into `quota_usage`.
+        "quota_invocation_evidence",
+        # Durable per-event identities that make `record_usage` retries and
+        # crash-ambiguous commits harmless (#1204).
         "quota_usage_events",
         # Schedule definitions and their fire cursors (016). Durable so that a
         # cursor survives a restart and two scheduler replicas share one rather

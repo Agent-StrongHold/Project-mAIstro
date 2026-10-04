@@ -66,7 +66,6 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
-<<<<<<< HEAD
     # --- #102 backlog work-source (maistro.backlog) -----------------------
     # Pydantic invokes these field/model validators at runtime; static import
     # scanning cannot see decorator-based dispatch (same shape as
@@ -106,7 +105,6 @@ _VULTURE_WHITELIST = (
     # exporter's _render_header and is consumed outside the scanned tree by
     # the migration test suite and downstream import tooling.
     ParsedItem.written_block,
-=======
     # Workspace work campaigns (#103, SPEC-092626-1831). Pydantic invokes the
     # validators; the Actor-valued fields are serialization surface written
     # through model_dump_json and read by consumers outside this scan (the
@@ -132,5 +130,4 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
->>>>>>> fa3391e5e925e342d6b2a244f29abe058b1b0c13
 )

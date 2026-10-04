@@ -316,8 +316,6 @@ def test_unknown_enums_are_refused(admin_client) -> None:
         assert r.status_code == 422, changes
 
 
-<<<<<<< HEAD
-=======
 def test_create_refuses_a_status_outside_the_legend(admin_client) -> None:
     """Creation is the one path the service's own enum check does not guard.
 
@@ -332,7 +330,6 @@ def test_create_refuses_a_status_outside_the_legend(admin_client) -> None:
     assert not stores.backlog_items
 
 
->>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
 # ---------------------------------------------------------------------------
 # Lifecycle: block/unblock, reorder, decompose, pin/pause/archive
 # ---------------------------------------------------------------------------
@@ -354,8 +351,6 @@ def test_block_requires_evidence_and_unblock_clears_it(admin_client) -> None:
     assert r.json()["blocked_reason"] is None
 
 
-<<<<<<< HEAD
-=======
 def test_parking_rules_hold_on_the_plain_edit_and_drag_paths(admin_client) -> None:
     """No side door into blocked without evidence, and no stale evidence left."""
     item = _create_item(admin_client)
@@ -415,7 +410,6 @@ def test_detail_hides_related_items_the_caller_cannot_see(admin_client, authed_c
     assert [dep["id"] for dep in viewer_detail["dependencies"]] == [visible_child["id"]]
 
 
->>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
 def test_board_order_is_priority_then_rank(admin_client) -> None:
     _create_item(admin_client, title="low")
     top = _create_item(admin_client, title="top")
@@ -523,8 +517,6 @@ def test_archived_item_refuses_plain_edits_until_restored(admin_client) -> None:
     assert r.status_code == 422
 
 
-<<<<<<< HEAD
-=======
 def test_refused_patches_leave_stored_state_untouched(admin_client) -> None:
     """Edits stage on a copy; a refusal never publishes a partial mutation.
 
@@ -556,7 +548,6 @@ def test_refused_patches_leave_stored_state_untouched(admin_client) -> None:
     assert after["title"] == item["title"] and after["version"] == 2
 
 
->>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
 def test_provenance_records_every_actor_and_action(admin_client) -> None:
     item = _create_item(admin_client)
     item_id = item["id"]
@@ -599,13 +590,9 @@ def test_provenance_is_capped(admin_client, monkeypatch) -> None:
 def test_list_and_detail_carry_the_non_authoritative_marker(admin_client) -> None:
     """Until #102's cutover, the UI is a preview over the canonical service.
 
-<<<<<<< HEAD
     The payload says so, so the UI cannot quietly claim authority. The
     statement is read live from the committed authority marker (#102), which
     ships at the pre-cutover default: markdown, revision 0.
-=======
-    The payload says so, so the UI cannot quietly claim authority.
->>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
     """
     item = _create_item(admin_client)
     listed = admin_client.get("/v1/backlog").json()
@@ -613,11 +600,8 @@ def test_list_and_detail_carry_the_non_authoritative_marker(admin_client) -> Non
         "canonical_service": "services.backlog",
         "ui_authoritative": False,
         "cutover_issue": 102,
-<<<<<<< HEAD
         "authority": "markdown",
         "authority_revision": 0,
-=======
->>>>>>> d4ccd452e6a34349a37ce2cb732c18a1798b42dc
     }
     detail = admin_client.get(f"/v1/backlog/{item['id']}").json()
     assert detail["authority"]["ui_authoritative"] is False
