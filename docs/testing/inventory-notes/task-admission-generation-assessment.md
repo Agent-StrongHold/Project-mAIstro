@@ -109,3 +109,41 @@ One local-only red herring:
 `packages/maistro-core/tests/test_container_postgres.py::
 test_an_unreachable_server_is_an_error_not_a_fallback` needs a reachable
 Docker daemon (passes with `DOCKER_HOST` set; green in CI, which has one).
+
+## CI-repair round at b4d3ae948 (2026-10-04, step-level confirmation)
+
+The failing job's step-level record (GitHub Actions job 111501147324, fetched
+read-only) confirms the local root-cause: `exact-debt-ledger` failed at the
+step "Require enforced ratchet provenance policy" (`check-ratchet-provenance.py`);
+"Require classified shipped surfaces" and "Require exact reviewed Vulture
+identities" were **skipped, not failed** — the Vulture per-identity ledger was
+never the defect. The job log's provenance output is line-identical to the
+local reproduction (base resolved to 91996e19 from `RATCHET_BASE_REV:
+origin/develop`): `maistro.runs.admission_identity` NEW disposition + NEW
+unreachable, `maistro.tasks.admission_generation` NEW unreachable + missing
+from candidate baseline, inventory incomplete.
+
+The prescribed vulture repair procedure was executed and has an empty
+fix-list: `uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` exits 0 with 1342 reviewed
+identities -> 1342 findings, `unclassified: 0` — so
+`quality/vulture-baseline.json` stays byte-for-byte untouched (any row added
+or removed would desync the exact multiset and fail the same gate). No
+in-leaf change can green the provenance step: `load_authorizations` reads
+`quality/ratchet-authorizations.json` from the merge base, so a candidate-side
+git-row can never authorize the commit that introduces it (the two-merge
+rule), and this leaf's scope forbids baseline additions, grants, fake callers,
+and production wiring outright. The blocker therefore remains exactly where
+the leaf scope put it: the separately scoped #1845 integration change must
+wire a real reviewed consumer and converge the gates at its final head.
+
+Re-validation at this head (all executed): ruff check + format clean; 177/177
+leaf tests pass; 104 collected in the new suite (== `inventory-delta`);
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok (12976 node
+IDs); `mypy packages/maistro-core/src` clean (702 files);
+`check-shipped-surface-truth.py` ok; `check-convergence-matrix.py` ok (175
+unreachable attributed); `check-reachability.py` exits 1 listing exactly one
+NEWLY UNREACHABLE module (`maistro.tasks.admission_generation`);
+`check-radon-baseline.py` exits 1 listing exactly
+`admission_generation.py:62 _assess -> C (13)` — both stand as the documented
+blocker, nothing else drifted.
