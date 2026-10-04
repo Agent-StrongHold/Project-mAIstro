@@ -8626,3 +8626,74 @@ the issue's stop condition forbids Design-Studio-private substitutes. All 13
 acceptance criteria therefore remain unprovable against reachable behavior;
 the green battery shows only that the branch is healthy, not that #777 is
 implementable. Verdict: **BLOCKED** (Refs #777).
+
+## Round 129 — repair round 9f02c73c: sync origin/develop 91996e192, blockers re-proven, battery green, BLOCKED unchanged
+
+Starting head `4c2305d92` (round 128's commit, tree clean, matches the lane
+brief exactly). This round's only actionable inputs were the prior BLOCKED
+artifact (`45a21f55…/result.json` — round 128's own verdict record, not a code
+failure) and the stale `53d5e08bf/check-2.log` ruff-format failure
+(`agent_loop.py`, already disproven fresh in rounds 126–128).
+
+### Sync: origin/develop moved 2a57094fe -> 91996e192 (3 commits)
+
+- `137eee3ed` docs(#160) epic lane validation evidence (doc-only);
+- `8d000fc3f` #1932 audit reconcile (doc-only);
+- `91996e192` #1884/#1928 P1a: stage `Attempt.cancellation_cause` unknown with
+  null-omitting serializer — touches
+  `packages/maistro-core/src/maistro/runs/model.py` (+63),
+  `graph/definitions.py` (+5), and adds
+  `tests/runs/test_attempt_cancellation_cause_model.py` (334 lines) and
+  `tests/graph/test_template_runtime_exclusion.py` (72 lines).
+
+Merged conflict-free at `e14a4052f` (branch now 205 ahead / 0 behind).
+**None of the three commits lands the #804/#805/#806 seam** — they are
+canonical Attempt/Run lifecycle work, compatible with #777's dependency
+stance but not its missing dependency.
+
+### Ledger integrity across the merge
+
+`git diff --numstat HEAD^1 -- quality/` = **empty** (merge lost nothing);
+`git diff --numstat origin/develop -- quality/` = `0 1
+quality/vulture-baseline.json`, exactly the branch's own round-110
+`agent_loop.py::tool_definitions` removal, not a merge casualty.
+
+### Blockers re-proven fresh at e14a4052f (not assumed from round 128)
+
+- `grep -rlE "GoalReconciler|delegate_goal" packages/ --include="*.py"` →
+  **0 files**; `goal.?reconcil` case-insensitive → 0 files.
+- `packages/maistro-core/src/maistro/goals` → **absent**.
+- `packages/maistro-design/src` `workspace_agent` refs → **0 .py sources**
+  (single grep hit is an untracked, gitignored stale
+  `__pycache__/workspace_agent.cpython-312.pyc`; `git ls-files` confirms 0
+  tracked files under that `__pycache__`).
+- `packages/maistro-design/src` `maistro.memory.working` refs → **0**
+  (#776 working-graph seam still unconsumed).
+- `ControlMode` consumers outside `maistro-design` → **0**.
+- `BACKLOG.md:348` still lists #804 as future M2 work ("persistent goals +
+  reconciliation … follows this path").
+
+### Fresh battery at e14a4052f (all executed this round)
+
+`ruff check .` EXIT 0 ("All checks passed!"); `ruff format --check .` EXIT 0
+(2895 files, +1 from the merge-added test); vulture CI-exact
+(`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) EXIT 0, 1342 reviewed -> 1341 findings, no
+unbanked identities, no ledger amendment; suite-inventory **14/14** EXIT 0;
+backlog-consistency **167 items** EXIT 0; branch-independence PASS EXIT 0;
+pytest `packages/maistro-design/tests packages/maistro-bootstrap/tests`
+**777 passed / 2 skipped**; pytest merge-touched
+`packages/maistro-core/tests/runs packages/maistro-core/tests/graph`
+**2685 passed / 359 skipped** (includes the merge-added
+`test_attempt_cancellation_cause_model.py`); pytest hive backend
+`-k "design or brief or workspace or agent"` **508 passed / 5 skipped**.
+(One false start: running hive tests via `uv run` from inside
+`packages/hive-conductor/backend` dies on an editables path-rewrite build
+error — wrong project root, not a code signal; rerun from repo root passed.)
+
+### Verdict — BLOCKED (dependency-blocking), unchanged from rounds 123–128
+
+All 13 acceptance criteria remain unprovable against reachable production
+behavior: every canonical owner #777 must consume is absent from the branch
+and from freshly-synced develop, and the issue's stop condition forbids
+Design-Studio-private substitutes. Verdict: **BLOCKED** (Refs #777).
