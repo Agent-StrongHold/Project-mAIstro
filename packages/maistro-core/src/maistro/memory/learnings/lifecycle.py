@@ -106,6 +106,41 @@ class StageTransition:
     reason: str = ""
 
 
+def _require_next_rung(learning: Learning, to_stage: LearningStage) -> LearningStage:
+    """Return the current stage once ``to_stage`` is proven exactly one rung above.
+
+    Raises :class:`InvalidStageTransition` for an unknown current stage, a
+    backward move, or a skip. Split from :func:`plan_advance` so the rule
+    stays one readable paragraph and the planner stays a short composition of
+    check -> replace -> stamp -> record.
+    """
+    current = learning.stage
+    if current not in LEARNING_STAGE_ORDER:
+        raise InvalidStageTransition(
+            f"learning #{learning.id} carries an unknown stage {current!r}; "
+            "refusing to build on a value the ladder does not define"
+        )
+    expected_next = LEARNING_STAGE_ORDER[current] + 1
+    target = LEARNING_STAGE_ORDER[to_stage]
+    if target == expected_next:
+        return current
+    if target < LEARNING_STAGE_ORDER[current]:
+        raise InvalidStageTransition(
+            f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
+            "transitions are forward-only; the ladder never demotes"
+        )
+    if expected_next in _STAGE_BY_RANK:
+        raise InvalidStageTransition(
+            f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
+            "transitions are forward-only and single-step "
+            f"(expected {_STAGE_BY_RANK[expected_next]})"
+        )
+    raise InvalidStageTransition(
+        f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
+        f"{current} is the top of the ladder"
+    )
+
+
 def plan_advance(
     learning: Learning,
     *,
@@ -140,30 +175,7 @@ def plan_advance(
             "a stage transition must name its actor; anonymous provenance is no provenance"
         )
 
-    current = learning.stage
-    if current not in LEARNING_STAGE_ORDER:
-        raise InvalidStageTransition(
-            f"learning #{learning.id} carries an unknown stage {current!r}; "
-            "refusing to build on a value the ladder does not define"
-        )
-    expected_next = LEARNING_STAGE_ORDER[current] + 1
-    target = LEARNING_STAGE_ORDER[to_stage]
-    if target != expected_next:
-        if target < LEARNING_STAGE_ORDER[current]:
-            raise InvalidStageTransition(
-                f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
-                "transitions are forward-only; the ladder never demotes"
-            )
-        if expected_next in _STAGE_BY_RANK:
-            raise InvalidStageTransition(
-                f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
-                "transitions are forward-only and single-step "
-                f"(expected {_STAGE_BY_RANK[expected_next]})"
-            )
-        raise InvalidStageTransition(
-            f"cannot advance learning #{learning.id} from {current} to {to_stage}: "
-            f"{current} is the top of the ladder"
-        )
+    current = _require_next_rung(learning, to_stage)
 
     updated = dataclasses.replace(learning, stage=to_stage)
     if to_stage is LearningStage.VALIDATED:

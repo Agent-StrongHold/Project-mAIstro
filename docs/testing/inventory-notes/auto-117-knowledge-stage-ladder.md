@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +28
+  packages/maistro-core/tests: +30
   tests/: +3
 ---
 
@@ -40,7 +40,15 @@ no parallel runtime: fields + lifecycle functions + durable transitions.
 - Authority invariant: nothing on the authorization path reads knowledge
   state; pinned by test.
 
-## Tests (+5 files, 31 cases)
+## Tests (+5 files, 33 cases)
+
+- `packages/maistro-core/tests/memory/learnings/test_durable_hybrid.py` —
+  the hybrid wrapper's `advance_stage` / `stage_history` delegation held to
+  the same contract as every other forwarded method: passes what it was given
+  (all five ladder arguments, keyword-only downstream) and returns what it
+  got back, with the audit read scoped by `org_id`. These cover the two
+  wrapper methods the production container path calls that no test reached
+  (found by the diff-coverage gate).
 
 - `packages/maistro-core/tests/memory/learnings/test_learning_lifecycle.py`
   — the pure rule set (`plan_advance`) and the in-memory store run: backward

@@ -659,7 +659,22 @@ def _load_keys(raw: object) -> list[str]:
     return []
 
 
+def _stage_provenance(row: asyncpg.Record) -> tuple[LearningStage, str, str]:
+    """Decode the ladder columns (ADR-103): nullable SQL to the dataclass's shapes.
+
+    ``or`` because the columns are nullable and the fields are not: a row that
+    predates the ladder (or a transition that never named one) reads back as
+    the plain-memory default, not as a NULL the mapper would have to special-case.
+    """
+    return (
+        LearningStage(row.get("stage") or "memory"),
+        row.get("validated_by") or "",
+        row.get("promoted_by") or "",
+    )
+
+
 def _row_to_learning(row: asyncpg.Record) -> Learning:
+    _ladder = _stage_provenance(row)
     return Learning(
         id=row["id"],
         category=row.get("category") or "",
@@ -686,7 +701,8 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         run_id=row.get("run_id") or "",
         node_run_id=row.get("node_run_id") or "",
         attempt_id=row.get("attempt_id") or "",
-        stage=LearningStage(row.get("stage") or "memory"),
-        validated_by=row.get("validated_by") or "",
-        promoted_by=row.get("promoted_by") or "",
+        # Ladder provenance (ADR-103): decode in one place, see _stage_provenance.
+        stage=_ladder[0],
+        validated_by=_ladder[1],
+        promoted_by=_ladder[2],
     )
