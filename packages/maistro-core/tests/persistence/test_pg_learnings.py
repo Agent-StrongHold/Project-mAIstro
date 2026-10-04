@@ -152,12 +152,24 @@ async def test_ensure_schema_fences_ddl_behind_advisory_lock(
     assert conn.calls[1].args == (_SCHEMA_LOCK_KEY,)
     assert _SCHEMA_LOCK_KEY == 0x6D61_656C
 
-    # All three DDL statements run inside the fence, in order, and nothing
-    # else executes between the lock and the commit.
+    # Scope and learning-stage upgrades must all remain inside the fence.
+    # Check the complete ordered body, not the pre-ADR-103 three-statement
+    # shape: startup now also upgrades the ladder columns and audit table.
+    expected_ddl = [
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS stage ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_by ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS promoted_by ",
+        "CREATE TABLE IF NOT EXISTS learning_stage_transitions (",
+        "CREATE INDEX IF NOT EXISTS idx_learning_stage_transitions_learning ",
+        "CREATE INDEX IF NOT EXISTS idx_learnings_scope ",
+        "CREATE INDEX IF NOT EXISTS idx_learnings_scope_axes ",
+    ]
     body = conn.calls[2:-1]
-    assert [c.query.split()[0] for c in body] == ["ALTER", "CREATE", "CREATE"]
-    assert "idx_learnings_scope " in body[1].query
-    assert "idx_learnings_scope_axes" in body[2].query
+    assert len(body) == len(expected_ddl)
+    for call, prefix in zip(body, expected_ddl, strict=True):
+        assert call.method == "execute"
+        assert call.query.strip().startswith(prefix)
 
 
 def make_learning(**overrides: Any) -> Learning:
