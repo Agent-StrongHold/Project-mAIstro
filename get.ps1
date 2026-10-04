@@ -32,6 +32,19 @@
   Fail instead of falling back to a branch when no release tag can be
   resolved.
 
+.PARAMETER AnswersFile
+  Path to a maistro-install answers YAML file (schema v1; templates in
+  docs/install/examples/) for fully unattended installs. This is the Windows
+  twin of `get.sh -- --answers-file`: the same one schema is validated,
+  translated to the distro's /mnt view of the Windows filesystem, and
+  forwarded to install.sh inside WSL, exactly as on Unix. Validated before
+  any mutation (no WSL setup, no elevation prompt, no reboot), and the path
+  survives the elevation relaunch and the post-reboot resume. The answers
+  file carries names and flags only — never API keys or passwords (SPEC-180);
+  secrets stay in the 0600 .env or a pre-staged credentials file referenced
+  by the MAISTRO_BOOTSTRAP_CREDENTIALS_FILE environment variable, never in
+  command history.
+
 .PARAMETER Repo
   GitHub "owner/repo" to install from (default: Agent-StrongHold/Project-mAIstro).
 
@@ -59,6 +72,12 @@
   .\get.ps1 -Version v1.0.0
 
 .EXAMPLE
+  .\get.ps1 -AutoInstallDeps -AnswersFile $env:USERPROFILE\answers-v1-smoke.yaml
+  Fully unattended: WSL setup is auto-confirmed and the feature/deployment
+  choices come from the v1 answers file — the same file `get.sh --
+  --answers-file` consumes on Unix.
+
+.EXAMPLE
   .\get.ps1 -Channel dev
 #>
 [CmdletBinding()]
@@ -67,6 +86,10 @@ param(
     [ValidateSet('stable', 'dev')]
     [string]$Channel = 'stable',
     [string]$Branch = '',
+    # Validated (and translated to a WSL /mnt path) by Assert-AnswersPreflight
+    # before anything is installed; forwarded to get.sh inside the distro as
+    # `--answers-file` — the same argv contract as the Unix one-liner (#409).
+    [string]$AnswersFile = '',
     # SECURITY-REVIEW: -Repo selects external GitHub content and crosses into
     # the WSL shell handoff; preserve argument boundaries when changing it.
     [ValidatePattern('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')]
@@ -97,6 +120,16 @@ $ErrorActionPreference = 'Stop'
 # Get-PassthroughArgs). The default name, in contrast, is only a fallback for
 # machines that have no distro yet.
 $script:DistroWasExplicit = $PSBoundParameters.ContainsKey('Distro')
+
+# Set when -AnswersFile was passed explicitly (even as an empty string, which
+# the preflight rejects: an unattended run must fail loudly, not fall back to
+# interactive prompting mid-install).
+$script:AnswersFileWasBound = $PSBoundParameters.ContainsKey('AnswersFile')
+# Resolved by Assert-AnswersPreflight before any mutation: the validated
+# Windows-side path and its translation into the distro (see the function for
+# the exact rules). Empty means "no answers file in play".
+$script:AnswersFileResolved = ''
+$script:AnswersFileWsl = ''
 
 # Branch installed when the stable channel has no release to resolve — the same
 # choice get.sh makes, for the same reason (ADR-073126-c4e1 §2 makes `main` the
@@ -129,6 +162,87 @@ function Format-VersionTag {
     param([string]$Value)
     if ($Value -like 'v*') { return $Value }
     return "v$Value"
+}
+
+# --- unattended answers file (issue #409) -----------------------------------
+#
+# -AnswersFile is the Windows twin of get.sh's `-- --answers-file` passthrough:
+# one versioned answers schema (InstallAnswersV1, schema_version "1"; templates
+# in docs/install/examples/), consumed by maistro-install inside the distro
+# exactly as on Unix. The file carries names and flags only — never API keys or
+# passwords (SPEC-180); secrets stay in the 0600 .env or a pre-staged bootstrap
+# credentials file referenced by MAISTRO_BOOTSTRAP_CREDENTIALS_FILE.
+
+# POSIX single-quote a value for the bash -lc payload: every ' becomes '\''
+# (close the quoted span, an escaped quote, reopen). Keeps a path with spaces
+# or quotes one argument once bash splits the command string.
+function ConvertTo-BashSingleQuoted {
+    param([string]$Value)
+    return "'" + $Value.Replace("'", "'\''") + "'"
+}
+
+# Translate a Windows path to where the distro's automounter mounts it (drvfs
+# default: /mnt/<drive>/...). Pure string translation on purpose: the preflight
+# runs before any distro exists, so wslpath(1) is not available yet. UNC paths
+# return $null — shares are not automounted, and the preflight turns that into
+# an actionable error instead of a mid-install failure. POSIX-absolute input
+# passes through unchanged: unreachable from a Windows user (Resolve-Path
+# always returns a drive-qualified path there), but it keeps the contract
+# testable on non-Windows hosts, where the same answers file is already valid
+# inside the distro.
+function ConvertTo-WslPath {
+    param([string]$WindowsPath)
+    if ($WindowsPath -match '^([A-Za-z]):[\\/](.*)$') {
+        $rest = $Matches[2] -replace '[\\/]', '/'
+        return "/mnt/$($Matches[1].ToLowerInvariant())/$rest"
+    }
+    if ($WindowsPath -match '^/') { return $WindowsPath }
+    return $null
+}
+
+# Validate -AnswersFile BEFORE any mutation: no WSL setup, no elevation
+# prompt, no download, not even a saved copy of this script. Every problem is
+# collected and reported in one failure — an unattended run must not dribble
+# findings out one reboot at a time. install.sh repeats the conflict and
+# existence checks at its own boundary (the common mutation point for both
+# entrypoints); doing it here too is what keeps a bad path from ever reaching
+# `wsl --install` or a reboot.
+function Assert-AnswersPreflight {
+    $script:AnswersFileResolved = ''
+    $script:AnswersFileWsl = ''
+    if (-not $script:AnswersFileWasBound) { return $true }
+
+    $problems = @()
+    $resolved = $null
+    if ([string]::IsNullOrWhiteSpace($AnswersFile)) {
+        $problems += "-AnswersFile was given an empty path. Pass the path to a v1 answers file (template: docs/install/examples/answers-v1-minimal.yaml), or omit the parameter to install interactively."
+    } else {
+        try {
+            $resolved = (Resolve-Path -LiteralPath $AnswersFile -ErrorAction Stop).ProviderPath
+        } catch {
+            $problems += "answers file not found: $AnswersFile (cwd: $(Get-Location)). Pass the path to a v1 answers file (template: docs/install/examples/answers-v1-minimal.yaml), or drop -AnswersFile to install interactively."
+        }
+    }
+    if ($resolved -and -not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        $problems += "answers path '$resolved' is not a file. Pass the YAML file itself (template: docs/install/examples/answers-v1-minimal.yaml)."
+    }
+    if ($SkipWizard) {
+        $problems += "-AnswersFile conflicts with -SkipWizard: a skipped questionnaire never reads the answers file, so the install would silently ignore it. Remove one of the two (install.sh fails the same combination on Unix)."
+    }
+    if ($resolved -and (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        $script:AnswersFileWsl = ConvertTo-WslPath -WindowsPath $resolved
+        if (-not $script:AnswersFileWsl) {
+            $problems += "answers path '$resolved' is not a Windows drive path (UNC shares are not mounted inside the distro). Copy the file to a local drive (e.g. $env:TEMP) and pass that path."
+        }
+    }
+
+    if ($problems.Count -gt 0) {
+        foreach ($problem in $problems) { Write-ErrMsg $problem }
+        Write-ErrMsg "Nothing was installed. Combine -AnswersFile with -AutoInstallDeps for a fully unattended run."
+        return $false
+    }
+    $script:AnswersFileResolved = $resolved
+    return $true
 }
 
 # Latest published release tag, or $null when there is none / the API is
@@ -240,6 +354,11 @@ function Get-PassthroughArgs {
     # the one this run committed to.
     if ($script:DistroWasExplicit -or $Distro -ne 'Ubuntu') { $argList += @('-Distro', $Distro) }
     if ($AutoInstallDeps) { $argList += '-AutoInstallDeps' }
+    # The answers file must survive the elevation relaunch and the post-reboot
+    # resume: losing it there would turn an unattended install interactive
+    # mid-flight — the exact failure -AnswersFile exists to prevent. Carry the
+    # RESOLVED path; the relaunched run re-validates and re-translates it.
+    if ($script:AnswersFileWsl) { $argList += @('-AnswersFile', $script:AnswersFileResolved) }
     if ($SkipWizard) { $argList += '-SkipWizard' }
     if ($NoStart) { $argList += '-NoStart' }
     if ($NoCli) { $argList += '-NoCli' }
@@ -499,15 +618,34 @@ function Invoke-LinuxInstall {
     if ($NoStart) { $envAssignments += 'MAISTRO_START_STACK=0' }
     if ($NoCli) { $envAssignments += 'MAISTRO_INSTALL_CLI=0' }
     if ($NoOpen) { $envAssignments += 'MAISTRO_OPEN_BROWSER=0' }
+    # Unattended answers (#409): forwarded as a get.sh passthrough argument —
+    # the same argv contract as `get.sh -- --answers-file <path>` on Unix —
+    # translated to the distro's /mnt view of the Windows filesystem, and
+    # single-quoted so a path with spaces or quotes stays one argument.
+    $bashArgs = ''
+    if ($script:AnswersFileWsl) {
+        $bashArgs = " -s -- --answers-file $(ConvertTo-BashSingleQuoted -Value $script:AnswersFileWsl)"
+    }
+    # Secrets never travel on argv or in the answers file (SPEC-180). The
+    # secure channel for first-run credentials is a pre-staged 0600 file
+    # referenced by environment variable; when it lives on the Windows side,
+    # its path needs the same translation to be reachable inside the distro.
+    if ($env:MAISTRO_BOOTSTRAP_CREDENTIALS_FILE) {
+        $credsWsl = ConvertTo-WslPath -WindowsPath $env:MAISTRO_BOOTSTRAP_CREDENTIALS_FILE
+        if (-not $credsWsl) { $credsWsl = $env:MAISTRO_BOOTSTRAP_CREDENTIALS_FILE }
+        $envAssignments += "MAISTRO_BOOTSTRAP_CREDENTIALS_FILE=$(ConvertTo-BashSingleQuoted -Value $credsWsl)"
+    }
     # Checksum verification of the fetched install.sh (SPEC-072726-3439
     # Phase 5): forward the manifest URL so get.sh verifies before executing.
     if ($env:MAISTRO_SHA256SUMS_URL) { $envAssignments += "MAISTRO_SHA256SUMS_URL=$($env:MAISTRO_SHA256SUMS_URL)" }
     $exports = ($envAssignments | ForEach-Object { "export $_;" }) -join ' '
 
     # Fetch get.sh from the ref being installed, so the bootstrapper and the
-    # tree it lays down are the same revision.
+    # tree it lays down are the same revision. -s reads the script from stdin;
+    # everything after `--` is handed to it verbatim (its own options end
+    # there, so --answers-file lands in get.sh's install.sh passthrough).
     $getShUrl = "https://raw.githubusercontent.com/$Repo/$($script:Ref)/get.sh"
-    $innerCmd = "$exports curl -fsSL $getShUrl | bash"
+    $innerCmd = "$exports curl -fsSL $getShUrl | bash$bashArgs"
 
     & wsl.exe -d $Distro -u root -- bash -lc $innerCmd
     $exitCode = $LASTEXITCODE
@@ -528,6 +666,10 @@ function Invoke-Main {
     Write-Host "maistro-engine Windows installer" -ForegroundColor Cyan
     Write-Host "bootstraps WSL2, then hands off to the Linux installer" -ForegroundColor Cyan
     Write-Host ""
+
+    # Validate the unattended answers contract before ANY mutation — no
+    # release lookup, no elevation prompt, no `wsl --install`, no reboot.
+    if (-not (Assert-AnswersPreflight)) { exit 1 }
 
     # Before anything is fetched or saved: Save-StableCopy, Get-PassthroughArgs
     # and Invoke-LinuxInstall all read $script:Ref.
