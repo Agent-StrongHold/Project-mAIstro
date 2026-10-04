@@ -3,7 +3,7 @@
 Targets the specific uncovered lines reported by `coverage report -m`:
 - jira_wait_for_subtasks: 109-116, 150-165, 127-135, 166-176, 246-249, 252-255
 - llm_summarize: 89, 93, 114, 116, 118
-- transform_format_markdown: 60, 67-70, 76, 93, 95
+- transform_format_markdown: 66, 76-77, 98, 100
 - airtable_poll: 81, 83, 85
 """
 
@@ -407,13 +407,14 @@ async def test_format_markdown_empty_uses_fallback_with_footer() -> None:
     assert "_(end)_" in md
 
 
-async def test_format_markdown_missing_field_surfaces_placeholder() -> None:
-    """Covers lines 67-70: KeyError path when a {field} isn't in the dict.
+async def test_format_markdown_missing_field_renders_empty() -> None:
+    """Missing-field contract: an unresolvable {placeholder} renders as ''.
 
-    The template uses a dot-path key that doesn't exist; the renderer's
-    re.sub callback returns '' for missing keys, so the rendered row
-    contains the literal template minus that placeholder. We assert that
-    the row appears (no crash) and items are counted.
+    The renderer has no error path — the former `except KeyError` branch in
+    ``_execute`` was unreachable because the re.sub callback blanks missing
+    keys instead of raising. The row still renders and is counted; the
+    missing field contributes nothing (contract documented on
+    ``FormatMarkdownIn.template``).
     """
     node = get_node("transform.format_markdown")()
     out = await node.run(
@@ -426,12 +427,13 @@ async def test_format_markdown_missing_field_surfaces_placeholder() -> None:
     )
     assert out.success
     assert out.output.rows_rendered == 2
-    assert "K1" in out.output.markdown
-    assert "K2" in out.output.markdown
+    assert out.output.markdown == "- K1: \n- K2: "
+    # The unresolvable key never leaks into the output as a raw placeholder.
+    assert "{missing.field}" not in out.output.markdown
 
 
 async def test_format_markdown_with_footer_renders() -> None:
-    """Line 76 (and 72→74): footer branch on non-empty items."""
+    """Footer branch (76-77) on non-empty items."""
     node = get_node("transform.format_markdown")()
     out = await node.run(
         {"items": [{"k": "a"}], "template": "- {k}", "header": "## h", "footer": "FOOT"},
@@ -442,7 +444,8 @@ async def test_format_markdown_with_footer_renders() -> None:
 
 
 async def test_format_markdown_render_with_attribute_access() -> None:
-    """Covers lines 93, 95: the getattr-branch when an item is not a dict.
+    """Covers lines 98, 100: the getattr/None branches when a path segment
+    is not a dict.
 
     The template renderer falls back to getattr when cur isn't a dict —
     simulate by passing a SimpleNamespace-like object.
