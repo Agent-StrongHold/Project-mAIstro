@@ -212,6 +212,39 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- answers-file preflight (issue #409) ------------------------------------
+#
+# Validate the answers contract before anything is installed, so an unattended
+# run fails once with every problem named instead of after a mutation it
+# cannot take back. get.ps1 runs the equivalent checks on the Windows side
+# before WSL2 setup or an elevation prompt; this is the common mutation point
+# for both entrypoints. Schema-level unknown-key and type validation happens
+# in maistro-install (InstallAnswersV1, extra="forbid") once Python is up;
+# everything checkable without it is checked here.
+ANSWERS_PROBLEMS=()
+if [[ -n "$ANSWERS_FILE" ]]; then
+    if [[ "$SKIP_WIZARD" == "1" || "$SKIP_WIZARD" == "true" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "--answers-file is set together with --skip-wizard (or MAISTRO_SKIP_WIZARD=1): a skipped questionnaire never reads the answers file, so the install would silently ignore it. Remove one of the two."
+        )
+    fi
+    if [[ -d "$ANSWERS_FILE" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "answers file '$ANSWERS_FILE' is a directory. Pass the YAML file itself (template: docs/install/examples/answers-v1-minimal.yaml)."
+        )
+    elif [[ ! -f "$ANSWERS_FILE" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "answers file '$ANSWERS_FILE' does not exist (cwd: $PWD). Pass the path to a v1 answers file (template: docs/install/examples/answers-v1-minimal.yaml), or drop --answers-file to install interactively."
+        )
+    fi
+fi
+if [[ ${#ANSWERS_PROBLEMS[@]} -gt 0 ]]; then
+    for problem in "${ANSWERS_PROBLEMS[@]}"; do
+        echo -e "${RED}[error]${NC} $problem" >&2
+    done
+    exit 1
+fi
+
 ensure_python() {
     if [[ ${#PYTHON_CMD[@]} -gt 0 ]]; then
         return
