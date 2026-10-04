@@ -1175,12 +1175,12 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::evaluate_candidate",
       "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 1117,
+      "line": 1131,
       "name": "evaluate_candidate",
       "classname": null,
-      "rank": "D",
-      "complexity": 22,
-      "rationale": "Regressed by #1730 (2026-10-02) from 25 to 30; the #108 proven-scenario passthrough and the #109 evaluator-oracle preamble both run through this block. The merge of #108 (proven-scenario objective wiring) and #109 (oracle-integrity preamble before any oracle run) refactored the cost-layered evidence blocks (fail-first TDD, mutation-probe staging, regression-judge attachment, oracle-integrity resolution) into named helpers, banking the merged block at its measured 22 (D) -- still well under the 30 the trusted base records. #1792 tracks whether the remaining complexity can come down further."
+      "rank": "C",
+      "complexity": 20,
+      "rationale": "Regressed by #1730 (2026-10-02) from 25 to 30; the #108 proven-scenario passthrough and the #109 evaluator-oracle preamble both run through this block. The merge of #108 (proven-scenario objective wiring) and #109 (oracle-integrity preamble before any oracle run) refactored the cost-layered evidence blocks (fail-first TDD, mutation-probe staging, regression-judge attachment, oracle-integrity resolution, refactor-baseline-quality) into named helpers, taking the merged block from the trusted base's D(21) to its measured C(20). #1792 tracks whether the remaining complexity can come down further."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::protected_inventory_gate",

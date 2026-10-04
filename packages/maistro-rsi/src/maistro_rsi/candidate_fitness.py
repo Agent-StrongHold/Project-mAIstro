@@ -941,6 +941,20 @@ def _mean_assertion(cwd: Path, test_files: list[str]) -> tuple[float | None, str
     return round(mean, 4), f"mean assertion strength over {len(scores)} changed test file(s)"
 
 
+def _baseline_quality_at_base(
+    cwd: Path, baseline_ref: str | None, src_files: list[str], contract: EvidenceContract
+) -> float | None:
+    """The refactor contract's left side (#392): the changed source's mean
+    quality at the base revision. Only a declared REFACTOR contract measures
+    it — the behavior contract's delta is fail-first evidence, not quality —
+    and with no baseline there is nothing to diff against (fail closed:
+    ``None``). Named so ``evaluate_candidate`` reads as measurement intake
+    rather than contract arithmetic."""
+    if contract is not EvidenceContract.REFACTOR or not baseline_ref:
+        return None
+    return _mean_quality_at_base(cwd, baseline_ref, src_files)
+
+
 def _mean_quality_at_base(cwd: Path, baseline_ref: str, src_files: list[str]) -> float | None:
     """Mean code-quality composite of the changed source files AS THEY WERE on
     ``baseline_ref`` — the left side of the refactor contract's quality delta.
@@ -1194,11 +1208,7 @@ def evaluate_candidate(
     # alternative (declared refactor/doc polish).
     declared = declared_kind.value if isinstance(declared_kind, ImprovementKind) else declared_kind
     contract = resolve_contract(declared, src, tests)
-    baseline_quality = (
-        _mean_quality_at_base(cwd, baseline_ref, src)
-        if contract is EvidenceContract.REFACTOR and baseline_ref
-        else None
-    )
+    baseline_quality = _baseline_quality_at_base(cwd, baseline_ref, src, contract)
     # Test-config surfaces touched by this diff — the shared taint signal for
     # the protected-inventory gate (#306) and the fail-first contract (#392):
     # a config edit can both hide inventory shrinkage and manufacture a red.
