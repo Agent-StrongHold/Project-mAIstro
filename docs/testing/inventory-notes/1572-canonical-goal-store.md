@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +51
+  packages/maistro-core/tests: +54
 ---
 
 # 1572-canonical-goal-store
@@ -9,7 +9,7 @@ Issue #1572 ships the canonical Goal store (`maistro.goals`): `Goal`,
 append-only `GoalRevision` chain, Subgoal lineage, recorded lifecycle and
 ownership transitions, one protocol over in-memory/SQLite/PostgreSQL
 backends, Workspace-seam authorization, and immutable Run-admission binding.
-Fifty-one node IDs arrive with it, all in
+Fifty-four node IDs arrive with it, all in
 `packages/maistro-core/tests/goals/` except two gained legs of an existing
 suite, described last.
 
@@ -36,8 +36,10 @@ not move `current_revision`, so the PostgreSQL CAS carries a
 revision and state"), without which the second of two concurrent transitions
 silently overwrote the first.
 
-`test_run_goal_binding.py` (+8) proves the spine half: `admit_direct_work`
-binds `goal_id`/`goal_revision` over the in-memory and SQLite Run stores,
+`test_run_goal_binding.py` (+11) proves the spine half: `admit_direct_work`
+binds `goal_id`/`goal_revision` over all three Run stores — in-memory,
+SQLite, and PostgreSQL (the durable JSONB payload driven directly, so "PG
+rides the same payload" is a tested claim, not an architecture argument) —
 the binding survives storage, every subsequent transition to terminal leaves
 it untouched (a historical Run keeps the revision it used), unbound admission
 stays unbound, a half binding is refused at the model, and a terminal Run

@@ -5,14 +5,16 @@ on the spine: a Run can name the Goal and the exact desired-state revision it
 was admitted against, and after admission nothing can move that binding — a
 historical Run keeps the revision it used even as the Goal moves on.
 
-These tests drive the shipped admission seam (`admit_direct_work`) over the
-in-memory reference store and the SQLite durable twin, because the binding is
-payload-carried on both backends and the round-trip through storage is the
-part a pure-model test would not prove.
+These tests drive the shipped admission seam (`admit_direct_work`) over all
+three Run-store backends — the in-memory reference and the SQLite and
+PostgreSQL durable twins — because the binding is payload-carried on each of
+them and the round-trip through each store is the part a pure-model test
+would not prove.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -24,6 +26,7 @@ from maistro.runs.admission import admit_direct_work
 from maistro.runs.model import Run
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing.postgres import postgres_dsn
 
 KIND = "transform.format_markdown"
 WORKSPACE = "ws-goal-binding"
@@ -39,16 +42,38 @@ async def _projects() -> tuple[InMemoryProjectScopeStore, str]:
     return projects, project.project_id
 
 
-@pytest.fixture(params=["memory", "sqlite"])
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def run_spine(request, tmp_path) -> Any:
-    """A Run store on one of its two non-PostgreSQL backends, plus the ids
-    admission needs. PostgreSQL rides the same payload round-trip (the same
-    `json_of` write and `model_validate` read), and is covered by the
-    runs-store conformance suite; these legs prove the binding contract
-    itself, which the payload carries identically."""
+    """A Run store on one of its three backends, plus the ids admission
+    needs. The PostgreSQL leg is the same durable payload the other legs
+    prove, driven against the migrated server so "PG rides the same JSONB
+    payload" stays a tested claim instead of an architecture argument."""
     projects, project_id = await _projects()
     if request.param == "memory":
         yield InMemoryRunStore(project_store=projects), project_id, None
+        return
+    if request.param == "postgres":
+        dsn = postgres_dsn()
+        if not dsn:
+            if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
+                msg = (
+                    "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_PG_DSN is empty: "
+                    "the PostgreSQL Run-binding leg cannot run and must not be "
+                    "silently skipped"
+                )
+                raise RuntimeError(msg)
+            pytest.skip("set MAISTRO_TEST_PG_DSN to a migrated PostgreSQL database")
+        asyncpg = pytest.importorskip("asyncpg")
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+        from maistro.runs.pg_store import PgRunStore
+
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+        try:
+            pg_projects = PgProjectScopeStore(pool)
+            root = await pg_projects.create_root(WORKSPACE)
+            yield PgRunStore(pool, project_store=pg_projects), root.project_id, None
+        finally:
+            await pool.close()
         return
     import aiosqlite
 
