@@ -1,3 +1,69 @@
+# Repair #116 @ d60ea0f37 (branch auto-116) — 2026-10-03, round 6
+
+Round 6 (driver job 6408a89cacc84ec8b6e77de6e250168a; the round-5 attempt
+8a86b365145648a6a6d4a095279cc640 died on a provider timeout with zero checks
+executed) re-derived the evidence against the **new designated base 45cc9632**
+(develop advanced c0441cf94b -> 45cc9632 with 3 WIP commits, ~3.9k lines in
+maistro-rsi + quality rows) and executed the branch-side executable work:
+
+- **Synced to the designated base**: merged origin/develop (45cc96326) into
+  auto-116 — merge d60ea0f37, conflict-free, worktree clean;
+  `git diff --numstat origin/develop -- quality/` shows only the branch's
+  known side (vulture-baseline +4/-2, reachability rows, ac-state-notes/
+  auto-116.json); no develop rows lost (multiset-checked).
+- **Gate reproduced at the new base**: `uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` -> **exit 1**; baseline: base 45cc963267a1,
+  candidate d60ea0f37883; exactly the same 3 promotion.py identities
+  unauthorized (attach_effect:385, mark_reversed:414, promote:645); the stale
+  POLICY row is informational (removed rows never fail the gate —
+  check-vulture-baseline.py:355-362 omits trusted `removed` from the exit
+  expression).
+- **The grant is still absent at the CURRENT base**: base 45cc9632's
+  ratchet-authorizations.json vulture section has 0 promotion.py keys and its
+  vulture-baseline.json has 0 promotion.py rows (direct `git show 45cc9632`
+  greps). Develop's new promotion work (#1747, promotion_review.py) is the
+  RSI-side surface and adds no callers of PromotionContract.promote/
+  attach_effect/mark_reversed — the merge therefore cannot and did not clear
+  the identities.
+- **The ordered ledger amendment is a no-op — proven, not assumed**: ran the
+  gate with `--update` and diffed: the only change is canonical re-sorting of
+  the 3 already-banked rows (Counter multiset identical across all 15 rules);
+  kept the sorted form (quality/vulture-baseline.json, 4 lines moved).
+  Nothing remains to amend and nothing remains to eliminate branch-side.
+- **Everything else green at d60ea0f37 (fresh runs)**: ruff check + format
+  --check clean (2853 files); test_promotion_contract.py 32 passed; governance
+  + template stores 157 passed / 58 DB-skipped; develop's new RSI tests
+  (test_promotion_path_split.py, test_intervention.py) 50 passed post-merge;
+  **mypy packages/maistro-core/src: 0 issues in 696 files** (the 5 pre-existing
+  maistro_bootstrap import-stub errors from rounds 2-5 are GONE at this head);
+  radon 145==145; suite inventory 14/14 (24716 identities, 0 duplicates);
+  promotion surface ok; reachability 1246 modules / 173 unreachable +
+  dispositions OK.
+- **Correction to round-5's claim**: "full battery green except the
+  develop-side vulture grant" was false. `check-ac-state.py --run-tests
+  --ratchet` **fails at the pre-merge head f4471c97e too** (verified by direct
+  execution in a detached worktree, not inherited): design coverage 37.3775
+  below the base floor 41.1539 and the branch's own banked note floor 42.1466
+  (quality/ac-state-notes/auto-116.json). Post-merge the same leg fails with
+  the base floor raised to 41.7828 by develop's auto-110 note; the measured
+  value is identical (37.3775) pre/post merge, so the merge introduced
+  nothing. The `--mandate 45cc9632` legs (what CI's merge-group job adds)
+  both pass: "every criterion this change declares is proven" and "no new
+  spec, decision or criterion-less document". The ratchet leg's sanctioned
+  exits — restore the evidence (raise coverage to >= 42.1466) or re-bank the
+  fall with --bank — are respectively out of scope for #116 and an ac-state
+  ledger edit this lane's brief does not authorize (its exception names only
+  quality/vulture-baseline.json). Driver decision required.
+- The two-merge doctrine re-confirmed from the gate's own output at the new
+  base: "New Vulture debt is not authorized by the trusted base. Running
+  --update in this branch cannot authorize it; land a reviewed grant first."
+  The resolution is unchanged and above this lane: (a) land the reviewed
+  grant for the 3 identities on develop, then merge develop here; or (b)
+  fund the ADR-100126-a9c4-deferred family adoption as scoped feature work.
+
+---
+
 # Repair #116 @ e34a1d751 (branch auto-116) — 2026-10-03, round 3
 
 Round 3 (driver job 5c141c9dc460) re-executed the ordered repair — "fix what
