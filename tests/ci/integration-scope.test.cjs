@@ -30,13 +30,12 @@ function run(id, conclusion = 'success', overrides = {}) {
   };
 }
 
-async function poll(snapshots, { required = ['docker-build'], attempts = 2, interval = 1, errors = [] } = {}) {
+async function poll(snapshots, { required = ['docker-build'], attempts = 2, interval = 1 } = {}) {
   const failures = [];
   const messages = [];
   const warnings = [];
   const requests = [];
   const waits = [];
-  let thrown = null;
   const listForRef = Symbol('checks.listForRef');
   const sandbox = {
     process: { env: {
@@ -60,23 +59,18 @@ async function poll(snapshots, { required = ['docker-build'], attempts = 2, inte
         assert.equal(options.repo, 'Project-mAIstro');
         assert.equal(options.per_page, 100);
         requests.push(options);
-        if (requests.length <= errors.length) throw errors[requests.length - 1];
-        return structuredClone(snapshots[Math.min(requests.length - 1 - errors.length, snapshots.length - 1)]);
+        // A snapshot that is an Error makes the API call throw, the way a
+        // GitHub 5xx or a network outage surfaces in the polling loop.
+        const next = snapshots[Math.min(requests.length - 1, snapshots.length - 1)];
+        if (next instanceof Error) throw next;
+        return structuredClone(next);
       },
     },
     setTimeout: (resolve, milliseconds) => { waits.push(milliseconds); resolve(); },
   };
-  try {
-    await vm.runInNewContext(`(async () => {\n${script}\n})()`, sandbox);
-  } catch (error) {
-    thrown = error;
-  }
-  return { failures, messages, warnings, requests, waits, thrown };
+  await vm.runInNewContext(`(async () => {\n${script}\n})()`, sandbox);
+  return { failures, messages, warnings, requests, waits };
 }
-
-// The exact fault that killed integration-scope in run 37156509599: an
-// undici HeadersTimeoutError from checks.listForRef, carrying no HTTP status.
-const headersTimeout = Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' });
 
 function permutations(values) {
   if (values.length === 0) return [[]];
@@ -153,6 +147,48 @@ test('all required names must succeed; unrelated checks cannot satisfy them', as
   assert.ok(result.messages.some(message => message.includes('still waiting for postgres (pg18)')));
 });
 
+test('transient API failures spend an attempt and interval, then recover without failing', async () => {
+  const recovered = [run(30)];
+  for (const [label, error] of [
+    ['http 503', Object.assign(new Error('No server is currently available to service your request.'), { status: 503 })],
+    ['http 429', Object.assign(new Error('API rate limit exceeded'), { status: 429 })],
+    ['network outage', new Error('getaddrinfo EAI_AGAIN api.github.com')],
+  ]) {
+    const result = await poll([error, error, recovered], { attempts: 4, interval: 7 });
+    succeeded(result);
+    assert.equal(result.requests.length, 3, label);
+    assert.deepEqual(result.waits, [7, 7], label);
+    assert.equal(result.warnings.length, 2, label);
+    assert.ok(result.warnings.every(message => message.startsWith('attempt ') && message.includes('transiently')), label);
+  }
+});
+
+test('persistent transient API failures exhaust the unchanged budget and fail closed', async () => {
+  const outage = Object.assign(new Error('No server is currently available to service your request.'), { status: 503 });
+  const result = await poll([outage], { attempts: 3, interval: 50 });
+  assert.deepEqual(result.failures, ['timed out waiting for required specialized CI evidence']);
+  assert.equal(result.requests.length, 3);
+  assert.deepEqual(result.waits, [50, 50, 50]);
+  assert.equal(result.warnings.length, 3);
+});
+
+test('a failed check surfaced through a transient error still fails the aggregator', async () => {
+  // The outage must not become a smokescreen: once the API answers, a required
+  // check that concluded failure must still fail the aggregator.
+  const outage = Object.assign(new Error('No server is currently available to service your request.'), { status: 502 });
+  const result = await poll([outage, outage, [run(30, 'failure')]], { attempts: 4, interval: 1 });
+  assert.deepEqual(result.failures, ['docker-build is required by integration scope but concluded failure']);
+});
+
+test('permanent client errors are not retried within the budget', async () => {
+  for (const status of [400, 401, 403, 404, 422]) {
+    await assert.rejects(
+      poll([Object.assign(new Error(`HTTP ${status}`), { status })], { attempts: 5, interval: 1 }),
+      error => error.status === status,
+    );
+  }
+});
+
 test('empty scope returns without querying while malformed budgets still fail closed', async () => {
   const result = await poll([], { required: [] });
   assert.deepEqual(result.failures, []);
@@ -161,42 +197,6 @@ test('empty scope returns without querying while malformed budgets still fail cl
     const invalid = await poll([], options);
     assert.deepEqual(invalid.failures, ['invalid Integration Scope polling budget']);
     assert.deepEqual(invalid.requests, []);
-  }
-});
-
-test('transient API faults keep polling and still succeed when evidence later appears', async () => {
-  const result = await poll([[run(30)]], { errors: [headersTimeout], attempts: 3, interval: 1 });
-  succeeded(result);
-  assert.equal(result.requests.length, 2);
-  assert.deepEqual(result.waits, [1]);
-  assert.ok(result.warnings.some(message =>
-    message.includes('transient API error') && message.includes('Headers Timeout Error')));
-
-  // A 5xx HttpError is equally transient: retried, not fatal.
-  const serverError = Object.assign(new Error('Internal Server Error'), { status: 502 });
-  const retried = await poll([[run(30)]], { errors: [serverError], attempts: 2, interval: 1 });
-  succeeded(retried);
-  assert.equal(retried.requests.length, 2);
-});
-
-test('persistent transient faults consume the same budget and still fail closed', async () => {
-  const result = await poll([[]], {
-    errors: [headersTimeout, headersTimeout, headersTimeout], attempts: 3, interval: 50,
-  });
-  assert.deepEqual(result.failures, ['timed out waiting for required specialized CI evidence']);
-  assert.equal(result.requests.length, 3);
-  assert.deepEqual(result.waits, [50, 50, 50]);
-});
-
-test('permanent client errors fail fast instead of burning the evidence budget', async () => {
-  for (const status of [400, 401, 403, 404, 422]) {
-    const notFound = Object.assign(new Error('permanent'), { status });
-    const result = await poll([[run(30)]], { errors: [notFound, notFound], attempts: 3 });
-    assert.ok(result.thrown, `status ${status} must be rethrown`);
-    assert.equal(result.thrown.status, status);
-    assert.deepEqual(result.failures, []);
-    assert.equal(result.requests.length, 1);
-    assert.deepEqual(result.waits, []);
   }
 });
 

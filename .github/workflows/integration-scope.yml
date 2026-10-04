@@ -84,6 +84,13 @@ jobs:
             if (required.size === 0) return;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+              // A transient GitHub API outage must not fail the aggregator
+              // while evidence is still pending: run 37156105427 died on an
+              // unhandled 503 at attempt 5 of 170 with every required check
+              // still in flight. Treat server-side and throttling failures
+              // (and unclassed network errors) as one spent attempt; anything
+              // else — especially permanent 4xx — is a real fault and
+              // rethrows. Budget exhaustion still fails closed below.
               let runs;
               try {
                 runs = await github.paginate(
@@ -96,17 +103,11 @@ jobs:
                   },
                 );
               } catch (error) {
-                // A transient GitHub API fault (network timeout like the
-                // UND_ERR_HEADERS_TIMEOUT that killed run 37156509599, or a
-                // 5xx) must not discard the aggregator: the evidence window
-                // keeps polling and still fails closed if evidence never
-                // appears. Permanent client errors (octokit's default
-                // retry-exempt status codes) are rethrown so a wrong SHA or
-                // bad token fails fast instead of burning the whole budget.
-                if (Number.isInteger(error?.status) && [400, 401, 403, 404, 422].includes(error.status)) {
+                const status = error && error.status;
+                if (status !== undefined && status !== null && status < 500 && status !== 429) {
                   throw error;
                 }
-                core.warning(`attempt ${attempt}: transient API error (${error?.message || error}); retrying within the evidence window`);
+                core.warning(`attempt ${attempt}: checks API request failed transiently (${status === undefined || status === null ? 'network error' : `HTTP ${status}`}); retrying within the evidence budget`);
                 await new Promise(resolve => setTimeout(resolve, intervalMs));
                 continue;
               }
