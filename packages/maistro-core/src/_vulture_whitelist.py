@@ -15,6 +15,7 @@ from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
 from maistro.memory.learnings.approval import LearningApprovalGate
+from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
 from maistro.ontology.rubric import (
     PassFailScale,
     RubricDimension,
@@ -170,6 +171,19 @@ _VULTURE_WHITELIST = (
     # and #110's review-verb refactor replaced that binding — so name it here,
     # explicitly, for the same reason as its siblings.
     LearningApprovalGate.approve,
+    # Learning lifecycle (M4-B4, #120, SPEC-282). The revisable-learning
+    # contract ships first: its in-tree consumers are its tests, and the
+    # durable ledger twins plus the orchestrator/retrieval wiring that calls
+    # these follow, as they did for the episodic store's dynamics. Same
+    # "contract ships first by design" posture as CampaignSelector and the
+    # eval-score seam above.
+    InMemoryLearningLifecycle.weaken,
+    InMemoryLearningLifecycle.record_contradiction,
+    InMemoryLearningLifecycle.resolve_conflict,
+    InMemoryLearningLifecycle.supersede,
+    InMemoryLearningLifecycle.retire,
+    InMemoryLearningLifecycle.evidence_for,
+    InMemoryLearningLifecycle.revisions_for,
     # Goal `Rubric` as a first-class ontology kind (M7-A2, #791). The issue
     # ships persistence + ontology only — its stop condition ("Do not score
     # anything in this PR") defers the consumers to later M7 work, so the
