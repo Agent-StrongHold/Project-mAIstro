@@ -6472,3 +6472,69 @@ landed M4 items unrelated to every #777 dependency; all 13 acceptance
 criteria remain unverifiable against reachable production behavior, and the
 issue's stop condition forbids Design-Studio-private substitutes. Verdict:
 **BLOCKED** (Refs #777).
+
+## Round 95 (develop sync, job 725e94a560c546a7a66140215d4a740b) — origin/develop advanced 3 commits, no dependency landed
+
+Round-94 record documents state at `939bc9d69`/`35cd9d188` (develop
+`829de3dac`). Prior job `ef0aacbf4e76` was a provider timeout
+(success:false, checks [], clean tree — nothing to salvage); driver checks=[]
+again, battery re-executed fresh.
+
+### Sync
+
+- `git fetch origin`; `HEAD..origin/develop` = 3 commits past the already
+  merged `829de3dac` (merge-base): `77c17b9b8` (M4-A8 evolve attribution,
+  #1750 — maistro-evolve/maistro-rsi + vulture-baseline −5 rows +
+  radon-baseline), `9dcb1a4da` (#382 containers refusal test —
+  hive-conductor tests only), `1e4933e2a` (M3-B6 API-wide HTTP content
+  negotiation, #1736 — maistro-core `api_versioning.py`, maistro-server/
+  hive-conductor main.py, canvas routes).
+- `git merge origin/develop` — conflict-free, HEAD `0b0faea80ef5`.
+- Post-merge ledger integrity: `git diff --numstat origin/develop --
+  quality/` empty → quality/ byte-identical to origin/develop (vulture −5
+  rows and radon edits are develop's own fixes carried by the merge; no
+  amendment, and this is not an exact-debt-ledger repair round).
+- None of the 3 commits is an #804/#805/#806/#458/#774/#775/#776 dependency
+  of #777.
+
+### Battery (all fresh at merge head `0b0faea80`)
+
+- `uv run ruff check .` EXIT 0; `uv run ruff format --check .` EXIT 0
+  (2865 files).
+- Vulture CI-args gate EXIT 0: **1345 = 1345** identities (develop's −5
+  rows arrived via the merge and match develop's own code change).
+- Gates EXIT 0: suite-inventory (14 suites match recorded inventory),
+  backlog-consistency (167 items), doc-links, cross-package-imports,
+  api-route-contracts (279 handlers); verify-monorepo-layout.sh EXIT 0.
+- pytest: `maistro-design` **540P/1S** (no regression); **newly merged
+  suites**: `maistro-core/tests/api_versioning` +
+  `maistro-evolve/tests/test_attribution.py` **62P**;
+  `maistro-server` version-negotiation + canvas **54P**; hive-conductor
+  version-negotiation + containers **63P**; regression re-check
+  `maistro-core` ontology + interop + memory (incl. working_graph) **574P**.
+
+### Blockers re-confirmed fresh at `0b0faea80`
+
+- `grep -rn GoalReconcil packages/*/src` exit 1; `git grep GoalReconcil
+  origin/develop -- 'packages/*/src'` exit 1 — the #804 reconciler is
+  absent on both the merged tree and the new origin/develop `1e4933e2a`.
+- `packages/hive-conductor/backend/services/design_service.py` (376 lines)
+  — 0 matches for workspace_agent/GoalReconcil/persona/brief consumption
+  tokens.
+- `ControlMode`/`BranchControl` consumers: only `maistro-design` itself
+  (+pycache) — still no backend/product consumer, no mixed-control E2E
+  (only token is the deferral comment in `versions.py`).
+- `packages/hive-conductor/backend/services/brief_chat.py:64`
+  `_NOT_WRITTEN` still defers Goal/CreativeBrief writers to unlanded
+  #458/#774.
+- `working_graph` consumers outside `maistro-core`: none — only
+  `container.py` import/wiring, no product retrieval path (#776 still
+  unwired for #777).
+
+### Verdict — unchanged (BLOCKED, dependency-blocking)
+
+Eighth consecutive round with no implementable delta. The develop sync
+landed M3-B6/M4-A8/#382 items unrelated to every #777 dependency; all 13
+acceptance criteria remain unverifiable against reachable production
+behavior, and the issue's stop condition forbids Design-Studio-private
+substitutes. Verdict: **BLOCKED** (Refs #777).
