@@ -970,6 +970,16 @@ class LocalRsiConfig:
     # change. Does NOT cover a test-config edit that shrinks the inventory
     # (that is presumed hiding and always vetoes).
     allow_test_inventory_shrink: bool = False
+    # Governance override for the evaluator-oracle veto (#109): when True, a
+    # candidate that mutated the score-defining artifacts (the scorer, its
+    # pinning tests, the scenario corpora, ratchet baselines, AC trees) is
+    # still scored — but never silently: the veto evidence (mutated paths plus
+    # the trusted base evaluator digest) rides the scorecard and the promotion
+    # record for human review. Default False: RSI may satisfy the oracle but
+    # may not edit it in the diff that is judged against it. This governs
+    # CANDIDATE diffs only — human edits to the oracle go through ordinary
+    # reviewed PRs and never pass through this loop.
+    allow_evaluator_mutation: bool = False
     # Checkpointing for long runs. Every ``report_every`` cycles (0 = only at the
     # end), write a progress report (markdown + JSON) into ``report_dir`` and
     # refresh a rolling, harvestable patch export of everything promoted so far.
@@ -1668,6 +1678,61 @@ class LocalRsiLoop:
         status = _git(cwd, "status", "--porcelain")
         return [ln[3:].strip() for ln in status.stdout.splitlines() if ln.strip()]
 
+    def _evaluator_integrity(self, cycle_dir: Path) -> tuple[list[str], str | None]:
+        """(#109) Did this candidate's committed diff mutate the evaluator oracle?
+
+        Returns ``(mutations, trusted_digest)``: the oracle paths the candidate
+        touched (edits, deletes, renames/moves, symlink swaps, committed
+        generated artifacts) and the SHA-256 of the score-defining artifacts at
+        the trusted base revision. Fail-closed — a git failure counts as a
+        mutation, because an integrity check that can be broken is broken in
+        exactly the direction that hides an edit.
+        """
+        from maistro_rsi.evaluator_oracle import oracle_digest, oracle_mutations
+
+        try:
+            mutations = oracle_mutations(cycle_dir, self._config.baseline_branch)
+            digest: str | None = oracle_digest(cycle_dir, self._config.baseline_branch)
+        except Exception as exc:  # pragma: no cover — defensive, fail closed
+            return [f"<evaluator integrity check failed: {exc}>"], None
+        return mutations, digest
+
+    def _veto_evaluator_mutation(
+        self,
+        index: int,
+        r: _VariantResult,
+        mutations: list[str],
+        digest: str | None,
+    ) -> None:
+        """(#109) Reject a candidate whose diff mutated the scoring oracle, BEFORE
+        the mutated oracle can produce its acceptance evidence.
+
+        Both acceptance paths route through here: with ``use_fitness`` the
+        scorecard never runs against the mutated tree (``evaluate_candidate``
+        short-circuits on the same evidence), and without it the bare test
+        command — itself part of the oracle — never executes. ``accepted``
+        stays False, so the #302 promotion prerequisites can never be met from
+        oracle self-mutation.
+        """
+        r.accepted = False
+        r.tests_passed = False
+        r.composite = 0.0
+        r.trace = {
+            "evaluator": {
+                "verdict": "vetoed",
+                "mutations": mutations,
+                "evaluator_digest": digest,
+                "authorized": False,
+            }
+        }
+        r.note = "evaluator oracle mutated; scoring withheld (#109): " + "; ".join(mutations[:5])
+        logger.warning(
+            "rsi_local_evaluator_mutation_vetoed",
+            index=index,
+            variant=r.label,
+            mutations=mutations[:10],
+        )
+
     def _load_saved_patches(self) -> None:
         """Resume from a prior run: reapply all saved patches to the baseline.
 
@@ -1826,6 +1891,34 @@ class LocalRsiLoop:
                 "-m",
                 f"RSI cycle {index} [{competitor.label}]: {objective[:50]}",
             )
+            # Evaluator-oracle immunity (#109): enforced BEFORE either scoring
+            # path runs. A candidate that mutated the score-defining artifacts
+            # is rejected without its modified oracle ever executing — the
+            # test command and the fitness gates ARE the oracle, so running
+            # either against the mutated tree would let the candidate judge
+            # its own diff.
+            mutations, oracle_digest_value = self._evaluator_integrity(cdir)
+            if mutations and not self._config.allow_evaluator_mutation:
+                self._veto_evaluator_mutation(index, r, mutations, oracle_digest_value)
+                return r
+            if not self._config.use_fitness:
+                # The bare path has no scorecard, so the evaluator-oracle
+                # verdict is stashed here for _annotate_promotion on EVERY
+                # bare-path decision, not only authorized overrides (#109):
+                # a promotion accepted by the trusted oracle must still name
+                # the oracle version that judged it — digest, possibly-empty
+                # mutation list, authorization — or the export manifest emits
+                # a null evaluator_digest and the promotion can never be
+                # replayed against the oracle that produced it. The fitness
+                # path re-derives the same evidence from its gate detail.
+                r.trace = {
+                    "evaluator": {
+                        "verdict": "authorized" if mutations else "clean",
+                        "mutations": mutations,
+                        "evaluator_digest": oracle_digest_value,
+                        "authorized": bool(mutations),
+                    }
+                }
             if self._config.use_fitness:
                 (
                     r.accepted,
@@ -1835,7 +1928,12 @@ class LocalRsiLoop:
                     r.regression_judge_score,
                     r.trace,
                 ) = self._fitness_decision(
-                    index, cdir, r.changed_files, target=objective, kind=kind
+                    index,
+                    cdir,
+                    r.changed_files,
+                    target=objective,
+                    kind=kind,
+                    evaluator_evidence=(mutations, oracle_digest_value),
                 )
             else:
                 r.tests_passed = self._run_tests(cdir)
@@ -2426,6 +2524,7 @@ class LocalRsiLoop:
         *,
         target: str = "",
         kind: ImprovementKind | None = None,
+        evaluator_evidence: tuple[list[str], str | None] | None = None,
     ) -> tuple[bool, float, str, bool, float | None, dict[str, Any]]:
         """Build the multi-signal Scorecard for the candidate and return
         (accepted, composite, reject_reason, tests_passed, regression_judge_score,
@@ -2435,8 +2534,15 @@ class LocalRsiLoop:
         compact per-gate/reward bundle for the commit's git-notes record.
         ``kind`` is the slot's declared ImprovementKind — the fail-first contract's
         declaration input (#392); None keeps the strict default (source-touching
-        ⇒ behavior contract)."""
+        ⇒ behavior contract). ``evaluator_evidence`` is the precomputed (#109)
+        integrity verdict ``(mutations, trusted_digest)``; when absent it is
+        resolved here, so merge-dir re-scoring gets the same oracle immunity.
+        """
         from maistro_rsi.candidate_fitness import evaluate_candidate
+
+        if evaluator_evidence is None:
+            evaluator_evidence = self._evaluator_integrity(cycle_dir)
+        evaluator_mutations, evaluator_digest = evaluator_evidence
 
         scorecard = evaluate_candidate(
             cycle_dir,
@@ -2453,6 +2559,9 @@ class LocalRsiLoop:
             baseline_inventory=self._baseline_test_inventory(),
             allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
             declared_kind=kind,
+            evaluator_digest=evaluator_digest,
+            evaluator_mutations=evaluator_mutations,
+            evaluator_mutation_authorized=self._config.allow_evaluator_mutation,
         )
         logger.info(
             "rsi_local_scorecard",
@@ -2471,6 +2580,23 @@ class LocalRsiLoop:
         # None when the judge was unavailable (fail closed, #307). That None
         # must survive to the promotion evidence, never coerced to a number.
         judge_score = float(judge_raw) if isinstance(judge_raw, int | float) else None
+        trace = self._scorecard_trace(scorecard)
+        return (
+            scorecard.accepted,
+            scorecard.composite,
+            reason,
+            tests_passed,
+            judge_score,
+            trace,
+        )
+
+    @staticmethod
+    def _scorecard_trace(scorecard: Any) -> dict[str, Any]:
+        """The compact per-gate/reward bundle behind a fitness decision — the
+        promotion record's evidence payload. Gate details ride along in full
+        (never silent): the protected inventory (#306), the fail-first proof
+        (#392), and the evaluator-oracle verdict with its trusted digest
+        (#109)."""
         mut_raw = next(
             (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
             None,
@@ -2480,30 +2606,16 @@ class LocalRsiLoop:
             "composite": scorecard.composite,
             "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
         }
-        # Inventory evidence rides the promotion record (#306): the gate's
-        # counts and (capped) deleted/added lists, including the override flag
-        # when a governance-authorized shrink passed — never silent.
-        inv_detail = next(
-            (g.detail for g in scorecard.gates if g.name == "protected_test_inventory"), None
+        evidence_keys = (
+            ("protected_test_inventory", "inventory"),
+            ("fail_first_evidence", "fail_first"),
+            ("evaluator_integrity", "evaluator"),
         )
-        if inv_detail:
-            trace["inventory"] = dict(inv_detail)
-        # Fail-first evidence rides the promotion record (#392): the contract,
-        # probe SHAs, failing identities, digest, and passing result — the
-        # replayable proof behind a behavior-changing promotion.
-        ff_detail = next(
-            (g.detail for g in scorecard.gates if g.name == "fail_first_evidence"), None
-        )
-        if ff_detail:
-            trace["fail_first"] = dict(ff_detail)
-        return (
-            scorecard.accepted,
-            scorecard.composite,
-            reason,
-            tests_passed,
-            judge_score,
-            trace,
-        )
+        for gate_name, trace_key in evidence_keys:
+            detail = next((g.detail for g in scorecard.gates if g.name == gate_name), None)
+            if detail:
+                trace[trace_key] = dict(detail)
+        return trace
 
     def _annotate_promotion(
         self,
@@ -2553,6 +2665,7 @@ class LocalRsiLoop:
             note=summary,
             inventory=source.get("inventory"),
             fail_first=source.get("fail_first"),
+            evaluator=source.get("evaluator"),
         )
         return write_trace_note(self._baseline, sha, trace_note)
 
@@ -2936,26 +3049,45 @@ class LocalRsiLoop:
             for stale in dest.glob("*.patch"):
                 stale.unlink()
             (dest / "manifest.json").unlink(missing_ok=True)
+
         rng = f"{self._start_ref}..{self._config.baseline_branch}"
         revs = [
             sha
             for sha in _git(self._baseline, "rev-list", "--reverse", rng).stdout.split()
             if sha not in self._excluded_from_export
         ]
-        manifest: list[dict[str, str]] = []
-        for i, sha in enumerate(revs, 1):
-            names = [
-                ln.strip()
-                for ln in _git(
-                    self._baseline, "show", "--name-only", "--pretty=format:", sha
-                ).stdout.splitlines()
-                if ln.strip()
-            ]
-            subject = _git(self._baseline, "show", "-s", "--pretty=format:%s", sha).stdout.strip()
-            patch_name = f"{i:04d}-{sha[:8]}.patch"
-            patch = _git(self._baseline, "format-patch", "-1", "--stdout", sha).stdout
-            (dest / patch_name).write_text(patch, encoding="utf-8")
-            src = next((n for n in names if n.endswith(".py")), names[0] if names else "")
-            manifest.append({"patch_file": patch_name, "file": src, "subject": subject})
+        manifest = [self._export_entry(dest, i, sha) for i, sha in enumerate(revs, 1)]
         (dest / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return len(manifest)
+
+    def _export_entry(self, dest: Path, position: int, sha: str) -> dict[str, object]:
+        """One promotion's manifest row: the git-am-able patch file, the file
+        it edits, the subject — and (#109) the evaluator provenance. The
+        harvest path opens PRs from these manifests, so each one names the
+        oracle version that accepted the promotion: a reviewer sees an
+        authorized oracle override before it merges, and a promotion accepted
+        under a mutated oracle can never masquerade as one judged by the
+        trusted base definition."""
+        names = [
+            ln.strip()
+            for ln in _git(
+                self._baseline, "show", "--name-only", "--pretty=format:", sha
+            ).stdout.splitlines()
+            if ln.strip()
+        ]
+        subject = _git(self._baseline, "show", "-s", "--pretty=format:%s", sha).stdout.strip()
+        patch_name = f"{position:04d}-{sha[:8]}.patch"
+        patch = _git(self._baseline, "format-patch", "-1", "--stdout", sha).stdout
+        (dest / patch_name).write_text(patch, encoding="utf-8")
+        from maistro_rsi.trace_notes import read_trace_note
+
+        note = read_trace_note(self._baseline, sha)
+        evaluator = (note.evaluator if note is not None else None) or {}
+        src = next((n for n in names if n.endswith(".py")), names[0] if names else "")
+        return {
+            "patch_file": patch_name,
+            "file": src,
+            "subject": subject,
+            "evaluator_digest": evaluator.get("evaluator_digest"),
+            "evaluator_authorized": bool(evaluator.get("authorized")),
+        }
