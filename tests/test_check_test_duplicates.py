@@ -174,6 +174,8 @@ def test_contract_overlapping_but_not_matching_is_a_hint_not_an_approval(gate, r
     [
         '{"contracts": [{"id": "", "justification": "x", "files": ["a", "b"]}]}',
         '{"contracts": [{"id": "g", "justification": "", "files": ["a", "b"]}]}',
+        '{"contracts": [{"id": "g", "generator": "", "justification": "x", "files": ["a", "b"]}]}',
+        '{"contracts": [{"id": "g", "justification": "x", "files": ["a", "b"]}]}',
         '{"contracts": [{"id": "g", "justification": "x", "files": ["a"]}]}',
         '{"contracts": [{"id": "g", "justification": "x", "files": "a b"}]}',
         '{"contracts": "all of them"}',

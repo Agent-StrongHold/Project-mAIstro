@@ -135,7 +135,7 @@ package, and `formal` trees shares a test population.
 ## Effect on evidence
 
 The root `tests/` suite's recorded node-ID count drops by exactly the node
-IDs these 24 files contributed (recorded in the `inventory-notes/` delta for
+IDs these 26 files contributed (recorded in the `inventory-notes/` delta for
 this change). Total *unique* evidence is unchanged: every removed node ID
 was a second collection of a test that still runs — and is executed
 standalone in CI — under its package tree.

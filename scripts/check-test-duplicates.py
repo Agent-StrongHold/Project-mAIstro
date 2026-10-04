@@ -101,11 +101,11 @@ def load_contracts() -> list[dict[str, object]]:
         raise RuntimeError(f"{CONTRACTS.relative_to(REPO_ROOT)} has no `contracts` list")
     for entry in contracts:
         if not isinstance(entry, dict) or not all(
-            isinstance(entry.get(k), str) and entry[k] for k in ("id", "justification")
+            isinstance(entry.get(k), str) and entry[k] for k in ("id", "generator", "justification")
         ):
             raise RuntimeError(
                 f"{CONTRACTS.relative_to(REPO_ROOT)}: every contract needs a non-empty "
-                "`id` and `justification`"
+                "`id`, `generator`, and `justification`"
             )
         files = entry.get("files")
         if (
