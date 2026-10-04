@@ -1,3 +1,80 @@
+# Repair #116 @ 2b0e9325a (branch auto-116) — 2026-10-04, round 11
+
+Round 11 (driver job 16e1f084a44d4bacae3531b9e6b9f53b, phase repair; brief
+again carried the CI-exact vulture repair instruction and named develop base
+29af8200e4a846036fa8357ab67d5bb47f950db9). No check-*.log files were present
+(manifest `checks: []`), so every claim below is own execution at the
+unchanged head 2b0e9325a (tree clean at start and end).
+
+- **Vulture gate re-run CI-exact (quality.yml:963-965 form), direct exit**:
+exit 1; base 97c05e0f17e3, candidate 2b0e9325a7c2, 1342 reviewed → 1344
+findings, unclassified 0. Sole exit driver unchanged: the **3 unauthorized
+identities** `governance/promotion.py:385 attach_effect / :414 mark_reversed /
+:645 promote` (core-public-api-surface). The gate's own words: "New Vulture
+debt is not authorized by the trusted base. Running --update in this branch
+cannot authorize it; **land a reviewed grant first**."
+- **Both develop-side unlock paths re-checked at the NEW designated base
+29af8200e** (develop advanced a586560 → 29af8200e, dependency bumps): (a)
+`ratchet-authorizations.json` vulture section at 29af8200e has **0
+promotion.py keys** (61 keys total); (b) `vulture-baseline.json` at
+29af8200e has **0 promotion.py rows** — the debt is not pre-banked there
+either. Merge-base with origin/develop is still 97c05e0f1 (also 0 keys).
+No in-branch state can pass: `ratchet_provenance.load_authorizations` reads
+grants from the base revision only.
+- **No-merge decision stands**: the brief conditions a develop merge on a
+develop-sync-conflict block; this round's block is the grant. Merging
+29af8200e would move the trusted base to a commit that still lacks the
+grant (vulture stays red) and would re-fold the ac-state floors from the
+new notes in a586560..29af8200e without an authorized bank (rounds 9-10
+evidence) — strictly worse.
+- **Instructed ledger amendment re-proven exact**: gate `--update` run again
+→ **byte-level no-op** (`diff -q` clean vs pre-run copy);
+`git diff --numstat origin/develop HEAD -- quality/vulture-baseline.json`
+= **+3/−1**: the 3 reviewed retained identities banked under `rules` —
+  - `packages/maistro-core/src/maistro/governance/promotion.py::unused method 'attach_effect'`
+  - `packages/maistro-core/src/maistro/governance/promotion.py::unused method 'mark_reversed'`
+  - `packages/maistro-core/src/maistro/governance/promotion.py::unused method 'promote'`
+  and the stale `auth/resources.py POLICY` row pruned (that row appears only
+  in the gate's informational trusted-removed section and is not an exit
+term). "Fix what is genuinely dead" has no object: re-verified from primary
+sources that `templates.py` imports only the `PromotionApproval` **type**
+(templates.py:21) and routes stores through `promote_audited` (their own
+raw transitions stay the sanctioned path per pg/sqlite_templates.py), while
+ADR-100126-a9c4 "What this deliberately does not decide" records moving the
+other families onto the contract as migration work "Recorded as follow-up".
+Deleting the methods breaks TestAC1/AC6/reversal tests; `# noqa` is
+gate-weakening. The exact grant keys above are what must land on develop.
+- **Battery green, all fresh this round**: ruff check clean; ruff format
+--check 2860 files clean; mypy --strict packages/maistro-core/src → **0
+errors in 696 files** (after `uv sync --locked --extra dev --extra bootstrap`;
+bare `--extra dev` uninstalls maistro-bootstrap and reproduces the 5 known
+import errors — venv artifact, files untouched by this PR); pytest
+governance/test_promotion_contract.py + graph/test_template_store.py +
+graph/test_node_template_store.py with MAISTRO_REQUIRE_PG_LEGS=1 → **202
+passed, 1 skipped in 11.34s**. **New DSN gotcha recorded**: the round-7
+container pg-acstate-116-r7 (127.0.0.1:55117) runs POSTGRES_USER/PASSWORD
+`maistro`/`maistro` — guessing `postgres:postgres` false-fails every PG leg
+with InvalidPasswordError (171 fixture errors, misread as a code defect if
+not inspected).
+- **ac-state gate EXIT 0, CI-exact PR form** (quality.yml:1145):
+`check-ac-state.py --run-tests --ratchet --mandate 97c05e0f17e3…` with BOTH
+DATABASE_URL and MAISTRO_TEST_PG_DSN at maistro@127.0.0.1:55117 (alembic
+upgrade head no-op): 10 debt counters on ceilings folded from 25 notes;
+design_coverage **42.1466%** over 160 decisions — exactly on the floor, read
+back from the gate-written quality/ac-state.json (`design_coverage.percent`);
+mandate 7 criteria added/newly claimed, **0 unproven**; chain 0/0/0; **ADR-100126-a9c4
+7/7 criteria reachable, 100%** (per_decision entry).
+- **Other gates fresh**: suite inventory ok (1 suite matches); promotion
+surface ok; test-duplicates ok; radon 145==145; reachability 1249 modules /
+173 unreachable + dispositions OK.
+- **Verdict unchanged across 11 rounds**: the only red item is the vulture
+authorization, above-lane by the two-merge rule. Required above-lane action:
+land a reviewed grant in `quality/ratchet-authorizations.json` for the 3
+exact identity keys above on develop (first merge), then merge develop into
+auto-116 and re-run the gate (second merge). No in-lane work remains.
+
+---
+
 # Salvage #116 @ fec96d45d (branch auto-116) — 2026-10-04, round 10
 
 Round 10 (driver job 190d941fb973437e96a142cd31e270a8, phase repair; brief
