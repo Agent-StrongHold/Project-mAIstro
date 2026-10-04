@@ -43,3 +43,46 @@ frontier only once the spine has been quiet past
 assumed anywhere else in the store. Both tests count one physical node
 execution and exactly one Attempt with an accepted outcome, so a duplicate
 effect or a second Attempt cannot hide behind a green assertion.
+
+## Verification record (L1861 verify @ cccf9d49a7f8)
+
+Verifier/writer re-run at head `cccf9d49a7f827707a33bc10f4beb5ecf623e57f`
+(fix commit `8d635a8fd`, develop base `928993dda1c9`), `MAISTRO_TEST_PG_DSN`
+pointed at the lane pgvector (127.0.0.1:55186, migrated to alembic head 052).
+Collected node IDs: the six listed under "What moved" —
+`test_live_walker_final_checkpoint_is_not_claimed_by_recovery` and
+`test_crashed_empty_frontier_walker_is_still_recovered_after_quiet_period`,
+each over `memory` / `sqlite` / `postgres`; all six executed, zero skipped.
+Backend/store composition: postgres legs run real `PgRunStore` plus
+`PgGraphContinuationStore` with the recovery instance on an independent
+asyncpg pool (`recovery_pool`, separate from `walker_pool`); the acceptance
+battery also re-ran unmodified.
+
+Fail-before/pass-after: with the predicate's empty-frontier branch temporarily
+restored to the pre-fix fall-through (`return True`), the named regression
+failed on all three backends at the barrier assertion
+`assert await recovery.reconcile_persistence(now=...) == 0` → `assert 1 == 0`
+— one tick claimed the live continuation; reverting the probe restores the
+pass (worktree byte-identical afterwards, clean `git diff`).
+
+Battery (exact acceptance command plus the new file, `-q -ra`):
+`test_crash_window_invariants.py` + `test_recovery_completion_budget.py` +
+`test_cross_store_crash_reconciliation.py` +
+`test_canonical_recovery_contract.py` + `test_live_walker_final_checkpoint.py`
+= 107 passed, 0 skipped; full `packages/maistro-core/tests/graph/durable_runs`
+= 648 passed with real PG. Observed no-op snapshots (memory observation run,
+matching the asserted equalities): barrier continuation `{version: 7,
+status: running, resume_at: None}` → one recovery tick returns 0 and the
+continuation compares equal (byte-identical) → released walker returns
+COMPLETED with 1 counted execution and final continuation `{version: 8,
+status: completed, resume_at: None}` (original lineage, exactly one Attempt
+ordinal 1 COMPLETED) → second recovery tick returns 0, snapshot identical.
+
+Gates: `ruff check .` clean; `ruff format --check .` clean (2889 files);
+`check-suite-inventory.py` ok (14 suites match the recorded inventory);
+documented full-package `mypy` command clean (792 files); CI-repair round
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` exits 0 — 1342 findings, all reviewed identities banked,
+no unbanked identities and no `quality/` delta vs develop
+(`git diff --numstat origin/develop -- quality/` empty), so the per-identity
+ledger needed no amendment for this change.
