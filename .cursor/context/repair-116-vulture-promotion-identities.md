@@ -1,3 +1,87 @@
+# Salvage #116 @ 254f0a327 (branch auto-116) — 2026-10-04, round 9
+
+Round 9 (driver job e80a694e9cfb44b4843e70c93012aa48, phase salvage; prior
+verify job 1ff5e923 passed its 5 checks and voted MERGE-READY but its evidence
+was rejected because its agent left `quality/ac-state-notes/auto-116.json`
+modified — that uncommitted edit is the salvage payload this round resolved).
+Every claim below re-derived at the unchanged head 254f0a327; no production
+code touched this round.
+
+- **The verifier's uncommitted bank was a MIS-BANK and is rejected with primary
+  evidence.** The edit lowered this branch's note `design_coverage` 42.1466 →
+  37.3775 — banking the DB-down measurement. Re-derived ground truth: (i) the
+  DB-up CI-exact gate with the mis-bank in place **EXIT 1** — `FAIL: unbanked
+  improvement — design_coverage: 42.1466, floor still says 41.7828`, i.e. the
+  bank both poisons the exact target and would hard-fail CI's
+  `_candidate_note_fold_weakening` (candidate note fold 37.3775 < base fold
+  41.7828, check-ac-state.py:112-134); (ii) after restoring the committed value
+  42.1466 (content edit, not git restore; the mis-bank preserved at
+  jobs/e80a694e…/incoming-ac-state-bank.patch), the same gate **EXIT 0** — 10
+  debt counters on ceilings, design_coverage exactly on its floor, mandate 7
+  criteria added / 0 unproven, chain 0/0/0. The 37.3775 fall remains what
+  rounds 4-8 diagnosed: the DB-down artifact (skipped durable legs collapse
+  the reachable denominator). No `--bank` was ever needed.
+- **Fold mechanics, primary-source**: the 41.7828 floor is contributed by
+  `auto-110.json` (another lane's note, present at base 97c05e0f17e3), so no
+  auto-116 note value can move the fold — only a base-landed grant could lower
+  it, and none exists (verified: `ac-state` section absent from
+  ratchet-authorizations.json at base and in-tree).
+- **ac-state gate EXIT 0 re-proven fresh, CI-exact PR form**:
+  `check-ac-state.py --run-tests --ratchet --mandate 97c05e0f17e3…` with
+  DATABASE_URL + MAISTRO_TEST_PG_DSN pointed at the round-7 container
+  pg-acstate-116-r7 (127.0.0.1:55117/maistro_test, schema verified at alembic
+  head 051 / 59 tables before the run; `alembic upgrade head` no-op). Design
+  coverage **42.1466%** over 160 taken decisions — byte-identical to round 8.
+  This issue's ADR-100126-a9c4: 7/7 criteria reachable (100%).
+- **Vulture blocker re-proven CI-exact at this head** (quality.yml:960-963
+  invocation run fresh): **exit 1**, trusted base 97c05e0f17e3, candidate
+  254f0a3277, 1342 reviewed → 1344 findings; sole exit driver the **3
+  unauthorized identities** (promotion.py:385 attach_effect / :414
+  mark_reversed / :645 promote, core-public-api-surface). Candidate
+  bookkeeping is EXACT: candidate ledger banks exactly those 3 rows and no
+  others; the stale base row `auth/resources.py POLICY`
+  (pydantic-declarative-field) is pruned candidate-side and appears only in
+  the informational trusted-side section (`_enforce_trusted`'s exit expression
+  has no trusted-removed term — verified in source, exit drivers: unclassified,
+  never-allowlist, unauthorized, candidate_added, candidate_removed,
+  candidate_unbanked_rules). Two-merge precondition re-verified at the **new
+  develop tip 00aafef9**: vulture grant section carries **0 promotion.py
+  keys** (61 keys total). Unchanged resolution: land the reviewed grant on
+  develop, then re-sync — above this lane.
+- **Battery green at 254f0a327 (fresh runs this round)**: ruff check clean;
+  ruff format --check **2860 files** clean; mypy --strict
+  packages/maistro-core/src → **0 errors in 696 files** after
+  `uv sync --locked --extra dev --extra bootstrap` (the 5 maistro_bootstrap
+  import errors reproduce without the extra at cli/_builders_tui.py:160-163,
+  cli/_install.py:20 — venv artifact, files untouched by this PR,
+  reconfirmed); pytest test_promotion_contract.py + graph/test_template_store.py
+  + graph/test_node_template_store.py with live PG legs
+  (MAISTRO_REQUIRE_PG_LEGS=1): **202 passed, 1 skipped in 9.68s** —
+  byte-identical to rounds 7-8 (note: the template-store suites moved to
+  `tests/graph/` since round 8's note wrote the old paths); suite inventory
+  gate exit 0 (`--suite packages/maistro-core/tests`, 0 duplicates).
+- **Acceptance mapping re-checked against test bodies, not class names**:
+  AC1 candidacy inert (evaluate records nothing; promote is the only append);
+  AC2 explicit version + immutable history (next version cites prior; no
+  number reuse across rollback/repromote; stale base refused by number and
+  hash; duplicate version refused; records frozen); AC3 record completeness —
+  `test_record_carries_every_governed_field` asserts scope, subject,
+  prior/new version, evidence.evaluation_run_ids, evidence.evaluator_versions,
+  approval.{approver,reason,authority,policy_id},
+  rollback.{rollback_target_version,reversible,mechanism}, promoted_at; AC4
+  own-constituent fence (judge/constitution edits refused even under external
+  approval); AC5 no self-approval (effective_authority semantics); AC6
+  traceability (trace returns record + effects + reversals; effect measurement
+  must cite Runs; EvaluationEvidence refuses empty run ids / unpinned evaluator
+  versions — canonical Run ontology honored); AC7 one approval type per
+  family. All green in the 202-pass run.
+- **Tree state at end of round**: worktree clean and byte-identical to
+  254f0a327 plus this note's commit; quality/ac-state.json (gate-regenerated,
+  gitignored) reflects the DB-up run. Verdict unchanged: the only red item is
+  the vulture authorization, above-lane by the two-merge rule.
+
+---
+
 # Repair #116 @ dfb3cfce1 (branch auto-116) — 2026-10-04, round 8
 
 Round 8 (driver job 6d517249a38b4c00891d21f1152cfa29; the round-7 follow-up
