@@ -1210,6 +1210,13 @@ jobs:
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
 
+      # M1-D (#1613): foreign harnesses are admitted as governed graph nodes —
+      # Provider -> Binding -> Invocation. A product module that references
+      # OpenClaw/Pi and performs its own HTTP/subprocess transport is a raw
+      # side door: same harness, no Binding, no Invocation, no parent Run.
+      - name: foreign-harness egress (OpenClaw/Pi transport stays inside the Provider boundary)
+        run: uv run python scripts/check-foreign-harness-egress.py
+
       - name: Architecture fitness functions
         env:
           PYTHONPATH: packages/maistro-core/src
