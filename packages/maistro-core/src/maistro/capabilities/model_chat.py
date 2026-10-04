@@ -22,7 +22,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
@@ -42,6 +41,7 @@ from maistro.capabilities.providers.llm_gateway import (
     execute_model_chat,
 )
 from maistro.capabilities.types import Unavailable
+from maistro.observability.correlation import current_execution_context
 from maistro.providers.errors import ModelNotFoundError, NoEligibleModelError
 from maistro.providers.types import (
     ModelMetadata,
@@ -129,6 +129,15 @@ class GovernedLLMClient:
     provider call has one canonical Binding/Invocation authority. ``set_turn``
     is a small runtime context seam used by Agent.handle; it does not dispatch
     or own a second ledger.
+
+    Turn identity is the canonical execution identity (#1827): ``set_turn``
+    reads the Run/NodeRun/Attempt triple that canonical execution already bound
+    on the correlation context — ``RunExecutionService`` binds ``run_id``;
+    ``AttemptExecutionService.execute_claimed`` binds ``node_run_id`` and
+    ``attempt_id`` — and never fabricates an agent-turn/agent-node/agent-attempt
+    id to make an unadmitted call look governed. These values provide
+    correlation, not authorization: Binding/credential/policy checks remain at
+    the governed effect boundary inside :class:`ModelChatEgress`.
     """
 
     def __init__(
@@ -150,15 +159,50 @@ class GovernedLLMClient:
         self._sequence: ContextVar[int] = ContextVar("governed_llm_sequence", default=0)
 
     def set_turn(self, run_id: str | None = None, *, agent_name: str = "") -> None:
-        """Set correlation identity for the next Agent turn."""
-        self._turn.set(
-            (
-                run_id or f"agent-turn-{uuid4().hex}",
-                f"agent-node-{agent_name or 'model'}",
-                f"agent-attempt-{uuid4().hex}",
-            )
-        )
+        """Bind correlation identity for the next turn from canonical execution.
+
+        Stores exactly the (run_id, node_run_id, attempt_id) triple the
+        canonical execution services bound on the correlation context. When
+        any of the three is missing or blank, raises
+        :class:`maistro.runs.store.RunIntegrityError` instead of minting a
+        synthetic identity. A supplied ``run_id`` must equal the bound one —
+        it is checked, never substituted. ``agent_name`` is accepted for
+        compatibility with the ``Agent`` turn seam and cannot manufacture a
+        node id.
+
+        Failure-atomic: any previously stored turn is dropped *before*
+        validation, so a rejected ``set_turn`` cannot leave an earlier valid
+        tuple usable behind it. On success the per-turn call sequence resets
+        to zero, as before.
+        """
+        # Imported here, not at module level: `maistro.runs` transitively
+        # imports `maistro.graph.nodes`, which imports this module, so an
+        # eager import would make every `maistro.capabilities.model_chat`
+        # import a cycle.
+        from maistro.runs.store import RunIntegrityError
+
+        del agent_name  # compatibility only; it cannot manufacture identity
+        self._turn.set(None)
         self._sequence.set(0)
+        context = current_execution_context()
+        bound = (context.run_id, context.node_run_id, context.attempt_id)
+        missing = [
+            name
+            for name, value in zip(("run_id", "node_run_id", "attempt_id"), bound, strict=True)
+            if not value.strip()
+        ]
+        if missing:
+            raise RunIntegrityError(
+                "GovernedLLMClient requires the canonical execution context "
+                "(run_id, node_run_id, attempt_id) bound by canonical execution; "
+                f"missing or blank: {', '.join(missing)}"
+            )
+        if run_id and run_id != bound[0]:
+            raise RunIntegrityError(
+                f"explicit run_id {run_id!r} does not match the bound execution "
+                f"run_id {bound[0]!r}; the bound identity is never replaced"
+            )
+        self._turn.set(bound)
 
     def clear_turn(self) -> None:
         self._turn.set(None)
@@ -177,11 +221,28 @@ class GovernedLLMClient:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         del stream, metadata
+        from maistro.runs.store import RunIntegrityError
+
         if self._turn.get() is None:
+            # No explicit turn: adopt the currently bound canonical context.
+            # An incomplete context raises RunIntegrityError right here, with
+            # zero egress calls.
             self.set_turn()
-        self._sequence.set(self._sequence.get() + 1)
+        context = current_execution_context()
+        live = (context.run_id, context.node_run_id, context.attempt_id)
         turn = self._turn.get()
         assert turn is not None
+        if live != turn:
+            # The context has ended or moved to another Attempt: the stored
+            # triple is stale. Drop it and refuse instead of attributing the
+            # call to a dead identity; an explicit set_turn starts the next
+            # turn.
+            self.clear_turn()
+            raise RunIntegrityError(
+                f"current execution context {live} does not match the stored "
+                f"turn {turn}; call set_turn to start the new turn explicitly"
+            )
+        self._sequence.set(self._sequence.get() + 1)
         run_id, node_run_id, attempt_id = turn
         request = ModelChatRequest(
             model=model,
