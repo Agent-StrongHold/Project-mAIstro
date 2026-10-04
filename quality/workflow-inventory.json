@@ -167,6 +167,13 @@
         ".github/workflows/ci.yml and .github/workflows/quality.yml (root test failures are blocking, not advisory)"
       ],
       "rationale": "The 'Stream 1 Diagnostic' workflow triggered only on feat/execution-runtime-spine-373 -- a branch deleted after #373 landed -- and pinned a baseline commit that no longer exists, while every step ended in `|| true`. It could never run, and had it run it could never fail: the definition of an always-green precedent (#400). Removed; its three annotations are covered by blocking gates."
+    },
+    {
+      "id": "working-memory-bench",
+      "file": ".github/workflows/working-memory-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #301 / ADR-082226-5104 §8 working-memory projection benchmark (per-projection RAM, hydration cost, recall and traversal latency at caller-supplied concurrency); deterministic and offline, run when the memory substrate changes — a measurement, not a gate."
     }
   ],
   "retained_branches": [
