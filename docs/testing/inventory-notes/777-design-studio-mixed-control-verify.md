@@ -6837,3 +6837,91 @@ actionable step for the lane: re-run this dependency map after
 #804/#805/#806 + #458-writer + #776-wiring land on `origin/develop`; the
 salvage draft's shape (CreativeBrief projection, ControlManager,
 StudioToolSelector) is reusable then, without its fabrication bugs.
+
+## Round 100 — develop sync (b35c76e03 -> c0441cf94) + fresh battery (2026-10-03)
+
+### Sync
+
+Prior round 99 recorded develop "UNMOVED at b35c76e03 ... no merge applicable".
+That was true then; `origin/develop` has since advanced by exactly two commits,
+landing on the develop base this lane was assigned against:
+
+- `e1161225e` — [M5-B] weighted proven scenarios as initial RSI fitness
+  objective (#1891): `maistro-evolve/scenario_objective.py`,
+  `maistro-rsi/candidate_fitness.py`, related tests.
+- `c0441cf94` — [EPIC M4-H] durable log-as-context / measured working memory
+  (#1748): `maistro-core/src/maistro/memory/working/*` (log store,
+  projection, recall, render, simplify, measurement, sqlite store, wiring),
+  `container.py` memory wiring, related tests.
+
+Neither lands any #777 dependency (no GoalReconciler, no delegation seam, no
+#458 Goal writer, no #776 product wiring). Merged conflict-free:
+`git merge origin/develop` -> merge commit `15a6d90bb466`. Post-merge
+`git diff --numstat HEAD origin/develop -- quality/` is empty both ways —
+quality/ is byte-identical to develop (`vulture-baseline.json` -2 rows and
+`radon-baseline.json` 3-line move are develop's own fixes, not ours; no
+ledger amendment performed or needed).
+
+### Local-artifact finding (not a regression; artifact relocated, copy preserved)
+
+First one-process run failed 1/7799:
+`tests/test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`
+→ `unclassified quality state: quality/ac-state.json`. Root cause:
+`quality/ac-state.json` is the **gitignored generated output** of
+`scripts/check_ac_state_impl.py` (`DEFAULT_OUT`, line 59; `.gitignore:81`
+documents it as regenerated on every run). A stale 581 KB copy (mtime Oct 3
+15:16, before this round) sat untracked on disk from earlier tooling; the
+classification test enumerates on-disk `quality/*.json` and rejects it. Not
+present on `origin/develop`, not tracked, not reproducible on a fresh
+checkout. Handling: file moved out of the tree with a byte copy preserved at
+`/home/dev/maistro/jobs/4ff33580177148b99017700bb6312ad6/salvage-ac-state.json`
+(no `git clean`/`git restore` used). After relocation the test passes and the
+gate `uv run python scripts/check-branch-independence.py` reports
+`PASS: every quality JSON state surface has one branch-independence
+representation` (EXIT 0).
+
+### Blockers re-confirmed fresh at merge head `15a6d90bb466`
+
+- `GoalReconcil*` → 0 files under `packages/*/src`; `delegate_goal` → 0 files.
+- `reclaim|reassign` hits are Canvas z-index reassignment
+  (`canvas/store.py:558`) and worker-lease reclamation
+  (`canvas/canonical_execution.py:534`) — no Goal/Subgoal ownership seam.
+- #458 canonical Goal writer — still absent; `GoalRevisionCatalog` only in
+  `projects/rubric_store.py` (resolution-only seam).
+- #776 `working_graph` → 0 product consumers; only internal references under
+  `maistro-core/src/maistro/memory/working_graph/`.
+- `design_service.py` → 0 `GoalReconcil|delegate_goal|reconcile` tokens;
+  `ControlMode`/`BranchControl` → 0 consumers outside `maistro-design`.
+- `brief_chat.py:64` `_NOT_WRITTEN` stands (defers to absent #458/#774
+  writers).
+- The two new develop commits add `memory/working/*` (per-Workspace
+  observation log) — #777's "Workspace context retrieved through #776"
+  criterion still requires the #776 working-graph wiring, which remains
+  absent.
+
+### Battery re-executed fresh at `15a6d90bb466`
+
+- `uv sync --locked --extra dev` → OK (246 packages).
+- `uv run ruff check .` EXIT 0; `uv run ruff format --check .` EXIT 0
+  (2856 files).
+- Vulture CI-args gate EXIT 0 — **1343 = 1343 exact multiset** (develop's own
+  -2; no amendment).
+- Gates EXIT 0: suite-inventory (14 suites), test-duplicates, 
+  cross-package-imports, api-route-contracts (279 handlers),
+  backlog-consistency (167 items), doc-links, verify-monorepo-layout.sh,
+  check-branch-independence.py.
+- New-in-merge tests: `packages/maistro-core/tests/memory/test_working_memory.py`
+  + `test_working_log_store_conformance.py` + `test_container_wiring.py` →
+  **136 passed**.
+- CI one-process job (exact args, env `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1`):
+  `uv run pytest tests/ packages/hive-conductor/backend/tests
+  packages/maistro-design/tests -q --timeout=60` → **7799 passed,
+  133 skipped, 0 failed** (7m33s) after artifact relocation.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+No new #777-relevant capability landed on `origin/develop`; all 13 acceptance
+criteria still trace to canonical owners absent at this head and on develop.
+Stop condition forbids private substitutes. Verdict: **BLOCKED** (Refs #777).
+Next: re-run the dependency map when #804/#805/#806 + #458 Goal writer +
+#776 product wiring land.
