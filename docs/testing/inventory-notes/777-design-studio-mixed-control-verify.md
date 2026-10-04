@@ -8435,3 +8435,54 @@ Workspace Agent Goal reconciliation) is still absent from the repo and from
 substitutes, so the 13 acceptance criteria that require a consumed
 reconciliation/delegation seam remain unimplementable in this lane. Verdict:
 **BLOCKED** (Refs #777).
+
+## Round 126 — repair round at 786977d70: both incoming failure signals are stale/non-reproducing
+
+Two repair signals were re-examined from primary evidence this round:
+
+1. **Prior validation failure** (`53d5e08bf` job, `check-2.log`): ruff-format
+   failure on
+   `packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py`
+   ("Would reformat … 2863 files already formatted"). The 2863-file tree count
+   dates the run to a pre-round-110 state; the fix landed in this branch at
+   `2f054b614` (round 110, removes genuine dead code in `agent_loop.py` and is
+   already reflected in the vulture ledger). Fresh
+   `uv run ruff format --check .` at HEAD 786977d70: **2891 files already
+   formatted, EXIT 0**. Non-reproducing.
+2. **Prior result artifact** (`da1b2f13` job, `result.json`):
+   `failure_kind: provider_error` ("Request timed out"), `checks: []`,
+   `success: false` — the job died before running any check; zero tree delta.
+
+Blockers re-proven fresh by grep at HEAD 786977d70:
+`GoalReconciler`/`delegate_goal` **0 files** under `packages/`;
+`maistro.goals` appears only as doc-comment owner strings in
+`maistro-design` packs and as owner assertions in
+`maistro-core/tests/ontology/test_design_loop_kind_fencing.py` (no producer);
+`packages/maistro-design/src` has **0** `workspace_agent` and **0**
+`maistro.memory.working` references; `ControlMode` has **0 consumers**
+outside `maistro-design`.
+
+Fresh battery at 786977d70: `ruff check .` EXIT 0; `ruff format --check .`
+EXIT 0 (2891 files); vulture CI-exact
+(`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) EXIT 0, 1342 reviewed -> 1341 findings, no
+unbanked identities, no ledger amendment needed; suite-inventory **14/14**
+EXIT 0; backlog-consistency **167 items** EXIT 0; branch-independence EXIT 0;
+pytest `packages/maistro-design/tests packages/maistro-bootstrap/tests`
+**777 passed / 2 skipped**; pytest hive backend
+`-k "design or brief or workspace or agent"` **507 passed / 5 skipped**;
+hive e2e `test_pm_agent.py` 1 skipped (external-service gated, unchanged).
+
+No production or test code changed this round; front-matter deltas stay +0.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+Both actionable repair signals from the incoming lane are resolved as stale
+(fixed at `2f054b614`) or driver-side (provider timeout with no checks run);
+the branch is green across the full battery at 786977d70. The blocking
+dependency (#804/#805/#806 persistent Workspace Agent + Goal reconciliation,
+#458 canonical Goal producer, #776 working-graph consumption) is still absent
+from the repo, and the issue's stop condition forbids Design-Studio-private
+substitutes, so the 13 acceptance criteria that require a consumed
+reconciliation/delegation seam remain unimplementable in this lane. Verdict:
+**BLOCKED** (Refs #777).
