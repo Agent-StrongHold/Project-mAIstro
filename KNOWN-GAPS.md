@@ -122,12 +122,16 @@ product identity.
 
 ### HTTP API content negotiation
 
-[ADR-076](docs/adr/ADR-076-http-api-versioning.md) is not implemented across
-the business API. Canvas has a narrow `/v2` response-format mechanism, but
-the business routes remain mounted under `/v1` and do not provide the ADR's
-general content-negotiation scheme.
-
-Tracking: implement ADR-076's API-wide version negotiation in v1.1.
+Closed by #96 (M3-B6): [ADR-076](docs/adr/ADR-076-http-api-versioning.md) is
+now implemented across the business API. Both `maistro-server` and
+`hive-conductor` run the shared `maistro.api_versioning` middleware: a request
+selects a version via `Accept: application/vnd.maistro.vN`, an `api_version`
+query parameter, or an `api_version` JSON body field; every response advertises
+`Maistro-API-Version` / `Maistro-API-Default`; an unsupported selector is a
+`406`. Business routes remain on their stable `/v1` mounts — the ADR's stable
+resource mount with negotiated behavior — and the canvas
+`application/vnd.canvas+json;version=2` media-type check stays a canvas-local
+mechanism, distinct from the general scheme.
 
 ### Recurring schedules created through the API do not survive a restart
 
@@ -211,5 +215,4 @@ The following text is intended to be copied verbatim into the release notes.
 > default shipped service and return `503`. Design Studio can discover
 > resources and select artifact modes, but visual generation and
 > editing/preview still need wired providers. Conductor can run in degraded
-> mode when optional services are unavailable, and API-wide HTTP content
-> negotiation from ADR-076 is deferred to v1.1.
+> mode when optional services are unavailable.

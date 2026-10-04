@@ -30,6 +30,7 @@ app = Typer(
 from maistro.cli._approvals import app as _approvals_app  # noqa: E402
 from maistro.cli._archive import app as _archive_app  # noqa: E402
 from maistro.cli._builders import app as _builders_app  # noqa: E402
+from maistro.cli._eval_workspace import app as _eval_workspace_app  # noqa: E402
 from maistro.cli._fixtures import app as _fixtures_app  # noqa: E402
 from maistro.cli._install import app as _install_app  # noqa: E402
 from maistro.cli._launch import app as _launch_app  # noqa: E402
@@ -47,6 +48,7 @@ app.add_typer(_fixtures_app, name="fixtures")
 app.add_typer(_security_app, name="security")
 app.add_typer(_archive_app, name="archive")
 app.add_typer(_sandbox_app, name="sandbox")
+app.add_typer(_eval_workspace_app, name="eval-workspace")
 app.add_typer(_repair_app, name="repair")
 
 
