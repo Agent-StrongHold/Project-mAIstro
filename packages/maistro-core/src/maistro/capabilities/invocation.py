@@ -321,6 +321,7 @@ class InvocationStore(Protocol):
         node run, and ``None`` spans every node run under the run for the
         binding+effect_key pair (the cross-node audit read).
         """
+        ...
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]: ...
 
