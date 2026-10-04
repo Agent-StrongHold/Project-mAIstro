@@ -31,6 +31,7 @@ from maistro.graph.nodes import (
     list_kinds,
     register_node,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 _SYNTH_DAG = {"nodes": [{"id": "s", "kind": "agent.synth_dag"}]}
 
@@ -293,6 +294,7 @@ async def test_the_container_composed_node_admits_canonical_work(
             nodes=[Node(node_id="s", node_type="agent.synth_dag")],
         ),
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     parent = await container.run_store.transition_run(parent.run_id, RunStatus.RUNNING)
     parent_node_run = await container.run_store.create_node_run(parent.run_id, node_id="s")
@@ -328,6 +330,7 @@ async def test_the_container_composed_node_admits_canonical_work(
             node_run_id=parent_node_run.node_run_id,
             workspace_id="ws-composition",
             project_id=root.project_id,
+            user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         ),
     )
 

@@ -45,6 +45,7 @@ from maistro.runs.store import (
     RunIntegrityError,
     RunNotFound,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 GOAL_ID = "goal-homestead"
 RUBRIC_ID = "rubric-homestead"
@@ -179,7 +180,7 @@ async def _spine() -> tuple[InMemoryRunStore, Run, NodeRun, Attempt]:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent", name="a")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
     attempt = await store.create_attempt(node_run.node_run_id)
     await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
