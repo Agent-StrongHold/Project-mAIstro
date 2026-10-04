@@ -34,6 +34,7 @@ capability_invocations .run_id, .node_run_id, .attempt_id   none — logical (03
 capability_approvals.run_id (+ node_run_id)       none — logical (runtime DDL)  Preserve. A durable approval request for one effect of one execution is receipt history like the invocation ledger and is never selected by the purge.
 design_artifact_versions / design_project_guidance / design_branch_controls .run_id   none — logical (049)   Preserve. Producer provenance (#780): a version-ledger row, a durable guidance record or a branch-control row names the canonical execution that produced or last authorized it — attribution history exactly like `design_outputs`, and the purge never touches it. (`design_artifact_locks` carries no `run_id` column and so is outside this inventory.)
 task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key, bounded by its own replay window rather than by the Run's retention. `_ClaimFlow.claim` (#325, #1577) drives `purge_expired` on every claim, so the window is swept in production; `quality/durable-table-retention.json` records it as `ttl_purge`. The Run purge does not stand in for it.
+workspace_working_log.run_id                      none — logical (runtime DDL)   Preserve. The per-Workspace observation log (#301, M4-H) records *which run observed something* — attribution history on an append-only log whose only driven deletion is `purge_workspace` when the Workspace itself goes away. A Run purge deleting observations would break the losslessness the log exists for; the residue policy is the same class as Events and task receipts.
 durable_graph_runs.run_id                         PK only, separate store       Not touched, and not yet decided. `SqliteDurableRunStore`'s checkpoint table belongs to a store the canonical purge does not reach; its retention is recorded as `undecided` in `quality/durable-table-retention.json` rather than claimed here.
 ================================================  ============================  ====================================================
 
@@ -86,6 +87,9 @@ RUN_REFERENCING_TABLES: tuple[str, ...] = (
     "capability_invocations",
     "capability_approvals",
     "task_idempotency",
+    # Runtime SQLite DDL (working-memory observation log, #301): run_id names
+    # the Run that produced the observation — provenance, not execution state.
+    "workspace_working_log",
     "durable_graph_runs",
 )
 
