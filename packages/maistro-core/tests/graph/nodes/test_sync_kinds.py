@@ -175,6 +175,38 @@ async def test_format_markdown_empty_uses_fallback() -> None:
     assert "_no items_" in out.output.markdown
 
 
+async def test_format_markdown_malformed_and_none_placeholders_render_empty() -> None:
+    """Malformed-field contract: only non-empty dot-paths are placeholders.
+
+    ``{}`` has no key at all, so the substitution regex never matches and the
+    braces pass through literally. ``{.}`` normalizes to an empty path and —
+    like a None value at the end or middle of a path — renders as '' rather
+    than leaking the whole-item repr. ``{a..b}`` collapses to the valid
+    nested path ``a.b``.
+    """
+    Node = get_node("transform.format_markdown")
+    out = await Node().run(
+        {
+            "items": [{"a": {"b": "v"}, "n": None}],
+            "template": "L {} | E {.} | N {a..b} | P {a.b} | M {a.b.c} | Z {n} | X",
+            "header": "",
+        },
+        _ctx(),
+    )
+    assert out.success
+    md = out.output.markdown
+    # Literal braces survive; raw malformed placeholders never leak.
+    assert "L {}" in md
+    assert "{.}" not in md and "{a.b.c}" not in md and "{n}" not in md
+    # Empty paths and None values resolve to '' (explicit empty substitution).
+    assert "E  |" in md
+    assert "M  |" in md
+    assert "Z  |" in md
+    # Present and normalized nested paths still resolve.
+    assert "N v" in md
+    assert "P v" in md
+
+
 # --- jira.poll (httpx mocked) ---------------------------------------------
 
 

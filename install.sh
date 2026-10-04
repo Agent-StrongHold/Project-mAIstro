@@ -55,6 +55,15 @@ ARCHIVE_MARKER="${MAISTRO_ARCHIVE_MARKER:-.maistro-archive-install}"
 # fixed CVE-2025-68121 (+21 HIGHs) in the previously embedded go1.22.11 CLI.
 MIN_DOCKER_API_VERSION="1.44"
 
+# Compose floor the stack's schema needs. The compose files use conditional
+# `depends_on` (service_healthy / service_completed_successfully), healthcheck
+# wiring and secrets — Compose v2 features the legacy python `docker-compose`
+# (v1, EOL) cannot parse, which is why install.sh no longer falls back to it
+# (#407). The floor is a preflight convenience, not the real contract: when a
+# front-end hides a parseable version, the schema-parse probe in
+# ensure_compose_supported decides instead.
+MIN_COMPOSE_VERSION="2.17.0"
+
 # Container tag the generated image_pull compose pins to (E5/#298). get.sh
 # exports this to match the release it just checked out; when install.sh is run
 # directly out of a tree, derive it from the tag that tree is sitting on so a
@@ -894,16 +903,15 @@ sync_env_file() {
     fi
 }
 
-# Locate a compose front-end and set COMPOSE_CMD. Returns 1 if none is present.
-# This only checks the CLI; daemon readiness is verified separately.
+# Locate a Compose v2 front-end and set COMPOSE_CMD. Returns 1 if none is
+# present. This only checks the CLI; daemon readiness is verified separately.
+# Deliberately no `docker-compose`/`podman-compose` fallback (#407): those are
+# Compose v1-generation engines the stack's conditional `depends_on` schema
+# breaks on, and a front-end the full stack has not been tested with must
+# never be advertised as one.
 detect_compose_cmd() {
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
         COMPOSE_CMD=(docker compose)
-        return 0
-    fi
-
-    if command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE_CMD=(docker-compose)
         return 0
     fi
 
@@ -912,12 +920,59 @@ detect_compose_cmd() {
         return 0
     fi
 
-    if command -v podman-compose >/dev/null 2>&1; then
-        COMPOSE_CMD=(podman-compose)
-        return 0
+    return 1
+}
+
+# First dotted-numeric token in the selected front-end's `version` output, if
+# it prints one. Output shapes vary across front-ends and providers ("Docker
+# Compose version v2.39.2", "v2.24.6-desktop.1"), so scan rather than parse a
+# fixed layout. Returns 1 when nothing parseable comes back; the schema probe
+# in ensure_compose_supported decides in that case.
+compose_reported_version() {
+    local out
+    out="$("${COMPOSE_CMD[@]}" version 2>/dev/null || true)"
+    out="$(grep -oE '[0-9]+(\.[0-9]+)+' <<<"$out" | head -n 1 || true)"
+    [[ -n "$out" ]] || return 1
+    echo "$out"
+}
+
+# Platform-specific pointer to a modern Compose v2, phrased for where the
+# installer is actually running (macOS, WSL2, plain Linux).
+compose_upgrade_instructions() {
+    if is_macos; then
+        echo "On macOS: update Docker Desktop (Settings > Software updates), or install the standalone plugin with 'brew install docker-compose'."
+    elif is_wsl; then
+        echo "In WSL2: add Docker's apt repository, then 'sudo apt-get install -y docker-compose-plugin' (https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository), or update Docker Desktop on the Windows side."
+    else
+        echo "On Linux: install the compose plugin — Debian/Ubuntu: 'sudo apt-get install -y docker-compose-plugin'; Fedora/RHEL: 'sudo dnf install docker-compose-plugin'; or see https://docs.docker.com/compose/install/linux/."
+    fi
+}
+
+# Refuse any compose front-end known unable to parse/run the stack (#407).
+# Two gates, in order of certainty:
+#   1. a parseable version below MIN_COMPOSE_VERSION fails outright;
+#   2. a missing or unparseable version string proves nothing by itself, so
+#      the front-end is feature-probed against the real compose files —
+#      parsing the stack's schema is exactly the capability the version
+#      floor stands in for.
+# Runs after compose_files(), so the probe sees the same file set `up` gets.
+ensure_compose_supported() {
+    local version
+    if version="$(compose_reported_version)"; then
+        if version_ge "$version" "$MIN_COMPOSE_VERSION"; then
+            ok "Compose $version meets the required minimum $MIN_COMPOSE_VERSION."
+            return 0
+        fi
+        fail "Compose v$MIN_COMPOSE_VERSION+ is required; detected version $version is below the floor and cannot reliably run this stack's schema. $(compose_upgrade_instructions) Then re-run ./install.sh."
     fi
 
-    return 1
+    local probe_err
+    probe_err="$("${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" config --quiet 2>&1 >/dev/null | head -n 2 || true)"
+    if "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" config --quiet >/dev/null 2>&1; then
+        warn "${COMPOSE_CMD[*]} did not report a usable version, but it parses the stack compose files; proceeding on that evidence."
+        return 0
+    fi
+    fail "${COMPOSE_CMD[*]} reported no usable Compose version and could not be verified against the stack compose files (conditional depends_on and related schema need Compose v2 >= $MIN_COMPOSE_VERSION). The compose error was: ${probe_err:-none}. $(compose_upgrade_instructions) Then re-run ./install.sh."
 }
 
 # True when the docker CLI exists and the daemon answers.
@@ -1241,7 +1296,7 @@ ensure_compose_runtime() {
         return
     fi
 
-    fail "No compose runtime found. Install Docker Desktop, Docker Engine with compose, or Podman, then retry."
+    fail "No Compose v2 runtime found. Install Docker Desktop, Docker Engine with the compose plugin, or Podman, then retry."
 }
 
 run_feature_wizard() {
@@ -1471,8 +1526,11 @@ start_engine() {
     check_docker_credential_helper
     record_docker_sock
     # compose_files first: report_arch reads the image list from the same
-    # file set `up` will use, so an addon's images are checked too.
+    # file set `up` will use, so an addon's images are checked too — and
+    # ensure_compose_supported feature-probes that same set before anything
+    # is built or started.
     compose_files
+    ensure_compose_supported
     report_arch
     info "Starting maistro-engine..."
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_UP_ARGS[@]}"
