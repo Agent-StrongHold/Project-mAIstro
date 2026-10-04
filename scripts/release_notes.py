@@ -38,11 +38,18 @@ REPO_URL = "https://github.com/Agent-StrongHold/Project-mAIstro"
 API_STATEMENT = """### API compatibility
 
 **The stable HTTP surface in this release is the `/v1` route mount.** Clients
-should address `/v1/...` paths directly.
+should address `/v1/...` paths directly. The `/v1` path segment is the stable
+resource mount; the *behavioral* version is negotiated, not taken from the
+path.
 
-[ADR-076](docs/adr/ADR-076-http-api-versioning.md) specifies version selection
-by **content negotiation** (`Accept: application/vnd.maistro.vN+json`). **That
-scheme is not implemented** in this release — do not write clients against it.
+[ADR-076](docs/adr/ADR-076-http-api-versioning.md) version selection is
+**implemented** by the shared `maistro.api_versioning` middleware: a request
+selects a version via the `Accept: application/vnd.maistro.vN` media type, an
+`api_version` query parameter, or an `api_version` JSON body field, and every
+response states the served version (`Maistro-API-Version`) and the default
+(`Maistro-API-Default`). Only version 1 exists today. The canvas
+`application/vnd.canvas+json;version=2` media-type check at `/v2/canvas` is a
+canvas-local response-format mechanism, not the general API-version scheme.
 
 The API version axis is independent of the package version: a `1.x` package
 release does not imply a `/v2` HTTP surface.
