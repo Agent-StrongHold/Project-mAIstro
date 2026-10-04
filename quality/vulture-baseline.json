@@ -1508,8 +1508,6 @@
         "packages/maistro-rsi/src/maistro_rsi/scout.py::unused function 'scout_objective'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused function 'read_campaign'",
         "packages/maistro-turing/src/maistro_turing/protocols.py::unused variable 'created_after'",
-        "packages/maistro-turing/src/maistro_turing/protocols.py::unused variable 'entry_id'",
-        "packages/maistro-turing/src/maistro_turing/protocols.py::unused variable 'entry_id'",
         "packages/maistro-turing/src/maistro_turing/protocols.py::unused variable 'include_deleted'",
         "packages/maistro-turing/src/maistro_turing/protocols.py::unused variable 'include_superseded'",
         "packages/maistro-turing/src/maistro_turing/protocols.py::unused variable 'successor_id'",

@@ -19,7 +19,7 @@ blocked-by: []
 contracts:
   - behavioral
 tests:
-  - tests/memory/learnings/test_learning_store.py
+  - packages/maistro-core/tests/memory/learnings/test_learning_store.py
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
