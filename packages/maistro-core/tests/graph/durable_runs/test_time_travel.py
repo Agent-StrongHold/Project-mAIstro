@@ -36,12 +36,14 @@ from maistro.graph.durable_runs.continuation import (
 )
 from maistro.graph.durable_runs.time_travel import (
     DURABLE_GRAPH_FORK_PROVENANCE,
+    fork_provenance,
+    load_state,
     state_epoch_appended,
 )
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, pause_until
-from maistro.graph.traversal_commit import graph_state_hash
+from maistro.graph.traversal_commit import TraversalCheckpoint, graph_state_hash
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
 from maistro.runs import InMemoryRunStore
@@ -701,3 +703,254 @@ async def test_epoch_append_is_stable_for_unchanged_state() -> None:
     )
     assert [epoch.sequence for epoch in advanced.state_timeline] == [1, 2]
     assert advanced.state_timeline[1].state_hash == graph_state_hash(changed_state)
+
+
+def _isolated_state(run_id: str, *, cycle: int = 0) -> GraphExecutionState:
+    return GraphExecutionState(
+        run_id=run_id,
+        active_node_ids=("a",),
+        blackboard_snapshot={
+            "task_objective": "t",
+            "metadata": {},
+            "node_annotations": {},
+        },
+        metadata={"initial_inputs": {}, "hitl_answers": {}},
+        cycle=cycle,
+    )
+
+
+def test_epoch_rejects_blank_or_mismatched_hashes() -> None:
+    """An epoch that cannot verify its own content is not constructible: a
+    timeline position that lied about its state must never be recordable."""
+    state = _isolated_state("run-epoch")
+    with pytest.raises(ValueError, match="hashes must be non-empty"):
+        GraphStateEpoch(
+            sequence=1,
+            state=state,
+            state_hash="  ",
+            graph_snapshot_hash="graph-hash",
+        )
+    with pytest.raises(ValueError, match="hashes must be non-empty"):
+        GraphStateEpoch(
+            sequence=1,
+            state=state,
+            state_hash=graph_state_hash(state),
+            graph_snapshot_hash="  ",
+        )
+    with pytest.raises(ValueError, match="state_hash must match"):
+        GraphStateEpoch(
+            sequence=1,
+            state=state,
+            state_hash="deadbeef-not-the-content",
+            graph_snapshot_hash="graph-hash",
+        )
+
+
+def test_epoch_append_returns_continuation_unchanged_when_history_already_carried() -> None:
+    """A state-stable write whose continuation already carries the recorded
+    history is returned as the same object: no copy, no epoch, no churn."""
+    state = _isolated_state("run-epoch")
+    continuation = GraphContinuation(run_id="run-epoch", graph_state=state, version=1)
+    appended = state_epoch_appended(continuation, previous=None, graph_snapshot_hash="graph-hash")
+    assert len(appended.state_timeline) == 1
+
+    carried = appended.model_copy(update={"version": appended.version + 1})
+    same = state_epoch_appended(carried, previous=appended, graph_snapshot_hash="graph-hash")
+    assert same is carried, "an already-carried history must not be copied"
+    assert len(same.state_timeline) == 1
+
+
+async def test_state_matching_a_traversal_checkpoint_links_and_loads() -> None:
+    """A persisted state whose content is a captured TraversalCheckpoint links
+    the epoch to that fact, and load returns the checkpoint evidence."""
+    run_store, workspace_id, project_id = await _spine()
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    graph = _counting_chain(workspace_id, project_id, [_Counting.kind])
+    run_id = await _admit(run_store, graph)
+    record = await run_store.get_run(run_id)
+    assert record is not None
+    snapshot_hash = record.graph.content_hash
+
+    state = _isolated_state(run_id)
+    checkpoint = TraversalCheckpoint.from_state(
+        graph_snapshot_hash=snapshot_hash,
+        state=state,
+        ordered_source_node_run_ids=("nr-1",),
+        checkpoint_sequence=1,
+    )
+    await continuations.create(
+        GraphContinuation.of(DurableRunRecord(run=record, graph_state=state, version=1)).model_copy(
+            update={"traversal_checkpoints": (checkpoint,)}
+        )
+    )
+
+    appended = state_epoch_appended(
+        GraphContinuation.of(DurableRunRecord(run=record, graph_state=state, version=2)).model_copy(
+            update={"traversal_checkpoints": (checkpoint,)}
+        ),
+        previous=None,
+        graph_snapshot_hash=snapshot_hash,
+    )
+    assert appended.state_timeline[0].checkpoint_sequence == 1
+    assert appended.state_timeline[0].commit_sequence is None
+    await continuations.update(appended)
+
+    loaded = await store.load_state(run_id, 1)
+    assert loaded.traversal_checkpoints == (checkpoint,)
+    assert loaded.traversal_commits == ()
+
+
+async def test_load_fails_closed_when_run_row_is_missing() -> None:
+    """A continuation without its canonical Run is not loadable history: the
+    spine owns the lifecycle, so an orphaned timeline proves nothing."""
+    run_store, _workspace_id, _project_id = await _spine()
+    continuations = InMemoryGraphContinuationStore()
+    state = _isolated_state("orphan-run")
+    await continuations.create(
+        GraphContinuation(
+            run_id="orphan-run",
+            graph_state=state,
+            state_timeline=(
+                GraphStateEpoch(
+                    sequence=1,
+                    state=state,
+                    state_hash=graph_state_hash(state),
+                    graph_snapshot_hash="graph-hash",
+                ),
+            ),
+            version=1,
+        )
+    )
+    with pytest.raises(UnknownGraphRunError, match="not on the canonical spine"):
+        await load_state(
+            run_id="orphan-run", sequence=1, continuations=continuations, run_store=run_store
+        )
+
+
+async def test_load_fails_closed_on_tampered_epoch_state_content() -> None:
+    """Epoch content edited after recording fails its hash re-derivation.
+
+    The validating stores refuse to persist such an epoch, so the corrupted
+    document arrives the way it would in production: from a writer that never
+    re-validated -- the store port hands the reader exactly what is on disk.
+    """
+
+    class _CorruptedDocumentStore:
+        """A GraphContinuationStore port serving one fixed row verbatim."""
+
+        def __init__(self, row: GraphContinuation) -> None:
+            self._row = row
+
+        async def get(self, run_id: str) -> GraphContinuation | None:
+            return self._row
+
+    run_store, workspace_id, project_id = await _spine()
+    graph = _counting_chain(workspace_id, project_id, [_Counting.kind])
+    run_id = await _admit(run_store, graph)
+    record = await run_store.get_run(run_id)
+    assert record is not None
+
+    state = _isolated_state(run_id)
+    tampered_epoch = GraphStateEpoch.model_construct(
+        sequence=1,
+        state=state.model_copy(update={"cycle": 7}),
+        state_hash=graph_state_hash(state),
+        graph_snapshot_hash=record.graph.content_hash,
+    )
+    row = GraphContinuation.model_construct(
+        run_id=run_id,
+        graph_state=state,
+        state_timeline=(tampered_epoch,),
+    )
+    with pytest.raises(StateHistoryIntegrityError, match="does not match its recorded state hash"):
+        await load_state(
+            run_id=run_id,
+            sequence=1,
+            continuations=_CorruptedDocumentStore(row),  # type: ignore[arg-type]
+            run_store=run_store,
+        )
+
+
+async def test_load_fails_closed_on_pruned_checkpoint_link() -> None:
+    """An epoch linked to a checkpoint that no longer exists fails closed."""
+    run_store, workspace_id, project_id = await _spine()
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    graph = _counting_chain(workspace_id, project_id, [_Counting.kind])
+    run_id = await _admit(run_store, graph)
+    record = await run_store.get_run(run_id)
+    assert record is not None
+    snapshot_hash = record.graph.content_hash
+
+    state = _isolated_state(run_id)
+    checkpoint = TraversalCheckpoint.from_state(
+        graph_snapshot_hash=snapshot_hash,
+        state=state,
+        ordered_source_node_run_ids=("nr-1",),
+        checkpoint_sequence=1,
+    )
+    linked = GraphContinuation.of(
+        DurableRunRecord(run=record, graph_state=state, version=1)
+    ).model_copy(update={"traversal_checkpoints": (checkpoint,)})
+    await continuations.create(linked)
+    appended = state_epoch_appended(linked, previous=None, graph_snapshot_hash=snapshot_hash)
+    assert appended.state_timeline[0].checkpoint_sequence == 1
+    # Prune the checkpoint beneath the linked epoch, as a corrupted or
+    # partial write would leave it.
+    await continuations.update(
+        appended.model_copy(update={"traversal_checkpoints": (), "version": appended.version + 1})
+    )
+    with pytest.raises(
+        StateHistoryIntegrityError, match="TraversalCheckpoint 1, which no longer exists"
+    ):
+        await store.load_state(run_id, 1)
+
+
+async def test_fork_provenance_rejects_blank_reason_itself() -> None:
+    """The provenance fact is the second fail-closed gate on the reason, past
+    the store entry point: neither caller may record a blank one."""
+    run_store, workspace_id, project_id = await _spine()
+    graph = _counting_chain(workspace_id, project_id, [_Counting.kind])
+    parent = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    with pytest.raises(ValueError, match="non-blank reason"):
+        fork_provenance(
+            parent=parent,
+            source_sequence=1,
+            source_state_hash="state-hash",
+            reason="   ",
+            forked_at=datetime.now(UTC),
+        )
+
+
+async def test_fork_provenance_skips_none_eval_fields() -> None:
+    """An eval score row with unset fields contributes only what it set: no
+    ``None`` revisions may be recorded as if they named a revision."""
+    run_store, workspace_id, project_id = await _spine()
+    graph = _counting_chain(workspace_id, project_id, [_Counting.kind])
+    parent = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    fact = fork_provenance(
+        parent=parent,
+        source_sequence=1,
+        source_state_hash="state-hash",
+        reason="inspect",
+        latest_eval={
+            "goal_id": None,
+            "goal_revision": None,
+            "rubric_id": "rubric-9",
+            "rubric_revision": None,
+        },
+        forked_at=datetime.now(UTC),
+    )[DURABLE_GRAPH_FORK_PROVENANCE]
+    assert "goal_id" not in fact, "the parent named no Goal either"
+    assert "goal_revision" not in fact
+    assert "rubric_revision" not in fact
+    assert fact["rubric_id"] == "rubric-9"

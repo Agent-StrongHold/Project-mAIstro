@@ -150,6 +150,33 @@ def _require_sequence_text(value: str, message: str) -> str:
     return value
 
 
+def _existing_timeline(previous: GraphContinuation | None) -> tuple[GraphStateEpoch, ...]:
+    """The recorded history a write extends; empty when there is no prior write."""
+    return previous.state_timeline if previous is not None else ()
+
+
+def _linked_fact_sequences(
+    continuation: GraphContinuation,
+    state_hash: str,
+) -> tuple[int | None, int | None]:
+    """Sequences of the newest traversal facts claiming ``state_hash``.
+
+    Either side is ``None`` unless a commit or checkpoint exists whose content
+    hash matches, which is what ties a timeline epoch to its evidence.
+    """
+    commit_sequence = None
+    for commit in reversed(continuation.traversal_commits):
+        if commit.resulting_state_hash == state_hash:
+            commit_sequence = commit.commit_sequence
+            break
+    checkpoint_sequence = None
+    for checkpoint in reversed(continuation.traversal_checkpoints):
+        if checkpoint.state_hash == state_hash:
+            checkpoint_sequence = checkpoint.checkpoint_sequence
+            break
+    return commit_sequence, checkpoint_sequence
+
+
 def state_epoch_appended(
     continuation: GraphContinuation,
     *,
@@ -168,26 +195,17 @@ def state_epoch_appended(
     A continuation persisted by a writer that predates the timeline (legacy
     document stores) starts its history at its first post-convergence write.
     """
-    timeline = previous.state_timeline if previous is not None else ()
+    timeline = _existing_timeline(previous)
     state_hash = graph_state_hash(continuation.graph_state)
     last = timeline[-1] if timeline else None
     if last is not None and last.state_hash == state_hash:
         # Unchanged content extends no epoch -- but the write must still carry
         # the recorded history, or every state-stable checkpoint would wipe
         # the timeline the next append is supposed to extend.
-        if continuation.state_timeline != timeline:
-            return continuation.model_copy(update={"state_timeline": timeline})
-        return continuation
-    commit_sequence = None
-    for commit in reversed(continuation.traversal_commits):
-        if commit.resulting_state_hash == state_hash:
-            commit_sequence = commit.commit_sequence
-            break
-    checkpoint_sequence = None
-    for checkpoint in reversed(continuation.traversal_checkpoints):
-        if checkpoint.state_hash == state_hash:
-            checkpoint_sequence = checkpoint.checkpoint_sequence
-            break
+        if continuation.state_timeline == timeline:
+            return continuation
+        return continuation.model_copy(update={"state_timeline": timeline})
+    commit_sequence, checkpoint_sequence = _linked_fact_sequences(continuation, state_hash)
     epoch = GraphStateEpoch(
         sequence=last.sequence + 1 if last is not None else 1,
         state=continuation.graph_state,
@@ -227,17 +245,10 @@ async def load_state(
         )
     epoch = timeline[sequence - 1]
     _verify_epoch(epoch, run=run, continuation=continuation)
-    commit_limit = epoch.commit_sequence
-    checkpoint_limit = epoch.checkpoint_sequence
-    commits = tuple(
-        commit
-        for commit in continuation.traversal_commits
-        if commit_limit is not None and commit.commit_sequence <= commit_limit
-    )
-    checkpoints = tuple(
-        item
-        for item in continuation.traversal_checkpoints
-        if checkpoint_limit is not None and item.checkpoint_sequence <= checkpoint_limit
+    commits, checkpoints = _slice_linked_facts(
+        continuation,
+        commit_limit=epoch.commit_sequence,
+        checkpoint_limit=epoch.checkpoint_sequence,
     )
     return GraphStateLoad(
         run_id=run_id,
@@ -249,6 +260,26 @@ async def load_state(
         traversal_commits=commits,
         traversal_checkpoints=checkpoints,
     )
+
+
+def _slice_linked_facts(
+    continuation: GraphContinuation,
+    *,
+    commit_limit: int | None,
+    checkpoint_limit: int | None,
+) -> tuple[tuple[TraversalCommit, ...], tuple[TraversalCheckpoint, ...]]:
+    """The traversal facts whose sequences fall within the inclusive slice."""
+    commits = tuple(
+        commit
+        for commit in continuation.traversal_commits
+        if commit_limit is not None and commit.commit_sequence <= commit_limit
+    )
+    checkpoints = tuple(
+        item
+        for item in continuation.traversal_checkpoints
+        if checkpoint_limit is not None and item.checkpoint_sequence <= checkpoint_limit
+    )
+    return commits, checkpoints
 
 
 def _verify_epoch(
@@ -270,37 +301,55 @@ def _verify_epoch(
             f"{run.graph.content_hash!r}; the revisions are incompatible"
         )
     if epoch.commit_sequence is not None:
-        commit = next(
-            (
-                item
-                for item in continuation.traversal_commits
-                if item.commit_sequence == epoch.commit_sequence
-            ),
-            None,
-        )
-        if commit is None or commit.resulting_state_hash != epoch.state_hash:
-            raise StateHistoryIntegrityError(
-                f"timeline epoch {epoch.sequence} of run {run.run_id!r} links "
-                f"TraversalCommit {epoch.commit_sequence}, which no longer exists with "
-                "the recorded resulting state; the traversal evidence was pruned or "
-                "rewritten"
-            )
+        _verify_commit_link(epoch, continuation, run)
     elif epoch.checkpoint_sequence is not None:
-        checkpoint = next(
-            (
-                item
-                for item in continuation.traversal_checkpoints
-                if item.checkpoint_sequence == epoch.checkpoint_sequence
-            ),
-            None,
+        _verify_checkpoint_link(epoch, continuation, run)
+
+
+def _verify_commit_link(
+    epoch: GraphStateEpoch,
+    continuation: GraphContinuation,
+    run: Run,
+) -> None:
+    """Fail closed unless the linked TraversalCommit still carries this state."""
+    commit = next(
+        (
+            item
+            for item in continuation.traversal_commits
+            if item.commit_sequence == epoch.commit_sequence
+        ),
+        None,
+    )
+    if commit is None or commit.resulting_state_hash != epoch.state_hash:
+        raise StateHistoryIntegrityError(
+            f"timeline epoch {epoch.sequence} of run {run.run_id!r} links "
+            f"TraversalCommit {epoch.commit_sequence}, which no longer exists with "
+            "the recorded resulting state; the traversal evidence was pruned or "
+            "rewritten"
         )
-        if checkpoint is None or checkpoint.state_hash != epoch.state_hash:
-            raise StateHistoryIntegrityError(
-                f"timeline epoch {epoch.sequence} of run {run.run_id!r} links "
-                f"TraversalCheckpoint {epoch.checkpoint_sequence}, which no longer "
-                "exists with the recorded state; the traversal evidence was pruned or "
-                "rewritten"
-            )
+
+
+def _verify_checkpoint_link(
+    epoch: GraphStateEpoch,
+    continuation: GraphContinuation,
+    run: Run,
+) -> None:
+    """Fail closed unless the linked TraversalCheckpoint still carries this state."""
+    checkpoint = next(
+        (
+            item
+            for item in continuation.traversal_checkpoints
+            if item.checkpoint_sequence == epoch.checkpoint_sequence
+        ),
+        None,
+    )
+    if checkpoint is None or checkpoint.state_hash != epoch.state_hash:
+        raise StateHistoryIntegrityError(
+            f"timeline epoch {epoch.sequence} of run {run.run_id!r} links "
+            f"TraversalCheckpoint {epoch.checkpoint_sequence}, which no longer "
+            "exists with the recorded state; the traversal evidence was pruned or "
+            "rewritten"
+        )
 
 
 def fork_provenance(
