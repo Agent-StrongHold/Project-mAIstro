@@ -616,7 +616,10 @@ def _node_logical_effect_key(node: Any, inputs: dict[str, Any], ctx: NodeContext
         return None
     input_schema = getattr(node, "input_schema", None)
     key_inputs = input_schema.model_validate(inputs) if input_schema is not None else inputs
-    key: str | None = key_builder(key_inputs, ctx)
+    # The callable comes off a duck-typed node; BaseNode's protocol
+    # (``(inputs, ctx) -> str | None``) is the contract this cast restates, so
+    # pyright can verify the assignment without pinning ``node`` to a class.
+    key: str | None = cast("str | None", key_builder(key_inputs, ctx))
     return key
 
 
