@@ -1324,21 +1324,68 @@ class PgRunStore:
         """Rewrite one terminal Attempt's recorded result, carrying its NodeRun.
 
         The twin of `InMemoryRunStore.repair_attempt_result`; see the protocol
-        for why both copies move in one operation (ADR-083026-14c3). Both rows
+        for why both copies move in one operation (ADR-083026-14c3). Locks are
+        taken parent-first — Run, then NodeRun, then the Attempt — the order
+        `record_eval_score`, the archive sweep, and every cascade here use, so
+        a repair holding its Attempt while it waits for a parent can never
+        form the wait cycle an Attempt-first lock invites (#1888). Both rows
         are locked and written inside one transaction, so a concurrent reader
         never sees the Attempt repaired and its accepted outcome not.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            # Lineage first, from the promoted relational columns alone: the
+            # Attempt's payload may live in the archive, but its NodeRun link
+            # is a real column. Unlocked on purpose — reading the spine in the
+            # order it is about to be locked would make the reads themselves
+            # part of the cycle; each row is re-read under its lock below.
+            lineage = await conn.fetchrow(
+                """SELECT a.node_run_id AS node_run_id, n.run_id AS run_id
+                     FROM canonical_attempts a
+                     JOIN canonical_node_runs n ON n.node_run_id = a.node_run_id
+                    WHERE a.attempt_id = $1""",
+                attempt_id,
+            )
+            if lineage is None:
+                raise AttemptNotFound(attempt_id)
+            # The Run is locked for order and existence only, by relational
+            # identity: whether the Attempt may be repaired is decided by the
+            # Attempt alone (`require_repairable_attempt`), so a terminal Run
+            # over a terminal Attempt stays repairable and the Run's payload —
+            # possibly an archive-backed one — is neither read nor validated.
+            # A missing Run means delete_run removed the lineage under its own
+            # lock between the read above and this lock; the target went with
+            # it, so the failure names the target, not a parent it never had.
+            run_row = await conn.fetchrow(
+                "SELECT run_id FROM canonical_runs WHERE run_id = $1 FOR UPDATE",
+                lineage["run_id"],
+            )
+            if run_row is None:
+                raise AttemptNotFound(attempt_id)
+            node_run = NodeRun.model_validate(
+                await self._locked(
+                    conn, "canonical_node_runs", "node_run_id", lineage["node_run_id"]
+                )
+            )
             attempt = Attempt.model_validate(
                 await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
             )
+            # The lineage was read unlocked; re-verified now that every row is
+            # locked, before anything is written.
+            if attempt.node_run_id != lineage["node_run_id"]:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} lineage changed under the repair lock: it now "
+                    f"names NodeRun {attempt.node_run_id!r}, not {lineage['node_run_id']!r}"
+                )
+            if node_run.run_id != lineage["run_id"]:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} lineage changed under the repair lock: "
+                    f"NodeRun {node_run.node_run_id!r} belongs to Run {node_run.run_id!r}, "
+                    f"not Run {lineage['run_id']!r}"
+                )
             require_repairable_attempt(attempt)
             updated = attempt.model_copy(update={"result": result})
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
 
-            node_run = NodeRun.model_validate(
-                await self._locked(conn, "canonical_node_runs", "node_run_id", attempt.node_run_id)
-            )
             if outcome_embeds_attempt(node_run, attempt_id):
                 assert node_run.accepted_outcome is not None  # narrowed above
                 repaired = node_run.model_copy(
