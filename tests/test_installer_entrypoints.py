@@ -43,6 +43,30 @@ URL_WITH_SLOT = re.compile(r"https?://[^\s\"'`)]*[<>]")
 #: (``git clone ... <YOUR_REPO_URL> "$TARGET"``).
 PLACEHOLDER_TOKENS = ("<YOUR", "YOUR_REPO", "<org>", "<ORG>")
 
+#: Generic unfilled ``<slot>`` argument: any lowercase slot token standing
+#: alone between angle brackets. This is the shape of the defect class above
+#: under any spelling (e.g. ``git clone <maistro-engine-url>``), so the
+#: detector cannot be evaded by renaming the placeholder. Shell redirection
+#: (``< file``, ``<<EOF``) never matches: a slot opens with a letter.
+GENERIC_SLOT = re.compile(r"(?<![\w<])<[a-z][a-z0-9._-]*>")
+
+#: Angled tokens that are conventional notation rather than an unfilled slot
+#: a user would run verbatim, each quoted verbatim from the surface:
+#: a usage metavariable in prose/warnings, the ADR naming convention, and the
+#: legacy key formats quoted by install.sh's migration hint (bare and inside
+#: the ``[...]`` list brackets, shell-escaped as ``API_KEYS=[\"<secret>\"]``).
+#: Proof the widened entry strips the real lines lives in the surface test:
+#: drop it and install.sh:839/840 fail the scan.
+NOTATION_SLOTS = (
+    r"-Distro <name>",
+    r"ADR-NNN-<slug>\.md",
+    r"API_KEYS=\[?\\?[\"'](ops:)?<secret>\\?[\"']\]?",
+)
+
+#: Comment prefixes for the executable surfaces; slots inside comments
+#: describe third-party syntax and are never run verbatim.
+_COMMENT = re.compile(r"^\s*#")
+
 
 def test_removed_placeholder_installer_stays_removed() -> None:
     """The dead curl-pipe-bash helper #401 deleted must not come back."""
@@ -67,6 +91,15 @@ def test_installer_surface_has_no_placeholder_urls() -> None:
         offenders += (
             f"{rel}: placeholder token {token!r}" for token in PLACEHOLDER_TOKENS if token in text
         )
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _COMMENT.match(line):
+                continue
+            for allowed in NOTATION_SLOTS:
+                line = re.sub(allowed, "", line)
+            offenders += (
+                f"{rel}:{lineno}: unfilled slot {match.group(0)}"
+                for match in GENERIC_SLOT.finditer(line)
+            )
     assert not offenders, "placeholder installer content:\n" + "\n".join(offenders)
 
 
@@ -85,3 +118,16 @@ def test_placeholder_detector_catches_the_removed_shape() -> None:
     )
     assert URL_WITH_SLOT.search(historical)
     assert any(token in historical for token in PLACEHOLDER_TOKENS)
+
+
+def test_slot_detector_catches_renamed_placeholders() -> None:
+    """The generic detector must flag slots the historical tokens would miss.
+
+    ``git clone <maistro-engine-url>`` is the #401 shape under a renamed
+    placeholder: a paste-verbatim command whose argument is an unfilled
+    slot. The token list alone reports the surface as placeholder-free
+    here; only the generic detector enforces the invariant.
+    """
+    renamed = '  info "Example: git clone <maistro-engine-url> "$TARGET""'
+    assert not any(token in renamed for token in PLACEHOLDER_TOKENS)
+    assert GENERIC_SLOT.search(renamed)
