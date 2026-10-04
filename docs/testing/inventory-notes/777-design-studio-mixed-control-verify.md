@@ -6538,3 +6538,49 @@ landed M3-B6/M4-A8/#382 items unrelated to every #777 dependency; all 13
 acceptance criteria remain unverifiable against reachable production
 behavior, and the issue's stop condition forbids Design-Studio-private
 substitutes. Verdict: **BLOCKED** (Refs #777).
+
+## Round 96 — repair round, job 3947340188b34f6e9d36e0b62a76634b (HEAD `707c3415bb82`)
+
+Prior block disposition: the previous round's BLOCKED was **dependency-blocking,
+not a develop sync conflict** — `git fetch origin` then `git rev-parse
+origin/develop` = `1e4933e2a` = lane base = merge base, so no merge is
+applicable and the develop-sync resolution path is N/A. Starting head matched
+the assigned `707c3415b` exactly; tree clean, nothing to salvage.
+
+Driver `checks=[]` (no `check-*.log` in the job directory), so the battery was
+re-executed fresh at `707c3415b`:
+
+- `uv run ruff check .` EXIT 0 — "All checks passed!";
+  `uv run ruff format --check .` EXIT 0 — 2865 files already formatted.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` EXIT 0 — 1345 reviewed
+  identities = 1345 findings; no amendment (gate green, not a CI-repair round).
+- Gates EXIT 0: suite-inventory (14 suites), backlog (167 items), doc-links,
+  cross-package-imports (6 tolerated), api-route-contracts (279 handlers),
+  monorepo layout.
+- `pytest packages/hive-conductor/backend/tests` **3305P/6S**;
+  `packages/maistro-design/tests` **540P/1S**; `maistro-core` ontology+memory
+  **560P**.
+
+### Blockers re-confirmed fresh at `707c3415b` / `origin/develop 1e4933e2a`
+
+- Broadened upstream sweep for dependency surfaces under alternate names —
+  `git grep -liE 'GoalReconcil|Reconcil|CreativeBrief|GoalRevision|delegate_goal|reassign|reclaim|workspace_agent|persistent.*agent' origin/develop -- 'packages/*/src'`:
+  **zero files** for every pattern. #804/#805/#806/#458 remain unlanded
+  upstream; nothing new to consume since round 95.
+- The only `CreativeBrief` hits in `maistro-core` are docstring forward
+  references (`ontology/rubric.py:6,15`, `agents/brief_interview.py:1,5,447`)
+  marking #774 as not-yet-written — no canonical implementation.
+- `ControlMode`/`BranchControl`: still no consumer outside `maistro-design`;
+  `working_graph`: still zero product consumers outside `maistro-core`;
+  `design_service.py`: still 0 consumption tokens; `brief_chat.py:64`
+  `_NOT_WRITTEN` deferral unchanged.
+
+### Verdict — unchanged (BLOCKED, dependency-blocking)
+
+Ninth consecutive round with no implementable delta: origin/develop did not
+advance, every #777 dependency surface is still absent under any plausible
+naming, and the issue's stop condition forbids Design-Studio-private
+substitutes for the unlanded canonical owners. All 13 acceptance criteria
+remain unverifiable against reachable production behavior. Verdict:
+**BLOCKED** (Refs #777).
