@@ -77,3 +77,53 @@ are not lane-repairable. No in-tree change is required; this file is the round's
 - #77's 2026-09-02 re-closure evidence depth was not audited (owned by #18).
 - Leaf closure evidence (the 8 closed leaves) was checked for state/parenting only;
   per-leaf behavioral evidence review belongs to each leaf's parent gate.
+
+## Repair round (job 994ceb7dc37c46c3a186ee4e0f94d47b) — "commit status not successful"
+
+Block inherited from the prior merge-queue evaluation: a commit status was not
+successful. Prior run died on a provider timeout before executing any check
+(`checks: []`, no `check-*.log` files), so this round re-derived the evidence.
+
+### The red status was a stale pending snapshot; CI is green at this exact head
+
+The job started ~14:26 UTC while the 14:40Z CI run on head `426065b32e65` was still
+executing; the last producer finished 15:07:18Z and `gates-ran` published SUCCESS at
+15:10:07Z (run 37211820664). Read-only verification of the shipped state:
+
+- Commit status on `426065b32e65`: `gates-ran` → `success` — "All required checks
+  executed on this exact head".
+- All 30 check runs on the head/PR #1932: `success`, with exactly one legitimate
+  `skipped` (`Container scan + SBOM + cosign`).
+- PR #1932 `mergeable: MERGEABLE`, all rollup checks green. Remaining
+  `mergeStateStatus: BLOCKED` is the approvals/merge-queue-entry state, not a check
+  failure; enqueueing/approving is GitHub-side and prohibited for this lane.
+- No failed merge-group (`gh-readonly-queue/*`) run exists for this branch.
+
+### Local gate battery at this head (all exit 0)
+
+CI-exact invocations from `quality.yml`/`vulture-ratchet.yml`:
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+→ 1342 reviewed identities = 1342 findings, 0 unclassified, 0 never_allowlist (no
+ledger amendment needed this round); `check-ratchet-provenance.py`;
+`check-shipped-surface-truth.py`; `check-reachability.py` (174 unreachable, within
+ledger); `check-credential-authority.py`; `check-wiring-reads.py`; radon baseline +
+`radon cc … --min B`; `check-backlog-consistency.py` (167 items OK); doc-links;
+enumerations; release consistency; route permissions; principal identity; frontend
+typed client; vendor ifeval/bfcl; agent-store-writes; contract markers; convergence
+matrix; reachability dispositions; security/image/workflow inventories; execution
+lifecycles; model egress; `ruff check .`; `ruff format --check .` (2881 files).
+
+Environment note for future rounds: `mypy --strict packages/maistro-core/src` fails
+locally with `import-not-found` for `maistro_bootstrap.*` unless the venv is synced
+like CI (`uv sync --locked --all-extras`; the package sits behind the optional
+`bootstrap` extra, pyproject.toml:102, CI sync at quality.yml:104). After the
+CI-exact sync: "Success: no issues found in 700 source files". This is an
+environment artifact, not a tree defect.
+
+### Repair conclusion
+
+No tree-side repair exists for this block: the branch diff is this docs-only handoff,
+every locally-replicable gate passes, and the GitHub-side status set is green at the
+exact head the queue evaluated. The correct disposition is re-evaluation by the merge
+queue against the now-complete green evidence — an operator/GitHub-side action this
+lane cannot perform. No inventory notes were added (no tests added or removed).
