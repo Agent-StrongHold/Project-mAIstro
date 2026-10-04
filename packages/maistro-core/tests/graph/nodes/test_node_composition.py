@@ -55,8 +55,25 @@ def shipped_kinds() -> list[str]:
 
 
 def _sentinel_authorities() -> dict[str, object]:
-    """One distinct object per authority, so identity can be asserted."""
-    return {name: object() for name in AUTHORITY_NAMES}
+    """One distinct object per authority, so identity can be asserted.
+
+    The `harness_adapters` authority is shape-validated at construction
+    (#1613: every value must be a HarnessAdapter or HarnessRunner), so its
+    sentinel is a real mapping of a shape-valid stub — still one distinct
+    object, still identity-assertable.
+    """
+
+    class _StubHarnessAdapter:
+        async def dispatch(self, request: object) -> object: ...
+
+        async def poll(self, handle: object) -> object: ...
+
+        async def cancel(self, handle: object) -> None: ...
+
+    stub = _StubHarnessAdapter()
+    sentinels: dict[str, object] = {name: object() for name in AUTHORITY_NAMES}
+    sentinels["harness_adapters"] = {"stub": stub}
+    return sentinels
 
 
 # --- the declarations themselves ----------------------------------------------
