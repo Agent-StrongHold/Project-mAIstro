@@ -202,6 +202,9 @@ STATIC_ROOTS = (
     "maistro.cli",
     "maistro_registry.cli",
     "maistro_rsi.cli",
+    # `maistro-rsi-campaign` console script (M5-B, #114): its own entry point,
+    # deliberately outside `maistro_rsi.cli` — see campaign_cli's docstring.
+    "maistro_rsi.campaign_cli",
     "maistro_bootstrap",
 )
 
