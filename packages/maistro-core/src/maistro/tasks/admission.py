@@ -33,9 +33,10 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.observability.correlation import current_execution_context
-from maistro.runs.admission import admit_direct_work
+from maistro.runs.admission import admit_direct_work, direct_work_graph
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.task_kinds import resolve_direct_work
 from maistro.tasks.idempotency import IDEMPOTENCY_KEY_PROVENANCE
 from maistro.tasks.models import TaskStatus
@@ -43,8 +44,10 @@ from maistro.tasks.models import TaskStatus
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.agents.intents import IntentRegistry
     from maistro.projects.scope_store import ProjectScopeStore
+    from maistro.runs.model import Run
     from maistro.runs.store import RunStore
     from maistro.tasks.models import TaskResponse
+    from maistro.tasks.pg_admission import PgRootAdmissionCoordinator
 
 #: How a task's state machine reads on the canonical Run.
 #:
@@ -191,6 +194,7 @@ class TaskRunAdmitter:
         project_id: str | None = None,
         project_store: ProjectScopeStore | None = None,
         intents: IntentRegistry | None = None,
+        coordinator: PgRootAdmissionCoordinator | None = None,
     ) -> None:
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
@@ -204,6 +208,12 @@ class TaskRunAdmitter:
         self._project_id = project_id
         self._projects = project_store
         self._intents = intents
+        # The atomic admission lane (#1845): composition wires the shared pool
+        # and the Run store's connection-owned insert into one coordinator;
+        # this admitter contributes only its Workspace/Project binding through
+        # `prepare_run`. None keeps the legacy two-commit path for tiers that
+        # carry no coordinator (in-memory, SQLite).
+        self._coordinator = coordinator
         # Whether dispatch on this store is claimed atomically with its
         # physical evidence (#544, #1114). On a claiming store the Run's
         # QUEUED->RUNNING write belongs to `claim_consumer_run` — the same
@@ -230,21 +240,47 @@ class TaskRunAdmitter:
         return self._workspace_id
 
     async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
-        """Return the immutable Workspace/Project binding for admission keys.
+        """Return the immutable Workspace/Project binding for admission keys."""
+        self._require_own_workspace(workspace_id)
+        return self._workspace_id, await self._resolve_project_id()
 
-        Idempotency must claim the same scope the Run will use. Resolving a
-        lazy Root Project here makes that binding explicit before the claim is
-        written, instead of scoping only by Workspace and allowing two Project
-        bindings in one process to reconcile the wrong Run. A named Workspace
-        must still match this bound admitter; silently scoping it to the wrong
-        Project would make the key replay an unrelated Run.
-        """
+    @property
+    def coordinator(self) -> PgRootAdmissionCoordinator | None:
+        """The atomic admission coordinator, when this tier carries one."""
+        return self._coordinator
+
+    def _require_own_workspace(self, workspace_id: str | None) -> None:
         if workspace_id is not None and workspace_id != self._workspace_id:
             raise WorkspaceNotAdmissible(
                 f"admitter is bound to Workspace {self._workspace_id!r} and cannot "
-                f"scope {workspace_id!r}"
+                f"admit into {workspace_id!r}"
             )
-        return self._workspace_id, await self._resolve_project_id()
+
+    async def prepare_run(self, task: TaskResponse) -> Run:
+        """Build this task's canonical Run without writing anything.
+
+        Preparation runs before the coordinator opens its transaction because
+        Project resolution may acquire a separate connection.
+        """
+        work = resolve_direct_work(
+            description=task.description,
+            task_type=task.task_type,
+            agent_id=task.agent_id,
+            registry=self._intents,
+        )
+        return await self._runs.prepare_run(  # type: ignore[attr-defined,no-any-return]
+            direct_work_graph(
+                workspace_id=self._workspace_id,
+                project_id=await self._resolve_project_id(),
+                node_type=work.node_type,
+                name=work.name,
+                parameters=work.parameters,
+                description=task.description,
+            ),
+            actor_principal_id=task.user_id or None,
+            provenance={**_admission_provenance(task), ADMISSION_SOURCE: TASK_QUEUE_SOURCE},
+            initial_status=RunStatus.QUEUED,
+        )
 
     async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
         """Admit one queued task as a Run and return its ``run_id``.
@@ -255,11 +291,7 @@ class TaskRunAdmitter:
         Workspace, and silently filing the work in the bound one would put a
         Run in a Project its submitter never named.
         """
-        if workspace_id is not None and workspace_id != self._workspace_id:
-            raise WorkspaceNotAdmissible(
-                f"admitter is bound to Workspace {self._workspace_id!r} and cannot "
-                f"admit into {workspace_id!r}"
-            )
+        self._require_own_workspace(workspace_id)
         work = resolve_direct_work(
             description=task.description,
             task_type=task.task_type,
@@ -419,6 +451,7 @@ class WorkspaceRoutingAdmitter:
         *,
         default_workspace_id: str,
         intents: IntentRegistry | None = None,
+        coordinator: PgRootAdmissionCoordinator | None = None,
     ) -> None:
         if not default_workspace_id.strip():
             raise ValueError("default_workspace_id must be a non-empty string")
@@ -426,6 +459,9 @@ class WorkspaceRoutingAdmitter:
         self._projects = project_store
         self._default_workspace_id = default_workspace_id
         self._intents = intents
+        # One coordinator per process, shared by every bound admitter: it owns
+        # the pool and the SQL, not any Workspace (#1845).
+        self._coordinator = coordinator
         self._by_workspace: dict[str, TaskRunAdmitter] = {}
         # Two concurrent first submissions for one Workspace would otherwise
         # both create a Root Project. `create_root` is idempotent, so the
@@ -465,6 +501,7 @@ class WorkspaceRoutingAdmitter:
                 workspace_id=resolved,
                 project_id=root.project_id,
                 intents=self._intents,
+                coordinator=self._coordinator,
             )
             self._by_workspace[resolved] = admitter
             return admitter

@@ -27,8 +27,26 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = ["spine_is_migrated", "wire_chat_admission", "wire_execution_spine"]
 
-
 logger = logging.getLogger(__name__)
+
+
+def _wire_admission_coordinator(pg_pool: Any, run_store: RunStore) -> Any:
+    """The atomic task-admission coordinator on the PG spine, else None (#1845).
+
+    One per process: it owns the shared pool and the Run store's
+    connection-owned insert callback, so the queue's admission binding and the
+    canonical Run insert commit together. Tiers without a PostgreSQL pool (or a
+    Run store without the connection-owned insert) keep the legacy two-commit
+    path — the coordinator is deliberately not faked onto backends whose
+    transactions cannot carry it.
+    """
+    insert = getattr(run_store, "insert_prepared_run", None)
+    if pg_pool is None or insert is None:
+        return None
+    from maistro.tasks.pg_admission import PgRootAdmissionCoordinator
+
+    return PgRootAdmissionCoordinator(pg_pool, insert_run=insert)
+
 
 #: Tables the PostgreSQL spine needs before it may be selected. Defined here
 #: rather than in `container` because the import runs that way: `container`
@@ -314,6 +332,7 @@ async def wire_execution_spine(
         project_scope_store,
         default_workspace_id=workspace_id,
         intents=intents,
+        coordinator=_wire_admission_coordinator(pg_pool, run_store),
     )
     # Priming the default Workspace is what keeps the eager-Root guarantee in
     # the docstring above true for the case every deployment has. Workspaces a
