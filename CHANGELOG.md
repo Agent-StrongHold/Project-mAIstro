@@ -44,6 +44,17 @@ or placeholder-only section.
 
 ### Changed
 
+- **Advisory DAG-shape proportionality judge failures are explicit, not silent allows (#1191).**
+  `LLMProportionalityJudge` no longer collapses a timeout, provider error, malformed response
+  envelope, or malformed judgment into `justified=True`. `ProportionalityVerdict` now carries a
+  `disposition` (`allow`/`deny`/`unavailable`): every failure path yields `unavailable` with
+  `justified=False`, so it can never read as affirmative approval evidence. `evaluate_dag_shape`
+  records the degraded policy as a distinct `approved_degraded` `DagShapeVerdict` status (logged,
+  counted in the new `maistro_security_advisory_degraded_total` metric,
+  `proportionality_disposition="unavailable"`; `can_execute` still true — the critic stays
+  advisory and is not an availability dependency). `agent.synth_dag` threads the disposition into
+  the child Run's provenance. Hard Warden/Sentinel gates are unchanged and remain authoritative.
+
 - **v1.0 release contract consolidated into canonical planning docs (no linked issue:
   governance realignment).** Stakeholder decisions from the 2026-10-01 architecture
   review now live in [`ROADMAP.md`](ROADMAP.md) (release contract section),

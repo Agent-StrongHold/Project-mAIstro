@@ -446,10 +446,22 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
 
         synthesized_kinds = [str(n) for n in synth.graph_config.nodes]
 
-        if verdict.status != "approved":
+        if verdict.status not in ("approved", "approved_degraded"):
             raise SynthDagFailed(_verdict_error(verdict))
 
-        return await self._dispatch_or_decline(synth, synthesized_kinds, inputs, ctx, depth)
+        # `approved_degraded` (#1191) means the advisory proportionality judge
+        # was unavailable and the shape proceeds under the documented degraded
+        # policy. It is not an affirmative approval, so it rides into the
+        # child Run's provenance — the durable audit record of this spawn —
+        # instead of disappearing behind a success flag.
+        return await self._dispatch_or_decline(
+            synth,
+            synthesized_kinds,
+            inputs,
+            ctx,
+            depth,
+            proportionality_disposition=verdict.proportionality_disposition,
+        )
 
     async def _dispatch_or_decline(
         self,
@@ -458,6 +470,8 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
         inputs: SynthDagIn,
         ctx: NodeContext,
         depth: int,
+        *,
+        proportionality_disposition: str = "allow",
     ) -> SynthDagOut:
         """Run the approved config as a canonical child Run, or fail saying why (#520)."""
         if self._run_store is None:
@@ -480,6 +494,8 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             "admission_source": "agent.synth_dag",
             "objective": inputs.objective[:200],
         }
+        if proportionality_disposition != "allow":
+            provenance["proportionality"] = proportionality_disposition
         # The child starts one level deeper than the node that spawned it,
         # so a nested agent.synth_dag inside it hits the same hard cap.
         blackboard_metadata = {"synth_depth": depth + 1}
