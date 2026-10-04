@@ -586,7 +586,7 @@ append_env_once() {
     local key="$1"
     local value="$2"
     if ! env_has "$key"; then
-        secret_env_run append-once "$key" "$value"
+        secret_env_run append-once -- "$key" "$value"
     fi
 }
 
@@ -594,18 +594,28 @@ append_env_once() {
 # Use for secrets that compose requires non-empty; a prior install may have
 # written the key with an empty value as a placeholder.
 fill_env_value() {
-    secret_env_run set-key "$1" "$2" --only-if-blank
+    # `--` ends option parsing: a generated or carried-over value may start
+    # with '-' (random_secret emits urlsafe text), and argparse would read
+    # such a value as an option string — "the following arguments are
+    # required: value" on ~1 run in 8 before this marker was here.
+    secret_env_run set-key --only-if-blank -- "$1" "$2"
 }
 
 # Ensure API_KEYS (a JSON array) contains token. Preserves other existing keys.
 ensure_api_keys_contains() {
-    secret_env_run ensure-api-keys "$1"
+    secret_env_run ensure-api-keys -- "$1"
 }
 
 # Insert or replace a key in $ENV_FILE. Unlike append_env_once this keeps the
 # key's position and overwrites whatever value is there.
 set_env_value() {
-    secret_env_run set-key "$1" "$2"
+    secret_env_run set-key -- "$1" "$2"
+}
+
+# Drop a key's line from $ENV_FILE if present (#402 renames). No-op when the
+# key is absent, so the ordinary re-run never rewrites the file.
+remove_env_key() {
+    secret_env_run remove-key -- "$1"
 }
 
 append_provider_placeholders() {
@@ -659,7 +669,11 @@ write_new_env() {
 # Regenerate with: rm .env && ./install.sh
 
 # API access
-MAISTRO_ACCESS_TOKEN=${token}
+# MAISTRO_ROUTER_API_KEY is the Conductor's credential for calling the engine:
+# the conductor presents it as a bearer token and the engine matches it against
+# the secret half of the API_KEYS entry below. Nothing reads MAISTRO_ACCESS_TOKEN
+# (#402 removed that alias), so the credential lives under its consumer's name.
+MAISTRO_ROUTER_API_KEY=${token}
 API_KEYS=["conductor:${token}"]
 ROUTER_API_KEY=${router_key}
 TASK_DELEGATION_KEY=${delegation_key}
@@ -723,11 +737,20 @@ repair_existing_env() {
 
     warn "$ENV_FILE exists; preserving values and appending missing installer keys."
 
-    token="$(env_get MAISTRO_ACCESS_TOKEN)"
+    # #402 rename: the conductor's engine credential used to be written as
+    # MAISTRO_ACCESS_TOKEN. Carry the existing value over to its real name
+    # rather than rotating it, so clients already presenting the token keep
+    # authenticating, then delete the old line -- a dead credential-shaped
+    # alias in .env is exactly the false confidence #402 removes.
+    token="$(env_get MAISTRO_ROUTER_API_KEY)"
+    if [[ -z "$token" ]]; then
+        token="$(env_get MAISTRO_ACCESS_TOKEN)"
+    fi
     if [[ -z "$token" ]]; then
         token="$(random_secret "" 32)"
-        fill_env_value MAISTRO_ACCESS_TOKEN "$token"
     fi
+    fill_env_value MAISTRO_ROUTER_API_KEY "$token"
+    remove_env_key MAISTRO_ACCESS_TOKEN
 
     router_key="$(env_get ROUTER_API_KEY)"
     if [[ -z "$router_key" ]]; then
@@ -759,7 +782,7 @@ repair_existing_env() {
     # every entry needs an explicit principal — the installer's key is the
     # Conductor service's credential. Migrate a legacy plain entry written by
     # an older install (same secret, now attributed), then ensure membership.
-    secret_env_run migrate-api-keys "$token" "conductor"
+    secret_env_run migrate-api-keys -- "$token" "conductor"
     ensure_api_keys_contains "conductor:${token}"
     append_env_once REQUIRE_AUTH "true"
     append_env_once MAISTRO_BIND_HOST "$BIND_HOST"
@@ -842,9 +865,12 @@ for position, entry in enumerate(api_keys, start=1):
             "docs/install/api-key-identity.md."
         )
 
-access_token = values.get("MAISTRO_ACCESS_TOKEN", "")
-if not access_token or access_token not in (_entry_secret(e) for e in api_keys):
-    raise SystemExit("MAISTRO_ACCESS_TOKEN must be present in API_KEYS.")
+# The conductor's bearer credential must be one of API_KEYS' secrets, or
+# every engine call it makes gets 401 (#402: it used to be validated under
+# the name MAISTRO_ACCESS_TOKEN, which nothing reads any more).
+routing_key = values.get("MAISTRO_ROUTER_API_KEY", "")
+if not routing_key or routing_key not in (_entry_secret(e) for e in api_keys):
+    raise SystemExit("MAISTRO_ROUTER_API_KEY must be present in API_KEYS.")
 router_key = values.get("ROUTER_API_KEY", "")
 if len(router_key) < 32:
     raise SystemExit("ROUTER_API_KEY must contain at least 32 characters.")
@@ -1846,7 +1872,7 @@ print_success() {
     echo "maistro-engine is ready"
     echo "  Engine API:  ${ENGINE_BASE_URL}"
     echo "  Conductor:   ${CONDUCTOR_BASE_URL}  (chat, DAGs, deck builder)"
-    echo "  Token:       stored in $ENV_FILE as MAISTRO_ACCESS_TOKEN (not printed)"
+    echo "  Token:       stored in $ENV_FILE as MAISTRO_ROUTER_API_KEY (not printed)"
     echo "  Install dir: $PWD"
     echo "  Plan dir:    $PLAN_DIR"
     echo ""
