@@ -30,6 +30,7 @@ import copy
 import importlib.util
 import json
 import math
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -739,3 +740,72 @@ class TestSchemaFileContract:
         assert status == "#/$defs/invocation"
         enum = schema["$defs"]["invocation"]["properties"]["status"]["enum"]
         assert tuple(enum) == CANONICAL_INVOCATION_STATES
+
+
+class TestCli:
+    """The fail-closed process entry the quality gate exercises.
+
+    The workflow-named CLI is the module's call path: a file is judged
+    exactly like the JSON text the pure helper accepts, through real exit
+    codes (0 valid, 1 invalid report, 2 CLI misuse) — never a pretend
+    report for a usage error and never a pass for a spliced record.
+    """
+
+    def test_valid_document_exits_zero_with_valid_report(
+        self, contract, tmp_path: Path, capsys
+    ) -> None:
+        path = tmp_path / "call.json"
+        path.write_text(json.dumps(valid_document()), encoding="utf-8")
+        assert contract.main([str(path)]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["valid"] is True
+        assert report["mode"] == "structural"
+
+    def test_spliced_dispatch_exits_one_with_first_ordered_code(
+        self, contract, tmp_path: Path, capsys
+    ) -> None:
+        document = valid_document()
+        document["dispatch"]["invocation_id"] = "inv-other"
+        path = tmp_path / "spliced.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        assert contract.main([str(path)]) == 1
+        report = json.loads(capsys.readouterr().out)
+        assert [(e["code"], e["path"]) for e in report["errors"]] == [
+            ("DISPATCH_LINK_MISMATCH", "/dispatch/invocation_id")
+        ]
+
+    def test_invalid_json_text_is_reported_not_misuse(
+        self, contract, tmp_path: Path, capsys
+    ) -> None:
+        path = tmp_path / "bad.json"
+        path.write_text("{", encoding="utf-8")
+        assert contract.main([str(path)]) == 1
+        report = json.loads(capsys.readouterr().out)
+        assert report["errors"][0]["code"] == "INVALID_JSON"
+
+    def test_missing_file_is_cli_misuse(self, contract, tmp_path: Path, capsys) -> None:
+        missing = tmp_path / "absent.json"
+        assert contract.main([str(missing)]) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "cannot read" in captured.err
+
+    def test_wrong_argument_count_is_cli_misuse(self, contract, capsys) -> None:
+        assert contract.main([]) == 2
+        assert contract.main(["a", "b"]) == 2
+        assert "usage:" in capsys.readouterr().err
+
+    def test_script_entry_point_runs_as_a_process(self, tmp_path: Path) -> None:
+        # The quality gate executes the file directly; this is the same
+        # real-process path, covering the __main__ guard end to end.
+        path = tmp_path / "call.json"
+        path.write_text(json.dumps(valid_document()), encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(MODULE_PATH), str(path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["valid"] is True

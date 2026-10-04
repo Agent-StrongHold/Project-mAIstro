@@ -17,7 +17,10 @@ not synthetic.
 half: :func:`validate_model_call`, the pure internal-consistency validator
 for exactly one selected completed model Invocation and its original
 physical dispatch, reusing the same parser, pointer builder, error-code
-vocabulary and :class:`Report` below.
+vocabulary and :class:`Report` below, plus the thin fail-closed CLI at the
+bottom (``python scripts/installed_workspace_proof_contract.py
+<document.json>``) that the quality gate exercises end to end so the
+module stays a wired tool rather than unreachable debt.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -542,3 +546,37 @@ def validate_model_call(
     if failure is not None:
         report.add(*failure)
     return report.as_dict()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Fail-closed CLI over one selected-call document file.
+
+    ``python scripts/installed_workspace_proof_contract.py <document.json>``
+    prints the :func:`validate_model_call` report as one JSON object and
+    exits 0 when it is valid, 1 when it is not (INVALID_JSON included — a
+    bad document is a report, not a usage error), and 2 for CLI misuse
+    (wrong argument count or an unreadable path — diagnostics on stderr,
+    never a pretend report). The document text is handed to the shared
+    duplicate-key parser, so a file is judged exactly like the JSON text
+    the helper accepts. It never asserts that a model call occurred or
+    that any record is authentic.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 1:
+        print(
+            f"usage: {Path(sys.argv[0]).name} <selected-call-document.json>",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        text = Path(args[0]).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"cannot read {args[0]}: {exc}", file=sys.stderr)
+        return 2
+    report = validate_model_call(text)
+    print(json.dumps(report))
+    return 0 if report["valid"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
