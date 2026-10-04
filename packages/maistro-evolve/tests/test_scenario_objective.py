@@ -155,6 +155,12 @@ class TestObjectiveImmutability:
         assert base.digest() != heavier_security.digest()
         assert base.digest() != _objective(version="scenario-obj-v2").digest()
         assert base.digest() != _objective(regression_tolerance=0.01).digest()
+        # No rounding in the digest: tolerances that differ below 1e-9 can
+        # flip a regression verdict, so they must never share a digest.
+        assert (
+            _objective(regression_tolerance=1e-10).digest()
+            != _objective(regression_tolerance=2e-10).digest()
+        )
 
 
 class TestWeightedAggregate:
@@ -183,6 +189,15 @@ class TestWeightedAggregate:
 
     def test_no_scores_scores_zero(self):
         assert _objective().weighted_score({}) == 0.0
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_score_is_rejected_not_full_credit(self, bad):
+        """``min(1.0, nan)`` is ``1.0``: without a finiteness guard a failed
+        numerical measurement clamps to a perfect score. It is malformed
+        input and must be rejected, not clamped."""
+        objective = _objective()
+        with pytest.raises(ValueError, match="must be finite"):
+            objective.weighted_score({"sec/data-exfiltration": bad})
 
 
 class TestEvaluation:
@@ -263,6 +278,20 @@ class TestEvaluation:
         assert regressed_outcome.candidate_score == pytest.approx(0.9)
         assert regressed_outcome.proven_score == pytest.approx(0.95)
 
+    def test_non_finite_candidate_score_cannot_pass_the_comparison(self):
+        """``nan < proven - tol`` is False, so an unguarded NaN would read as
+        a non-regressed PASS and could be promoted. The evaluation rejects
+        the malformed measurement outright."""
+        objective = _objective()
+        proven = {"sec/data-exfiltration": 0.9, "prod/checkout": 0.5}
+        with pytest.raises(ValueError, match="must be finite"):
+            evaluate_proven_scenarios(
+                objective,
+                proven,
+                {"sec/data-exfiltration": float("nan"), "prod/checkout": 1.0},
+                _correctness(),
+            )
+
     def test_not_evaluated_proven_scenario_blocks(self):
         """A proven scenario the candidate never scored blocks: skipping the
         scenarios you would have to defend is not a pass."""
@@ -310,6 +339,37 @@ class TestEvaluation:
         assert evaluation.promotable is True
         assert [o.scenario_id for o in evaluation.per_scenario] == ["cosmetic/typo"]
         assert evaluation.objective_score == pytest.approx((1.0 * 1.0 + 2.0 * 0.5) / 3.0)
+
+    def test_proven_id_absent_from_ruler_blocks(self):
+        """Historical evidence for a scenario the ruler does not define is
+        ``not_evaluated`` and blocks: a candidate cannot dodge a previously
+        proven (e.g. security) scenario by leaving it out of the ruler."""
+        ruler = ScenarioObjective(
+            version="scenario-obj-v1",
+            scenarios=(
+                ScenarioDefinition(
+                    scenario_id="cosmetic/typo",
+                    title="Landing page typo fixed",
+                    criticality=ScenarioCriticality.COSMETIC,
+                    weight=1.0,
+                ),
+            ),
+        )  # sec/data-exfiltration deliberately absent from the ruler
+        evaluation = evaluate_proven_scenarios(
+            ruler,
+            {"sec/data-exfiltration": 1.0, "cosmetic/typo": 1.0},
+            {"cosmetic/typo": 1.0},
+            _correctness(),
+        )
+        assert evaluation.promotable is False
+        assert evaluation.objective_score == 0.0
+        assert evaluation.regression_blocked is True
+        assert evaluation.not_evaluated == ["sec/data-exfiltration"]
+        unmatched = next(
+            o for o in evaluation.per_scenario if o.scenario_id == "sec/data-exfiltration"
+        )
+        assert unmatched.proven_score == pytest.approx(1.0)
+        assert unmatched.criticality is None and unmatched.weight is None
 
     def test_evaluation_record_is_frozen(self):
         evaluation = evaluate_proven_scenarios(

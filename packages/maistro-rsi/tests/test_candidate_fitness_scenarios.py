@@ -251,9 +251,7 @@ def test_evaluate_candidate_passes_scenario_evidence_through(tmp_path: Path, mon
     (repo / "value.txt").write_text("1\n", encoding="utf-8")  # doc-only diff, no test roots
 
     monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
-    monkeypatch.setattr(
-        candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {})
-    )
+    monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
 
     def _score(**kwargs: object) -> object:
         return candidate_fitness.evaluate_candidate(

@@ -27,7 +27,8 @@ The contract, mirroring :mod:`maistro_evolve.objective` (the #853 ruler):
 - **a regression cannot be compensated** — when any *proven* scenario (one
   with historical evidence, the same prior proven scenario set
   ``archive.proven_scenario_scores`` defends) falls below its proven score —
-  or is not evaluated at all — the scalar is 0.0 and ``promotable`` is False,
+  or is not evaluated at all, including a proven id the ruler does not
+  define — the scalar is 0.0 and ``promotable`` is False,
   even when the weighted aggregate itself rose. Unrelated gains move
   ``raw_weighted_score``; they never move the verdict;
 - **immutable, versioned ruler** — the objective and every definition are
@@ -46,6 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from enum import StrEnum
 
@@ -112,6 +114,22 @@ class ScenarioDefinition(BaseModel):
         return self
 
 
+def _finite_score(scenario_id: str, score: float) -> float:
+    """Reject non-finite measurements before any clamp or comparison.
+
+    ``min(1.0, nan)`` is ``1.0`` and ``nan < x`` is ``False``, so an unguarded
+    NaN/inf measurement would clamp to full credit and never count as a
+    regression. A failed numerical measurement is malformed input, not a
+    perfect score.
+    """
+    if not math.isfinite(score):
+        raise ValueError(
+            f"scenario {scenario_id} score must be finite, got {score!r} — "
+            "a NaN/inf measurement cannot be clamped or compared"
+        )
+    return score
+
+
 class ScenarioObjective(BaseModel):
     """The immutable, versioned scenario ruler a candidate is measured with.
 
@@ -157,7 +175,7 @@ class ScenarioObjective(BaseModel):
             score = scores.get(definition.scenario_id)
             if score is None:
                 continue
-            clamped = max(0.0, min(1.0, score))
+            clamped = max(0.0, min(1.0, _finite_score(definition.scenario_id, score)))
             total += definition.weight * clamped
             total_weight += definition.weight
         return total / total_weight if total_weight > 0 else 0.0
@@ -168,17 +186,21 @@ class ScenarioObjective(BaseModel):
 
         Any change to a weight, tier, title, id, or tolerance changes the
         digest — and therefore invalidates comparison with evaluations stamped
-        under the previous digest.
+        under the previous digest. Floats are serialized at full repr
+        precision (json.dumps emits Python's shortest round-trip repr): no
+        rounding, so near-boundary tolerances such as ``1e-10`` vs ``2e-10``
+        — which can flip a regression verdict — always yield distinct
+        digests.
         """
         payload = {
             "version": self.version,
-            "regression_tolerance": round(self.regression_tolerance, 9),
+            "regression_tolerance": self.regression_tolerance,
             "scenarios": [
                 {
                     "scenario_id": d.scenario_id,
                     "title": d.title,
                     "criticality": d.criticality.value,
-                    "weight": round(d.weight, 9),
+                    "weight": d.weight,
                 }
                 for d in sorted(self.scenarios, key=lambda d: d.scenario_id)
             ],
@@ -210,13 +232,17 @@ class ScenarioStatus(StrEnum):
 
 
 class ScenarioOutcome(BaseModel):
-    """One proven scenario's historical-vs-candidate comparison."""
+    """One proven scenario's historical-vs-candidate comparison.
+
+    ``criticality``/``weight`` are ``None`` when the proven id is absent from
+    the ruler (an unmatched-proven outcome is blocking regardless of tier).
+    """
 
     model_config = ConfigDict(frozen=True)
 
     scenario_id: str
-    criticality: ScenarioCriticality
-    weight: float
+    criticality: ScenarioCriticality | None = None
+    weight: float | None = None
     proven_score: float
     candidate_score: float | None = None
     status: ScenarioStatus
@@ -292,7 +318,9 @@ def evaluate_proven_scenarios(
     derives. A proven scenario the candidate never scored is
     ``not_evaluated`` and blocks: a policy that let a challenger skip the
     scenarios it would have to defend would make the replay a paperwork
-    exercise (the archive.RetentionGate ruling).
+    exercise (the archive.RetentionGate ruling). A proven id absent from the
+    ruler is likewise ``not_evaluated`` and blocks — omitting a proven
+    scenario from the objective must not silently drop its evidence.
 
     Verdict semantics:
     - correctness failure → ``objective_score = 0.0``, ``promotable = False``
@@ -305,6 +333,7 @@ def evaluate_proven_scenarios(
       the candidate is promotable on this axis.
     """
     outcomes: list[ScenarioOutcome] = []
+    ruler_ids = {definition.scenario_id for definition in objective.scenarios}
     for definition in sorted(objective.scenarios, key=lambda d: d.scenario_id):
         proven = proven_scores.get(definition.scenario_id)
         if proven is None:
@@ -314,7 +343,10 @@ def evaluate_proven_scenarios(
         candidate = candidate_scores.get(definition.scenario_id)
         if candidate is None:
             status = ScenarioStatus.NOT_EVALUATED
-        elif candidate < proven - objective.regression_tolerance:
+        elif (
+            _finite_score(definition.scenario_id, candidate)
+            < proven - objective.regression_tolerance
+        ):
             status = ScenarioStatus.REGRESSED
         else:
             status = ScenarioStatus.PASS
@@ -326,6 +358,18 @@ def evaluate_proven_scenarios(
                 proven_score=proven,
                 candidate_score=candidate,
                 status=status,
+            )
+        )
+    # Historical evidence the ruler does not cover: the candidate cannot score
+    # these scenarios at all, so they are ``not_evaluated`` and block — same
+    # ruling as a skipped proven scenario, never a silent pass.
+    for scenario_id in sorted(set(proven_scores) - ruler_ids):
+        outcomes.append(
+            ScenarioOutcome(
+                scenario_id=scenario_id,
+                proven_score=proven_scores[scenario_id],
+                candidate_score=None,
+                status=ScenarioStatus.NOT_EVALUATED,
             )
         )
 
