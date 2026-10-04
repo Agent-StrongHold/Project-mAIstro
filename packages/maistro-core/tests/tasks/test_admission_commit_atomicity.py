@@ -206,18 +206,26 @@ async def test_a_replaced_row_is_reacquired_without_releasing_the_successor() ->
         attempts.append(claim)
         if len(attempts) == 1:
             # A successor's fresh generation took the row over: re-stamped,
-            # unbound, and not this caller's to insert into or release.
-            return AdmissionRowReplaced(
-                record=AdmissionRecord(
-                    fingerprint=claim.fingerprint,
-                    request=claim.request,
-                    task_id=None,
-                    run_id=None,
-                    created_at_us=claim.created_at_us + 1_000_000,
-                    expires_at_us=claim.expires_at_us,
-                    lease_expires_at_us=claim.lease_expires_at_us + 1_000_000,
-                )
+            # unbound, and not this caller's to insert into or release. The
+            # coordinator's ``AdmissionRowReplaced`` carries the row its
+            # locked recheck actually observed, so the stub re-stamps the
+            # durable row with that successor's record too. Its lease is
+            # already lapsed — the successor died mid-admission, the crash
+            # class this issue closes — so the bounded re-claim below wins
+            # the row back through the takeover fence rather than polling
+            # out a live 30-second lease in wall-clock time, a wait CI's
+            # --timeout=30 kills by construction.
+            successor = AdmissionRecord(
+                fingerprint=claim.fingerprint,
+                request=claim.request,
+                task_id=None,
+                run_id=None,
+                created_at_us=claim.created_at_us + 1_000_000,
+                expires_at_us=claim.expires_at_us,
+                lease_expires_at_us=claim.created_at_us,
             )
+            store._rows[kw["scope_key"]] = successor
+            return AdmissionRowReplaced(record=successor)
         return await real_bind(**kw)
 
     coordinator.bind_admission = replaced_once  # type: ignore[method-assign]
