@@ -1,12 +1,12 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +33
+  packages/maistro-core/tests: +37
 ---
 
 # Candidate-source policy for `git_clone` (issue #404 / [M6 deferred])
 
 Rejects unauthenticated `git://` clone URLs so an on-path attacker cannot
-substitute repository content that RSI later builds/tests. Thirty-three
+substitute repository content that RSI later builds/tests. Thirty-seven
 maistro-core node IDs cover the new policy surface; no other suite moves
 (the two RSI hermetic tests were re-pointed at the new explicit local-source
 opt-in without adding or removing cases).
@@ -24,10 +24,18 @@ opt-in without adding or removing cases).
   opted into AND the resolved path sits under `_ALLOWED_LOCAL_SOURCE_ROOTS`
   (empty by default — production refuses local sources outright).
 - Every clone runs with pinned config: `protocol.allow=never` plus explicit
-  https/ssh allows and `file=user` (the git transport whitelist, inherited
-  by submodule fetches), `http.followRedirects=false` (redirects and
-  protocol-downgrade hops fail instead of being followed), and
-  `http.sslVerify=true`.
+  https/ssh allows and `file=user` (the git transport whitelist),
+  `http.followRedirects=false` (redirects and protocol-downgrade hops fail
+  instead of being followed), and `http.sslVerify=true`. The whitelist is
+  applied at three layers, because `-c` flags are invocation-scoped (the
+  clone neither writes them into the destination repo nor are they inherited
+  by a later command): they ride ahead of the clone itself, ahead of every
+  later git command the server issues in the workspace (GIT_CONFIG_PARAMETERS
+  carries them into child git processes, so a server-issued `git submodule
+  update` pins the submodule's internal clone), and they are persisted into
+  the destination repo's local config post-clone, where in-repo
+  fetch/pull/push read them. A hostile `.gitmodules` is additionally caught
+  by the post-clone URL scan below.
 - `commit=<full digest>` pins the checkout: the tool fetches the digest
   itself, detaches to it, and re-verifies HEAD, so a branch ref moving
   between resolution and fetch (TOCTOU) cannot change what gets built;
@@ -35,6 +43,9 @@ opt-in without adding or removing cases).
   HEAD digest is returned as `head_commit` on every success.
 - Submodule URLs in the fetched `.gitmodules` are validated against the same
   policy; a malformed `.gitmodules` is rejected outright.
+- The transport whitelist is enforced beyond the clone call: persisted into
+  the destination repo config (fail-closed on write failure), and re-applied
+  by every git command the server runs in the workspace.
 
 ## Test nodes
 
@@ -46,7 +57,10 @@ transport hardening argv, `head_commit` reporting, pin-when-branch-moved
 (TOCTOU success and rejection), fetch-failure → `commit_pin_mismatch`,
 non-digest pins (3 cases), uppercase digest normalization, signature policy
 fail-closed and pass, policy-compliant / non-policy (4 cases) / malformed
-submodule URLs, and the three local-source gating cases.
+submodule URLs, the three local-source gating cases, destination-config pin
+persistence + fail-closed pin-write, the per-command workspace pin, and a
+real-git behavioral test of a pinned `git submodule update --init` refusing
+a git:// submodule URL.
 
 ## Independent validation record (verification round at 0f2214162668)
 
@@ -114,3 +128,43 @@ to the operator CLI trust domain (`rsi harvest --clone-url` / `--repo-dir`,
 `_builders_tui.py`, local-loop baseline of the operator-configured repo
 path). PR #1729 body and branch commits carry no closure keywords
 ("Refs #404" only).
+
+## Repair round (verifier findings at 3762152dbf, resolved on top of it)
+
+The verification round at 3762152dbf probed git 2.53.0 and established that
+the `-c protocol.*` flags passed ahead of `clone` are invocation-scoped: the
+destination repo's `.git/config` carries no protocol/http keys, and a later
+`git submodule update` runs unpinned — so the comments claiming the whitelist
+was "inherited by submodule fetches" were false, and the post-clone
+`_validate_submodule_urls` scan was the only actual submodule defense. Probed
+again independently this round, plus the fix behavior:
+
+- Reproduced: hardened `clone` → `git -C dest config protocol.allow` empty;
+  later `git submodule update --init` against a hostile `git://` URL attempts
+  the unauthenticated transport (hangs on connect in the probe sandbox).
+- Established what does constrain later invocations: `-c` flags (equivalently
+  GIT_CONFIG_PARAMETERS) on the *later* command reach the submodule's
+  internal clone → `fatal: clone of 'git://…' failed` before any network;
+  dest-local config is read by in-repo `fetch` (direct `git fetch git://…`
+  → `fatal: transport 'git' not allowed`), but NOT by `clone`, which ignores
+  the enclosing repo's config — hence both layers below.
+- Fix in `maistro.tools.git.server`: `_TRANSPORT_PIN` is now the single
+  source of the (key, value) whitelist; its flat `-c` form is passed ahead of
+  the clone (unchanged `_CLONE_CONFIG_HARDENING` argv) AND ahead of every
+  `_git` invocation (all workspace git tools: branch/add/commit/push/diff/
+  status/log, plus the post-clone verification commands); and the clone
+  persists the pairs into the destination's local config
+  (`_pin_destination_transport`), failing the clone closed with
+  `transport_pin_failed` when a write fails. The false comment claims at the
+  old server.py:34-35/61-62 and the matching claim in this note were
+  rewritten to state each layer's actual mechanism.
+- Tests: four new nodes (destination-pin persistence argv + ordering,
+  fail-closed pin write, per-command workspace pin argv, and a real-git
+  behavioral test where a policy clone of a compliant-submodule repo, with
+  `.gitmodules` flipped to `git://` afterwards, has its server-issued
+  `git submodule update --init` refused by git itself); the scripted
+  step lists now model the pin writes. Residual, stated plainly: a git
+  process that is neither server-issued nor reading the destination repo
+  config (e.g. a bare `git clone` run by an unrelated tool inside the
+  workspace) is outside the pin's reach — the source policy's authority is
+  the clone gate plus these two layers.

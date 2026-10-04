@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from maistro.tools.git.server import git_clone, git_status
+from maistro.tools.git.server import (
+    _CLONE_CONFIG_HARDENING,
+    _TRANSPORT_PIN,
+    _git,
+    git_clone,
+    git_status,
+)
 
 
 @pytest.mark.parametrize("workspace", ["/etc", "/root/.ssh", "/tmp/maistro-workspace-evil/repo"])
@@ -108,12 +115,20 @@ _DIGEST = "b" * 40
 _ATTACKER_DIGEST = "a" * 40
 
 
+def _pin_steps() -> list[tuple[tuple[str, ...], bytes, int]]:
+    """Post-clone transport-pin persistence: one `git config` write per
+    whitelist key, into the destination repo's local config."""
+    return [(("config", key), b"", 0) for key, _ in _TRANSPORT_PIN]
+
+
 def _success_steps() -> list[tuple[tuple[str, ...], bytes, int]]:
-    """Minimal happy-path script: clone succeeds and HEAD resolves to a
-    digest. No .gitmodules step: the default destination does not exist, so
-    the tool skips the submodule scan."""
+    """Minimal happy-path script: clone succeeds, the destination config is
+    pinned to the transport whitelist, and HEAD resolves to a digest. No
+    .gitmodules step: the default destination does not exist, so the tool
+    skips the submodule scan."""
     return [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
     ]
 
@@ -259,6 +274,7 @@ async def test_git_clone_pinned_commit_survives_branch_ref_moving(
     exactly on it — the attacker commit never becomes the checkout."""
     steps: list[tuple[tuple[str, ...], bytes, int]] = [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_ATTACKER_DIGEST}\n".encode(), 0),
         (("fetch", _DIGEST), b"", 0),
         (("checkout",), b"", 0),
@@ -283,6 +299,7 @@ async def test_git_clone_rejects_when_head_still_mismatches_pin(
     ships."""
     steps: list[tuple[tuple[str, ...], bytes, int]] = [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_ATTACKER_DIGEST}\n".encode(), 0),
         (("fetch", _DIGEST), b"", 0),
         (("checkout",), b"", 0),
@@ -300,6 +317,7 @@ async def test_git_clone_pin_fetch_failure_is_pin_mismatch(
 ) -> None:
     steps: list[tuple[tuple[str, ...], bytes, int]] = [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_ATTACKER_DIGEST}\n".encode(), 0),
         (("fetch", _DIGEST), b"fatal: could not fetch\n", 128),
     ]
@@ -339,6 +357,7 @@ async def test_git_clone_require_signed_fails_closed(
 ) -> None:
     steps: list[tuple[tuple[str, ...], bytes, int]] = [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
         (("verify-commit",), b"error: no signature\n", 1),
     ]
@@ -354,6 +373,7 @@ async def test_git_clone_require_signed_passes_when_signature_verifies(
 ) -> None:
     steps: list[tuple[tuple[str, ...], bytes, int]] = [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
         (("verify-commit",), b"gpg: Good signature\n", 0),
     ]
@@ -390,6 +410,7 @@ async def test_git_clone_accepts_policy_compliant_submodule_urls(
     )
     steps: list[tuple[tuple[str, ...], bytes, int]] = [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
         (("--get-regexp",), b"submodule.lib.url https://github.com/org/lib.git\n", 0),
     ]
@@ -417,6 +438,7 @@ async def test_git_clone_rejects_nonpolicy_submodule_urls(
     (dest / ".gitmodules").write_text(f'[submodule "lib"]\n\tpath = lib\n\turl = {submodule_url}\n')
     steps: list[tuple[tuple[str, ...], bytes, int]] = [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
         (("--get-regexp",), f"submodule.lib.url {submodule_url}\n".encode(), 0),
     ]
@@ -435,6 +457,7 @@ async def test_git_clone_rejects_malformed_gitmodules(
     (dest / ".gitmodules").write_text("this is not a valid config file\n")
     steps: list[tuple[tuple[str, ...], bytes, int]] = [
         (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
         (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
         (("--get-regexp",), b"fatal: bad config line\n", 128),
     ]
@@ -507,3 +530,165 @@ async def test_git_clone_allows_file_source_under_verified_root(
 
     assert result["success"] is True
     assert scripted.argv_of("clone")[-2:] == (f"file://{origin}", "/repos/dest")
+
+
+async def test_git_clone_persists_transport_pin_into_destination_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clone destination's local config receives the full transport
+    whitelist. `-c` flags are invocation-scoped and `git clone` ignores the
+    enclosing repo's local config, so this persisted copy is what later
+    in-repo fetch/pull/push run under."""
+    result, scripted = await _run_scripted_clone(monkeypatch, _success_steps())
+
+    assert result["success"] is True
+    rev_parse_argv = scripted.argv_of("rev-parse")
+    for key, value in _TRANSPORT_PIN:
+        argv = scripted.argv_of(key)
+        assert argv[argv.index("config") :] == ("config", key, value)
+        # the pin writes themselves run through the same pinned chokepoint
+        assert argv[:3] == ("git", "-C", "/repos/dest")
+        assert "-c" in argv and "protocol.allow=never" in argv
+        # the whitelist is on disk before any content of the tree is inspected
+        assert scripted.calls.index(argv) < scripted.calls.index(rev_parse_argv)
+
+
+async def test_git_clone_fails_closed_when_destination_pin_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A destination whose config cannot be pinned never becomes a candidate
+    source — the clone is rejected outright, before any tree inspection."""
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        (("config", "protocol.allow"), b"error: could not write config\n", 1),
+    ]
+
+    result, scripted = await _run_scripted_clone(monkeypatch, steps)
+
+    assert result["success"] is False
+    assert result["error_code"] == "transport_pin_failed"
+    assert all("rev-parse" not in argv for argv in scripted.calls)
+
+
+async def test_git_commands_in_workspace_carry_transport_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every git command the server issues in a workspace re-applies the
+    whitelist ahead of the subcommand — GIT_CONFIG_PARAMETERS carries it into
+    child git processes, which is how a server-issued `git submodule update`
+    pins the submodule's internal clone."""
+    captured: list[tuple[object, ...]] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> _ScriptedProc:
+        captured.append(tuple(args))
+        return _ScriptedProc(b"", 0)
+
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
+
+    result = await _git("/repos/ws", "submodule", "update", "--init")
+
+    assert result["success"] is True
+    argv = captured[0]
+    assert argv[:3] == ("git", "-C", "/repos/ws")
+    pin_flags = tuple(str(a) for a in _CLONE_CONFIG_HARDENING)
+    assert argv[3 : 3 + len(pin_flags)] == pin_flags
+    assert argv[3 + len(pin_flags) :] == ("submodule", "update", "--init")
+
+
+async def test_pinned_workspace_refuses_submodule_update_over_git_protocol(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Real git, end to end: a policy clone of a repo whose HEAD declares a
+    compliant submodule, then the .gitmodules URL flipped to git:// (what a
+    hostile ref checkout would produce — the URL policy ran at clone time on
+    the *original* file). A server-issued `git submodule update --init`
+    re-applies the whitelist and GIT_CONFIG_PARAMETERS reaches the submodule's
+    internal clone, so git refuses the unauthenticated transport before any
+    network I/O (previously this invocation ran unpinned)."""
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+    libsrc = tmp_path / "libsrc"
+    libsrc.mkdir()
+    git("init", "-q", "-b", "main", cwd=libsrc)
+    git(
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "user.name=t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "lib",
+        cwd=libsrc,
+    )
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git("init", "-q", "-b", "main", cwd=origin)
+    git(
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "user.name=t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "init",
+        cwd=origin,
+    )
+    git(
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        f"file://{libsrc}",
+        "lib",
+        cwd=origin,
+    )
+    git(
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "add submodule",
+        cwd=origin,
+    )
+
+    monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (tmp_path,))
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+        ("https://", "ssh://", "file://"),
+    )
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_LOCAL_SOURCE_ROOTS",
+        (str(tmp_path),),
+    )
+
+    dest = tmp_path / "ws" / "dest"
+    clone = await git_clone(f"file://{origin}", str(dest))
+    assert clone["success"] is True, clone
+
+    # the persisted whitelist is really in the destination's local config
+    persisted = subprocess.run(
+        ["git", "-C", str(dest), "config", "protocol.allow"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert persisted.stdout.strip() == "never"
+
+    # attacker flips the declared submodule URL after the clone
+    (dest / ".gitmodules").write_text(
+        '[submodule "lib"]\n\tpath = lib\n\turl = git://127.0.0.1:9418/evil.git\n'
+    )
+
+    result = await _git(str(dest), "submodule", "update", "--init", timeout=20)
+
+    assert result["success"] is False
+    assert "clone of 'git://127.0.0.1:9418/evil.git'" in result["stdout"]
+    assert result["error_code"] != "git_timeout"

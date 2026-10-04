@@ -32,11 +32,17 @@ GIT_CLONE_TIMEOUT = 300
 # candidate source: `https://` and `ssh://` verify the remote. `git://` is the
 # unauthenticated, unencrypted git daemon protocol — an on-path attacker can
 # substitute repository content that downstream builds/tests execute — so it
-# is hard-rejected first, even if the allowlist below is ever widened, and the
-# `-c protocol.*` flags pin the same whitelist inside git itself (submodules
-# and nested git invocations inherit it). Anything else — bare local paths,
-# `scp`-like `host:path`, a `-`-prefixed string argv would hand to git as a
-# flag — is rejected by parsing the URL, not prefix-matching it, so case
+# is hard-rejected first, even if the allowlist below is ever widened. The
+# same whitelist travels with every git command this server runs (_TRANSPORT_PIN
+# below): command-line `-c` config is invocation-scoped — the clone neither
+# writes it into the destination repo nor is it inherited by a later command —
+# so it is re-applied per invocation, and GIT_CONFIG_PARAMETERS carries it into
+# child git processes, which is how a server-issued `git submodule update`
+# pins the submodule's internal clone. The clone additionally persists the
+# whitelist into the destination's local config (_pin_destination_transport),
+# where later in-repo fetch/pull/push read it. Anything else — bare local
+# paths, `scp`-like `host:path`, a `-`-prefixed string argv would hand to git
+# as a flag — is rejected by parsing the URL, not prefix-matching it, so case
 # (`GIT://`) and encoded spellings resolve to the same decision.
 _FORBIDDEN_CLONE_SCHEMES = ("git://",)
 _ALLOWED_CLONE_SCHEMES = ("https://", "ssh://")
@@ -57,30 +63,34 @@ def _clone_host_allowlist() -> frozenset[str]:
     return frozenset(host.strip().lower() for host in raw.split(",") if host.strip())
 
 
-# Config hardening passed ahead of every clone — before the subcommand, so a
-# URL can never override them:
-# - protocol.allow=never plus explicit https/ssh allows and file=user pins the
-#   git transport whitelist for this clone AND everything it triggers
-#   (submodule fetches do not run as user-initiated transports, so a hostile
-#   .gitmodules cannot reintroduce git:// or file:// from inside the tree).
+# (key, value) transport whitelist applied at three layers:
+# - as `-c` flags ahead of the clone subprocess (_CLONE_CONFIG_HARDENING) and
+#   ahead of every other git command this server issues in a workspace —
+#   always before the subcommand, so a URL can never override them;
+# - persisted into the clone destination's local config post-clone
+#   (_pin_destination_transport), where in-repo fetch/pull/push read it. git's
+#   `clone` command ignores the enclosing repo's local config, which is why
+#   the flags are re-applied per invocation instead of relying on this row;
+# - protocol.file.allow=user keeps file:// usable only by a direct
+#   user-invoked fetch/clone/push, so an indirect transport — a submodule
+#   fetch, or a redirect target — cannot use it.
 # - http.followRedirects=false: an http(s) source cannot be silently
-#   redirected to another host or downgraded off HTTPS — the clone fails
+#   redirected to another host or downgraded off HTTPS — the command fails
 #   instead, and the same URL policy applies to whatever the caller asked for.
 # - http.sslVerify=true: a stray system/global git config cannot disable
 #   certificate verification.
-_CLONE_CONFIG_HARDENING = (
-    "-c",
-    "protocol.allow=never",
-    "-c",
-    "protocol.https.allow=always",
-    "-c",
-    "protocol.ssh.allow=always",
-    "-c",
-    "protocol.file.allow=user",
-    "-c",
-    "http.followRedirects=false",
-    "-c",
-    "http.sslVerify=true",
+# Declared submodule URLs are additionally validated against the same source
+# policy right after the clone (_validate_submodule_urls).
+_TRANSPORT_PIN: tuple[tuple[str, str], ...] = (
+    ("protocol.allow", "never"),
+    ("protocol.https.allow", "always"),
+    ("protocol.ssh.allow", "always"),
+    ("protocol.file.allow", "user"),
+    ("http.followRedirects", "false"),
+    ("http.sslVerify", "true"),
+)
+_CLONE_CONFIG_HARDENING = tuple(
+    flag for key, value in _TRANSPORT_PIN for flag in ("-c", f"{key}={value}")
 )
 
 # Commit pins must be full SHA-1 or SHA-256 digests — branch names and
@@ -217,6 +227,7 @@ async def _git(workspace: str, *args: str, timeout: int = 60) -> dict[str, Any]:
             "git",
             "-C",
             workspace,
+            *_CLONE_CONFIG_HARDENING,
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -308,17 +319,47 @@ async def _verify_commit_signature(dest: str, pin: str) -> dict[str, Any] | None
     return None
 
 
+async def _pin_destination_transport(dest: str) -> dict[str, Any] | None:
+    """Persist the transport whitelist into the cloned repo's local config.
+
+    git's `clone` command ignores the enclosing repo's local config, so the
+    `-c` flags on the clone subprocess cannot protect commands run later in
+    the workspace; writing _TRANSPORT_PIN into dest/.git/config puts it where
+    in-repo fetch/pull/push read it. Fail-closed: a destination whose config
+    cannot be pinned is rejected outright.
+    """
+    for key, value in _TRANSPORT_PIN:
+        result = await _git(dest, "config", key, value)
+        if not result["success"]:
+            return fail(
+                stdout=result["stdout"],
+                exit_code=result.get("exit_code", 1),
+                error_code="transport_pin_failed",
+                recoverable=False,
+                suggested_action=(
+                    "The cloned workspace could not be pinned to the "
+                    "source-policy transport whitelist; do not use it as a "
+                    "candidate source."
+                ),
+            )
+    return None
+
+
 async def _verify_cloned_source(
     dest: str, *, pin: str | None, require_signed: bool
 ) -> dict[str, Any]:
     """Post-clone identity checks on the fetched tree.
 
-    Resolves HEAD, enforces an optional commit-digest pin (fetching the digest
-    itself and detaching when the default branch moved — the TOCTOU guard), an
-    optional signature policy, and validates every .gitmodules submodule URL
-    against the same source policy as the top-level clone. Returns
+    Persists the transport whitelist into the destination config, resolves
+    HEAD, enforces an optional commit-digest pin (fetching the digest
+    itself and detaching when the default branch moved — the TOCTOU guard),
+    an optional signature policy, and validates every .gitmodules submodule
+    URL against the same source policy as the top-level clone. Returns
     ``{"ok": True, "head_commit": <digest>}`` or a structured failure.
     """
+    transport_failure = await _pin_destination_transport(dest)
+    if transport_failure is not None:
+        return transport_failure
     head = await _git(dest, "rev-parse", "HEAD")
     if not head["success"]:
         return fail(
@@ -431,6 +472,12 @@ async def git_clone(
     gets built. `require_signed` additionally demands `git verify-commit`
     accept the pinned commit (ignored without `commit`). On success the
     resolved HEAD digest is returned as `head_commit` for the audit trail.
+
+    The transport whitelist is not scoped to this call: it is persisted into
+    the clone's local config, and every git command this server later runs in
+    the workspace re-applies it, so a ref checkout cannot drop the workspace
+    back onto an unauthenticated transport (a hostile .gitmodules is rejected
+    at clone time; a server-issued `git submodule update` still runs pinned).
     """
     try:
         _validate_clone_url(url)
