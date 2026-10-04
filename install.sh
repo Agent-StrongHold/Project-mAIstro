@@ -153,8 +153,19 @@ Environment:
   MAISTRO_OPEN_BROWSER (0 = do not open the Conductor UI when ready),
   MAISTRO_IMAGE_TAG (container tag the image_pull compose pins to; defaults to
     the release tag this checkout sits on, else 'latest'),
+  MAISTRO_COMPOSE_PROFILES (space/comma-separated Compose profiles to activate,
+    e.g. "llm,data" — an override that assigns services to profiles starts
+    nothing until its profiles are active),
+  MAISTRO_PRINT_COMPOSE_CONFIG (1 = also print the fully rendered Compose
+    config before startup; it includes credentials interpolated from .env),
   MAISTRO_SOURCE_URL (upstream repo URL recorded in the install manifest for
     archive checkouts; get.sh sets it, since archives carry no git metadata).
+
+  docker-compose.override.yml: when present at the repo root it is included
+  explicitly in this installer's compose invocation (which uses -f files, so
+  Compose's own automatic override loading never applies), after the base
+  file and the wizard's plan override — but only when the invoking user owns
+  it and it is not group/world-writable; anything else aborts the install.
 
   Ports and the bind address resolve like Compose interpolation: the process
   environment wins, then the .env file, then the built-in defaults (engine
@@ -211,6 +222,39 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# --- answers-file preflight (issue #409) ------------------------------------
+#
+# Validate the answers contract before anything is installed, so an unattended
+# run fails once with every problem named instead of after a mutation it
+# cannot take back. get.ps1 runs the equivalent checks on the Windows side
+# before WSL2 setup or an elevation prompt; this is the common mutation point
+# for both entrypoints. Schema-level unknown-key and type validation happens
+# in maistro-install (InstallAnswersV1, extra="forbid") once Python is up;
+# everything checkable without it is checked here.
+ANSWERS_PROBLEMS=()
+if [[ -n "$ANSWERS_FILE" ]]; then
+    if [[ "$SKIP_WIZARD" == "1" || "$SKIP_WIZARD" == "true" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "--answers-file is set together with --skip-wizard (or MAISTRO_SKIP_WIZARD=1): a skipped questionnaire never reads the answers file, so the install would silently ignore it. Remove one of the two."
+        )
+    fi
+    if [[ -d "$ANSWERS_FILE" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "answers file '$ANSWERS_FILE' is a directory. Pass the YAML file itself (template: docs/install/examples/answers-v1-minimal.yaml)."
+        )
+    elif [[ ! -f "$ANSWERS_FILE" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "answers file '$ANSWERS_FILE' does not exist (cwd: $PWD). Pass the path to a v1 answers file (template: docs/install/examples/answers-v1-minimal.yaml), or drop --answers-file to install interactively."
+        )
+    fi
+fi
+if [[ ${#ANSWERS_PROBLEMS[@]} -gt 0 ]]; then
+    for problem in "${ANSWERS_PROBLEMS[@]}"; do
+        echo -e "${RED}[error]${NC} $problem" >&2
+    done
+    exit 1
+fi
 
 ensure_python() {
     if [[ ${#PYTHON_CMD[@]} -gt 0 ]]; then
@@ -595,7 +639,7 @@ append_env_once() {
     local key="$1"
     local value="$2"
     if ! env_has "$key"; then
-        secret_env_run append-once "$key" "$value"
+        secret_env_run append-once -- "$key" "$value"
     fi
 }
 
@@ -603,18 +647,28 @@ append_env_once() {
 # Use for secrets that compose requires non-empty; a prior install may have
 # written the key with an empty value as a placeholder.
 fill_env_value() {
-    secret_env_run set-key "$1" "$2" --only-if-blank
+    # `--` ends option parsing: a generated or carried-over value may start
+    # with '-' (random_secret emits urlsafe text), and argparse would read
+    # such a value as an option string — "the following arguments are
+    # required: value" on ~1 run in 8 before this marker was here.
+    secret_env_run set-key --only-if-blank -- "$1" "$2"
 }
 
 # Ensure API_KEYS (a JSON array) contains token. Preserves other existing keys.
 ensure_api_keys_contains() {
-    secret_env_run ensure-api-keys "$1"
+    secret_env_run ensure-api-keys -- "$1"
 }
 
 # Insert or replace a key in $ENV_FILE. Unlike append_env_once this keeps the
 # key's position and overwrites whatever value is there.
 set_env_value() {
-    secret_env_run set-key "$1" "$2"
+    secret_env_run set-key -- "$1" "$2"
+}
+
+# Drop a key's line from $ENV_FILE if present (#402 renames). No-op when the
+# key is absent, so the ordinary re-run never rewrites the file.
+remove_env_key() {
+    secret_env_run remove-key -- "$1"
 }
 
 append_provider_placeholders() {
@@ -668,7 +722,11 @@ write_new_env() {
 # Regenerate with: rm .env && ./install.sh
 
 # API access
-MAISTRO_ACCESS_TOKEN=${token}
+# MAISTRO_ROUTER_API_KEY is the Conductor's credential for calling the engine:
+# the conductor presents it as a bearer token and the engine matches it against
+# the secret half of the API_KEYS entry below. Nothing reads MAISTRO_ACCESS_TOKEN
+# (#402 removed that alias), so the credential lives under its consumer's name.
+MAISTRO_ROUTER_API_KEY=${token}
 API_KEYS=["conductor:${token}"]
 ROUTER_API_KEY=${router_key}
 TASK_DELEGATION_KEY=${delegation_key}
@@ -732,11 +790,20 @@ repair_existing_env() {
 
     warn "$ENV_FILE exists; preserving values and appending missing installer keys."
 
-    token="$(env_get MAISTRO_ACCESS_TOKEN)"
+    # #402 rename: the conductor's engine credential used to be written as
+    # MAISTRO_ACCESS_TOKEN. Carry the existing value over to its real name
+    # rather than rotating it, so clients already presenting the token keep
+    # authenticating, then delete the old line -- a dead credential-shaped
+    # alias in .env is exactly the false confidence #402 removes.
+    token="$(env_get MAISTRO_ROUTER_API_KEY)"
+    if [[ -z "$token" ]]; then
+        token="$(env_get MAISTRO_ACCESS_TOKEN)"
+    fi
     if [[ -z "$token" ]]; then
         token="$(random_secret "" 32)"
-        fill_env_value MAISTRO_ACCESS_TOKEN "$token"
     fi
+    fill_env_value MAISTRO_ROUTER_API_KEY "$token"
+    remove_env_key MAISTRO_ACCESS_TOKEN
 
     router_key="$(env_get ROUTER_API_KEY)"
     if [[ -z "$router_key" ]]; then
@@ -768,7 +835,7 @@ repair_existing_env() {
     # every entry needs an explicit principal — the installer's key is the
     # Conductor service's credential. Migrate a legacy plain entry written by
     # an older install (same secret, now attributed), then ensure membership.
-    secret_env_run migrate-api-keys "$token" "conductor"
+    secret_env_run migrate-api-keys -- "$token" "conductor"
     ensure_api_keys_contains "conductor:${token}"
     append_env_once REQUIRE_AUTH "true"
     append_env_once MAISTRO_BIND_HOST "$BIND_HOST"
@@ -851,9 +918,12 @@ for position, entry in enumerate(api_keys, start=1):
             "docs/install/api-key-identity.md."
         )
 
-access_token = values.get("MAISTRO_ACCESS_TOKEN", "")
-if not access_token or access_token not in (_entry_secret(e) for e in api_keys):
-    raise SystemExit("MAISTRO_ACCESS_TOKEN must be present in API_KEYS.")
+# The conductor's bearer credential must be one of API_KEYS' secrets, or
+# every engine call it makes gets 401 (#402: it used to be validated under
+# the name MAISTRO_ACCESS_TOKEN, which nothing reads any more).
+routing_key = values.get("MAISTRO_ROUTER_API_KEY", "")
+if not routing_key or routing_key not in (_entry_secret(e) for e in api_keys):
+    raise SystemExit("MAISTRO_ROUTER_API_KEY must be present in API_KEYS.")
 router_key = values.get("ROUTER_API_KEY", "")
 if len(router_key) < 32:
     raise SystemExit("ROUTER_API_KEY must contain at least 32 characters.")
@@ -1335,6 +1405,74 @@ effective_delivery_mode() {
     fi
 }
 
+# --- Operator override (docker-compose.override.yml), #405 -------------------
+#
+# This installer always invokes compose with explicit `-f` files, which
+# disables Compose's own automatic docker-compose.override.yml loading: an
+# override an operator copied into the checkout was silently ignored on
+# installer runs while the docs claimed it was "picked up automatically". The
+# decision recorded here (#405): the root override IS a supported automatic
+# input — compose_files() includes it explicitly, last, so operator intent
+# outranks both the base file and the wizard's plan override.
+
+# Pure decision over (octal mode, owner uid) so tests can cover the
+# foreign-owner case without root: returns 0 only when the file is safe to
+# execute as part of this install.
+override_file_is_safe() {
+    local mode="$1" owner="$2"
+    # Group/world-writable means any local user can rewrite what `up` will
+    # run; ownership by another uid means that user can chmod it back.
+    (( 8#$mode & 8#022 )) && return 1
+    [[ "$owner" == "$EUID" ]] || return 1
+    return 0
+}
+
+# Echo "<octal-mode> <owner-uid>" for a path; exits 1 when it cannot be
+# stat'ed (missing, dangling symlink). Python rather than stat(1): macOS
+# ships BSD stat and Linux GNU stat with different format flags, and python3
+# is already a documented installer dependency. PURE: prints only the data,
+# so it is safe to call inside a command substitution — run ensure_python
+# beforehand (require_safe_override_file does) and never inside the
+# substitution itself.
+override_file_state() {
+    "${PYTHON_CMD[@]}" - "$1" <<'PY'
+import os
+import stat
+import sys
+
+try:
+    st = os.stat(sys.argv[1])
+except OSError as exc:
+    print(f"cannot stat {sys.argv[1]}: {exc.strerror}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"{stat.S_IMODE(st.st_mode):04o} {st.st_uid}")
+PY
+}
+
+# Refuse an override this user does not exclusively control. Failing (rather
+# than warning-and-skipping) is deliberate: an override can remap ports,
+# disable sandbox flags, or mount the host Docker socket, so running one
+# another local user could have written is a privilege-escalation path — and
+# silently ignoring the file would recreate exactly the divergence between
+# the docs and the invocation this installer reconciles (#405).
+require_safe_override_file() {
+    local path="$1" state mode owner
+    # Out here, not inside the substitution below: ensure_python announces
+    # itself through ok(), and anything it prints inside $(...) would be
+    # captured as if it were the stat data.
+    ensure_python
+    if ! state="$(override_file_state "$path")"; then
+        fail "Cannot inspect the Compose override file '$path' (missing, a dangling symlink, or unreadable). Remove it or replace it with a real file, then re-run."
+    fi
+    read -r mode owner <<< "$state"
+    if ! override_file_is_safe "$mode" "$owner"; then
+        if (( 8#$mode & 8#022 )); then
+            fail "Compose override '$path' is group/world-writable (mode $mode); a file any local user can rewrite must not run as part of this install. Fix with: chmod go-w '$path'"
+        fi
+        fail "Compose override '$path' is owned by uid $owner, not by the invoking user ($EUID); its owner could rewrite what this install executes. Fix with: sudo chown $EUID '$path'"
+    fi
+}
+
 compose_files() {
     COMPOSE_FILES=(-f "$COMPOSE_FILE")
     COMPOSE_UP_ARGS=(up -d --build)
@@ -1349,9 +1487,70 @@ compose_files() {
         warn "delivery_mode=image_pull selected, but pinned images are not published yet."
         warn "Falling back to source build (identical runtime behavior, longer install)."
     fi
+    # The wizard's plan override and the operator's root override (#405) are
+    # both execution config this install will run, so both go through the
+    # same safety gate: owned by the invoking user, not group/world-writable.
+    # The root override is appended last — operator intent outranks the plan.
     local override="$PLAN_DIR/compose.override.yml"
-    if [[ -f "$override" ]]; then
-        COMPOSE_FILES+=(-f "$override")
+    if [[ -e "$override" || -L "$override" ]]; then
+        require_safe_override_file "$override"
+        COMPOSE_FILES+=("-f" "$override")
+    fi
+    local root_override="docker-compose.override.yml"
+    if [[ -e "$root_override" || -L "$root_override" ]]; then
+        require_safe_override_file "$root_override"
+        COMPOSE_FILES+=("-f" "$root_override")
+    fi
+    # Activate Compose profiles the operator asked for (#405): an override
+    # that assigns services to profiles starts nothing while the profiles are
+    # inactive, so MAISTRO_COMPOSE_PROFILES carries the documented `--profile`
+    # workflow into the installer's own invocation. Comma or space separated.
+    local p
+    local -a profiles=()
+    if [[ -n "${MAISTRO_COMPOSE_PROFILES:-}" ]]; then
+        for p in ${MAISTRO_COMPOSE_PROFILES//,/ }; do
+            [[ -n "$p" ]] || continue
+            profiles+=("--profile" "$p")
+        done
+    fi
+    if [[ ${#profiles[@]} -gt 0 ]]; then
+        COMPOSE_FILES=("${profiles[@]}" "${COMPOSE_FILES[@]}")
+    fi
+}
+
+# Print the effective Compose invocation and validate the merged render
+# before anything starts (#405). With override files in play the operator
+# must see the exact file set, and a bad override must fail here — naming the
+# exact command — rather than surface as a half-started stack. The fully
+# rendered config is printed only on MAISTRO_PRINT_COMPOSE_CONFIG=1: it
+# contains every value interpolated from $ENV_FILE, credentials included.
+# Plain `config` (not `config --quiet`) keeps the validation compatible with
+# every backend detect_compose_cmd accepts, including podman-compose.
+show_compose_plan() {
+    local entry kind=""
+    info "Effective Compose invocation: ${COMPOSE_CMD[*]} ${COMPOSE_FILES[*]} ${COMPOSE_UP_ARGS[*]:-}"
+    for entry in "${COMPOSE_FILES[@]}"; do
+        case "$entry" in
+            -f) kind="file" ;;
+            --profile) kind="profile" ;;
+            --project-directory) kind="project" ;;
+            *)
+                case "$kind" in
+                    file) info "  Compose file: $entry" ;;
+                    profile) info "  Active profile: $entry" ;;
+                    project) info "  Project directory: $entry" ;;
+                esac
+                kind=""
+                ;;
+        esac
+    done
+    if ! "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" config >/dev/null; then
+        fail "Rendered Compose config failed validation (${COMPOSE_CMD[*]} ${COMPOSE_FILES[*]} config). Fix the files above and re-run."
+    fi
+    ok "Rendered Compose config validated before startup."
+    if [[ "${MAISTRO_PRINT_COMPOSE_CONFIG:-0}" == "1" || "${MAISTRO_PRINT_COMPOSE_CONFIG:-}" == "true" ]]; then
+        warn "Printing the rendered config: it includes every value interpolated from $ENV_FILE, credentials included. Do not paste it into tickets or logs."
+        "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" config
     fi
 }
 
@@ -1497,7 +1696,12 @@ start_engine() {
     # ensure_compose_supported feature-probes that same set before anything
     # is built or started.
     compose_files
+    # Floor gate first: reject a front-end below the schema floor before
+    # printing a plan for it (#407).
     ensure_compose_supported
+    # Then show (and validate) exactly what will start — effective files,
+    # active profiles, merged render — before `up` runs (#405).
+    show_compose_plan
     report_arch
     info "Starting maistro-engine..."
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_UP_ARGS[@]}"
@@ -1904,7 +2108,7 @@ print_success() {
     echo "maistro-engine is ready"
     echo "  Engine API:  ${ENGINE_BASE_URL}"
     echo "  Conductor:   ${CONDUCTOR_BASE_URL}  (chat, DAGs, deck builder)"
-    echo "  Token:       stored in $ENV_FILE as MAISTRO_ACCESS_TOKEN (not printed)"
+    echo "  Token:       stored in $ENV_FILE as MAISTRO_ROUTER_API_KEY (not printed)"
     echo "  Install dir: $PWD"
     echo "  Plan dir:    $PLAN_DIR"
     echo ""
