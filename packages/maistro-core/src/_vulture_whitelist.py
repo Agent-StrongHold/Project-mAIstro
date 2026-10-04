@@ -14,8 +14,8 @@ from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTarge
 from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
-from maistro.memory.learnings.gauntlet import ChainedGauntlet, IndependentTrialsGauntlet
 from maistro.memory.learnings.approval import LearningApprovalGate
+from maistro.memory.learnings.gauntlet import ChainedGauntlet, IndependentTrialsGauntlet
 from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
 from maistro.ontology.rubric import (
     PassFailScale,
