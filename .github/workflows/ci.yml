@@ -757,9 +757,14 @@ jobs:
           docker compose -f docker-compose.test.yml logs --no-color --tail=200 e2e-tests || true # same: the reporter container may be gone
           echo "::endgroup::"
           echo "::group::is the app reachable, and what does GET / return?"
+          # the probe prints its own exit=$?; unreachable is itself the finding.
+          # `|| true` below tolerates a failed probe, not a wedged compose. The
+          # reason sits here rather than on the flagged line so DevSkim DS137138
+          # (the URL is the compose-internal hive hostname; no TLS exists to
+          # prefer) keeps attributing it to the commit that introduced it.
           docker compose -f docker-compose.test.yml run --rm --no-deps -T \
             --entrypoint sh e2e-tests -c \
-            'wget -S -T 10 -O /dev/null http://hive:8101/ 2>&1 | head -40; echo "exit=$?"' || true # the probe prints its own exit=$?; unreachable is itself the finding
+            'wget -S -T 10 -O /dev/null http://hive:8101/ 2>&1 | head -40; echo "exit=$?"' || true
           echo "::endgroup::"
       - name: Tear down
         if: always()
