@@ -1175,12 +1175,12 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::evaluate_candidate",
       "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 932,
+      "line": 1117,
       "name": "evaluate_candidate",
       "classname": null,
       "rank": "D",
-      "complexity": 27,
-      "rationale": "Regressed by #1730 (2026-10-02), not newly visible. The file dates from the 2026-08-21 initial release; this complexity does not -- #1730 wired the fail-first evidence gate through the block and took it from 25 to 30. It went unmeasured only because the radon scan still covers packages/maistro-core/src alone, so maistro-rsi was never in scope. #1684 brings it in; #1792 tracks bringing the complexity back down, together with the three blocks #1730 added outright. Lowered 30 -> 27 by #109: the fail-first probe collection and the evaluator-oracle integrity preamble moved into named helpers (_resolve_tdd_evidence, _resolve_evaluator_evidence) while the gate itself was added; complexity fell even with the new veto in the block."
+      "complexity": 22,
+      "rationale": "Regressed by #1730 (2026-10-02) from 25 to 30; the #108 proven-scenario passthrough and the #109 evaluator-oracle preamble both run through this block. The merge of #108 (proven-scenario objective wiring) and #109 (oracle-integrity preamble before any oracle run) refactored the cost-layered evidence blocks (fail-first TDD, mutation-probe staging, regression-judge attachment, oracle-integrity resolution) into named helpers, banking the merged block at its measured 22 (D) -- still well under the 30 the trusted base records. #1792 tracks whether the remaining complexity can come down further."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::protected_inventory_gate",

@@ -42,6 +42,12 @@ from maistro_evolve.coverage_gate import (
 from maistro_evolve.doc_regression import doc_regressions
 from maistro_evolve.improvement import ImprovementKind
 from maistro_evolve.mutation_probe import MutationProbe, probe_diff_mutations
+from maistro_evolve.scenario_objective import (
+    CorrectnessResult,
+    ScenarioEvaluation,
+    ScenarioObjective,
+    evaluate_proven_scenarios,
+)
 from maistro_evolve.scorecard import (
     FitnessWeights,
     GateResult,
@@ -312,6 +318,20 @@ class FitnessInputs:
     evaluator_digest: str | None = None
     evaluator_mutations: list[str] = field(default_factory=list)
     evaluator_mutation_authorized: bool = False
+    # The weighted proven-scenario objective (M5-B, #108): the immutable,
+    # versioned scenario ruler the loop evaluates candidates with, plus the
+    # prior proven scores (best-ever per scenario, archive.proven_scenario_scores
+    # semantics), the candidate's own scenario scores, and — optionally — an
+    # explicit correctness verdict. When ``scenario_correctness`` is None the
+    # ``tests_pass`` gate IS the correctness oracle (contract/acceptance tests
+    # are the non-negotiable oracle); a caller with a broader oracle (security
+    # suites, contract tests beyond the loop's own pytest run) injects it.
+    # All four stay None when the loop has no scenario objective configured;
+    # the scenario gate and signal are then simply absent.
+    scenario_objective: ScenarioObjective | None = None
+    scenario_proven_scores: dict[str, float] = field(default_factory=dict)
+    scenario_candidate_scores: dict[str, float] = field(default_factory=dict)
+    scenario_correctness: CorrectnessResult | None = None
 
 
 def evaluator_integrity_gate(inp: FitnessInputs) -> GateResult:
@@ -545,9 +565,107 @@ def _mutation_signal(inp: FitnessInputs, w: FitnessWeights) -> SignalScore | Non
     )
 
 
+def _scenario_objective_eval(inp: FitnessInputs) -> ScenarioEvaluation | None:
+    """Evaluate the proven-scenario objective when the caller configured one.
+
+    Pure: no measurement happens here, the caller gathered the scores. The
+    default correctness oracle is the ``tests_pass`` gate itself (the
+    contract/acceptance tests), so a loop that configured a scenario objective
+    but has no broader oracle still gets the M5-B semantics — a red test suite
+    scores zero on the scenario objective, no matter the aggregate.
+    """
+    if inp.scenario_objective is None:
+        return None
+    oracle = inp.scenario_correctness or CorrectnessResult(
+        passed=inp.tests_passed,
+        failures=() if inp.tests_passed else (inp.test_reason or "tests failed",),
+    )
+    return evaluate_proven_scenarios(
+        inp.scenario_objective,
+        inp.scenario_proven_scores,
+        inp.scenario_candidate_scores,
+        oracle,
+    )
+
+
+def _scenario_gate_items(scenario_eval: ScenarioEvaluation | None) -> list[GateResult]:
+    """The proven-scenario veto (M5-B, #108) as a gate list: empty when no
+    scenario objective was configured (absent evidence adds no gate), a
+    single non-tradeable gate otherwise.
+
+    The gate reads ``promotable`` — zeroed when the correctness oracle failed
+    or any proven scenario regressed / was never evaluated — so no unrelated
+    scalar gain (coverage, quality, even other scenarios' gains) can rescue
+    the candidate. The full evaluation rides in ``detail`` and on
+    ``Scorecard.scenario_objective``, so the correctness verdict and the
+    scalar score are recorded separately for audit.
+    """
+    if scenario_eval is None:
+        return []
+    return [
+        GateResult(
+            "no_proven_scenario_regression",
+            scenario_eval.promotable,
+            scenario_eval.summary(),
+            detail={
+                "objective_version": scenario_eval.objective_version,
+                "objective_digest": scenario_eval.objective_digest,
+                "correctness_passed": scenario_eval.correctness_gate.passed,
+                "correctness_failures": list(scenario_eval.correctness_gate.failures),
+                "regressed": scenario_eval.regressed,
+                "not_evaluated": scenario_eval.not_evaluated,
+                "raw_weighted_score": scenario_eval.raw_weighted_score,
+                "objective_score": scenario_eval.objective_score,
+            },
+        )
+    ]
+
+
+def _scenario_signal(scenario_eval: ScenarioEvaluation, w: FitnessWeights) -> SignalScore:
+    """The scalar ranking contribution of the proven-scenario objective: the
+    dominant term of the composite when present (M5-B #108 — keeping the
+    proven scenarios green IS the objective the work signals serve). Only
+    ranks candidates that already cleared the scenario gate."""
+    return SignalScore(
+        "proven_scenarios",
+        MeasureKind.DERIVED,
+        scenario_eval.objective_score,
+        w.proven_scenarios,
+        (
+            "criticality-weighted proven scenarios under "
+            f"{scenario_eval.objective_version} ({scenario_eval.objective_digest}): "
+            f"score={scenario_eval.objective_score:.4f}; correctness="
+            f"{'pass' if scenario_eval.correctness_gate.passed else 'FAIL'}"
+        ),
+        detail={
+            "objective_version": scenario_eval.objective_version,
+            "objective_digest": scenario_eval.objective_digest,
+            "raw_weighted_score": scenario_eval.raw_weighted_score,
+            "regressed": scenario_eval.regressed,
+            "not_evaluated": scenario_eval.not_evaluated,
+        },
+    )
+
+
+def _scenario_signal_items(
+    scenario_eval: ScenarioEvaluation | None, w: FitnessWeights
+) -> list[SignalScore]:
+    """``_scenario_signal`` as a list: empty when no scenario objective was
+    configured, so absent evidence adds no signal (and no branch lands in
+    ``compose_scorecard``)."""
+    if scenario_eval is None:
+        return []
+    return [_scenario_signal(scenario_eval, w)]
+
+
 def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None) -> Scorecard:
     """Pure: assemble gates + priority-weighted scores into a Scorecard."""
     w = weights or FitnessWeights()
+    # The proven-scenario objective (M5-B, #108) is evaluated first: its gate
+    # is a veto like any other, and its evaluation record rides on the
+    # Scorecard so the correctness verdict and the scalar objective are
+    # recorded separately from the work-signal composite.
+    scenario_eval = _scenario_objective_eval(inp)
     gates = [
         # The oracle-immunity veto leads (#109): a candidate that mutated the
         # evaluator it is scored by is rejected on this gate before any other
@@ -595,9 +713,13 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
             assertion_score=inp.assertion_score,
         ),
         *inp.lint_gates,
+        *_scenario_gate_items(scenario_eval),
         *_conditional_gates(inp),
     ]
-    scores: list[SignalScore] = [red_green_signal(inp.tdd, w.red_green)]
+    scores: list[SignalScore] = [
+        red_green_signal(inp.tdd, w.red_green),
+        *_scenario_signal_items(scenario_eval, w),
+    ]
     cov_delta = (
         inp.candidate_coverage - inp.baseline_coverage
         if inp.candidate_coverage is not None and inp.baseline_coverage is not None
@@ -649,7 +771,11 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
                 inp.code_quality_detail or "changed-source quality composite",
             )
         )
-    scorecard = Scorecard(gates=gates, scores=scores)
+    scorecard = Scorecard(
+        gates=gates,
+        scores=scores,
+        scenario_objective=scenario_eval,
+    )
     # Provenance (#109): the scorecard records the trusted evaluator digest it
     # was judged against, so an acceptance decision is replayable against the
     # exact oracle version that produced it.
@@ -929,6 +1055,65 @@ def _resolve_tdd_evidence(
     return fail_first.tdd_view(tests), fail_first
 
 
+def _stage_mutation_probe(
+    inputs: FitnessInputs,
+    cwd: Path,
+    baseline_ref: str | None,
+    new_src_lines: dict[str, set[int]],
+    tests: list[str],
+    timeout: int,
+    weights: FitnessWeights | None,
+) -> Scorecard | None:
+    """Run the diff-mutation probe once the cheap gates cleared.
+
+    Cost-layered after the cheap gates: mutation runs the changed tests once
+    per mutant, so a candidate already doomed on tests/coverage/syntax never
+    pays for it. Only meaningful when the diff added source lines AND changed
+    tests exist to catch mutations of them.
+
+    Returns the staged, gate-failing Scorecard when the probe vetoes the
+    candidate, else ``None`` (probe absent or passed).
+    """
+    if not (baseline_ref and new_src_lines and tests):
+        return None
+    inputs.mutation_probe = probe_diff_mutations(
+        cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS
+    )
+    staged = compose_scorecard(inputs, weights)
+    if staged.gates_passed:
+        return None
+    return staged
+
+
+def _attach_regression_judge(
+    inputs: FitnessInputs,
+    regression_judge_fn: Callable[[str, str], JudgeVerdict] | None,
+    cwd: Path,
+    baseline_ref: str | None,
+    target: str,
+) -> None:
+    """Attach the second-opinion LLM judge, last and only if it can rule.
+
+    Only for candidates that cleared every deterministic gate, including the
+    mutation probe. An unavailable ``git diff`` is treated as no diff (the
+    judge simply stays absent); a produced diff is judged verbatim.
+    """
+    if regression_judge_fn is None or not baseline_ref:
+        return
+    try:
+        diff = subprocess.run(
+            ["git", "diff", baseline_ref],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        diff = ""
+    if diff.strip():
+        inputs.regression_judge = regression_judge_fn(diff, target)
+
+
 def evaluate_candidate(
     candidate_dir: str | Path,
     changed_files: list[str],
@@ -954,6 +1139,10 @@ def evaluate_candidate(
     evaluator_digest: str | None = None,
     evaluator_mutations: list[str] | None = None,
     evaluator_mutation_authorized: bool = False,
+    scenario_objective: ScenarioObjective | None = None,
+    scenario_proven_scores: dict[str, float] | None = None,
+    scenario_candidate_scores: dict[str, float] | None = None,
+    scenario_correctness: CorrectnessResult | None = None,
 ) -> Scorecard:
     """Run the local signals for a candidate and compose the Scorecard.
 
@@ -968,6 +1157,14 @@ def evaluate_candidate(
     ``allow_test_inventory_shrink`` is the explicit governance override (#306):
     when True, deletions pass the gate with a WARNING and are recorded, never
     silently absorbed.
+
+    The four ``scenario_*`` arguments are the M5-B proven-scenario evidence
+    (#108), gathered by the caller (the loop runs the scenario suite and reads
+    the archive's proven scores — no measurement happens here). Passing an
+    objective enables the ``no_proven_scenario_regression`` veto and the
+    dominant ``proven_scenarios`` signal; omitting it leaves both absent
+    (identical semantics to the ``FitnessInputs`` fields, never a false
+    rejection or a silent zero).
 
     ``regression_judge_fn`` (diff_text, target) -> JudgeVerdict is called
     lazily, and ONLY if every other gate already passes: a candidate that's
@@ -1099,37 +1296,23 @@ def evaluate_candidate(
         evaluator_digest=evaluator_digest,
         evaluator_mutations=evaluator_mutations,
         evaluator_mutation_authorized=evaluator_mutation_authorized,
+        scenario_objective=scenario_objective,
+        scenario_proven_scores=scenario_proven_scores or {},
+        scenario_candidate_scores=scenario_candidate_scores or {},
+        scenario_correctness=scenario_correctness,
     )
     prelim = compose_scorecard(inputs, weights)
     if not prelim.gates_passed:
         return prelim
 
-    # Cost-layered after the cheap gates: mutation runs the changed tests once per
-    # mutant, so a candidate already doomed on tests/coverage/syntax never pays
-    # for it. Only meaningful when the diff added source lines AND changed tests
-    # exist to catch mutations of them.
-    if baseline_ref and new_src_lines and tests:
-        inputs.mutation_probe = probe_diff_mutations(
-            cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS
-        )
-        staged = compose_scorecard(inputs, weights)
-        if not staged.gates_passed:
-            return staged
+    staged = _stage_mutation_probe(
+        inputs, cwd, baseline_ref, new_src_lines, tests, timeout, weights
+    )
+    if staged is not None:
+        return staged
 
     # Second-opinion LLM judge last (most expensive): only for candidates that
     # cleared every deterministic gate, including the mutation probe.
-    if regression_judge_fn is not None and baseline_ref:
-        try:
-            diff = subprocess.run(
-                ["git", "diff", baseline_ref],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            ).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            diff = ""
-        if diff.strip():
-            inputs.regression_judge = regression_judge_fn(diff, target)
+    _attach_regression_judge(inputs, regression_judge_fn, cwd, baseline_ref, target)
 
     return compose_scorecard(inputs, weights)
