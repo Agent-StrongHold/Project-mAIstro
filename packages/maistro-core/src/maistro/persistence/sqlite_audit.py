@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES, AuditPage, make_page, page_query
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.security import AuditEntry
 
@@ -86,6 +87,34 @@ class SqliteAuditLog:
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
             )
+
+            for name, fields in AUDIT_PAGE_INDEXES.items():
+                await self._conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+                )
+
+    async def get_page(
+        self,
+        *,
+        org_id: str = "",
+        user_id: str | None = None,
+        boundary: str | None = None,
+        denied: bool | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> AuditPage:
+        query, params = page_query(
+            org_id=org_id,
+            user_id=user_id,
+            boundary=boundary,
+            denied=denied,
+            limit=limit,
+            cursor=cursor,
+        )
+        async with self._conn.execute(query, params) as result:
+            names = [column[0] for column in result.description]
+            rows = [dict(zip(names, row, strict=True)) for row in await result.fetchall()]
+        return make_page(rows, limit)
 
     async def log(self, entry: AuditEntry) -> None:
         """Record an audit entry."""

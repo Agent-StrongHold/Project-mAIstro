@@ -214,7 +214,11 @@ def purge_all_sessions() -> int:
 
 
 def initialize_stores() -> None:
-    """Load persisted data, then seed if empty."""
+    """Migrate before serving requests, load persisted data, then seed if empty."""
+    if _persisted is not None:
+        from services.audit_query import ensure_audit_index
+
+        ensure_audit_index(_persisted)
     for store in _all_model_stores:
         store.initialize()
     for store in _all_json_stores:
