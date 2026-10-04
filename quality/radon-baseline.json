@@ -1115,11 +1115,11 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/__main__.py::_review",
       "path": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
-      "line": 894,
+      "line": 949,
       "name": "_review",
       "classname": null,
       "rank": "C",
-      "complexity": 13,
+      "complexity": 12,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
