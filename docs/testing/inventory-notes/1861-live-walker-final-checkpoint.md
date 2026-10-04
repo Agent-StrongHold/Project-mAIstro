@@ -282,3 +282,44 @@ head `052` confirmed via `alembic_version`), `MAISTRO_TEST_PG_DSN` set:
   findings, baseline base `680329c960cd` → candidate `fb5fad4e38d4`),
   `check-reachability.py` exit 0. No closure keywords in the branch's commit
   messages or the PR body.
+
+Independent re-verification (L1861 verify @ `e8fc0465e815`): the assigned head
+`e8fc0465e81565c62cdfb79b06b965f858ce39fc` is the merge of develop base
+`35f2e0158a91` into auto-1861; diff scope vs that base is still exactly three
+files (this note, the `canonical_store.py` predicate,
+`test_live_walker_final_checkpoint.py`), `git diff --numstat 35f2e0158a91..HEAD
+-- quality/` empty, and the fix module plus this test file are byte-identical
+to the `fb5fad4e38d4` versions this note already records. The proof was
+re-executed at this exact head against lane pgvector `pg-l1861`
+(`127.0.0.1:55186`, upgraded `052` -> `053` — the develop merge adds migration
+053 "Learning lifecycle + epistemics columns" — confirmed via
+`alembic_version`), `MAISTRO_TEST_PG_DSN` set:
+
+- New file `uv run --frozen pytest
+  packages/maistro-core/tests/graph/durable_runs/test_live_walker_final_checkpoint.py
+  -q -ra` = **9 passed, 0 skipped** (collected node IDs: the three cases ×
+  `memory`/`sqlite`/`postgres`; the no-DSN driver run at this same head
+  skipped exactly the three `[postgres]` legs, 6 passed / 3 skipped).
+- Exact acceptance battery plus the new file (`test_crash_window_invariants.py`
+  + `test_recovery_completion_budget.py` +
+  `test_cross_store_crash_reconciliation.py` +
+  `test_canonical_recovery_contract.py` + this file, `-q -ra`) = **110 passed,
+  0 skipped**; full `packages/maistro-core/tests/graph/durable_runs` with real
+  PG = **651 passed**. Postgres legs: real `PgRunStore` +
+  `PgGraphContinuationStore`, recovery instance on an independent asyncpg pool.
+- Fail-before re-proved without touching the tree (`git archive` of this head
+  into a scratch dir with only `canonical_store.py` replaced by the develop
+  base `35f2e0158a91` module, same DSN): the named regression failed all three
+  backends at the barrier assertion (`assert await
+  recovery.reconcile_persistence(...) == 0` → `assert 1 == 0`, one tick
+  claimed the live continuation) while the crashed companion and the
+  quiet-period boundary case passed there (3 failed / 6 passed). The repaired
+  head passes 9/9.
+- Gates re-run at this head: `ruff check .` and `ruff format --check .` clean
+  (driver logs), `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (`+9` delta), documented six-package `mypy`
+  command clean (796 source files), CI-exact vulture ratchet exit 0 (1339
+  reviewed identities = 1339 findings, baseline base `35f2e0158a91` →
+  candidate `e8fc0465e815`), `check-reachability.py` exit 0. No closure
+  keywords in the branch's commit messages or the PR body; no
+  sleep/xfail/`mark.skip` in the new test file.
