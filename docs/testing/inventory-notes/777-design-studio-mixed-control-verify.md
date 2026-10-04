@@ -8375,3 +8375,63 @@ at this head and absent from unmoved `origin/develop`; building it inside
 Design Studio is explicitly forbidden by the issue's stop condition. All 13
 acceptance criteria remain unimplementable without it. Verdict: **BLOCKED**
 (Refs #777).
+
+## Round 125 — repair round at c7556c460 (2026-10-04)
+
+Trigger: repair job b303b9517d4c4 died on provider timeout with `checks=[]`
+(zero work performed); the driver's failure signal remains check-2.log of
+verify job 53d5e08bf02 (`ruff format --check` -> agent_loop.py) at head
+a99c6bd78, which predates the round-110 fix (2f054b614).
+
+Fresh evidence, this round:
+
+- Incoming failure does not reproduce: `uv run ruff format --check .` ->
+  EXIT 0 at c7556c460 (2890 files) and again after sync (2891 files);
+  `uv run ruff check .` -> EXIT 0 both times.
+- `origin/develop` moved for the first time since round 122's merge:
+  29af8200e -> 2a24c8a82 (2 commits: #1888 PgRunStore.repair_attempt_result
+  lock-order normalization + its 607-line test, cyclonedx-bom bump;
+  `git diff --stat HEAD...origin/develop` = 4 files, none touching the
+  #777 surface). Merged conflict-free into auto-777 at df9e20d744.
+  Ledger-safety per AGENTS.md: `git diff --numstat c7556c460 HEAD -- quality/`
+  is empty (merge preserved the pre-merge ledger exactly); the branch-vs-
+  develop `0 1 vulture-baseline.json` delta is the branch's own round-110
+  dead-code removal, not merge loss.
+- Blockers re-proven fresh by grep at df9e20d744: `GoalReconciler` 0 files,
+  `delegate_goal` 0 files, no `maistro.goals` module, design src 0
+  `workspace_agent` refs and 0 `maistro.memory.working` refs,
+  `ControlMode` consumers outside maistro-design 0 files;
+  `projects/rubric_store.py` GoalRevisionCatalog remains a resolution-only
+  Protocol. History note: an earlier round built the DesignEngine injection
+  seam to consume the #53 front door and had to remove it as production-dead
+  (777-remove-dead-design-seams.md, vulture two-merge rule) — the seam cannot
+  stand without its real #804 consumer.
+- Battery at df9e20d744 (all fresh): ruff check EXIT 0; ruff format --check
+  EXIT 0 (2891 files); vulture CI-exact EXIT 0, base 2a24c8a82, candidate
+  df9e20d744, 1342 reviewed -> 1341 findings, no unbanked, no amendment;
+  suite-inventory EXIT 0 (14 suites); backlog-consistency EXIT 0 (167 items);
+  branch-independence EXIT 0; pytest design **540 passed / 1 skipped**;
+  pytest bootstrap **237 passed / 1 skipped**; pytest hive
+  design/brief/workspace/agent-identity/agent-invocation suites (12 files)
+  **166 passed**.
+- Partial-criterion probes: CreativeBrief binds persona/design_system as
+  *versioned references* (`brief.py` persona_id/persona_version/
+  design_system_slug/design_system_version;
+  `test_persona_and_design_system_are_versioned_references`), so criterion 2's
+  projection shape is proven, but its canonical-Goal-revision producer is not
+  (#458 catalog unresolved). Criterion 3 (context through #776) is
+  unsatisfied: the working graph lives in maistro-core
+  (tests/memory/working_graph/) but the design path never imports it.
+
+No production or test code changed this round; front-matter deltas stay +0.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+Round 125's only actionable repair signal (stale ruff-format failure) is
+confirmed non-reproducing; the branch is green across the full battery at the
+post-sync head df9e20d744. The blocking dependency (#804/#805/#806 persistent
+Workspace Agent Goal reconciliation) is still absent from the repo and from
+`origin/develop`, and the issue's stop condition forbids Design-Studio-private
+substitutes, so the 13 acceptance criteria that require a consumed
+reconciliation/delegation seam remain unimplementable in this lane. Verdict:
+**BLOCKED** (Refs #777).
