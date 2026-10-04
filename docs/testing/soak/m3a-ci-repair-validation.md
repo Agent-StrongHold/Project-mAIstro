@@ -106,3 +106,124 @@ new >=4-hour exact-artifact soak. Do not substitute a longer host preflight.
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: exact-RC prerequisites and sustained soak}`.
 Validation completed; issue acceptance remains blocked. Commit this report
 locally without pushing, opening a PR, merging, commenting, or closing an issue.
+
+---
+
+# CI-repair round 711010c6
+
+## Frozen scope
+
+- Issue: #860 only; writer lane `auto-860`.
+- Starting HEAD: `12789110051af9aab369a039a66350db773765eb`.
+- Assigned base: `c0441cf94b9a8e58517da0f4159070b97ea6a706`.
+- Initial worktree: clean; no incoming uncommitted work to salvage.
+- Candidate edits: this report and `quality/vulture-baseline.json` for reviewed
+  identities actually reported by the assigned exact-debt-ledger command.
+  Runtime changes require evidence of genuinely dead code before expanding scope.
+- Inspect existing soak implementation/tests, relevant ADRs and production seams;
+  do not introduce an alternate execution or authorization path.
+- Job directory listing contains no `check-*.log` files. Driver checks are not
+  available to inspect in this round; execute local validation instead.
+- Previous result inspected: prior job ended BLOCKED at this starting HEAD.
+  Prior H3 wording is already corrected; do not manufacture another repair.
+
+## Assumptions and limits
+
+The explicit CI-repair instruction permits reviewed vulture ledger amendments,
+not new grants or weakening gates. A clean ledger cannot prove #860 acceptance.
+The host-process harness is explicitly not an exact-RC production runner. No
+exact RC artifact/configuration is identified by this assignment. Do not run a
+four-hour emulator and mislabel it promotion evidence. Record unmet acceptance
+and remaining prerequisites honestly. GitHub mutations remain prohibited.
+
+## Validation
+
+Initial exact vulture command: PASS (1345 findings / 1345 reviewed identities,
+zero unclassified or never-allowlist). No unbanked identities or eliminated rows;
+no ledger change justified. Default trusted base reported `1e4933e2a1b7`.
+
+This report path already held a historical round. Its original content is
+preserved above; current-round results are appended rather than replacing it.
+
+### Fresh focused checks
+
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS (2859 files).
+- Supplied base resolves; `git merge-base HEAD
+  c0441cf94b9a8e58517da0f4159070b97ea6a706` is
+  `1e4933e2a1b7a0bc1bdecfdbafca846c7cb458f4`.
+- Repeated exact vulture command with
+  `RATCHET_BASE_REV=c0441cf94b9a8e58517da0f4159070b97ea6a706`: PASS,
+  1345/1345 identities against that trusted merge base.
+- `uv run python scripts/check-ratchet-provenance.py`: PASS, 46 consumers.
+- `uv run python scripts/check-shipped-surface-truth.py`: PASS.
+- `uv run pytest tests/test_soak_promotion_gates.py
+  packages/maistro-core/tests/persistence/test_pg_learnings.py
+  packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py
+  packages/maistro-server/tests/api/test_rate_limit.py -x -q`: **102 passed,
+  5 skipped**, 4.04 s. PostgreSQL skips are not live database evidence.
+  Middleware regressions execute independent production limiter instances;
+  sampler regression executes a real uv child. Neither is a deployed RC soak.
+
+### ADR reconciliation
+
+Read accepted ADR-081426-1f7c, ADR-081626-f383, ADR-082426-82c7 and ADR-085,
+and Proposed ADR-081. Canonical Attempt runtime identity and Run-store fencing
+remain authoritative; lease-expiry takeover is explicitly outside the accepted
+fencing contract. Occurrence admission uniqueness cannot prove physical work
+uniqueness. Principal-keyed rate limits do not imply shared replica state.
+No alternative execution authority or limiter is introduced by this repair.
+
+### Final executed evidence
+
+- `uv run pytest packages/maistro-server/tests -x -q`: **494 passed, 8 skipped,
+  22 deprecation warnings**, 43.15 s.
+- `uv run python scripts/check-doc-links.py`: PASS, 1646 Markdown files,
+  zero broken relative links.
+- `uv run python scripts/check-deployment-claims.py`: PASS (component existence,
+  not runtime deployment certification).
+- `git diff --check`: PASS.
+- Executed Python probe imported the current soak evaluator and asserted all four
+  frozen historical packs fail both `sustain_duration` and `exact_rc_artifact`:
+  `m3a-soak-evidence.json`, `m3a-repair-validation.json`, `m3a-round5-final.json`,
+  `m3a-round6-shakedown.json`. PASS. Round 5/6 sustain 90.17/90.43 seconds;
+  earlier packs lack top-level observed duration. These are not new soak results.
+- The same probe compared this report's prefix to `git show HEAD:<path>`:
+  historical content is preserved verbatim (append-only final diff).
+- Inspection error: `packages/maistro-server/src/maistro_server/app.py` was not
+  found; skipped. Searching the known package directory instead located the live
+  registration at `main.py:593` (`app.add_middleware(RateLimitMiddleware)`).
+
+### Acceptance disposition for this round
+
+| #860 criterion | Evidence and disposition |
+| --- | --- |
+| Representative RC load profile | PARTIAL: inspected profile explicitly lacks multiple users/Workspaces, Graph fan-out, successful tool/model calls, Design/Canvas and background workloads. RC applicability UNVERIFIED. |
+| At least two deployed replicas | UNVERIFIED: production Compose declares two services, but no exact-RC deployment executed this round. ASGI instances do not count as replicas under soak. |
+| Sustained saturation, queue growth, expiry/reclaim, retries, leaks and restart | UNVERIFIED: all four historical packs fail the executed duration/artifact evaluator; live child-sampler test is not a long-window observation. |
+| Exactly-once/fenced physical work and Goal reconciliation | UNVERIFIED: admission and backpressure regressions pass, but schedule probe cancels its queued Run and does not execute physical work. No deployed physical-effect oracle was exercised. |
+| Rate/security/degraded non-bypass | NOT MET for a shared budget: real middleware regressions reproduce independent `[200,200,429]` allowances on both instances for both identity classes. This middleware is registered at `main.py:593`; current RC security/degraded behavior under load remains UNVERIFIED. |
+| Full telemetry with thresholds | UNVERIFIED: sampler regressions pass, but no RC pool/lock/query/app-loop/worker/leak window was measured. Driver-loop lag is not application-loop latency. |
+| Active-work kill/restart, drain/fencing/recovery | UNVERIFIED: historical process exit/rejoin is not proof of physical-effect recovery; no replica killed/restarted this round. |
+| Long exact-RC artifact/configuration soak | BLOCKED: current runner always emits `exact_rc_artifact.ok=false`; all four historical packs rejected. No designated immutable RC artifact/configuration or new >=14400-second soak. |
+| Findings filed/reclassified before promotion | PARTIAL: local F1–F12 classifications inspected. External filing UNVERIFIED; GitHub mutations prohibited. No new product failure inferred from a passing CI scan. |
+| Hash-bound machine/human soak evidence | PARTIAL: historical packs inspected/evaluated, not re-signed. Current exact-RC image/package/commit/config evidence UNVERIFIED. |
+
+### Handoff
+
+**BLOCKED**, not integration approval. The prescribed exact-debt-ledger failure
+is not reproducible; there are no unbanked identities to review/amend. No speculative
+code deletion, ledger/grant amendment, weakened gate, or fabricated soak is warranted.
+Only this report changed; no tests added, so no inventory delta is required.
+No historical evidence changed. No branch sync conflict exists in the clean starting
+state. Local commit required; no push or GitHub mutation.
+
+Next: designate the exact RC artifact/configuration and provider environment,
+resolve the replica-rate-budget acceptance mismatch through its owner, finish the
+representative workloads and physical-effect/telemetry oracles, then execute and
+publish the >=4-hour production-topology soak. A longer host preflight is not a
+substitute. Prior blocked condition remains unresolved.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: exact-RC prerequisites and sustained soak}`.
+The error is the missing inspection path above, not a failed validation gate;
+CI-repair validation is complete, but #860 acceptance is not.
