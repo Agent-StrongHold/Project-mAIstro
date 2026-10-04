@@ -19,8 +19,15 @@ from pydantic import BaseModel, Field
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
+from maistro.capabilities.slots.harness_runner import HarnessRunner
 from maistro.capabilities.types import Unavailable
-from maistro.graph.harness import HarnessAdapter, HarnessRequest
+from maistro.graph.harness import (
+    HarnessAdapter,
+    HarnessHandle,
+    HarnessRequest,
+    HarnessResult,
+    HarnessRunnerDispatchAdapter,
+)
 
 from . import register_node
 from .base import (
@@ -43,6 +50,13 @@ class SpawnHarnessIn(BaseModel):
         default_factory=dict, description="Additional context for the harness"
     )
     timeout_seconds: int = Field(default=3600, description="Hard deadline in seconds")
+    workdir: str = Field(
+        default="",
+        description=(
+            "Workspace hint handed to the harness provider (repo/checkout the "
+            "harness acts on); recorded on the Invocation. Empty = provider default."
+        ),
+    )
     binding_id: str = Field(
         default="",
         description=(
@@ -58,6 +72,40 @@ class SpawnHarnessOut(BaseModel):
     output: str = ""
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def _detail_payload(handle: HarnessHandle) -> dict[str, Any]:
+    """Adapter-vouched dispatch provenance for the Invocation result row."""
+    detail = handle.detail
+    return dict(detail) if isinstance(detail, dict) else {}
+
+
+def _as_dispatch_adapter(provider: HarnessAdapter | HarnessRunner) -> HarnessAdapter:
+    """Accept either a graph dispatch adapter or a session-protocol provider."""
+    if isinstance(provider, HarnessAdapter):
+        return provider
+    if isinstance(provider, HarnessRunner):
+        return HarnessRunnerDispatchAdapter(provider)
+    raise TypeError(
+        "harness adapter must be a HarnessAdapter or a HarnessRunner provider; "
+        f"got {type(provider).__name__}"
+    )
+
+
+def _merge_poll_evidence(resumed: Any, result: HarnessResult) -> dict[str, Any]:
+    """Overlay a successful poll's evidence onto the transported resume answer.
+
+    The adapter vouches for the output; poll metadata extends (and on conflict
+    overrides) what the resume answer recorded instead of discarding it.
+    """
+    merged = dict(resumed)
+    if result.output:
+        merged["output"] = result.output
+    if isinstance(result.metadata, dict) and result.metadata:
+        merged_metadata = dict(resumed.get("metadata") or {})
+        merged_metadata.update(result.metadata)
+        merged["metadata"] = merged_metadata
+    return merged
 
 
 @dataclass(frozen=True)
@@ -97,11 +145,17 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
 
     def __init__(
         self,
-        adapters: dict[str, HarnessAdapter] | None = None,
+        adapters: Mapping[str, HarnessAdapter | HarnessRunner] | None = None,
         *,
         effect_context: CapabilityEffectContext | None = None,
     ) -> None:
-        self._adapters: dict[str, HarnessAdapter] = adapters or {}
+        # Adding a harness is a Provider + Binding, not a new product (#1613):
+        # a provider speaking the SPEC-208 HarnessRunner session protocol is
+        # wrapped in the one bridging adapter here, so callers can pass either
+        # shape. Everything then crosses the same governed Invocation seam.
+        self._adapters: dict[str, HarnessAdapter] = {
+            name: _as_dispatch_adapter(adapter) for name, adapter in (adapters or {}).items()
+        }
         self._effects = effect_context or default_effect_context()
 
     def logical_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
@@ -127,11 +181,38 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             metadata=dict(resumed.get("metadata") or {}),
         )
 
+    async def _with_fresh_harness_evidence(
+        self, inputs: SpawnHarnessIn, ctx: NodeContext, resumed: Any
+    ) -> Any:
+        """Prefer the provider's own poll evidence over a transported answer.
+
+        The resume answer may have travelled through a waker or a person; the
+        adapter that owns the session can often confirm (or correct) the
+        payload directly. A successful poll wins; anything else — no adapter,
+        no handle, provider lost the turn — leaves the recorded answer
+        untouched, so the answer path stays the fallback, never a blocker.
+        """
+        adapter = self._adapters.get(inputs.harness_type)
+        handle_id = str(resumed.get("handle_id") or "")
+        if adapter is None or not handle_id:
+            return resumed
+        try:
+            result = await adapter.poll(
+                HarnessHandle(handle_id=handle_id, harness_type=inputs.harness_type)
+            )
+        except Exception:
+            return resumed
+        if result is None or not result.success:
+            return resumed
+        return _merge_poll_evidence(resumed, result)
+
     async def _execute(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut:
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
-            return self._resume_output(resumed)
+            return self._resume_output(
+                await self._with_fresh_harness_evidence(inputs, ctx, resumed)
+            )
 
         if not inputs.binding_id.strip():
             raise BindingNotFound(
@@ -151,6 +232,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             "task": inputs.task,
             "context": inputs.context,
             "timeout_seconds": inputs.timeout_seconds,
+            "workdir": inputs.workdir,
         }
 
         async def resolve_provider(
@@ -184,6 +266,10 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 task=str(payload["task"]),
                 context=dict(payload.get("context") or {}),
                 timeout_seconds=int(payload.get("timeout_seconds") or 3600),
+                # Workspace hint (issue #1613): the adapter starts the harness
+                # session here; the value also lands on the persisted Invocation
+                # result so the row records where the harness was pointed.
+                metadata={"workdir": str(payload.get("workdir") or "")},
             )
             handle = await provider.adapter.dispatch(harness_request)
             if not handle.handle_id or not handle.harness_type:
@@ -191,6 +277,12 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             return {
                 "handle_id": handle.handle_id,
                 "harness_type": handle.harness_type,
+                # Dispatch provenance (issue #1613): harness session id,
+                # workspace hint, provider name. Adapter-supplied, so the
+                # Invocation row records the session/workspace, not just an
+                # opaque handle. A misbehaving adapter's non-dict detail is
+                # dropped rather than persisted.
+                **_detail_payload(handle),
             }
 
         # The graph may retry this logical node with a new NodeRun. Scope the
