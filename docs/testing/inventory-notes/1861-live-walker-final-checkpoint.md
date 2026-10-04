@@ -100,3 +100,31 @@ crashed-walker case passed there; the repaired tree passes. Also re-run clean:
 `ruff check .`, `ruff format --check .`, the CI-exact vulture ratchet
 (1342 reviewed identities = 1342 findings, no `quality/` delta vs develop),
 and the documented nine-package `mypy` command (792 source files).
+
+Independent re-verification (L1861 verify @ `e30ca1a216fe`): fix content is
+byte-identical to `8d635a8fd` (the two commits after merge `cccf9d49a7f8` add
+only this note). The exact acceptance battery plus the new file, run against
+the lane pgvector (`MAISTRO_TEST_PG_DSN=127.0.0.1:55186`, alembic head `052`
+confirmed via `alembic_version`): `uv run --frozen pytest
+packages/maistro-core/tests/runs/test_crash_window_invariants.py
+packages/maistro-core/tests/runs/test_recovery_completion_budget.py
+packages/maistro-core/tests/graph/durable_runs/test_cross_store_crash_reconciliation.py
+packages/maistro-core/tests/graph/durable_runs/test_canonical_recovery_contract.py
+packages/maistro-core/tests/graph/durable_runs/test_live_walker_final_checkpoint.py
+-q -ra` = **107 passed, 0 skipped** — all six new legs executed, real PG
+included (recovery on its own asyncpg pool). Fail-before re-proved without
+touching the tree: `git archive` of develop base `928993dda1c9` plus this test
+file, same DSN — the named regression failed all three backends at
+`assert await recovery.reconcile_persistence(now=...) == 0` → `assert 1 == 0`
+(one tick claimed the live continuation at the barrier) while the companion
+crashed-walker case passed there; the repaired tree passes. Observed no-op
+snapshots (direct observation run at this head, memory composition): barrier
+continuation `version=7, status=running, resume_at=None` → one recovery tick
+returns 0 with the continuation unchanged → released walker returns COMPLETED
+with 1 counted execution and final continuation `version=8, status=completed,
+resume_at=None` (original lineage, exactly one Attempt ordinal 1 COMPLETED
+with result set, 1 accepted NodeRun) → second recovery tick returns 0,
+snapshot unchanged. Gates re-run clean at this head: `ruff check .`,
+`ruff format --check .` (2889 files already formatted),
+`check-suite-inventory.py --suite packages/maistro-core/tests` (ok). No
+closure keywords in the branch's commit messages or the PR body.
