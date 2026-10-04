@@ -155,6 +155,23 @@ _SQLITE_INSERT_FIELDS = (
 )
 
 
+async def _add_missing_columns(
+    conn: aiosqlite.Connection,
+    columns: set[str],
+    column_types: dict[str, str],
+) -> None:
+    """Add each declared column an older file does not have yet.
+
+    SQLite has no `ADD COLUMN IF NOT EXISTS`, so callers pass the `PRAGMA
+    table_info` column set and this adds only what is missing. Every DDL dict
+    passed here is a module-level literal so the durable-table inventory's AST
+    scan can read the schema statically.
+    """
+    for column, column_type in column_types.items():
+        if column not in columns:
+            await conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} {column_type}")
+
+
 class SqliteLearningStore:
     """SQLite-backed learning store implementing the same protocol as PgLearningStore."""
 
@@ -179,34 +196,22 @@ class SqliteLearningStore:
                 await self._conn.execute(
                     "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
                 )
-            for column, column_type in _LEGACY_UPGRADE_COLUMNS.items():
-                if column not in columns:
-                    await self._conn.execute(
-                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
-                    )
+            await _add_missing_columns(self._conn, columns, _LEGACY_UPGRADE_COLUMNS)
             # The same in-place upgrade for the producer columns. A file created
             # before #709 holds real learnings; recreating the table would be the
             # only alternative, and it would lose them (#709).
-            for column in _PROVENANCE_COLUMNS:
-                if column not in columns:
-                    await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
+            await _add_missing_columns(
+                self._conn, columns, dict.fromkeys(_PROVENANCE_COLUMNS, "TEXT")
+            )
             # M4-B3: applicability, confidence and epistemic columns. Defaults
             # are the legacy reading (observed / no applicability / unmeasured);
             # see _EPISTEMIC_COLUMNS for why confidence alone stays nullable.
-            for column, column_type in _EPISTEMIC_COLUMNS.items():
-                if column not in columns:
-                    await self._conn.execute(
-                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
-                    )
+            await _add_missing_columns(self._conn, columns, _EPISTEMIC_COLUMNS)
             # M4-B1 (ADR-103): the stage columns default to the bottom rung
             # with blank actors. Pre-ladder rows keep `memory` and never gain
             # a fabricated validation or promotion claim; the ledger starts
             # empty and records only transitions that actually happened.
-            for column, column_type in _STAGE_COLUMN_TYPES.items():
-                if column not in columns:
-                    await self._conn.execute(
-                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
-                    )
+            await _add_missing_columns(self._conn, columns, _STAGE_COLUMN_TYPES)
             await self._conn.execute(_STAGE_HISTORY_SCHEMA)
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
@@ -668,35 +673,48 @@ def _json_list(row: dict[str, Any], name: str) -> list[str]:
     return []
 
 
+def _text_or(row: dict[str, Any], name: str, default: str) -> str:
+    """Read a nullable text column with an explicit fallback.
+
+    The row-level shape of `Learning`'s string fields: the column is nullable,
+    the dataclass field is not, and each field carries its own honest default
+    (`""` for "not recorded", `"active"` for status). Named rather than spelled
+    `row.get(x) or y` at every call site so the mapper reads as a table of
+    dispositions instead of a wall of `or` operators — and so the shared rule
+    (NULL and empty both fall back) lives in one place.
+    """
+    return str(row.get(name) or default)
+
+
 def _row_to_learning(row: dict[str, Any]) -> Learning:
     return Learning(
         id=row["id"],
-        category=row.get("category") or "",
+        category=_text_or(row, "category", ""),
         trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
         learning=row["learning"],
-        tool_name=row.get("tool_name") or "",
+        tool_name=_text_or(row, "tool_name", ""),
         source_query=_text(row, "source_query"),
         agent_id=row.get("agent_id") or None,
         user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
+        org_id=_text_or(row, "org_id", ""),
         team_id=_text(row, "team_id"),
-        scope=MemoryScope(row.get("scope") or "agent"),
+        scope=MemoryScope(_text_or(row, "scope", "agent")),
         hit_count=row.get("hit_count", 0),
-        status=row.get("status") or "active",
+        status=_text_or(row, "status", "active"),
         rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention") or "",
+        rca_prevention=_text_or(row, "rca_prevention", ""),
         run_id=_text(row, "run_id"),
         node_run_id=_text(row, "node_run_id"),
         attempt_id=_text(row, "attempt_id"),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
-        epistemic_type=EpistemicType(row.get("epistemic_type") or "observed"),
+        epistemic_type=EpistemicType(_text_or(row, "epistemic_type", "observed")),
         works_when=_json_list(row, "works_when"),
         avoid_in=_json_list(row, "avoid_in"),
         confidence=row.get("confidence"),
         evidence_run_ids=_json_list(row, "evidence_run_ids"),
         evaluation_ids=_json_list(row, "evaluation_ids"),
-        stage=LearningStage(row.get("stage") or "memory"),
+        stage=LearningStage(_text_or(row, "stage", "memory")),
         validated_by=_text(row, "validated_by"),
         promoted_by=_text(row, "promoted_by"),
     )
