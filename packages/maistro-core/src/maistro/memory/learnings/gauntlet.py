@@ -36,9 +36,19 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from maistro.runs.model import RunStatus
 from maistro.types.memory import Learning
+
+if TYPE_CHECKING:
+    from maistro.runs.store import RunStore
+
+#: Provenance marker every gauntlet trial Run must carry. The Gauntlet reads
+#: it back off the canonical Run store, so an evaluator cannot pass off an
+#: unrelated Run — one that exists and completed, but executed something else
+#: entirely — as this candidate's evidence.
+GAUNTLET_TRIAL_PURPOSE = "learning-gauntlet-trial"
 
 
 def learning_content_hash(
@@ -123,8 +133,10 @@ class TrialResult:
 
     `run_id` must be the id of a canonical Run — created through the
     `Goal -> Graph -> Run` spine — that executed this trial of the frozen
-    candidate content. It is what the promoted learning will name as evidence,
-    so it is recorded verbatim and never synthesized here.
+    candidate content, carrying provenance the Gauntlet can bind back: the
+    `GAUNTLET_TRIAL_PURPOSE` marker, the candidate's content hash, this
+    context id, and the held-out flag. It is what the promoted learning will
+    name as evidence, so it is recorded verbatim and never synthesized here.
     """
 
     context_id: str
@@ -212,7 +224,11 @@ class IndependentTrialsGauntlet:
     hands only the frozen snapshot to the evaluator, and judges the returned
     record. It never consults `hit_count` — recall frequency says how often a
     learning was injected, not whether following it helped — and it never
-    trusts the producer's own account of the learning.
+    trusts the producer's own account of the learning. Nor does it trust the
+    record's own account of its trials: every named Run id is resolved
+    against the canonical Run store (`run_store=`) before a verdict is
+    minted, and without a store the gate fails closed — unresolvable
+    provenance cannot justify promotion.
 
     Checks (each names a failed check in the verdict):
 
@@ -225,8 +241,18 @@ class IndependentTrialsGauntlet:
       version that actually ran the trials, and they match the evaluator
       this Gauntlet dispatched to. A wrapper that delegated to a different
       runtime must not lend its own name to the promoted provenance.
-    - `canonical_runs` — every trial names a Run id, and no two trials share
-      one: one Run cannot be two independent trials.
+    - `canonical_runs` — every trial names a Run id that resolves to a real
+      Run on the canonical Run store, and no two trials share one: one Run
+      cannot be two independent trials, and a fabricated, mistyped, or
+      deleted id is no evidence at all.
+    - `run_outcome` — each named Run reached terminal success on the spine
+      (`completed`). A trial still running, failed, cancelled, or timed out
+      proves nothing about the candidate.
+    - `run_provenance` — each Run's provenance binds it to exactly this
+      evaluation: the gauntlet-trial purpose, this candidate's frozen content
+      hash, the trial's reported context, and its held-out flag. A real,
+      completed Run from some other execution cannot be spent as this
+      candidate's evidence.
     - `independence` — the evaluation set does not include the producing Run.
       Trials re-running the very execution that induced the learning would
       measure the producer twice, not validate the correction.
@@ -250,6 +276,7 @@ class IndependentTrialsGauntlet:
         min_regimes: int = 1,
         min_held_out: int = 1,
         min_success_rate: float = 0.6,
+        run_store: RunStore | None = None,
     ) -> None:
         if min_trials < 1:
             raise ValueError("min_trials must be at least 1")
@@ -265,6 +292,7 @@ class IndependentTrialsGauntlet:
         self._min_regimes = min_regimes
         self._min_held_out = min_held_out
         self._min_success_rate = min_success_rate
+        self._run_store = run_store
 
     async def evaluate(self, learning: Learning) -> GauntletVerdict:
         """Freeze, evaluate, judge. One verdict names every failed check."""
@@ -282,7 +310,7 @@ class IndependentTrialsGauntlet:
             or record.evaluator_version != self._evaluator.version
         ):
             failed.append("evaluator_identity")
-        failed.extend(self._run_checks(candidate, record))
+        failed.extend(await self._run_checks(candidate, record))
         failed.extend(self._coverage_checks(candidate, record))
         failed.extend(self._efficacy_checks(record))
 
@@ -315,9 +343,12 @@ class IndependentTrialsGauntlet:
     def _held_out(record: EvaluationRecord) -> int:
         return sum(1 for trial in record.trials if trial.held_out)
 
-    def _run_checks(self, candidate: GauntletCandidate, record: EvaluationRecord) -> list[str]:
+    async def _run_checks(
+        self, candidate: GauntletCandidate, record: EvaluationRecord
+    ) -> list[str]:
         """Provenance checks on the trial set: every trial names one distinct
-        canonical Run, and none of them is the Run that produced the learning."""
+        canonical Run that exists, completed, and is provenance-bound to this
+        candidate — and none of them is the Run that produced the learning."""
         failed: list[str] = []
         run_ids = [trial.run_id for trial in record.trials]
         # An empty id names no Run, and one Run cannot be two independent
@@ -326,6 +357,44 @@ class IndependentTrialsGauntlet:
             failed.append("canonical_runs")
         if candidate.producer_run_id and candidate.producer_run_id in run_ids:
             failed.append("independence")
+        failed.extend(await self._run_store_checks(candidate, record))
+        return failed
+
+    async def _run_store_checks(
+        self, candidate: GauntletCandidate, record: EvaluationRecord
+    ) -> list[str]:
+        """Resolve every named trial Run against the canonical Run store.
+
+        A run id in a record is a claim, not evidence: any distinct nonempty
+        string would pass a shape check, letting mistyped, deleted, or
+        fabricated ids promote with an audit trail that cannot be resolved.
+        So each id is read back from the store and must be a completed Run
+        whose provenance binds it to this candidate, this trial context, and
+        the reported held-out flag. With no store configured the check fails
+        closed: the gate would be certifying executions it cannot see.
+        """
+        failed: list[str] = []
+        if self._run_store is None:
+            if any(trial.run_id for trial in record.trials):
+                failed.append("canonical_runs")
+            return failed
+        for trial in record.trials:
+            if not trial.run_id:
+                continue
+            run = await self._run_store.get_run(trial.run_id)
+            if run is None:
+                failed.append("canonical_runs")
+                continue
+            if run.status != RunStatus.COMPLETED:
+                failed.append("run_outcome")
+            provenance = run.provenance if isinstance(run.provenance, dict) else {}
+            if (
+                provenance.get("purpose") != GAUNTLET_TRIAL_PURPOSE
+                or provenance.get("gauntlet_candidate_content_hash") != candidate.content_hash
+                or provenance.get("trial_context_id") != trial.context_id
+                or bool(provenance.get("held_out")) != trial.held_out
+            ):
+                failed.append("run_provenance")
         return failed
 
     def _coverage_checks(self, candidate: GauntletCandidate, record: EvaluationRecord) -> list[str]:

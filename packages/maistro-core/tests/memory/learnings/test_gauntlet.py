@@ -11,12 +11,14 @@ stays closed to it.
 from __future__ import annotations
 
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from maistro.graph import Graph, Node
 from maistro.memory.learnings.gauntlet import (
+    GAUNTLET_TRIAL_PURPOSE,
     ChainedGauntlet,
     EvaluationRecord,
     GauntletCandidate,
@@ -97,8 +99,72 @@ def passing_evaluator(**kwargs: Any) -> ScriptedEvaluator:
     return ScriptedEvaluator(lambda candidate: passing_trials(candidate.content_hash, **kwargs))
 
 
+class TrialRunStore:
+    """Minimal canonical Run store: resolves only the trials registered on it."""
+
+    def __init__(self) -> None:
+        self.runs: dict[str, Any] = {}
+
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Any:
+        return self.runs.get(run_id)
+
+    def register(
+        self,
+        run_id: str,
+        *,
+        content_hash: str,
+        context_id: str,
+        held_out: bool = False,
+        status: Any = RunStatus.COMPLETED,
+        provenance: dict[str, Any] | None = None,
+    ) -> None:
+        base = {
+            "purpose": GAUNTLET_TRIAL_PURPOSE,
+            "gauntlet_candidate_content_hash": content_hash,
+            "trial_context_id": context_id,
+            "held_out": held_out,
+        }
+        self.runs[run_id] = SimpleNamespace(
+            status=status, provenance={**base, **(provenance or {})}
+        )
+
+
+class StoreRegisteringEvaluator:
+    """Wraps a scripted evaluator; registers every returned trial as a
+    completed canonical Run whose provenance binds it to the candidate."""
+
+    def __init__(
+        self,
+        inner: Any,
+        store: TrialRunStore,
+        *,
+        provenance_overrides: dict[str, Any] | None = None,
+    ) -> None:
+        self._inner = inner
+        self._store = store
+        self._overrides = provenance_overrides or {}
+        self.name = inner.name
+        self.version = inner.version
+
+    async def evaluate(self, candidate: GauntletCandidate) -> EvaluationRecord:
+        record = await self._inner.evaluate(candidate)
+        for trial in record.trials:
+            self._store.register(
+                trial.run_id,
+                content_hash=candidate.content_hash,
+                context_id=trial.context_id,
+                held_out=trial.held_out,
+                provenance=self._overrides,
+            )
+        return record
+
+
 def gauntlet(evaluator: Any, **kwargs: Any) -> IndependentTrialsGauntlet:
-    return IndependentTrialsGauntlet(evaluator, **kwargs)
+    """A gate whose evaluator's trials resolve to real, completed, bound Runs."""
+    store = TrialRunStore()
+    return IndependentTrialsGauntlet(
+        StoreRegisteringEvaluator(evaluator, store), run_store=store, **kwargs
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +581,70 @@ async def test_every_trial_must_name_one_distinct_run() -> None:
     assert "canonical_runs" in duplicated.failed_checks
 
 
+async def test_a_run_id_that_resolves_to_nothing_is_rejected() -> None:
+    """Fabricated, mistyped, and deleted ids all fail the same way: the store
+    has no such Run, and an audit trail that cannot be resolved is no trail."""
+    # The evaluator names runs the store was never told about.
+    store = TrialRunStore()
+    verdict = await IndependentTrialsGauntlet(passing_evaluator(), run_store=store).evaluate(
+        make_learning()
+    )
+
+    assert not verdict.ok
+    assert "canonical_runs" in verdict.failed_checks
+
+
+async def test_a_run_that_never_completed_cannot_validate() -> None:
+    """A trial still running, failed, or cancelled proves nothing about the
+    candidate — the record's `success` flag alone is not the spine's word."""
+    learning = make_learning()
+    content_hash = freeze_candidate(learning).content_hash
+    record = passing_trials(content_hash)
+    for status in (RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED):
+        store = TrialRunStore()
+        for trial in record.trials:
+            store.register(
+                trial.run_id,
+                content_hash=content_hash,
+                context_id=trial.context_id,
+                held_out=trial.held_out,
+                status=status,
+            )
+        gate = IndependentTrialsGauntlet(passing_evaluator(), run_store=store)
+        verdict = await gate.evaluate(learning)
+
+        assert not verdict.ok, status
+        assert "run_outcome" in verdict.failed_checks, status
+
+
+async def test_run_provenance_must_bind_to_this_candidate_and_context() -> None:
+    """A real, completed Run from some other execution is not evidence here."""
+    cases: tuple[dict[str, Any], ...] = (
+        {"gauntlet_candidate_content_hash": "hash-of-some-other-candidate"},
+        {"trial_context_id": "ctx-some-other-trial"},
+        {"purpose": "some-other-purpose"},
+        {"held_out": False},  # trials 1-2 report held_out=True
+    )
+    for overrides in cases:
+        store = TrialRunStore()
+        gate = IndependentTrialsGauntlet(
+            StoreRegisteringEvaluator(passing_evaluator(), store, provenance_overrides=overrides),
+            run_store=store,
+        )
+        verdict = await gate.evaluate(make_learning())
+
+        assert not verdict.ok, overrides
+        assert "run_provenance" in verdict.failed_checks, overrides
+
+
+async def test_without_a_run_store_the_gate_fails_closed() -> None:
+    """No store means no resolvable provenance, so nothing may promote."""
+    verdict = await IndependentTrialsGauntlet(passing_evaluator()).evaluate(make_learning())
+
+    assert not verdict.ok
+    assert "canonical_runs" in verdict.failed_checks
+
+
 async def test_unattributed_learning_cannot_be_validated() -> None:
     evaluator = passing_evaluator()
     verdict = await gauntlet(evaluator).evaluate(make_learning(run_id=""))
@@ -534,9 +664,11 @@ async def test_unattributed_learning_cannot_be_validated() -> None:
 
 async def test_chained_gauntlet_requires_every_member_and_merges_provenance() -> None:
     evaluator = passing_evaluator()
+    store = TrialRunStore()
+    store_backed = StoreRegisteringEvaluator(evaluator, store)
     # Only three trials ran; demanding five makes this member fail.
-    strict = IndependentTrialsGauntlet(evaluator, min_trials=5, name="strict")
-    lenient = IndependentTrialsGauntlet(evaluator, name="lenient")
+    strict = IndependentTrialsGauntlet(store_backed, min_trials=5, name="strict", run_store=store)
+    lenient = IndependentTrialsGauntlet(store_backed, name="lenient", run_store=store)
 
     chain = ChainedGauntlet(strict, lenient)
     rejected = await chain.evaluate(make_learning())
@@ -663,6 +795,7 @@ async def test_validating_trials_execute_as_real_canonical_runs() -> None:
             for context_id in ("ctx-a", "ctx-b", "ctx-held-out"):
                 run = await self._service.create_run(
                     self._graph,
+                    actor_principal_id="principal-gauntlet",
                     provenance={
                         "purpose": "learning-gauntlet-trial",
                         "gauntlet_candidate_content_hash": candidate.content_hash,
@@ -704,7 +837,11 @@ async def test_validating_trials_execute_as_real_canonical_runs() -> None:
 
     store = InMemoryLearningStore()
     await store.store(make_learning())
-    promoter = LearningPromoter(store, threshold=5, gauntlet=IndependentTrialsGauntlet(evaluator))
+    promoter = LearningPromoter(
+        store,
+        threshold=5,
+        gauntlet=IndependentTrialsGauntlet(evaluator, run_store=run_store),
+    )
     promoted = await promoter.check_and_promote()
 
     assert len(promoted) == 1
