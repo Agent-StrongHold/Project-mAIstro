@@ -23,8 +23,9 @@ One versioned answers schema — `InstallAnswersV1` (`schema_version: "1"`,
 templates in [`examples/`](examples/)) — is consumed equivalently by both
 entrypoints. On Unix it rides get.sh's passthrough into install.sh; on Windows
 `get.ps1 -AnswersFile` validates it, translates the path to the distro's
-`/mnt/<drive>` view, and forwards it as the same `--answers-file` argument to
-get.sh inside WSL:
+`/mnt` view of the Windows filesystem (`C:\Users\me\answers.yaml` becomes
+`/mnt/c/Users/me/answers.yaml`), and forwards it as the same `--answers-file`
+argument to get.sh inside WSL:
 
 - **Validated before mutation.** Both entrypoints check the answers contract
   before anything is installed: missing file, answers path that is a
