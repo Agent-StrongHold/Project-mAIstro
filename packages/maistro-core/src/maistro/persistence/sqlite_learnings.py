@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.learnings.evidence import (
@@ -25,6 +26,7 @@ from maistro.persistence.learning_contract import (
 from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import (
+    DEFAULT_LEARNING_CONFIDENCE,
     EPISTEMIC_BONUS,
     EpistemicType,
     Learning,
@@ -64,7 +66,17 @@ CREATE TABLE IF NOT EXISTS learnings (
     evidence_run_ids TEXT NOT NULL DEFAULT '[]',
     evaluation_ids TEXT NOT NULL DEFAULT '[]',
     stage TEXT NOT NULL DEFAULT 'memory',
+    epistemic_type TEXT NOT NULL DEFAULT 'empirical',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    applicability TEXT NOT NULL DEFAULT '{}',
+    reinforcement_count INTEGER NOT NULL DEFAULT 0,
+    contradiction_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    last_confirmed_at TEXT,
     validated_by TEXT NOT NULL DEFAULT '',
+    validated_at TEXT,
+    supersedes INTEGER,
+    superseded_by INTEGER,
     promoted_by TEXT NOT NULL DEFAULT ''
 )
 """
@@ -85,14 +97,6 @@ CREATE TABLE IF NOT EXISTS learning_stage_transitions (
 )
 """
 
-#: Columns added to existing SQLite files without a default. NULL preserves the
-#: fact that an older row never recorded a scope/provenance value; the mapper
-#: exposes that absence as the dataclass's empty-string shape.
-_LEGACY_UPGRADE_COLUMNS = {
-    "source_query": "TEXT",
-    "team_id": "TEXT",
-}
-
 #: One module-level DDL table for every column an older file may lack, in the
 #: order the in-place upgrade adds them. One literal rather than several named
 #: collections because the retention-reference inventory's AST scan resolves a
@@ -111,23 +115,32 @@ _UPGRADE_COLUMNS = {
     "run_id": "TEXT",
     "node_run_id": "TEXT",
     "attempt_id": "TEXT",
-    # M4-B3: applicability, confidence and epistemic columns. Defaults are the
-    # legacy reading (observed / no applicability / unmeasured). `confidence`
-    # alone stays nullable: an unmeasured row must read back as unmeasured,
-    # because promotion treats NULL as a blocker and a fabricated 0.0 would
-    # read as "measured and failed".
-    "epistemic_type": "TEXT NOT NULL DEFAULT 'observed'",
+    # Applicability, confidence and epistemic columns (M4-B3 + the pipeline
+    # epistemics ADR-100126-8c2d). Defaults mirror the dataclass: a pre-epistemics
+    # row lands as the local empirical learning it implicitly was. `confidence`
+    # alone stays nullable: an unmeasured row is stored as NULL, and the decode
+    # maps a legacy NULL to the default — it must never read back as measured,
+    # and promotion blocks it at the floor either way.
+    "epistemic_type": "TEXT NOT NULL DEFAULT 'empirical'",
     "works_when": "TEXT NOT NULL DEFAULT '[]'",
     "avoid_in": "TEXT NOT NULL DEFAULT '[]'",
     "confidence": "REAL",
     "evidence_run_ids": "TEXT NOT NULL DEFAULT '[]'",
     "evaluation_ids": "TEXT NOT NULL DEFAULT '[]'",
+    "applicability": "TEXT NOT NULL DEFAULT '{}'",
+    "reinforcement_count": "INTEGER NOT NULL DEFAULT 0",
+    "contradiction_count": "INTEGER NOT NULL DEFAULT 0",
+    "created_at": "TEXT",
+    "last_confirmed_at": "TEXT",
     # M4-B1 (ADR-103): the stage columns default to the bottom rung with blank
     # actors. Pre-ladder rows keep `memory` and never gain a fabricated
     # validation or promotion claim; the ledger starts empty and records only
     # transitions that actually happened.
     "stage": "TEXT NOT NULL DEFAULT 'memory'",
     "validated_by": "TEXT NOT NULL DEFAULT ''",
+    "validated_at": "TEXT",
+    "supersedes": "INTEGER",
+    "superseded_by": "INTEGER",
     "promoted_by": "TEXT NOT NULL DEFAULT ''",
 }
 
@@ -161,9 +174,17 @@ _SQLITE_INSERT_FIELDS = (
     "confidence",
     "evidence_run_ids",
     "evaluation_ids",
+    "applicability",
+    "reinforcement_count",
+    "contradiction_count",
+    "created_at",
+    "last_confirmed_at",
     "stage",
     "validated_by",
+    "validated_at",
     "promoted_by",
+    "supersedes",
+    "superseded_by",
 )
 
 
@@ -248,8 +269,11 @@ class SqliteLearningStore:
                 run_id, node_run_id, attempt_id,
                 epistemic_type, works_when, avoid_in, confidence,
                 evidence_run_ids, evaluation_ids,
-                stage, validated_by, promoted_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                applicability, reinforcement_count, contradiction_count,
+                created_at, last_confirmed_at,
+                stage, validated_by, validated_at, promoted_by,
+                supersedes, superseded_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -274,9 +298,19 @@ class SqliteLearningStore:
                 learning.confidence,
                 json.dumps(list(learning.evidence_run_ids)),
                 json.dumps(list(learning.evaluation_ids)),
+                json.dumps(learning.applicability),
+                learning.reinforcement_count,
+                learning.contradiction_count,
+                _utc_text(learning.created_at),
+                _utc_text(learning.last_confirmed_at)
+                if learning.last_confirmed_at is not None
+                else None,
                 learning.stage,
                 learning.validated_by,
+                _utc_text(learning.validated_at) if learning.validated_at is not None else None,
                 learning.promoted_by,
+                learning.supersedes,
+                learning.superseded_by,
             ),
         )
         await self._conn.commit()
@@ -468,6 +502,48 @@ class SqliteLearningStore:
             [1 if success else 0, *learning_ids, org_id],
         )
         await self._conn.commit()
+
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        cursor = await self._conn.execute(
+            """SELECT * FROM learnings
+               WHERE success_after_use + failure_after_use >= ?
+                 AND failure_after_use > success_after_use
+               ORDER BY id DESC""",
+            (min_uses,),
+        )
+        columns = [d[0] for d in cursor.description]
+        rows = await cursor.fetchall()
+        return [_row_to_learning(dict(zip(columns, row, strict=True))) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        cursor = await self._conn.execute(
+            """UPDATE learnings
+               SET epistemic_type = 'anti_pattern',
+                   confidence = MAX(confidence, ?)
+               WHERE id = ? AND org_id = ?""",
+            (confidence_floor, learning_id, org_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     async def check_auto_promotions(
         self,
@@ -670,48 +746,98 @@ def _json_list(row: dict[str, Any], name: str) -> list[str]:
     return []
 
 
-def _text_or(row: dict[str, Any], name: str, default: str) -> str:
-    """Read a nullable text column with an explicit fallback.
+def _provenance_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": json.loads(row.get("trigger_keys") or "[]"),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name") or "",
+        "source_query": _text(row, "source_query"),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": _text(row, "team_id"),
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status") or "active",
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention") or "",
+        "run_id": _text(row, "run_id"),
+        "node_run_id": _text(row, "node_run_id"),
+        "attempt_id": _text(row, "attempt_id"),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
+    }
 
-    The row-level shape of `Learning`'s string fields: the column is nullable,
-    the dataclass field is not, and each field carries its own honest default
-    (`""` for "not recorded", `"active"` for status). Named rather than spelled
-    `row.get(x) or y` at every call site so the mapper reads as a table of
-    dispositions instead of a wall of `or` operators — and so the shared rule
-    (NULL and empty both fall back) lives in one place.
+
+def _lifecycle_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d, M4-B3).
+
+    Defaults mirror the dataclass so a pre-M4B row reads back as the local
+    empirical learning on the bottom rung that it was, not as something the
+    system never claimed. Applicability and provenance (M4-B3) decode with the
+    same tolerance as every other column: consolidation and rewording must
+    never lose the evidence a claim rests on because one column held junk.
     """
-    return str(row.get(name) or default)
+    return {
+        "stage": LearningStage(row.get("stage") or "memory"),
+        "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
+        "confidence": (
+            float(row["confidence"])
+            if row.get("confidence") is not None
+            else DEFAULT_LEARNING_CONFIDENCE
+        ),
+        "works_when": _json_list(row, "works_when"),
+        "avoid_in": _json_list(row, "avoid_in"),
+        "evidence_run_ids": _json_list(row, "evidence_run_ids"),
+        "evaluation_ids": _json_list(row, "evaluation_ids"),
+        "applicability": _load_applicability(row.get("applicability")),
+        "reinforcement_count": row.get("reinforcement_count") or 0,
+        "contradiction_count": row.get("contradiction_count") or 0,
+        "created_at": _load_moment(row.get("created_at")) or datetime.now(UTC),
+        "last_confirmed_at": _load_moment(row.get("last_confirmed_at")),
+        "validated_by": _text(row, "validated_by"),
+        "validated_at": _load_moment(row.get("validated_at")),
+        "promoted_by": _text(row, "promoted_by"),
+        "supersedes": row.get("supersedes"),
+        "superseded_by": row.get("superseded_by"),
+    }
 
 
 def _row_to_learning(row: dict[str, Any]) -> Learning:
-    return Learning(
-        id=row["id"],
-        category=_text_or(row, "category", ""),
-        trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
-        learning=row["learning"],
-        tool_name=_text_or(row, "tool_name", ""),
-        source_query=_text(row, "source_query"),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=_text_or(row, "org_id", ""),
-        team_id=_text(row, "team_id"),
-        scope=MemoryScope(_text_or(row, "scope", "agent")),
-        hit_count=row.get("hit_count", 0),
-        status=_text_or(row, "status", "active"),
-        rca_category=row.get("rca_category"),
-        rca_prevention=_text_or(row, "rca_prevention", ""),
-        run_id=_text(row, "run_id"),
-        node_run_id=_text(row, "node_run_id"),
-        attempt_id=_text(row, "attempt_id"),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
-        epistemic_type=EpistemicType(_text_or(row, "epistemic_type", "observed")),
-        works_when=_json_list(row, "works_when"),
-        avoid_in=_json_list(row, "avoid_in"),
-        confidence=row.get("confidence"),
-        evidence_run_ids=_json_list(row, "evidence_run_ids"),
-        evaluation_ids=_json_list(row, "evaluation_ids"),
-        stage=LearningStage(_text_or(row, "stage", "memory")),
-        validated_by=_text(row, "validated_by"),
-        promoted_by=_text(row, "promoted_by"),
-    )
+    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
+
+
+def _utc_text(moment: datetime) -> str:
+    """An instant as text that sorts in instant order (see sqlite_outcomes)."""
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC).isoformat()
+    return moment.astimezone(UTC).isoformat()
+
+
+def _load_moment(raw: object) -> datetime | None:
+    """Decode an instant column; NULL or unparseable text names no instant."""
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _load_applicability(raw: object) -> dict[str, list[str]]:
+    """Decode `applicability`, tolerating NULL or malformed text like `trigger_keys`."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): [str(v) for v in values] for k, values in raw.items()}
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            return {}
+        if isinstance(decoded, dict):
+            return {str(k): [str(v) for v in values] for k, values in decoded.items()}
+    return {}

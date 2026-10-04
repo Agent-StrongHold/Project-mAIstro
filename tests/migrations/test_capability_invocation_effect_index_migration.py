@@ -66,13 +66,13 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # `050_design_creative_briefs` after that. #792's eval-score evidence,
     # which had taken `049` on develop while this branch's artifact-version
     # ledger took the same number on the same parent, re-parents onto that
-    # `050` as `051_canonical_run_eval_scores`. Both this sync's stage ladder
-    # (M4-B1, ADR-103) and this branch's learning migration (M4-B3, #119)
-    # then took `052` on parent `051` — the same collision the convention
-    # exists for — so the applicability migration re-parents onto the ladder
-    # as `053_learning_applicability_epistemics`, and the single linear head
-    # is `053`.
-    walked = {item.revision for item in directory.walk_revisions("base", "053")}
+    # `050` as `051_canonical_run_eval_scores`. The M4-B1 stage ladder
+    # (ADR-103) took `052`, develop's M4-B5 sync (#1753) took `053` for the
+    # learning lifecycle columns, and this branch's learning applicability
+    # migration (M4-B3, #119) — after four collision renumberings — re-parents
+    # onto that `053` as `054_learning_applicability_epistemics`, so the
+    # single linear head is `054`.
+    walked = {item.revision for item in directory.walk_revisions("base", "054")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -85,7 +85,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "051" in walked
     assert "052" in walked
     assert "053" in walked
-    assert directory.get_heads() == ["053"]
+    assert "054" in walked
+    assert directory.get_heads() == ["054"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

@@ -21,6 +21,8 @@ from maistro.persistence.sqlite_learnings import (
 )
 from maistro.types.memory import Learning
 
+pytestmark = [pytest.mark.contract("behavioral")]
+
 
 def _sqlite_columns() -> set[str]:
     columns: set[str] = set()

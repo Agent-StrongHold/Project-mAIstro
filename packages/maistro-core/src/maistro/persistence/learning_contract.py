@@ -32,14 +32,29 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "run_id",
         "node_run_id",
         "attempt_id",
+        # Epistemic qualification (M4-B3 / ADR-100126-b3c7): applicability,
+        # evidence strength and provenance are durable like every other field.
         "epistemic_type",
         "works_when",
         "avoid_in",
         "confidence",
         "evidence_run_ids",
         "evaluation_ids",
+        # Knowledge-stage ladder + pipeline epistemics (ADR-103, ADR-100126-8c2d,
+        # EPIC M4-B). A restart must not demote a validated learning back to a
+        # local belief or resurrect a superseded one, so the lifecycle state is
+        # durable like every other field. (`epistemic_type` and `confidence`
+        # are already listed above — one record, one field each.)
         "stage",
+        "applicability",
+        "reinforcement_count",
+        "contradiction_count",
+        "created_at",
+        "last_confirmed_at",
         "validated_by",
+        "validated_at",
         "promoted_by",
+        "supersedes",
+        "superseded_by",
     }
 )

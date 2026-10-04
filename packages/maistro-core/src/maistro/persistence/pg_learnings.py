@@ -6,6 +6,7 @@ import itertools
 import json
 import logging
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.learnings.evidence import (
@@ -26,6 +27,7 @@ from maistro.persistence.learning_contract import (
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.types.memory import (
+    DEFAULT_LEARNING_CONFIDENCE,
     EPISTEMIC_BONUS,
     EpistemicType,
     Learning,
@@ -74,22 +76,39 @@ _PG_INSERT_FIELDS = (
     "confidence",
     "evidence_run_ids",
     "evaluation_ids",
+    "applicability",
+    "reinforcement_count",
+    "contradiction_count",
+    "created_at",
+    "last_confirmed_at",
     "stage",
     "validated_by",
+    "validated_at",
     "promoted_by",
+    "supersedes",
+    "superseded_by",
 )
 
 #: The belt-and-braces upgrade adds these in `ensure_schema`, mirroring what
-#: migration 048 declares. `confidence` is the only nullable one: an unmeasured
-#: row must read back as unmeasured, because promotion treats NULL as a blocker
-#: and a fabricated default would read as measured (M4-B3).
+#: the applicability/lifecycle migrations declare. `confidence` stays nullable
+#: on disk — an unmeasured row is stored as NULL — while the decode maps a
+#: pre-lifecycle NULL to the dataclass default, so a legacy row reads back as
+#: the local empirical learning at default confidence it implicitly was
+#: (never as measured, and promotion still blocks it at the floor).
 _EPISTEMIC_COLUMNS = (
-    ("epistemic_type", "TEXT NOT NULL DEFAULT 'observed'"),
+    ("epistemic_type", "TEXT NOT NULL DEFAULT 'empirical'"),
     ("works_when", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
     ("avoid_in", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
     ("confidence", "DOUBLE PRECISION"),
     ("evidence_run_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
     ("evaluation_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("applicability", "JSONB NOT NULL DEFAULT '{}'::jsonb"),
+    ("reinforcement_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("contradiction_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_confirmed_at", "TIMESTAMPTZ"),
+    ("validated_at", "TIMESTAMPTZ"),
+    ("supersedes", "BIGINT"),
+    ("superseded_by", "BIGINT"),
 )
 
 
@@ -236,7 +255,9 @@ class PgLearningStore:
                 # column the writer skips is a column that always reads back as
                 # its default. `hit_count` is usually 0 on a new learning, but
                 # a caller that supplies one — a re-import, a merge — must get
-                # it back, and `find_relevant` orders by it.
+                # it back, and `find_relevant` orders by it. The lifecycle
+                # fields (ADR-100126-8c2d) are written for the same reason: a restart
+                # must not demote a validated learning back to a local belief.
                 """INSERT INTO learnings
                    (category, trigger_keys, learning, tool_name, source_query,
                     agent_id, user_id, org_id, team_id, scope, hit_count, status,
@@ -245,10 +266,14 @@ class PgLearningStore:
                     run_id, node_run_id, attempt_id,
                     epistemic_type, works_when, avoid_in, confidence,
                     evidence_run_ids, evaluation_ids,
-                    stage, validated_by, promoted_by)
+                    applicability, reinforcement_count, contradiction_count,
+                    created_at, last_confirmed_at,
+                    stage, validated_by, validated_at, promoted_by,
+                    supersedes, superseded_by)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                            $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-                           $23, $24, $25, $26, $27, $28)
+                           $23, $24, $25, $26, $27, $28, $29, $30, $31, $32,
+                           $33, $34, $35, $36)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -275,9 +300,17 @@ class PgLearningStore:
                 learning.confidence,
                 _dump_keys(learning.evidence_run_ids),
                 _dump_keys(learning.evaluation_ids),
+                json.dumps(learning.applicability),
+                learning.reinforcement_count,
+                learning.contradiction_count,
+                learning.created_at,
+                learning.last_confirmed_at,
                 learning.stage,
                 learning.validated_by,
+                learning.validated_at,
                 learning.promoted_by,
+                learning.supersedes,
+                learning.superseded_by,
             )
             return int(row["id"]) if row else 0
 
@@ -574,6 +607,50 @@ class PgLearningStore:
                 1 if success else 0,
             )
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM learnings
+                   WHERE success_after_use + failure_after_use >= $1
+                     AND failure_after_use > success_after_use
+                   ORDER BY id DESC""",
+                min_uses,
+            )
+        return [_row_to_learning(row) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE learnings
+                   SET epistemic_type = 'anti_pattern',
+                       confidence = GREATEST(confidence, $2)
+                   WHERE id = $1 AND org_id = $3
+                   RETURNING id""",
+                learning_id,
+                confidence_floor,
+                org_id,
+            )
+            return row is not None
+
     async def check_auto_promotions(
         self,
         threshold: int = 5,
@@ -795,56 +872,84 @@ def _load_keys(raw: object) -> list[str]:
     return []
 
 
-def _stage_provenance(row: asyncpg.Record) -> tuple[LearningStage, str, str]:
-    """Decode the ladder columns (ADR-103): nullable SQL to the dataclass's shapes.
-
-    ``or`` because the columns are nullable and the fields are not: a row that
-    predates the ladder (or a transition that never named one) reads back as
-    the plain-memory default, not as a NULL the mapper would have to special-case.
-    """
-    return (
-        LearningStage(row.get("stage") or "memory"),
-        row.get("validated_by") or "",
-        row.get("promoted_by") or "",
-    )
-
-
-def _row_to_learning(row: asyncpg.Record) -> Learning:
-    _ladder = _stage_provenance(row)
-    return Learning(
-        id=row["id"],
-        category=row.get("category") or "",
-        trigger_keys=_load_keys(row.get("trigger_keys")),
-        learning=row["learning"],
-        tool_name=row.get("tool_name", ""),
+def _provenance_fields(row: asyncpg.Record) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": _load_keys(row.get("trigger_keys")),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name", ""),
         # Preserve both the provenance query and team scope on reads; they are
         # part of the Learning contract, not write-only SQL columns.
-        source_query=row.get("source_query", ""),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=row.get("team_id") or "",
-        scope=MemoryScope(row.get("scope") or "agent"),
-        hit_count=row.get("hit_count", 0),
-        status=row.get("status", "active"),
-        rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention", ""),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
+        "source_query": row.get("source_query", ""),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": row.get("team_id") or "",
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status", "active"),
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention", ""),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
         # `or ""` because the columns are nullable and the dataclass fields are
         # not: a row with no producer comes back as a Learning naming none,
         # which is the same fact in the shape the caller expects (#709).
-        run_id=row.get("run_id") or "",
-        node_run_id=row.get("node_run_id") or "",
-        attempt_id=row.get("attempt_id") or "",
-        epistemic_type=EpistemicType(row.get("epistemic_type") or "observed"),
-        works_when=_load_keys(row.get("works_when")),
-        avoid_in=_load_keys(row.get("avoid_in")),
-        confidence=row.get("confidence"),
-        evidence_run_ids=_load_keys(row.get("evidence_run_ids")),
-        evaluation_ids=_load_keys(row.get("evaluation_ids")),
-        # Ladder provenance (ADR-103): decode in one place, see _stage_provenance.
-        stage=_ladder[0],
-        validated_by=_ladder[1],
-        promoted_by=_ladder[2],
-    )
+        "run_id": row.get("run_id") or "",
+        "node_run_id": row.get("node_run_id") or "",
+        "attempt_id": row.get("attempt_id") or "",
+    }
+
+
+def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
+    """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d, M4-B3).
+
+    Defaults mirror the dataclass so a row written before the applicability
+    and lifecycle migrations reads back as the local empirical learning on
+    the bottom rung that it was, not as something the system never claimed.
+    """
+    return {
+        "stage": LearningStage(row.get("stage") or "memory"),
+        "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
+        "confidence": (
+            float(row["confidence"])
+            if row.get("confidence") is not None
+            else DEFAULT_LEARNING_CONFIDENCE
+        ),
+        "works_when": _load_keys(row.get("works_when")),
+        "avoid_in": _load_keys(row.get("avoid_in")),
+        "evidence_run_ids": _load_keys(row.get("evidence_run_ids")),
+        "evaluation_ids": _load_keys(row.get("evaluation_ids")),
+        "applicability": _load_applicability(row.get("applicability")),
+        "reinforcement_count": row.get("reinforcement_count") or 0,
+        "contradiction_count": row.get("contradiction_count") or 0,
+        "created_at": row.get("created_at") or datetime.now(UTC),
+        "last_confirmed_at": row.get("last_confirmed_at"),
+        "validated_by": row.get("validated_by") or "",
+        "validated_at": row.get("validated_at"),
+        "promoted_by": row.get("promoted_by") or "",
+        "supersedes": row.get("supersedes"),
+        "superseded_by": row.get("superseded_by"),
+    }
+
+
+def _row_to_learning(row: asyncpg.Record) -> Learning:
+    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
+
+
+def _load_applicability(raw: object) -> dict[str, list[str]]:
+    """Decode `applicability`, tolerating NULL or malformed text like `_load_keys`."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): [str(v) for v in values] for k, values in raw.items()}
+    if isinstance(raw, str | bytes | bytearray):
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        if isinstance(decoded, dict):
+            return {str(k): [str(v) for v in values] for k, values in decoded.items()}
+    return {}

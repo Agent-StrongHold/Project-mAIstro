@@ -59,6 +59,17 @@ FAST_DECAY: float = 2.0  # decay_rate multiplier on thumbs-down
 WISDOM_PROMOTE_THRESHOLD: int = 5  # reinforcement_count to promote -> WISDOM
 REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
 
+# Learning pipeline dynamics (ADR-100126-8c2d / EPIC M4-B). A validated learning cannot
+# sit below the validation floor -- the Gauntlet accepted its evidence -- and
+# failure knowledge decays slowest: an anti-pattern cost a real failure to
+# learn, and forgetting it re-buys that failure (the Learning-side mirror of
+# REGRET's structural 0.6 floor).
+DEFAULT_LEARNING_CONFIDENCE: float = 0.5
+VALIDATED_CONFIDENCE_FLOOR: float = 0.6
+ANTI_PATTERN_CONFIDENCE_FLOOR: float = 0.6
+EMPIRICAL_HALF_LIFE_DAYS: float = 30.0
+ANTI_PATTERN_HALF_LIFE_DAYS: float = 120.0
+
 
 class EpistemicType(StrEnum):
     """How a learning claims to know what it says (M4-B3).
@@ -86,6 +97,17 @@ class EpistemicType(StrEnum):
     COUNTERFACTUAL = "counterfactual"
     #: Imported/asserted from an external source (e.g. CoinSwarm wisdom JSON).
     REPORTED = "reported"
+    # Pipeline-epistemics members (#117/#121, ADR-100126-8c2d), reconciled with
+    # M4-B3's ladder above: EMPIRICAL is the default for captured tool
+    # corrections (the "observed" reading under a pipeline name), INFERENTIAL
+    # marks RCA-derived diagnosis, ANTI_PATTERN marks failure knowledge that
+    # decays slowest because forgetting it re-buys the failure.
+    #: Observed fail->succeed (or first-try success) correction from tool history.
+    EMPIRICAL = "empirical"
+    #: RCA-derived diagnosis: inferred cause, not directly observed.
+    INFERENTIAL = "inferential"
+    #: Failure knowledge: what to stop doing. Retained near-permanently (#121).
+    ANTI_PATTERN = "anti_pattern"
 
 
 #: Retrieval bonus added to the keyword score in `find_relevant` (M4-B3). All
@@ -98,6 +120,13 @@ EPISTEMIC_BONUS: dict[EpistemicType, float] = {
     EpistemicType.REPORTED: 0.2,
     EpistemicType.INFERRED: 0.1,
     EpistemicType.COUNTERFACTUAL: 0.0,
+    # Pipeline members mirror their M4-B3 readings: EMPIRICAL ranks as the
+    # observation it is, INFERENTIAL as the inference it is, and an anti-pattern
+    # (asserted failure knowledge) ranks beside REPORTED until a gauntlet
+    # validates it.
+    EpistemicType.EMPIRICAL: 0.3,
+    EpistemicType.INFERENTIAL: 0.1,
+    EpistemicType.ANTI_PATTERN: 0.2,
 }
 
 
@@ -207,32 +236,53 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
-    # Epistemic qualification (M4-B3 / ADR-100126-b3c7). `run_id` above names
+    # Epistemic qualification (M4-B3 / ADR-100126-b3c7, reconciled with the
+    # pipeline epistemics #117/#121 ADR-100126-8c2d). `run_id` above names
     # the one Run that *produced* the text; `evidence_run_ids` names every Run
     # whose outcome *supports* the claim — a list, because consolidation and
     # rewording merge rows while their supporting executions accumulate. A
     # learning with neither list nor producer has no validation evidence and
-    # cannot be promoted, no matter how it reads.
-    epistemic_type: EpistemicType = EpistemicType.OBSERVED
+    # cannot be promoted, no matter how it reads. EMPIRICAL is the default
+    # epistemic type: a captured tool correction is measured until reclassified.
+    epistemic_type: EpistemicType = EpistemicType.EMPIRICAL
     #: Contexts where the claim is known to hold (CoinSwarm wisdom's `excels_in`).
     works_when: list[str] = field(default_factory=list)
     #: Contexts where the claim failed or must not be applied (`avoid_in`).
     avoid_in: list[str] = field(default_factory=list)
-    #: Evidence strength in [0, 1]; `None` means unmeasured — which blocks
-    #: promotion, because "no one measured" and "perfectly confident" must not
-    # read as the same record (the rule ADR-083026-a91e set for metrics).
-    confidence: float | None = None
+    #: 0..1 belief strength, decayed toward the epistemic floor over time.
+    #: `None` means unmeasured — which blocks promotion, because "no one
+    #: measured" and "perfectly confident" must not read as the same record
+    #: (the rule ADR-083026-a91e set for metrics). A fresh row starts at
+    #: DEFAULT_LEARNING_CONFIDENCE, below the promotion floor.
+    confidence: float | None = DEFAULT_LEARNING_CONFIDENCE
     evidence_run_ids: list[str] = field(default_factory=list)
     #: Evaluation records that scored the claim; the only evidence a
     #: COUNTERFACTUAL claim can be promoted on.
     evaluation_ids: list[str] = field(default_factory=list)
-    # Knowledge-stage ladder (M4-B1 / ADR-103). `stage` is semantics;
+    #: Where this learning applies, e.g. {"task_types": ["deploy"], "tools": ["bash"]}.
+    applicability: dict[str, list[str]] = field(default_factory=dict)
+    reinforcement_count: int = 0
+    contradiction_count: int = 0
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    #: Last reinforcement instant; the decay clock anchors here, not created_at.
+    last_confirmed_at: datetime | None = None
+    # Knowledge-stage ladder (M4-B1 / ADR-103) with the pipeline epistemics
+    # (#117/#121, ADR-100126-8c2d). `stage` is the knowledge pipeline position;
     # `status` stays the read surface (`promoted`-only readers keep working).
+    # They move together only where they must: committing a learning to the
+    # repertoire sets status="promoted" so those readers keep working.
     # `validated_by`/`promoted_by` name the actor of the corresponding
     # transition — blank means "never happened", never a fabricated default.
     stage: LearningStage = LearningStage.MEMORY
+    #: Gauntlet provenance (#118): which independent validator accepted, and when.
     validated_by: str = ""
+    validated_at: datetime | None = None
+    #: Promotion actor (ADR-103): who committed the validated claim for reuse.
     promoted_by: str = ""
+    #: Supersession links (#120). Both rows survive: institutional knowledge is
+    # retained, so later Runs can ask what used to be believed.
+    supersedes: int | None = None
+    superseded_by: int | None = None
 
 
 @dataclass

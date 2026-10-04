@@ -565,6 +565,15 @@ class Agent:
                 success=not tool_had_failures,
                 org_id=org_id,
             )
+            if tool_had_failures and self._learning_promoter:
+                # Failure knowledge capture (#121, ADR-100126-8c2d): this turn's
+                # recorded failure is the evidence that just moved. When a
+                # learning's recorded failures now dominate its successes,
+                # the promoter reclassifies it as retained ANTI_PATTERN
+                # knowledge, so later Runs stop re-buying the failure.
+                # Reclassification is not validation: the repertoire still
+                # requires the Gauntlet like any other learning.
+                await self._learning_promoter.capture_anti_patterns(org_id)
 
     async def _prepare_user_input(
         self,

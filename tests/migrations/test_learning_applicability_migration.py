@@ -100,16 +100,18 @@ def at_047():
 
 
 class TestTheEpistemicColumnsLand:
-    def test_a_legacy_row_reads_observed_with_empty_applicability_and_no_confidence(
+    def test_a_legacy_row_reads_empirical_with_empty_applicability_and_no_confidence(
         self, at_047
     ) -> None:
-        """The honest reading of a pre-M4-B3 row, not fabricated evidence.
+        """The honest reading of a pre-M4-B row, not fabricated evidence.
 
         `confidence` arrives NULL — "never measured" is a promotion blocker,
         while a 0.0 default would read as measured-and-failing and a 1.0 as
         measured-and-perfect (the rule ADR-083026-a91e set for metrics). The
         defaulted columns backfill, so the NOT NULL add succeeds on a
-        populated table.
+        populated table. The epistemic default is `empirical`, the reconciled
+        pipeline-epistemics reading (ADR-100126-8c2d) that `053` landed: a
+        captured tool correction is empirical-by-construction.
         """
         assert _alembic("upgrade", "head").returncode == 0
 
@@ -121,7 +123,7 @@ class TestTheEpistemicColumnsLand:
             "where org_id = 'org-legacy'"
         )
         assert rows == [
-            ("observed", [], [], None, [], []),
+            ("empirical", [], [], None, [], []),
         ]
 
     def test_the_reapplied_chain_is_adopted_with_a_pre_existing_row(self, at_047) -> None:

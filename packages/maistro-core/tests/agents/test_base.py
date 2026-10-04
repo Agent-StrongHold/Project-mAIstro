@@ -175,9 +175,14 @@ class _FakeRcaExtractor:
 class _FakeLearningPromoter:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.captured: list[str] = []
 
     async def check_and_promote(self, *, org_id: str) -> None:
         self.calls.append(org_id)
+
+    async def capture_anti_patterns(self, org_id: str = "", *, min_uses: int = 3) -> list[Any]:
+        self.captured.append(org_id)
+        return []
 
 
 class _FakeCoinLedger:
@@ -1357,6 +1362,62 @@ class TestHandleRcaAndLearningExtraction:
 
         assert learning_store.marked == [([7, 8], True, "org-1")]
         assert events == ["mark_outcome", "check_and_promote"]
+
+    async def test_failed_turn_records_outcome_then_captures_anti_patterns(self) -> None:
+        # #121: the failure this turn just recorded is the evidence that may
+        # tip a learning into "repeatedly followed into failure", so the
+        # capture sweep runs after the outcome is written, on the same turn.
+        promoter = _FakeLearningPromoter()
+        learning_store = _FakeLearningStore()
+        context_builder = _FakeContextBuilder(learning_ids=[7])
+        result = ReasoningResult(
+            response="done",
+            tool_history=[{"tool_name": "x", "result": "Error: failed"}],
+        )
+        agent = _make_agent(
+            _RecordingStrategy(result),
+            context_builder=context_builder,
+            learning_store=learning_store,
+            learning_promoter=promoter,
+        )
+
+        await agent.handle(messages=[{"role": "user", "content": "x"}], auth=_Auth())
+
+        assert learning_store.marked == [([7], False, "org-1")]
+        assert promoter.captured == ["org-1"]
+
+    async def test_successful_turn_does_not_capture_anti_patterns(self) -> None:
+        promoter = _FakeLearningPromoter()
+        learning_store = _FakeLearningStore()
+        context_builder = _FakeContextBuilder(learning_ids=[7])
+        agent = _make_agent(
+            _RecordingStrategy(ReasoningResult(response="done")),
+            context_builder=context_builder,
+            learning_store=learning_store,
+            learning_promoter=promoter,
+        )
+
+        await agent.handle(messages=[{"role": "user", "content": "x"}], auth=_Auth())
+
+        assert learning_store.marked == [([7], True, "org-1")]
+        assert promoter.captured == []
+
+    async def test_failed_turn_without_injected_learnings_skips_capture(self) -> None:
+        # No injected learning, no outcome moved, nothing new to measure:
+        # the sweep would be a scan with no evidence behind it.
+        promoter = _FakeLearningPromoter()
+        result = ReasoningResult(
+            response="done",
+            tool_history=[{"tool_name": "x", "result": "Error: failed"}],
+        )
+        agent = _make_agent(
+            _RecordingStrategy(result),
+            learning_promoter=promoter,
+        )
+
+        await agent.handle(messages=[{"role": "user", "content": "x"}], auth=_Auth())
+
+        assert promoter.captured == []
 
 
 class TestHandlePersistence:

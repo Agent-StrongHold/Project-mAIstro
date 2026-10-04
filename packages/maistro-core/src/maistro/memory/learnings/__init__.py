@@ -10,7 +10,14 @@ first import of any sibling (`learnings.store`, `learnings.evidence`) the
 container wires.
 """
 
-from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
+from maistro.memory.learnings.gauntlet import ChainedGauntlet, OutcomeEvidenceGauntlet
+from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle, effectiveness
 from maistro.memory.learnings.wisdom import learning_from_wisdom
 
-__all__ = ["InMemoryLearningLifecycle", "learning_from_wisdom"]
+__all__ = [
+    "ChainedGauntlet",
+    "InMemoryLearningLifecycle",
+    "OutcomeEvidenceGauntlet",
+    "effectiveness",
+    "learning_from_wisdom",
+]
