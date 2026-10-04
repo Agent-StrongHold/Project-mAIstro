@@ -1135,12 +1135,12 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/autorun.py::run_autonomous",
       "path": "packages/maistro-rsi/src/maistro_rsi/autorun.py",
-      "line": 726,
+      "line": 968,
       "name": "run_autonomous",
       "classname": null,
-      "rank": "D",
-      "complexity": 22,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "rank": "C",
+      "complexity": 17,
+      "rationale": "Refactored in the M5-B stall-intervention change (#111): the per-cycle learnings recall and the intervention-record merge moved into _recall_prior_learnings/_extend_interventions_unique, taking the block from D(22) to C(17). Recorded at the reduced complexity so the ledger tracks the improvement instead of silently holding slack."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::_lint_gates",
