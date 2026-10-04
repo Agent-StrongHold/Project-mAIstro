@@ -107,6 +107,10 @@ CORE_PUBLIC_SURFACE = [
     "maistro.config",
     "maistro.constants",
     "maistro.delivery",
+    # #107: persistent, forkable evaluation workspaces -- durable bookkeeping
+    # over the M2 sandbox substrate (digests, snapshots, forks, warm pool).
+    # Pure-library surface, no extras required.
+    "maistro.eval_workspace",
     "maistro.governance",
     "maistro.integrations",
     "maistro.interop",
