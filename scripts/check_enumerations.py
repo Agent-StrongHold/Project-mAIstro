@@ -360,7 +360,9 @@ def check_sensitive_paths() -> tuple[list[Gap], str | None]:
     return gaps, None
 
 
-def _dead_patterns(patterns: tuple[str, ...]) -> list[Gap]:
+def _dead_patterns(
+    patterns: tuple[str, ...], *, list_name: str = "SENSITIVE_PATH_PATTERNS"
+) -> list[Gap]:
     """Patterns that match nothing in the tree.
 
     The inverse direction of the coverage probes above, and the gate's own
@@ -386,7 +388,7 @@ def _dead_patterns(patterns: tuple[str, ...]) -> list[Gap]:
                 Gap(
                     "sensitive_paths",
                     f"pattern:{pattern}",
-                    "SENSITIVE_PATH_PATTERNS entry matches no tracked file",
+                    f"{list_name} entry matches no tracked file",
                 )
             )
     return gaps
@@ -450,9 +452,69 @@ def _importable_children(root: Path, *, prefix: str) -> list[str]:
     return names
 
 
+# --- check B2: the evaluator-oracle surface must be covered (#109) ----------
+
+
+def check_evaluator_oracle_paths() -> tuple[list[Gap], str | None]:
+    """The oracle tier must cover the score-defining trees, and every tracked
+    pattern must be alive.
+
+    #109 added a second, stricter tier under the containment surface: the
+    artifacts that DEFINE success (scorer, pinning tests, scenario corpora,
+    ratchet baselines, AC trees) may not be edited by the candidate being
+    judged against them. Same failure mode as check B, one tier deeper: the
+    probes go through the REAL matcher, and a pattern matching nothing is a
+    gap, not a no-op.
+    """
+    sys.path.insert(0, str(REPO / "packages" / "maistro-rsi" / "src"))
+    try:
+        from maistro_rsi.quarantine import (
+            EVALUATOR_ORACLE_PATTERNS,
+            matches_evaluator_oracle_pattern,
+        )
+    except Exception as exc:  # pragma: no cover
+        return [], f"could not import oracle patterns ({type(exc).__name__}: {exc})"
+
+    # One representative path per score-defining surface the loop consumes.
+    # If any of these is unmatched, a candidate can edit that oracle in the
+    # diff that is judged against it.
+    probes = (
+        "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
+        "packages/maistro-rsi/src/maistro_rsi/fail_first.py",
+        "packages/maistro-rsi/src/maistro_rsi/regression_judge.py",
+        "packages/maistro-rsi/src/maistro_rsi/test_inventory.py",
+        "packages/maistro-rsi/src/maistro_rsi/spec_tracker.py",
+        "packages/maistro-evolve/src/maistro_evolve/scorecard.py",
+        "packages/maistro-evolve/src/maistro_evolve/coverage_gate.py",
+        "packages/maistro-evolve/src/maistro_evolve/benchmarks/ifeval.py",
+        "packages/maistro-rsi/tests/test_candidate_fitness.py",
+        "packages/maistro-evolve/tests/test_scorecard.py",
+        "scripts/vendor_ifeval.py",
+        "scripts/vendor_bfcl.py",
+        "quality/vulture-baseline.json",
+        "quality/ratchet-authorizations.json",
+        "docs/specs/SPEC-000-example.md",
+    )
+    gaps: list[Gap] = []
+    for probe in probes:
+        if not matches_evaluator_oracle_pattern(probe):
+            gaps.append(
+                Gap(
+                    "evaluator_oracle",
+                    probe,
+                    "score-defining path not matched by EVALUATOR_ORACLE_PATTERNS",
+                )
+            )
+    # And the inverse direction: an oracle pattern matching no tracked file is
+    # bit-rot pretending to be protection (same ratchet as _dead_patterns).
+    gaps.extend(_dead_patterns(EVALUATOR_ORACLE_PATTERNS, list_name="EVALUATOR_ORACLE_PATTERNS"))
+    return gaps, None
+
+
 CHECKS = {
     "routes": check_routes,
     "sensitive_paths": check_sensitive_paths,
+    "evaluator_oracle": check_evaluator_oracle_paths,
     "core_surface": check_core_surface,
 }
 
