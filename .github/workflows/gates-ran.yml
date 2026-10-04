@@ -141,6 +141,8 @@ jobs:
       - name: Collect changed files for pull-request scope
         if: steps.target.outputs.head_sha != '' && steps.target.outputs.event_name == 'pull_request'
         uses: actions/github-script@v9
+        # Best-effort scope evidence: if collection fails the evaluator
+        # reports PENDING ("scope is ambiguous", exit 2), never a scoped pass.
         continue-on-error: true
         env:
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
