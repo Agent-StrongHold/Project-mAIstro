@@ -92,6 +92,14 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
     The projection uses the canonical Run id as its own key and copies the
     canonical terminal status. It cannot mint a second execution identity or
     recompute whether the DAG succeeded.
+
+    Only a status the canonical Run vocabulary defines is projected, and only
+    a terminal one finishes the row (#1877): a Run still created/queued/
+    running/waiting/paused has no `finished_at` -- the Run model forbids one
+    -- so finishing its row here would publish terminal lifecycle metadata the
+    canonical Run does not carry. A missing or unknown status is malformed
+    projection input, recorded as the projection failure it is -- never
+    coerced to `failed`.
     """
     run_id = str(result.get("run_id") or "")
     if not run_id:
@@ -99,6 +107,13 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
     try:
         from services.dag_run_store import get_dag_run_store
 
+        from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+
+        # Validated against the canonical Run vocabulary BEFORE any store
+        # mutation: an unknown or missing status raises here, so the failure
+        # is the caught-and-logged one below and no row is ever opened on
+        # input the projection cannot honestly mirror.
+        status = RunStatus(str(result.get("status")))
         store = get_dag_run_store()
         # The result carries the canonical Workspace/Project the Run was
         # admitted into (`canonical_dag_runner._project` mirrors
@@ -125,11 +140,17 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
                     "response": node_result.get("response", "")[:2000],
                 },
             )
-        await store.finish_run(
-            run_id,
-            status=str(result.get("status") or "failed"),
-            result=result,
-        )
+        # Terminal only (#1877): `finish_run` stamps the row's `finished_at`,
+        # so calling it for a nonterminal Run would publish a completion time
+        # the canonical Run does not have. A nonterminal Run leaves the row
+        # open at the store's in-flight default; the read overlay (or the
+        # eventual terminal transition) is what gives it its real status.
+        if status in TERMINAL_RUN_STATUSES:
+            await store.finish_run(
+                run_id,
+                status=status.value,
+                result=result,
+            )
     except Exception:
         logger.warning(
             "dag_run_projection_not_recorded run_id=%s dag_id=%s",
