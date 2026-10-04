@@ -299,21 +299,62 @@ def make_llm_lineage_reviewer(
 def parse_review_directions(text: str, valid_seed_ids: set[str]) -> list[ReseedDirection]:
     """Parse a reviewer completion into directions — a `SEED=<node_id>` prefix
     is always stripped from the hypothesis text but only *honored* (as the
-    reseed branch point) when it names a known archived candidate."""
+    reseed branch point) when it names a known archived candidate. Blank or
+    bullet-only lines, and a bare `SEED=<id>` with no direction text, carry no
+    reseedable idea and are dropped rather than turned into junk hypotheses."""
     directions: list[ReseedDirection] = []
     for line in text.splitlines():
         line = line.strip().lstrip("-•* ")
         if not line:
             continue
         seed_id: str | None = None
-        marker = re.match(r"^SEED=([\w-]+)[:\s]+(.+)$", line)
+        marker = re.match(r"^SEED=([\w-]+)(?:[:\s]+(.+))?$", line)
         if marker:
-            line = marker.group(2).strip()
+            line = (marker.group(2) or "").strip()
             if marker.group(1) in valid_seed_ids:
                 seed_id = marker.group(1)
         if line:
             directions.append(ReseedDirection(text=line[:500], seed_node_id=seed_id))
     return directions
+
+
+def _extend_interventions_unique(
+    target: list[Intervention], incoming: Sequence[Intervention]
+) -> None:
+    """Append interventions not already present, comparing by identity.
+
+    The policy owns the authoritative record of its interventions and hands
+    the same objects back more than once: each per-cycle partial carries the
+    interventions created during that cycle, and ObjectiveParked carries all
+    of them. Extending blindly would double-count shared records in the
+    result's intervention provenance; extending by identity cannot."""
+    known = {id(i) for i in target}
+    target.extend(i for i in incoming if id(i) not in known)
+
+
+async def _recall_prior_learnings(
+    ledger: LearningsLedger,
+    boundary: WardenHarvestBoundary,
+    *,
+    top_k: int,
+    repo_url: str,
+) -> list[str]:
+    """Recall prior insights and re-scan each at use time, not just at append
+    time: the ledger file sits on disk between runs, and an entry tampered
+    with after append (or written by an older version that never scanned)
+    would otherwise ride straight into this run's prompts."""
+    recalled: list[str] = []
+    for insight in ledger.recall(top_k, repo_url=repo_url):
+        admission = await boundary.scan(insight)
+        if admission.admitted:
+            recalled.append(insight)
+        else:
+            await logger.awarning(
+                "rsi_learnings_recall_refused",
+                outcome=admission.outcome,
+                flags=list(admission.verdict.flags) if admission.verdict else [],
+            )
+    return recalled
 
 
 class ProposerCircuitOpen(RuntimeError):
@@ -966,7 +1007,7 @@ async def run_autonomous(
     # Scan recalled insights AGAIN at use time, not just at append time: the
     # ledger file sits on disk between runs, and an entry tampered with after
     # append (or written by an older version that never scanned) would
-    # otherwise ride straight into this run's prompts.
+    # otherwise ride straight into this run's prompts (_recall_prior_learnings).
     active_audit = audit or AuditLog(Path(config.workspace_root) / f"autorun-{run_id}.jsonl")
     audit_sink = (
         getattr(active_audit, "record_security_event", None)
@@ -976,17 +1017,12 @@ async def run_autonomous(
     ledger_boundary = WardenHarvestBoundary(
         Warden(), correlation=run_correlation, audit_sink=audit_sink
     )
-    prior_learnings: list[str] = []
-    for insight in active_ledger.recall(config.recall_top_k, repo_url=config.repo_url):
-        admission = await ledger_boundary.scan(insight)
-        if admission.admitted:
-            prior_learnings.append(insight)
-        else:
-            await logger.awarning(
-                "rsi_learnings_recall_refused",
-                outcome=admission.outcome,
-                flags=list(admission.verdict.flags) if admission.verdict else [],
-            )
+    prior_learnings = await _recall_prior_learnings(
+        active_ledger,
+        ledger_boundary,
+        top_k=config.recall_top_k,
+        repo_url=config.repo_url,
+    )
 
     active_executor = executor or build_executor(
         config,
@@ -1061,8 +1097,7 @@ async def run_autonomous(
             # The policy's records include interventions already collected
             # from earlier per-cycle partial results — extend by identity, not
             # blindly, or a park double-counts them.
-            known = {id(i) for i in interventions}
-            interventions.extend(i for i in exc.interventions if id(i) not in known)
+            _extend_interventions_unique(interventions, exc.interventions)
             # The park fires after the triggering cycle already executed and
             # recorded its node in the shared tree; the coordinator's partial
             # result never returns, so recover those steps from the exception
@@ -1082,7 +1117,7 @@ async def run_autonomous(
             await _record_objective_parked(active_audit, exc)
             break
         steps.extend(partial.steps)
-        interventions.extend(partial.interventions)
+        _extend_interventions_unique(interventions, partial.interventions)
         await _checkpoint_steps(
             partial.steps,
             tree=tree,

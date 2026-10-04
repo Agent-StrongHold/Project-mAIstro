@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +18
+  packages/maistro-rsi/tests: +26
 ---
 # 111 — RSI stall detection, lineage review, and reseeding (M5-B)
 
@@ -32,3 +32,23 @@ Adds one test module:
 
 No existing test was modified: the coordinator's new `policy` keyword is
 opt-in and defaults to the previous behavior.
+
+CI-repair round (radon D(22→C(17)) refactor + diff-coverage arcs), +8 more:
+
+- the park path now checkpoints the triggering cycle's already-executed
+  steps (`ObjectiveParked.steps`), asserted end-to-end: returned steps,
+  snapshot statuses, and a resume that would not re-execute any executed
+  node;
+- the reviewer's degrade matrix is closed: a refused review context never
+  reaches the gateway, refused *directions* fall back to the template
+  reviewer with the refusal logged, and a directionless (blank/bullet-only)
+  completion falls through without a spurious refusal;
+- `parse_review_directions` edge cases: blank/bullet-only lines skipped and
+  a bare `SEED=<id>` with no direction text dropped (the marker regex now
+  makes that case reachable instead of emitting the marker as a hypothesis);
+- recalled ledger entries are proven to be re-scanned at use time: a flagged
+  entry is refused with its verdict flags logged, an entry whose scan has no
+  verdict is refused with empty flags, and the admitted lesson flows on;
+- `_checkpoint_steps` degenerate scans: an empty-insight node appends as
+  unscanned (the ledger skips it) and a verdict-less scan still records the
+  insight with its admission outcome.
