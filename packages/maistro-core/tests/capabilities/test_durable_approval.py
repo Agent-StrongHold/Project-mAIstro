@@ -546,6 +546,104 @@ def test_redact_approval_value_covers_camelcase_synonyms() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sqlite_find_effect_resolves_by_explicit_effect_scope(tmp_path) -> None:
+    """Scoped effect claims (the #1194 replay scope) resolve through the
+    scope-aware query: the same binding/effect key under two scopes is two
+    independent approvals, and an unclaimed scope resolves to None."""
+
+    def _scoped(request_id: str, effect_scope: str) -> DurableApproval:
+        approval = _durable_approval(request_id=request_id)
+        return approval.model_copy(update={"effect_scope": effect_scope})
+
+    async with aiosqlite.connect(tmp_path / "scoped.db") as conn:
+        store = SqliteApprovalStore(conn)
+        await store.ensure_schema()
+        await store.create(_scoped("req-a", "scope-a"))
+        await store.create(_scoped("req-b", "scope-b"))
+
+        found = await store.find_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="binding-1",
+            effect_key="write:1",
+            effect_scope="scope-a",
+        )
+        assert found is not None
+        assert found.request.request_id == "req-a"
+        assert found.effect_scope == "scope-a"
+
+        other = await store.find_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="binding-1",
+            effect_key="write:1",
+            effect_scope="scope-b",
+        )
+        assert other is not None
+        assert other.request.request_id == "req-b"
+
+        unclaimed = await store.find_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="binding-1",
+            effect_key="write:1",
+            effect_scope="scope-never-claimed",
+        )
+        assert unclaimed is None
+
+
+@pytest.mark.asyncio
+async def test_sqlite_ensure_schema_upgrades_a_legacy_table_without_effect_scope(
+    tmp_path,
+) -> None:
+    """A database created before effect scoping must upgrade in place: the
+    column is added, the legacy row survives, and it stays resolvable through
+    the legacy (scope-less) read that matches how it was written."""
+    path = tmp_path / "legacy.db"
+    approval = _durable_approval()
+
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute("""
+CREATE TABLE capability_approvals (
+    request_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    node_run_id TEXT NOT NULL,
+    binding_id TEXT NOT NULL,
+    effect_key TEXT NOT NULL,
+    payload TEXT NOT NULL
+)
+""")
+        await conn.execute(
+            "INSERT INTO capability_approvals VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                approval.request.request_id,
+                approval.run_id,
+                approval.node_run_id,
+                approval.binding_id,
+                approval.effect_key,
+                approval.model_dump_json(),
+            ),
+        )
+        await conn.commit()
+
+        store = SqliteApprovalStore(conn)
+        await store.ensure_schema()
+
+        cursor = await conn.execute("PRAGMA table_info(capability_approvals)")
+        columns = {str(row[1]) for row in await cursor.fetchall()}
+        assert "effect_scope" in columns
+
+        legacy = await store.find_effect(
+            run_id=approval.run_id,
+            node_run_id=approval.node_run_id,
+            binding_id=approval.binding_id,
+            effect_key=approval.effect_key,
+        )
+        assert legacy is not None
+        assert legacy.request.request_id == approval.request.request_id
+
+
+@pytest.mark.asyncio
 async def test_sqlite_concurrent_resolution_commits_only_one_decision(tmp_path) -> None:
     path = tmp_path / "approvals-race.db"
     approval = _durable_approval(request_id="approval-race")

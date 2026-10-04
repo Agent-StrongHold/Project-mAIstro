@@ -104,11 +104,16 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         self._adapters: dict[str, HarnessAdapter] = adapters or {}
         self._effects = effect_context or default_effect_context()
 
-    def replay_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
+    def logical_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
         return replay_effect_key(
             ctx,
             "agent.spawn_harness.dispatch",
-            inputs.model_dump(mode="json"),
+            {
+                "harness_type": inputs.harness_type,
+                "task": inputs.task,
+                "context": inputs.context,
+                "timeout_seconds": inputs.timeout_seconds,
+            },
         )
 
     @staticmethod
@@ -188,9 +193,9 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 "harness_type": handle.harness_type,
             }
 
-        # Include the logical request in the key: a changed task is explicit
-        # new work, while a retry with a new NodeRun keeps the same identity.
-        effect_key = self.replay_effect_key(inputs, ctx)
+        # The graph may retry this logical node with a new NodeRun. Scope the
+        # effect by the stable Run/node/input identity, not that physical visit.
+        effect_key = self.logical_effect_key(inputs, ctx)
         invocation = await invoke_capability_effect(
             lambda: self._effects.invocations.invoke(
                 binding=binding,
@@ -198,10 +203,10 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 node_run_id=ctx.node_run_id,
                 attempt_id=ctx.attempt_id,
                 effect_key=effect_key,
+                effect_scope=effect_key,
                 request=request_payload,
                 resolver=resolve_provider,
                 executor=execute_provider,
-                logical_effect=True,
             ),
             effect_key=effect_key,
         )

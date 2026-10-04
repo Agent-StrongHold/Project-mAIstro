@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     import asyncpg
 
 
-_TABLE_DDL = """
+_SCHEMA = """
 CREATE TABLE IF NOT EXISTS capability_invocations (
     invocation_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -25,39 +25,39 @@ CREATE TABLE IF NOT EXISTS capability_invocations (
     attempt_id TEXT NOT NULL,
     binding_id TEXT NOT NULL,
     effect_key TEXT NOT NULL,
+    effect_scope TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
     revision BIGINT NOT NULL DEFAULT 0,
-    logical_effect BOOLEAN NOT NULL DEFAULT FALSE,
     created_at DOUBLE PRECISION NOT NULL,
     payload JSONB NOT NULL
 );
-"""
-
-_INDEX_DDL = """
--- Same shape as SqliteInvocationStore._SCHEMA: node_run_id is deliberately
--- absent from this index so the logical-effect lookup (node_run_id IS the
--- whole Run, i.e. the NULL argument to list_effect) and the physical-visit
--- lookup are both served by one index. Admission uniqueness keeps
--- node_run_id (uq_capability_invocation_active_effect below), matching the
--- SQLite twin and Alembic revision 043.
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_effect
-    ON capability_invocations (run_id, binding_id, effect_key, created_at, invocation_id);
+    ON capability_invocations (run_id, node_run_id, binding_id, effect_key, created_at, invocation_id);
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_attempt
     ON capability_invocations (attempt_id, created_at, invocation_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_capability_invocation_active_effect
-    ON capability_invocations (run_id, node_run_id, binding_id, effect_key)
-    WHERE status IN ('created', 'running', 'unknown');
--- Logical admission (#1194): an Invocation flagged ``logical_effect`` is one
--- effect for the whole Run, so this atomic guard drops ``node_run_id`` --
--- the same Run-scoped partial unique index as the SQLite twin and Alembic
--- revision 045. A retry whose lease loss minted a new NodeRun collides with
--- the canonical active row here instead of double-dispatching.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_capability_invocation_active_logical_effect
-    ON capability_invocations (run_id, binding_id, effect_key)
-    WHERE status IN ('created', 'running', 'unknown') AND logical_effect;
 """
 
-_SCHEMA = _TABLE_DDL + _INDEX_DDL
+_CLAIM_DDL = """
+UPDATE capability_invocations SET effect_scope = node_run_id WHERE effect_scope = '';
+DROP INDEX IF EXISTS uq_capability_invocation_active_effect;
+CREATE UNIQUE INDEX uq_capability_invocation_active_effect
+    ON capability_invocations (run_id, effect_scope, binding_id, effect_key)
+    WHERE status IN ('created', 'running', 'completed', 'unknown');
+"""
+"""The active-effect claim is keyed by the logical effect identity, not the
+physical NodeRun (#42, #1194). ``Invocation.effect_identity`` is
+``effect_scope or node_run_id``; ``create`` normalizes an empty scope to the
+node_run_id, so the partial unique index spans NodeRun visits exactly like the
+in-memory store's ``effect_identity`` guard. The predicate covers every
+non-FAILED status: a completed prior record must also refuse a second claim,
+closing the check-then-insert window where the first visit terminalizes
+between the loser's history read and its insert. The UPDATE + DROP + CREATE
+trio also reconciles databases deployed by Alembic revision 035's earlier
+node_run_id-keyed index; backfilling the scope of pre-column rows keeps index
+creation safe because the old contract never admitted two non-failed rows for
+one ``(run_id, node_run_id, binding_id, effect_key)``. Runs after every
+``ensure_schema`` so the runtime-backed schema agrees with migration 035
+without waiting for a re-migration."""
 
 
 class PgInvocationStore:
@@ -74,11 +74,11 @@ class PgInvocationStore:
 
     async def ensure_schema(self) -> None:
         async with self._pool.acquire() as connection, connection.transaction():
-            # The table must exist before late columns can be added, and late
-            # columns must exist before _INDEX_DDL runs: the logical-effect
-            # admission index references the discriminator column, so an
-            # existing database gets its ALTER before the index is created.
-            for statement in _TABLE_DDL.split(";"):
+            # Column ALTERs must precede the claim DDL: a database deployed by
+            # an earlier revision 035 lacks ``effect_scope`` and ``revision``,
+            # and both the backfill UPDATE and the claim index reference the
+            # column.
+            for statement in _SCHEMA.split(";"):
                 if statement.strip():
                     await connection.execute(statement)
             await connection.execute(
@@ -87,9 +87,9 @@ class PgInvocationStore:
             )
             await connection.execute(
                 "ALTER TABLE capability_invocations "
-                "ADD COLUMN IF NOT EXISTS logical_effect BOOLEAN NOT NULL DEFAULT FALSE"
+                "ADD COLUMN IF NOT EXISTS effect_scope TEXT NOT NULL DEFAULT ''"
             )
-            for statement in _INDEX_DDL.split(";"):
+            for statement in _CLAIM_DDL.split(";"):
                 if statement.strip():
                     await connection.execute(statement)
 
@@ -98,7 +98,7 @@ class PgInvocationStore:
         row = await self._pool.fetchrow(
             """INSERT INTO capability_invocations (
                    invocation_id, run_id, node_run_id, attempt_id, binding_id,
-                   effect_key, status, revision, logical_effect, created_at, payload
+                   effect_key, effect_scope, status, revision, created_at, payload
                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
                ON CONFLICT DO NOTHING
                RETURNING invocation_id""",
@@ -108,9 +108,9 @@ class PgInvocationStore:
             invocation.attempt_id,
             invocation.binding.binding_id,
             invocation.effect_key,
+            invocation.effect_scope or invocation.node_run_id,
             invocation.status.value,
             invocation.revision,
-            invocation.logical_effect,
             invocation.created_at.timestamp(),
             json.dumps(payload),
         )
@@ -165,31 +165,28 @@ class PgInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str | None,
+        node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> list[Invocation]:
-        # ``node_run_id=None`` is the logical-effect identity: the whole history
-        # for (run, binding, effect_key) across every physical NodeRun. It must
-        # match rows, not bind NULL (NULL = NULL is not true in SQL), or the
-        # completed-Invocation dedup and UnsafeEffectRetry guard silently
-        # never fire on Postgres. Same contract as SqliteInvocationStore.
-        if node_run_id is None:
-            rows = await self._pool.fetch(
-                """SELECT payload FROM capability_invocations
-                   WHERE run_id=$1 AND binding_id=$2 AND effect_key=$3
-                   ORDER BY created_at ASC, invocation_id ASC""",
-                run_id,
-                binding_id,
-                effect_key,
-            )
-        else:
+        if effect_scope is None:
             rows = await self._pool.fetch(
                 """SELECT payload FROM capability_invocations
                    WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
                    ORDER BY created_at ASC, invocation_id ASC""",
                 run_id,
                 node_run_id,
+                binding_id,
+                effect_key,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """SELECT payload FROM capability_invocations
+                   WHERE run_id=$1 AND effect_scope=$2 AND binding_id=$3 AND effect_key=$4
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                run_id,
+                effect_scope,
                 binding_id,
                 effect_key,
             )
@@ -216,27 +213,12 @@ class PgInvocationStore:
         ]
 
     async def _find_effect(self, invocation: Invocation) -> Invocation | None:
-        # A logical-effect candidate searches the whole Run history: the row
-        # that won admission may sit under another NodeRun (#1194). A
-        # physical candidate keeps its per-visit scope. Both shapes mirror
-        # ``list_effect`` -- a present ``node_run_id=$2`` filter binds its
-        # argument exactly, an absent one spans every NodeRun.
-        if invocation.logical_effect:
-            row = await self._pool.fetchrow(
-                """SELECT payload FROM capability_invocations
-                   WHERE run_id=$1 AND binding_id=$2 AND effect_key=$3
-                   ORDER BY created_at DESC, invocation_id DESC LIMIT 1""",
-                invocation.run_id,
-                invocation.binding.binding_id,
-                invocation.effect_key,
-            )
-            return _row_to_invocation(row) if row is not None else None
         row = await self._pool.fetchrow(
             """SELECT payload FROM capability_invocations
-               WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
+               WHERE run_id=$1 AND effect_scope=$2 AND binding_id=$3 AND effect_key=$4
                ORDER BY created_at DESC, invocation_id DESC LIMIT 1""",
             invocation.run_id,
-            invocation.node_run_id,
+            invocation.effect_scope or invocation.node_run_id,
             invocation.binding.binding_id,
             invocation.effect_key,
         )

@@ -741,6 +741,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._recover_in_process(inputs, key, child_id)
 
         try:
+            # This local admission is synchronous and deduplicates by effect
+            # key itself, so validating it before claiming the canonical child
+            # cannot create an ambiguous external effect.
             task_id = self._a2a_delegator.delegate_task(
                 inputs.from_agent,
                 inputs.task,

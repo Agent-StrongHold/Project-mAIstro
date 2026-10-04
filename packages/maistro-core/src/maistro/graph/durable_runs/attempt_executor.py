@@ -599,6 +599,27 @@ async def _persist_cancelled_run(
     return cancelled
 
 
+def _node_replay_semantics(node: Any) -> ReplaySemantics:
+    """The node's executable replay contract, read once per frontier visit."""
+    return ReplaySemantics(getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE))
+
+
+def _node_logical_effect_key(node: Any, inputs: dict[str, Any], ctx: NodeContext) -> str | None:
+    """The node's stable logical effect key, derived before any physical work.
+
+    Keyed effects reconcile retries through the Invocation claim whose identity
+    this key names; a node that exposes no key leaves ``None`` in place, and
+    the fold fails closed on any EFFECT_KEY revisit (#1194).
+    """
+    key_builder = getattr(node, "logical_effect_key", None)
+    if not callable(key_builder):
+        return None
+    input_schema = getattr(node, "input_schema", None)
+    key_inputs = input_schema.model_validate(inputs) if input_schema is not None else inputs
+    key: str | None = key_builder(key_inputs, ctx)
+    return key
+
+
 async def _execute_frontier(
     record: DurableRunRecord,
     graph: Graph,
@@ -628,10 +649,9 @@ async def _execute_frontier(
         inputs: dict[str, Any],
     ) -> Any:
         prior_completion_accepted = False
+        logical_effect_key = _node_logical_effect_key(node, inputs, ctx)
         attempts = await execution_store.list_attempts(node_run.node_run_id)
-        semantics = ReplaySemantics(
-            getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
-        )
+        semantics = _node_replay_semantics(node)
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
             persisted_result = NodeResult.model_validate(attempts[-1].result)
             prior_completion_accepted = _requires_continuation_redispatch(
@@ -646,7 +666,10 @@ async def _execute_frontier(
                     node_run,
                     ctx,
                     persisted_result,
-                    semantics,
+                    ReplaySemantics(
+                        getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
+                    ),
+                    logical_effect_key,
                 )
 
         # A prior Attempt that never completed means this NodeRun's work was
@@ -714,6 +737,7 @@ async def _execute_frontier(
             ctx,
             raw_result,
             semantics,
+            logical_effect_key,
         )
 
     return tuple(

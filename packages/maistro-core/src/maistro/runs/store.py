@@ -279,6 +279,31 @@ def validate_child_scope(
         )
 
 
+def validate_effect_claim_parent(
+    parent: Run | None,
+    parent_node_run: NodeRun | None,
+    *,
+    parent_run_id: str | None,
+    parent_node_run_id: str | None,
+    workspace_id: str,
+    project_id: str,
+    allow_cross_project: bool,
+) -> None:
+    """Validate optional parent evidence before admitting an effect-keyed child Run."""
+    if parent_node_run_id is not None and parent_run_id is None:
+        raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+    if parent is None:
+        return
+    validate_child_scope(
+        parent,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        allow_cross_project=allow_cross_project,
+    )
+    if parent_node_run is not None and parent_node_run.run_id != parent_run_id:
+        raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+
+
 @runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
@@ -1200,32 +1225,6 @@ class InMemoryRunStore:
                 return run.model_copy(deep=True)
         return None
 
-    def _require_parent_scope(
-        self,
-        graph: Graph,
-        *,
-        parent_run_id: str | None,
-        parent_node_run_id: str | None,
-        allow_cross_project: bool,
-    ) -> Run | None:
-        """Validate the optional parent chain for an effect claim; return the parent."""
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
-        if parent is None:
-            return None
-        validate_child_scope(
-            parent,
-            workspace_id=graph.workspace_id,
-            project_id=graph.project_id,
-            allow_cross_project=allow_cross_project,
-        )
-        if parent_node_run_id is not None:
-            parent_node_run = self._require_node_run(parent_node_run_id)
-            if parent_node_run.run_id != parent_run_id:
-                raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
-        return parent
-
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -1253,10 +1252,19 @@ class InMemoryRunStore:
         for existing in self._runs.values():
             if existing.provenance.get("effect_key") == effect_key:
                 return RunEffectClaim(existing.model_copy(deep=True), False)
-        self._require_parent_scope(
-            graph,
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        parent_node_run = (
+            self._require_node_run(parent_node_run_id)
+            if parent is not None and parent_node_run_id is not None
+            else None
+        )
+        validate_effect_claim_parent(
+            parent,
+            parent_node_run,
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
             allow_cross_project=allow_cross_project,
         )
         run = admit_in_state(

@@ -93,6 +93,7 @@ from maistro.runs.store import (
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_effect_claim_parent,
     validate_eval_score_spine,
 )
 from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
@@ -698,36 +699,6 @@ class PgRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         return Run.model_validate(payload)
 
-    async def _require_locked_parent_scope(
-        self,
-        # PoolConnectionProxy at the one call site; `Any` like every other
-        # connection-taking helper in this store (#1194 repair).
-        conn: Any,
-        graph: Graph,
-        *,
-        parent_run_id: str | None,
-        parent_node_run_id: str | None,
-        allow_cross_project: bool,
-    ) -> None:
-        """Validate the optional parent chain inside the claim transaction."""
-        if parent_run_id is None:
-            return
-        parent_payload = await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
-        parent = Run.model_validate(parent_payload)
-        validate_child_scope(
-            parent,
-            workspace_id=graph.workspace_id,
-            project_id=graph.project_id,
-            allow_cross_project=allow_cross_project,
-        )
-        if parent_node_run_id is None:
-            return
-        parent_node_run = NodeRun.model_validate(
-            await self._locked(conn, "canonical_node_runs", "node_run_id", parent_node_run_id)
-        )
-        if parent_node_run.run_id != parent_run_id:
-            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
-
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -746,8 +717,6 @@ class PgRunStore:
         if not effect_key:
             raise ValueError("effect_key must be non-empty")
         await self._validate_graph_scope(graph)
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         run = Run(
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
@@ -771,11 +740,29 @@ class PgRunStore:
                 return RunEffectClaim(
                     Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
                 )
-            await self._require_locked_parent_scope(
-                conn,
-                graph,
+            parent = (
+                Run.model_validate(
+                    await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
+                )
+                if parent_run_id is not None
+                else None
+            )
+            parent_node_run = (
+                NodeRun.model_validate(
+                    await self._locked(
+                        conn, "canonical_node_runs", "node_run_id", parent_node_run_id
+                    )
+                )
+                if parent is not None and parent_node_run_id is not None
+                else None
+            )
+            validate_effect_claim_parent(
+                parent,
+                parent_node_run,
                 parent_run_id=parent_run_id,
                 parent_node_run_id=parent_node_run_id,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
                 allow_cross_project=allow_cross_project,
             )
             inserted = await conn.fetchrow(
