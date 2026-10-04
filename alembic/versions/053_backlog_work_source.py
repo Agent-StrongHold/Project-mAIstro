@@ -11,7 +11,11 @@ one head; and when the 829de3dac sync brought develop's renumbered
 ``051_canonical_run_eval_scores`` (which had re-parented onto develop's own
 ``050``) onto the same parent this migration had taken, it collided with the
 ``051`` this branch already held and re-attached after that tip as ``052`` --
-the same move one more time, keeping exactly one head.
+the same move one more time; and when the a58656017 sync brought develop's
+knowledge-stage ladder -- numbered ``048`` when written, re-parented onto the
+same chain tip as ``052_learning_stage_ladder`` (M4-B1, ADR-103) -- it collided
+with the ``052`` this migration already held, so it re-attached after that tip
+as ``053``, keeping exactly one head.
 
 The DDL is guarded (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
 EXISTS`), matching the SQLite twin's `ensure_schema`
@@ -31,8 +35,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "052"
-down_revision = "051"
+revision = "053"
+down_revision = "052"
 branch_labels = None
 depends_on = None
 

@@ -27,7 +27,7 @@ cutover will migrate into.
 Three store implementations share one contract: the in-memory reference in
 ``maistro.backlog.store`` and its durable SQLite/PostgreSQL twins, read
 against the same conformance suite. PostgreSQL tables are owned by Alembic
-migration ``052_backlog_work_source`` -- a durable store never creates its own
+migration ``053_backlog_work_source`` -- a durable store never creates its own
 schema (one schema owner; see ``maistro.workspaces.wiring``).
 """
 
