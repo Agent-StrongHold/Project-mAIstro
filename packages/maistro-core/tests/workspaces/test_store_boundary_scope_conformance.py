@@ -519,7 +519,10 @@ def test_the_audit_log_has_no_by_id_mutation() -> None:
     A by-id update or delete added to an audit store must arrive with its own
     scoped case here rather than inherit the append's answer.
     """
-    allowed = {"log", "get_entries", "ensure_schema"}
+    allowed = {"log", "get_entries", "ensure_schema", "get_page"}
+    # get_page (#358) is the bounded keyset read: like get_entries it exposes
+    # no by-id mutation path, so it is named here rather than inherited by
+    # silence. A future update/delete by id still fails this set.
     for store in (InMemoryAuditLog, SqliteAuditLog, PgAuditLog):
         public = {
             name

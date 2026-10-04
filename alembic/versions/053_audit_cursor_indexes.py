@@ -1,7 +1,7 @@
 """Ordered exact-scope audit cursor indexes (#358).
 
-Revision ID: 051
-Revises: 050
+Revision ID: 053
+Revises: 052
 
 Each equality-filter shape needs an ordered seek, including timestamp ties.
 Build at migration time, not on the first audit request. Eight indexes trade
@@ -12,8 +12,8 @@ from itertools import combinations
 
 from alembic import op
 
-revision = "051"
-down_revision = "050"
+revision = "053"
+down_revision = "052"
 branch_labels = None
 depends_on = None
 
