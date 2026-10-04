@@ -72,4 +72,3 @@ writer handoff only, not integration approval.
 Progress: checked 1 assigned issue; done 0 acceptance-complete issues; skipped 0
 issues; errors 0 validation commands. Next: resolve the production soak and
 replica-rate blockers; do not repeat speculative ledger amendments.
-
