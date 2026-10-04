@@ -75,6 +75,22 @@ or placeholder-only section.
   duplicate [ADR-061526-f383](docs/adr/ADR-061526-f383-foreign-harness-adapters-and-portability.md)
   in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
 
+### Fixed
+
+- **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
+  always invokes Compose with explicit `-f` files, which disables Compose's own
+  automatic override loading, so an override copied into the checkout was
+  silently ignored on installer runs while the docs claimed it was picked up.
+  A repo-root `docker-compose.override.yml` is now included explicitly — last,
+  so operator intent outranks the base file and the wizard's plan override —
+  in both delivery modes, and only when the invoking user owns it and it is
+  not group/world-writable (an override can remap ports, disable sandbox
+  flags, or mount the host Docker socket; anything else aborts the install
+  with remediation). The installer prints the effective Compose files and
+  validates the merged render before startup (`MAISTRO_PRINT_COMPOSE_CONFIG=1`
+  additionally prints the rendered config, credentials included), and
+  `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
+
 ### Security
 
 - **Project wisdom respects GLOBAL organization boundaries (#1247).**
