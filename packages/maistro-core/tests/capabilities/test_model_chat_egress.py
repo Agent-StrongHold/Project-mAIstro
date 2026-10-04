@@ -46,6 +46,10 @@ from maistro.capabilities.providers.llm_gateway import (
 from maistro.capabilities.types import Unavailable
 from maistro.credentials.router import CredentialRouter
 from maistro.credentials.types import CredentialRecord
+from maistro.observability.correlation import (
+    bind_execution_context,
+    detached_execution_context,
+)
 from maistro.providers.errors import NoEligibleModelError
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -56,6 +60,7 @@ from maistro.providers.types import (
 )
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.runs.store import RunIntegrityError
 
 
 def _meta(
@@ -1129,15 +1134,19 @@ async def test_chat_payload_carries_structured_output_shape(
     assert "response_format" not in captured["json"]
 
 
-async def test_client_complete_without_prior_turn_mints_one(
+async def test_client_complete_adopts_bound_context_or_refuses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A caller that never set a turn still gets canonical identity.
+    """A caller that never set a turn uses canonical identity — only a real one.
 
     `Agent.handle` always calls `set_turn` first, but the client is also the
     factory's LLMClient for strategies driven outside that seam. `complete`
-    must mint a turn itself rather than refuse -- the Invocation lands under
-    that minted identity either way (#718: no ungoverned side door).
+    adopts the Run/NodeRun/Attempt triple canonical execution bound on the
+    correlation context when there is one (#1827). When canonical execution
+    bound nothing, the client refuses with RunIntegrityError and makes zero
+    egress calls instead of minting a fabricated identity that would make an
+    unadmitted call look governed (#718's no-ungoverned-side-door rule now
+    means refuse, not invent).
     """
     tracker = InMemoryQuotaTracker()
     effects = new_in_memory_effect_context(
@@ -1165,10 +1174,21 @@ async def test_client_complete_without_prior_turn_mints_one(
         project_id="p1",
     )
 
-    body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
+    # No canonical context in scope: refuse with zero egress.
+    with detached_execution_context(), pytest.raises(RunIntegrityError):
+        await client.complete([{"role": "user", "content": "hello"}], "fast-model")
+    assert await tracker.get_all_usage() == []
+
+    # A complete bound context is adopted wholesale, without an explicit
+    # set_turn: the usage the fake gateway reported still reaches the quota
+    # ledger, under the canonical identity the execution bound.
+    with bind_execution_context(
+        run_id="run-adopt",
+        node_run_id="node-adopt",
+        attempt_id="attempt-adopt",
+    ):
+        body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
 
     assert body["choices"][0]["message"]["content"] == "hi"
-    # The minted turn still routed the call through the canonical egress: the
-    # usage the fake gateway reported reached the quota ledger.
     (entry,) = await tracker.get_all_usage()
     assert entry["request_count"] == 1
