@@ -57,6 +57,20 @@ RUN pip install --no-cache-dir \
       "anyio>=4.14.2" \
       "httpx>=0.27.0"
 
+# #406: the identity stack's locked bip-utils pins pytoniq-core-fork, whose
+# wheel installs a generic top-level `examples` namespace package into this
+# venv (examples/boc/*, examples/hashmaps/dict.py, examples/tl/*). It cannot
+# be upgraded away (both PyPI releases ship it; bip-utils pins <0.2.0), and
+# pip cannot exclude a subpath at install time, so the payload is pruned here
+# — build-time and asserted in the same layer so a silent no-op prune fails
+# the image build instead of the next audit. RECORD is rewritten, so the syft
+# SBOM keeps recording the fork distribution (pkg:pypi/pytoniq-core-fork)
+# with a file inventory that shows exactly what the patch removed.
+COPY scripts/check-dependency-namespaces.py scripts/prune-dependency-namespaces.py /tmp/
+RUN python /tmp/prune-dependency-namespaces.py \
+    && python /tmp/check-dependency-namespaces.py --production \
+    && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
+
 # ─── Wolfi runtime (-dev variant): low-CVE, has apk so `git` is available ───
 # This image is NOT vuln-gated (only the hive-conductor image is trivy/grype
 # scanned), so the -dev variant's slightly larger surface has no gate cost. It
