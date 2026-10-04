@@ -60,6 +60,46 @@ WISDOM_PROMOTE_THRESHOLD: int = 5  # reinforcement_count to promote -> WISDOM
 REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
 
 
+class LearningStage(StrEnum):
+    """Knowledge-stage ladder over a Learning record (M4-B1 / ADR-103).
+
+    The four semantic states between local execution memory and reusable
+    institutional knowledge, in ascending order:
+
+    - ``MEMORY`` — execution/agent-local remembered evidence/context. The
+      record was captured with its producer provenance but has not been
+      asserted as a reusable claim.
+    - ``LEARNING`` — a claim inferred from that evidence: the correction a
+      later execution is allowed to consider.
+    - ``VALIDATED`` — a claim that survived independent evaluation. Whoever
+      or whatever evaluated it is recorded in ``Learning.validated_by``; the
+      evaluator is not the producer of the claim.
+    - ``REPERTOIRE`` — validated learning explicitly promoted for reuse in
+      shared knowledge. Promotion flips ``status`` to ``promoted`` so every
+      existing promoted-only reader keeps working.
+
+    Not a runtime: the ladder is fields on the one ``Learning`` record plus
+    the transition functions in :mod:`maistro.memory.learnings.lifecycle`.
+    A stage is metadata about knowledge, and it never grants permissions or
+    execution authority — the Sentinel never reads it (ADR-103).
+    """
+
+    MEMORY = "memory"
+    LEARNING = "learning"
+    VALIDATED = "validated"
+    REPERTOIRE = "repertoire"
+
+
+#: Position of each stage on the ladder. Transitions are forward-only and
+#: single-step; the lifecycle functions derive both rules from this map.
+LEARNING_STAGE_ORDER: dict[LearningStage, int] = {
+    LearningStage.MEMORY: 0,
+    LearningStage.LEARNING: 1,
+    LearningStage.VALIDATED: 2,
+    LearningStage.REPERTOIRE: 3,
+}
+
+
 class MemoryScope(StrEnum):
     """Memory visibility scopes — hierarchical from broadest to narrowest."""
 
@@ -138,6 +178,12 @@ class Learning:
     validated_at: float = 0.0
     validation_run_ids: list[str] = field(default_factory=list)
     validation_content_hash: str = ""
+    # Knowledge-stage ladder (M4-B1 / ADR-103). `stage` is semantics;
+    # `status` stays the read surface (`promoted`-only readers keep working).
+    # `validated_by`/`promoted_by` name the actor of the corresponding
+    # transition — blank means "never happened", never a fabricated default.
+    stage: LearningStage = LearningStage.MEMORY
+    promoted_by: str = ""
 
 
 @dataclass

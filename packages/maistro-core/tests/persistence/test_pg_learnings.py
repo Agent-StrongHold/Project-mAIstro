@@ -18,7 +18,7 @@ from maistro.persistence.pg_learnings import (
     PgLearningStore,
     similarity_query,
 )
-from maistro.types.memory import Learning, MemoryScope
+from maistro.types.memory import Learning, LearningStage, MemoryScope
 
 from .conftest import requires_postgres
 
@@ -197,11 +197,17 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         None,
         None,
         # Gauntlet validation provenance (M4-B2): a fresh row has never been
-        # validated, so the defaults are the honest values.
+        # validated, so the defaults are the honest values. validated_by is
+        # shared with the stage ladder (ADR-103); the ladder's promoted_by
+        # trails the stage.
         "",
         "",
         0.0,
         "[]",
+        "",
+        # The knowledge-stage ladder (ADR-103): a new learning lands on the
+        # bottom rung.
+        LearningStage.MEMORY,
         "",
     )
 

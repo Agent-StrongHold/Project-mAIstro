@@ -40,5 +40,8 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "validated_at",
         "validation_run_ids",
         "validation_content_hash",
+        # Knowledge-stage ladder (M4-B1 / ADR-103).
+        "stage",
+        "promoted_by",
     }
 )

@@ -44,6 +44,17 @@ or placeholder-only section.
 
 ### Changed
 
+- **Advisory DAG-shape proportionality judge failures are explicit, not silent allows (#1191).**
+  `LLMProportionalityJudge` no longer collapses a timeout, provider error, malformed response
+  envelope, or malformed judgment into `justified=True`. `ProportionalityVerdict` now carries a
+  `disposition` (`allow`/`deny`/`unavailable`): every failure path yields `unavailable` with
+  `justified=False`, so it can never read as affirmative approval evidence. `evaluate_dag_shape`
+  records the degraded policy as a distinct `approved_degraded` `DagShapeVerdict` status (logged,
+  counted in the new `maistro_security_advisory_degraded_total` metric,
+  `proportionality_disposition="unavailable"`; `can_execute` still true — the critic stays
+  advisory and is not an availability dependency). `agent.synth_dag` threads the disposition into
+  the child Run's provenance. Hard Warden/Sentinel gates are unchanged and remain authoritative.
+
 - **v1.0 release contract consolidated into canonical planning docs (no linked issue:
   governance realignment).** Stakeholder decisions from the 2026-10-01 architecture
   review now live in [`ROADMAP.md`](ROADMAP.md) (release contract section),
@@ -63,6 +74,22 @@ or placeholder-only section.
   for all ADRs (`[engine-113]`); fixed stale `docs/analysis/` citations; superseded
   duplicate [ADR-061526-f383](docs/adr/ADR-061526-f383-foreign-harness-adapters-and-portability.md)
   in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
+
+### Fixed
+
+- **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
+  always invokes Compose with explicit `-f` files, which disables Compose's own
+  automatic override loading, so an override copied into the checkout was
+  silently ignored on installer runs while the docs claimed it was picked up.
+  A repo-root `docker-compose.override.yml` is now included explicitly — last,
+  so operator intent outranks the base file and the wizard's plan override —
+  in both delivery modes, and only when the invoking user owns it and it is
+  not group/world-writable (an override can remap ports, disable sandbox
+  flags, or mount the host Docker socket; anything else aborts the install
+  with remediation). The installer prints the effective Compose files and
+  validates the merged render before startup (`MAISTRO_PRINT_COMPOSE_CONFIG=1`
+  additionally prints the rendered config, credentials included), and
+  `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
 

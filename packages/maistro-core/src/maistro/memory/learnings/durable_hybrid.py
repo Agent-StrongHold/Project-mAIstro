@@ -21,9 +21,10 @@ from typing import TYPE_CHECKING
 from maistro.memory.vectors import require_matching_dimension
 
 if TYPE_CHECKING:
+    from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.persistence.pg_learnings import PgLearningStore
     from maistro.protocols.embeddings import EmbeddingClient
-    from maistro.types.memory import Learning
+    from maistro.types.memory import Learning, LearningStage
 
 logger = logging.getLogger("maistro.memory.learnings.durable_hybrid")
 
@@ -197,6 +198,28 @@ class DurableHybridLearningStore:
 
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
         return await self._store.list_all(org_id, limit)
+
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+    ) -> Learning:
+        """Delegate: the ladder and its ledger are the wrapped store's."""
+        return await self._store.advance_stage(
+            learning_id,
+            to_stage=to_stage,
+            actor=actor,
+            reason=reason,
+            org_id=org_id,
+        )
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """Delegate: the audit trail is the wrapped store's to answer."""
+        return await self._store.stage_history(learning_id, org_id=org_id)
 
 
 __all__ = ["DurableHybridLearningStore"]

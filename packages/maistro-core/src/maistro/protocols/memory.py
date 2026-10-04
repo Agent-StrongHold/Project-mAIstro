@@ -11,11 +11,13 @@ from maistro.types.memory import REINFORCE_DELTA
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.memory.user_model.types import UserModelFact
     from maistro.types.memory import (
         DecaySweep,
         EpisodicMemory,
         Learning,
+        LearningStage,
         Outcome,
         SkillMutation,
     )
@@ -105,6 +107,27 @@ class LearningStore(Protocol):
 
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
         """List learnings for an org (candidate enumeration for promotion/admin)."""
+        ...
+
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+    ) -> Learning:
+        """Move a learning one rung up the knowledge ladder (ADR-103).
+
+        Forward-only, single-step, actor-attributed; the transition is
+        persisted together with its audit row. Raises the shared transition
+        error on an illegal move instead of half-applying it.
+        """
+        ...
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """The durable audit trail of one learning's ladder transitions."""
         ...
 
 

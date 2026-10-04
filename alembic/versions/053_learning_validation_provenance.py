@@ -12,31 +12,34 @@ validation is a *known* fact — it was never validated — so `''`/`0`/`'[]'` a
 the honest values, unlike producer provenance where NULL preserves "no
 execution was in scope".
 
-Revision ID: 052
-Revises: 051
+Revision ID: 053
+Revises: 052
 Create Date: 2026-10-01
 
-Renumbered twice during develop integrations. First 048 -> 051: while this
-branch was open, develop's `048_canvas_job_retry_backoff` (#398) claimed the
-numeric slot (and `049_canonical_run_eval_scores` #792 and
+Renumbered three times during develop integrations. First 048 -> 051: while
+this branch was open, develop's `048_canvas_job_retry_backoff` (#398) claimed
+the numeric slot (and `049_canonical_run_eval_scores` #792 and
 `050_design_creative_briefs` #774 chained onto it), which left the tree with
 a duplicate "048" and two heads; re-parenting onto that chain tip 050 kept
 exactly one linear head. Then 051 -> 052: the M4-A6 integration renumbered
 #792's eval-score evidence onto this branch's old 051 slot (parented on the
 same 050, after #780's `049_design_artifact_versions` claimed 049 and pushed
 #774's briefs to 050), which left two revisions both named "051" on parent
-"050" — two heads again. This revision now follows the merged chain tip 051.
-A string-suffixed id like `048_learning_validation_provenance` remains
-rejected: it exceeds alembic's 32-character `alembic_version.version_num`
-limit (see 041_quota_invocation_evidence).
+"050" — two heads again. This revision followed the merged chain tip 051.
+Then 052 -> 053: the M4-B1 integration (ADR-103 knowledge-stage ladder) took
+"052" on the same parent 051; this revision re-parents onto that ladder tip,
+keeping exactly one linear head 053. A string-suffixed id like
+`053_learning_validation_provenance` remains rejected: it exceeds alembic's
+32-character `alembic_version.version_num` limit (see
+041_quota_invocation_evidence).
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "052"
-down_revision = "051"
+revision = "053"
+down_revision = "052"
 branch_labels = None
 depends_on = None
 
