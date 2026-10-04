@@ -147,3 +147,43 @@ any prior claim:
   feedback_service all declare `exposure_mode`; the gate reads only mode,
   actor and per-block tag. No closure keyword (fixes/closes/resolves) in the
   PR body or any branch commit message.
+
+## CI-repair round 2 (merge of develop 8c8fc8d6 at db25f6ea4)
+
+The salvaged in-flight develop sync was completed (its sole conflict,
+`container.py`, resolved to keep both the ADR-057 `exposure_mode` wiring and
+develop's fourth SQLite connection for the backlog-history journal), and two
+classes of regression were repaired at that head:
+
+1. Sync-reintroduced bare store constructions. The develop syncs brought
+   develop-side versions of three test files whose constructions predate the
+   write-authority gate, reintroducing the exact failure class CI-repair round
+   1 fixed. `test_unscoped_global_recall.py`, `test_project_global_recall.py`
+   and hive's `test_optimizer_candidate_apply.py` again constructed stores
+   bare and mutated them (14 + 1 + 1 failures with
+   `MemoryUndeclaredModeError`). Fixed by declaring
+   `exposure_mode=MemoryExposureMode.AGENT_MANAGED` at those sites — the same
+   declaration the container makes. Deliberately-bare sites are untouched:
+   `test_exposure_mode.py`'s reachability matrix, `test_protocols.py`'s
+   isinstance checks, and the read-only (`find_similar`) construction in
+   `tests/migrations/test_memory_embeddings.py`; an AST scan over every
+   `**/tests/**` tree reports no other bare construction of the nine memory
+   store classes.
+2. The root-suite inventory double-count. The union note
+   `auto-390-develop-sync-union.md` (+18) was true when written at 79b118c63
+   (expected 4392, collected 4410) but the later develop syncs brought
+   develop's own ledger rows for the same nodes, making expected 4441 against
+   a collected 4423 that is byte-identical to develop's node set. Its
+   front-matter delta is retired to +0 with the full evidence recorded in that
+   note; `check-suite-inventory.py` (all-suites form) is green again.
+
+Re-executed at db25f6ea4 + these fixes: the two exact-debt-ledger sibling
+gates (`check-ratchet-provenance.py`, `check-shipped-surface-truth.py`) and
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` all exit 0 (1361 reviewed identities -> 1361 findings);
+`check-suite-inventory.py` 14/14 suites match; `ruff check .` and
+`ruff format --check .` clean; `test_exposure_mode.py` +
+`test_write_authority_conformance.py` 62 passed / 98 skipped (PG legs skip
+without a DSN); `tests/memory` 64 passed; the repaired files 15 passed /
+7 skipped and 25 passed; the memory + persistence + container-episodic driver
+battery 507 passed / 144 skipped.
