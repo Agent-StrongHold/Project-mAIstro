@@ -24,6 +24,13 @@ an ungrounded coverage change.
 - The CI-scoped vulture exact-debt ledger passed unchanged: 1,342 reviewed
   identities, zero unclassified, zero never-allowlisted.
 
+An independent recheck at `eee0f1180e55b37d5c38509a5a2a5a9f0df2784c` repeated
+those five publish-set producers (92% against the 87% floor), the maistro-server
+and Hive coverage producers (499 passed / 8 skipped; 3328 passed / 6 skipped),
+the exact `check-diff-coverage.py` invocation (pass), and the CI-scoped vulture
+ledger (1,342 reviewed identities, zero unclassified). The separate archive and
+PostgreSQL coverage producers were not rerun in this documentation-only check.
+
 No test or production source change is justified by this evidence. The parent
 is still not closeable: `TaskQueue._admit_claimed` mints the canonical Run at
 `packages/maistro-core/src/maistro/tasks/queue.py:741` and only then separately
