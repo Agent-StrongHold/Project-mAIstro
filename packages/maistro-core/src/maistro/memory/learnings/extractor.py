@@ -12,7 +12,7 @@ import json
 import logging
 import re
 
-from maistro.memory.types import Learning, MemoryScope
+from maistro.memory.types import EpistemicType, Learning, MemoryScope
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +219,10 @@ class RCAExtractor:
             scope=MemoryScope.AGENT,
             rca_category=category,
             rca_prevention=prevention,
+            # An RCA is a diagnosis of why a loop failed, not an observed
+            # correction: it claims its cause inferentially, and the epistemic
+            # type says so (M4-B #119).
+            epistemic_type=EpistemicType.INFERENTIAL,
         )
 
     async def _call_llm(self, prompt: str) -> str | None:
