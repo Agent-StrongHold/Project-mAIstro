@@ -8553,3 +8553,76 @@ persistent Workspace Agent + Goal reconciliation, #458 canonical Goal
 producer, #776 working-graph consumption seam) remains absent, and the issue's
 stop condition forbids Design-Studio-private substitutes. Verdict:
 **BLOCKED** (Refs #777).
+
+## Round 128 — repair round: sync origin/develop 2a57094fe (merge 0558428fa), prior signals re-resolved
+
+Documentation-only verifier note; no production or test code changed;
+front-matter deltas stay +0. Round 127's job (`cf6acc19082b4c319d5654970fea9e2c`)
+returned verdict BLOCKED (dependency-blocking) at head `ca6a82a23`; this round
+is that block's designated repair.
+
+### Incoming signals re-resolved at this head
+
+- **`53d5e08bf/check-2.log` (ruff-format, agent_loop.py):** non-reproducing for
+  the third consecutive round. Fresh `uv run ruff format --check .` at the
+  merge head = "2894 files already formatted", EXIT 0; the named file remains
+  formatted since the round-110 fix `2f054b614`.
+- **Prior result artifact (`cf6acc19082b4c319d5654970fea9e2c/result.json`):**
+  round 127's own BLOCKED record — a verdict, not a validation failure; no
+  code signal to repair.
+- **`origin/develop` moved 2a24c8a82 -> 2a57094fe** (2 commits: dd817f49d
+  #1879 installed-workspace selected-model-Invocation validator + its #1878
+  proof-envelope base; 2a57094fe #1877 canonical Run lifecycle projection in
+  hive dags routes/inspection). **Neither lands the #804/#805/#806 seam.**
+  Merged conflict-free into auto-777 at `0558428fa83bde48fb7aa03e8bdc4431492193e8`
+  (merge base of the lane brief); branch now 205 ahead / 0 behind.
+
+### Quality-ledger integrity across the merge (multiset hazard checked)
+
+- `git diff --numstat ca6a82a23 HEAD -- quality/` → **empty**: the merge
+  itself lost no rows.
+- `git diff --numstat origin/develop HEAD -- quality/vulture-baseline.json` →
+  `0 1`: exactly the branch's own round-110 removal of
+  `agent_loop.py::unused variable 'tool_definitions'` (a row the branch
+  legitimately eliminated by deleting the dead variable), not a merge
+  casualty. CI-exact vulture passes against develop's baseline anyway.
+
+### Dependency blockers re-proven fresh at 0558428fa (not assumed)
+
+- `GoalReconciler|delegate_goal` → 0 files under `packages/`.
+- `maistro/goals` module → absent (`packages/maistro-core/src/maistro/goals`
+  does not exist).
+- `packages/maistro-design/src`: 0 `workspace_agent` refs; 0
+  `maistro.memory.working` refs.
+- `ControlMode` → 0 consumers outside `maistro-design`.
+- The 2 newly landed develop commits touch only the #1877 canonical Run
+  lifecycle projection and the #1879 proof contract — physical/Run-layer
+  truth, no Goal-reconciliation producer, no #458 Goal store, no #776
+  working-graph consumption seam for Design Studio.
+
+### Fresh battery at 0558428fa (all executed this round)
+
+`ruff check .` EXIT 0 ("All checks passed!"); `ruff format --check .` EXIT 0
+(2894 files); vulture CI-exact
+(`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) EXIT 0, 1342 reviewed -> 1341 findings, no
+unbanked identities, no ledger amendment; suite-inventory **14/14** EXIT 0;
+backlog-consistency **167 items** EXIT 0; branch-independence PASS EXIT 0;
+pytest `packages/maistro-design/tests packages/maistro-bootstrap/tests`
+**777 passed / 2 skipped**; pytest hive backend
+`-k "design or brief or workspace or agent"` **508 passed / 5 skipped**
+(+1 vs round 127 from the merged #1877 lifecycle tests matching the
+selector); pytest merge-touched
+`test_dag_run_canonical_lifecycle.py + test_dag_run_creative_inspection.py`
+**23 passed**; pytest merge-added `tests/release/
+test_installed_workspace_request_chain.py` **87 passed**.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged from rounds 123–127
+
+The sync brought no dependency seam: the consumed #804/#805/#806 persistent
+Workspace Agent + Goal reconciliation APIs, the #458 canonical Goal-revision
+producer, and the #776 working-graph consumption seam all remain absent, and
+the issue's stop condition forbids Design-Studio-private substitutes. All 13
+acceptance criteria therefore remain unprovable against reachable behavior;
+the green battery shows only that the branch is healthy, not that #777 is
+implementable. Verdict: **BLOCKED** (Refs #777).
