@@ -1,3 +1,82 @@
+# Repair #116 @ dfb3cfce1 (branch auto-116) — 2026-10-04, round 8
+
+Round 8 (driver job 6d517249a38b4c00891d21f1152cfa29; the round-7 follow-up
+09f750aab died on a provider 429 with zero checks executed) re-derived every
+load-bearing claim from primary evidence at the unchanged head dfb3cfce1
+(tree clean at start, no new commits on the branch). Independent re-verification,
+not carried forward from round 7's notes:
+
+- **Vulture gate reproduced CI-exact again** (quality.yml:960-963 invocation
+  run fresh this round): **exit 1**, trusted base 086ad770863b, candidate
+  dfb3cfce142b, 1342 reviewed -> 1344 findings; sole hard failure remains the
+  **3 unauthorized identities** (promotion.py:385 attach_effect / :414
+  mark_reversed / :645 promote, core-public-api-surface). No candidate-ledger
+  deltas printed — bookkeeping is still EXACT (the 3 rows banked; the stale
+  POLICY row appears only in the informational TRUSTED section and is pruned
+  candidate-side; `_enforce_trusted` excludes trusted `removed` from the exit
+  expression).
+- **True merge base re-confirmed**: `git merge-base HEAD origin/develop` =
+  086ad770863b; `git show 086ad7708:quality/ratchet-authorizations.json` has
+  **0 promotion.py vulture keys** and its vulture-baseline.json has **0
+  promotion.py rows**; origin/develop HEAD (97c05e0f1) likewise 0 keys. The
+  two-merge blocker is unchanged: `ratchet_provenance.load_authorizations`
+  reads the grant file from the base revision only, so no branch-side edit can
+  authorize the rows (docstring at ratchet_provenance.py:478-505 states this
+  is deliberate).
+- **The identities are live AC-pinned surface, not dead code (re-proven)**:
+  test_promotion_contract.py calls `.promote(` 20+ times, `attach_effect` and
+  `mark_reversed` throughout (AC1-AC7 classes); the same 3 tests pass green
+  below. "Fix what is genuinely dead" has no branch-side object: deleting the
+  methods breaks the issue's own tests; wiring a production caller is
+  explicitly out of scope — ADR-100126-a9c4 ("What this deliberately does not
+  decide", lines ~148-155): rewiring audited transitions is migration work,
+  "Recorded as follow-up", and non-adopting families "are not in violation";
+  `# noqa` suppression is gate-weakening and was not used.
+- **ac-state gate EXIT 0, re-run fresh** with a live PG (reused round-7
+  container pg-acstate-116-r7, 127.0.0.1:55117, schema verified at alembic
+  head **051**, 59 tables; `alembic upgrade head` re-run with DATABASE_URL set
+  → exit 0): `check-ac-state.py --run-tests --ratchet --mandate 086ad7708…`
+  → design coverage **42.1466%** over 160 taken decisions, 10 debt counters on
+  their ceilings folded from 25 notes; 7 criteria added/newly claimed,
+  **0 unproven**; chain mandate 0/0/0. Round-6's 37.3775 stays diagnosed as
+  the DB-down measurement artifact.
+- **Test env correction worth recording**: `MAISTRO_TEST_PG_DSN` is consumed
+  by `maistro.testing.postgres.postgres_dsn()` and passed **straight to
+  asyncpg.create_pool** (tests/conftest.py pg_pool fixture) — it must be a
+  plain `postgresql://` DSN, not `postgresql+asyncpg://`. A first battery run
+  with the SQLAlchemy scheme produced 171 asyncpg `ClientConfigurationError`s
+  in the parametrized graph-store legs; corrected DSN → **202 passed,
+  1 skipped** (test_promotion_contract.py + test_template_store.py +
+  test_node_template_store.py, MAISTRO_REQUIRE_PG_LEGS=1) — byte-identical to
+  round 7's count.
+- **Battery green at dfb3cfce1 (fresh runs this round)**: ruff check clean;
+  ruff format --check 2857 files clean; mypy --strict packages/maistro-core/src
+  → **0 errors in 696 files** (after `uv sync --extra bootstrap`; the 5
+  maistro_bootstrap import-stub errors reproduce without the extra — venv
+  artifact, reconfirmed); radon baseline **145==145** exit 0 (radon installed
+  ad-hoc per CI quality.yml:722 — venv ships without it); suite inventory
+  **14/14** match, 0 duplicate test files; reachability exit 0 (1247 modules /
+  173 unreachable); dispositions exit 0 (49 groups: 149 CONNECT, 22 LIBRARY,
+  2 RETIRE); promotion-surface **ok**; tree clean after all runs
+  (quality/ac-state.json is gate-regenerated and gitignored).
+- **AC mapping re-checked against test classes** (not just round 7's notes):
+  AC1 TestAC1CandidacyIsInert, AC2 TestAC2ExplicitVersionAndImmutableHistory,
+  AC3 TestAC3RecordCompleteness, AC4 TestAC4OwnConstituentFence (+
+  TestFenceEdges), AC5 TestAC5NoSelfApproval, AC6 TestAC6Traceability (+
+  TestReversalDecisionSemantics), AC7 TestAC7OneApprovalType — all green in
+  the 202-pass run.
+- **Verdict unchanged and above this lane**: the ONLY red item is the vulture
+  authorization. Branch-side options remain exhausted and were re-proven this
+  round: ledger already banks the rows exactly (`--update` would be a no-op,
+  established round 6); the identities cannot be authorized in-branch
+  (base-only grant read); they cannot be deleted (AC tests) or suppressed
+  (gate-weakening); a production caller cannot be added (ADR-declared
+  follow-up). Resolution unchanged: **land the reviewed grant for the 3
+  identities on develop, then merge develop into auto-116 and re-run the
+  gate** — no further work exists inside this worktree.
+
+---
+
 # Repair #116 @ aa3dacfa0 (branch auto-116) — 2026-10-03, round 7
 
 Round 7 (driver job e3378636e8594973bd87c6d841a3e4bb; the round-6 follow-up
