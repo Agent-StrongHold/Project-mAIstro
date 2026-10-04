@@ -33,7 +33,9 @@ from maistro.capabilities.invocation import InvocationStatus
 from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus
 from maistro.graph.harness import (
     HarnessAdapter,
+    HarnessHandle,
     HarnessRequest,
+    HarnessResult,
     HarnessRunnerDispatchAdapter,
 )
 from maistro.graph.nodes import BaseNode, NodeContext, get_node, register_node
@@ -74,6 +76,37 @@ def _sandbox_factory(sandbox: _FakeSandbox):
         return sandbox
 
     return make
+
+
+class _PollingStubAdapter:
+    """HarnessAdapter double whose poll result is scripted per test.
+
+    Used to pin the fallback halves of the resume-evidence overlay: a poll
+    that returns ``None`` (still running), an unsuccessful result, or raises
+    must leave the transported resume answer untouched.
+    """
+
+    def __init__(
+        self,
+        *,
+        result: HarnessResult | None = None,
+        raise_on_poll: bool = False,
+    ) -> None:
+        self._result = result
+        self._raise_on_poll = raise_on_poll
+        self.polls = 0
+
+    async def dispatch(self, request: HarnessRequest) -> HarnessHandle:
+        return HarnessHandle(handle_id="stub-1", harness_type=request.harness_type)
+
+    async def poll(self, handle: HarnessHandle) -> HarnessResult | None:
+        self.polls += 1
+        if self._raise_on_poll:
+            raise RuntimeError("provider lost the session")
+        return self._result
+
+    async def cancel(self, handle: HarnessHandle) -> None:
+        return None
 
 
 class _ScriptedRunner:
@@ -374,6 +407,73 @@ class TestProvidersThroughInvocationPath:
         }
         result = await node.run({"harness_type": "claude_code", "task": "x"}, ctx)
         assert result.output.output == "recorded answer"
+
+    @pytest.mark.parametrize("poll_mode", ["running", "failed", "raises"])
+    async def test_resume_keeps_the_recorded_answer_when_poll_brings_nothing(
+        self,
+        poll_mode: str,
+    ) -> None:
+        """A lost/failed/running poll never blocks or edits the answer path.
+
+        Pins the degenerate halves of the poll-evidence overlay: only a
+        *successful* poll result may overwrite the transported answer.
+        """
+        if poll_mode == "raises":
+            adapter: _PollingStubAdapter = _PollingStubAdapter(raise_on_poll=True)
+        elif poll_mode == "running":
+            adapter = _PollingStubAdapter(result=None)
+        else:
+            adapter = _PollingStubAdapter(
+                result=HarnessResult(
+                    handle_id="h-1",
+                    success=False,
+                    output="error: harness died mid-turn",
+                    metadata={"attempt": 2},
+                )
+            )
+        node = AgentSpawnHarnessNode(adapters={"stub": adapter})
+        ctx = _ctx()
+        ctx.metadata["hitl_answers"] = {
+            "h-node-1": {
+                "status": "completed",
+                "handle_id": "h-1",
+                "output": "recorded answer",
+                "metadata": {"who": "waker"},
+            }
+        }
+        result = await node.run({"harness_type": "stub", "task": "x"}, ctx)
+        assert result.output.output == "recorded answer"
+        assert result.output.metadata == {"who": "waker"}
+        assert result.output.status == "completed"
+        assert adapter.polls == 1  # the poll was attempted, not skipped
+
+    async def test_poll_evidence_extends_rather_than_replaces_answer_metadata(
+        self,
+    ) -> None:
+        adapter = _PollingStubAdapter(
+            result=HarnessResult(
+                handle_id="h-1",
+                success=True,
+                output="fresh from the provider",
+                metadata={"session_id": "s-9"},
+            )
+        )
+        node = AgentSpawnHarnessNode(adapters={"stub": adapter})
+        ctx = _ctx()
+        ctx.metadata["hitl_answers"] = {
+            "h-node-1": {
+                "status": "completed",
+                "handle_id": "h-1",
+                "output": "stale transported answer",
+                "metadata": {"who": "waker", "session_id": "transported"},
+            }
+        }
+        result = await node.run({"harness_type": "stub", "task": "x"}, ctx)
+        # provider output wins; poll metadata overrides colliding keys while
+        # answer-only keys survive the merge
+        assert result.output.output == "fresh from the provider"
+        assert result.output.metadata == {"who": "waker", "session_id": "s-9"}
+        assert result.output.status == "completed"
 
 
 # --- one parent Run over one native node + one foreign-harness node -------------

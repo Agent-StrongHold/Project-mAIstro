@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +29
+  packages/maistro-core/tests: +33
   tests/: +12
 ---
 # Foreign harnesses as governed graph nodes (#1613, M1-D)
@@ -21,7 +21,7 @@ The twenty-nine new maistro-core node IDs cover each acceptance seam directly:
   healthchecks, and microVM wiring that points each harness at the caller's
   workspace with operator-wired (never request-wired) credentials.
 
-- `tests/graph/nodes/test_foreign_harness_invocation.py` (11): the governed
+- `tests/graph/nodes/test_foreign_harness_invocation.py` (15): the governed
   path. The `HarnessRunnerDispatchAdapter` bridge performs exactly one bounded
   turn per dispatch — start_session, send, stop in a `finally` — so a failed
   turn still stops the session (no orphan claw session survives as canonical
@@ -34,6 +34,10 @@ The twenty-nine new maistro-core node IDs cover each acceptance seam directly:
   node: both NodeRuns and their Attempts share one canonical parent Run, the
   foreign node's pause metadata carries the invocation id a harness waker
   (#1192) will need, and the Invocation is stored under that same Run identity.
+  The resume-evidence overlay is pinned at its degenerate halves: a poll that
+  is still running, reports failure, or raises leaves the transported answer
+  untouched, and a successful poll extends (never discards) the answer's
+  metadata.
 
 The twelve root-suite node IDs (`tests/test_check_foreign_harness_egress.py`)
 cover the new gate both ways: OpenClaw-over-HTTPX, Pi-over-subprocess, and

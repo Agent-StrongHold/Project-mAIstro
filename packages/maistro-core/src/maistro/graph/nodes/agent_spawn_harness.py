@@ -25,6 +25,7 @@ from maistro.graph.harness import (
     HarnessAdapter,
     HarnessHandle,
     HarnessRequest,
+    HarnessResult,
     HarnessRunnerDispatchAdapter,
 )
 
@@ -89,6 +90,22 @@ def _as_dispatch_adapter(provider: HarnessAdapter | HarnessRunner) -> HarnessAda
         "harness adapter must be a HarnessAdapter or a HarnessRunner provider; "
         f"got {type(provider).__name__}"
     )
+
+
+def _merge_poll_evidence(resumed: Any, result: HarnessResult) -> dict[str, Any]:
+    """Overlay a successful poll's evidence onto the transported resume answer.
+
+    The adapter vouches for the output; poll metadata extends (and on conflict
+    overrides) what the resume answer recorded instead of discarding it.
+    """
+    merged = dict(resumed)
+    if result.output:
+        merged["output"] = result.output
+    if isinstance(result.metadata, dict) and result.metadata:
+        merged_metadata = dict(resumed.get("metadata") or {})
+        merged_metadata.update(result.metadata)
+        merged["metadata"] = merged_metadata
+    return merged
 
 
 @dataclass(frozen=True)
@@ -182,14 +199,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             return resumed
         if result is None or not result.success:
             return resumed
-        merged = dict(resumed)
-        if result.output:
-            merged["output"] = result.output
-        if isinstance(result.metadata, dict) and result.metadata:
-            merged_metadata = dict(resumed.get("metadata") or {})
-            merged_metadata.update(result.metadata)
-            merged["metadata"] = merged_metadata
-        return merged
+        return _merge_poll_evidence(resumed, result)
 
     async def _execute(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut:
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
