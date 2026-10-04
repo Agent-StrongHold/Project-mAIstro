@@ -276,10 +276,21 @@ def _matches_segment_patterns(path: str, patterns: tuple[str, ...]) -> bool:
     must match a whole trailing path segment. Raw ``pattern in path`` accepted
     ``notmaistro/security/x`` and rejected nothing adjacent — both directions
     were wrong.
+
+    Directory patterns also match the directory name itself as the terminal
+    segment. Git reports a symlink (or gitlink) whose name equals the directory
+    without a trailing slash — a root-level ``maistro_rsi -> evil`` lands in
+    the diff and the HEAD tree as plain ``maistro_rsi`` — so startswith and
+    slash-containment alone miss exactly the entry that smuggles a directory
+    in. Over-matching a regular file of the same name costs one escalated
+    review; missing the symlink costs the containment surface.
     """
     for pattern in patterns:
         if pattern.endswith("/"):
             if path.startswith(pattern) or f"/{pattern}" in path:
+                return True
+            bare = pattern.rstrip("/")
+            if path == bare or path.endswith(f"/{bare}"):
                 return True
         elif path == pattern or path.endswith(f"/{pattern}"):
             return True
