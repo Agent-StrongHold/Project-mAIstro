@@ -11,7 +11,10 @@ executes, and the Container that owns the spine terminalizes, exactly as
 the route's conversation-only model call, never the tool-capable Conduit.
 
 A turn that cannot be admitted is refused with a retryable 503 before the
-model is called (#1108): an ungoverned answer is not a fallback.
+model is called (#1108): an ungoverned answer is not a fallback. A turn the
+canonical active-Run ceiling refuses (#1182) is answered 429 instead --
+backpressure, not an outage -- with the same detail and `Retry-After` the
+maistro-server chat door uses for the same canonical limiter.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from maistro.runs.chat_execution import (
     ChatAttemptExecutor,
     ChatDispatchUnrecorded,
 )
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.wiring import wire_chat_admission
 from services import workspace_authority
@@ -58,6 +62,20 @@ class AdmittedTurn:
     agent_id: str
     container: Any
     admitter: ChatRunAdmitter
+
+
+def _capacity(exc: RunConcurrencyExceeded) -> HTTPException:
+    """The shared 429 for a full canonical admission ceiling (#1182).
+
+    Same status, detail, and `Retry-After` as maistro-server's chat door for
+    the same `RunStore` limiter: `exc.scope` says which ceiling is full, and
+    the exception's type and fields stay intact on the chained cause.
+    """
+    return HTTPException(
+        status_code=429,
+        detail=f"too many active runs for this {exc.scope}; retry shortly",
+        headers={"Retry-After": RETRY_AFTER_SECONDS},
+    )
 
 
 def _unavailable(detail: str) -> HTTPException:
@@ -203,6 +221,17 @@ async def admit_turn(
             admitter.release_dispatch_pending(run.run_id)
         await asyncio.shield(container._cancel_incomplete_admission(run))
         raise
+    except RunConcurrencyExceeded as exc:
+        # Backpressure, not an admission outage (#1182): 429, not the 503 an
+        # ordinary admission failure gets. The same cleanup as below -- there
+        # is no dispatch-pending marker yet and nothing to compensate when the
+        # ceiling refused the create itself, but the invariant is kept for any
+        # capacity refusal that happens after the Run exists.
+        logger.info("chat turn refused: active Run ceiling full", exc_info=True)
+        if marked and admitter is not None and run is not None:
+            admitter.release_dispatch_pending(run.run_id)
+        await container._cancel_incomplete_admission(run)
+        raise _capacity(exc) from exc
     except Exception:
         logger.warning("chat turn could not be admitted as a Run", exc_info=True)
         if marked and admitter is not None and run is not None:
