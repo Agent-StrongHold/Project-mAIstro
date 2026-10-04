@@ -1901,18 +1901,22 @@ class LocalRsiLoop:
             if mutations and not self._config.allow_evaluator_mutation:
                 self._veto_evaluator_mutation(index, r, mutations, oracle_digest_value)
                 return r
-            if mutations:
-                # Authorized override (#109): scoring proceeds, but never
-                # silently — the evidence rides the promotion record on both
-                # acceptance paths (the fitness path re-derives it from the
-                # gate detail below; the bare path has no scorecard, so it is
-                # stashed here for _annotate_promotion).
+            if not self._config.use_fitness:
+                # The bare path has no scorecard, so the evaluator-oracle
+                # verdict is stashed here for _annotate_promotion on EVERY
+                # bare-path decision, not only authorized overrides (#109):
+                # a promotion accepted by the trusted oracle must still name
+                # the oracle version that judged it — digest, possibly-empty
+                # mutation list, authorization — or the export manifest emits
+                # a null evaluator_digest and the promotion can never be
+                # replayed against the oracle that produced it. The fitness
+                # path re-derives the same evidence from its gate detail.
                 r.trace = {
                     "evaluator": {
-                        "verdict": "authorized",
+                        "verdict": "authorized" if mutations else "clean",
                         "mutations": mutations,
                         "evaluator_digest": oracle_digest_value,
-                        "authorized": True,
+                        "authorized": bool(mutations),
                     }
                 }
             if self._config.use_fitness:

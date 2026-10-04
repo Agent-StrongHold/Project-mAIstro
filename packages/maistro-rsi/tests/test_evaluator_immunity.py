@@ -611,7 +611,14 @@ class TestAdversarialSelfScoringFixture:
 
     def test_clean_candidate_still_promotes(self, tmp_path: Path) -> None:
         """The guard must not convert the loop into a no-op: a legitimate
-        application improvement keeps promoting."""
+        application improvement keeps promoting — and, since the bare path
+        has no scorecard, the promotion record still pins the trusted oracle
+        digest on the clean decision (empty mutations, unauthorized), so the
+        acceptance is replayable against the oracle version that judged it."""
+        import json
+
+        from maistro_rsi.trace_notes import read_trace_note
+
         repo = _oracle_repo(tmp_path / "src")
 
         def improve(ws: Path) -> None:
@@ -625,6 +632,27 @@ class TestAdversarialSelfScoringFixture:
         )
         result = LocalRsiLoop(config, apply_patch=_make_apply(improve)).run()
         assert result.promotions == 1
+
+        note = read_trace_note(Path(result.baseline_dir), result.cycles[0].sha)
+        assert note is not None
+        evaluator = note.evaluator
+        assert evaluator is not None
+        assert evaluator["verdict"] == "clean"
+        assert evaluator["mutations"] == []
+        assert evaluator["authorized"] is False
+        assert evaluator["evaluator_digest"] == oracle_digest(
+            Path(result.baseline_dir), f"{result.cycles[0].sha}^"
+        )
+
+        export_dir = tmp_path / "export"
+        exporter = LocalRsiLoop(config, apply_patch=None)
+        exporter._baseline = Path(result.baseline_dir)
+        exporter._start_ref = f"{result.cycles[0].sha}^"
+        exporter.export_promotions(export_dir, clear=True)
+        manifest = json.loads((export_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest, "expected the promotion to be exported"
+        assert manifest[0]["evaluator_digest"] == evaluator["evaluator_digest"]
+        assert manifest[0]["evaluator_authorized"] is False
 
 
 # ---------------------------------------------------------------------------
