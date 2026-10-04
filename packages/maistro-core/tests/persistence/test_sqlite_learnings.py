@@ -219,3 +219,80 @@ async def test_list_all_orders_newest_first_and_respects_limit(
     all_learnings = await store.list_all(limit=2)
     assert len(all_learnings) == 2
     assert all_learnings[0].tool_name == "tool2"
+
+
+@pytest.mark.asyncio
+async def test_applicability_columns_written_outside_the_store_read_back_tolerant() -> None:
+    """`_json_list` must tolerate legacy NULLs, junk text and JSON scalars.
+
+    The M4-B3 columns carry NOT NULL DEFAULT '[]' in this repo's DDL, but a
+    database written outside this migration chain (an older nullable shape, a
+    partial writer) can hold anything. The mapper's contract is that such a
+    row reads back as an empty list — never a crash and never a fabricated
+    applicability claim (#119). The well-formed column in the same row proves
+    the tolerance is per-column, not a blanket wipe.
+    """
+    conn = await aiosqlite.connect(":memory:")
+    # A database written before the NOT NULL DEFAULT '[]' tightening: the
+    # columns exist but accept anything. ensure_schema inspects the column
+    # list, finds them present, and correctly leaves them alone.
+    await conn.execute(
+        """
+        CREATE TABLE learnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL DEFAULT 'general',
+            trigger_keys TEXT NOT NULL DEFAULT '[]',
+            learning TEXT NOT NULL DEFAULT '',
+            tool_name TEXT NOT NULL DEFAULT '',
+            source_query TEXT NOT NULL DEFAULT '',
+            agent_id TEXT NOT NULL DEFAULT '',
+            user_id TEXT,
+            org_id TEXT NOT NULL DEFAULT '',
+            team_id TEXT NOT NULL DEFAULT '',
+            scope TEXT NOT NULL DEFAULT 'agent',
+            hit_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            rca_category TEXT,
+            rca_prevention TEXT NOT NULL DEFAULT '',
+            success_after_use INTEGER NOT NULL DEFAULT 0,
+            failure_after_use INTEGER NOT NULL DEFAULT 0,
+            run_id TEXT,
+            node_run_id TEXT,
+            attempt_id TEXT,
+            epistemic_type TEXT,
+            works_when TEXT,
+            avoid_in TEXT,
+            confidence REAL,
+            evidence_run_ids TEXT,
+            evaluation_ids TEXT
+        )
+        """
+    )
+    store = SqliteLearningStore(conn)
+    await store.ensure_schema()
+    try:
+        await conn.execute(
+            "INSERT INTO learnings (trigger_keys, learning, tool_name, org_id,"
+            " works_when, avoid_in, evidence_run_ids, evaluation_ids)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                '["deploy"]',
+                "legacy row with hand-written applicability",
+                "bash",
+                "org-legacy",
+                None,  # legacy NULL where the newer shape requires a JSON array
+                "not json {",
+                "42",  # JSON scalar, not a list
+                '[ "run-1" ]',  # well-formed control
+            ),
+        )
+        await conn.commit()
+        rows = await store.list_all(org_id="org-legacy")
+    finally:
+        await conn.close()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.works_when == []
+    assert row.avoid_in == []
+    assert row.evidence_run_ids == []
+    assert row.evaluation_ids == ["run-1"]
