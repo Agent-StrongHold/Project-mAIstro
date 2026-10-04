@@ -42,3 +42,23 @@ empty stdout for misuse. Envelope validation never asserts that a run
 occurred, that evidence is authentic, or that live security/provider behavior
 passed; the observed all-PASS fixtures are correctly hashed, which is all the
 envelope check claims about them.
+
+Repair addendum (this branch): the first cut left both new scripts
+unreachable-from-any-entry-point — release tooling nothing imports and no
+workflow named — so `check-reachability.py`,
+`check-reachability-provenance.py` and the four reachability tests failed, and
+the coverage producer (which runs the root suite) failed with them. Baseline
+could not absorb them: the two-merge rule reads grants from the merge base, so
+a same-PR authorization is self-approval by definition. The repair wires the
+validator the way the ratchet recognizes: a `quality.yml` quality-gate step
+(`installed proof envelope validator fails closed via CLI (#1878)`) builds a
+synthetic, correctly hashed envelope and asserts through the real process CLI
+that structural mode exits 0 with `"valid": true` while closeout exits 1 with
+`SYNTHETIC_NOT_CLOSEOUT` — the contract's fail-closed headline, now exercised
+end to end on every PR. The sibling contract module is reached through the
+validator's own import of it. `tests/test_check_reachability.py::
+test_the_gate_scripts_themselves_are_reachable` now lists the validator so
+removing the workflow step fails a test, not just the gate. Test count
+unchanged (+0); the workflow step replaces no pytest assertion — `TestCli`
+already covered exit codes in-process, this adds the real-process smoke the
+suite cannot give.

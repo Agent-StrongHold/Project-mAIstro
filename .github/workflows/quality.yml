@@ -973,6 +973,114 @@ jobs:
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
 
+      # The installed-workspace proof validator (#1878) is release tooling, and
+      # the ratchet above counts a scripts/ module as wired only when a
+      # workflow names its file — so this step is its call path, not an
+      # ornament. It exercises the real CLI end to end, which the in-process
+      # tests in tests/release/test_installed_workspace_proof_schema.py cannot:
+      # a synthetic, correctly hashed envelope is valid structural evidence but
+      # must fail closeout with SYNTHETIC_NOT_CLOSEOUT, asserted here through
+      # actual process exit codes. This checks envelope form only; it never
+      # asserts that a run occurred or that evidence is authentic.
+      - name: installed proof envelope validator fails closed via CLI (#1878)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          uv run python - "$tmp" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          bundle = root / "bundle"
+          bundle.mkdir(parents=True)
+
+          profile_id = "ci-reviewed-profile-1878"
+          commit = "b" * 40  # shape-conformant stand-in; envelope form, not authenticity
+          artifact = hashlib.sha256(
+              b"maistro installed-workspace proof envelope conformance"
+          ).hexdigest()
+
+          payloads = {
+              "install.log": b"synthetic install log (CI conformance, #1878)\n",
+              "effective-config.json": b'{"synthetic": true}\n',
+              "execution.json": b'{"synthetic": true}\n',
+              "restart.json": b'{"synthetic": true}\n',
+              "isolation.json": b'{"synthetic": true}\n',
+              "junit.xml": b"<testsuites synthetic='true' />\n",
+          }
+          profile = {
+              "schema_version": 1,
+              "profile_id": profile_id,
+              "browser_login_applicable": False,
+          }
+          (root / "reviewed-profile.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+          def dump(doc):
+              return (json.dumps(doc, indent=2) + "\n").encode()
+
+          results = {
+              "schema_version": 1,
+              "candidate_sha256": artifact,
+              "profile_id": profile_id,
+              "scenarios": [
+                  {
+                      "id": family,
+                      "outcome": "PASS",
+                      "reason_code": None,
+                      "evidence_paths": ["install.log"],
+                  }
+                  for family in ("INSTALL", "EXECUTE", "RESTART", "ISOLATE", "FAIL-CLOSED")
+              ],
+              "subchecks": [
+                  {
+                      "id": "BROWSER_LOGIN",
+                      "outcome": "NOT_APPLICABLE",
+                      "reason_code": "browser-login-not-applicable",
+                      "evidence_paths": [],
+                  }
+              ],
+          }
+          on_disk = {**payloads, "results.json": dump(results)}
+          manifest = {
+              "schema_version": 1,
+              "evidence_kind": "synthetic",
+              "candidate": {"commit": commit, "artifact_sha256": artifact},
+              "profile_id": profile_id,
+              "files": [
+                  {"path": name, "sha256": hashlib.sha256(data).hexdigest()}
+                  for name, data in sorted(on_disk.items())
+              ],
+          }
+          for name, data in on_disk.items():
+              (bundle / name).write_bytes(data)
+          (bundle / "manifest.json").write_bytes(dump(manifest))
+          print(f"synthetic bundle written to {bundle}")
+          PY
+          uv run python scripts/validate-installed-workspace-proof.py \
+            --bundle "$tmp/bundle" --profile "$tmp/reviewed-profile.json" \
+            --mode structural > "$tmp/structural-report.json"
+          grep -q '"valid": true' "$tmp/structural-report.json"
+          if uv run python scripts/validate-installed-workspace-proof.py \
+              --bundle "$tmp/bundle" --profile "$tmp/reviewed-profile.json" \
+              --mode closeout > "$tmp/closeout-report.json"; then
+            echo "::error::synthetic envelope passed closeout — validator is not fail-closed"
+            exit 1
+          fi
+          grep -q "SYNTHETIC_NOT_CLOSEOUT" "$tmp/closeout-report.json" || {
+            echo "::error::closeout failed without SYNTHETIC_NOT_CLOSEOUT:"
+            cat "$tmp/closeout-report.json"
+            exit 1
+          }
+          echo "installed proof envelope validator fails closed: structural exit 0, closeout exit 1 (SYNTHETIC_NOT_CLOSEOUT)"
+
+      # Credential authority is checked against the same reachable module graph;
+      # a renamed unscoped store must fail before it can become a route dependency.
+      - name: credential authority (reachable stores are classified and scoped)
+        run: uv run python scripts/check-credential-authority.py
+
       # Credential authority is checked against the same reachable module graph;
       # a renamed unscoped store must fail before it can become a route dependency.
       - name: credential authority (reachable stores are classified and scoped)
