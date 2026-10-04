@@ -7828,3 +7828,55 @@ creative Graph, #776 product wiring in the Design-Studio path — all still
 absent. All 13 acceptance criteria still trace to absent canonical owners;
 the stop condition forbids Design-Studio-private substitutes. Verdict:
 **BLOCKED** (Refs #777).
+
+## Round 116 (repair) — head `3bee9630f` = round 115 end head, tree clean; origin/develop still unmoved at `e067b7b0a`; blockers re-proven fresh; battery re-run green
+
+**Starting state (not trusted, verified):** job `341c823f` (this round)
+dispatches on `3bee9630fc15`, exactly round 115's committed end head;
+`git status` clean, nothing to salvage. `git fetch origin` → `origin/develop`
+still `e067b7b0aca01b578f0bf2446dc0864fc4d88d15` (lane base), already merged
+conflict-free at `a74877296`; no merge applicable.
+
+**Driver validation failure re-verified fixed fresh:** the recorded failure
+(job `53d5e08b` `check-2.log`: `ruff format --check .` flagging
+`builders/agent_loop.py` at `a99c6bd78`) is green at this head — **2882
+files already formatted**, `ruff check .` "All checks passed!".
+
+**Dependency audit re-run fresh at `3bee9630f` (own greps, outcome
+unchanged from rounds 108–115):** `GoalReconcil|delegate_goal` → **0 files**
+in `packages/*/src`; `maistro.goals` module **absent** (no #458 Goal
+writer; `rubric_store.py:71` resolution-only Protocol stands);
+`ControlMode|BranchControl` → **0 consumers** outside `maistro-design`;
+`WorkingMemory` → **0 refs** in `packages/maistro-design/src`;
+`WorkspaceAgent` → **0 tokens** in `packages/maistro-design/src`;
+`brief_chat.py:64-67` `_NOT_WRITTEN` stands verbatim.
+
+**Battery re-run at `3bee9630f` (all fresh, this round):**
+
+- `uv run ruff check .` → EXIT 0
+- `uv run ruff format --check .` → EXIT 0 (2882 files)
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI-exact) → EXIT 0; base `e067b7b0aca0` vs candidate
+  `3bee9630fc15`, 1342 reviewed → 1341 findings, `unclassified: 0` — no
+  ledger amendment (none permitted: gate green)
+- `check-suite-inventory` → EXIT 0 (14 suites match); `check-backlog-
+  consistency` → EXIT 0 (167 items); `check-dependency-namespaces` /
+  `check-branch-independence` → EXIT 0
+- canonical mypy → "Success: no issues found in 791 source files"
+- pytest `maistro-design/tests` + `maistro-core/tests/memory/working` +
+  `memory/working_graph` + `memory/test_working_memory.py` → **700 passed /
+  1 skipped** (23.0s, matches round 115's invocation exactly);
+  `maistro-bootstrap/tests` → **237 passed / 1 skipped** (14.6s); 20 hive
+  design/brief/workspace test modules → **286 passed / 5 skipped** (16.3s)
+
+No production or test code changed this round; front-matter deltas stay +0.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged
+
+No #777 dependency landed on `origin/develop` since `e067b7b0a` and none
+exists on the branch: #804/#805/#806 persistent Workspace Agent + Goal
+reconciliation/delegation, #458 canonical Goal writer, #774 CreativeBrief
+writer, #775 creative Graph, #776 product-path wiring are all still absent,
+so all 13 acceptance criteria remain unverifiable against reachable
+production behavior; the stop condition forbids private substitutes. Verdict:
+**BLOCKED** (Refs #777).
