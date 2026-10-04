@@ -62,7 +62,7 @@ jobs:
         run: |
           uv run bandit -r packages/maistro-core/src packages/hive-conductor/backend \
                           packages/maistro-server/src \
-                          -ll --confidence-level=medium -f json -o bandit.json || true
+                          -ll --confidence-level=medium -f json -o bandit.json || true # bandit's verdict is re-derived from its JSON below
           uv run python -c "
           import json, sys
           data = json.load(open('bandit.json'))

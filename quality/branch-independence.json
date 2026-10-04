@@ -145,6 +145,14 @@
       "reason": "Reviewed per-route contract specification; changing a shipped route's no-op disposition or contract is the substantive change."
     },
     {
+      "id": "workflow-inventory",
+      "kind": "specification",
+      "paths": [
+        "quality/workflow-inventory.json"
+      ],
+      "reason": "Reviewed per-workflow disposition specification (#400); changing a workflow's disposition, declared triggers or reference-liveness claim is the substantive change."
+    },
+    {
       "id": "citation-baseline",
       "kind": "legacy_shared_aggregate",
       "paths": [

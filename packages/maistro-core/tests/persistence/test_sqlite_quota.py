@@ -10,6 +10,7 @@ import pytest
 
 from maistro.persistence.pg_quota import cycle_key
 from maistro.persistence.sqlite_quota import SqliteQuotaTracker
+from maistro.types.model import UnknownBillingCycleError
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ async def tracker() -> AsyncIterator[SqliteQuotaTracker]:
 
 @pytest.mark.asyncio
 async def test_record_usage_creates_new_row(tracker: SqliteQuotaTracker) -> None:
-    result = await tracker.record_usage("openai", "  Monthly  ", 100, 50)
+    result = await tracker.record_usage("openai", "monthly", 100, 50)
     assert result == {
         "provider": "openai",
         "cycle_key": cycle_key("monthly"),
@@ -32,6 +33,18 @@ async def test_record_usage_creates_new_row(tracker: SqliteQuotaTracker) -> None
         "total_tokens": 150,
         "request_count": 1,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unnormalized", ["Monthly", "  Monthly  ", "MONTHLY"])
+async def test_unnormalized_cycle_values_fail_explicitly(
+    tracker: SqliteQuotaTracker, unnormalized: str
+) -> None:
+    """#1205: the old silent fallback landed any unrecognized cycle string in
+    the monthly bucket, so '  Monthly  ' quietly worked by accident. The
+    tracked vocabulary is exact — anything else fails at the seam."""
+    with pytest.raises(UnknownBillingCycleError):
+        await tracker.record_usage("openai", unnormalized, 100, 50)
 
 
 @pytest.mark.asyncio
@@ -120,7 +133,7 @@ async def test_get_usage_pct_no_row_returns_zero(tracker: SqliteQuotaTracker) ->
 @pytest.mark.asyncio
 async def test_get_usage_pct_computes_ratio(tracker: SqliteQuotaTracker) -> None:
     await tracker.record_usage("openai", "monthly", 250, 0)
-    pct = await tracker.get_usage_pct("openai", "Monthly", 1000)
+    pct = await tracker.get_usage_pct("openai", "monthly", 1000)
     assert pct == 0.25
 
 
