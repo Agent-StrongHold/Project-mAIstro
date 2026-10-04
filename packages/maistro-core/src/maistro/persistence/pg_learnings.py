@@ -65,7 +65,6 @@ _PG_INSERT_FIELDS = (
     "stage",
     "promoted_by",
 )
-)
 
 
 def similarity_query(

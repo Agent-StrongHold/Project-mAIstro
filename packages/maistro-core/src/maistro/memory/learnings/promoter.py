@@ -116,35 +116,46 @@ class LearningPromoter:
         all_candidates = await self._store.list_all(org_id=org_id, limit=10_000)
         candidates = [lr for lr in all_candidates if org_id or not lr.org_id]
         for lr in candidates:
-            if lr.hit_count < self._threshold or lr.status != "active":
-                continue
-            # A candidate whose evaluation cannot complete (transient trial
-            # Run or evaluator failure) is not a rejected candidate: it stays
-            # active here and is re-evaluated on a later pass. The failure is
-            # contained to this candidate so the remaining candidates are
-            # still considered and promotion never breaks the caller, which
-            # awaits this inline before persisting the Run.
-            try:
-                verdict = await self._gauntlet.evaluate(lr)
-            except Exception:
-                logger.exception(
-                    "Gauntlet evaluation failed for learning #%s; leaves it active for retry",
-                    lr.id,
-                )
-                continue
-            if not verdict.ok:
-                logger.info(
-                    "Gauntlet rejected learning #%s (%s): stays active and local",
-                    lr.id,
-                    verdict.reason,
-                )
-                continue
-            updated = await self._promote_validated(lr, verdict)
-            if updated is None:
-                continue
-            promoted.append(updated)
+            updated = await self._evaluate_candidate(lr)
+            if updated is not None:
+                promoted.append(updated)
 
         return promoted
+
+    async def _evaluate_candidate(self, lr: Learning) -> Learning | None:
+        """Run one candidate through the Gauntlet; promote it only on acceptance.
+
+        Returns the promoted Learning, or None when the candidate is not due
+        (below threshold, not active), was rejected, could not be evaluated,
+        or raced away before its row could be flipped. Each outcome is logged
+        with its own reason; none raises — a failed candidate costs its own
+        promotion, never the caller's pass.
+        """
+        assert self._gauntlet is not None
+        if lr.hit_count < self._threshold or lr.status != "active":
+            return None
+        # A candidate whose evaluation cannot complete (transient trial
+        # Run or evaluator failure) is not a rejected candidate: it stays
+        # active here and is re-evaluated on a later pass. The failure is
+        # contained to this candidate so the remaining candidates are
+        # still considered and promotion never breaks the caller, which
+        # awaits this inline before persisting the Run.
+        try:
+            verdict = await self._gauntlet.evaluate(lr)
+        except Exception:
+            logger.exception(
+                "Gauntlet evaluation failed for learning #%s; leaves it active for retry",
+                lr.id,
+            )
+            return None
+        if not verdict.ok:
+            logger.info(
+                "Gauntlet rejected learning #%s (%s): stays active and local",
+                lr.id,
+                verdict.reason,
+            )
+            return None
+        return await self._promote_validated(lr, verdict)
 
     async def _promote_validated(self, lr: Learning, verdict: GauntletVerdict) -> Learning | None:
         """Promote one Gauntlet-accepted candidate, stamping the verdict's provenance.

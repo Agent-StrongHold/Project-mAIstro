@@ -42,6 +42,7 @@ from maistro.runs.model import RunStatus
 from maistro.types.memory import Learning
 
 if TYPE_CHECKING:
+    from maistro.runs.model import Run
     from maistro.runs.store import RunStore
 
 #: Provenance marker every gauntlet trial Run must carry. The Gauntlet reads
@@ -217,6 +218,23 @@ class LearningGauntlet(Protocol):
         ...
 
 
+def _trial_provenance_matches(run: Run, candidate: GauntletCandidate, trial: TrialResult) -> bool:
+    """Whether one trial Run's provenance binds it to this candidate's trial.
+
+    A completed Run that executed something else proves nothing: the Run must
+    carry the gauntlet-trial purpose marker, the frozen candidate content
+    hash it judged, this trial's context id, and the trial's held-out flag.
+    A Run whose provenance is absent or not a mapping fails the binding.
+    """
+    provenance = run.provenance if isinstance(run.provenance, dict) else {}
+    return (
+        provenance.get("purpose") == GAUNTLET_TRIAL_PURPOSE
+        and provenance.get("gauntlet_candidate_content_hash") == candidate.content_hash
+        and provenance.get("trial_context_id") == trial.context_id
+        and bool(provenance.get("held_out")) == trial.held_out
+    )
+
+
 class IndependentTrialsGauntlet:
     """Judge an evaluation record against independence and coverage rules.
 
@@ -387,13 +405,7 @@ class IndependentTrialsGauntlet:
                 continue
             if run.status != RunStatus.COMPLETED:
                 failed.append("run_outcome")
-            provenance = run.provenance if isinstance(run.provenance, dict) else {}
-            if (
-                provenance.get("purpose") != GAUNTLET_TRIAL_PURPOSE
-                or provenance.get("gauntlet_candidate_content_hash") != candidate.content_hash
-                or provenance.get("trial_context_id") != trial.context_id
-                or bool(provenance.get("held_out")) != trial.held_out
-            ):
+            if not _trial_provenance_matches(run, candidate, trial):
                 failed.append("run_provenance")
         return failed
 

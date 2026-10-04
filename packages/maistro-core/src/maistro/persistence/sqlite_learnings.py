@@ -108,7 +108,6 @@ _STAGE_COLUMN_TYPES = {
     "validated_by": "TEXT NOT NULL DEFAULT ''",
     "promoted_by": "TEXT NOT NULL DEFAULT ''",
 }
-}
 
 # Kept next to the SQL so the conformance test can detect a new Learning field
 # that is not represented by both persistence twins.
@@ -142,7 +141,6 @@ _SQLITE_INSERT_FIELDS = (
     "stage",
     "promoted_by",
 )
-)
 
 
 class SqliteLearningStore:
@@ -163,28 +161,19 @@ class SqliteLearningStore:
         """
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
-            cursor = await self._conn.execute("PRAGMA table_info(learnings)")
-            columns = {row[1] for row in await cursor.fetchall()}
-            if "org_id" not in columns:
-                await self._conn.execute(
-                    "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
-                )
-            for column, column_type in _LEGACY_UPGRADE_COLUMNS.items():
-                if column not in columns:
-                    await self._conn.execute(
-                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
-                    )
-            # The same in-place upgrade for the producer columns. A file created
-            # before #709 holds real learnings; recreating the table would be the
-            # only alternative, and it would lose them (#709).
-            for column in _PROVENANCE_COLUMNS:
-                if column not in columns:
-                    await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
+            columns = await _learning_columns(self._conn)
+            await _upgrade_pre_709_columns(self._conn, columns)
             for column, column_type in _VALIDATION_COLUMNS.items():
                 if column not in columns:
                     await self._conn.execute(
                         f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
                     )
+            # Re-read the column set: the validation upgrade above may just have
+            # added `validated_by`, which the ladder's upgrade types also name
+            # (the one column the Gauntlet provenance and the stage ladder
+            # share). The snapshot taken before the first upgrade would send
+            # the next one after an already-existing column and fail.
+            columns = await _learning_columns(self._conn)
             # M4-B1 (ADR-103): the stage columns default to the bottom rung
             # with blank actors. Pre-ladder rows keep `memory` and never gain
             # a fabricated validation or promotion claim; the ledger starts
@@ -618,6 +607,30 @@ def _text(row: dict[str, Any], name: str) -> str:
     return str(row.get(name) or "")
 
 
+async def _learning_columns(conn: aiosqlite.Connection) -> set[str]:
+    """The columns the learnings table currently has (schema-upgrade probes)."""
+    cursor = await conn.execute("PRAGMA table_info(learnings)")
+    return {row[1] for row in await cursor.fetchall()}
+
+
+async def _upgrade_pre_709_columns(conn: aiosqlite.Connection, columns: set[str]) -> None:
+    """Upgrade a file created before #709: scope, legacy text, producer columns.
+
+    `org_id` predates the SQLite twin storing all of the `Learning` fields;
+    the legacy text columns and the producer provenance columns follow the
+    same in-place pattern. Recreating the table would be the only
+    alternative, and it would lose real learnings (#709).
+    """
+    if "org_id" not in columns:
+        await conn.execute("ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''")
+    for column, column_type in _LEGACY_UPGRADE_COLUMNS.items():
+        if column not in columns:
+            await conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} {column_type}")
+    for column in _PROVENANCE_COLUMNS:
+        if column not in columns:
+            await conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
+
+
 def _row_to_learning(row: dict[str, Any]) -> Learning:
     return Learning(
         id=row["id"],
@@ -640,13 +653,26 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         attempt_id=_text(row, "attempt_id"),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
-        validated_evaluator_version=_text(row, "validated_evaluator_version"),
-        validated_at=row.get("validated_at") or 0.0,
-        validation_run_ids=_load_validation_run_ids(row.get("validation_run_ids")),
-        validation_content_hash=_text(row, "validation_content_hash"),
+        **_validation_provenance(row),
         stage=LearningStage(row.get("stage") or "memory"),
         promoted_by=_text(row, "promoted_by"),
     )
+
+
+def _validation_provenance(row: dict[str, Any]) -> dict[str, Any]:
+    """Decode the Gauntlet provenance columns (M4-B2) as keyword fields.
+
+    A pre-Gauntlet row was never validated, so the defaults are the honest
+    values: blank evaluator identity and version, timestamp 0, no evaluation
+    Runs, no frozen-content hash.
+    """
+    return {
+        "validated_by": _text(row, "validated_by"),
+        "validated_evaluator_version": _text(row, "validated_evaluator_version"),
+        "validated_at": row.get("validated_at") or 0.0,
+        "validation_run_ids": _load_validation_run_ids(row.get("validation_run_ids")),
+        "validation_content_hash": _text(row, "validation_content_hash"),
+    }
 
 
 def _load_validation_run_ids(raw: object) -> list[str]:
