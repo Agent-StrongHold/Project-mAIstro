@@ -100,6 +100,19 @@ import sysconfig
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#: Stem of the companion prune tool, ``scripts/prune-dependency-namespaces.py``.
+#
+#: Named at runtime, not imported: both are standalone entry points, and the
+#: remediation for a ``pruned-present`` finding (reported below) is to run that
+#: tool on the shipped environment and re-scan with ``--production``. Holding
+#: the stem here also keeps the tool reachable for ``scripts/check-reachability.py``:
+#: it roots tooling from workflow text, and the places the prune actually runs
+#: (the shipped-image Dockerfiles) are not workflow text — without this
+#: reference the live tool re-banks as an unreachable identity and the
+#: reachability ratchet fails. Sibling scripts the images run must stay named
+#: by a script CI runs.
+PRUNE_TOOL_STEM = "prune-dependency-namespaces"
+
 #: Top-level names so generic that a dependency shipping one unreviewed is a
 #: collision waiting for a victim: they are the names a first-party tree, a
 #: script, or a vendored module would plausibly choose. Not an exhaustive
@@ -606,7 +619,7 @@ def _evaluate_single_owner(
                 distribution=owner.name,
                 detail=(
                     f"production scan: {top!r} is in PRUNED_IN_PRODUCTION (prune via "
-                    "scripts/prune-dependency-namespaces.py) and must be absent from "
+                    f"scripts/{PRUNE_TOOL_STEM}.py) and must be absent from "
                     "shipped environments, reviewed or not"
                 ),
             )
@@ -630,6 +643,11 @@ def _render(
         lines.append(f"REJECTED — {len(findings)} namespace finding(s):")
         for f in findings:
             lines.append(f"  [{f.kind}] {f.top_level} <- {f.distribution}: {f.detail}")
+        if production and any(f.kind == "pruned-present" for f in findings):
+            lines.append(
+                f"Remediate a pruned-present finding: run scripts/{PRUNE_TOOL_STEM}.py "
+                "on the shipped environment, then re-run this gate with --production."
+            )
         lines.append(
             "Fix by removing the payload (prune/patch), pinning past it, or adding a "
             "REVIEWED_NAMESPACES entry that names exactly this distribution and the "

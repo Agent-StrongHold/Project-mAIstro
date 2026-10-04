@@ -63,18 +63,28 @@ def make_dist(
     dist_name: str,
     version: str,
     files: dict[str, bytes],
+    *,
+    extra_record_rows: list[str] | None = None,
+    metadata: str | None = None,
+    omit_metadata: bool = False,
 ) -> Path:
     """Fabricate one installed distribution: METADATA + RECORD + payload files.
 
     RECORD rows carry real sha256/size columns so a prune that rewrites the
-    file is exercised against the same shape syft and pip read.
+    file is exercised against the same shape syft and pip read. ``extra_record_rows``
+    appends raw first-column rows (a recorded directory, a ``..`` escape) for the
+    hostile-RECORD cases; ``metadata`` replaces the standard headers, and
+    ``omit_metadata`` installs the dist-info without a METADATA file at all.
     """
     dist_info = site / f"{dist_name.replace('-', '_')}-{version}.dist-info"
     dist_info.mkdir(parents=True)
-    (dist_info / "METADATA").write_text(
-        f"Metadata-Version: 2.4\nName: {dist_name}\nVersion: {version}\n",
-        encoding="utf-8",
-    )
+    if not omit_metadata:
+        (dist_info / "METADATA").write_text(
+            metadata
+            if metadata is not None
+            else (f"Metadata-Version: 2.4\nName: {dist_name}\nVersion: {version}\n"),
+            encoding="utf-8",
+        )
     rows: list[list[str]] = []
     for rel, content in sorted(files.items()):
         target = site / rel
@@ -82,7 +92,10 @@ def make_dist(
         target.write_bytes(content)
         digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip("=")
         rows.append([rel, f"sha256={digest}", str(len(content))])
-    rows.append([f"{dist_info.name}/METADATA", "", ""])
+    if not omit_metadata:
+        rows.append([f"{dist_info.name}/METADATA", "", ""])
+    for raw in extra_record_rows or []:
+        rows.append([raw, "", ""])
     with (dist_info / "RECORD").open("w", newline="", encoding="utf-8") as fh:
         csv.writer(fh, lineterminator="\n").writerows(rows)
     return dist_info
@@ -156,6 +169,62 @@ class TestInventory:
         _, dists = tops_of(scripts, site)
         assert dists[0].name == "pytoniq-core-fork"
 
+    def test_top_level_extension_counts_by_import_name(self, scripts, site):
+        """A top-level extension module is import surface keyed by IMPORT name:
+        ``grunt.cpython-312-x86_64-linux-gnu.so`` must read as ``grunt``, not as
+        a filename — the same import an attacker would shadow."""
+        make_dist(site, "grunt", "1.0", {"grunt.cpython-312-x86_64-linux-gnu.so": b"\\x7fELF"})
+        _, dists = tops_of(scripts, site)
+        assert dists[0].top_levels == {"grunt"}
+
+    def test_extensionless_top_level_file_is_not_import_surface(self, scripts, site):
+        """A stray top-level LICENSE or README is data, not a module: excluded
+        with a stated reason, and never entering the inventory as a name."""
+        make_dist(site, "chatty", "1.0", {"chatty/__init__.py": b"x = 1\n"})
+        di_rows = ["LICENSE", "README"]
+        with (site / "chatty-1.0.dist-info" / "RECORD").open(
+            "a", newline="", encoding="utf-8"
+        ) as fh:
+            csv.writer(fh, lineterminator="\n").writerows([[r] for r in di_rows])
+        _, dists = tops_of(scripts, site)
+        assert dists[0].top_levels == {"chatty"}
+        assert "top-level non-Python file" in " ".join(dists[0].skipped_rows)
+
+    def test_dist_info_without_metadata_falls_back_to_the_stem(self, scripts, site):
+        """A dist-info with no METADATA at all is still a distribution: its name
+        comes from the directory stem (which installers keep in sync), so the
+        inventory cannot be blinded by deleting one file."""
+        make_dist(site, "shy-dist", "2.0", {"shy/__init__.py": b"x = 1\n"}, omit_metadata=True)
+        _, dists = tops_of(scripts, site)
+        assert dists[0].name == "shy-dist"
+        assert dists[0].top_levels == {"shy"}
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            "Metadata-Version: 2.4\nVersion: 1.0\n\nname comes later, after a blank line\n",
+            "Metadata-Version: 2.4\nVersion: 1.0\nSummary: no blank line, no Name\n",
+        ],
+        ids=["blank-line-before-name", "no-name-before-end"],
+    )
+    def test_metadata_without_a_name_header_falls_back_to_the_stem(self, scripts, site, metadata):
+        """METADATA that never states ``Name:`` (both before a blank line and
+        through end-of-file) must not yield an unnamed distribution: the stem
+        fallback keeps every payload attributable."""
+        make_dist(site, "nameless", "3.1", {"nameless/mod.py": b"x = 1\n"}, metadata=metadata)
+        _, dists = tops_of(scripts, site)
+        assert dists[0].name == "nameless"
+
+    def test_a_file_named_dist_info_is_not_a_distribution(self, scripts, site):
+        """A regular FILE named ``*.dist-info`` (an installer crash artifact)
+        is not a distribution: scanning it would crash or, worse, invent an
+        empty inventory. It must be skipped outright."""
+        (site / "ghost-1.0.dist-info").write_text("not a directory", encoding="utf-8")
+        make_dist(site, "real", "1.0", {"real/__init__.py": b"x = 1\n"})
+        findings, dists = tops_of(scripts, site)
+        assert [d.name for d in dists] == ["real"]
+        assert findings == []
+
 
 class TestRejection:
     def test_dev_scan_accepts_the_reviewed_examples(self, scripts, site):
@@ -187,9 +256,15 @@ class TestRejection:
         """Reviewed means dev/CI. In production mode the reviewed-but-present
         namespace is exactly the thing --production exists to catch."""
         make_dist(site, "pytoniq-core-fork", "0.1.48", PYTONIQ_PAYLOAD)
-        findings, _ = tops_of(scripts, site, production=True)
+        findings, dists = tops_of(scripts, site, production=True)
         assert [f.kind for f in findings] == ["pruned-present"]
         assert findings[0].top_level == "examples"
+        # The finding names its remediation tool at runtime (scripts/
+        # <PRUNE_TOOL_STEM>.py), and so does the rendered report — the named
+        # constant is live output, not documentation.
+        assert scripts.check.PRUNE_TOOL_STEM in findings[0].detail
+        report = scripts.check._render(dists, findings, [site], production=True)
+        assert f"scripts/{scripts.check.PRUNE_TOOL_STEM}.py" in report
 
     def test_production_mode_passes_after_prune(self, scripts, site):
         """Simulate the image-build prune (rows and files gone) and the strict
@@ -304,6 +379,93 @@ class TestRejection:
         findings, _ = tops_of(scripts, site)
         assert [f.kind for f in findings] == ["first-party-shadow"]
         assert "typosquat-core" in findings[0].distribution
+
+
+class TestReportAndCli:
+    """The report and the argument surface: what an operator actually sees and
+    runs. A gate whose remediation text or exit codes are wrong is a gate that
+    gets rerun with --force until it goes away."""
+
+    def test_clean_report_says_no_unreviewed_namespaces(self, scripts, site):
+        """The empty-finding report is explicit, not blank — silence reads the
+        same as a crash in a build log."""
+        report = scripts.check._render([], [], [site], production=False)
+        assert "no unreviewed top-level namespaces." in report
+
+    def test_default_site_packages_distinguishes_platlib(self, scripts, monkeypatch):
+        """The default scan scope is purelib plus platlib WHEN THEY DIFFER:
+        a split-layout environment must not leave its platlib payload
+        unscanned, and a merged layout must not scan one directory twice."""
+        pure = "/env/pure"
+        monkeypatch.setattr(
+            scripts.check.sysconfig,
+            "get_paths",
+            lambda: {"purelib": pure, "platlib": "/env/plat"},
+        )
+        assert scripts.check.default_site_packages() == [Path(pure), Path("/env/plat")]
+        monkeypatch.setattr(
+            scripts.check.sysconfig,
+            "get_paths",
+            lambda: {"purelib": pure, "platlib": pure},
+        )
+        assert scripts.check.default_site_packages() == [Path(pure)]
+
+    def test_uninventorable_contributor_proves_no_regular_package(self, scripts, site):
+        """A distribution whose payload cannot be listed cannot PROVE it ships
+        ``<top>/__init__.py``, so it must not satisfy a namespace-split review:
+        otherwise an unscannable wheel could ride in as a reviewed co-owner."""
+        di = site / "shadowy-1.0.dist-info"
+        di.mkdir()  # no RECORD: the unscannable case
+        unscannable = scripts.check.Distribution(name="shadowy", dist_info=di, top_levels=set())
+        assert scripts.check._ships_regular_package(unscannable, "zope") is False
+
+    def test_cli_json_inventory_exits_zero_and_parses(self, scripts, site):
+        """--json on a clean fabricated site: exit 0, and the payload is the
+        machine inventory the gate's callers consume."""
+        make_dist(site, "calm", "1.0", {"calm/__init__.py": b"x = 1\n"})
+        import io
+        from contextlib import redirect_stdout
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = scripts.check.main(["--site-packages", str(site), "--json"])
+        assert code == 0
+        payload = json.loads(buffer.getvalue())
+        assert payload["production"] is False
+        assert payload["distributions"] == {"calm": ["calm"]}
+        assert payload["findings"] == []
+
+    def test_cli_production_json_exits_one_with_the_finding(self, scripts, site):
+        """--production --json on a shipped-shaped env carrying the reviewed
+        namespace: exit 1, and the finding is in the machine payload."""
+        make_dist(site, "pytoniq-core-fork", "0.1.48", PYTONIQ_PAYLOAD)
+        import io
+        from contextlib import redirect_stdout
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = scripts.check.main(["--site-packages", str(site), "--production", "--json"])
+        assert code == 1
+        payload = json.loads(buffer.getvalue())
+        assert [f["kind"] for f in payload["findings"]] == ["pruned-present"]
+
+    def test_cli_missing_site_packages_exits_two(self, scripts):
+        """A mistyped --site-packages path is a usage error (exit 2), not an
+        empty scan that would report a clean bill for nothing."""
+        assert scripts.check.main(["--site-packages", "/definitely/not/here-406"]) == 2
+
+    def test_cli_human_report_names_the_remediation(self, scripts, site):
+        """The human report on a production finding prints the prune tool by
+        its real path — the operator's next command is in the output."""
+        make_dist(site, "pytoniq-core-fork", "0.1.48", PYTONIQ_PAYLOAD)
+        import io
+        from contextlib import redirect_stdout
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = scripts.check.main(["--site-packages", str(site), "--production"])
+        assert code == 1
+        assert f"scripts/{scripts.check.PRUNE_TOOL_STEM}.py" in buffer.getvalue()
 
 
 class TestShadowingSemantics:
@@ -450,6 +612,120 @@ class TestPruneScript:
         assert scripts.prune.assert_not_importable("definitely_not_a_module_406") is True
         assert scripts.prune.assert_not_importable("csv") is False
 
+    def test_prune_fails_loudly_when_the_gate_companion_is_unloadable(
+        self, scripts, tmp_path, monkeypatch
+    ):
+        """The prune is keyed to PRUNED_IN_PRODUCTION, loaded live from the
+        check script; the images COPY the two together. A companion that is
+        missing or not a module must be a loud RuntimeError, never a prune
+        against a silently empty target list."""
+        impostor = tmp_path / "check-dependency-namespaces.txt"
+        impostor.write_text("not python", encoding="utf-8")
+        monkeypatch.setattr(scripts.prune, "_CHECK_SCRIPT", impostor)
+        monkeypatch.delitem(sys.modules, "check_dependency_namespaces")
+        with pytest.raises(RuntimeError):
+            scripts.prune._load_check_module()
+
+    def test_prune_reports_a_distribution_it_cannot_inventory(self, scripts, site):
+        """A target distribution whose RECORD is gone cannot state what it
+        installed, so the prune refuses (exit 1) instead of shipping an
+        unaccounted payload."""
+        make_dist(site, "pytoniq-core-fork", "0.1.48", PYTONIQ_PAYLOAD)
+        (site / "pytoniq_core_fork-0.1.48.dist-info" / "RECORD").unlink()
+        assert scripts.prune.main(["--site-packages", str(site), "--no-import-check"]) == 1
+        assert (site / "examples").exists()  # nothing was silently removed
+
+    def test_finder_skips_non_dir_and_metadataless_dist_infos(self, scripts, site):
+        """The dist-info finder walks every candidate: a FILE named
+        ``*.dist-info`` and a directory without METADATA are skipped, and the
+        real target behind them is still found and pruned."""
+        (site / "ghost-1.0.dist-info").write_text("not a directory", encoding="utf-8")
+        (site / "quiet-1.0.dist-info").mkdir()  # no METADATA inside
+        make_dist(site, "pytoniq-core-fork", "0.1.48", PYTONIQ_PAYLOAD)
+        assert scripts.prune.main(["--site-packages", str(site), "--no-import-check"]) == 0
+        assert not (site / "examples").exists()
+
+    def test_finder_returns_none_when_no_candidate_matches(self, scripts, site):
+        """A distribution whose METADATA names something else is rejected by
+        name (not by directory spelling), and an absent target ends the search
+        as None — the no-op path the research image relies on."""
+        make_dist(site, "unrelated", "1.0", {"unrelated/__init__.py": b"x = 1\n"})
+        results = scripts.prune.prune_site_packages(site)
+        assert results == [("examples", "pytoniq-core-fork", 0)]
+
+    def test_finder_stem_fallback_without_name_header(self, scripts, site):
+        """METADATA with no ``Name:`` line still yields the distribution via
+        the directory-stem fallback, so deleting one metadata line cannot hide
+        a payload from the prune."""
+        make_dist(
+            site,
+            "pytoniq-core-fork",
+            "0.1.48",
+            PYTONIQ_PAYLOAD,
+            metadata="Metadata-Version: 2.4\nVersion: 0.1.48\n",
+        )
+        results = scripts.prune.prune_site_packages(site)
+        assert results == [("examples", "pytoniq-core-fork", 3)]
+        assert not (site / "examples").exists()
+
+    def test_prune_never_deletes_outside_site_on_escaped_rows(self, scripts, site):
+        """A hostile RECORD row that escapes site-packages (``examples/../../x``)
+        is dropped from the deletion set: the prune deletes exactly the rows it
+        can prove were inside the scanned environment, and nothing beside it."""
+        outside = site.parent / "outside-406.txt"
+        outside.write_text("do not touch", encoding="utf-8")
+        make_dist(
+            site,
+            "pytoniq-core-fork",
+            "0.1.48",
+            PYTONIQ_PAYLOAD,
+            extra_record_rows=["examples/../../outside-406.txt"],
+        )
+        assert scripts.prune.main(["--site-packages", str(site), "--no-import-check"]) == 0
+        assert outside.exists()
+        assert not (site / "examples").exists()
+
+    def test_prune_removes_a_recorded_directory_row(self, scripts, site):
+        """Some installers record directories as bare rows. A row naming a
+        directory goes through the same deletion as a file row — removed, and
+        only when the prune's own RECORD listed it."""
+        legacy = site / "examples" / "legacy"
+        legacy.mkdir(parents=True)
+        (legacy / "old.py").write_text("x = 1\n", encoding="utf-8")
+        make_dist(
+            site,
+            "pytoniq-core-fork",
+            "0.1.48",
+            PYTONIQ_PAYLOAD,
+            extra_record_rows=["examples/legacy"],
+        )
+        assert scripts.prune.main(["--site-packages", str(site), "--no-import-check"]) == 0
+        assert not legacy.exists()
+
+    def test_prune_rejects_a_missing_site(self, scripts):
+        """A mistyped --site-packages is a usage error (exit 2), not a
+        successful no-op against nothing."""
+        assert scripts.prune.main(["--site-packages", "/definitely/not/here-406"]) == 2
+
+    def test_prune_import_check_failure_fails_the_run(self, scripts, site, monkeypatch, capsys):
+        """When a pruned name still resolves afterwards, the run fails with the
+        named payload — a build whose prune stopped working must break, not
+        ship."""
+        make_dist(site, "pytoniq-core-fork", "0.1.48", PYTONIQ_PAYLOAD)
+        monkeypatch.setattr(scripts.prune, "assert_not_importable", lambda top: False)
+        assert scripts.prune.main(["--site-packages", str(site)]) == 1
+        assert "still importable after the prune" in capsys.readouterr().err
+
+    def test_prune_reports_verified_when_the_import_check_holds(
+        self, scripts, site, monkeypatch, capsys
+    ):
+        """The default (no --no-import-check) run states what it verified, so a
+        build log shows the assertion ran rather than nothing at all."""
+        make_dist(site, "pytoniq-core-fork", "0.1.48", PYTONIQ_PAYLOAD)
+        monkeypatch.setattr(scripts.prune, "assert_not_importable", lambda top: True)
+        assert scripts.prune.main(["--site-packages", str(site)]) == 0
+        assert "verified: 1 pruned namespace(s) no longer importable" in capsys.readouterr().out
+
 
 class TestRealEnvironment:
     def test_gate_passes_on_the_synced_repo_environment(self):
@@ -522,6 +798,41 @@ class TestWiring:
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         assert f"docker run --rm --entrypoint python {tag}" in ci
         assert "find_spec('examples') is None" in ci
+
+    def test_the_live_prune_tool_stays_reachable_to_the_import_graph(self, scripts):
+        """scripts/check-reachability.py roots tooling from WORKFLOW text only,
+        and the places the prune actually runs — the shipped-image Dockerfiles
+        and Dockerfile.rsi-runner — are not workflow text. A live tool the
+        graph cannot root re-banks as a NEW unreachable identity, which fails
+        the reachability provenance gate ("not previously authorized": a floor
+        raise takes two merges). The gate's runtime reference — PRUNE_TOOL_STEM,
+        printed by the pruned-present finding and the report remediation — is
+        the sibling edge check-reachability.py's own rules accept, so this
+        test holds that edge with the scanner's own edge walker: dropping the
+        reference fails HERE, named, instead of as an unexplained provenance
+        failure on an unrelated future change."""
+
+        def load(path: Path, name: str) -> ModuleType:
+            spec = importlib.util.spec_from_file_location(name, path)
+            assert spec and spec.loader
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
+            return module
+
+        reach = load(ROOT / "scripts" / "check-reachability.py", "check_reachability_for_406")
+        tooling = reach._collect_tooling(reach.ROOT)
+        workflows = reach._workflow_text(reach.ROOT)
+
+        # Root half: the gate itself is executed by ci.yml, so the graph roots it.
+        assert reach._tool_key("check-dependency-namespaces") in reach._tooling_roots(
+            tooling, workflows
+        )
+
+        # Edge half: the rooted gate names the Dockerfile-run prune at runtime.
+        edges = reach._tooling_edges(CHECK_SCRIPT, tooling)
+        assert reach._tool_key(scripts.check.PRUNE_TOOL_STEM) in edges
+        assert (ROOT / "scripts" / f"{scripts.check.PRUNE_TOOL_STEM}.py").is_file()
 
 
 class TestFirstPartyMap:

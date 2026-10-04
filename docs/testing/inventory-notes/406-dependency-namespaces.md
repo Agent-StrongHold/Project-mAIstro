@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +42
+  tests/: +66
 ---
 # 406-dependency-namespaces
 
@@ -52,4 +52,18 @@ environment that resolves it. The +42 collected node IDs in `tests/` are
   and re-check in `--production` mode in one build layer, Dockerfile.research
   stays off the `identity` extra (adding it fails the test until the prune
   arrives), and ci.yml runs the gate on the dev environment and asserts the
-  built images have no importable `examples`.
+  built images have no importable `examples`;
+- the repair wiring holds the prune tool reachable to
+  `scripts/check-reachability.py`'s import graph: the scanner roots tooling
+  from workflow text only, and the prune runs from the shipped-image
+  Dockerfiles, so the gate names it at runtime (`PRUNE_TOOL_STEM`, printed in
+  the `pruned-present` finding and the report remediation) and a test holds
+  that edge with the scanner's own `_tooling_edges` — dropping the reference
+  re-banks a live tool as a new unreachable identity and fails here, named;
+- the merge-queue repair round raised the two scripts to the diff-coverage
+  floor (90% lines / 80% branch arcs, per file) and the new tests caught a
+  real deletion-escape while doing it: a hostile RECORD row like
+  `examples/../../outside.txt` sailed past `relative_to` (which compares parts
+  lexically and keeps `..`), so `_delete_payload` now resolves each candidate
+  and requires containment in the scanned site-packages before unlinking —
+  mirroring the scanner's treatment of the same row as an inventory escape.

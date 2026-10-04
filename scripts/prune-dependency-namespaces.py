@@ -160,15 +160,22 @@ def _delete_payload(site: Path, top: str, rows: list[list[str]]) -> None:
     RECORD's back. Directories are removed only once empty, walked upward.
     """
     touched: list[Path] = []
+    site_resolved = site.resolve()
     for row in rows:
         first = row[0].split("/", 1)[0]
         if first != top:
             continue
         try:
-            relative = (site / row[0]).relative_to(site)
-        except ValueError:
+            # Resolve before containment: ``relative_to`` compares parts
+            # lexically, so ``<top>/../../victim`` slips past it. A RECORD row
+            # that resolves outside the scanned environment is not payload we
+            # can prove we installed — the scanner skips the same row as an
+            # escape, and deletion must be at least as careful as inventory.
+            resolved = (site / row[0]).resolve()
+            resolved.relative_to(site_resolved)
+        except (OSError, ValueError):
             continue
-        touched.append(site / relative)
+        touched.append(site / row[0])
     for target in touched:
         if target.is_file() or target.is_symlink():
             target.unlink()
