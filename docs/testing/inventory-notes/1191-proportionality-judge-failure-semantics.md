@@ -9,7 +9,7 @@ inventory-delta:
 DAG-shape proportionality critic, spread so that re-collapsing a judge failure
 into an affirmative allow fails at three independent layers:
 
-- `tests/security/test_proportionality.py` (+10 net): the critic's own
+- `tests/security/test_proportionality.py` (+9 net): the critic's own
   contract — timeout (`asyncio.TimeoutError`), provider exception, malformed
   response envelope (empty choices, non-string content, non-dict body),
   unparseable JSON, missing boolean `justified`, non-boolean `justified`
