@@ -1901,44 +1901,7 @@ class LocalRsiLoop:
             if mutations and not self._config.allow_evaluator_mutation:
                 self._veto_evaluator_mutation(index, r, mutations, oracle_digest_value)
                 return r
-            if not self._config.use_fitness:
-                # The bare path has no scorecard, so the evaluator-oracle
-                # verdict is stashed here for _annotate_promotion on EVERY
-                # bare-path decision, not only authorized overrides (#109):
-                # a promotion accepted by the trusted oracle must still name
-                # the oracle version that judged it — digest, possibly-empty
-                # mutation list, authorization — or the export manifest emits
-                # a null evaluator_digest and the promotion can never be
-                # replayed against the oracle that produced it. The fitness
-                # path re-derives the same evidence from its gate detail.
-                r.trace = {
-                    "evaluator": {
-                        "verdict": "authorized" if mutations else "clean",
-                        "mutations": mutations,
-                        "evaluator_digest": oracle_digest_value,
-                        "authorized": bool(mutations),
-                    }
-                }
-            if self._config.use_fitness:
-                (
-                    r.accepted,
-                    r.composite,
-                    r.note,
-                    r.tests_passed,
-                    r.regression_judge_score,
-                    r.trace,
-                ) = self._fitness_decision(
-                    index,
-                    cdir,
-                    r.changed_files,
-                    target=objective,
-                    kind=kind,
-                    evaluator_evidence=(mutations, oracle_digest_value),
-                )
-            else:
-                r.tests_passed = self._run_tests(cdir)
-                r.accepted = r.tests_passed
-                r.note = "" if r.tests_passed else "test command failed"
+            self._score_variant(r, index, cdir, objective, kind, mutations, oracle_digest_value)
         except Exception as exc:
             r.errored = True
             if _is_transient_provider_error(str(exc)):
@@ -1981,6 +1944,57 @@ class LocalRsiLoop:
             note=r.note,
         )
         return r
+
+    def _score_variant(
+        self,
+        r: _VariantResult,
+        index: int,
+        cdir: Path,
+        objective: str,
+        kind: ImprovementKind,
+        mutations: list[str],
+        oracle_digest_value: str | None,
+    ) -> None:
+        """Set acceptance evidence on ``r`` from the trusted scoring path.
+
+        One branch per scoring path, both fed the evaluator-oracle verdict
+        (#109): fitness derives its gate detail from it, and the bare test
+        command path — which has no scorecard — stashes the verdict in
+        ``r.trace`` for _annotate_promotion on EVERY bare-path decision, not
+        only authorized overrides: a promotion accepted by the trusted oracle
+        must still name the oracle version that judged it — digest,
+        possibly-empty mutation list, authorization — or the export manifest
+        emits a null evaluator_digest and the promotion can never be replayed
+        against the oracle that produced it.
+        """
+        if self._config.use_fitness:
+            (
+                r.accepted,
+                r.composite,
+                r.note,
+                r.tests_passed,
+                r.regression_judge_score,
+                r.trace,
+            ) = self._fitness_decision(
+                index,
+                cdir,
+                r.changed_files,
+                target=objective,
+                kind=kind,
+                evaluator_evidence=(mutations, oracle_digest_value),
+            )
+            return
+        r.trace = {
+            "evaluator": {
+                "verdict": "authorized" if mutations else "clean",
+                "mutations": mutations,
+                "evaluator_digest": oracle_digest_value,
+                "authorized": bool(mutations),
+            }
+        }
+        r.tests_passed = self._run_tests(cdir)
+        r.accepted = r.tests_passed
+        r.note = "" if r.tests_passed else "test command failed"
 
     def _apply_to_merge(self, merge_dir: Path, variant: _VariantResult) -> bool:
         patch = _git(

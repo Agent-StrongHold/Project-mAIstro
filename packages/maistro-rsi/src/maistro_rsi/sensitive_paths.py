@@ -257,6 +257,31 @@ GENERATED_ORACLE_PATTERNS: tuple[str, ...] = (
     "usercustomize.py",
 )
 
+# Test-control surfaces (Codex review, #109): files that change how pytest
+# collects, selects, or reports the very run that produces a candidate's
+# acceptance evidence. pytest imports every ``conftest.py`` on the collection
+# path *before* it runs anything, so a top-level or otherwise out-of-tree one
+# carrying a ``pytest_sessionfinish`` hook can force a zero exit status despite
+# failing tests — and the ini files can deselect, re-root, or load plugins via
+# ``addopts``. These basenames are matched AT ANY DEPTH: the danger is what
+# pytest loads, not which directory it sits in, which is exactly the gap the
+# directory patterns for the two package test suites leave open. The set is
+# kept in lockstep with ``test_inventory``'s config-basename recognition so
+# both scoring paths veto a test-control edit before it can count as evidence.
+TEST_CONTROL_BASENAMES: frozenset[str] = frozenset(
+    {"conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml"}
+)
+
+
+def matches_test_control_path(path: str) -> bool:
+    """True if ``path`` is a pytest test-control file at any depth (#109).
+
+    Basename matching, deliberately broader than the segment matcher used by
+    the pattern tiers: ``conftest.py`` applies per directory, so a nested one
+    is exactly as load-bearing as the root one.
+    """
+    return normalize_touched_path(path).rsplit("/", 1)[-1] in TEST_CONTROL_BASENAMES
+
 
 def normalize_touched_path(path: str) -> str:
     """A diff path in the one spelling the patterns are written against."""

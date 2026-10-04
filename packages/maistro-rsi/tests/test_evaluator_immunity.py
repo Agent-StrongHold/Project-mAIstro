@@ -45,8 +45,10 @@ from maistro_rsi.evaluator_oracle import (
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
 from maistro_rsi.protocols import MicroVmSandbox
 from maistro_rsi.sensitive_paths import (
+    TEST_CONTROL_BASENAMES,
     matches_evaluator_oracle_pattern,
     matches_sensitive_pattern,
+    matches_test_control_path,
 )
 
 
@@ -127,6 +129,24 @@ class TestOraclePatternCoverage:
             assert _matches_generated(path), path
         assert GENERATED_ORACLE_PATTERNS
 
+    def test_test_control_basenames_match_at_any_depth(self) -> None:
+        """The inventory treats conftest.py/pytest config as test-control
+        surfaces by basename at any depth; the veto tier matches the same
+        closure (Codex review, #109). A top-level conftest.py — OUTSIDE the
+        two protected package test directories — is exactly the spell this
+        must catch."""
+        for path in (
+            "conftest.py",
+            "pytest.ini",
+            "packages/maistro-core/tests/conftest.py",
+            "packages/maistro-core/pyproject.toml",
+            "formal/tox.ini",
+        ):
+            assert matches_test_control_path(path), path
+        assert not matches_test_control_path("src/app.py")
+        assert not matches_test_control_path("tests/test_app.py")
+        assert TEST_CONTROL_BASENAMES
+
 
 # ---------------------------------------------------------------------------
 # oracle_mutations: the bypass spells (#109 acceptance: renames, symlinks,
@@ -160,6 +180,10 @@ def _oracle_repo(path: Path, *, scorer_source: str = "def compose():\n    return
     app = path / "src/app.py"
     app.parent.mkdir(parents=True)
     app.write_text("VALUE = 0\n", encoding="utf-8")
+    # A tracked test-control file: editing it in a candidate diff must veto,
+    # exactly like editing an out-of-tree addition would.
+    conftest = path / "packages/maistro-rsi/tests/conftest.py"
+    conftest.write_text("import pytest\npytest_plugins: list[str] = []\n", encoding="utf-8")
     _git(path, "add", "-A")
     _git(path, "commit", "-q", "-m", "base")
     _git(path, "branch", "rsi-baseline")
@@ -279,6 +303,64 @@ class TestOracleMutationSpells:
         _commit(repo, "gitignore")
         (repo / "scratch.log").write_text("noise\n", encoding="utf-8")
         assert oracle_mutations(repo, "rsi-baseline") == []
+
+    def test_out_of_tree_conftest_hook_is_flagged(self, tmp_path: Path) -> None:
+        """The pytest hook spell (Codex review, #109): a TOP-LEVEL conftest.py
+        is imported by pytest before collection, so a pytest_sessionfinish
+        hook there can force exit 0 despite failing tests. It sits outside the
+        protected package test directories, so only the test-control closure
+        catches it — and it must, before either scoring path runs."""
+        repo = _oracle_repo(tmp_path / "r")
+        (repo / "conftest.py").write_text(
+            "import pytest\n\n\n"
+            "def pytest_sessionfinish(session, exitstatus):\n"
+            "    session.testsfailed = 0\n"
+            "    pytest.exitcode = 0\n",
+            encoding="utf-8",
+        )
+        _commit(repo, "candidate")
+        assert any(
+            v.startswith("test-control:") and v.endswith("conftest.py")
+            for v in oracle_mutations(repo, "rsi-baseline")
+        )
+
+    def test_editing_a_tracked_nested_conftest_is_flagged(self, tmp_path: Path) -> None:
+        """A conftest.py INSIDE the oracle tier (packages/maistro-rsi/tests/)
+        is doubly caught: the digest layer flags the tracked edit by its blob
+        change and the diff layer by its status letter. The ``test-control:``
+        label is reserved for test-control files OUTSIDE the oracle tier —
+        the top-level and ignored-conftest nodes above pin that spelling.
+        Either way the edit is a violation before any scoring runs."""
+        repo = _oracle_repo(tmp_path / "r")
+        conftest = repo / "packages/maistro-rsi/tests/conftest.py"
+        conftest.write_text("collect_ignore = ['test_candidate_fitness.py']\n", encoding="utf-8")
+        _commit(repo, "candidate")
+        violations = oracle_mutations(repo, "rsi-baseline")
+        # Digest layer: the blob identity of the tracked test-control file
+        # changed, so the bare oracle path is a violation on its own.
+        assert "packages/maistro-rsi/tests/conftest.py" in violations
+        # Diff layer: the same edit shows up with its status letter.
+        assert any(v.startswith("M:") and v.endswith("tests/conftest.py") for v in violations)
+
+    def test_pytest_ini_addition_is_flagged(self, tmp_path: Path) -> None:
+        repo = _oracle_repo(tmp_path / "r")
+        (repo / "pytest.ini").write_text("[pytest]\naddopts = -p no:randomly\n", encoding="utf-8")
+        _commit(repo, "candidate")
+        assert any("test-control:pytest.ini" in v for v in oracle_mutations(repo, "rsi-baseline"))
+
+    def test_ignored_out_of_tree_conftest_is_flagged(self, tmp_path: Path) -> None:
+        """pytest imports an ignored conftest.py just the same: the ignored
+        layer must veto test-control files, not only generated artifacts."""
+        repo = _oracle_repo(tmp_path / "r")
+        (repo / ".gitignore").write_text("hooks/\n", encoding="utf-8")
+        _commit(repo, "gitignore")
+        hooks = repo / "hooks/conftest.py"
+        hooks.parent.mkdir(parents=True)
+        hooks.write_text("def pytest_sessionfinish(session, exitstatus):\n    exitstatus = 0\n")
+        (repo / "src/app.py").write_text("VALUE = 1\n", encoding="utf-8")
+        _commit(repo, "candidate")
+        violations = oracle_mutations(repo, "rsi-baseline")
+        assert any(v.startswith("ignored:") and "conftest.py" in v for v in violations)
 
     def test_integrity_failure_fails_closed(self, tmp_path: Path) -> None:
         """A candidate that can break the check must not slip through it: an

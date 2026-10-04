@@ -28,7 +28,13 @@ evaluator oracle?** It detects, specifically:
   hijack the oracle's own execution without any listed path looking edited.
   The same patterns are also matched against the worktree's *ignored* files
   (layer 4), so bytecode that ``.gitignore`` keeps out of every diff, tree
-  listing and porcelain report is still vetoed before scoring.
+  listing and porcelain report is still vetoed before scoring;
+- test-control edits: an added or edited ``conftest.py`` (any depth — pytest
+  imports it before collection, so a ``pytest_sessionfinish`` hook can force a
+  zero exit status despite failing tests) or pytest configuration file that
+  deselects, re-roots, or plugin-loads the scoring run. The inventory already
+  treats these basenames as test-control surfaces, so the same closure holds
+  before BOTH scoring paths (Codex review, #109).
 
 The verdict is paired with a **trusted digest** (:func:`oracle_digest`): a
 SHA-256 over the oracle definition *at the base revision*. The loop pins that
@@ -57,6 +63,7 @@ from maistro_rsi.sensitive_paths import (
     EVALUATOR_ORACLE_PATTERNS,
     GENERATED_ORACLE_PATTERNS,
     matches_evaluator_oracle_pattern,
+    matches_test_control_path,
     normalize_touched_path,
 )
 
@@ -200,6 +207,8 @@ def _diff_layer_violations(tree: Path, baseline_ref: str) -> list[str]:
             violations.append(f"{status}:{norm}")
         elif _matches_generated(norm):
             violations.append(f"generated:{norm}")
+        elif matches_test_control_path(norm):
+            violations.append(f"test-control:{norm}")
     return violations
 
 
@@ -222,27 +231,45 @@ def _ignored_layer_violations(tree: Path) -> list[str]:
         if not path:
             continue
         norm = normalize_touched_path(path)
-        if _matches_generated(norm) and f"ignored:{norm}" not in violations:
+        # A conftest.py pytest *ignores* for VCS purposes it still imports for
+        # collection: the ignored layer must veto test-control files too, or
+        # the hook route survives in the one blind spot every diff-based layer
+        # shares.
+        if (_matches_generated(norm) or matches_test_control_path(norm)) and (
+            f"ignored:{norm}" not in violations
+        ):
             violations.append(f"ignored:{norm}")
     return violations
 
 
+def _reported_violation(norm: str, base_oracle: set[str]) -> str | None:
+    """The layer-3 violation string for one caller-reported path, else None.
+
+    Same tier classification as the diff layer (oracle status, generated
+    label, test-control label). The caller list cannot distinguish an
+    addition from an edit, so the docs/specs exemption applies only to paths
+    the digest layer proves are new (``norm in base_oracle`` proves an edit
+    of a tracked oracle file — always a violation).
+    """
+    if matches_evaluator_oracle_pattern(norm):
+        return norm if (norm in base_oracle or not _addition_allowed(norm)) else None
+    if _matches_generated(norm):
+        return f"generated:{norm}"
+    if matches_test_control_path(norm):
+        return f"test-control:{norm}"
+    return None
+
+
 def _reported_layer_violations(changed_files: list[str], base_oracle: set[str]) -> list[str]:
     """Layer 3: the caller-reported paths (rename entries split), so
-    enforcement holds even when the diff is not yet committed. The caller
-    list cannot distinguish an addition from an edit, so the docs/specs
-    exemption applies only to paths the digest layer proves are new."""
+    enforcement holds even when the diff is not yet committed."""
     violations: list[str] = []
     for entry in changed_files:
         for path in _split_rename_entry(entry):
             norm = normalize_touched_path(path)
-            if matches_evaluator_oracle_pattern(norm):
-                if (norm in base_oracle or not _addition_allowed(norm)) and norm not in violations:
-                    violations.append(norm)
-            elif _matches_generated(norm):
-                label = f"generated:{norm}"
-                if label not in violations:
-                    violations.append(label)
+            violation = _reported_violation(norm, base_oracle)
+            if violation and violation not in violations:
+                violations.append(violation)
     return violations
 
 
