@@ -160,7 +160,6 @@ _VULTURE_WHITELIST = (
     # variable above rather than a class-object reference, which would not
     # typecheck.
     latest_by_dimension,
-<<<<<<< HEAD
     # The Gauntlet seam (M4-B2, #118): IndependentTrialsGauntlet and
     # ChainedGauntlet are constructed by the embedding host (or tests) and
     # injected into LearningPromoter(gauntlet=...); no scanned call site in
@@ -169,7 +168,6 @@ _VULTURE_WHITELIST = (
     # TrialResult, which the evaluator protocol returns.
     IndependentTrialsGauntlet,
     ChainedGauntlet,
-=======
     # Learning promotion approval gate (ported from Stronghold). The promoter's
     # gated flow (LearningPromoter._check_with_gate) queues approvals and
     # consumes get_approved_ids()/mark_promoted; the admin verbs themselves are
@@ -195,7 +193,6 @@ _VULTURE_WHITELIST = (
     InMemoryLearningLifecycle.retire,
     InMemoryLearningLifecycle.evidence_for,
     InMemoryLearningLifecycle.revisions_for,
->>>>>>> 97c05e0f17e3ed72c82d76ed7eb0a0fe702883fb
     # Goal `Rubric` as a first-class ontology kind (M7-A2, #791). The issue
     # ships persistence + ontology only — its stop condition ("Do not score
     # anything in this PR") defers the consumers to later M7 work, so the
