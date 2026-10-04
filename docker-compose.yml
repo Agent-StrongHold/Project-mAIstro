@@ -56,7 +56,9 @@ services:
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
       # Separate HMAC capability for Conductor's authenticated user context.
       - TASK_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
-      - MAISTRO_ACCESS_TOKEN=${MAISTRO_ACCESS_TOKEN:-}
+      # MAISTRO_ACCESS_TOKEN used to be passed here, but nothing in the engine
+      # ever read it (#402): auth is API_KEYS + REQUIRE_AUTH. A credential-
+      # looking variable with no reader only creates false confidence.
       - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
       - CI_WEBHOOK_SECRET=${CI_WEBHOOK_SECRET:-}
@@ -217,12 +219,17 @@ services:
       - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
       - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
       - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
-      # Engine router for DAG execution (REQUIRE_AUTH=true expects the access token).
-      # Settings.maistro_base_url / maistro_router_api_key (config.py) read these
-      # MAISTRO_* names directly; CONDUCTOR_ROUTER_URL/ROUTER_API_KEY are not bound
-      # to any field, so task dispatch silently fell back to localhost with no auth.
+      # Engine router for DAG execution. Settings.maistro_base_url /
+      # maistro_router_api_key (config.py) read these MAISTRO_* names directly;
+      # CONDUCTOR_ROUTER_URL/ROUTER_API_KEY are not bound to any field, so task
+      # dispatch silently fell back to localhost with no auth. Required (#402):
+      # the value must exist in .env -- under this name, which is what the
+      # installer writes -- because an empty key means the Workspace bridge
+      # never starts (ADR-092326-97c4). MAISTRO_ACCESS_TOKEN, the name this
+      # used to be interpolated from, is gone: it was a second spelling of the
+      # same credential that nothing read.
       - MAISTRO_BASE_URL=http://maistro-engine:8000
-      - MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN:-}
+      - MAISTRO_ROUTER_API_KEY=${MAISTRO_ROUTER_API_KEY:?Run ./install.sh to generate MAISTRO_ROUTER_API_KEY}
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
       # Must match the task server's TASK_DELEGATION_KEY; never reuse the API key.
       - MAISTRO_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
