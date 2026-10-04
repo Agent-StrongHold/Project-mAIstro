@@ -119,14 +119,18 @@ class TestMigrationDomainsMatchTheModel:
             == revision_052._ATTEMPT_STATUS_CHECK
         )
         source = (VERSIONS / "052_run_store_planner_stability.py").read_text(encoding="utf-8")
+        # The constrained add rides 052's guarded helper (the adoption-safe
+        # form the chain's re-application contract needs), so the spelling
+        # this greps for is the helper call with the same constant the
+        # assertions above pin to the model.
         for table in ("canonical_runs", "canonical_node_runs", "graph_continuations"):
             assert re.search(
-                rf'create_check_constraint\(\s*"ck_{table}_status",\s*"{table}",\s*'
+                rf'_add_check_constraint_if_absent\(\s*"ck_{table}_status",\s*"{table}",\s*'
                 rf"_RUN_STATUS_CHECK",
                 source,
             ), f"{table} must be CHECK-constrained to the Run domain"
         assert re.search(
-            r'create_check_constraint\(\s*"ck_canonical_attempts_status",\s*'
+            r'_add_check_constraint_if_absent\(\s*"ck_canonical_attempts_status",\s*'
             r'"canonical_attempts",\s*_ATTEMPT_STATUS_CHECK',
             source,
         ), "canonical_attempts must be CHECK-constrained to the Attempt domain"

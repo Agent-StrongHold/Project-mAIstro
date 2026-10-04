@@ -36,6 +36,13 @@ failure is loud at write time; these tests hold the pairing shut statically:
   status-bearing table must be declared here, with an owner and a domain,
   rather than silently joining the class of columns this issue is about.
 
+Repair note (this branch): 052's constraint adds ride a guarded
+`_add_check_constraint_if_absent` helper so re-applying the revision over its
+own schema is adoption, not `DuplicateObject` — the lockstep greps were
+updated to that spelling with the enforced property unchanged, and test
+counts are unmoved (`test_migration_chain.py`'s re-application test now
+covers the guarded revision).
+
 ## `test_run_store_planner_stability.py` (20: 5 static + 15 live)
 
 The planner half. Postgres switches long-lived prepared statements (sweepers,

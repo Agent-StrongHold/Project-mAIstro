@@ -58,6 +58,17 @@ sweep and every queue tick stop paying a scan-plus-sort per call — the trade
 listing never used as an ordering column, so the write cost is one index on
 that table, not two.
 
+Every statement is guarded (`CREATE INDEX IF NOT EXISTS`, `DROP INDEX IF
+EXISTS`, and a catalog-checked `ADD CONSTRAINT` — PostgreSQL has no ``IF NOT
+EXISTS`` for constraints), matching 046/047/051: stamp-back and re-upgrade is
+a live repair path, and the chain's contract is that re-applying a revision
+over the schema it already built is adoption, not an error
+(`tests/migrations`,
+`test_reapplying_the_chain_over_an_already_migrated_schema_is_adopted`). The
+conditional add also spares an adopted database the constraint's validation
+scan: an existing CHECK is left exactly as it stands rather than dropped and
+rebuilt.
+
 Revision ID: 052
 Revises: 051
 Create Date: 2026-10-04
@@ -65,7 +76,6 @@ Create Date: 2026-10-04
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "052"
@@ -105,50 +115,80 @@ _ATTEMPT_STATUS_CHECK = "status IN ({})".format(
 )  # nosec B608
 
 
+def _add_check_constraint_if_absent(constraint: str, table: str, check: str) -> None:
+    """Add a CHECK constraint only when the catalog does not already have it.
+
+    ``ADD CONSTRAINT`` has no ``IF NOT EXISTS`` and a bare add fails a
+    re-application with ``DuplicateObject``; a drop-then-add would tear the
+    domain guard away for a moment and pay the validation scan again on a
+    schema that already satisfies it. One catalog probe inside one ``DO``
+    block is the guarded form the chain's adoption contract needs — and the
+    names come from this module's constants, not from any caller.
+    """
+    op.execute(
+        "DO $constraint_guard$ BEGIN "
+        "IF NOT EXISTS ("
+        "SELECT 1 FROM pg_constraint "
+        f"WHERE conname = '{constraint}' AND conrelid = '{table}'::regclass) THEN "
+        f"ALTER TABLE {table} ADD CONSTRAINT {constraint} CHECK ({check}); "
+        "END IF; END $constraint_guard$;"
+    )  # nosec B608
+
+
 def upgrade() -> None:
     # Domains first, so every index created below is provably indexing a closed
     # set of values on a table that cannot hold a value outside its predicate.
-    op.create_check_constraint("ck_canonical_runs_status", "canonical_runs", _RUN_STATUS_CHECK)
-    op.create_check_constraint(
+    _add_check_constraint_if_absent("ck_canonical_runs_status", "canonical_runs", _RUN_STATUS_CHECK)
+    _add_check_constraint_if_absent(
         "ck_canonical_node_runs_status", "canonical_node_runs", _RUN_STATUS_CHECK
     )
-    op.create_check_constraint(
+    _add_check_constraint_if_absent(
         "ck_canonical_attempts_status", "canonical_attempts", _ATTEMPT_STATUS_CHECK
     )
-    op.create_check_constraint(
+    _add_check_constraint_if_absent(
         "ck_graph_continuations_status", "graph_continuations", _RUN_STATUS_CHECK
     )
 
     # The retention anti-join and the NodeRun RESTRICT foreign-key probe.
-    op.create_index("ix_canonical_runs_parent_node", "canonical_runs", ["parent_node_run_id"])
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_canonical_runs_parent_node "
+        "ON canonical_runs (parent_node_run_id)"
+    )
 
     # The queue cursor: any single status, in (created_at, run_id) order, with
     # the keyset comparison on the same trailing columns.
-    op.create_index(
-        "ix_canonical_runs_status_created",
-        "canonical_runs",
-        ["status", sa.text("((payload->>'created_at'))"), "run_id"],
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_canonical_runs_status_created "
+        "ON canonical_runs (status, ((payload->>'created_at')), run_id)"
     )
 
     # The continuation listing's sort, replacing the (status, project_id)
     # prefix no query ordered by. The project-scoped read keeps its own
     # (project_id, created_at) index from migration 021.
-    op.drop_index("ix_graph_continuations_status", table_name="graph_continuations")
-    op.create_index(
-        "ix_graph_continuations_status_created",
-        "graph_continuations",
-        ["status", "created_at", "run_id"],
+    op.execute("DROP INDEX IF EXISTS ix_graph_continuations_status")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_graph_continuations_status_created "
+        "ON graph_continuations (status, created_at, run_id)"
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_graph_continuations_status_created", table_name="graph_continuations")
-    op.create_index(
-        "ix_graph_continuations_status", "graph_continuations", ["status", "project_id"]
+    # The same guards, mirrored: a downgrade re-run over an already-downgraded
+    # schema is the chain's reverse adoption and must be as quiet.
+    op.execute("DROP INDEX IF EXISTS ix_graph_continuations_status_created")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_graph_continuations_status "
+        "ON graph_continuations (status, project_id)"
     )
-    op.drop_index("ix_canonical_runs_status_created", table_name="canonical_runs")
-    op.drop_index("ix_canonical_runs_parent_node", table_name="canonical_runs")
-    op.drop_constraint("ck_graph_continuations_status", "graph_continuations", type_="check")
-    op.drop_constraint("ck_canonical_attempts_status", "canonical_attempts", type_="check")
-    op.drop_constraint("ck_canonical_node_runs_status", "canonical_node_runs", type_="check")
-    op.drop_constraint("ck_canonical_runs_status", "canonical_runs", type_="check")
+    op.execute("DROP INDEX IF EXISTS ix_canonical_runs_status_created")
+    op.execute("DROP INDEX IF EXISTS ix_canonical_runs_parent_node")
+    op.execute(
+        "ALTER TABLE graph_continuations DROP CONSTRAINT IF EXISTS ck_graph_continuations_status"
+    )
+    op.execute(
+        "ALTER TABLE canonical_attempts DROP CONSTRAINT IF EXISTS ck_canonical_attempts_status"
+    )
+    op.execute(
+        "ALTER TABLE canonical_node_runs DROP CONSTRAINT IF EXISTS ck_canonical_node_runs_status"
+    )
+    op.execute("ALTER TABLE canonical_runs DROP CONSTRAINT IF EXISTS ck_canonical_runs_status")
