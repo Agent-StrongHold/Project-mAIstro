@@ -1095,6 +1095,30 @@
       "notes": "No DELETE, and restore full-scans the table. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity; retention itself stays open on #325."
     },
     {
+      "table": "workspace_working_log",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/working/sqlite_store.py",
+      "data_class": "memory",
+      "retention": "undecided",
+      "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
+      "issue": "#325",
+      "notes": "The lossless per-Workspace observation log (#301, M4-H). Simplification and hard resets APPEND SUMMARY/RESET markers rather than updating or deleting rows, so nothing in production edits an entry; the one driven deletion is purge_workspace when the Workspace itself is deleted -- the same explicit-delete-without-sweep shape as canonical_workspaces. Losslessness is the feature, so the open decision is indefinite_by_decision versus a retention horizon for abandoned Workspaces."
+    },
+    {
+      "table": "workspace_working_results",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/working/sqlite_store.py",
+      "data_class": "memory",
+      "retention": "undecided",
+      "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
+      "issue": "#325",
+      "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (put_result is INSERT OR IGNORE on the content address). Deleted by the same purge_workspace that removes the log entries referencing them; the lifetime question is the log's."
+    },
+    {
       "table": "workspace_backlog_history",
       "backends": [
         "sqlite"
