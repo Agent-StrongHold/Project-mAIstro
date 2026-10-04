@@ -6,6 +6,11 @@ import itertools
 import json
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.learnings.lifecycle import (
+    InvalidStageTransition,
+    StageTransition,
+    plan_advance,
+)
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
@@ -13,7 +18,7 @@ from maistro.persistence.learning_contract import (
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.sqlite_schema import serialized_schema_upgrade
-from maistro.types.memory import Learning, MemoryScope
+from maistro.types.memory import Learning, LearningStage, MemoryScope
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -39,7 +44,26 @@ CREATE TABLE IF NOT EXISTS learnings (
     failure_after_use INTEGER NOT NULL DEFAULT 0,
     run_id TEXT,
     node_run_id TEXT,
-    attempt_id TEXT
+    attempt_id TEXT,
+    stage TEXT NOT NULL DEFAULT 'memory',
+    validated_by TEXT NOT NULL DEFAULT '',
+    promoted_by TEXT NOT NULL DEFAULT ''
+)
+"""
+
+#: Append-only ladder audit trail (ADR-103). One row per accepted transition;
+#: nothing ever updates or deletes from it. `org_id` is copied from the row at
+#: transition time so the audit read can scope exactly like every other read.
+_STAGE_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS learning_stage_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    learning_id INTEGER NOT NULL,
+    org_id TEXT NOT NULL DEFAULT '',
+    from_stage TEXT NOT NULL,
+    to_stage TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )
 """
 
@@ -55,6 +79,18 @@ _LEGACY_UPGRADE_COLUMNS = {
 #: nullable in PostgreSQL: a row written with no execution in scope names none,
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
+
+#: The knowledge-ladder columns (ADR-103), with their in-place upgrade types.
+#: NOT NULL with defaults: every pre-ladder row lands on the bottom rung with
+#: no actor recorded, which is the truth — nothing validated or promoted it.
+#: A dict literal (not a tuple + subscript): the retention inventory's AST
+#: scan resolves DDL f-strings only from `.items()` over a module-level dict,
+#: and a schema statement it cannot verify statically fails the suite.
+_STAGE_COLUMN_TYPES = {
+    "stage": "TEXT NOT NULL DEFAULT 'memory'",
+    "validated_by": "TEXT NOT NULL DEFAULT ''",
+    "promoted_by": "TEXT NOT NULL DEFAULT ''",
+}
 
 # Kept next to the SQL so the conformance test can detect a new Learning field
 # that is not represented by both persistence twins.
@@ -80,6 +116,9 @@ _SQLITE_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "stage",
+    "validated_by",
+    "promoted_by",
 )
 
 
@@ -118,6 +157,16 @@ class SqliteLearningStore:
             for column in _PROVENANCE_COLUMNS:
                 if column not in columns:
                     await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
+            # M4-B1 (ADR-103): the stage columns default to the bottom rung
+            # with blank actors. Pre-ladder rows keep `memory` and never gain
+            # a fabricated validation or promotion claim; the ledger starts
+            # empty and records only transitions that actually happened.
+            for column, column_type in _STAGE_COLUMN_TYPES.items():
+                if column not in columns:
+                    await self._conn.execute(
+                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
+                    )
+            await self._conn.execute(_STAGE_HISTORY_SCHEMA)
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
             )
@@ -150,8 +199,9 @@ class SqliteLearningStore:
                 agent_id, user_id, org_id, team_id, scope, hit_count, status,
                 rca_category, rca_prevention,
                 success_after_use, failure_after_use,
-                run_id, node_run_id, attempt_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                run_id, node_run_id, attempt_id,
+                stage, validated_by, promoted_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -170,6 +220,9 @@ class SqliteLearningStore:
                 learning.success_after_use,
                 learning.failure_after_use,
                 *provenance.as_columns(),
+                learning.stage,
+                learning.validated_by,
+                learning.promoted_by,
             ),
         )
         await self._conn.commit()
@@ -371,6 +424,106 @@ class SqliteLearningStore:
         rows = await cursor.fetchall()
         return [_row_to_learning(dict(zip(columns, r, strict=True))) for r in rows]
 
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+    ) -> Learning:
+        """Move a learning one rung up the ladder, durably and auditably.
+
+        The guarded UPDATE (`AND stage = <expected from>`) makes a concurrent
+        double-transition fail loudly instead of applying twice, and the
+        ledger row is written in the same transaction as the row update, so a
+        crash between them can produce neither a moved row without a record
+        nor a record without a moved row. Both writes commit together or not
+        at all — that is what makes the transition *durable* (ADR-103).
+        """
+        row = await self._scoped_row(learning_id, org_id=org_id)
+        current = LearningStage(row.get("stage") or "memory")
+        candidate = _row_to_learning(row)
+        updated, transition = plan_advance(candidate, to_stage=to_stage, actor=actor, reason=reason)
+        cursor = await self._conn.execute(
+            "UPDATE learnings SET stage = ?, validated_by = ?, promoted_by = ?, "
+            "status = ? WHERE id = ? AND stage = ? AND org_id = ?",
+            (
+                updated.stage,
+                updated.validated_by,
+                updated.promoted_by,
+                updated.status,
+                learning_id,
+                current,
+                row.get("org_id") or "",
+            ),
+        )
+        if cursor.rowcount == 0:
+            # The row moved underneath us between the read and the guarded
+            # UPDATE — a concurrent transition won this rung first. Raise
+            # rather than half-apply: the ledger INSERT below never runs, so
+            # the audit trail never records a transition the row does not
+            # carry (ADR-103 rule 3; same contract as PgLearningStore's
+            # `UPDATE 0`). The failed UPDATE matched no rows, so no rollback
+            # is needed — the shared connection's in-flight writer is untouched.
+            raise InvalidStageTransition(
+                f"learning #{learning_id} left stage {candidate.stage} "
+                "before the transition committed"
+            )
+        await self._conn.execute(
+            "INSERT INTO learning_stage_transitions "
+            "(learning_id, org_id, from_stage, to_stage, actor, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                learning_id,
+                transition.org_id,
+                transition.from_stage,
+                transition.to_stage,
+                transition.actor,
+                transition.reason,
+            ),
+        )
+        await self._conn.commit()
+        return updated
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """The durable audit trail for one learning, oldest first."""
+        await self._scoped_row(learning_id, org_id=org_id)
+        cursor = await self._conn.execute(
+            "SELECT learning_id, org_id, from_stage, to_stage, actor, reason "
+            "FROM learning_stage_transitions WHERE learning_id = ? ORDER BY id",
+            (learning_id,),
+        )
+        return [
+            StageTransition(
+                learning_id=int(raw[0]),
+                org_id=str(raw[1] or ""),
+                from_stage=LearningStage(raw[2]),
+                to_stage=LearningStage(raw[3]),
+                actor=str(raw[4] or ""),
+                reason=str(raw[5] or ""),
+            )
+            for raw in await cursor.fetchall()
+        ]
+
+    async def _scoped_row(self, learning_id: int, *, org_id: str) -> dict[str, Any]:
+        """The one learning row this id names, visible to this org scope.
+
+        Same write-visibility rule as `mark_outcome`: a caller may only move
+        state on rows it could have been served. An unknown id and an
+        other-org id raise identically, so a guessed id leaks nothing.
+        """
+        cursor = await self._conn.execute(
+            "SELECT * FROM learnings WHERE id = ? AND org_id = ?",
+            (learning_id, org_id),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise KeyError(f"no learning #{learning_id} visible in this scope")
+        columns = [d[0] for d in cursor.description]
+        return dict(zip(columns, row, strict=True))
+
 
 def _text(row: dict[str, Any], name: str) -> str:
     """Read a nullable text column as the empty string the dataclass expects.
@@ -404,4 +557,7 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         attempt_id=_text(row, "attempt_id"),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
+        stage=LearningStage(row.get("stage") or "memory"),
+        validated_by=_text(row, "validated_by"),
+        promoted_by=_text(row, "promoted_by"),
     )

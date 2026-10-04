@@ -12,7 +12,7 @@ carries `timed_out=True` so downstream conditional edges can branch.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -30,6 +30,13 @@ from .base import (
     resumed_pause,
 )
 
+#: Host-approved floor for `poll_interval_seconds`. The host, not the DAG
+#: author, owns this bound: a zero or negative interval turns the node into a
+#: hot loop against an external Jira API (one HTTP poll per wake, waking
+#: immediately), and the wake cadence is the runtime's, not the author's, to
+#: make safe. Raise it here if external-poll politeness ever demands more.
+MIN_POLL_INTERVAL_SECONDS = 5
+
 
 class WaitForSubtasksIn(BaseModel):
     base_url: str
@@ -38,9 +45,21 @@ class WaitForSubtasksIn(BaseModel):
     flavor: str = Field(default="server")  # "server" | "cloud"
     email: str | None = None
     target_statuses: list[str] = Field(default_factory=lambda: ["Done", "Closed"])
-    timeout_seconds: int = Field(default=86_400 * 7)
-    poll_interval_seconds: int = Field(default=900)  # 15 min
-    timeout_s: float = Field(default=8.0, description="HTTP timeout per poll")
+    timeout_seconds: int = Field(
+        default=86_400 * 7,
+        gt=0,
+        description="Overall wait budget in seconds; must be positive.",
+    )
+    poll_interval_seconds: int = Field(
+        default=900,  # 15 min
+        ge=MIN_POLL_INTERVAL_SECONDS,
+        description=(
+            "Seconds between polls; floored by the host at "
+            f"{MIN_POLL_INTERVAL_SECONDS} so a bad config cannot request "
+            "a hot external polling loop."
+        ),
+    )
+    timeout_s: float = Field(default=8.0, gt=0, description="HTTP timeout per poll")
 
 
 class WaitForSubtasksOut(BaseModel):
@@ -67,6 +86,19 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
     )
 
     async def _execute(self, inputs: WaitForSubtasksIn, ctx: NodeContext) -> WaitForSubtasksOut:
+        # A cadence that can never re-check inside the budget is a
+        # contradiction between two values the same author configured: with
+        # `poll_interval_seconds > timeout_seconds` the node wakes once, after
+        # its own deadline has already passed, and reports a timeout it never
+        # had a second look to avoid. Enforced here — the single entry every
+        # execution reaches — so a failed Attempt names both fields instead of
+        # a week-long wait ending in an unexplained timeout.
+        if inputs.timeout_seconds < inputs.poll_interval_seconds:
+            raise ValueError(
+                f"timeout_seconds ({inputs.timeout_seconds}) must be >= "
+                f"poll_interval_seconds ({inputs.poll_interval_seconds}) or the "
+                "deadline passes before the first poll can re-check"
+            )
         # Check the parent's subtasks right now. If they already match, we
         # complete on first reach; otherwise we pause until the next poll.
         statuses = await _fetch_subtask_statuses(inputs)
@@ -107,35 +139,68 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
                     "deadline": (now + timedelta(seconds=inputs.timeout_seconds)).isoformat(),
                 },
             )
-            return WaitForSubtasksOut(parent_key=inputs.parent_key)
-
-        # Resume path — was the deadline reached?
-        try:
-            from datetime import datetime as _dt
-
-            first = _dt.fromisoformat(first_seen)
-        except Exception:
-            first = now
-        if (now - first).total_seconds() >= inputs.timeout_seconds:
-            return WaitForSubtasksOut(
-                parent_key=inputs.parent_key,
-                subtask_keys=list(statuses.keys()),
-                statuses=statuses,
-                all_match=False,
-                timed_out=True,
-            )
-
-        # Still waiting — pause for another poll interval.
-        pause_until(
-            PAUSE_WAITING_ON_JIRA_SUBTASKS,
-            resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
-            metadata={
-                "parent_key": inputs.parent_key,
-                "current_statuses": statuses,
-                "first_seen": first_seen,
-            },
-        )
+        timed_out = _resume_wait(inputs, ctx, statuses, first_seen, now)
+        if timed_out is not None:
+            return timed_out
         return WaitForSubtasksOut(parent_key=inputs.parent_key)
+
+
+def _resume_wait(
+    inputs: WaitForSubtasksIn,
+    ctx: NodeContext,
+    statuses: dict[str, str],
+    first_seen: Any,
+    now: datetime,
+) -> WaitForSubtasksOut | None:
+    """Resume path: repair a corrupt anchor, answer a passed deadline, or pause.
+
+    Returns a timed-out result when the deadline measured from the anchor has
+    passed; otherwise pauses for another poll interval (raising through
+    `pause_until`) and the caller's fallthrough return is unreachable.
+    """
+    first = _parse_first_seen(first_seen)
+    repair: dict[str, Any] | None = None
+    if first is None:
+        # Corrupt durable timing evidence. The old behaviour substituted `now`
+        # silently *and re-persisted the corrupt string*, so every evaluation
+        # reset the elapsed clock and the deadline could never arrive. The
+        # repair below is explicit and one-shot: the pause carries the
+        # canonical timestamp plus what it replaced, so the next evaluation
+        # reads a parseable anchor instead of restarting the clock again.
+        first = now
+        repair = {
+            "reason": "unparseable_first_seen",
+            "replaced": first_seen if isinstance(first_seen, str) else repr(first_seen),
+            "repaired_at": now.isoformat(),
+        }
+    if (now - first).total_seconds() >= inputs.timeout_seconds:
+        return WaitForSubtasksOut(
+            parent_key=inputs.parent_key,
+            subtask_keys=list(statuses.keys()),
+            statuses=statuses,
+            all_match=False,
+            timed_out=True,
+        )
+
+    # Still waiting — pause for another poll interval, carrying the canonical
+    # anchor forward (and the repair evidence, exactly once).
+    pause_metadata: dict[str, Any] = {
+        "parent_key": inputs.parent_key,
+        "current_statuses": statuses,
+        "first_seen": first.isoformat(),
+    }
+    if repair is not None:
+        pause_metadata["first_seen_repair"] = repair
+        # Converge the legacy sidecar key onto the same canonical value so a
+        # later resume that reads the fallback (no carried pause) finds the
+        # repaired anchor, not the corrupt string that caused this.
+        if ctx.metadata is not None:
+            ctx.metadata[f"wait_first_seen:{ctx.node_id}"] = first.isoformat()
+    pause_until(
+        PAUSE_WAITING_ON_JIRA_SUBTASKS,
+        resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
+        metadata=pause_metadata,
+    )
 
 
 def _first_seen(ctx: NodeContext) -> Any:
@@ -153,6 +218,29 @@ def _first_seen(ctx: NodeContext) -> Any:
     if carried:
         return carried
     return (ctx.metadata or {}).get(f"wait_first_seen:{ctx.node_id}")
+
+
+def _parse_first_seen(value: Any) -> datetime | None:
+    """Parse a persisted first-seen anchor, or ``None`` if it is corrupt.
+
+    "Corrupt" covers both an unparseable string and a parseable-but-naive
+    one: elapsed time is computed against a tz-aware UTC clock, and a naive
+    value would make that subtraction a ``TypeError`` mid-poll. Neither
+    shape can anchor a deadline, so both route to the same explicit repair
+    path instead of one failing loudly and the other crashing the run.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 async def _fetch_subtask_statuses(inputs: WaitForSubtasksIn) -> dict[str, str]:
