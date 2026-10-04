@@ -17,25 +17,70 @@ from maistro.security.warden.heuristics import (
 
 
 class HeuristicScanMachine(RuleBasedStateMachine):
+    # Vocabulary with zero instruction tokens: any text built from it has
+    # instruction density exactly 0.0 and no base64 payload, so it must come
+    # back clean. False positives on benign content are the counterexample
+    # class (e.g. a threshold regression to 0.0 flags every non-empty text).
+    _BENIGN_WORDS = [
+        "alpha",
+        "bravo",
+        "charlie",
+        "delta",
+        "echo",
+        "foxtrot",
+        "golf",
+        "hotel",
+        "window",
+        "bridge",
+        "lamp",
+        "notebook",
+    ]
+
     def __init__(self):
         super().__init__()
-        self.scanned_count = 0
-        self.flagged_count = 0
+        self.last_flagged: bool | None = None
+        self.last_flags: list[str] | None = None
 
     @rule(
         text=st.text(min_size=0, max_size=500),
     )
     def scan_text(self, text):
         flagged, flags = heuristic_scan(text)
-        self.scanned_count += 1
-        if flagged:
-            self.flagged_count += 1
         assert isinstance(flagged, bool)
         assert isinstance(flags, list)
+        self.last_flagged = flagged
+        self.last_flags = flags
+
+    @rule(
+        sentence=st.lists(st.sampled_from(_BENIGN_WORDS), min_size=1, max_size=15),
+    )
+    def scan_benign_text(self, sentence):
+        """Specificity property (replaces `flagged_count <= scanned_count`,
+        which the machine's own bookkeeping implied).
+
+        Counterexample class: any change that flags instruction-free text —
+        a threshold dropped to 0.0, an inverted density comparison, a base64
+        detector that reports undecodable blobs — fails here on the first
+        benign sentence.
+        """
+        flagged, flags = heuristic_scan(" ".join(sentence))
+        assert flagged is False, f"benign text flagged: {flags!r}"
+        assert flags == []
 
     @invariant()
-    def counts_consistent(self):
-        assert self.flagged_count <= self.scanned_count
+    def flagged_iff_nonempty_flags(self):
+        """The boolean and the flag list must agree in both directions.
+
+        Counterexample class: `heuristic_scan` returning `True` with no flags
+        (unattributable alarm) or flags with `False` (silent detection —
+        worse: a caller trusting the boolean skips review) fails here.
+        """
+        if self.last_flagged is None:
+            return
+        if self.last_flagged:
+            assert len(self.last_flags) >= 1
+        else:
+            assert self.last_flags == []
 
 
 TestHeuristicScanMachine = HeuristicScanMachine.TestCase
