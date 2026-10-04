@@ -101,6 +101,14 @@ class FitnessWeights:
 class Scorecard:
     gates: list[GateResult] = field(default_factory=list)
     scores: list[SignalScore] = field(default_factory=list)
+    # Evaluator provenance (#109): the SHA-256 of the score-defining artifacts
+    # (scorer, pinning tests, scenario corpora, ratchet baselines, AC trees)
+    # at the trusted base revision this candidate was judged against. None
+    # when no baseline was available to pin. Recorded so an acceptance
+    # decision is replayable against the exact oracle version that produced
+    # it — a candidate is never scored by whichever evaluator happens to sit
+    # in its own checkout.
+    evaluator_digest: str | None = None
     # The weighted proven-scenario evaluation (M5-B, #108) when the caller
     # supplied scenario evidence — the separate record of the correctness
     # gate and the scalar objective. ``None`` when no scenario objective was

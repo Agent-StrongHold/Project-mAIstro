@@ -94,6 +94,11 @@ class TraceNote:
     # test-first. Optional so older notes (and non-behavioral contracts:
     # refactor/characterization/documentation) simply omit it.
     fail_first: dict[str, object] | None = None
+    # Evaluator-oracle provenance (#109): the trusted base digest of the
+    # score-defining artifacts this promotion was judged against, plus the
+    # integrity verdict (mutated paths + authorization flag). A promotion is
+    # replayable against the exact oracle version that accepted it.
+    evaluator: dict[str, object] | None = None
     note: str = ""
     version: int = NOTE_VERSION
 
