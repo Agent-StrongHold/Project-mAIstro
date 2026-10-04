@@ -905,22 +905,22 @@
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/crossover.py::crossover",
       "path": "packages/maistro-evolve/src/maistro_evolve/crossover.py",
-      "line": 25,
+      "line": 66,
       "name": "crossover",
       "classname": null,
       "rank": "C",
-      "complexity": 14,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "complexity": 13,
+      "rationale": "Refactored for M4-A8/#115: parent-edge rewiring moved into _rewire_parent_edges so crossover reads as assemble->stamp. Complexity fell 14 -> 13 (C); recorded at the lowered value."
     },
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle._breed_island",
       "path": "packages/maistro-evolve/src/maistro_evolve/cycle.py",
-      "line": 365,
+      "line": 586,
       "name": "_breed_island",
       "classname": "EvolutionCycle",
-      "rank": "D",
-      "complexity": 21,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Refactored for M4-A8/#115: the duplicated crossover+register+island-placement block is now _spawn_island_child, so both breeding paths share one spawn path. Complexity fell 21 -> 16 (D -> C); recorded at the lowered value so it cannot regrow."
     },
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle._hyper_mutate_one",
@@ -985,12 +985,12 @@
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/mutate.py::mutate_topology",
       "path": "packages/maistro-evolve/src/maistro_evolve/mutate.py",
-      "line": 56,
+      "line": 145,
       "name": "mutate_topology",
       "classname": null,
-      "rank": "D",
-      "complexity": 21,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Refactored for M4-A8/#115: the two random edge-mutation blocks moved into _rewire_edges so the operator keeps one cohesive edge-rewiring helper. Complexity fell 21 -> 15 (D -> C); recorded at the lowered value."
     },
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/population.py::migrate_islands",
@@ -1125,12 +1125,12 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::evaluate_candidate",
       "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 759,
+      "line": 1005,
       "name": "evaluate_candidate",
       "classname": null,
       "rank": "D",
-      "complexity": 30,
-      "rationale": "Regressed by #1730 (2026-10-02), not newly visible. The file dates from the 2026-08-21 initial release; this complexity does not -- #1730 wired the fail-first evidence gate through the block and took it from 25 to 30. It went unmeasured only because the radon scan still covers packages/maistro-core/src alone, so maistro-rsi was never in scope. #1684 brings it in; #1792 tracks bringing the complexity back down, together with the three blocks #1730 added outright."
+      "complexity": 21,
+      "rationale": "Regressed by #1730 (2026-10-02) from 25 to 30; the #108 proven-scenario passthrough pushed it to 32 (E), which the radon ratchet rejected in CI. The repair refactored the three cost-layered evidence blocks (fail-first TDD, mutation-probe staging, regression-judge attachment) into rank-A helpers, banking the block at its measured 21 (D). #1792 tracks whether the remaining complexity can come down further."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::protected_inventory_gate",
