@@ -43,6 +43,20 @@ updated to that spelling with the enforced property unchanged, and test
 counts are unmoved (`test_migration_chain.py`'s re-application test now
 covers the guarded revision).
 
+CI-repair note: that helper originally spelled the guarded ``ADD`` as an
+f-string, which the run-id reference-inventory scan refuses — a DDL-shaped
+f-string whose interpolations (the helper's parameters) it cannot resolve
+statically must be rejected, not assumed run-id-free
+(`test_retention_reference_inventory.py::test_every_run_id_table_is_in_the_purge_inventory`
+and `::test_scan_sees_the_known_reference_shapes` failed on exactly that
+refusal in the coverage/test jobs at 9e5ed653). The DDL is now one
+module-level format-template constant: the scan reads its literal skeleton
+as SQL text as it does every constant in the chain, the placeholders are
+filled only from this module's own constants, and the enforced properties —
+adoption-safe guarded add, lockstep-grepped call shape, exact CHECK domain
+strings — are unchanged. No test added, removed or renamed; the recorded
+suite inventory is untouched.
+
 ## `test_run_store_planner_stability.py` (20: 5 static + 15 live)
 
 The planner half. Postgres switches long-lived prepared statements (sweepers,

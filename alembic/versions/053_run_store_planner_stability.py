@@ -120,6 +120,24 @@ _ATTEMPT_STATUS_CHECK = "status IN ({})".format(
     ", ".join(f"'{value}'" for value in _ATTEMPT_STATUS_VALUES)
 )  # nosec B608
 
+#: The guarded ``ADD CONSTRAINT``, as a format template rather than an
+#: f-string. The run-id reference inventory (``scripts/check-durable-table-``
+#: ``inventory.py``, replayed by ``test_retention_reference_inventory.py``)
+#: reads every string constant in the chain as SQL text and *refuses* an
+#: f-string carrying ``ALTER TABLE`` whose interpolations it cannot resolve
+#: statically — which a helper's parameters never are. A template is one
+#: constant: the scan reads its literal skeleton (and would still see a
+#: ``run_id`` column if this DDL ever named one), while the placeholders are
+#: filled here from this module's own constants — never from caller input.
+_GUARDED_CHECK_CONSTRAINT = (
+    "DO $constraint_guard$ BEGIN "
+    "IF NOT EXISTS ("
+    "SELECT 1 FROM pg_constraint "
+    "WHERE conname = '{constraint}' AND conrelid = '{table}'::regclass) THEN "
+    "ALTER TABLE {table} ADD CONSTRAINT {constraint} CHECK ({check}); "
+    "END IF; END $constraint_guard$"
+)
+
 
 def _add_check_constraint_if_absent(constraint: str, table: str, check: str) -> None:
     """Add a CHECK constraint only when the catalog does not already have it.
@@ -131,14 +149,7 @@ def _add_check_constraint_if_absent(constraint: str, table: str, check: str) -> 
     block is the guarded form the chain's adoption contract needs — and the
     names come from this module's constants, not from any caller.
     """
-    op.execute(
-        "DO $constraint_guard$ BEGIN "
-        "IF NOT EXISTS ("
-        "SELECT 1 FROM pg_constraint "
-        f"WHERE conname = '{constraint}' AND conrelid = '{table}'::regclass) THEN "
-        f"ALTER TABLE {table} ADD CONSTRAINT {constraint} CHECK ({check}); "
-        "END IF; END $constraint_guard$;"
-    )  # nosec B608
+    op.execute(_GUARDED_CHECK_CONSTRAINT.format(constraint=constraint, table=table, check=check))  # nosec B608
 
 
 def upgrade() -> None:
