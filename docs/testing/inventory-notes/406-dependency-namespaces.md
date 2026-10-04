@@ -8,7 +8,7 @@ Issue #406: `pytoniq-core-fork` — the locked identity stack's transitive
 dependency (`maistro-core[identity]` → `bip-utils`) — installs a generic
 top-level `examples` namespace package (`examples/boc/*`,
 `examples/hashmaps/dict.py`, `examples/tl/*`, `examples/tlb/*`) into every
-environment that resolves it. The +42 collected node IDs in `tests/` are
+environment that resolves it. The +66 collected node IDs in `tests/` are
 `tests/test_dependency_namespaces.py`, which holds
 `scripts/check-dependency-namespaces.py` and
 `scripts/prune-dependency-namespaces.py` to their contract:
