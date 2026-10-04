@@ -955,22 +955,22 @@
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/crossover.py::crossover",
       "path": "packages/maistro-evolve/src/maistro_evolve/crossover.py",
-      "line": 25,
+      "line": 66,
       "name": "crossover",
       "classname": null,
       "rank": "C",
-      "complexity": 14,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "complexity": 13,
+      "rationale": "Refactored for M4-A8/#115: parent-edge rewiring moved into _rewire_parent_edges so crossover reads as assemble->stamp. Complexity fell 14 -> 13 (C); recorded at the lowered value."
     },
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle._breed_island",
       "path": "packages/maistro-evolve/src/maistro_evolve/cycle.py",
-      "line": 365,
+      "line": 586,
       "name": "_breed_island",
       "classname": "EvolutionCycle",
-      "rank": "D",
-      "complexity": 21,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Refactored for M4-A8/#115: the duplicated crossover+register+island-placement block is now _spawn_island_child, so both breeding paths share one spawn path. Complexity fell 21 -> 16 (D -> C); recorded at the lowered value so it cannot regrow."
     },
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/cycle.py::EvolutionCycle._hyper_mutate_one",
@@ -1035,12 +1035,12 @@
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/mutate.py::mutate_topology",
       "path": "packages/maistro-evolve/src/maistro_evolve/mutate.py",
-      "line": 56,
+      "line": 145,
       "name": "mutate_topology",
       "classname": null,
-      "rank": "D",
-      "complexity": 21,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Refactored for M4-A8/#115: the two random edge-mutation blocks moved into _rewire_edges so the operator keeps one cohesive edge-rewiring helper. Complexity fell 21 -> 15 (D -> C); recorded at the lowered value."
     },
     {
       "key": "packages/maistro-evolve/src/maistro_evolve/population.py::migrate_islands",

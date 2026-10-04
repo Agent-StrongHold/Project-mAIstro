@@ -257,6 +257,12 @@ class InMemoryLearningStore:
         Unlike the scope queries on this store, a blank ``org_id`` here means
         "no org filter", not "only orgless rows": a point read by identity is
         not a scope query, and callers that need the scope rule pass an org.
+
+        Callers that hold an id from `store` use this to get back the *store's*
+        instance — after a dedup hit, `store` returns the surviving row's id
+        and keeps the pre-existing object, so a caller that kept its own copy
+        is holding an orphan. `InMemoryLearningLifecycle` leans on exactly that
+        guarantee to track the store's row, not the caller's.
         """
         for lr in self._learnings:
             if lr.id != learning_id:
