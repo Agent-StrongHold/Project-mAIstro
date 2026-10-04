@@ -112,4 +112,14 @@ RUN uv sync --python 3.12 --frozen
 # lock-enforced installs, not something to guess at here.
 RUN uv pip install coverage bandit radon interrogate vulture pylint
 
+# #406: the workspace lock installs maistro-core[tui,identity] -> bip-utils ->
+# pytoniq-core-fork, whose wheel ships a generic top-level `examples`
+# namespace. This container runs AGENT-AUTHORED code, so a stray importable
+# `examples` tree is surface an agent can reach; the shipped images prune it,
+# and so does this one — placed after the last site-packages-mutating install,
+# with the same build-time assertion behind it, so a silent no-op prune fails
+# this build rather than shipping the surface to the loop.
+RUN .venv/bin/python scripts/prune-dependency-namespaces.py \
+    && .venv/bin/python scripts/check-dependency-namespaces.py --production
+
 CMD ["sleep", "infinity"]
