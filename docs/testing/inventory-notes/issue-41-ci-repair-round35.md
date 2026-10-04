@@ -26,6 +26,15 @@ Follow-up CI-repair validation repeated the PostgreSQL coverage producer against
 a fresh local PostgreSQL 17 container: `tests/migrations` passed (107), the
 producer's schema-dependent core selection passed (4,919), and the previously
 timed-out Canvas selection passed (516). The original Canvas database-drop
-timeout therefore did not reproduce. This establishes the producer portion of
-the reported coverage failure; it does not claim a full multi-artifact Coverage
-gate result or resolve #1845's separate atomic-admission residual.
+timeout therefore did not reproduce.
+
+A later replay on the same isolated PostgreSQL 17 database did reproduce that
+teardown timeout once (`DROP DATABASE ... WITH (FORCE)` in
+`test_canvas_store_migration.py` exceeded pytest's 30-second timeout), then
+passed on an immediate targeted rerun (9) and on a complete fresh producer run:
+107 migration tests, 4,930 schema-dependent core tests, and 516 Canvas tests.
+The repeatable producer result establishes the PostgreSQL producer portion of
+the reported coverage failure, but the intermittent teardown remains an
+infrastructure/test-isolation risk. This note does not claim a full
+multi-artifact Coverage gate result or resolve #1845's separate
+atomic-admission residual.
