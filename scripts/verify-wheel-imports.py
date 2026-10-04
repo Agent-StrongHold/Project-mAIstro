@@ -67,6 +67,9 @@ CORE_PUBLIC_SURFACE = [
     "maistro.container",
     "maistro.credentials",
     "maistro.events",
+    # The canonical Goal store (#1572): ontology owner of the shared Goal
+    # concept, shipped public surface like runs/workspaces beside it.
+    "maistro.goals",
     "maistro.graph",
     "maistro.http",
     "maistro.memory",

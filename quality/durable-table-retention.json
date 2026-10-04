@@ -1142,6 +1142,45 @@
       "deletion_path": null,
       "issue": "#101",
       "notes": "Append-only BacklogItem history: INSERT is the only write and there is no delete path by design, so rows accumulate for the life of the deployment. The PostgreSQL history slice decides retention."
+    },
+    {
+      "table": "canonical_goals",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#1572",
+      "notes": "Canonical Goals (`maistro.goals`): desired state and accountability, never execution state. Append-only by contract; no deletion path in scope — terminal Goals are final records, and a driven purge belongs with the reconciliation consumer (#805/#806) that first deletes one."
+    },
+    {
+      "table": "canonical_goal_revisions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#1572",
+      "notes": "The append-only desired-state revision chain. Revisions are never rewritten or deleted by any code path (#1572); they die with their Goal only if a Goal purge is ever driven (see canonical_goals)."
+    },
+    {
+      "table": "canonical_goal_transitions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "audit",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#1572",
+      "notes": "Recorded, attributed lifecycle moves and Agent reassignments; the audit half of the Goal store (#1572). Bounded only by a Goal deletion that does not exist yet."
     }
   ]
 }
