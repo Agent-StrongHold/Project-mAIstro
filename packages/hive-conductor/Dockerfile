@@ -97,6 +97,21 @@ ARG INSTALL_OBSERVABILITY=0
 RUN if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
         pip install --no-cache-dir "/packages/maistro-core[observability]"; \
     fi
+
+# #406: bip-utils pins pytoniq-core-fork, whose wheel installs a generic
+# top-level `examples` namespace package. Both PyPI releases of the fork ship
+# it and pip cannot exclude a subpath, so the payload is pruned at build time
+# and the whole environment is then re-checked in production mode — placed
+# AFTER every install that can touch site-packages (identity stack, backend
+# requirements, optional observability), because a gate that runs before the
+# last dependency lands does not gate that dependency. A silent no-op prune
+# fails this build, not the next audit. RECORD is rewritten, so the syft SBOM
+# keeps the fork provenance (pkg:pypi/pytoniq-core-fork) with the pruned file
+# inventory.
+COPY scripts/check-dependency-namespaces.py scripts/prune-dependency-namespaces.py /tmp/
+RUN python /tmp/prune-dependency-namespaces.py \
+    && python /tmp/check-dependency-namespaces.py --production \
+    && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 # The image build is the first contract test: exercise the same identity import
 # and derivation that setup uses, and fail if a native wheel was not selected.
 RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
