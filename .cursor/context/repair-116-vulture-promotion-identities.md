@@ -125,3 +125,42 @@ quality.yml:960-965) exits 1 at dad6bc865:
   modules, 173 unreachable); `check-reachability-dispositions.py` → OK (49
   groups cover 173); `check-radon-baseline.py` → 145 == 145.
 - Worktree left clean at dad6bc865; only artifact added is this note.
+
+## Round 4 (develop sync to 1e4933e2a1): ac-state resolved DB-side; vulture blocker unchanged
+
+- **Merged origin/develop (1e4933e2a1) into auto-116** (round's designated base;
+  merge-base was cf4a562b before). Git auto-resolved `quality/*.json` with no
+  conflict — audited by hand per the AGENTS.md silent-row-loss warning:
+  vulture-baseline = branch 1357 − develop's 10 paid rows = 1347 rows; the 3
+  promotion.py rows survived; the stale POLICY row did not return. radon took
+  develop's 11/11 rewrite; reachability ledgers stayed branch-side.
+- **Vulture gate on the merged tree** (CI-exact args): trusted baseline now
+  folds at 1e4933e2a1 (1345 identities, base-only grants per
+  ratchet_provenance.py:478-504); candidate bookkeeping exact (no candidate
+  deltas). Exit 1 solely on the same 3 unauthorized identities
+  (promotion.py:385 attach_effect / :414 mark_reversed / :645 promote,
+  core-public-api-surface). Develop's ratchet-authorizations.json is
+  byte-identical to cf4a562b's and promotion.py does not exist on develop, so
+  no develop-side caller or grant can exist: the two-merge blocker is
+  unchanged by the sync.
+- **check-ac-state initially failed on the merged tree**: design_coverage
+  37.3775 < floor 41.1539. Root cause = measurement environment, not the
+  merge: the floor was recorded DB-up, and without MAISTRO_TEST_PG_DSN the
+  durable-store AC legs skip — `ac_outcome_plugin` counts a skip as
+  not-passing (quality.yml:632-639), collapsing coverage. Re-measured with the
+  CI-equivalent stack (pgvector/pgvector:pg18, alembic upgrade head, both DSN
+  env vars): **coverage 42.1466 ≥ 41.1539**; the delta then failed as
+  "unbanked improvement" and was banked per the gate's own instruction as
+  `quality/ac-state-notes/auto-116.json` (measured_with_tests: true). Gate
+  **exit 0** with `--run-tests --ratchet --bank --mandate 1e4933e2a1`.
+- **mypy --strict packages/maistro-core/src: SUCCESS (686 files, 0 errors)**
+  after `uv sync --extra bootstrap`. The "5 pre-existing maistro_bootstrap
+  import-stub errors" reported in rounds 1–3 were a missing-extra artifact in
+  the worktree venv, not a repository defect.
+- Promotion contract tests re-verified on the merged tree: 145 passed / 58
+  DB-skipped; ruff check + format clean (2858 files); suite-inventory 14/14;
+  promotion-surface ok; reachability exit 0 (1233 modules / 173 unreachable);
+  radon 145 == 145.
+- **Remaining blocker (unchanged, above this lane):** the vulture grant must
+  land on develop first (two merges), or the ADR-deviating family adoption is
+  funded as scoped work.

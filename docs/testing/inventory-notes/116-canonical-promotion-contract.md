@@ -111,3 +111,11 @@ the success-shaped no-op the repo hunts, so they stay banked in
 `quality/vulture-baseline.json` (candidate leg exact against the scan,
 11 stale rows pruned) pending vulture grants landing on develop — the
 two-merge doctrine's own resolution, as in the #82 round-5 repair.
+
+## Round 4 (develop sync): counts unchanged
+
+The branch was synced to origin/develop (1e4933e2a1). No test was added,
+removed or reparametrised: `test_promotion_contract.py` +
+`test_template_store.py` + `test_node_template_store.py` re-ran on the merged
+tree at 145 passed / 58 DB-skipped, identical to the round-2 record. The
+`inventory-delta` above is unchanged.
