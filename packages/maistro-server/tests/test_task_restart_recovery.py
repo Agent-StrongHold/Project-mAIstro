@@ -288,7 +288,7 @@ import asyncio, json
 
 MARKER = {marker!r}
 
-async def _execute(request, on_response=None):
+async def _execute(request, on_response=None, **_kwargs):
     from maistro.agents.types import ConductorOutput
 
     with open(MARKER, "a") as fh:
