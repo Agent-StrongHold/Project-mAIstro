@@ -51,10 +51,26 @@ from maistro_rsi.sensitive_paths import (
     matches_test_control_path,
 )
 
+# Identity is set per-invocation, mirroring local_loop._GIT_CONFIG: this suite
+# commits both in repos built by _oracle_repo (repo-local identity) and in
+# worktrees cloned from a LocalRsiLoop baseline (which carries the identity per
+# invocation only, never repo-local). CI runners configure no global git
+# identity, so a bare `git commit` there fails with "Author identity unknown" —
+# exactly what #109's merge-dir test hit in CI.
+_TEST_IDENTITY = (
+    "-c",
+    "user.email=rsi@test.local",
+    "-c",
+    "user.name=RSI Test",
+)
+
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
-        ["git", "-c", "core.longpaths=true", *args], cwd=str(cwd), capture_output=True, text=True
+        ["git", "-c", "core.longpaths=true", *_TEST_IDENTITY, *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} rc={proc.returncode}: {proc.stderr.strip()}")
