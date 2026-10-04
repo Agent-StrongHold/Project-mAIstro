@@ -230,3 +230,55 @@ explicit `now` past `TERMINAL_SETTLE_QUIET_PERIOD` via
   ratchet exit 0 (1340 reviewed identities = 1340 findings, `git diff
   --numstat origin/develop -- quality/` empty — no ledger amendment needed;
   this round touches `packages/*/src` not at all).
+
+Independent re-verification (L1861 verify @ `fb5fad4e38d4`): the assigned head
+`fb5fad4e38d4192f7f8318541c85a30de884beca` is the merge of develop base
+`680329c960cd` into auto-1861; the fix module
+`canonical_store.py` and this test file are byte-identical to the
+`ea180743fdce` versions this note already records (`git diff ea180743f..HEAD`
+touches neither), but the merge also brings develop's #1940 store content
+(`runs/pg_store.py`, `runs/wiring.py`, `tasks/*`), so the proof was re-executed
+at this exact head rather than inherited. Diff scope vs base: exactly three
+files (this note, the `canonical_store.py` predicate, this test file);
+`packages/maistro-core/tests/runs/` and the four acceptance files are
+byte-identical to base; `git diff --numstat 680329c960cd..HEAD -- quality/`
+empty. Executed against lane pgvector `pg-l1861` (`127.0.0.1:55186`, alembic
+head `052` confirmed via `alembic_version`), `MAISTRO_TEST_PG_DSN` set:
+
+- New file `uv run --frozen pytest
+  packages/maistro-core/tests/graph/durable_runs/test_live_walker_final_checkpoint.py
+  -q -ra` = **9 passed, 0 skipped** (three cases × memory/sqlite/postgres;
+  the 6-legged no-DSN driver run skipped exactly the three `[postgres]` ids).
+- Exact acceptance battery plus the new file (`test_crash_window_invariants.py`
+  + `test_recovery_completion_budget.py` +
+  `test_cross_store_crash_reconciliation.py` +
+  `test_canonical_recovery_contract.py` + this file, `-q -ra`) = **110 passed,
+  0 skipped**; full `packages/maistro-core/tests/graph/durable_runs` with real
+  PG = **651 passed**. Postgres legs: real `PgRunStore` +
+  `PgGraphContinuationStore`, recovery instance on an independent asyncpg pool.
+- Fail-before re-proved without touching the tree (`git archive` of this head
+  with only `canonical_store.py` replaced by the develop base `680329c960cd`
+  module): `test_live_walker_final_checkpoint_is_not_claimed_by_recovery`
+  failed all three backends at the barrier assertion
+  (`assert await recovery.reconcile_persistence(now=...) == 0` →
+  `assert 1 == 0`, one tick claimed the live continuation) while the crashed
+  companion and the quiet-period boundary case passed there.
+- Observed snapshots (direct observation script at this head, memory
+  composition): barrier continuation `{version: 7, status: running,
+  resume_at: None, active_node_ids: []}` → recovery tick returns 0, model
+  equal → released walker COMPLETED, 1 counted execution, 1 NodeRun completed
+  with accepted outcome, exactly 1 Attempt ordinal 1 COMPLETED with result →
+  final continuation `{version: 8, status: completed, resume_at: None}`
+  (original lineage) → second tick returns 0, snapshot identical, canonical
+  Run completed. Claim race at the same barrier: one tick at
+  `now = wall clock + 1h` returns 1 and stores `{version: 8, resume_at set}`;
+  the released live walker raises `version regression: stored=8 incoming=8`;
+  spine afterwards: Run `running`, 1 terminal NodeRun, 1 Attempt ordinal 1,
+  1 execution; continuation equals the claim; second tick returns 0 unchanged.
+- Gates re-run at this head: `ruff check .` and `ruff format --check .` clean
+  (driver logs), `check-suite-inventory.py --suite packages/maistro-core/tests`
+  ok (`+9` delta), documented six-package `mypy` command clean (795 source
+  files), CI-exact vulture ratchet exit 0 (1340 reviewed identities = 1340
+  findings, baseline base `680329c960cd` → candidate `fb5fad4e38d4`),
+  `check-reachability.py` exit 0. No closure keywords in the branch's commit
+  messages or the PR body.
