@@ -61,8 +61,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) continues the chain after this
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
-    # that; #398's `048_canvas_job_retry_backoff` continues it, and
-    # `049_design_artifact_versions` (#780) continues that; #774's
+    # that; #398's `048_canvas_job_retry_backoff` continues it, and #780's
+    # `049_design_artifact_versions` continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
     # #780 claimed them — continues after that. #792's eval-score evidence,
     # which had taken `049` on develop while this branch's artifact-version
@@ -72,8 +72,12 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # 047-child collision on its first develop sync and was renumbered onto
     # the then-head 050; the second sync moved the head to that
     # `051_canonical_run_eval_scores`, so it re-parented again as
-    # `052_learning_lifecycle_columns`. The single linear head is `052`.
-    walked = {item.revision for item in directory.walk_revisions("base", "052")}
+    # `052_learning_lifecycle_columns`. Develop's knowledge-stage ladder
+    # (M4-B1, ADR-103) — numbered 048 when written, re-parented to 052 on its
+    # own branch — arrived in the same merge on the same parent, so it took
+    # the next id: `053_learning_stage_ladder` on the `052` column revision.
+    # The single linear head is `053`.
+    walked = {item.revision for item in directory.walk_revisions("base", "053")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -85,7 +89,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "050" in walked
     assert "051" in walked
     assert "052" in walked
-    assert directory.get_heads() == ["052"]
+    assert "053" in walked
+    assert directory.get_heads() == ["053"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

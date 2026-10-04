@@ -95,25 +95,47 @@ SCOPE_RANK: dict[MemoryScope, int] = {
 
 
 class LearningStage(StrEnum):
-    """Stages of the learning pipeline (ADR-100126-9a4b, M4-B #117).
+    """Knowledge-stage ladder over a Learning record (M4-B1 / ADR-103,
+    completed by ADR-100126-9a4b / M4-B #117-#121).
 
     MEMORY -> LEARNING -> VALIDATED -> REPERTOIRE:
 
     - ``MEMORY`` names the source tier: episodic records of what a Run
-      observed. A :class:`Learning` never carries this stage -- it marks where
-      the pipeline starts, so the stage ladder is total.
+      observed. A :class:`Learning` never carries this stage -- it marks
+      where the ladder starts, so the stage ladder is total (ADR-103).
     - ``LEARNING``: an extracted correction held locally by one scope. Local
-      belief, not yet reusable knowledge.
+      belief, not yet reusable knowledge. Every stored learning enters the
+      ladder here (ADR-100126-9a4b): extraction is the MEMORY -> LEARNING
+      step, so no row is left parked on a rung nothing advances.
     - ``VALIDATED``: an independent Gauntlet accepted the outcome evidence
-      later Runs recorded (#118). Still scoped, now believed.
+      later Runs recorded (#118). Still scoped, now believed. The evaluator
+      is recorded in ``Learning.validated_by``; the *independence* of the
+      evaluator is the caller's duty, which a stage value cannot prove.
     - ``REPERTOIRE``: collective, reusable knowledge committed for injection
-      into later Runs. The only door in is through VALIDATED.
+      into later Runs. The only door in is through VALIDATED; promotion
+      records ``promoted_by`` and flips ``status`` to ``promoted`` so every
+      existing promoted-only reader keeps working.
+
+    Not a runtime: the ladder is fields on the one ``Learning`` record plus
+    the transition functions in :mod:`maistro.memory.learnings.lifecycle`.
+    A stage is metadata about knowledge, and it never grants permissions or
+    execution authority — the Sentinel never reads it (ADR-103).
     """
 
     MEMORY = "memory"
     LEARNING = "learning"
     VALIDATED = "validated"
     REPERTOIRE = "repertoire"
+
+
+#: Position of each stage on the ladder. Transitions are forward-only and
+#: single-step; the lifecycle functions derive both rules from this map.
+LEARNING_STAGE_ORDER: dict[LearningStage, int] = {
+    LearningStage.MEMORY: 0,
+    LearningStage.LEARNING: 1,
+    LearningStage.VALIDATED: 2,
+    LearningStage.REPERTOIRE: 3,
+}
 
 
 class EpistemicType(StrEnum):
@@ -170,10 +192,11 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
-    # Pipeline + epistemics (ADR-100126-9a4b, EPIC M4-B). `stage` is the knowledge
-    # pipeline position; `status` stays the store-level row state. They move
-    # together only where they must: committing a learning to the repertoire
-    # sets status="promoted" so existing promoted-only readers keep working.
+    # Pipeline + epistemics (ADR-100126-9a4b, EPIC M4-B; ladder per ADR-103).
+    # `stage` is the knowledge pipeline position; `status` stays the store-level
+    # row state. They move together only where they must: committing a learning
+    # to the repertoire sets status="promoted" so existing promoted-only readers
+    # keep working.
     stage: LearningStage = LearningStage.LEARNING
     epistemic_type: EpistemicType = EpistemicType.EMPIRICAL
     #: 0..1 belief strength, decayed toward the epistemic floor over time.
@@ -192,6 +215,11 @@ class Learning:
     # retained, so later Runs can ask what used to be believed.
     supersedes: int | None = None
     superseded_by: int | None = None
+    #: Repertoire-commit actor (ADR-103). Named by the ``plan_advance`` store
+    # path; blank means the row never took the REPERTOIRE step through it,
+    # never a fabricated default. Appended last so positional constructions
+    # of the earlier field set keep their meaning.
+    promoted_by: str = ""
 
 
 @dataclass

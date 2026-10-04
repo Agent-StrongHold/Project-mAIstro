@@ -10,7 +10,8 @@ import logging
 from datetime import UTC, datetime
 
 from maistro.memory.learnings import lifecycle
-from maistro.memory.types import Learning
+from maistro.memory.learnings.lifecycle import StageTransition, plan_advance
+from maistro.memory.types import Learning, LearningStage
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_scope import matches_learning_scope
 from maistro.types.memory import CONTRADICT_DELTA, REINFORCE_DELTA
@@ -27,6 +28,11 @@ class InMemoryLearningStore:
         self._learnings: list[Learning] = []
         self._next_id = 1
         self._max = max_learnings
+        # Append-only ladder audit trail (ADR-103). In-memory is the dev/test
+        # backend, so the ledger lives here for the same reason provenance
+        # does: a backend that skipped it would let every behavioural test
+        # pass while only the durable ones did the work.
+        self._stage_history: list[StageTransition] = []
 
     async def store(self, learning: Learning) -> int:
         """Store a learning, naming the execution that produced it.
@@ -376,3 +382,51 @@ class InMemoryLearningStore:
             if len(results) >= limit:
                 break
         return results
+
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+    ) -> Learning:
+        """Move a learning one rung up the knowledge ladder (ADR-103).
+
+        The rules live in `plan_advance`; this store applies them to the
+        stored instance (which it hands back to callers, so identity is
+        preserved exactly as with `store`) and appends the transition to the
+        in-memory ledger. A scoped caller (`org_id`) can only advance a row
+        it could have read — the same write rule `mark_outcome` enforces.
+        """
+        learning = await self._get_for_scope(learning_id, org_id=org_id)
+        updated, transition = plan_advance(learning, to_stage=to_stage, actor=actor, reason=reason)
+        learning.stage = updated.stage
+        learning.validated_by = updated.validated_by
+        learning.promoted_by = updated.promoted_by
+        learning.status = updated.status
+        self._stage_history.append(transition)
+        return learning
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """The audit trail of one learning's ladder transitions, oldest first."""
+        await self._get_for_scope(learning_id, org_id=org_id)
+        return [
+            transition
+            for transition in self._stage_history
+            if transition.learning_id == learning_id
+        ]
+
+    async def _get_for_scope(self, learning_id: int, *, org_id: str) -> Learning:
+        """The stored learning with this id, visible to this org scope.
+
+        The scope rule matches `mark_outcome`: a caller may only move state on
+        rows it could have been served. An unknown id raises the same way —
+        the distinction between "no such row" and "not yours" would leak
+        ids across orgs.
+        """
+        for lr in self._learnings:
+            if lr.id == learning_id and matches_learning_scope(lr, org_id=org_id):
+                return lr
+        raise KeyError(f"no learning #{learning_id} visible in this scope")

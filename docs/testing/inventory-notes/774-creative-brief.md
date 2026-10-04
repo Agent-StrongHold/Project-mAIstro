@@ -380,3 +380,16 @@ test now walks to `051` and asserts `get_heads() == ["051"]`;
 `test_migration_chain`'s eval-table comment and `retention_scope`'s policy
 comment follow the renumber. No test node IDs moved; the inventory deltas are
 unchanged.
+
+## Round 8 (auto-117 develop sync: the knowledge-stage ladder re-parents onto `051` as `052`)
+
+Merging develop into auto-117 (M4-B1, #117) collided the head a fifth time:
+this branch's knowledge-stage ladder — re-parented onto `050` as `051` in
+Round 7's world — met develop's own `051_canonical_run_eval_scores` sitting
+on the same parent. Per the one-linear-head convention the develop chain
+stands and the ladder re-parents onto that `051` chain tip as
+**`052_learning_stage_ladder`** (`down_revision = "051"`). The effect-index
+chain test now walks to `052` and asserts `get_heads() == ["052"]`, and the
+ladder's own live-pgvector round trip upgrades/downgrades `051`↔`052`.
+Round 7's head-`051` statement is superseded on this branch. No test node
+IDs moved; the inventory deltas are unchanged.

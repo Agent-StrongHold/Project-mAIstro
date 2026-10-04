@@ -32,9 +32,11 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "run_id",
         "node_run_id",
         "attempt_id",
-        # Pipeline + epistemics (ADR-100126-9a4b, EPIC M4-B). A restart must not demote
-        # a validated learning back to a local belief or resurrect a superseded
-        # one, so the lifecycle state is durable like every other field.
+        # Pipeline + epistemics (ADR-100126-9a4b, EPIC M4-B; ladder per
+        # ADR-103). A restart must not demote a validated learning back to a
+        # local belief or resurrect a superseded one, so the lifecycle state
+        # is durable like every other field. `promoted_by` names the
+        # repertoire-commit actor (ADR-103).
         "stage",
         "epistemic_type",
         "confidence",
@@ -47,5 +49,6 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "validated_at",
         "supersedes",
         "superseded_by",
+        "promoted_by",
     }
 )

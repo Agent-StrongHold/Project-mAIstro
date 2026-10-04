@@ -8,6 +8,11 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from maistro.memory.learnings.lifecycle import (
+    InvalidStageTransition,
+    StageTransition,
+    plan_advance,
+)
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
@@ -70,6 +75,7 @@ _PG_INSERT_FIELDS = (
     "validated_at",
     "supersedes",
     "superseded_by",
+    "promoted_by",
 )
 
 
@@ -141,6 +147,43 @@ class PgLearningStore:
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''"
             )
+            # M4-B1 (ADR-103) / M4-B (ADR-100126-9a4b): stage columns, same
+            # belt-and-braces upgrade posture as org_id. Rows enter the ladder
+            # at `learning` (extraction is the MEMORY -> LEARNING step), with
+            # blank actors — the truth about rows nothing validated.
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "stage TEXT NOT NULL DEFAULT 'learning'"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "validated_by TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
+                "promoted_by TEXT NOT NULL DEFAULT ''"
+            )
+            # The append-only ladder audit trail. Created here as well as in
+            # migration 048 for the same reason the scope index is: startup
+            # may run against a database migrated before the ladder existed.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS learning_stage_transitions (
+                    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                    learning_id BIGINT NOT NULL,
+                    org_id TEXT NOT NULL DEFAULT '',
+                    from_stage TEXT NOT NULL,
+                    to_stage TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learning_stage_transitions_learning "
+                "ON learning_stage_transitions (learning_id, id)"
+            )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope "
                 "ON learnings (org_id, agent_id, status)"
@@ -186,11 +229,11 @@ class PgLearningStore:
                     reinforcement_count, contradiction_count,
                     created_at, last_confirmed_at,
                     validated_by, validated_at,
-                    supersedes, superseded_by)
+                    supersedes, superseded_by, promoted_by)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                            $13, $14, $15, $16, $17, $18, $19,
                            $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
-                           $30, $31)
+                           $30, $31, $32)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -223,6 +266,7 @@ class PgLearningStore:
                 learning.validated_at,
                 learning.supersedes,
                 learning.superseded_by,
+                learning.promoted_by,
             )
             return int(row["id"]) if row else 0
 
@@ -521,6 +565,96 @@ class PgLearningStore:
             )
             return [_row_to_learning(r) for r in rows]
 
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+    ) -> Learning:
+        """Move a learning one rung up the ladder, durably and auditably.
+
+        One transaction does both writes: the guarded row UPDATE (`AND
+        stage = $from` makes a concurrent double-transition fail loudly
+        rather than apply twice) and the append-only ledger row. A crash
+        between them can produce neither a moved row without a record nor a
+        record without a moved row — that is what makes the transition
+        durable (ADR-103).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT * FROM learnings WHERE id = $1 AND org_id = $2",
+                learning_id,
+                org_id,
+            )
+            if row is None:
+                raise KeyError(f"no learning #{learning_id} visible in this scope")
+            candidate = _row_to_learning(row)
+            updated, transition = plan_advance(
+                candidate, to_stage=to_stage, actor=actor, reason=reason
+            )
+            result = await conn.execute(
+                "UPDATE learnings SET stage = $2, validated_by = $3, "
+                "promoted_by = $4, status = $5 "
+                "WHERE id = $1 AND stage = $6 AND org_id = $7",
+                learning_id,
+                updated.stage,
+                updated.validated_by,
+                updated.promoted_by,
+                updated.status,
+                candidate.stage,
+                org_id,
+            )
+            if result == "UPDATE 0":
+                # The row moved underneath us between the SELECT and the
+                # UPDATE. Raise rather than half-apply: the ledger must never
+                # record a transition the row does not carry.
+                raise InvalidStageTransition(
+                    f"learning #{learning_id} left stage {candidate.stage} "
+                    "before the transition committed"
+                )
+            await conn.execute(
+                "INSERT INTO learning_stage_transitions "
+                "(learning_id, org_id, from_stage, to_stage, actor, reason) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                learning_id,
+                transition.org_id,
+                transition.from_stage,
+                transition.to_stage,
+                transition.actor,
+                transition.reason,
+            )
+        return updated
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """The durable audit trail for one learning, oldest first."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM learnings WHERE id = $1 AND org_id = $2",
+                learning_id,
+                org_id,
+            )
+            if row is None:
+                raise KeyError(f"no learning #{learning_id} visible in this scope")
+            rows = await conn.fetch(
+                "SELECT learning_id, org_id, from_stage, to_stage, actor, reason "
+                "FROM learning_stage_transitions WHERE learning_id = $1 ORDER BY id",
+                learning_id,
+            )
+        return [
+            StageTransition(
+                learning_id=int(raw["learning_id"]),
+                org_id=str(raw["org_id"] or ""),
+                from_stage=LearningStage(raw["from_stage"]),
+                to_stage=LearningStage(raw["to_stage"]),
+                actor=str(raw["actor"] or ""),
+                reason=str(raw["reason"] or ""),
+            )
+            for raw in rows
+        ]
+
 
 def _dump_keys(keys: list[str]) -> str:
     """Encode `trigger_keys` for the JSONB column migration 001 declares.
@@ -576,6 +710,7 @@ class _LifecycleRowFields(TypedDict):
     validated_at: datetime | None
     supersedes: int | None
     superseded_by: int | None
+    promoted_by: str
 
 
 def _lifecycle_row_fields(row: asyncpg.Record) -> _LifecycleRowFields:
@@ -602,6 +737,7 @@ def _lifecycle_row_fields(row: asyncpg.Record) -> _LifecycleRowFields:
         "validated_at": row.get("validated_at"),
         "supersedes": row.get("supersedes"),
         "superseded_by": row.get("superseded_by"),
+        "promoted_by": row.get("promoted_by") or "",
     }
 
 

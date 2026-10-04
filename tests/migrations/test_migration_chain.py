@@ -121,6 +121,11 @@ EXPECTED_TABLES = frozenset(
         "handler_invocations",
         "knowledge_nodes",
         "learnings",
+        # The append-only provenance ledger for the knowledge-stage ladder
+        # (053, M4-B1/ADR-103): one row per accepted MEMORY → LEARNING →
+        # VALIDATED → REPERTOIRE transition, written in the same transaction
+        # as the stage update itself.
+        "learning_stage_transitions",
         "memory_entries",
         # The NodeTemplate half of the reusable-definition model (020). Its
         # GraphTemplate sibling has been durable since 014; without this one a

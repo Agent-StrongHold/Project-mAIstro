@@ -197,11 +197,12 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         None,
         None,
         None,
-        # Lifecycle + epistemics (ADR-100126-9a4b): written like every other durable
-        # field so a restart cannot demote a validated learning back to a
-        # local belief. A fresh learning is a local empirical one at the
-        # default confidence, naming no validator, no confirmation instant,
-        # and no supersession lineage.
+        # Lifecycle + epistemics (ADR-100126-9a4b; ladder provenance per
+        # ADR-103): written like every other durable field so a restart cannot
+        # demote a validated learning back to a local belief. A fresh learning
+        # is a local empirical one at the default confidence, naming no
+        # validator, no confirmation instant, no supersession lineage, and no
+        # promotion actor.
         "learning",
         "empirical",
         0.5,
@@ -214,6 +215,7 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         None,
         None,
         None,
+        "",
     )
 
 
