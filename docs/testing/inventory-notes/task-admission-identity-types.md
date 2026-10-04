@@ -48,3 +48,6 @@ output but cannot authorize new trusted-base debt; `check-vulture-baseline.py`
 therefore remains blocked on the pre-existing two-merge provenance rule until
 a separately reviewed authorization lands on develop or the parent wiring makes
 the module reachable.
+
+Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
+`aec772d4c3d01000ba83958431b859cf1bb3ac56`.
