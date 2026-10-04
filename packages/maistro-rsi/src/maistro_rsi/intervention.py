@@ -270,9 +270,20 @@ class ObjectiveParked(RuntimeError):
     match on the message text.
     """
 
-    def __init__(self, objective: str, interventions: tuple[Intervention, ...]) -> None:
+    def __init__(
+        self,
+        objective: str,
+        interventions: tuple[Intervention, ...],
+        steps: tuple[str, ...] = (),
+    ) -> None:
         self.objective = objective
         self.interventions = interventions
+        # Node ids the coordinator executed in the run that raised this park:
+        # the triggering cycle runs and records its node BEFORE intervening, so
+        # a caller that persists steps only from a returned CoordinatorResult
+        # would drop an already-executed experiment and leave its node OPEN in
+        # the on-disk snapshot — re-executed by a later resume.
+        self.steps = steps
         super().__init__(
             f"objective parked after {len(interventions)} intervention(s) without improvement: "
             f"{objective!r}"

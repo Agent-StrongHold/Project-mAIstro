@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from maistro_rsi.htr import HypothesisEvidence, HypothesisNode, HypothesisTree
-from maistro_rsi.intervention import Intervention, InterventionPolicy
+from maistro_rsi.intervention import Intervention, InterventionPolicy, ObjectiveParked
 
 if TYPE_CHECKING:
     from maistro_rsi.runner import RsiCycleResult
@@ -165,7 +165,17 @@ class HtrCoordinator:
                     consecutive_non_improving=(self._policy.tracker.consecutive_non_improving),
                     **self._tree.summary(),
                 )
-                intervention = await self._policy.intervene(self._tree, node.id)
+                try:
+                    intervention = await self._policy.intervene(self._tree, node.id)
+                except ObjectiveParked as exc:
+                    # The park fires AFTER this cycle executed and recorded
+                    # `node`, so the raised exception must carry the steps this
+                    # run completed: the loop driver merges steps only from a
+                    # returned CoordinatorResult, and dropping the executed
+                    # cycle here would leave its node OPEN in the on-disk
+                    # snapshot for a later resume to run again.
+                    exc.steps = tuple(result.steps)
+                    raise
                 result.interventions.append(intervention)
         return result
 

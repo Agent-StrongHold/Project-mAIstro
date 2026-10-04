@@ -526,6 +526,46 @@ class TestAutorunStallWiring:
         for line in audit_path.read_text().splitlines():
             json.loads(line)
 
+    @pytest.mark.asyncio
+    async def test_park_checkpoints_the_triggering_cycle(self, monkeypatch, tmp_path):
+        """autorun-15: the cycle that triggers the park has already executed
+        and recorded its node by the time intervene() raises, so the handler
+        must still merge the step into the result, ledger its insight, and
+        checkpoint the tree — otherwise the snapshot leaves the node OPEN and
+        a later resume executes the same experiment again."""
+        monkeypatch.setattr(
+            "maistro_rsi.autorun._post", lambda *a, **k: (_ for _ in ()).throw(ConnectionError())
+        )
+
+        executed: list[str] = []
+
+        async def executor(context: HtrContext) -> ExecutionReport:
+            executed.append(context.node.id)
+            return _report(improved=False)
+
+        tree_path = tmp_path / "tree.json"
+        ledger_path = tmp_path / "learnings.jsonl"
+        config = _autorun_config(
+            tmp_path,
+            stall_threshold=1,
+            direction_count=1,
+            park_after=1,
+            num_cycles=10,
+            tree_path=str(tree_path),
+            learnings_path=str(ledger_path),
+        )
+        result = await run_autonomous(config, executor=executor, proposer=lambda ctx: "next")
+
+        # the triggering cycle's node is part of the returned result ... (autorun-15)
+        assert result.steps == executed
+        # ... its (absent) insight was checked and the snapshot checkpointed
+        snapshot = json.loads(tree_path.read_text())["tree"]
+        executed_set = set(executed)
+        assert all(n["id"] not in executed_set or n["status"] != "open" for n in snapshot["nodes"])
+        # a resume would not re-execute any node that already ran
+        resumed = HypothesisTree.from_dict(snapshot)
+        assert not executed_set & {n.id for n in resumed.pending()}
+
 
 class TestLlmLineageReviewer:
     def test_degrades_to_template_on_gateway_failure(self, monkeypatch):

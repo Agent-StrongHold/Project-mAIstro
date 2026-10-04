@@ -886,6 +886,44 @@ async def _record_objective_parked(audit: AuditLog, exc: ObjectiveParked) -> Non
     audit.record_parked(exc)
 
 
+async def _checkpoint_steps(
+    completed: Sequence[str],
+    *,
+    tree: HypothesisTree,
+    tree_path: Path,
+    repo_url: str,
+    run_id: str,
+    ledger: LearningsLedger,
+    ledger_boundary: WardenHarvestBoundary,
+) -> None:
+    """Ledger the executed steps' insights, then checkpoint the tree snapshot.
+
+    Ledger first, then tree: if the process dies between these two writes, at
+    worst a node's insight is appended twice on a later resume (recall()
+    dedupes by insight text) rather than lost forever — the tree still marks
+    the node EXPLORED either way, so losing the insight instead of the write
+    ordering is the one true crash window to close (autorun-10/11's
+    retained-learnings guarantee depends on every executed insight reaching
+    the ledger).
+    """
+    for node_id in completed:
+        node = tree.nodes[node_id]
+        flags: tuple[str, ...] = ()
+        admitted = False
+        if node.insight:
+            admission = await ledger_boundary.scan(node.insight)
+            flags = admission.verdict.flags if admission.verdict else ()
+            admitted = admission.admitted
+        ledger.append(
+            repo_url=repo_url,
+            run_id=run_id,
+            node=node,
+            warden_flags=flags,
+            warden_admitted=admitted,
+        )
+    _atomic_write_json(tree_path, {"repo_url": repo_url, "tree": tree.to_dict()})
+
+
 async def run_autonomous(
     config: AutorunConfig,
     *,
@@ -987,6 +1025,7 @@ async def run_autonomous(
     started = time.monotonic()
     steps: list[str] = []
     interventions: list[Intervention] = []
+
     for _ in range(config.num_cycles):
         budget = config.max_wall_clock_s
         if budget is not None and time.monotonic() - started >= budget:
@@ -1024,33 +1063,35 @@ async def run_autonomous(
             # blindly, or a park double-counts them.
             known = {id(i) for i in interventions}
             interventions.extend(i for i in exc.interventions if id(i) not in known)
+            # The park fires after the triggering cycle already executed and
+            # recorded its node in the shared tree; the coordinator's partial
+            # result never returns, so recover those steps from the exception
+            # and checkpoint them — otherwise the result omits an executed
+            # experiment and the snapshot leaves the node OPEN for a later
+            # resume to execute again.
+            steps.extend(exc.steps)
+            await _checkpoint_steps(
+                exc.steps,
+                tree=tree,
+                tree_path=tree_path,
+                repo_url=config.repo_url,
+                run_id=run_id,
+                ledger=active_ledger,
+                ledger_boundary=ledger_boundary,
+            )
             await _record_objective_parked(active_audit, exc)
             break
         steps.extend(partial.steps)
         interventions.extend(partial.interventions)
-        # Ledger first, then tree: if the process dies between these two
-        # writes, at worst a node's insight is appended twice on a later
-        # resume (recall() dedupes by insight text) rather than lost forever
-        # — the tree still marks the node EXPLORED either way, so losing the
-        # insight instead of the write ordering is the one true crash window
-        # to close (autorun-10/11's retained-learnings guarantee depends on
-        # every executed insight reaching the ledger).
-        for node_id in partial.steps:
-            node = tree.nodes[node_id]
-            flags: tuple[str, ...] = ()
-            admitted = False
-            if node.insight:
-                admission = await ledger_boundary.scan(node.insight)
-                flags = admission.verdict.flags if admission.verdict else ()
-                admitted = admission.admitted
-            active_ledger.append(
-                repo_url=config.repo_url,
-                run_id=run_id,
-                node=node,
-                warden_flags=flags,
-                warden_admitted=admitted,
-            )
-        _atomic_write_json(tree_path, {"repo_url": config.repo_url, "tree": tree.to_dict()})
+        await _checkpoint_steps(
+            partial.steps,
+            tree=tree,
+            tree_path=tree_path,
+            repo_url=config.repo_url,
+            run_id=run_id,
+            ledger=active_ledger,
+            ledger_boundary=ledger_boundary,
+        )
 
     result = CoordinatorResult(tree=tree, steps=steps, interventions=interventions)
     best = result.best
