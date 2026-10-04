@@ -637,6 +637,7 @@ class PgLearningStore:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         """Move a learning one rung up the ladder, durably and auditably.
 
@@ -646,7 +647,15 @@ class PgLearningStore:
         between them can produce neither a moved row without a record nor a
         record without a moved row — that is what makes the transition
         durable (ADR-103).
+
+        ADR-057: the gate is the first statement, before the transaction —
+        a denied or undeclared call opens no transaction and writes no row.
+        `authority` is the ADR-057 principal (default agent), distinct from
+        the ADR-103 attribution string in `actor`.
         """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT * FROM learnings WHERE id = $1 AND org_id = $2",

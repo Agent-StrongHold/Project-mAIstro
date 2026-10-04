@@ -132,7 +132,12 @@ or placeholder-only section.
   never model or persona content. The container declares the deployment's
   posture from the new `AgentConfig.memory.exposure_mode` setting
   (`agent_managed` default — the engine's existing behavior, now explicit;
-  set `system_managed` for curated-context deployments). Not yet wired, and
+  set `system_managed` for curated-context deployments). The M4-B lifecycle
+  mutations added by the develop sync — `supersede`, `consolidate` and the
+  store-level `advance_stage` on all three learning-store backends — are
+  gated by the same decision as first statements, behind an explicit ADR-057
+  principal kept distinct from the ADR-103 attribution string, so a denied
+  supersede retires nothing and stores nothing. Not yet wired, and
   disclosed in KNOWN-GAPS until then: per-call read gating, `hybrid` per-block
   tags (agent writes fail closed under `hybrid`), `memory.write.denied` event
   emission, and a product-reachable E2E proving a denied write.

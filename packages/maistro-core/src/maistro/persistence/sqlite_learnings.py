@@ -549,6 +549,7 @@ class SqliteLearningStore:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         """Move a learning one rung up the ladder, durably and auditably.
 
@@ -558,7 +559,15 @@ class SqliteLearningStore:
         crash between them can produce neither a moved row without a record
         nor a record without a moved row. Both writes commit together or not
         at all — that is what makes the transition *durable* (ADR-103).
+
+        ADR-057: the gate is the first statement — a denied or undeclared
+        call touches neither the row nor the ledger. `authority` is the
+        ADR-057 principal (default agent), distinct from the ADR-103
+        attribution string in `actor`.
         """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
         row = await self._scoped_row(learning_id, org_id=org_id)
         current = LearningStage(row.get("stage") or "memory")
         candidate = _row_to_learning(row)

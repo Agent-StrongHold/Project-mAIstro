@@ -131,7 +131,13 @@ from maistro.persistence.pg_outcomes import PgOutcomeStore  # noqa: E402
 from maistro.persistence.sqlite_episodic import SqliteEpisodicStore  # noqa: E402
 from maistro.persistence.sqlite_learnings import SqliteLearningStore  # noqa: E402
 from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore  # noqa: E402
-from maistro.types.memory import EpisodicMemory, Learning, Outcome, SkillMutation  # noqa: E402
+from maistro.types.memory import (  # noqa: E402
+    EpisodicMemory,
+    Learning,
+    LearningStage,
+    Outcome,
+    SkillMutation,
+)
 
 
 class TestReachabilityAtStoreBoundary:
@@ -143,6 +149,12 @@ class TestReachabilityAtStoreBoundary:
             asyncio_run(store.store(Learning(), actor=Actor.SYSTEM))
         with pytest.raises(MemoryUndeclaredModeError):
             asyncio_run(store.check_auto_promotions(actor=Actor.SYSTEM))
+        with pytest.raises(MemoryUndeclaredModeError):
+            asyncio_run(store.supersede(1, Learning(learning="x")))
+        with pytest.raises(MemoryUndeclaredModeError):
+            asyncio_run(store.consolidate())
+        with pytest.raises(MemoryUndeclaredModeError):
+            asyncio_run(store.advance_stage(1, to_stage=LearningStage.LEARNING, actor="x"))
 
     def test_in_memory_episodic_store(self) -> None:
         store = InMemoryEpisodicStore()
@@ -166,11 +178,15 @@ class TestReachabilityAtStoreBoundary:
             asyncio_run(store.store(Learning(), actor=Actor.SYSTEM))
         with pytest.raises(MemoryUndeclaredModeError):
             asyncio_run(store.check_auto_promotions(actor=Actor.SYSTEM))
+        with pytest.raises(MemoryUndeclaredModeError):
+            asyncio_run(store.advance_stage(1, to_stage=LearningStage.LEARNING, actor="x"))
 
     def test_sqlite_learning_store(self) -> None:
         store = SqliteLearningStore(conn=None)  # type: ignore[arg-type]
         with pytest.raises(MemoryUndeclaredModeError):
             asyncio_run(store.store(Learning(), actor=Actor.SYSTEM))
+        with pytest.raises(MemoryUndeclaredModeError):
+            asyncio_run(store.advance_stage(1, to_stage=LearningStage.LEARNING, actor="x"))
 
     def test_pg_episodic_store(self) -> None:
         store = PgEpisodicStore(pool=None)  # type: ignore[arg-type]
@@ -243,6 +259,65 @@ class TestTwoActorInMemoryStores:
         with pytest.raises(ValueError, match="HYBRID mode requires block_exposure"):
             asyncio_run(store.store(Learning(learning="x"), actor=Actor.AGENT))
         assert store._learnings == []
+
+    def test_agent_supersede_denied_under_system_managed_leaves_no_partial_state(self) -> None:
+        """A denied supersede retires nothing and stores nothing (#390).
+
+        The pre-gate implementation retired the old row *before* the gated
+        store() call, so a denial left the old row superseded with no
+        replacement — exactly the partial durable state ADR-057 forbids.
+        """
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)
+        old_id = asyncio_run(store.store(Learning(learning="old"), actor=Actor.SYSTEM))
+        with pytest.raises(MemoryWriteDenied):
+            asyncio_run(store.supersede(old_id, Learning(learning="new"), actor=Actor.AGENT))
+        assert len(store._learnings) == 1
+        assert store._learnings[0].id == old_id
+        assert store._learnings[0].status == "active"
+        assert store._learnings[0].learning == "old"
+
+    def test_system_supersede_under_system_managed_carries_one_principal(self) -> None:
+        """The gate's principal is the one the inner store() call runs under."""
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)
+        old_id = asyncio_run(store.store(Learning(learning="old"), actor=Actor.SYSTEM))
+        new_id = asyncio_run(store.supersede(old_id, Learning(learning="new"), actor=Actor.SYSTEM))
+        assert new_id != old_id
+        assert asyncio_run(store.get(old_id)).status == "superseded"
+        assert asyncio_run(store.get(new_id)).status == "active"
+
+    def test_agent_consolidate_denied_under_system_managed_merges_nothing(self) -> None:
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)
+        # Disjoint trigger keys so the write-path dedup probe keeps both rows
+        # alive: the denial, not a dedup fold, must be why nothing merged.
+        first = asyncio_run(
+            store.store(Learning(learning="a", trigger_keys=["deploy"]), actor=Actor.SYSTEM)
+        )
+        second = asyncio_run(
+            store.store(Learning(learning="b", trigger_keys=["rollback"]), actor=Actor.SYSTEM)
+        )
+        with pytest.raises(MemoryWriteDenied):
+            asyncio_run(store.consolidate(org_id="", actor=Actor.AGENT))
+        assert [lr.id for lr in store._learnings] == [first, second]
+        assert all(lr.status == "active" for lr in store._learnings)
+
+    def test_agent_advance_stage_denied_under_system_managed(self) -> None:
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)
+        lid = asyncio_run(store.store(Learning(learning="x"), actor=Actor.SYSTEM))
+        with pytest.raises(MemoryWriteDenied):
+            asyncio_run(store.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="planner"))
+        assert store._learnings[0].stage is LearningStage.MEMORY
+        assert store._stage_history == []
+
+    def test_system_advance_stage_allowed_under_system_managed(self) -> None:
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)
+        lid = asyncio_run(store.store(Learning(learning="x"), actor=Actor.SYSTEM))
+        learning = asyncio_run(
+            store.advance_stage(
+                lid, to_stage=LearningStage.LEARNING, actor="curator", authority=Actor.SYSTEM
+            )
+        )
+        assert learning.stage is LearningStage.LEARNING
+        assert store._stage_history[0].actor == "curator"
 
 
 class TestGovernanceNoProductIdentityBranch:

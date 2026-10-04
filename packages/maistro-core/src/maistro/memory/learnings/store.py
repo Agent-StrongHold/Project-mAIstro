@@ -336,6 +336,7 @@ class InMemoryLearningStore:
         replacement: Learning,
         *,
         org_id: str = "",
+        actor: Actor = Actor.AGENT,
     ) -> int:
         """Retire ``old_id`` in favour of ``replacement``, keeping both rows (#120).
 
@@ -344,12 +345,19 @@ class InMemoryLearningStore:
         the replacement into the very row it replaces. Raises ``KeyError``
         when the old id is not in scope: a silent no-op would leave both rows
         active and the lineage unrecorded.
+
+        ADR-057: superseding restructures the claim set, so the caller needs
+        write authority. The gate is the first statement — a denied call
+        retires nothing and stores nothing, leaving no partial state — and
+        the same actor is carried into the inner ``store`` call so one
+        principal decides the whole operation.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         old = await self.get(old_id, org_id=org_id)
         if old is None:
             raise KeyError(old_id)
         old.status = "superseded"
-        new_id = await self.store(replacement)
+        new_id = await self.store(replacement, actor=actor)
         survivor = await self.get(new_id)
         if survivor is None:  # pragma: no cover - store() just returned this id
             raise RuntimeError(f"store returned id {new_id} that cannot be read back")
@@ -383,6 +391,7 @@ class InMemoryLearningStore:
         *,
         org_id: str = "",
         tool_name: str | None = None,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
         """Merge near-duplicate active learnings, folding their evidence (#120).
 
@@ -390,7 +399,12 @@ class InMemoryLearningStore:
         every org. Duplicates share the tool and scope axes and overlap at
         least half of their trigger keys (the same rule ``store`` dedup uses);
         the earliest row survives and absorbs the rest. Returns the survivors.
+
+        ADR-057: consolidation retires rows, so it is a write — under
+        ``SYSTEM_MANAGED`` an agent-actor call is denied before any row is
+        absorbed, and an undeclared mode fails closed.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         pool = [
             lr
             for lr in self._learnings
@@ -426,6 +440,7 @@ class InMemoryLearningStore:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         """Move a learning one rung up the knowledge ladder (ADR-103).
 
@@ -434,7 +449,19 @@ class InMemoryLearningStore:
         preserved exactly as with `store`) and appends the transition to the
         in-memory ledger. A scoped caller (`org_id`) can only advance a row
         it could have read — the same write rule `mark_outcome` enforces.
+
+        ADR-057: a stage move is a write (the merged ADR-103 tests say so
+        themselves), so the caller needs write authority. `actor` is the
+        ADR-103 attribution string recorded in the ledger; `authority` is the
+        ADR-057 principal the gate decides on, defaulting to the agent —
+        under ``SYSTEM_MANAGED`` an agent-authority call is denied before the
+        row is read or the ledger touched, and an undeclared mode fails
+        closed. The two names stay distinct on purpose: who is credited for
+        the move is not who is authorized to make it.
         """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
         learning = await self._get_for_scope(learning_id, org_id=org_id)
         updated, transition = plan_advance(learning, to_stage=to_stage, actor=actor, reason=reason)
         learning.stage = updated.stage
