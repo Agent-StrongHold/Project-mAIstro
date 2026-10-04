@@ -88,7 +88,7 @@ observability = [
 dev = [
     "pytest>=9.0.3,<10",
     "pytest-asyncio>=0.25,<2",
-    "pytest-bdd>=8.0.0,<9",
+    "pytest-bdd>=8.0.0,<10",
     "hypothesis>=6.0.0,<7",
 ]
 
