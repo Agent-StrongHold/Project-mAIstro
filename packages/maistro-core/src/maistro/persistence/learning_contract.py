@@ -38,5 +38,8 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "confidence",
         "evidence_run_ids",
         "evaluation_ids",
+        "stage",
+        "validated_by",
+        "promoted_by",
     }
 )

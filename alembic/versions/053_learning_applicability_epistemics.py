@@ -34,8 +34,8 @@ Column dispositions follow the record's own semantics:
 The SQLite twin upgrades existing files in place (`ensure_schema`); this
 migration is the PostgreSQL half of the same shape.
 
-Revision ID: 052
-Revises: 051
+Revision ID: 053
+Revises: 052
 Create Date: 2026-10-01
 """
 
@@ -43,20 +43,22 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "052"
-down_revision = "051"
+revision = "053"
+down_revision = "052"
 branch_labels = None
 depends_on = None
 
-# Renumbered twice per the chain's standing collision convention (see 046's
-# docstring): first from "048" on parent "047" when develop claimed that id
-# for `048_canvas_job_retry_backoff` on the same parent, then from "051" on
+# Renumbered three times per the chain's standing collision convention (see
+# 046's docstring): first from "048" on parent "047" when develop claimed that
+# id for `048_canvas_job_retry_backoff` on the same parent, then from "051" on
 # parent "050" when the auto-780 develop sync brought
-# `051_canonical_run_eval_scores` (#792) onto that same parent. Either
+# `051_canonical_run_eval_scores` (#792) onto that same parent, and finally
+# from "052" on parent "051" when the auto-119 develop sync brought
+# `052_learning_stage_ladder` (M4-B1, ADR-103) onto that same parent. Each
 # collision leaves two revisions sharing one id and two heads — `alembic
 # history` fails outright on that shape. This migration now attaches after
-# develop's chain tip `051` (`canonical_run_eval_scores`), keeping exactly
-# one head.
+# develop's chain tip `052` (`learning_stage_ladder`), keeping exactly one
+# head.
 
 # Column DDL, in declaration order. The defaults are expression text (the cast
 # `'[]'::jsonb` is SQL, not a JSON value), matching what the SQLite twin's

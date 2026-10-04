@@ -21,8 +21,9 @@ from typing import Any
 import pytest
 
 from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
+from maistro.memory.learnings.lifecycle import StageTransition
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS
-from maistro.types.memory import Learning
+from maistro.types.memory import Learning, LearningStage
 
 
 def _learning(learning_id: int, text: str = "do not do X") -> Learning:
@@ -101,6 +102,37 @@ class _Store:
         self._record("list_all", org_id, limit)
         return [_learning(13)]
 
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+    ) -> Learning:
+        self._record(
+            "advance_stage",
+            learning_id,
+            to_stage=to_stage,
+            actor=actor,
+            reason=reason,
+            org_id=org_id,
+        )
+        return _learning(14)
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        self._record("stage_history", learning_id, org_id=org_id)
+        return [
+            StageTransition(
+                learning_id=learning_id,
+                org_id=org_id,
+                from_stage=LearningStage.VALIDATED,
+                to_stage=LearningStage.REPERTOIRE,
+                actor="curator",
+            )
+        ]
+
 
 class _Embeddings:
     dimension = EMBEDDING_DIMENSIONS
@@ -174,6 +206,46 @@ async def test_list_all_forwards_positionally_and_returns(wrapped) -> None:
 
     assert store.calls == [("list_all", ("org-1", 5), {})]
     assert [item.id for item in listed] == [13]
+
+
+async def test_advance_stage_forwards_the_whole_ladder_call(wrapped) -> None:
+    """The ladder call is keyword-only downstream; dropping one of the five
+    arguments here would silently move the wrong rung or lose the actor the
+    audit ledger exists to record."""
+    hybrid, store = wrapped
+
+    advanced = await hybrid.advance_stage(
+        9,
+        to_stage=LearningStage.VALIDATED,
+        actor="gauntlet-7",
+        reason="passed",
+        org_id="org-1",
+    )
+
+    assert store.calls == [
+        (
+            "advance_stage",
+            (9,),
+            {
+                "to_stage": LearningStage.VALIDATED,
+                "actor": "gauntlet-7",
+                "reason": "passed",
+                "org_id": "org-1",
+            },
+        )
+    ]
+    assert advanced.id == 14
+
+
+async def test_stage_history_forwards_the_org_it_was_scoped_to(wrapped) -> None:
+    """The audit read scopes exactly like every other read (#117); a dropped
+    org_id would let one tenant read another tenant's provenance."""
+    hybrid, store = wrapped
+
+    history = await hybrid.stage_history(9, org_id="org-1")
+
+    assert store.calls == [("stage_history", (9,), {"org_id": "org-1"})]
+    assert [row.to_stage for row in history] == [LearningStage.REPERTOIRE]
 
 
 # --- the merge bound -------------------------------------------------------

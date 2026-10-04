@@ -118,6 +118,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-100 | v1 | Accepted | 2026-06-14 | 2026-06-14 | 2026-06-14 | Bundled (T1) + cataloged (T2) Open Design design systems for maistro-design, with a content scan and one-click catalog import. |
 | ADR-101 | v2 | Proposed | 2026-06-15 | — | 2026-10-01 15:22 CDT | Foreign harness adapters, hierarchical orchestration, and agent/skill portability. |
 | ADR-102 | v1 | Accepted | 2026-09-14 | 2026-09-14 | 2026-09-14 | Sibling packages reuse maistro-core's central guarded outbound HTTP seam; no vendored SSRF control. |
+| ADR-103 | v1 | Accepted | 2026-10-01 | 2026-10-01 | 2026-10-01 | Knowledge-stage ladder on the Learning record — MEMORY → LEARNING → VALIDATED → REPERTOIRE; forward-only single-step transitions, durable append-only provenance ledger; a knowledge stage never grants authority. |
 | ADR-061526-f383 | v2 | Superseded | 2026-06-15 | 2026-10-01 | 2026-10-01 15:22 CDT | Foreign harness adapters, hierarchical orchestration, and agent/skill portability. |
 | ADR-062026-9b30 | v1 | Accepted | 2026-06-20 | 2026-06-20 | 2026-08-20 21:03 CDT | Date-based ADR/SPEC IDs for new records (sequential numbering frozen). |
 | ADR-062226-674b | v1 | Accepted | 2026-06-22 | 2026-06-22† | 2026-08-20 21:03 CDT | Constant tunability ladder — config-backed defaults that mature toward locked constants. |

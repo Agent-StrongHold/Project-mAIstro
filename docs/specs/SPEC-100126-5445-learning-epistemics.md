@@ -42,7 +42,7 @@ source:
   - packages/maistro-core/src/maistro/memory/learnings/wisdom.py
   - packages/maistro-core/src/maistro/memory/learnings/extractor.py
   - packages/maistro-core/src/maistro/persistence/learning_contract.py
-  - alembic/versions/052_learning_applicability_epistemics.py
+  - alembic/versions/053_learning_applicability_epistemics.py
 layer: Memory
 ac-modules:
   AC-1: maistro.memory.learnings.wisdom
@@ -106,5 +106,7 @@ AC-1/AC-2/AC-6 in `test_applicability.py`, AC-3/AC-4/AC-5 in
 `test_evidence_promotion.py` plus the store-level promotion tests in
 `test_learning_store.py` (package suite and its root `tests/` twin), and the
 twin-parity machine checks in `test_learning_contract.py`. The PostgreSQL DDL
-half is migration `052_learning_applicability_epistemics` (single linear head,
-see the chain test); the SQLite twin upgrades in place.
+half is migration `053_learning_applicability_epistemics` (single linear head,
+see the chain test; renumbered past develop's `052_learning_stage_ladder`,
+which the merge with M4-B1 brought onto the same parent); the SQLite twin
+upgrades in place.
