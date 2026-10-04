@@ -59,3 +59,18 @@ cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durab
 # commit's blob is immutable and every `BASE..HEAD` range scan that contains
 # 8185c1d0 re-reports it. Fingerprint is keyed to that commit SHA.
 8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
+# ---- M4-A8 producer-attribution tests (#115) ----
+# gitleaks' generic-api-key rule matches a keyword-argument call shape in
+# the ledger's operator-weighting tests: a parameter whose name ends in
+# "key" is passed alongside a ProducerKind qualifier, and the rule reads
+# that pairing as an assignment of a key-like value. What follows the
+# qualifier is a class name, not a value — there is no secret on the line
+# (gitleaks' own --redact output shows only the argument text). The tests
+# are fingerprinted at their introducing commit rather than reworded.
+# The third entry is this file itself: an earlier wording of the comment
+# above quoted the flagged call shape verbatim, so the ignore file tripped
+# the same rule when the range scan reached commit b5c22a358. That wording
+# is now paraphrased; the fingerprint keeps the historical commit clean.
+bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:361
+bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:375
+b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
