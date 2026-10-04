@@ -65,7 +65,7 @@ class InvalidStageTransition(ValueError):
     """
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class StageTransition:
     """One durable, auditable ladder transition.
 
@@ -279,9 +279,7 @@ def advance_stage(
     """
     if to_stage is LearningStage.MEMORY:
         raise ValueError("MEMORY is the source tier; a Learning never carries it")
-    current = LEARNING_STAGE_ORDER.get(
-        learning.stage, LEARNING_STAGE_ORDER[LearningStage.LEARNING]
-    )
+    current = LEARNING_STAGE_ORDER.get(learning.stage, LEARNING_STAGE_ORDER[LearningStage.LEARNING])
     target = LEARNING_STAGE_ORDER[to_stage]
     if target <= current:
         raise ValueError(f"stage only moves forward: {learning.stage} -> {to_stage}")

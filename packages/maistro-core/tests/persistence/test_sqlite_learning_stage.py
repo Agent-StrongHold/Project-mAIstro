@@ -54,20 +54,22 @@ async def test_a_transition_persists_row_and_ledger_together(
     store: SqliteLearningStore,
 ) -> None:
     lid = await store.store(make_learning())
+    # A stored row enters at LEARNING (ADR-100126-9a4b); the first durable
+    # rung is the Gauntlet's LEARNING -> VALIDATED confirmation.
     learning = await store.advance_stage(
-        lid, to_stage=LearningStage.LEARNING, actor="planner", reason="asserted", org_id=ORG
+        lid, to_stage=LearningStage.VALIDATED, actor="gauntlet", reason="asserted", org_id=ORG
     )
-    assert learning.stage is LearningStage.LEARNING
+    assert learning.stage is LearningStage.VALIDATED
 
     # Read back through a fresh SELECT, not the returned object.
     rows = await store.list_all(org_id=ORG)
-    assert rows[0].stage is LearningStage.LEARNING
+    assert rows[0].stage is LearningStage.VALIDATED
     history = await store.stage_history(lid, org_id=ORG)
     assert len(history) == 1
-    assert history[0].actor == "planner"
+    assert history[0].actor == "gauntlet"
     assert history[0].reason == "asserted"
-    assert history[0].from_stage is LearningStage.MEMORY
-    assert history[0].to_stage is LearningStage.LEARNING
+    assert history[0].from_stage is LearningStage.LEARNING
+    assert history[0].to_stage is LearningStage.VALIDATED
 
 
 @pytest.mark.asyncio
@@ -81,7 +83,6 @@ async def test_the_ladder_survives_a_reconnect() -> None:
         db_path = str(Path(tmp) / "learnings.db")
         s1, conn1 = await _open(db_path)
         lid = await s1.store(make_learning())
-        await s1.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG)
         await s1.advance_stage(lid, to_stage=LearningStage.VALIDATED, actor="gauntlet", org_id=ORG)
         await conn1.close()
 
@@ -92,7 +93,6 @@ async def test_the_ladder_survives_a_reconnect() -> None:
             assert rows[0].validated_by == "gauntlet"
             history = await s2.stage_history(lid, org_id=ORG)
             assert [(t.from_stage, t.to_stage) for t in history] == [
-                (LearningStage.MEMORY, LearningStage.LEARNING),
                 (LearningStage.LEARNING, LearningStage.VALIDATED),
             ]
         finally:
@@ -105,7 +105,6 @@ async def test_repertoire_commit_flips_status_so_promoted_readers_keep_working(
     store: SqliteLearningStore,
 ) -> None:
     lid = await store.store(make_learning())
-    await store.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG)
     await store.advance_stage(lid, to_stage=LearningStage.VALIDATED, actor="gauntlet", org_id=ORG)
     learning = await store.advance_stage(
         lid, to_stage=LearningStage.REPERTOIRE, actor="curator", org_id=ORG
@@ -119,11 +118,12 @@ async def test_repertoire_commit_flips_status_so_promoted_readers_keep_working(
 @pytest.mark.asyncio
 @pytest.mark.ac("SPEC-100426-b103/AC-3")
 async def test_a_pre_ladder_database_is_upgraded_without_fabricated_provenance() -> None:
-    """A file created before the ladder lands on the bottom rung, honestly.
+    """A file created before the ladder lands on the entry rung, honestly.
 
-    Old rows keep `memory` and blank actors: the upgrade must not stamp a
-    validation or promotion that never happened. Nothing is backfilled — the
-    ledger starts empty and records only transitions from now on.
+    Old rows enter at `learning` — extraction was always the MEMORY ->
+    LEARNING step — with blank actors: the upgrade must not stamp a validation
+    or promotion that never happened. Nothing is backfilled — the ledger
+    starts empty and records only transitions from now on.
     """
     import tempfile
     from pathlib import Path
@@ -132,7 +132,7 @@ async def test_a_pre_ladder_database_is_upgraded_without_fabricated_provenance()
         db_path = str(Path(tmp) / "legacy.db")
         s1, conn1 = await _open(db_path)
         lid = await s1.store(make_learning())
-        await s1.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG)
+        await s1.advance_stage(lid, to_stage=LearningStage.VALIDATED, actor="gauntlet", org_id=ORG)
         # Simulate the pre-ladder file: drop the stage columns' content the
         # way an old writer would have left them — by removing the columns.
         await conn1.execute("DROP TABLE learning_stage_transitions")
@@ -150,15 +150,15 @@ async def test_a_pre_ladder_database_is_upgraded_without_fabricated_provenance()
         s2, conn2 = await _open(db_path)  # ensure_schema performs the upgrade
         try:
             rows = await s2.list_all(org_id=ORG)
-            assert rows[0].stage is LearningStage.MEMORY
+            assert rows[0].stage is LearningStage.LEARNING
             assert rows[0].validated_by == ""
             assert rows[0].promoted_by == ""
             assert await s2.stage_history(rows[0].id, org_id=ORG) == []
             # The upgraded row can still climb the ladder normally.
             advanced = await s2.advance_stage(
-                rows[0].id, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG
+                rows[0].id, to_stage=LearningStage.VALIDATED, actor="gauntlet", org_id=ORG
             )
-            assert advanced.stage is LearningStage.LEARNING
+            assert advanced.stage is LearningStage.VALIDATED
         finally:
             await conn2.close()
 
@@ -169,10 +169,15 @@ async def test_an_illegal_transition_writes_neither_row_nor_ledger(
     store: SqliteLearningStore,
 ) -> None:
     lid = await store.store(make_learning())
+    # From the entry rung both degenerate moves are illegal: the same-rung
+    # no-op (the ladder never repeats) and the two-rung skip (it is
+    # single-step). Neither may move the row or write a ledger row.
     with pytest.raises(InvalidStageTransition):
-        await store.advance_stage(lid, to_stage=LearningStage.VALIDATED, actor="x", org_id=ORG)
+        await store.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="x", org_id=ORG)
+    with pytest.raises(InvalidStageTransition):
+        await store.advance_stage(lid, to_stage=LearningStage.REPERTOIRE, actor="x", org_id=ORG)
     rows = await store.list_all(org_id=ORG)
-    assert rows[0].stage is LearningStage.MEMORY
+    assert rows[0].stage is LearningStage.LEARNING
     assert await store.stage_history(lid, org_id=ORG) == []
 
 
@@ -183,7 +188,7 @@ async def test_another_org_cannot_read_or_advance(
 ) -> None:
     lid = await store.store(make_learning())
     with pytest.raises(KeyError):
-        await store.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="x", org_id="org-b")
+        await store.advance_stage(lid, to_stage=LearningStage.VALIDATED, actor="x", org_id="org-b")
     with pytest.raises(KeyError):
         await store.stage_history(lid, org_id="org-b")
 
@@ -198,7 +203,7 @@ async def test_a_losing_concurrent_transition_raises_and_leaves_no_ledger_row() 
     transition the row does not carry. The interleave is deterministic: the
     loser's read is parked on a gate while the winner commits, so the
     loser's guarded UPDATE provably runs against the row the winner already
-    moved (its `plan_advance` still sees the stale `memory` stage, so the
+    moved (its `plan_advance` still sees the stale `learning` stage, so the
     rejection can only come from the rowcount check on the UPDATE itself).
     """
     import asyncio
@@ -218,19 +223,21 @@ async def test_a_losing_concurrent_transition_raises_and_leaves_no_ledger_row() 
 
             async def parked_scoped_row(learning_id: int, *, org_id: str) -> dict[str, Any]:
                 row = await real_scoped_row(learning_id, org_id=org_id)
-                loser_has_read.set()  # holding a stale read of stage=memory
+                loser_has_read.set()  # holding a stale read of stage=learning
                 await winner_may_commit.wait()
                 return row
 
             loser._scoped_row = parked_scoped_row  # type: ignore[method-assign]
             losing_task = asyncio.create_task(
-                loser.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="loser", org_id=ORG)
+                loser.advance_stage(
+                    lid, to_stage=LearningStage.VALIDATED, actor="loser", org_id=ORG
+                )
             )
             await loser_has_read.wait()
             winner_learning = await winner.advance_stage(
-                lid, to_stage=LearningStage.LEARNING, actor="winner", org_id=ORG
+                lid, to_stage=LearningStage.VALIDATED, actor="winner", org_id=ORG
             )
-            assert winner_learning.stage is LearningStage.LEARNING
+            assert winner_learning.stage is LearningStage.VALIDATED
             winner_may_commit.set()
 
             with pytest.raises(InvalidStageTransition):
@@ -239,10 +246,10 @@ async def test_a_losing_concurrent_transition_raises_and_leaves_no_ledger_row() 
             # Exactly one applied transition, exactly one ledger row: the
             # loser left neither a moved row nor a phantom audit record.
             rows = await winner.list_all(org_id=ORG)
-            assert rows[0].stage is LearningStage.LEARNING
+            assert rows[0].stage is LearningStage.VALIDATED
             history = await winner.stage_history(lid, org_id=ORG)
             assert [(t.actor, t.from_stage, t.to_stage) for t in history] == [
-                ("winner", LearningStage.MEMORY, LearningStage.LEARNING)
+                ("winner", LearningStage.LEARNING, LearningStage.VALIDATED)
             ]
         finally:
             await conn_l.close()

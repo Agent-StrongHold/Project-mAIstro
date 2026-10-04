@@ -58,7 +58,9 @@ def test_memory_to_learning_records_the_claim() -> None:
     """The MEMORY -> LEARNING rung is walked by extraction (ADR-100126-9a4b);
     the rule table still has to accept exactly that one step."""
     evidence_row = dataclasses.replace(make_learning(), stage=LearningStage.MEMORY)
-    updated, transition = plan_advance(evidence_row, to_stage=LearningStage.LEARNING, actor="planner")
+    updated, transition = plan_advance(
+        evidence_row, to_stage=LearningStage.LEARNING, actor="planner"
+    )
     assert updated.stage is LearningStage.LEARNING
     assert updated.validated_by == ""
     assert transition.from_stage is LearningStage.MEMORY

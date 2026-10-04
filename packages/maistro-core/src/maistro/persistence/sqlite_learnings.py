@@ -82,7 +82,6 @@ CREATE TABLE IF NOT EXISTS learning_stage_transitions (
     reason TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )
-)
 """
 
 #: Columns added to existing SQLite files without a default. NULL preserves the
