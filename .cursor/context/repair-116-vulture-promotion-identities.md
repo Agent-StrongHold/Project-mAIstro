@@ -164,3 +164,52 @@ quality.yml:960-965) exits 1 at dad6bc865:
 - **Remaining blocker (unchanged, above this lane):** the vulture grant must
   land on develop first (two merges), or the ADR-deviating family adoption is
   funded as scoped work.
+
+---
+
+# Round 5 @ 7d30dee6d8 (merge of origin/develop c0441cf94b) — 2026-10-03
+
+Synced the branch to this round's designated develop base **c0441cf94b**
+(clean auto-merge, commit 7d30dee6d8). Per AGENTS.md the quality/*.json
+auto-merges were audited by hand: vulture ledger = develop@c0441cf9 + the 3
+promotion.py rows − the stale POLICY row (1345 rows; develop's c0441cf94 had
+already dropped the duplicate `entry_id` pair, and the merged scan no longer
+produces them — candidate bookkeeping came out EXACT with nothing to prune);
+radon took develop's 6-line edit; reachability ledgers branch-side.
+
+Full battery re-run fresh on the merged tree (head 7d30dee6d8):
+
+- **vulture (CI-exact args)**: exit 1, base now c0441cf94b9a — trusted
+  1343 → scan 1345, sole failure the same 3 unauthorized identities
+  (promotion.py:385 `attach_effect`, :414 `mark_reversed`, :645 `promote`);
+  candidate ledger exact (no bookkeeping section). Grants at c0441cf94b still
+  contain 0 promotion.py rows (61 vulture entries, verified against the ref),
+  so the two-merge blocker is unchanged. The gate's own message says it:
+  "land a reviewed grant first."
+- **ac-state** `--run-tests --ratchet --mandate c0441cf94b9a8...`: **exit 0**
+  on a fresh migrated pgvector/pgvector:pg18 (alembic 001→051, 58 upgrades);
+  design coverage 42.1466 == the banked note; 7 criteria added, 0 unproven;
+  chain mandate OK.
+- Template stores with live PG legs (MAISTRO_REQUIRE_PG_LEGS=1):
+  **170 passed, 1 skipped** (vs 113/58 DB-skipped without the DSN) — AC-7's
+  shared PromotionApproval proven against real Postgres.
+- test_promotion_contract.py: 32 passed (AC1–AC7 classes + reversal + fences).
+- ruff check/format: clean (2849 files). mypy core: 0 errors (696 files).
+- suite-inventory (develop's rewritten script): 14/14, exit 0; NEW develop
+  gate check-test-duplicates.py: exit 0. promotion-surface: ok. radon:
+  145 == 145 at base c0441cf94b. reachability: 1245 modules, 173 unreachable,
+  exit 0.
+
+Verdict unchanged after five rounds of primary evidence: the ONLY red item is
+the vulture authorization, which by design (ratchet_provenance.py:478-504,
+base-only grant read) must land on develop before this branch can pass it.
+Branch-side options are exhausted: the identities are tested AC-pinned
+contract surface (not dead), the ledger banks them exactly, and ADR-100126
+-a9c4 scopes family adoption as follow-up. Resolution is above this lane:
+land the reviewed grant on develop, then merge develop here.
+
+Operational note: an early alembic invocation this round reported success
+against a DB that was not the intended one (no ambient DB_* vars found); the
+authoritative runs above all used a dedicated fresh container on :55116
+(pg-acstate-116-r5, migrated 001→051 in one observed transaction). Other
+lanes' scratch DBs observed at 051/052 — forward migrations only, additive.
