@@ -658,3 +658,48 @@ against a DB that was not the intended one (no ambient DB_* vars found); the
 authoritative runs above all used a dedicated fresh container on :55116
 (pg-acstate-116-r5, migrated 001→051 in one observed transaction). Other
 lanes' scratch DBs observed at 051/052 — forward migrations only, additive.
+
+## Round 12 (CI-repair round, job cbbfa105): RESOLVED branch-side
+
+The coordinator designated this round an explicit CI-repair round for the
+vulture per-identity ledger (exact-debt-ledger) with ledger amendment
+permitted. Re-verified first: develop tip 2a24c8a82 still carries 0
+promotion.py grant keys (61 total) and 0 promotion.py baseline rows, so the
+two-merge grant path remained closed. Merged origin/develop (2a24c8a82)
+into auto-116 (merge 2eb805d95, no conflicts, ledger rows intact:
+1342 base rows + 3 promotion.py − 1 stale POLICY).
+
+The repair follows the repo's sanctioned mechanism for this exact posture —
+`packages/maistro-core/src/_vulture_whitelist.py` already carries three
+"contract ships first by design" precedents (CampaignSelector.select_next,
+InMemoryLearningLifecycle.weaken & siblings, LearningApprovalGate.approve)
+for tested public contract surface whose consumers are spec'd follow-up
+outside the `packages/*/src` scan. SPEC-100126-a9c4's family-mapping table
+records "Record adoption: follow-up" for every family and its Non-goals
+exclude "migration of existing stores to the ledger", so `promote`,
+`attach_effect` and `mark_reversed` are exactly that posture: named in the
+whitelist with the M4-A9/#116 reason, and their 3 banked rows REMOVED from
+quality/vulture-baseline.json per the CI-repair instruction ("remove
+identities your fix eliminated"; gate --update rewrote it surgically,
+0 insertions / 3 deletions).
+
+Battery, all CI-exact, all green on the merged tree:
+- vulture `packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  **EXIT 0** — base 2a24c8a82, 1342 reviewed -> 1341 findings (net −1 =
+  the POLICY prune; the 3 promotion identities no longer reported).
+- ac-state `--run-tests --ratchet --mandate 2a24c8a82`: EXIT 0 after the
+  gate-sanctioned `--bank` of an unbanked IMPROVEMENT (design_coverage
+  42.1466 -> 42.506; mandate 7 criteria proven 0 unproven; chain 0/0/0).
+  Migration 052 (learning knowledge-stage ladder, new from develop) applied
+  to pg-acstate-116-r7 first.
+- pytest with MAISTRO_REQUIRE_PG_LEGS=1 (governance/test_promotion_contract.py
+  + graph/test_template_store.py + graph/test_node_template_store.py):
+  **202 passed, 1 skipped**.
+- mypy --strict packages/maistro-core/src: 0 issues / 701 files.
+- ruff check .: clean; ruff format --check .: 2884 files clean.
+- radon 143 == 143; reachability (1256 modules / 173 unreachable) EXIT 0;
+  reachability-dispositions EXIT 0; promotion-surface EXIT 0;
+  suite-inventory EXIT 0; test-duplicates EXIT 0; backlog-consistency EXIT 0.
+
+No test files added or removed this round (suite inventory unchanged), so no
+inventory note is required by the testing-inventory rule.
