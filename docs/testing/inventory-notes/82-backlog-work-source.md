@@ -170,9 +170,10 @@ Carryover: the NEEDS-DEEP-REVIEW trusted-base half from 54830db28.
 - **Durable leg proven against a live database (first time, not skipped):**
   pgvector/pgvector:pg18 container on :5434, `alembic upgrade head` ran the
   full 000→048 chain cleanly (048 = backlog work-source tables; **superseded
-  twice by the CI-repair addenda below: that revision is now `051` after the
-  045cfdfbe sync re-parented it onto develop's 049/050 — see the fifth
-  addendum**), then the
+  three times by the CI-repair addenda below: that revision is now `052`
+  after the 045cfdfbe sync re-parented it onto develop's 049/050 and the
+  829de3dac sync onto develop's 051 — see the fifth and sixth
+  addenda**), then the
   conformance suite with `MAISTRO_TEST_PG_DSN` set: **53 passed / 1 skipped**
   (vs 38/16 without a DSN). The remaining skip is the structural
   memory-reference reopen test ("the reference has no substrate to reopen").
@@ -516,3 +517,81 @@ M4-J, contradiction lifecycle M4-B4) and resolves the fallout:
   capability-invocation edit extends narration and assertion values inside
   the existing test, leaving its suite count at 2. The `inventory-delta:`
   block above still describes the branch's +54 backlog nodes.
+
+## Seventh CI-repair addendum (develop-sync completion round at 5a7067eed)
+
+Merge-queue evaluation flagged `Supply chain (pip-audit)` and a preserved
+develop-sync conflict; the prior salvage run died to a provider 429 before
+touching anything. This round completes the develop sync by finishing the
+in-flight merge of `1e4933e2a` (M3-B6 content negotiation, #382 containers
+pin, M4-A8 attribution) and then merging `origin/develop` at `c0441cf94`
+(M4-H durable log-as-context, M5-B weighted fitness, M4 dedup of
+byte-identical test files), and repairs the fallout. No backlog source,
+test, migration, or grant changed.
+
+- **Both sync conflicts resolved in place, same file, same arithmetic:**
+  each merge's only unmerged path was `quality/vulture-baseline.json`
+  (15 rule ids, identical metadata, drifted `findings` multisets). Resolved
+  per rule as a true multiset union (per-identity max count; no `set()`
+  pass), preserving every row from both sides — first merge union 559
+  develop-side rows into the candidate ledger, second union develop's
+  post-`b35c76e03` rows. Committed as `5cd955e4e` and `5a7067eed`.
+- **exact-debt-ledger re-banked for the merged tree:** the first enforce run
+  after the merges showed the union carrying 567 rows the merged tree no
+  longer produces — dominated by c0441cf94 wiring real callers for the
+  session-run correlation reads (`produced_runs` ×4, `turn_provenance`: the
+  `stated_absent_consumer` rule's rationale resolved, now banked 0) and
+  develop-side renames (cli `_approvals`/`_archive`/`_launch` families,
+  pydantic canvas/schema fields). `check-vulture-baseline.py` with CI's exact
+  scan args + `--update` pruned them and added 5 rows the merge introduced
+  (`api/projects.py::_require_non_blank_actions`, `api/webhooks.py::commit_sha`).
+  Re-running enforce: candidate bookkeeping exact — 0 unclassified,
+  0 never-allowlist, no candidate-added/removed/unbanked.
+- **Named merge-queue failure (Supply chain / pip-audit) re-proven at the
+  merged head, CI's exact order:** `uv sync --locked --all-extras`;
+  `uv pip install pip-audit`; `uv pip freeze --exclude-editable` (202 deps —
+  after the install, matching the workflow's step order);
+  `pip-audit --strict --format=json -r` exit 1 with a complete report —
+  2× `ecdsa==0.19.2 PYSEC-2026-1325`, both triaged in ALLOWED;
+  `pip_audit_gate.py` exit 0, direct-dependency usage OK (10 packages /
+  61 runtime deps / 4 dispositions). `uv.lock` and `pyproject.toml` moved
+  in neither merge (empty diff vs `301a9ffad`), and
+  `verify-wheel-imports.py` re-passed 10/10 anyway.
+- **Migration chain re-proven at `052` on a fresh database:** pgvector:pg18
+  (`pg-auto82`, port 55433, database `maistro_test`):
+  `tests/migrations/test_migration_chain.py` **13 passed**; then the
+  workflow's exact sequence `alembic upgrade head` (000→052, single head
+  `052 (head)`) → `alembic downgrade base` → `alembic upgrade head`, all
+  clean; whole `tests/migrations` **100 passed** with
+  `MAISTRO_TEST_DATABASE_URL`. Backlog conformance with the migrated
+  `MAISTRO_TEST_PG_DSN` **53 passed / 1 skipped** (the structural
+  memory-reference reopen skip, unchanged).
+- **Merge fallout battery, all green at `5a7067eed` + ledger commit:**
+  `ruff check .` / `ruff format --check .` clean; mypy clean across the six
+  canonical packages (791 files, +19 from the merges);
+  `check-suite-inventory.py` 14/14; `check-shipped-surface-truth.py` OK;
+  `check-backlog-consistency.py` OK (167 items);
+  `check-durable-table-inventory.py` OK (91 tables — the merge added
+  develop's rows); `check-reachability.py` OK (1249 production modules,
+  179 unreachable); `check-reachability-dispositions.py` OK (all 179
+  dispositioned); hive-conductor `test_backlog_routes.py` **36 passed**.
+- **Structural trusted-leg residual, unchanged in kind and still the only
+  red:** `check-vulture-baseline.py` (exact CI args) exits 1 solely on 50
+  NEW `maistro.backlog.*` identities (39 distinct, all covered by this
+  branch's 41 staged grants — verified key-by-key), and
+  `check-reachability-provenance.py` /
+  `check-reachability-dispositions-provenance.py` (aggregated by
+  `check-ratchet-provenance.py`; every other leg OK) exit 1 solely on the
+  five `maistro.backlog.*` modules — all unauthorized at merge base
+  `c0441cf94` per the #534 two-merge rule: `load_authorizations` reads the
+  base revision, and `origin/develop` still carries zero backlog grants
+  (re-verified this round: 61 vulture / 11 reachability grants, 0 backlog
+  keys). No candidate-side edit can clear this; the driver must land the
+  staged grants (+41 vulture, +5 reachability, all keyed to #98/#100) on
+  develop in a grants-only merge, then re-queue. No GitHub mutations are
+  permitted from this worker.
+- **Test inventory delta:** none — no test added, removed, or retagged in
+  this round (the merges land develop's own tests, which
+  `check-suite-inventory.py` confirms against the merged baseline);
+  the `inventory-delta:` block above still describes the branch's +54
+  backlog nodes.
