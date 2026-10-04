@@ -1,0 +1,59 @@
+name: Working-memory bench
+
+# Manual only, on purpose.
+#
+# This runs scripts/bench_working_memory.py — the #301 / ADR-082226-5104 §8
+# measurement that answers the ADR's open engineering questions with numbers:
+# per-projection RAM footprint, hydration cost, BM25 / hybrid recall latency
+# and graph-traversal latency at 1, 10 and 100 concurrently active Workspace
+# projections. It is deterministic and offline (generated corpus, hashed
+# bag-of-words embedder), so the results it uploads are comparable
+# run-to-run. It is not a gate and not a per-PR job: a benchmark's job is to
+# be run when the memory substrate changes, not on every commit.
+#
+# It is also what makes `scripts/bench_working_memory.py` a *real* entry
+# point rather than a script nobody can reach: `scripts/check-reachability.py`
+# roots tooling at the workflow steps that execute it, matching on filename.
+# This job runs it (same pattern as merge-latency.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      workspaces:
+        description: "Concurrent projection counts to measure"
+        required: false
+        default: "1 10 100"
+        type: string
+      records-per-workspace:
+        description: "Working-memory records hydrated per Workspace"
+        required: false
+        default: "100"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: working-memory-bench
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+      - name: uv sync (dev deps)
+        run: uv sync --locked --extra dev
+      - name: Benchmark per-Workspace working-memory projections
+        run: >-
+          uv run python scripts/bench_working_memory.py
+          --workspaces ${{ inputs.workspaces }}
+          --records-per-workspace ${{ inputs.records-per-workspace }}
+          --output working-memory-bench.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: working-memory-bench
+          path: working-memory-bench.json

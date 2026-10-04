@@ -177,7 +177,9 @@ class MistralSettings(BaseSettings):
     # used for chat requests -- required by MistralAdminApiVerifier
     # (quota/verifiers/mistral.py). Optional: unset means that verifier is
     # unavailable/skipped rather than an error, since not every deployment
-    # needs standalone balance verification.
+    # needs standalone balance verification. Nothing wires that verifier yet:
+    # it also requires a confirmed response-schema contract
+    # (MistralRateLimitSchema, #1205) before it may be connected.
     admin_api_key: str = ""
 
 
