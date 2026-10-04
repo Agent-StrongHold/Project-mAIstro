@@ -8486,3 +8486,70 @@ from the repo, and the issue's stop condition forbids Design-Studio-private
 substitutes, so the 13 acceptance criteria that require a consumed
 reconciliation/delegation seam remain unimplementable in this lane. Verdict:
 **BLOCKED** (Refs #777).
+
+## Round 127 — re-verification at 30958906f (both incoming signals re-resolved)
+
+Documentation-only verifier note; no production or test code changed;
+front-matter deltas stay +0. Round 126's job (`1276fb8dfcec`) returned verdict
+BLOCKED with `checks=[]`, so the only actionable incoming signal for this round
+remains the stale validation failure in `53d5e08bf/check-2.log`.
+
+### Incoming signals re-resolved at this head
+
+- **`53d5e08bf/check-2.log` (ruff-format, agent_loop.py, head `a99c6bd7`,
+  2863-file tree):** non-reproducing at 30958906f. Fresh
+  `uv run ruff format --check .` = "2891 files already formatted", EXIT 0;
+  the named file alone reports "1 file already formatted". The 2863-file tree
+  predates the round-110 fix `2f054b614`, which is in branch history.
+- **Prior result artifact (`1276fb8dfcec/result.json`):** that is round 126's
+  own BLOCKED record, not a new failure; the failure_kind=provider_error
+  timeout it inherits from `da1b2f13` ran zero checks against a zero-delta
+  tree — driver-side, no code signal.
+- **`origin/develop` re-fetched: unmoved at `2a24c8a82`** (0 commits behind;
+  branch 202 ahead). No sync applicable and no dependency seam landed upstream
+  since round 125's merge `df9e20d74`.
+
+### Dependency blockers re-proven fresh at 30958906f (not assumed from round 126)
+
+- `GoalReconciler|delegate_goal` → 0 files under `packages/`.
+- `packages/maistro-design/src`: 0 `workspace_agent`/`WorkspaceAgent` refs;
+  0 `maistro.memory.working` refs.
+- `ControlMode` → 0 consumers outside `maistro-design`.
+- No `maistro/goals` module; `GoalRevision` appears only in
+  `packages/maistro-core/src/maistro/projects/rubric_store.py` as the
+  resolution-only `GoalRevisionCatalog` Protocol + `GoalRevisionSnapshot`
+  model (a consumer seam, not a #458 canonical Goal-revision producer), and
+  0 times in `maistro-design` src.
+- The only `*Reconciler*` classes in `packages/*/src` are
+  `AttemptLifecycleReconciler` (runs/reconciliation.py) and
+  `PersistenceReconciler` (graph/durable_runs/recovery.py) — physical
+  attempt/persistence reconciliation, not #804 Goal reconciliation.
+- `BACKLOG.md:348` lists #804 under the future M2 path (persistent goals +
+  reconciliation), consistent with its absence from the tree.
+- Partial-criterion probe re-confirmed:
+  `packages/maistro-design/src/maistro_design/brief.py:72-81` binds
+  `goal_id`/`goal_revision` provenance plus versioned `persona_id` /
+  `persona_version` / `design_system_slug` / `design_system_version`
+  references (#774 projection shape present), but the #458 canonical
+  Goal-revision producer those references point at does not exist.
+
+### Fresh battery at 30958906f (all executed this round)
+
+`ruff check .` EXIT 0 ("All checks passed!"); `ruff format --check .` EXIT 0
+(2891 files); vulture CI-exact
+(`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) EXIT 0, 1342 reviewed -> 1341 findings, no
+unbanked identities, no ledger amendment; suite-inventory **14/14** EXIT 0;
+backlog-consistency **167 items** EXIT 0; pytest
+`packages/maistro-design/tests packages/maistro-bootstrap/tests`
+**777 passed / 2 skipped**; pytest hive backend
+`-k "design or brief or workspace or agent"` **507 passed / 5 skipped**.
+
+### Verdict — BLOCKED (dependency-blocking), unchanged from rounds 123–126
+
+Both incoming signals are stale/driver-side and the full battery is green at
+30958906f, but every canonical owner #777 must consume (#804/#805/#806
+persistent Workspace Agent + Goal reconciliation, #458 canonical Goal
+producer, #776 working-graph consumption seam) remains absent, and the issue's
+stop condition forbids Design-Studio-private substitutes. Verdict:
+**BLOCKED** (Refs #777).
