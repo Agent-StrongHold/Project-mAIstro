@@ -75,9 +75,24 @@ from maistro.tasks.models import (
     TaskResult,
     TaskStatus,
 )
+from maistro.tasks.pg_admission import (
+    AdmissionAlreadyBound,
+    AdmissionBound,
+    AdmissionOutcome,
+    AdmissionRowMissing,
+    AdmissionRowReplaced,
+    PgRootAdmissionCoordinator,
+)
 from maistro.tasks.status import can_transition
 
 logger = structlog.get_logger()
+
+#: Bounded re-claim rounds after an atomic admission found its row missing or
+#: taken over (#1845). A successor's live claim is waited out inside
+#: ``_claim_until_resolved``; this bounds only the row-changed-under-us
+#: retries, which for an honest backend means a takeover race landed between
+#: two of this caller's steps.
+ADMISSION_REACQUIRE_ROUNDS = 4
 
 
 def _build_unpublished_task(
@@ -567,20 +582,155 @@ class TaskQueue:
                 }
             ).model_dump(mode="json")
         )
-        outcome = await self._claim_until_resolved(
-            store,
-            scope_key,
-            fingerprint=fingerprint,
-            request=request_json,
+        for _ in range(ADMISSION_REACQUIRE_ROUNDS):
+            outcome = await self._claim_until_resolved(
+                store,
+                scope_key,
+                fingerprint=fingerprint,
+                request=request_json,
+            )
+            if isinstance(outcome, AdmissionRecord):
+                await logger.ainfo(
+                    "task_admission_replayed",
+                    task_id=outcome.task_id,
+                    run_id=outcome.run_id,
+                    explicit_key=key is not None,
+                )
+                return await self._replay_receipt(outcome)
+            # The claim store's get, not a remembered value: the atomic lane
+            # fences against the generation this caller actually won, and a
+            # row that vanished between the claim and here leaves nothing to
+            # protect — the legacy path below is the honest fallback.
+            claim = await store.get(scope_key)
+            if claim is None:
+                return await self._submit_legacy(
+                    request,
+                    key,
+                    store=store,
+                    scope_key=scope_key,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    service_principal_id=service_principal_id,
+                    delegation_id=delegation_id,
+                    actor_kind=actor_kind,
+                )
+            atomic = await self._atomic_admission(workspace_id)
+            if atomic is None:
+                # No coordinator on this tier: the legacy two-commit path is
+                # the deployment's contract.
+                return await self._submit_legacy(
+                    request,
+                    key,
+                    store=store,
+                    scope_key=scope_key,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    service_principal_id=service_principal_id,
+                    delegation_id=delegation_id,
+                    actor_kind=actor_kind,
+                )
+            coordinator, admitter = atomic
+            result = await self._admit_atomic_round(
+                coordinator,
+                admitter,
+                request=request,
+                key=key,
+                scope_key=scope_key,
+                claim=claim,
+                owner=owner,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
+            )
+            if isinstance(result, TaskResponse):
+                return result
+            # Missing or replaced: bounded re-claim, and no release — the row
+            # either no longer exists or now belongs to a successor whose
+            # claim this caller must not delete.
+            await logger.awarning(
+                "task_admission_row_changed",
+                scope="task_idempotency",
+                missing=isinstance(result, AdmissionRowMissing),
+            )
+        raise IdempotencyPendingTimeout(
+            "the admission row kept changing under this submission; the bounded "
+            "re-claim rounds are spent"
         )
-        if isinstance(outcome, AdmissionRecord):
+
+    async def _admit_atomic_round(
+        self,
+        coordinator: PgRootAdmissionCoordinator,
+        admitter: Any,
+        *,
+        request: TaskCreate,
+        key: str | None,
+        scope_key: str,
+        claim: AdmissionRecord,
+        owner: str,
+        service_principal_id: str | None,
+        delegation_id: str | None,
+        actor_kind: TaskActorKind,
+    ) -> TaskResponse | AdmissionRowMissing | AdmissionRowReplaced:
+        """One atomic admission attempt for a claim this caller holds.
+
+        Returns the published or replayed receipt, or — when the row was
+        missing or taken over — the row-changed outcome the caller answers
+        with a bounded re-claim. Any other failure proves nothing was
+        admitted (the coordinator already resolved ambiguous commits by
+        rereading the durable row), so this releases only this caller's own
+        generation — the fenced release, never the plain one, which is what
+        keeps a late owner from deleting a successor's fresh claim — and
+        re-raises.
+        """
+        try:
+            task, bound = await self._bind_claimed(
+                coordinator,
+                admitter,
+                request=request,
+                key=key,
+                scope_key=scope_key,
+                claim=claim,
+                owner=owner,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await coordinator.release_claim(scope_key, claim)
+            raise
+        if isinstance(bound, AdmissionBound):
+            return await self._publish_bound(task, bound, explicit_key=key is not None)
+        if isinstance(bound, AdmissionAlreadyBound):
             await logger.ainfo(
                 "task_admission_replayed",
-                task_id=outcome.task_id,
-                run_id=outcome.run_id,
+                task_id=bound.record.task_id,
+                run_id=bound.record.run_id,
                 explicit_key=key is not None,
             )
-            return await self._replay_receipt(outcome)
+            return await self._replay_receipt(bound.record)
+        return bound
+
+    async def _submit_legacy(
+        self,
+        request: TaskCreate,
+        key: str | None,
+        *,
+        store: TaskIdempotencyStore,
+        scope_key: str,
+        user_id: str,
+        workspace_id: str | None,
+        service_principal_id: str | None,
+        delegation_id: str | None,
+        actor_kind: TaskActorKind,
+    ) -> TaskResponse:
+        """The pre-#1845 path, unchanged: claim, admit, best-effort complete.
+
+        Still the contract for tiers without a coordinator. The two-commit
+        window it carries (Run committed, binding lost) is the gap the atomic
+        lane exists to close, not a behavior this refactor may silently
+        change for deployments that have not grown the coordinator.
+        """
         try:
             task = await self._submit_once(
                 request,
@@ -610,6 +760,100 @@ class TaskQueue:
                 run_id=task.run_id,
                 error=str(exc),
             )
+        return task
+
+    async def _atomic_admission(
+        self,
+        workspace_id: str | None,
+    ) -> tuple[PgRootAdmissionCoordinator, Any] | None:
+        """The routed admitter's atomic coordinator, when this tier carries one.
+
+        Resolved through the same routing ``_scope_workspace`` uses, so no
+        second Workspace binding exists; the queue itself never sees a
+        database handle — only the coordinator's call surface.
+        """
+        admitter = self._admitter
+        if admitter is None:
+            return None
+        route = getattr(admitter, "admitter_for", None)
+        bound = await route(workspace_id) if route is not None else admitter
+        coordinator = getattr(bound, "coordinator", None)
+        if coordinator is None:
+            return None
+        return coordinator, bound
+
+    async def _bind_claimed(
+        self,
+        coordinator: PgRootAdmissionCoordinator,
+        admitter: Any,
+        *,
+        request: TaskCreate,
+        key: str | None,
+        scope_key: str,
+        claim: AdmissionRecord,
+        owner: str,
+        service_principal_id: str | None,
+        delegation_id: str | None,
+        actor_kind: TaskActorKind,
+    ) -> tuple[TaskResponse, AdmissionOutcome]:
+        """One atomic admission attempt for a claim this caller holds.
+
+        The receipt is built here — same ``_build_unpublished_task`` helper as
+        the legacy path, so the receipt's shape and identity rules do not
+        fork — and the Run is prepared by the bound admitter before the
+        coordinator's transaction opens. The coordinator makes the Run insert
+        and the binding one commit; ``complete`` is never awaited on this
+        path, because the binding is already durable when this returns. On any
+        non-bound outcome the built receipt was never admitted and is
+        discarded with the attempt.
+        """
+        task = _build_unpublished_task(
+            request,
+            task_id=TaskResponse.new_id(),
+            created_at=datetime.now(UTC),
+            user_id=owner,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
+            idempotency_key=key,
+        )
+        outcome = await coordinator.bind_admission(
+            scope_key=scope_key,
+            claim=claim,
+            task_id=task.task_id,
+            prepare_run=lambda: admitter.prepare_run(task),
+        )
+        return task, outcome
+
+    async def _publish_bound(
+        self,
+        task: TaskResponse,
+        bound: AdmissionBound,
+        *,
+        explicit_key: bool,
+    ) -> TaskResponse:
+        """The queue-side half of an atomic admission, after the joint commit.
+
+        The Run and the binding are already one durable fact; what remains is
+        the receipt's in-memory home and the best-effort TaskRecord write —
+        the same tail ``_submit_once`` runs, minus the separate admitter call
+        and minus ``complete``, which this path replaces with the commit
+        itself.
+        """
+        task.run_id = bound.run_id
+        async with self._lock:
+            self._tasks[task.task_id] = task
+            self._maybe_prune()
+        self._persist(task)
+        await self._pending.put(task.task_id)
+        tasks_submitted_total.inc()
+        active_tasks.inc()
+        await logger.ainfo(
+            "task_admission_bound",
+            task_id=task.task_id,
+            run_id=bound.run_id,
+            explicit_key=explicit_key,
+        )
         return task
 
     async def _claim_until_resolved(
