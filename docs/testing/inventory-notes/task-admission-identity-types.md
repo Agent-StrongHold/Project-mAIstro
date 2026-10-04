@@ -51,3 +51,17 @@ the module reachable.
 
 Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
 `aec772d4c3d01000ba83958431b859cf1bb3ac56`.
+
+## Final validation refresh
+
+At `9daa5d5929ce0d902e9c2a6bd0b5386800cbd472`, the focused suite passed
+73 cases, the suite inventory again collected 12,892 node IDs, the exact
+module/type shape probe passed, and ruff plus module mypy passed. The required
+exact Vulture command reported the nine reviewed-but-new identities as trusted-
+base debt (rc=1); `check-reachability.py` likewise reported the deliberately
+unreachable `maistro.runs.admission_identity` (rc=1), and
+`RATCHET_BASE_REV=928993dda1c958ada2e6f8e54b5e5c04bf86bf77 check-ratchet-
+provenance.py` failed only its reachability sub-gate. These must remain blocked
+until the separately authorized parent integration supplies a real consumer or
+a prior trusted-base authorization lands; this inactive leaf cannot repair them
+without violating its scope.
