@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.security._types import AuthContext
 from maistro.security.sentinel.policy import check_permission
@@ -39,6 +41,7 @@ def _sentinel_sources() -> list[Path]:
     return sorted(p for p in security.rglob("*.py") if "__pycache__" not in p.parts)
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-4")
 def test_no_authorization_module_imports_the_knowledge_stage_machinery() -> None:
     """The Sentinel path must not even be able to see a learning's stage."""
     offenders: list[str] = []
@@ -50,6 +53,7 @@ def test_no_authorization_module_imports_the_knowledge_stage_machinery() -> None
     assert not offenders, f"knowledge state reached the authorization path (ADR-103): {offenders}"
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-4")
 def test_promoted_knowledge_does_not_move_the_fail_closed_permission_decision() -> None:
     """A repertoire learning naming a tool grants nothing for that tool."""
 
@@ -79,6 +83,7 @@ def test_promoted_knowledge_does_not_move_the_fail_closed_permission_decision() 
     asyncio.run(scenario())
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-4")
 def test_a_repertoire_learning_is_not_an_execution_authority() -> None:
     """The stage machinery itself confers no run/capability handles.
 

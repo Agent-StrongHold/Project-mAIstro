@@ -140,6 +140,7 @@ def make_learning(**overrides: Any) -> Learning:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_advance_stage_updates_the_row_and_writes_the_ledger_in_one_transaction(
     store: PgLearningStore, conn: TransactionedFakeConnection
 ) -> None:
@@ -174,6 +175,7 @@ async def test_advance_stage_updates_the_row_and_writes_the_ledger_in_one_transa
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_a_row_that_moved_concurrently_raises_instead_of_half_applying(
     store: PgLearningStore, conn: TransactionedFakeConnection
 ) -> None:
@@ -184,6 +186,7 @@ async def test_a_row_that_moved_concurrently_raises_instead_of_half_applying(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_a_row_outside_the_callers_scope_is_not_found(
     store: PgLearningStore, conn: TransactionedFakeConnection
 ) -> None:
@@ -193,6 +196,7 @@ async def test_a_row_outside_the_callers_scope_is_not_found(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_stage_history_reads_the_ledger_scoped(
     store: PgLearningStore, conn: TransactionedFakeConnection
 ) -> None:
@@ -227,6 +231,7 @@ async def test_stage_history_reads_the_ledger_scoped(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-3")
 async def test_store_writes_the_stage_columns(
     store: PgLearningStore, conn: TransactionedFakeConnection
 ) -> None:

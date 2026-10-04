@@ -49,6 +49,7 @@ async def store() -> AsyncIterator[SqliteLearningStore]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_a_transition_persists_row_and_ledger_together(
     store: SqliteLearningStore,
 ) -> None:
@@ -70,6 +71,7 @@ async def test_a_transition_persists_row_and_ledger_together(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_the_ladder_survives_a_reconnect() -> None:
     """A restart cannot demote a validated learning or erase its provenance."""
     import tempfile
@@ -98,6 +100,7 @@ async def test_the_ladder_survives_a_reconnect() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-3")
 async def test_repertoire_commit_flips_status_so_promoted_readers_keep_working(
     store: SqliteLearningStore,
 ) -> None:
@@ -114,6 +117,7 @@ async def test_repertoire_commit_flips_status_so_promoted_readers_keep_working(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-3")
 async def test_a_pre_ladder_database_is_upgraded_without_fabricated_provenance() -> None:
     """A file created before the ladder lands on the bottom rung, honestly.
 
@@ -160,6 +164,7 @@ async def test_a_pre_ladder_database_is_upgraded_without_fabricated_provenance()
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_an_illegal_transition_writes_neither_row_nor_ledger(
     store: SqliteLearningStore,
 ) -> None:
@@ -172,6 +177,7 @@ async def test_an_illegal_transition_writes_neither_row_nor_ledger(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_another_org_cannot_read_or_advance(
     store: SqliteLearningStore,
 ) -> None:
@@ -183,6 +189,7 @@ async def test_another_org_cannot_read_or_advance(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_a_losing_concurrent_transition_raises_and_leaves_no_ledger_row() -> None:
     """Two writers race for the same rung: one wins, one loses loudly.
 

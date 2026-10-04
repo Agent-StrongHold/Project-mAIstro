@@ -45,11 +45,13 @@ def make_learning(**overrides: object) -> Learning:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_a_fresh_learning_starts_at_memory() -> None:
     """Memory = remembered evidence/context; it is the bottom rung."""
     assert Learning().stage is LearningStage.MEMORY
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_memory_to_learning_records_the_claim() -> None:
     updated, transition = plan_advance(
         make_learning(), to_stage=LearningStage.LEARNING, actor="planner"
@@ -61,6 +63,7 @@ def test_memory_to_learning_records_the_claim() -> None:
     assert transition.actor == "planner"
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-3")
 def test_learning_to_validated_stamps_the_evaluator() -> None:
     claim = dataclasses.replace(make_learning(), stage=LearningStage.LEARNING)
     updated, transition = plan_advance(claim, to_stage=LearningStage.VALIDATED, actor="gauntlet-7")
@@ -71,6 +74,7 @@ def test_learning_to_validated_stamps_the_evaluator() -> None:
     assert transition.to_stage is LearningStage.VALIDATED
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-3")
 def test_validated_to_repertoire_flips_status_for_promoted_only_readers() -> None:
     validated = dataclasses.replace(
         make_learning(), stage=LearningStage.VALIDATED, validated_by="gauntlet-7"
@@ -84,6 +88,7 @@ def test_validated_to_repertoire_flips_status_for_promoted_only_readers() -> Non
     assert updated.status == "promoted"
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_backward_transitions_are_rejected() -> None:
     """A demotion would rewrite history the ledger already recorded."""
     for to_stage in LearningStage:
@@ -94,12 +99,14 @@ def test_backward_transitions_are_rejected() -> None:
             plan_advance(learning, to_stage=LearningStage.MEMORY, actor="x")
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_skipping_a_rung_is_rejected() -> None:
     """VALIDATED without the LEARNING step would detach the claim from its evidence."""
     with pytest.raises(InvalidStageTransition, match="single-step"):
         plan_advance(make_learning(), to_stage=LearningStage.VALIDATED, actor="x")
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_the_top_of_the_ladder_cannot_be_advanced() -> None:
     repertoire = dataclasses.replace(
         make_learning(), stage=LearningStage.REPERTOIRE, status="promoted"
@@ -108,12 +115,14 @@ def test_the_top_of_the_ladder_cannot_be_advanced() -> None:
         plan_advance(repertoire, to_stage=LearningStage.REPERTOIRE, actor="x")
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_an_anonymous_actor_is_rejected() -> None:
     """Provenance without an actor is not provenance."""
     with pytest.raises(InvalidStageTransition, match="actor"):
         plan_advance(make_learning(), to_stage=LearningStage.LEARNING, actor="   ")
 
 
+@pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_an_unknown_stage_value_is_rejected() -> None:
     with pytest.raises(InvalidStageTransition, match="unknown learning stage"):
         plan_advance(make_learning(), to_stage="enlightened", actor="x")  # type: ignore[arg-type]
@@ -130,6 +139,7 @@ async def store() -> InMemoryLearningStore:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-1")
 async def test_the_full_ladder_runs_one_rung_at_a_time(
     store: InMemoryLearningStore,
 ) -> None:
@@ -146,6 +156,7 @@ async def test_the_full_ladder_runs_one_rung_at_a_time(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_every_transition_is_recorded_in_order(
     store: InMemoryLearningStore,
 ) -> None:
@@ -164,6 +175,7 @@ async def test_every_transition_is_recorded_in_order(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
 async def test_an_illegal_transition_is_rejected_without_a_ledger_row(
     store: InMemoryLearningStore,
 ) -> None:
