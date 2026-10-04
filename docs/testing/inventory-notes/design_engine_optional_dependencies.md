@@ -4,6 +4,18 @@ inventory-delta:
   packages/hive-conductor/backend/tests: +2
 ---
 
+> **STATUS: SUPERSEDED — provenance only, not current tree state.**
+> The DesignEngine WorkspaceAgent/Reconciler injection seam described below
+> was added in round 57 (`baee9f5fe`) and **removed** in round 65
+> (`f753cfe8e`, "eliminate dead DesignEngine seam surface"): it had zero
+> production consumers, tripped the vulture per-identity gate, and the #777
+> stop condition forbids reintroducing a Design-Studio-private reconciler.
+> The two tests this note claims (`test_engine_workspace_seam.py` and
+> `TestTheWorkspaceAgentSeamIsTheRealFrontDoor`) were deleted in round 65 and
+> **no longer exist** at HEAD `2d41e05a5` (verified by `ls`/`grep`). Authoritative
+> reversal: `777-remove-dead-design-seams.md` (delta −7 / −2). The present-tense
+> claims below describe round-57 state, not HEAD.
+
 # DesignEngine #777 injection seams: persistent Workspace Agent front door + canonical reconciler
 
 ## What changed and why
