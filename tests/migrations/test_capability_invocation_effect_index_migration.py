@@ -70,8 +70,10 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. This
     # branch's knowledge-stage ladder — numbered 048 when written —
     # re-parented onto that chain tip as `052_learning_stage_ladder`
-    # (M4-B1, ADR-103), so the single linear head is now `052`.
-    walked = {item.revision for item in directory.walk_revisions("base", "052")}
+    # (M4-B1, ADR-103), and #1892's forward admission-generation
+    # representation continues that tip as `053_task_admission_generations`,
+    # so the single linear head is now `053`.
+    walked = {item.revision for item in directory.walk_revisions("base", "053")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -81,7 +83,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "048" in walked
     assert "049" in walked
     assert "050" in walked
-    assert directory.get_heads() == ["052"]
+    assert directory.get_heads() == ["053"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

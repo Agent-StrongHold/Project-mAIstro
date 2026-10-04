@@ -1,0 +1,50 @@
+---
+inventory-delta:
+  tests/: +14
+---
+
+Issue #1892 (M1, parent #1845) adds the forward admission-generation
+representation on `task_idempotency` — alembic revision
+`053_task_admission_generations`, a schema-only leaf on the L41/#1325
+integration line. No writer is activated; nothing here claims mixed old/new
+writers are safe.
+
+`tests/migrations/test_task_admission_generation_upgrade.py` (+14) runs the
+migration against the live PostgreSQL catalog on a disposable database (same
+`MAISTRO_TEST_DATABASE_URL` gating as `test_migration_chain.py`; skipped
+without a server, so CI's postgres legs own the coverage). It covers:
+
+- the upgrade contract: shipped-038 rows preserved byte-for-byte in their old
+  columns with `format_version` defaulting to 1; the known #1325 L41 shape
+  (`claim_token` NOT NULL, defaulted `completed_at`) reached through a real
+  chain history and retained as found; stamp-back + re-upgrade over an
+  already-applied, populated v2 shape adopted unchanged; the exact contracted
+  column set on a fresh chain (and no `completed_at`, which v2 does not need).
+- refusal paths: a wrong-typed baseline column, a missing primary key, and a
+  lost expiry index each stop the upgrade before any forward DDL with the
+  stamp unmoved; a runtime-provisioned table with PRE-038 history is blocked
+  by shipped 038 before this revision can run.
+- the v2 CHECK: NULL injected into each of the ten nullable-but-required v2
+  fields independently (PostgreSQL CHECK passes UNKNOWN, so each needs its own
+  explicit `IS NOT NULL`); bad-hex/nil identities, blank ids/action, half-bound
+  or mis-bound task/run pairs, acknowledgement on an unbound row, and
+  non-positive windows all rejected; a complete generation (unbound, then
+  bound-to-own-receipt and acknowledged) admitted; format-v1 rows unconstrained.
+- downgrade: refuses before any change while a non-legacy row exists (stamp,
+  columns and row all survive the failed attempt); with legacy-only data it
+  drops exactly the v2 columns and the CHECK, retains the optional legacy
+  `claim_token`, preserves every row, and the resulting safe-downgrade shape
+  re-upgrades cleanly.
+
+One existing test moves with the chain tip, per that sentinel's own documented
+convention: `test_capability_invocation_effect_index_migration.py`
+`test_effect_index_migration_follows_the_chain_tip` now walks to and pins head
+`053` (was `052`) — same count, updated identity, no delta.
+
+Focused run (issue #1892):
+`uv run pytest tests/migrations/test_task_admission_generation_upgrade.py
+tests/migrations/test_migration_chain.py::TestTheChainApplies::test_reapplying_the_chain_over_an_already_migrated_schema_is_adopted
+tests/migrations/test_migration_chain.py::TestTheChainApplies::test_the_chain_round_trips -q`
+— 16 passed; the full `tests/migrations` package passes with the sentinel
+update; head re-stamped to `053` afterwards since the round-trip test ends at
+base.
