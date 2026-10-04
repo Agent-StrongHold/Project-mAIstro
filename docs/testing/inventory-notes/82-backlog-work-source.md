@@ -745,3 +745,69 @@ not inherited from earlier addenda.
   every branch commit subject/body greps free of
   `fixes|closes|resolves #<n>`.
 - **Test inventory delta:** none — this addendum is documentation-only.
+
+## Tenth CI-repair addendum (a58656017 develop sync, 053 renumber, vulture gate cleared at f662f8186)
+
+Executed at merge `f662f8186` (a58656017 `M4-B1 knowledge-stage ladder` synced
+into auto-82; prior head 3d8efed30 was mid-merge with an unresolved conflict in
+`tests/migrations/test_capability_invocation_effect_index_migration.py` — the
+tree did not parse, which is what the previous round's check-1/check-2 logs
+record).
+
+- **Migration renumber 052 → 053, the convention one more time.** The sync
+  brought develop's `052_learning_stage_ladder` (numbered 048 when written,
+  re-parented onto the shared chain tip per ADR-103), colliding with the `052`
+  `052_backlog_work_source` already held. The backlog migration re-attaches
+  after develop's tip as `053_backlog_work_source`
+  (`revision = "053"`, `down_revision = "052"`); `alembic heads` → single
+  `053 (head)`; the chain-conformance test's narrative merges both sides and
+  its head pin moved `052` → `053` with `051`/`052`/`053` membership asserts.
+  References updated: `backlog/model.py`, `backlog/pg_store.py`,
+  `quality/durable-table-retention.json` (alembic 052 → 053).
+  `tests/migrations` 19 passed; `packages/maistro-core/tests/backlog` 38
+  passed.
+- **Vulture gate cleared branch-locally — by eliminating the findings, not by
+  self-authorizing debt.** The 50 `maistro.backlog.*` identities were never
+  dead code: 10 are Pydantic-dispatched validators
+  (`@field_validator`/`@model_validator`, invoked implicitly at construction)
+  and 40 are the three-backend store CRUD/claim verbs — the #98 service
+  contract whose in-tree consumers are the conformance suite and whose #99 /
+  #102 / #804 consumers are downstream, the same "contract ships first by
+  design" posture the whitelist records for CampaignSelector, the eval-score
+  seam and the Rubric stores. They are now referenced in
+  `packages/maistro-core/src/_vulture_whitelist.py` (the module that exists
+  for exactly this shape; `Binding._validate_binding`,
+  `CampaignDefinition._require_campaign_text`, `EvalJudge._validate_judge`
+  are the direct precedents), so the scan no longer reports them.
+  `check-vulture-baseline.py` `--update` then pruned the ledger rows the fix
+  eliminated: the 50 backlog rows plus 3 same-named validator rows on other
+  models (`personas/model.py::_require_non_blank_identity`,
+  `workspaces/model.py::_normalize_timestamps`,
+  `workspaces/model.py::_require_non_blank_identity`) that fall to the same
+  name-level references. **Exact CI args exit 0 at f662f8186:** 1342 → 1339
+  banked identities, zero unauthorized, zero unbanked, zero unclassified —
+  measured against trusted base `a58656017` (post-merge merge-base), the
+  strictest base this branch has been measured against. The prior addendum's
+  "+41 vulture grant rows" driver-side need is thereby obsolete.
+- **pip-audit proven green with the CI sequence** (`uv sync --locked
+  --all-extras`; `uv pip install pip-audit`; `uv pip freeze
+  --exclude-editable` → 217 requirements; `pip-audit --strict --format=json`
+  exit 1 on `ecdsa==0.19.2 PYSEC-2026-1325` ×2, both ALLOWED-triaged;
+  `scripts/pip_audit_gate.py` exit 0: "1 known, all triaged in ALLOWED";
+  direct-dependency usage OK, 61 runtime deps, 4 reviewed dispositions). The
+  prior round's "Supply chain (pip-audit)" CI failure does not reproduce as a
+  verdict at this head; no dependency manifest changed in the merge.
+- **Reachability residual re-measured at base `a58656017`, unchanged and
+  still driver-side:** `check-reachability-provenance.py`,
+  `check-reachability-dispositions-provenance.py` and
+  `check-ratchet-provenance.py` exit 1 solely on the five `maistro.backlog*`
+  modules (reachability 174→179; dispositions identical; every other
+  ratchet leg OK). develop's `quality/ratchet-authorizations.json` at
+  `a58656017` still carries zero backlog keys. There is no branch-local
+  mechanism for this one: the module genuinely has no production caller
+  until #99/#102/#804 wire it, and inventing an import edge to appease the
+  scanner is the cosmetic change this round is forbidden to make. Repair
+  remains a grants-only develop merge of the +5 reachability rows (the
+  candidate baseline/dispositions rows are already banked and exact).
+- **No test inventory delta** — no tests added, removed or renamed; the
+  suite-inventory baseline is untouched.

@@ -8,6 +8,15 @@ Invocation execution API.
 """
 
 from maistro import identity as identity_package
+from maistro.backlog.model import (
+    BacklogClaim,
+    BacklogClosure,
+    BacklogEvent,
+    BacklogItem,
+)
+from maistro.backlog.pg_store import PgBacklogStore
+from maistro.backlog.sqlite_store import SqliteBacklogStore
+from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
@@ -224,4 +233,63 @@ _VULTURE_WHITELIST = (
     RubricStore.instantiate_from_catalog,
     RubricStore.record_run_binding,
     RubricStore.binding_for_run,
+    # Canonical Workspace BacklogItem work source (#98, EPIC M3-C). The
+    # store CRUD/claim verbs are the #98 service contract: their in-tree
+    # consumers are the three-backend conformance suite, and the #99 Conductor
+    # UI, the #102 BACKLOG.md cutover and the #804 persistent Agent wire them
+    # next — the same "contract ships first by design" posture as
+    # CampaignSelector and the eval-score seam above. The model validators are
+    # Pydantic-dispatched (`@field_validator` / `@model_validator`), invoked
+    # implicitly at construction — the same posture as CampaignDefinition,
+    # RunEvalScore and the Rubric models above.
+    BacklogStore.create_item,
+    BacklogStore.get_item,
+    BacklogStore.update_item,
+    BacklogStore.close_item,
+    BacklogStore.reopen_item,
+    BacklogStore.list_items,
+    BacklogStore.claim_item,
+    BacklogStore.extend_claim,
+    BacklogStore.release_claim,
+    BacklogStore.active_claim,
+    InMemoryBacklogStore.create_item,
+    InMemoryBacklogStore.get_item,
+    InMemoryBacklogStore.update_item,
+    InMemoryBacklogStore.close_item,
+    InMemoryBacklogStore.reopen_item,
+    InMemoryBacklogStore.list_items,
+    InMemoryBacklogStore.claim_item,
+    InMemoryBacklogStore.extend_claim,
+    InMemoryBacklogStore.release_claim,
+    InMemoryBacklogStore.active_claim,
+    SqliteBacklogStore.create_item,
+    SqliteBacklogStore.get_item,
+    SqliteBacklogStore.update_item,
+    SqliteBacklogStore.close_item,
+    SqliteBacklogStore.reopen_item,
+    SqliteBacklogStore.list_items,
+    SqliteBacklogStore.claim_item,
+    SqliteBacklogStore.extend_claim,
+    SqliteBacklogStore.release_claim,
+    SqliteBacklogStore.active_claim,
+    PgBacklogStore.create_item,
+    PgBacklogStore.get_item,
+    PgBacklogStore.update_item,
+    PgBacklogStore.close_item,
+    PgBacklogStore.reopen_item,
+    PgBacklogStore.list_items,
+    PgBacklogStore.claim_item,
+    PgBacklogStore.extend_claim,
+    PgBacklogStore.release_claim,
+    PgBacklogStore.active_claim,
+    BacklogClosure._require_non_blank_summary,
+    BacklogClosure._require_resolvable_refs,
+    BacklogClosure._normalize_closed_at,
+    BacklogItem._clean_tags,
+    BacklogItem._require_positive_revision,
+    BacklogItem._enforce_consistency,
+    BacklogClaim._require_non_blank_identity,
+    BacklogClaim._normalize_timestamps,
+    BacklogEvent._require_non_blank_identity,
+    BacklogEvent._normalize_at,
 )
