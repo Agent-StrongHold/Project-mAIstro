@@ -64,7 +64,7 @@ dev = [
     # `check-ac-state.py --run-tests` aborts on a collection error, which is
     # the loud failure the script is written to produce and still a gate that
     # cannot run. A tree this config collects is a dependency this config owns.
-    "pytest-bdd>=8.0.0,<9",
+    "pytest-bdd>=8.0.0,<10",
     "radon>=6.0",
     "vulture>=2.14",
     "types-PyYAML>=6.0",
@@ -134,7 +134,7 @@ dev = [
     # `check-ac-state.py --run-tests` aborts on a collection error, which is
     # the loud failure the script is written to produce and still a gate that
     # cannot run. A tree this config collects is a dependency this config owns.
-    "pytest-bdd>=8.0.0,<9",
+    "pytest-bdd>=8.0.0,<10",
     "types-PyYAML>=6.0",
     "types-regex>=2024.5.15",
     "questionary>=2.0",
