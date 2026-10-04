@@ -22,6 +22,7 @@ from maistro.persistence.sqlite_learnings import SqliteLearningStore
 from maistro.types.memory import EpistemicType, Learning, MemoryScope
 
 
+@pytest.mark.ac("SPEC-100126-5445/AC-6")
 async def test_rewording_keeps_applicability_and_evidence_union() -> None:
     """Dedup replaces the text; the contexts and evidence underneath union."""
     store = InMemoryLearningStore()
@@ -55,6 +56,7 @@ async def test_rewording_keeps_applicability_and_evidence_union() -> None:
     assert first.confidence == 0.8
 
 
+@pytest.mark.ac("SPEC-100126-5445/AC-6")
 async def test_merge_applicability_keeps_strongest_confidence() -> None:
     existing = Learning(confidence=0.4, works_when=["a"])
     incoming = Learning(confidence=0.9, works_when=["a", "b"])
@@ -67,6 +69,7 @@ async def test_merge_applicability_keeps_strongest_confidence() -> None:
     assert existing.confidence == 0.9
 
 
+@pytest.mark.ac("SPEC-100126-5445/AC-6")
 async def test_merge_applicability_keeps_measured_over_reported_prior() -> None:
     """A mostly-failing row must not be lifted by an unvalidated 0.9 prior."""
     existing = Learning(run_id="r1", confidence=0.2, success_after_use=1, failure_after_use=4)
@@ -80,6 +83,7 @@ async def test_merge_applicability_keeps_measured_over_reported_prior() -> None:
     assert existing.confidence == pytest.approx(0.2)
 
 
+@pytest.mark.ac("SPEC-100126-5445/AC-2")
 async def test_epistemic_type_breaks_keyword_ties_in_retrieval() -> None:
     """Equal keyword hits: the tested claim outranks the counterfactual one."""
     store = InMemoryLearningStore()
@@ -105,6 +109,7 @@ async def test_epistemic_type_breaks_keyword_ties_in_retrieval() -> None:
     assert [lr.learning for lr in results] == ["tested path", "would-have-worked path"]
 
 
+@pytest.mark.ac("SPEC-100126-5445/AC-2")
 async def test_epistemic_bonus_never_overrides_relevance() -> None:
     """A one-hit match beats a max-bonus zero-hit miss: bonuses stay < 1.0."""
     store = InMemoryLearningStore()
@@ -122,6 +127,7 @@ async def test_epistemic_bonus_never_overrides_relevance() -> None:
 
 
 class TestCoinSwarmWisdomImport:
+    @pytest.mark.ac("SPEC-100126-5445/AC-1")
     def test_wisdom_maps_excels_and_avoid(self) -> None:
         learning = learning_from_wisdom(
             {
@@ -143,6 +149,7 @@ class TestCoinSwarmWisdomImport:
         assert learning.source_query == "coinswarm:17"
         assert learning.org_id == "org-1"
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-1")
     def test_imported_wisdom_still_cannot_promote(self) -> None:
         """Confidence alone is not validation evidence — a Run/eval id is."""
         from maistro.memory.learnings.evidence import promotion_blockers
@@ -150,6 +157,7 @@ class TestCoinSwarmWisdomImport:
         learning = learning_from_wisdom({"lesson": "x", "confidence": 1.0})
         assert "no_source_run_or_evaluation_ids" in promotion_blockers(learning)
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-1")
     def test_confidence_clamped_and_junk_tolerated(self) -> None:
         learning = learning_from_wisdom(
             {"lesson": "x", "confidence": 5.0, "excels_in": "single string", "avoid_in": [1, "", 2]}
@@ -158,6 +166,7 @@ class TestCoinSwarmWisdomImport:
         assert learning.works_when == ["single string"]
         assert learning.avoid_in == ["1", "2"]
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-1")
     def test_empty_payload_yields_empty_learning(self) -> None:
         learning = learning_from_wisdom({})
         assert learning.learning == ""
@@ -174,6 +183,7 @@ class TestSqliteEpistemicRoundTrip:
         yield s
         await conn.close()
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-2")
     async def test_epistemic_fields_survive_a_round_trip(self, store: SqliteLearningStore) -> None:
         await store.store(
             Learning(
@@ -198,6 +208,7 @@ class TestSqliteEpistemicRoundTrip:
         assert row.evidence_run_ids == ["run-1", "run-2"]
         assert row.evaluation_ids == ["eval-5"]
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-6")
     async def test_dedup_consolidates_evidence_in_sql(self, store: SqliteLearningStore) -> None:
         first = Learning(
             trigger_keys=["deploy"],
@@ -230,6 +241,7 @@ class TestSqliteEpistemicRoundTrip:
         assert set(row.evidence_run_ids) == {"run-1", "run-2"}
         assert row.confidence == pytest.approx(0.9)
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-6")
     async def test_dedup_keeps_the_ambient_run_as_evidence(
         self, store: SqliteLearningStore
     ) -> None:
@@ -262,6 +274,7 @@ class TestSqliteEpistemicRoundTrip:
         # evidence, not a re-attribution.
         assert row.run_id == ""
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-6")
     async def test_mark_outcome_measures_confidence_in_sql(
         self, store: SqliteLearningStore
     ) -> None:
@@ -276,6 +289,7 @@ class TestSqliteEpistemicRoundTrip:
         (row,) = await store.list_all(org_id="org-1")
         assert row.confidence == pytest.approx(2 / 3)
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-6")
     async def test_legacy_file_upgrades_with_epistemic_columns(self) -> None:
         """A database written before M4-B3 gains the columns in place; legacy
         rows read back observed with no applicability and no measurement."""

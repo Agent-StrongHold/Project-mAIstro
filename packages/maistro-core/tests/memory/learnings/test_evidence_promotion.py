@@ -44,36 +44,44 @@ def _evidenced(**overrides: Any) -> Learning:
 
 
 class TestPromotionBlockers:
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_fully_evidenced_learning_has_no_blockers(self) -> None:
         assert promotion_blockers(_evidenced()) == []
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_no_source_evidence_blocks_even_when_confident(self) -> None:
         """A claimed confidence with no Run/evaluation behind it is not evidence."""
         blockers = promotion_blockers(_evidenced(run_id="", confidence=1.0))
         assert blockers == ["no_source_run_or_evaluation_ids"]
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_producer_run_id_counts_as_source_evidence(self) -> None:
         assert has_source_evidence(_evidenced(evidence_run_ids=[], evaluation_ids=[]))
         assert not has_source_evidence(_evidenced(run_id="", confidence=0.9))
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_unmeasured_confidence_blocks(self) -> None:
         """None means never measured — a blocker, not a pass (ADR-083026-a91e)."""
         assert promotion_blockers(_evidenced(confidence=None)) == ["confidence_unmeasured"]
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_confidence_below_floor_blocks(self) -> None:
         blockers = promotion_blockers(_evidenced(confidence=0.2))
         assert blockers == ["confidence_below_threshold"]
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_tied_evidence_at_floor_blocks(self) -> None:
         """1 success / 1 failure is a tie, not a strict majority — it may not promote."""
         blockers = promotion_blockers(_evidenced(confidence=0.5))
         assert blockers == ["confidence_below_threshold"]
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_min_confidence_is_configurable(self) -> None:
         assert promotion_blockers(_evidenced(confidence=0.7), min_confidence=0.8) == [
             "confidence_below_threshold"
         ]
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-4")
     def test_counterfactual_requires_an_evaluation(self) -> None:
         """Only an evaluation can test what *would have* happened."""
         cf = _evidenced(epistemic_type=EpistemicType.COUNTERFACTUAL)
@@ -83,6 +91,7 @@ class TestPromotionBlockers:
         )
         assert promotion_blockers(validated) == []
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-4")
     def test_inferred_needs_only_ordinary_evidence(self) -> None:
         inferred = _evidenced(
             epistemic_type=EpistemicType.INFERRED,
@@ -97,14 +106,17 @@ class TestPromotionBlockers:
 
 
 class TestOutcomeConfidence:
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_no_outcomes_is_unmeasured(self) -> None:
         assert outcome_confidence(0, 0) is None
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     def test_ratio_of_successes(self) -> None:
         assert outcome_confidence(3, 1) == pytest.approx(0.75)
 
 
 class TestDistillationIsNotEvidence:
+    @pytest.mark.ac("SPEC-100126-5445/AC-5")
     async def test_rca_learning_is_inferred_and_cannot_self_promote(self) -> None:
         """The LLM wrote the diagnosis; hits do not turn it into evidence."""
         llm = _FakeLLM("CATEGORY: rate_limit\nROOT CAUSE: cap\nPREVENTION: back off")
@@ -125,6 +137,7 @@ class TestDistillationIsNotEvidence:
         assert stored.status == "active"
         assert "no_source_run_or_evaluation_ids" in promotion_blockers(stored)
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-5")
     async def test_inferred_learning_promotes_once_a_run_backs_it(self) -> None:
         """The same distilled claim, once measured: wording from the LLM,
         warrant from the outcome counters."""
@@ -145,6 +158,7 @@ class TestDistillationIsNotEvidence:
 
 
 class TestStoreGate:
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_hits_alone_do_not_promote(self) -> None:
         store = InMemoryLearningStore()
         bare = _evidenced(run_id="", confidence=None)
@@ -154,6 +168,7 @@ class TestStoreGate:
         assert await store.check_auto_promotions(threshold=5) == []
         assert bare.status == "active"
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_min_confidence_flows_through(self) -> None:
         store = InMemoryLearningStore()
         learning = _evidenced(confidence=0.7)

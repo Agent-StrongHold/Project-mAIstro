@@ -71,7 +71,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # claimed 048, then to "052" when this sync brought 051 onto the same
     # parent — now attaches after that `051`, so the single linear head is
     # `052`.
-    walked = {item.revision for item in directory.walk_revisions("base", "051")}
+    walked = {item.revision for item in directory.walk_revisions("base", "052")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked

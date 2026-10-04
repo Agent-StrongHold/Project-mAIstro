@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import Learning, MemoryScope
 
@@ -13,7 +15,11 @@ def _lr(
     agent: str | None = "agent-1",
     status: str = "active",
     learning: str = "do X not Y",
+    *,
+    evidence: bool = False,
 ) -> Learning:
+    """A learning; `evidence=True` adds the validation evidence M4-B3 promotion
+    requires (source Run id + measured confidence from a recorded outcome)."""
     return Learning(
         tool_name=tool,
         trigger_keys=keys or ["foo", "bar"],
@@ -22,6 +28,9 @@ def _lr(
         agent_id=agent,
         scope=MemoryScope.AGENT,
         status=status,
+        run_id="run-1" if evidence else "",
+        confidence=1.0 if evidence else None,
+        evaluation_ids=["eval-1"] if evidence else [],
     )
 
 
@@ -35,7 +44,7 @@ class TestStore:
     async def test_store_dedup_same_org_same_tool_overlapping_keys(self) -> None:
         store = InMemoryLearningStore()
         lr1 = _lr(keys=["foo", "bar"])
-        lr2 = _lr(keys=["foo", "bar"], learning="updated")
+        lr2 = _lr(keys=["foo", "bar", "baz"], learning="updated")
         await store.store(lr1)
         id2 = await store.store(lr2)
         all_lr = await store.list_all()
@@ -108,20 +117,97 @@ class TestMarkUsed:
         assert all(lr.hit_count == 1 for lr in all_lr)
 
 
-class TestPromotion:
-    async def test_auto_promotion_at_threshold(self) -> None:
+class TestMarkOutcome:
+    async def test_success_increments_success_after_use(self) -> None:
         store = InMemoryLearningStore()
         id_ = await store.store(_lr(keys=["key"]))
+        await store.mark_outcome([id_], success=True, org_id="org-1")
+        all_lr = await store.list_all()
+        assert all_lr[0].success_after_use == 1
+        assert all_lr[0].failure_after_use == 0
+
+    async def test_failure_increments_failure_after_use(self) -> None:
+        store = InMemoryLearningStore()
+        id_ = await store.store(_lr(keys=["key"]))
+        await store.mark_outcome([id_], success=False, org_id="org-1")
+        all_lr = await store.list_all()
+        assert all_lr[0].failure_after_use == 1
+        assert all_lr[0].success_after_use == 0
+
+    async def test_org_isolation(self) -> None:
+        store = InMemoryLearningStore()
+        id_a = await store.store(_lr(keys=["a"], org="org-A"))
+        await store.mark_outcome([id_a], success=True, org_id="org-B")
+        all_lr = await store.list_all(org_id="__system__")
+        target = next(lr for lr in all_lr if lr.id == id_a)
+        assert target.success_after_use == 0
+
+    async def test_empty_ids_noop(self) -> None:
+        store = InMemoryLearningStore()
+        learning_id = await store.store(_lr(keys=["key"], org="org-1"))
+        await store.mark_outcome([], success=True, org_id="org-1")
+
+        learning = next(lr for lr in await store.list_all() if lr.id == learning_id)
+        assert learning.success_after_use == 0
+        assert learning.failure_after_use == 0
+
+
+class TestListIneffective:
+    async def test_returns_learnings_with_more_failures_than_successes(self) -> None:
+        store = InMemoryLearningStore()
+        id_ = await store.store(_lr(keys=["key"]))
+        await store.mark_outcome([id_], success=False, org_id="org-1")
+        await store.mark_outcome([id_], success=False, org_id="org-1")
+        await store.mark_outcome([id_], success=True, org_id="org-1")
+        results = await store.list_ineffective(min_uses=3)
+        assert len(results) == 1
+        assert results[0].id == id_
+
+    async def test_excludes_below_min_uses(self) -> None:
+        store = InMemoryLearningStore()
+        id_ = await store.store(_lr(keys=["key"]))
+        await store.mark_outcome([id_], success=False, org_id="org-1")
+        results = await store.list_ineffective(min_uses=3)
+        assert results == []
+
+    async def test_excludes_when_successes_tie_or_exceed(self) -> None:
+        store = InMemoryLearningStore()
+        id_ = await store.store(_lr(keys=["key"]))
+        await store.mark_outcome([id_], success=True, org_id="org-1")
+        await store.mark_outcome([id_], success=False, org_id="org-1")
+        results = await store.list_ineffective(min_uses=2)
+        assert results == []
+
+
+class TestPromotion:
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
+    async def test_auto_promotion_at_threshold(self) -> None:
+        store = InMemoryLearningStore()
+        id_ = await store.store(_lr(keys=["key"], evidence=True))
         for _ in range(5):
             await store.mark_used([id_])
         promoted = await store.check_auto_promotions(threshold=5, org_id="org-1")
         assert len(promoted) == 1
         assert promoted[0].status == "promoted"
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
+    @pytest.mark.contract("behavioral")
+    async def test_promotion_blocked_without_evidence(self) -> None:
+        """M4-B3: hits alone no longer promote — evidence is required too."""
+        store = InMemoryLearningStore()
+        id_ = await store.store(_lr(keys=["key"]))
+        for _ in range(5):
+            await store.mark_used([id_])
+        promoted = await store.check_auto_promotions(threshold=5, org_id="org-1")
+        assert promoted == []
+        stored = (await store.list_all(org_id="org-1"))[0]
+        assert stored.status == "active"
+
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_get_promoted_returns_only_promoted(self) -> None:
         store = InMemoryLearningStore()
         await store.store(_lr(keys=["active"]))
-        id2 = await store.store(_lr(keys=["will-promote"], tool="t2"))
+        id2 = await store.store(_lr(keys=["will-promote"], tool="t2", evidence=True))
         for _ in range(5):
             await store.mark_used([id2])
         await store.check_auto_promotions(threshold=5, org_id="org-1")

@@ -13,6 +13,7 @@ implements:
   - maistro-engine#ADR-015
 related:
   - maistro-engine#SPEC-215
+  - maistro-engine#SPEC-100126-5445
 supersedes: []
 blocks: []
 blocked-by: []
@@ -26,6 +27,13 @@ owners:
 ---
 
 # SPEC-216: InMemoryLearningStore: dedup, org-scope isolation, FIFO eviction, auto-promotion
+
+> **Promotion contract amended (M4-B3):** the hit-count threshold below decides
+> *when* a candidate is considered, no longer *whether* it promotes.
+> ADR-100126-5445 and [SPEC-100126-5445](SPEC-100126-5445-learning-epistemics.md)
+> gate promotion on evidence — a source Run/evaluation id and a measured
+> confidence — so a frequently-retrieved but never-validated learning stays
+> `active`.
 
 ## Context
 

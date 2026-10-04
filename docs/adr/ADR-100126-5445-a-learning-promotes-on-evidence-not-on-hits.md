@@ -19,6 +19,7 @@ implements: []
 related:
   - maistro-engine#ADR-083026-a91e
   - maistro-engine#ADR-081226-bb3a
+  - maistro-engine#SPEC-100126-5445
 supersedes: []
 blocks: []
 blocked-by: []
@@ -116,9 +117,9 @@ accountable to everything that ever taught it.
   accrues through `mark_outcome`. That is the intended strictness, not a
   migration bug.
 - Both SQL twins persist the new fields (contract in
-  `persistence/learning_contract.py`, PostgreSQL migration 051 — renumbered
-  from 048 after develop's `048_canvas_job_retry_backoff` claimed that id on
-  the same parent, SQLite in-place upgrade), and the conformance test fails
-  if a future field lands in one twin only.
+  `persistence/learning_contract.py`, PostgreSQL migration 052 — renumbered
+  from 048, then from 051, after develop claimed each id on the same parent
+  while this branch was open; SQLite in-place upgrade), and the conformance
+  test fails if a future field lands in one twin only.
 - The wisest import path (`memory.learnings.wisdom.learning_from_wisdom`)
   maps CoinSwarm wisdom JSON onto the record without granting it promotion.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import Learning, MemoryScope
 
@@ -178,6 +180,7 @@ class TestListIneffective:
 
 
 class TestPromotion:
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_auto_promotion_at_threshold(self) -> None:
         store = InMemoryLearningStore()
         id_ = await store.store(_lr(keys=["key"], evidence=True))
@@ -187,6 +190,8 @@ class TestPromotion:
         assert len(promoted) == 1
         assert promoted[0].status == "promoted"
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
+    @pytest.mark.contract("behavioral")
     async def test_promotion_blocked_without_evidence(self) -> None:
         """M4-B3: hits alone no longer promote — evidence is required too."""
         store = InMemoryLearningStore()
@@ -198,6 +203,7 @@ class TestPromotion:
         stored = (await store.list_all(org_id="org-1"))[0]
         assert stored.status == "active"
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_get_promoted_returns_only_promoted(self) -> None:
         store = InMemoryLearningStore()
         await store.store(_lr(keys=["active"]))
