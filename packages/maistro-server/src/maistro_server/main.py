@@ -19,6 +19,11 @@ import maistro.config.settings as settings_module
 import maistro.memory.store as memory_store
 import maistro.persistence as persistence
 from maistro.agents.types import ConductorOutput
+from maistro.api_versioning import (
+    API_VERSIONS,
+    DEFAULT_API_VERSION,
+    VersionNegotiationMiddleware,
+)
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container
@@ -612,6 +617,27 @@ app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     PayloadSizeLimitMiddleware,
     max_bytes=_settings.max_request_body_bytes,
+)
+
+# API version negotiation (ADR-076) — the negotiated version is selected by
+# Accept media type / api_version query / api_version JSON body field, the
+# default is advertised on every response, and an unsupported selector is a
+# 406 that never reaches a route handler. Infrastructure paths (health,
+# metrics, OpenAPI/docs) and A2A (whose versioning the ADR scopes out) pass
+# through untouched. Added before the security headers so it stays inside
+# them: even a 406 carries the security header set.
+app.add_middleware(
+    VersionNegotiationMiddleware,
+    versions=API_VERSIONS,
+    default_version=DEFAULT_API_VERSION,
+    skip_prefixes=(
+        "/health",
+        "/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/a2a",
+    ),
 )
 
 # Security headers — the true outermost middleware (added last), so headers
