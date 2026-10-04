@@ -20,7 +20,12 @@ call signature.
 
 Validated against a real PostgreSQL 17 container with a forced SIGKILL between
 admission and dispatch: the targeted E2E passed (`1 passed`). This changes no
-test count. The full PostgreSQL coverage producer was not established in this
-round: its unrelated Canvas leg timed out while dropping its isolated database,
-so the reported coverage-gate failure remains unverified rather than being
-attributed to this issue.
+test count.
+
+Follow-up CI-repair validation repeated the PostgreSQL coverage producer against
+a fresh local PostgreSQL 17 container: `tests/migrations` passed (107), the
+producer's schema-dependent core selection passed (4,919), and the previously
+timed-out Canvas selection passed (516). The original Canvas database-drop
+timeout therefore did not reproduce. This establishes the producer portion of
+the reported coverage failure; it does not claim a full multi-artifact Coverage
+gate result or resolve #1845's separate atomic-admission residual.
