@@ -93,27 +93,39 @@ _LEGACY_UPGRADE_COLUMNS = {
     "team_id": "TEXT",
 }
 
-#: The producer columns, nullable for the same reason migration 026 makes them
-#: nullable in PostgreSQL: a row written with no execution in scope names none,
-#: and `''` would name a Run whose id is empty (#709).
-_PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
-
-_EPISTEMIC_COLUMNS = {
+#: One module-level DDL table for every column an older file may lack, in the
+#: order the in-place upgrade adds them. One literal rather than several named
+#: collections because the retention-reference inventory's AST scan resolves a
+#: formatted `ALTER TABLE` only from a loop over a module-level dict literal
+#: (`.items()` shape) — an f-string whose parts it cannot resolve statically
+#: fails the suite rather than being assumed run_id-free. The commented groups
+#: keep the history each collection used to carry.
+_UPGRADE_COLUMNS = {
+    # Legacy scope columns (pre-team/source_query files), no default: existing
+    # rows have unknown scope and must not be silently fabricated.
+    "source_query": "TEXT",
+    "team_id": "TEXT",
+    # Producer columns (#709), nullable for the same reason migration 026 makes
+    # them nullable in PostgreSQL: a row written with no execution in scope
+    # names none, and '' would name a Run whose id is empty.
+    "run_id": "TEXT",
+    "node_run_id": "TEXT",
+    "attempt_id": "TEXT",
+    # M4-B3: applicability, confidence and epistemic columns. Defaults are the
+    # legacy reading (observed / no applicability / unmeasured). `confidence`
+    # alone stays nullable: an unmeasured row must read back as unmeasured,
+    # because promotion treats NULL as a blocker and a fabricated 0.0 would
+    # read as "measured and failed".
     "epistemic_type": "TEXT NOT NULL DEFAULT 'observed'",
     "works_when": "TEXT NOT NULL DEFAULT '[]'",
     "avoid_in": "TEXT NOT NULL DEFAULT '[]'",
     "confidence": "REAL",
     "evidence_run_ids": "TEXT NOT NULL DEFAULT '[]'",
     "evaluation_ids": "TEXT NOT NULL DEFAULT '[]'",
-}
-
-#: The knowledge-ladder columns (ADR-103), with their in-place upgrade types.
-#: NOT NULL with defaults: every pre-ladder row lands on the bottom rung with
-#: no actor recorded, which is the truth — nothing validated or promoted it.
-#: A dict literal (not a tuple + subscript): the retention inventory's AST
-#: scan resolves DDL f-strings only from `.items()` over a module-level dict,
-#: and a schema statement it cannot verify statically fails the suite.
-_STAGE_COLUMN_TYPES = {
+    # M4-B1 (ADR-103): the stage columns default to the bottom rung with blank
+    # actors. Pre-ladder rows keep `memory` and never gain a fabricated
+    # validation or promotion claim; the ledger starts empty and records only
+    # transitions that actually happened.
     "stage": "TEXT NOT NULL DEFAULT 'memory'",
     "validated_by": "TEXT NOT NULL DEFAULT ''",
     "promoted_by": "TEXT NOT NULL DEFAULT ''",
@@ -158,16 +170,16 @@ _SQLITE_INSERT_FIELDS = (
 async def _add_missing_columns(
     conn: aiosqlite.Connection,
     columns: set[str],
-    column_types: dict[str, str],
 ) -> None:
-    """Add each declared column an older file does not have yet.
+    """Add every declared upgrade column an older file does not have yet.
 
-    SQLite has no `ADD COLUMN IF NOT EXISTS`, so callers pass the `PRAGMA
-    table_info` column set and this adds only what is missing. Every DDL dict
-    passed here is a module-level literal so the durable-table inventory's AST
-    scan can read the schema statically.
+    SQLite has no `ADD COLUMN IF NOT EXISTS`, so the `PRAGMA table_info`
+    column set is passed in and only the missing columns are added. The DDL
+    loop reads `_UPGRADE_COLUMNS` directly — a module-level dict literal — so
+    the retention-reference inventory's AST scan can resolve the formatted
+    `ALTER TABLE` statement statically.
     """
-    for column, column_type in column_types.items():
+    for column, column_type in _UPGRADE_COLUMNS.items():
         if column not in columns:
             await conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} {column_type}")
 
@@ -196,22 +208,7 @@ class SqliteLearningStore:
                 await self._conn.execute(
                     "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
                 )
-            await _add_missing_columns(self._conn, columns, _LEGACY_UPGRADE_COLUMNS)
-            # The same in-place upgrade for the producer columns. A file created
-            # before #709 holds real learnings; recreating the table would be the
-            # only alternative, and it would lose them (#709).
-            await _add_missing_columns(
-                self._conn, columns, dict.fromkeys(_PROVENANCE_COLUMNS, "TEXT")
-            )
-            # M4-B3: applicability, confidence and epistemic columns. Defaults
-            # are the legacy reading (observed / no applicability / unmeasured);
-            # see _EPISTEMIC_COLUMNS for why confidence alone stays nullable.
-            await _add_missing_columns(self._conn, columns, _EPISTEMIC_COLUMNS)
-            # M4-B1 (ADR-103): the stage columns default to the bottom rung
-            # with blank actors. Pre-ladder rows keep `memory` and never gain
-            # a fabricated validation or promotion claim; the ledger starts
-            # empty and records only transitions that actually happened.
-            await _add_missing_columns(self._conn, columns, _STAGE_COLUMN_TYPES)
+            await _add_missing_columns(self._conn, columns)
             await self._conn.execute(_STAGE_HISTORY_SCHEMA)
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
