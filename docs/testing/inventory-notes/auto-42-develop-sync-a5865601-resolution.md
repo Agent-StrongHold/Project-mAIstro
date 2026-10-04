@@ -1,8 +1,3 @@
----
-inventory-delta:
-  (none): all 14 suites match the recorded inventory unchanged
----
-
 # auto-42 develop sync — resolve the preserved a58656017 merge conflict
 
 The previous round left the develop sync mid-merge at HEAD `5f302247a` with
