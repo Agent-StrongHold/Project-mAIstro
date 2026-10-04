@@ -14,6 +14,7 @@ from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTarge
 from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
+from maistro.memory.learnings.approval import LearningApprovalGate
 from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
 from maistro.ontology.rubric import (
     PassFailScale,
@@ -158,6 +159,18 @@ _VULTURE_WHITELIST = (
     # variable above rather than a class-object reference, which would not
     # typecheck.
     latest_by_dimension,
+    # Learning promotion approval gate (ported from Stronghold). The promoter's
+    # gated flow (LearningPromoter._check_with_gate) queues approvals and
+    # consumes get_approved_ids()/mark_promoted; the admin verbs themselves are
+    # the review surface for the humans approving those queued promotions —
+    # exercised by tests/memory/learnings/test_approval.py and consumed by the
+    # Stronghold port, both outside this packages/*/src scan. `reject`,
+    # `get_pending` and `get_all` are banked in quality/vulture-baseline.json;
+    # `approve` rode along unflagged only because the RSI CLI happened to bind
+    # a local named `approve` to its argparse subparser (name-level matching),
+    # and #110's review-verb refactor replaced that binding — so name it here,
+    # explicitly, for the same reason as its siblings.
+    LearningApprovalGate.approve,
     # Learning lifecycle (M4-B4, #120, SPEC-282). The revisable-learning
     # contract ships first: its in-tree consumers are its tests, and the
     # durable ledger twins plus the orchestrator/retrieval wiring that calls
