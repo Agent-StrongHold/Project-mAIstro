@@ -687,3 +687,61 @@ exact ledger re-bank below.
 - **Test inventory delta:** none — no test added, removed, or retagged in
   this round; the `inventory-delta:` block above still describes the
   branch's +54 backlog nodes.
+
+## Ninth verification addendum (independent review at merge 31152e1e2)
+
+Head `31152e1e2` (merge of develop `97c05e0f1` into auto-82; merge-base
+confirmed = `97c05e0f1`, so this candidate fully contains the develop base).
+All evidence below re-executed by the independent reviewer at this head —
+not inherited from earlier addenda.
+
+- **Migration cutover to `052` re-proven on a freshly created pristine
+  database** (`mb_pristine_v9`, pgvector:pg18 `pg-auto82` :55433):
+  `alembic heads` → single head `052`; `alembic upgrade head` ran the full
+  `000→052` chain cleanly (047→048 `generation_jobs.next_retry_at`, …
+  051→052 backlog work-source tail observed); `alembic current` → `052`.
+  `tests/migrations/test_migration_chain.py` **13 passed** with
+  `MAISTRO_TEST_DATABASE_URL` set (the tests skip without it).
+- **Named merge-queue failure (Supply chain / pip-audit) does not reproduce
+  with CI's exact sequence at this head:** `uv sync --locked --all-extras`
+  (217 distributions frozen), `uv pip install pip-audit`,
+  `check-dependency-namespaces.py` OK (no unreviewed top-level namespaces),
+  `pip-audit --strict --format=json -r <freeze>` → complete report, only
+  2× `ecdsa==0.19.2 PYSEC-2026-1325`, and `pip_audit_gate.py` **exit 0**
+  (ALLOWED triage; direct-dependency usage OK: 10 packages / 61 runtime
+  deps / 4 dispositions). The 18-file candidate diff vs `97c05e0f1` moves
+  neither `uv.lock` nor any `pyproject.toml`, so the dependency set is
+  byte-identical to develop — the queued failure is registry/transient or
+  environmental, not introduced by this branch. CI re-run still required
+  (local green ≠ observed CI green).
+- **Backlog substrate exercised on both stores at this head:** no-DSN
+  `packages/maistro-core/tests/backlog/` **38 passed / 16 skipped**; with
+  `MAISTRO_TEST_PG_DSN` on the freshly migrated DB **53 passed / 1
+  skipped** (structural memory-reference reopen skip only). hive-conductor
+  `test_backlog_routes.py` **36 passed**. `check-suite-inventory.py
+  --suite packages/maistro-core/tests` ok (12,658 unique identities, 0
+  duplicates). mypy clean across the six canonical packages (791 files).
+- **All other quality gates exit 0 at this head** (RATCHET_BASE_REV=
+  origin/develop where applicable): `check-reachability.py`,
+  `check-reachability-dispositions.py`, `check-shipped-surface-truth.py`,
+  `check-wiring-reads.py`, `check-agent-store-writes.py`,
+  `check-contract-markers.py`, `check-convergence-matrix.py`,
+  `check-credential-authority.py`, `check-security-inventory.py`.
+- **Remaining red confirmed unchanged, and now measured against base
+  `97c05e0f1`:** `check-vulture-baseline.py` (exact CI args) exit 1 on
+  1342→1392 findings = **50 NEW `maistro.backlog.*` identities**;
+  `check-reachability-provenance.py` / `check-reachability-dispositions-
+  provenance.py` exit 1 solely on the five `maistro.backlog*` modules
+  (reachability 174→179); `check-ratchet-provenance.py` exit 1 with every
+  other leg OK. **`git ls-remote origin develop` this round still resolves
+  develop to `97c05e0f1`, whose `quality/ratchet-authorizations.json`
+  carries 61 vulture / 11 reachability grants and zero backlog keys** —
+  the staged grants were never landed, so the #534 two-merge residual
+  persists by develop's state, not by candidate drift. Repair remains
+  driver-side only: grants-only merge of +41 vulture / +5 reachability
+  rows onto develop, then re-queue. No candidate-side edit can clear it
+  (the gate refuses candidate-self-authorization by construction).
+- **Closure-keyword audit clean:** PR #1702 body says "Refs #82" only;
+  every branch commit subject/body greps free of
+  `fixes|closes|resolves #<n>`.
+- **Test inventory delta:** none — this addendum is documentation-only.
