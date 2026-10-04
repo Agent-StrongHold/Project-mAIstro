@@ -219,6 +219,54 @@ class PgRunStore:
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
+        run = await self.prepare_run(
+            graph,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            allow_cross_project=allow_cross_project,
+            persona_id=persona_id,
+            actor_principal_id=actor_principal_id,
+            provenance=provenance,
+            retention_expires_at=retention_expires_at,
+            initial_status=initial_status,
+        )
+        async with self._pool.acquire() as conn:
+            try:
+                # READ COMMITTED pinned: the count after the advisory locks
+                # must take its snapshot after the wait, not before it.
+                async with conn.transaction(isolation="read_committed"):
+                    await self.insert_prepared_run(conn, run)
+            except _integrity_errors() as exc:
+                conflict = _occurrence_conflict(exc, run)
+                if conflict is None:
+                    raise
+                raise conflict from exc
+        return run
+
+    async def prepare_run(
+        self,
+        graph: Graph,
+        *,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> Run:
+        """Build one Run without writing anything — the admission-side half.
+
+        Every check that does not need the insertion transaction lives here:
+        graph scope (which may acquire its own connection through the Project
+        store), parent integrity, payload construction and the initial state.
+        A caller that must make a Run's insertion and some other row's update
+        one commit (#1845) completes this preparation *before* opening its
+        transaction, then hands the finished Run to :meth:`insert_prepared_run`
+        on the connection it already holds. The checks are unchanged from
+        ``create_run``'s own body — this is that body, split at its only seam.
+        """
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
@@ -252,38 +300,37 @@ class PgRunStore:
         )
         # Before the insert, not after it: one commit, so there is no window in
         # which a process death leaves a CREATED Run whose receipt was queued.
-        run = admit_in_state(run, initial_status)
-        async with self._pool.acquire() as conn:
-            try:
-                # READ COMMITTED pinned: the count after the advisory locks
-                # must take its snapshot after the wait, not before it.
-                async with conn.transaction(isolation="read_committed"):
-                    await self._lock_root_admission(conn, run)
-                    await conn.execute(
-                        """INSERT INTO canonical_runs
-                       (run_id, workspace_id, project_id, parent_run_id,
-                        parent_node_run_id, status, payload, retention_expires_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
-                        run.run_id,
-                        run.workspace_id,
-                        run.project_id,
-                        run.parent_run_id,
-                        run.parent_node_run_id,
-                        run.status.value,
-                        json_of(run),
-                        # Duplicated out of the payload so the retention sweep can
-                        # use an index (migration 012). Written once at creation
-                        # and never transitioned, so the two cannot drift the way
-                        # `status` could.
-                        run.retention_expires_at,
-                    )
-                    await self._admit_root(conn, run)
-            except _integrity_errors() as exc:
-                conflict = _occurrence_conflict(exc, run)
-                if conflict is None:
-                    raise
-                raise conflict from exc
-        return run
+        return admit_in_state(run, initial_status)
+
+    async def insert_prepared_run(self, conn: Any, run: Run) -> None:
+        """Write one already-prepared Run on the caller's open transaction.
+
+        Root-admission advisory locks, the canonical_runs INSERT and the root
+        ceiling count, in that order, on the connection the caller holds — no
+        pool acquisition here, so a caller that also updates its own row on
+        the same connection commits Run and binding together or not at all
+        (#1845). The statements are ``create_run``'s, unchanged.
+        """
+        await self._lock_root_admission(conn, run)
+        await conn.execute(
+            """INSERT INTO canonical_runs
+           (run_id, workspace_id, project_id, parent_run_id,
+            parent_node_run_id, status, payload, retention_expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
+            run.run_id,
+            run.workspace_id,
+            run.project_id,
+            run.parent_run_id,
+            run.parent_node_run_id,
+            run.status.value,
+            json_of(run),
+            # Duplicated out of the payload so the retention sweep can
+            # use an index (migration 012). Written once at creation
+            # and never transitioned, so the two cannot drift the way
+            # `status` could.
+            run.retention_expires_at,
+        )
+        await self._admit_root(conn, run)
 
     async def _lock_root_admission(self, conn: Any, run: Run) -> None:
         """Serialize root admissions across replicas (#1182).
