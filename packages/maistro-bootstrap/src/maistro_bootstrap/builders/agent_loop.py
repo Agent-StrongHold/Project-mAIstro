@@ -77,6 +77,7 @@ def model_for_worker(worker: str) -> str:
 @dataclass
 class AgentLoopConfig:
     """Tunable parameters for the agent loop."""
+
     max_turns: int = 10
     max_tokens: int = 8192
     # None → resolved per-worker via model_for_worker(); set explicitly to override.
@@ -85,6 +86,8 @@ class AgentLoopConfig:
 
     def resolved_model(self) -> str:
         return self.model or model_for_worker(self.worker)
+
+
 # ---------------------------------------------------------------------------
 # run_tests argument policy (#811)
 #
