@@ -202,8 +202,10 @@ class TestQuotaTrackerRunsAgainstTheMigration:
         from maistro.persistence.pg_quota import PgQuotaTracker
 
         tracker = PgQuotaTracker(pool)
-        await tracker.record_usage("anthropic", "2026-08", 100, 20)
-        second = await tracker.record_usage("anthropic", "2026-08", 5, 1)
+        # `record_usage` takes a billing cycle from the validated vocabulary
+        # (#1205) and derives the cycle key itself.
+        await tracker.record_usage("anthropic", "monthly", 100, 20)
+        second = await tracker.record_usage("anthropic", "monthly", 5, 1)
 
         assert second["input_tokens"] == 105
         assert second["output_tokens"] == 21
