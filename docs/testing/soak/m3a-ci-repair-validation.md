@@ -227,3 +227,122 @@ substitute. Prior blocked condition remains unresolved.
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: exact-RC prerequisites and sustained soak}`.
 The error is the missing inspection path above, not a failed validation gate;
 CI-repair validation is complete, but #860 acceptance is not.
+
+---
+
+# #860 CI-repair validation
+
+## Frozen scope
+
+- Issue: #860 only; assigned worktree `/home/dev/Git/wt/auto-860`.
+- Starting HEAD: `adfecd15de5288766f0dc31cce8c6f0fb7fb6a8a` (clean).
+- Supplied base: `e067b7b0aca01b578f0bf2446dc0864fc4d88d15`.
+- Writer repair round: inspect the exact vulture scan, amend only reviewed
+  identities if required, and validate existing soak acceptance probes.
+- Potential edits: this report and `quality/vulture-baseline.json` only.
+  Production/harness changes are not justified by the supplied historical findings.
+- Read-only validation scope: existing soak driver/tests/evidence, relevant
+  deployment/execution/rate-limit ADRs and production seams, quality gate code/CI.
+- No new tests planned; no suite inventory delta expected.
+
+## Initial observations
+
+The supplied job directory `d8335f358ba140409039771d1ffe0545` contains no
+`check-*.log` files. Prior job `014700700d6c4a8989d9734a03ba1655/result.json`
+reports BLOCKED, not a sync conflict. Its claims will not substitute for fresh
+validation. No merge or remote operation is needed.
+
+The existing profile explicitly rejects host-process preflight as exact-RC
+promotion evidence and records representative-workload gaps. Historical run 6
+lasted 90.43 seconds against the 14400-second minimum. Current H3 prose already
+states process-local limits and does not claim a shared cluster-wide budget.
+Assumption: the explicit CI-repair instruction permits only evidence-backed
+ledger repair; it does not waive any of #860's ten acceptance criteria.
+
+## Results
+
+The prescribed vulture command passed: 1342 findings / 1342 reviewed identities,
+zero unclassified and never-allowlist findings; trusted base `e067b7b0aca0`.
+CI uses the same arguments in `quality.yml` and `vulture-ratchet.yml`.
+No ledger amendment or dead-code deletion is justified by this result.
+`uv run ruff check .` passed; `uv run ruff format --check .` passed (2876 files).
+
+This report path already contained earlier rounds. Its original content has been
+preserved verbatim above; this round is an append-only addition, not a replacement.
+### Executed validation at the assigned head
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: PASS, 1342/1342 identities.
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS, 2876 files.
+- `uv run pytest tests/test_soak_promotion_gates.py
+  packages/maistro-core/tests/persistence/test_pg_learnings.py
+  packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py
+  packages/maistro-server/tests/api/test_rate_limit.py -x -q`: **102 passed,
+  5 skipped**, 3.04 s. PostgreSQL skips are not live database proof.
+- `uv run pytest packages/maistro-server/tests -x -q`: **494 passed, 8 skipped**,
+  22 deprecation warnings, 39.15 s.
+- `uv run python scripts/check-shipped-surface-truth.py`: PASS.
+- `uv run python scripts/check-ratchet-provenance.py`: PASS, 49 consumers.
+- `uv run python scripts/check-doc-links.py`: PASS, 1680 Markdown files,
+  zero broken relative links.
+- `git diff --check`: PASS.
+- Executed Python probe imported the current soak evaluator and asserted that
+  all four historical packs (`m3a-soak-evidence.json`,
+  `m3a-repair-validation.json`, `m3a-round5-final.json`,
+  `m3a-round6-shakedown.json`) fail both `sustain_duration` and
+  `exact_rc_artifact`: PASS. Round 5/6 observed 90.17/90.43 seconds; the first
+  two have no top-level observed duration. These are evaluator checks, not new
+  soak measurements.
+
+### Architecture reconciliation
+
+Read repository instructions, Proposed ADR-081, and accepted ADR-085,
+ADR-081626-f383, ADR-082426-82c7 and ADR-082526-b36a. The later accepted
+ADR-082526-b36a **does** define heartbeat renewal and expiry reclamation through
+canonical Attempt execution/store authority. Earlier sections of this historical
+report which cite only the initial fencing ADR's deferred takeover boundary
+must not be read as saying reclamation remains architecturally undefined.
+What remains absent here is a deployed soak observing that contract, not a
+reason to create another recovery authority. The canonical
+`Goal -> Graph -> Run -> NodeRun -> Attempt` model is unchanged.
+
+Production middleware registration is reachable at `main.py:593`. Its real
+instances in `test_replica_selection_has_an_independent_production_allowance`
+return `[200, 200, 429]` on each replica for the same identity, for both identity
+classes. Accepted principal-keying requirements do not establish shared limiter
+state; this passing regression falsifies a shared allowance rather than proving
+#860's replica-selection non-bypass acceptance. No alternate authorization or
+rate-limit implementation is introduced in this CI-repair round.
+
+### All ten acceptance criteria
+
+| Criterion | Executed evidence / remaining disposition |
+| --- | --- |
+| Representative release-candidate load profile | PARTIAL: profile inspected; one credential and no sustained multi-Workspace/fan-out/successful model/tool/Design/Canvas/background workload. RC applicability UNVERIFIED. |
+| At least two application replicas | UNVERIFIED: inspected production Compose declares two application services; no exact-RC deployment executed. ASGI middleware tests are not deployed replicas. |
+| Sustained saturation, queue growth, lease reclaim, retries, leaks and restart | UNVERIFIED: evaluator rejects every inspected historical pack for duration/artifact. Real child sampler regression passes but is not a long window. |
+| Exactly-once/fenced physical work and Goal reconciliation | UNVERIFIED: admission-oracle and backpressure tests pass; historical schedule probe cancels the queued Run instead of executing physical effects. |
+| Rate limiting/security/degraded replica-selection non-bypass | NOT MET for a shared allowance: real production-middleware regression reproduces independent replica budgets. Exact-RC concurrent security/degraded behavior UNVERIFIED. |
+| Complete telemetry and explicit thresholds | UNVERIFIED: profile has partial host-process/DB thresholds, not complete RC worker/pool/query/app-loop/leak observations. Driver-loop lag is not application-loop lag. |
+| Active-work kill/restart with drain/fencing/recovery | UNVERIFIED: historical process rejoin does not prove physical-effect recovery; no replica killed/restarted this round. |
+| Long-running exact RC artifact/configuration soak | BLOCKED: current driver always emits `exact_rc_artifact.ok=false`; no designated immutable RC image/configuration supplied or new >=14400-second soak executed. |
+| Findings filed/reclassified before promotion | PARTIAL: local historical classifications inspected; external filing UNVERIFIED and GitHub mutations prohibited. Clean scanner results do not establish a runtime defect. |
+| Hash-bound machine/human evidence | PARTIAL: historical JSON/Markdown inspected and rejected by current evaluator, not re-signed. Current exact-RC image/package/commit/configuration-bound soak UNVERIFIED. |
+
+### Final handoff
+
+**BLOCKED for #860.** Requested exact-debt-ledger failure did not reproduce;
+no ledger edit or guessed dead-code deletion is warranted. Only this validation
+report changed, preserving prior content. No new tests or inventory delta,
+production/config changes, or historical evidence edits. No remote mutations.
+
+Next: designate immutable RC artifact/configuration and provider environment,
+resolve the replica-budget acceptance mismatch through its owner, complete
+representative workloads and physical-effect/telemetry oracles, then execute
+and publish a >=4-hour production-topology soak. A longer host preflight does
+not satisfy acceptance. The previous blocked condition remains unresolved.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: exact-RC prerequisites and sustained soak}`.
+CI validation is complete; issue acceptance is not. This is a local writer
+checkpoint, not integration approval.
