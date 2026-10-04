@@ -910,6 +910,98 @@ def _vacuous_test_reasons(src: list[str], tests: list[str], tdd: TddEvidence) ->
     return []
 
 
+def _gather_tdd_evidence(
+    cwd: Path,
+    baseline_ref: str | None,
+    src: list[str],
+    tests: list[str],
+    timeout: int,
+    config_changed: list[str],
+    tdd: TddEvidence | None,
+) -> tuple[TddEvidence, FailFirstEvidence | None]:
+    """Resolve the TDD view (and, when derivable, the fail-first evidence).
+
+    Callers with an explicit ``tdd`` win untouched — the loop injects one when
+    it already gathered fail-first evidence itself. Without one, a baseline
+    ref plus changed tests buys a real fail-first probe against the base
+    revision; anything less is recorded as no-evidence rather than invented.
+    """
+    if tdd is not None:
+        return tdd, None
+    if not (baseline_ref and tests):
+        return TddEvidence(changed_tests=tests), None
+    fail_first = collect_fail_first_evidence(
+        cwd,
+        baseline_ref,
+        src,
+        tests,
+        timeout,
+        config_files_changed=config_changed,
+    )
+    if fail_first is None:
+        return TddEvidence(changed_tests=tests), None
+    return fail_first.tdd_view(tests), fail_first
+
+
+def _stage_mutation_probe(
+    inputs: FitnessInputs,
+    cwd: Path,
+    baseline_ref: str | None,
+    new_src_lines: dict[str, set[int]],
+    tests: list[str],
+    timeout: int,
+    weights: FitnessWeights | None,
+) -> Scorecard | None:
+    """Run the diff-mutation probe once the cheap gates cleared.
+
+    Cost-layered after the cheap gates: mutation runs the changed tests once
+    per mutant, so a candidate already doomed on tests/coverage/syntax never
+    pays for it. Only meaningful when the diff added source lines AND changed
+    tests exist to catch mutations of them.
+
+    Returns the staged, gate-failing Scorecard when the probe vetoes the
+    candidate, else ``None`` (probe absent or passed).
+    """
+    if not (baseline_ref and new_src_lines and tests):
+        return None
+    inputs.mutation_probe = probe_diff_mutations(
+        cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS
+    )
+    staged = compose_scorecard(inputs, weights)
+    if staged.gates_passed:
+        return None
+    return staged
+
+
+def _attach_regression_judge(
+    inputs: FitnessInputs,
+    regression_judge_fn: Callable[[str, str], JudgeVerdict] | None,
+    cwd: Path,
+    baseline_ref: str | None,
+    target: str,
+) -> None:
+    """Attach the second-opinion LLM judge, last and only if it can rule.
+
+    Only for candidates that cleared every deterministic gate, including the
+    mutation probe. An unavailable ``git diff`` is treated as no diff (the
+    judge simply stays absent); a produced diff is judged verbatim.
+    """
+    if regression_judge_fn is None or not baseline_ref:
+        return
+    try:
+        diff = subprocess.run(
+            ["git", "diff", baseline_ref],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        diff = ""
+    if diff.strip():
+        inputs.regression_judge = regression_judge_fn(diff, target)
+
+
 def evaluate_candidate(
     candidate_dir: str | Path,
     changed_files: list[str],
@@ -990,24 +1082,9 @@ def evaluate_candidate(
     )
     cq, cq_detail = _mean_quality(cwd, src)
     astr, astr_detail = _mean_assertion(cwd, tests)
-    fail_first: FailFirstEvidence | None = None
-    if tdd is None:
-        if baseline_ref and tests:
-            fail_first = collect_fail_first_evidence(
-                cwd,
-                baseline_ref,
-                src,
-                tests,
-                timeout,
-                config_files_changed=config_changed,
-            )
-            tdd = (
-                fail_first.tdd_view(tests)
-                if fail_first is not None
-                else TddEvidence(changed_tests=tests)
-            )
-        else:
-            tdd = TddEvidence(changed_tests=tests)
+    tdd, fail_first = _gather_tdd_evidence(
+        cwd, baseline_ref, src, tests, timeout, config_changed, tdd
+    )
     net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
     doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
     from maistro_rsi.spec_tracker import new_ac_coverage, proposed_specs
@@ -1072,32 +1149,14 @@ def evaluate_candidate(
     if not prelim.gates_passed:
         return prelim
 
-    # Cost-layered after the cheap gates: mutation runs the changed tests once per
-    # mutant, so a candidate already doomed on tests/coverage/syntax never pays
-    # for it. Only meaningful when the diff added source lines AND changed tests
-    # exist to catch mutations of them.
-    if baseline_ref and new_src_lines and tests:
-        inputs.mutation_probe = probe_diff_mutations(
-            cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS
-        )
-        staged = compose_scorecard(inputs, weights)
-        if not staged.gates_passed:
-            return staged
+    staged = _stage_mutation_probe(
+        inputs, cwd, baseline_ref, new_src_lines, tests, timeout, weights
+    )
+    if staged is not None:
+        return staged
 
     # Second-opinion LLM judge last (most expensive): only for candidates that
     # cleared every deterministic gate, including the mutation probe.
-    if regression_judge_fn is not None and baseline_ref:
-        try:
-            diff = subprocess.run(
-                ["git", "diff", baseline_ref],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            ).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            diff = ""
-        if diff.strip():
-            inputs.regression_judge = regression_judge_fn(diff, target)
+    _attach_regression_judge(inputs, regression_judge_fn, cwd, baseline_ref, target)
 
     return compose_scorecard(inputs, weights)
