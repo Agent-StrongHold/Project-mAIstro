@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-rsi/tests: +51
+  tests/: +3
 ---
 # 109-evaluator-oracle-immunity
 
@@ -72,3 +73,14 @@ at 1873 passed, 6 skipped, re-verified after the follow-up rounds, the
 develop sync, and the test-control round (whose refactor of
 `_run_variant`/`_reported_layer_violations` below the radon C floor is
 behavior-preserving: the full suite re-run is identical).
+
+CI-repair round (2026-10-04): the diff-coverage gate failed on
+`scripts/check_enumerations.py` — the check-B2 body added for this issue was
+registered in `CHECKS` but never executed by the root suite, so 12 changed
+lines measured 16.7%. `tests/test_check_enumerations.py` gains the
+`TestEvaluatorOracleSurface` nodes (+3, the `tests/: +3` delta above): the
+real matcher must cover every score-defining probe with zero dead patterns
+(the shipped tree is protected), a probe that escapes the patterns must be a
+named `evaluator_oracle::` gap (the rename/move/bit-rot failure mode the
+check exists for), and an unimportable pattern module must be a reported
+error, never an empty gap list that reads as a pass.
