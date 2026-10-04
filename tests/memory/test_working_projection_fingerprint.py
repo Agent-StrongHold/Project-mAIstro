@@ -5,14 +5,14 @@ whose agent_id, scope, project, metadata (declared entities) or visibility
 markers changed must not be counted as "unchanged" — the projection would
 otherwise keep serving the previous snapshot's visibility from hot recall
 while durable retrieval already has the corrected one (review thread,
-working/projection.py hydrate()).
+working/indexed.py hydrate()).
 """
 
 from __future__ import annotations
 
 import pytest
 
-from maistro.memory.working.projection import WorkspaceWorkingMemoryProjection
+from maistro.memory.working.indexed import WorkspaceWorkingMemoryProjection
 from maistro.types.memory import EpisodicMemory, MemoryScope
 
 
