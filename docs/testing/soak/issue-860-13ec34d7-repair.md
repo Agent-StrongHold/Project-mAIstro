@@ -94,4 +94,3 @@ Goal -> Graph -> Run -> NodeRun -> Attempt authority, including store-owned fenc
 Progress: checked 1, done 0, skipped 0, errors 1 (Docker prerequisite).
 CI-ledger assessment complete; acceptance remains blocked. This report is the
 local committed checkpoint. No push, GitHub mutation or destructive git command.
-

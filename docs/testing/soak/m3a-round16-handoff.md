@@ -109,4 +109,3 @@ Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: designated RC,
 representative workloads, and exact-artifact sustained evidence}`. CI gate
 validation is complete; issue #860 acceptance is not. No remote actions taken.
 This handoff is committed locally as the writer checkpoint.
-
