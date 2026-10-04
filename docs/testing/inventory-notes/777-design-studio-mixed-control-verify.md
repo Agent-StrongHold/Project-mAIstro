@@ -9035,3 +9035,68 @@ packages/maistro-bootstrap/tests` -q **777 passed / 2 skipped**
 Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
 123–134. All 13 acceptance criteria remain unprovable against
 reachable production behavior (Refs #777).
+
+## Round 136 — repair round at 03934e23, develop synced 928993dda → 2ef76025e
+
+Incoming repair signals, resolved from evidence:
+
+- **Signal A** (53d5e08bf `check-2.log`, `ruff format --check .` rc=1,
+  "Would reformat: agent_loop.py, 2863 files"): stale 7th consecutive
+  time. That log predates the round-110 fix (2f054b614). Fresh at merge
+  head: per-file `ruff format --check packages/maistro-bootstrap/src/
+  maistro_bootstrap/builders/agent_loop.py` → "1 file already formatted"
+  EXIT 0; repo-wide → **2908 files already formatted** EXIT 0 (tree grew
+  2897→2908 with the merge).
+- **Signal B** (9d687530 result.json): `failure_kind: provider_error`
+  ("Request timed out"), `checks: []`, agent_exit 0 — zero tree delta,
+  nothing actionable; recorded, no work to salvage (worktree was clean
+  at 03934e23 before this round).
+- **Previous block** (worker-requested BLOCKED): develop moved this
+  round. Fetched; `origin/develop` now exactly the job base
+  **2ef76025e** (gh-readonly-queue pr-1940). Branch was 4 behind /
+  214 ahead; merged conflict-free at **882d44c211ab**. The 4 commits
+  (#1939 foreign harnesses, #1937 GovernedLLMClient identity binding,
+  #1935 composition-guard universe tests, #1929 proof envelope) carry
+  **zero** #804-seam content: grep of the merge diff for
+  `GoalReconciler|delegate_goal|maistro\.goals|workspace_agent|
+  working_graph` → no hits. Quality ledger verified loss-free across
+  the merge: numstat vs pre-merge head `0 2 quality/vulture-baseline.json`
+  (develop's own removal), vs origin/develop `0 1` (this branch's
+  round-110 removal only); no other quality/*.json touched.
+
+Blockers re-proven fresh at merge head 882d44c211ab (grep, not assumed):
+
+- #804: `GoalReconciler`/`delegate_goal` → **0 files** in packages/;
+  no `maistro/goals` module exists (no goals.py under any src tree) —
+  the `maistro.goals` string survives only as doc-comment
+  owner-assertions in maistro-design (packs/types.py:14,242,
+  packs/rubric.py:13) and core ontology/interop tests.
+- #53 seam landed and alive: hive `services/workspace_agent.py`
+  consumed by chat path (`chat_runs.py`, `agent_materialization.py`,
+  `workspace_mode.py`) — but **0** `workspace_agent` references in
+  maistro-design src or design_service.py.
+- #776 landed in core (`maistro-core/src/maistro/memory/working_graph/`:
+  wiring/store/types/backend/manager) — **0** `working_graph`/
+  `WorkingGraph` references in maistro-design src or design_service.py.
+- BACKLOG.md:347–348: `[conductor-404] Workspace Agent chat — Proposed;
+  v1.0 M3-D` — #804/#1037 persistent goals + reconciliation still
+  Proposed (unimplemented).
+- Round-135 `.pyc` debris re-confirmed: only ignored
+  `tests/__pycache__/*.pyc` under maistro-design tests; no tracked or
+  untracked `.py` source hit exists.
+
+Fresh battery, all executed this round at 882d44c211ab:
+`uv sync --locked --extra dev` EXIT 0; `ruff check .` EXIT 0 ("All
+checks passed!"); `ruff format --check .` EXIT 0 (2908 files);
+vulture CI-exact EXIT 0 — base 2ef76025e / candidate 882d44c211ab,
+**1340 reviewed → 1339 findings**, unclassified 0, never-allowlist 0,
+**no ledger amendment**; suite-inventory **14/14** EXIT 0;
+backlog-consistency **167 items** EXIT 0; pytest
+`packages/maistro-design/tests packages/maistro-bootstrap/tests` -q
+**777 passed / 2 skipped** (41.57s); merge-touched core suites
+(graph/nodes, capabilities, test_container_wiring.py,
+test_governed_quota.py) **965 passed** (24.05s).
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
+123–135. All 13 acceptance criteria remain unprovable against
+reachable production behavior (Refs #777).
