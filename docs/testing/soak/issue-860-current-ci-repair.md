@@ -1,6 +1,65 @@
 # Issue #860 — current CI repair
 
-## Latest checkpoint — job `cdbeb34bb1d745d28f39fedf9c3bb57b`
+## Latest checkpoint — job `97a26abf2d78434dbc8c424a44b1f392`
+
+Frozen scope: #860 only, assigned `auto-860` worktree. Verified clean starting
+HEAD `e28917ddb6f26f5408a0dec2a58145da68357f46` and locally resolving assigned
+base `97c05e0f17e3ed72c82d76ed7eb0a0fe702883fb`. No conflict or uncommitted
+salvage existed. Inspected prior job `e0312ee2` result independently; no driver
+`check-*.log` files existed in this job's initial snapshot.
+
+Fresh validation (600/1200-second command timeouts; logs in the job directory):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, **1342 findings / 1342 reviewed identities**, zero unclassified/never-allowlist. Actual comparison base `086ad770863b`; `repair-vulture.log`. No unbanked identity exists to amend or genuinely dead finding to repair.
+- `uv sync --locked --extra dev`: PASS (`repair-sync.log`).
+- `uv run ruff check .`: PASS; `uv run ruff format --check .`: PASS, 2858 files (`repair-ruff-{check,format}.log`).
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`: **88 passed, 5 skipped**, missing `MAISTRO_TEST_PG_DSN` (`repair-pytest.log`). No live PostgreSQL proof claimed.
+- `uv run python scripts/check-suite-inventory.py`: PASS, 14 suites (`repair-inventory.log`).
+- `uv run python scripts/check-deployment-claims.py`, `uv run python scripts/check-compose-secrets.py`, `uv run python scripts/check-merge-markers.py`: PASS (`repair-deployment.log`, `repair-compose.log`, `repair-merge-markers.log`).
+- Inline `uv run python` imported the current driver and evaluated the four fixed historical packs below. Each failed both `sustain_duration` and `exact_rc_artifact`, as asserted (`repair-evidence.json`). Run 6 still records **90.43 seconds**, not 14400. This is evidence evaluation, not a new soak.
+
+Reviewed accepted ADR-085 (principal keys, not shared replica storage),
+ADR-081626-f383 (durable Attempt authority and stale-writer fencing), and
+ADR-082426-82c7 (occurrence-keyed Run admission). Preserve the canonical
+Goal → Graph → Run → NodeRun → Attempt model: admission uniqueness cannot
+stand in for physical-work or recovery proof. No authority or policy redesign.
+
+Reachable production behavior: `maistro_server/main.py:593` installs
+`RateLimitMiddleware`; `api/rate_limit.py:72` constructs an independent
+in-memory limiter. Executed tests at `tests/test_soak_promotion_gates.py:435`
+prove another allowance on replica 2 for the same authenticated or pre-auth
+identity after exhausting replica 1. The old H3 shared-store claim is already
+corrected; no cosmetic evidence edit is warranted. The reference Compose is a
+local build with required external gateway configuration, not a designated
+immutable RC. `scripts/soak/run_soak.py:635` rejects host-preflight equivalence.
+
+| Acceptance criterion | Fresh evidence / disposition |
+|---|---|
+| Representative RC profile | PARTIAL: profile inspected; users/Workspaces, Graph fan-out, successful tool/model, Design/Canvas and background applicability remain UNVERIFIED. |
+| Two application replicas | Boot-contract tests pass; deployed exact-RC replicas UNVERIFIED. |
+| Sustained saturation/reclaim/retry/leaks | UNVERIFIED; no sustained run executed. |
+| Physical-work uniqueness / Goal reconciliation | UNVERIFIED; admission checks and terminal Run counts do not prove execution/recovery. |
+| Rate/security/degraded non-bypass | Aggregate non-bypass NOT MET: real middleware tests reproduce independent replica allowances. Full RC security/degraded behavior UNVERIFIED. |
+| Complete telemetry and thresholds | Process-group sampler regression passes; full application-loop/worker/RC metrics and thresholds UNVERIFIED. |
+| Active-work kill/restart and recovery | UNVERIFIED; no live replica restart executed. |
+| Long exact-RC soak | NOT MET by evaluated packs; no designated exact-RC >=14400-second evidence. |
+| Findings filed/reclassified | Local F11/F12 milestone classifications inspected; external filing UNVERIFIED and prohibited in this lane. |
+| Hash-bound machine/human RC evidence | Historical packs evaluated; qualifying RC evidence UNVERIFIED. |
+
+**BLOCKED**: the requested CI debt failure does not reproduce. The unresolved
+block is missing production evidence plus the replica-budget contract mismatch,
+not a develop-sync conflict. Only this checkpoint changes; no source, runtime
+config, tests, inventory delta, ledger, grants or raw historical evidence edits.
+Next: designate the immutable RC/configuration, complete representative workload
+and physical-effect/telemetry oracles, resolve the replica-budget mismatch, then
+soak that unchanged production artifact for >=14400 seconds. Do not substitute
+another host preflight or speculative ledger amendment. Commit locally; no GitHub
+mutations or integration approval. Progress: checked 1, done 0 acceptance-complete,
+skipped 0 issues, errors 0 validation commands; 5 database tests skipped.
+
+---
+
+## Historical checkpoint — job `cdbeb34bb1d745d28f39fedf9c3bb57b`
 
 Frozen scope: issue #860 only, assigned branch/worktree `auto-860`, clean
 starting HEAD `278a8a53763fcd5dd7a76a69133ca69cf16525e8`; assigned base
