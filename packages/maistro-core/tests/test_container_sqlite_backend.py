@@ -70,7 +70,10 @@ async def test_sqlite_backend_quota_tracker_write_then_read_back() -> None:
     container = await create_container(
         AgentConfig(router_api_key="test-key", database_url="sqlite://")
     )
-    totals = await container.quota_tracker.record_usage("openai", "2026-06", 100, 50)
+    # `record_usage` takes a billing cycle from the validated vocabulary
+    # (#1205) and derives the cycle key itself; passing a precomputed key
+    # like "2026-06" now raises instead of silently meaning "monthly".
+    totals = await container.quota_tracker.record_usage("openai", "monthly", 100, 50)
     assert totals["input_tokens"] == 100
     assert totals["output_tokens"] == 50
 
