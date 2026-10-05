@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +57
+  tests/: +60
 ---
 # 951-extension-sdk-boundary
 
@@ -105,6 +105,31 @@ the installed distribution first and falls back to the extension root's copy
 only under the editable install, where no wheel exists to read — in the
 isolation sandbox the fallback file does not exist, so the fixture still
 fails a wheel that drops the manifest.
+
+## The review-repair round (third)
+
+The dynamic-import classifier learned its aliases and the test-only exemption
+learned its place — three node IDs in `tests/test_check_extension_imports.py`,
+each proven against the code it repairs (the pre-repair gate misses the
+aliased import, false-flags the method call, and exempts the shipped tests
+package):
+
+- `from importlib import import_module as load; load("maistro")` is now traced
+to the real callable through a scope-aware binding table, so an aliased
+dynamic import of a product-private root is named; and
+`manager.import_module("optional_plugin")` — an ordinary method call that
+merely wears the name — is no longer a violation (`test_dynamic_import_aliases_are_resolved`).
+- Bindings are lexical: a name bound inside one function is not the module's,
+and vice versa (`test_alias_bindings_respect_scope`).
+- A `tests` package beneath the shipped namespace (`src/root/tests/plugin.py`)
+no longer inherits the top-level `tests/` tree's test-only exemption: a host
+imports it as product code, so its `pytest` import must be declared
+(`test_tests_package_inside_the_shipped_namespace_is_not_test_only`).
+
+The first cut flagged any call whose terminal name was `import_module` or
+`__import__`; the matrix cases (`importlib.import_module("maistro")`, bare
+`__import__(...)`, `dynamic_import_module("x")`, argument-less calls) keep
+their recorded verdicts under the binding-table rule.
 
 ## What did not move
 

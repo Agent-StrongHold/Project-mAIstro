@@ -73,7 +73,9 @@ def make_extension(
         encoding="utf-8",
     )
     for filename, body in (files or {"__init__.py": ""}).items():
-        (ext / "src" / name.replace("-", "_") / filename).write_text(body, encoding="utf-8")
+        target = ext / "src" / name.replace("-", "_") / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
     for filename, body in (tests or {}).items():
         (ext / "tests" / filename).write_text(body, encoding="utf-8")
     return ext
@@ -290,6 +292,20 @@ def test_test_only_roots_are_allowed_only_under_tests(
     assert scan(gate, tested, write_policy(tmp_path / "b")) == []
 
 
+def test_tests_package_inside_the_shipped_namespace_is_not_test_only(
+    gate: types.ModuleType, tmp_path: Path
+) -> None:
+    """A manifest entrypoint may live at ``src/root/tests/plugin.py``.
+
+    It is within the extension's own import root, so the entrypoint gate
+    accepts it — which is exactly why the import gate must not mistake it
+    for test code: a host imports it without pytest installed.
+    """
+    ext = make_extension(tmp_path, files={"tests/plugin.py": "import pytest\n"})
+    violations = scan(gate, ext, write_policy(tmp_path))
+    assert any("undeclared third-party import" in v for v in violations)
+
+
 def test_imports_nested_in_functions_and_type_checking_are_still_caught(
     gate: types.ModuleType, tmp_path: Path
 ) -> None:
@@ -447,3 +463,46 @@ def test_non_import_shapes_are_ignored(gate: types.ModuleType, tmp_path: Path) -
         },
     )
     assert scan(gate, ext, write_policy(tmp_path)) == []
+
+
+def test_dynamic_import_aliases_are_resolved(gate: types.ModuleType, tmp_path: Path) -> None:
+    """Alias bindings reach the real callables; unrelated methods stay calls."""
+    ext = make_extension(
+        tmp_path,
+        files={
+            "mod.py": (
+                "from importlib import import_module as load\n"
+                "import importlib as il\n"
+                "load('maistro')\n"
+                "il.import_module('maistro')\n"
+                "manager.import_module('optional_plugin')\n"
+            )
+        },
+    )
+    violations = scan(gate, ext, write_policy(tmp_path))
+    assert sum('dynamic import of "maistro"' in v for v in violations) == 2
+    assert not any("optional_plugin" in v for v in violations)
+
+
+def test_alias_bindings_respect_scope(gate: types.ModuleType, tmp_path: Path) -> None:
+    """A binding inside one function is not the module's, and vice versa."""
+    ext = make_extension(
+        tmp_path,
+        files={
+            "mod.py": (
+                "def f():\n"
+                "    from importlib import import_module as load\n"
+                "    load('maistro')\n"
+                "\n"
+                "def g():\n"
+                "    import importlib as il\n"
+                "    return il\n"
+                "\n"
+                "il.import_module('maistro')\n"
+                "load('maistro')\n"
+            )
+        },
+    )
+    violations = scan(gate, ext, write_policy(tmp_path))
+    assert len(violations) == 1
+    assert ":3" in violations[0] and 'dynamic import of "maistro"' in violations[0]

@@ -27,8 +27,10 @@ boundary:
   its own buildable project (a ``pyproject.toml``), which is what keeps the
   tree outside the uv workspace and outside every product wheel.
 - ``test_only_namespaces`` — roots a test file may import without declaring
-  them as runtime dependencies. Outside a ``tests/`` directory they are
-  undeclared-dependency violations: test tooling is not a shipped dependency.
+  them as runtime dependencies. Outside the extension's top-level ``tests/``
+  tree they are undeclared-dependency violations: test tooling is not a
+  shipped dependency, and a ``tests`` package inside the shipped namespace is
+  still product code.
 
 What counts as a violation
 --------------------------
@@ -45,9 +47,10 @@ call `packages/maistro-ext-sdk`'s own hygiene test makes about itself):
   repository's layout is the import the isolation fixture exists to make
   impossible;
 - calling ``importlib.import_module(...)`` / ``__import__(...)`` on a literal
-  string that resolves to any of the above — a dynamic import is still an
-  import, and reading it statically is what keeps this gate from needing to
-  run any extension code;
+  string that resolves to any of the above, directly or through an alias of
+  the callable or its module (``from importlib import import_module as load;
+  load("maistro")``) — a dynamic import is still an import, and reading it
+  statically is what keeps this gate from needing to run any extension code;
 - naming a **manifest ``entrypoint.module`` outside the extension's own
   packaged namespace** — a host imports that module as the extension's code,
   so ``maistro.security.warden`` as an entrypoint reaches a product-private
@@ -253,33 +256,106 @@ def _import_roots(tree: ast.AST) -> list[tuple[str | None, int, str]]:
                 root = node.module.split(".")[0]
                 names = ", ".join(alias.name for alias in node.names)
                 found.append((root, node.lineno, f"from {node.module} import {names}"))
-        elif isinstance(node, ast.Call):
-            found.extend(_dynamic_import_roots(node))
         elif isinstance(node, ast.Attribute):
             found.extend(_sys_path_mutation(node))
+    found.extend(_DynamicImportCollector().visit_tree(tree).found)
     return found
 
 
-def _is_dynamic_import_call(func: ast.expr) -> bool:
-    """``importlib.import_module(...)``, ``import_module(...)``, ``__import__(...)``."""
-    if isinstance(func, ast.Attribute):
-        return func.attr in {"import_module", "__import__"}
-    if isinstance(func, ast.Name):
-        return func.id in {"import_module", "__import__"}
-    return False
+_DYNAMIC_IMPORT_CALLABLES = frozenset({"import_module", "__import__"})
+_DYNAMIC_IMPORT_MODULES = frozenset({"importlib", "builtins"})
 
 
-def _dynamic_import_roots(call: ast.Call) -> list[tuple[str | None, int, str]]:
-    """Literal-string targets of ``importlib.import_module`` and ``__import__``."""
-    if not _is_dynamic_import_call(call.func):
-        return []
-    if not call.args:
-        return []
-    arg = call.args[0]
-    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-        root = arg.value.split(".")[0]
-        return [(root, call.lineno, f'dynamic import of "{arg.value}"')]
-    return []
+class _ImportScope:
+    """Names one lexical scope binds to the dynamic-import machinery."""
+
+    def __init__(self) -> None:
+        self.callables: set[str] = set()
+        self.modules: set[str] = set()
+
+
+class _DynamicImportCollector(ast.NodeVisitor):
+    """Literal-string dynamic-import calls, with aliases resolved.
+
+    Tracks which names each lexical scope binds to the real callables
+    (``from importlib import import_module as load``, ``import importlib as
+    il``) and classifies a call only through those bindings — never through
+    the terminal attribute or name alone. ``load("maistro")`` is still an
+    import, and ``manager.import_module("optional_plugin")`` is still just
+    a method call.
+    """
+
+    def __init__(self) -> None:
+        self.found: list[tuple[str | None, int, str]] = []
+        self._scopes: list[_ImportScope] = [_ImportScope()]
+
+    def visit_tree(self, tree: ast.AST) -> _DynamicImportCollector:
+        self.visit(tree)
+        return self
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._scoped(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._scoped(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._scoped(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._scoped(node)
+
+    def _scoped(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
+    ) -> None:
+        # Decorators, defaults, and bases run in the enclosing scope; the
+        # body binds fresh names.
+        args = getattr(node, "args", None)
+        outer: list[ast.AST] = [
+            *getattr(node, "decorator_list", []),
+            *(args.defaults if args else []),
+            *(d for d in (args.kw_defaults if args else []) if d),
+            *getattr(node, "bases", []),
+        ]
+        for child in outer:
+            self.visit(child)
+        self._scopes.append(_ImportScope())
+        for stmt in node.body:
+            self.visit(stmt)
+        self._scopes.pop()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            root = alias.name.split(".")[0]
+            if root in _DYNAMIC_IMPORT_MODULES:
+                self._scopes[-1].modules.add(alias.asname or root)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.level == 0 and node.module in _DYNAMIC_IMPORT_MODULES:
+            for alias in node.names:
+                if alias.name in _DYNAMIC_IMPORT_CALLABLES:
+                    self._scopes[-1].callables.add(alias.asname or alias.name)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if node.args and self._is_dynamic_import(node.func):
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                root = arg.value.split(".")[0]
+                self.found.append((root, node.lineno, f'dynamic import of "{arg.value}"'))
+        self.generic_visit(node)
+
+    def _is_dynamic_import(self, func: ast.expr) -> bool:
+        if isinstance(func, ast.Name):
+            # ``__import__`` is a builtin even with no from-import in sight.
+            return func.id == "__import__" or self._bound(func.id, "callables")
+        if isinstance(func, ast.Attribute) and func.attr in _DYNAMIC_IMPORT_CALLABLES:
+            return isinstance(func.value, ast.Name) and self._bound(func.value.id, "modules")
+        return False
+
+    def _bound(self, name: str, kind: str) -> bool:
+        return any(name in getattr(scope, kind) for scope in self._scopes)
 
 
 def _sys_path_mutation(node: ast.Attribute) -> list[tuple[str | None, int, str]]:
@@ -311,7 +387,10 @@ def scan_extension(extension_dir: Path, policy: Policy) -> list[Violation]:
     for path in sorted(extension_dir.rglob("*.py")):
         if any(part in {"__pycache__", ".venv", "dist", "build"} for part in path.parts):
             continue
-        in_tests = "tests" in path.relative_to(extension_dir).parts
+        # Only the extension's own top-level tests tree is test-only. A
+        # ``tests`` package beneath the shipped namespace (``src/root/tests/``)
+        # is product code a host can import — its imports need declaring.
+        in_tests = path.relative_to(extension_dir).parts[0] == "tests"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for root, lineno, detail in _import_roots(tree):
             if root is None:
