@@ -143,6 +143,8 @@ class EventStoreProgressSink:
     invoking Attempt, with the extension identity recorded in the canonical
     ``provenance`` field. The sink is host-side: an extension reports through
     its context hook and never touches the event store itself.
+
+    M1 product-local projection: Event
     """
 
     def __init__(self, events: EventStore) -> None:

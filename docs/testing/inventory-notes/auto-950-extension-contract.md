@@ -32,6 +32,11 @@ No existing tests were removed or renamed; the delta is purely additive.
 
 ## Validation battery (executed at head `f348fa3e0bfb…`, branch `auto-950`)
 
+Re-executed after the CI-repair round on top of `869f936f525e` — the repair
+(`CORE_PUBLIC_SURFACE` enumeration, ADR-104 `related` reclassification,
+`EventStoreProgressSink` M1 projection marker) changed no test, so the counts
+below are unchanged; the newly executed provenance gates are appended.
+
 - `uv run ruff check .` → All checks passed (exit 0); `ruff format --check .`
   → 2926 files already formatted.
 - `uv run mypy --strict packages/maistro-core/src/maistro/extensions
@@ -58,3 +63,29 @@ No existing tests were removed or renamed; the delta is purely additive.
   `check-ac-state.py`, `check-doc-links.py` → all exit 0.
 - A ledger `--update` run against `quality/contract-markers-baseline.json`
   was reverted unused; the ADR-104 claim is evidenced by markers instead.
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py` (the `exact-debt-ledger` portfolio,
+  CI's exact step) → exit 0 after the repair: citation-status 0 exceptions,
+  enumerations 1 tolerated gap, adr-status-language / promotion-surface /
+  reachability / reachability-dispositions / shell-execution /
+  contract-markers / lifecycle all flat vs the trusted base.
+- `uv run python scripts/check_enumerations.py` → exit 0, no new gaps
+  (`maistro.extensions` is enumerated in `CORE_PUBLIC_SURFACE`,
+  `scripts/verify-wheel-imports.py`).
+- `uv run python scripts/check-citation-status.py` → exit 0 (SPEC-177 cited
+  as `related`, not governing `substrate`, in ADR-104).
+- `python scripts/check-m1-convergence-freeze.py --base 94781cf6` → exit 0
+  (`EventStoreProgressSink` docstring carries the policy's own
+  `M1 product-local projection: Event` classification).
+- `tests/test_check_citation_status.py` root self-checks (the ones CI's
+  `test` job and the coverage combine step run) → pass; plus
+  `tests/test_verify_wheel_imports.py`, `tests/test_check_enumerations.py`,
+  `packages/maistro-core/tests/extensions`, `packages/maistro-registry/tests`
+  → 313 passed total across the repair battery.
+- `scripts/check-diff-coverage.py` (branch coverage over the changed
+  measured files) → ok at 90% lines / 80% branch floors.
+- `scripts/check-adr-index.py`, `maistro_registry.cli lint . --strict`,
+  `scripts/check-doc-links.py`, `scripts/check-ac-state.py`,
+  `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (1338=1338, `unclassified: 0`) → all exit 0;
+  `quality/` is byte-identical to the base (no ledger rows added).

@@ -67,6 +67,11 @@ CORE_PUBLIC_SURFACE = [
     "maistro.container",
     "maistro.credentials",
     "maistro.events",
+    # The M9-A2 extension SDK (#950, ADR-104). Importable from a bare install
+    # by design: the context SDK resolves without optional credentials, so the
+    # enumeration ratchet's core-surface check sees it covered here rather
+    # than as a gap.
+    "maistro.extensions",
     "maistro.graph",
     "maistro.http",
     "maistro.memory",

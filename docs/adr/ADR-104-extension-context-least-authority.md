@@ -8,10 +8,10 @@ created: 2026-10-05
 accepted: 2026-10-05
 substrate:
   - maistro-engine#ADR-032
-  - maistro-engine#SPEC-177
 implements: []
 related:
   - maistro-engine#ADR-031
+  - maistro-engine#SPEC-177
 supersedes: []
 blocks: []
 blocked-by: []
@@ -55,6 +55,13 @@ execution chain `Graph → Run → NodeRun → Attempt`, the canonical
 with its typed `provenance` field. The defect to avoid is a parallel extension
 authority — a context that hands out a container, a second dispatch path, or
 an ambient "current extension" global.
+
+SPEC-177 (hyperagent graph execution) names that execution chain and is
+cited as `related` rather than `substrate`: its acceptance criteria are
+defined but the spec is not yet accepted, and a governing citation from an
+active document must resolve to live authority (#374). This ADR claims no
+authority over execution semantics it does not own; the citation becomes
+governing when SPEC-177's own acceptance ladder accepts the spec.
 
 ## Decision
 
