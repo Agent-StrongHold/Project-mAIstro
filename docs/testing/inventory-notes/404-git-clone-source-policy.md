@@ -208,3 +208,44 @@ multiset loss across the merge.
   (PostgreSQL)`, and `docker-build` were IN_PROGRESS and `gates-ran` PENDING
   at review time. CI is therefore not green on this head yet and is recorded
   UNVERIFIED rather than inferred.
+
+## Repair round (head 98a04e147, develop sync to 94781cf6b + CI conclusion)
+
+Two facts closed this round, neither carried forward from earlier rounds:
+
+- **Hosted CI on PR head 2ebefd794f8d concluded green.** Check-run snapshot:
+  31 runs, 30 `success`, 1 `skipped`, none failed. The `gates-ran` commit
+  status history on that head reads failure 04:55:11Z ("Required execution
+  evidence is missing or non-executed" — a transient while checks were still
+  arriving) → pending → **success 05:59:30Z** ("All required checks executed
+  on this exact head"). The earlier `failure` is superseded, not the current
+  state.
+- **Develop sync.** `origin/develop` moved to 94781cf6b (handler-identity
+  drift detection in `check-api-route-contracts.py`, its 5 tests, the 1860
+  inventory note). That SHA is exactly this lane's declared develop base, and
+  the branch was one commit behind (merge-base 534d475e). Merged
+  `origin/develop` into `auto-404` → merge head 98a04e147, `ort` strategy,
+  zero conflicts (verified beforehand: no path overlap between
+  534d475e..origin/develop and 534d475e..2ebefd794). `git diff --numstat
+  origin/develop HEAD -- quality/` shows only the additive
+  `quality/ac-state-notes/auto-404.json` (+17/−0) — no multiset rows lost
+  across either merge.
+
+Re-executed fresh at 98a04e147 (prior claims not carried forward): `ruff
+check .` clean; `ruff format --check .` 2917 files formatted; targeted set
+`test_server_security.py` + RSI `test_cli.py`/`test_selfbranch.py` + the
+synced-in `tests/test_check_api_route_contracts.py` → 113 passed; the
+synced-in gate `check-api-route-contracts.py` exit 0 (279 handlers, 15
+audited routes, 0 canned); `check-suite-inventory.py` matches for
+`packages/maistro-core/tests` (13327) and `packages/maistro-rsi/tests`
+(998), and the full 14-suite run matches including root `tests/` (4541);
+quality ratchets with CI's exact argv against base 94781cf6b —
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` exit 0 (1338 = 1338), `check-radon-baseline.py` exit 0
+(143 = 143), zero new/regressed/stale on both; `check-reachability.py` exit
+0; `check-security-inventory.py` exit 0. The 21 policy-surface git nodes
+re-run individually green (10 parametrized non-policy URLs incl. git://
+case/encoded spellings, host allowlist ×2, transport hardening argv,
+submodule-URL policy ×5, destination-pin persistence, per-command pin,
+real-git submodule-update refusal). Merge commit messages 2ebefd794..HEAD
+carry no closure keywords.
