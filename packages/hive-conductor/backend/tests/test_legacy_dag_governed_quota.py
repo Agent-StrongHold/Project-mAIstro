@@ -23,6 +23,9 @@ import httpx
 import pytest
 from services.dag_execution_scope import DagExecutionScope
 
+from maistro.providers.registry import InMemoryProviderRegistry
+from maistro.providers.types import ModelMetadata
+
 # The DAG node's env default model; pinned explicitly on the node below.
 _NODE_MODEL = "test-dag-model"
 
@@ -78,13 +81,19 @@ class _FakeGatewayClient:
         return _FakeGatewayResponse(dict(cls.response_body))
 
 
-class _UnknownModelRegistry:
-    """No registry metadata: the gateway provider still resolves by alias."""
-
-    async def get_model(self, name: str) -> Any:
-        from maistro.providers.errors import ModelNotFoundError
-
-        raise ModelNotFoundError(name)
+def _model_registry() -> InMemoryProviderRegistry:
+    """An explicit Binding pin requires trusted, registered model metadata."""
+    return InMemoryProviderRegistry(
+        models=[
+            ModelMetadata(
+                name=_NODE_MODEL,
+                provider="test-provider",
+                cost_per_1k_input=0.5,
+                cost_per_1k_output=1.0,
+                latency_p50_ms=100,
+            )
+        ]
+    )
 
 
 class _RecordingTracker:
@@ -156,7 +165,7 @@ def _install_container(monkeypatch: pytest.MonkeyPatch, tracker: _RecordingTrack
     )
     container = SimpleNamespace(
         capability_effects=effects,
-        provider_registry=_UnknownModelRegistry(),
+        provider_registry=_model_registry(),
         llm_router=SimpleNamespace(),
         run_store=None,
     )
@@ -274,7 +283,7 @@ def test_dag_node_runtime_refuses_partial_composition(monkeypatch: pytest.Monkey
     effects = SimpleNamespace(credentials=SimpleNamespace(add=lambda **kw: None))
     full = SimpleNamespace(
         capability_effects=effects,
-        provider_registry=_UnknownModelRegistry(),
+        provider_registry=_model_registry(),
         llm_router=SimpleNamespace(),
     )
     # get_settings is lru_cached suite-wide; pin the one attribute `_endpoint`
