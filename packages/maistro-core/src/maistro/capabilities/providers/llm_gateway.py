@@ -144,7 +144,8 @@ class ModelChatRequest(BaseModel):
 
     model: str = ""
     messages: list[dict[str, object]] = Field(default_factory=list)
-    temperature: float = 0.7
+    # None preserves callers which intentionally leave sampling to the Provider.
+    temperature: float | None = 0.7
     max_tokens: int | None = None
     tools: list[dict[str, object]] | None = None
     tool_choice: str | None = None
@@ -157,9 +158,10 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
     payload: dict[str, object] = {
         "model": provider.name,
         "messages": [dict(message) for message in request.messages],
-        "temperature": request.temperature,
         "stream": False,
     }
+    if request.temperature is not None:
+        payload["temperature"] = request.temperature
     if request.max_tokens is not None:
         payload["max_tokens"] = request.max_tokens
     if request.tools:

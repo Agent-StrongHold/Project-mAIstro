@@ -120,6 +120,25 @@ or placeholder-only section.
   Binding pin and actual gateway, with no fallback around a pin. Automatic retries
   require proved non-dispatch; UNKNOWN outcomes are not redispatched under new keys.
 
+- **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
+  `clarify` and the model fallback of `web_search` require a configured
+  `model.chat` Binding referenced by the DAG node's `model_binding_id`
+  (top-level or under `config`). Provider selection, scoped credentials,
+  actor/execution correlation, quota and usage use the existing canonical
+  effect authority. Missing authority and malformed model answers fail the
+  node instead of dispatching with ambient credentials or inventing answers.
+  The generic tool Invocation remains in place. Ordinary legacy model and
+  sandbox callers and Agent tool composition remain separate convergence work.
+
+- **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
+  Pinned models must have metadata in the configured ProviderRegistry before
+  use; registered-but-unavailable pins continue to refuse without fallback.
+  Unregistered request aliases retain gateway passthrough with absent cost
+  metadata. Hive activation now reports the registration prerequisite clearly:
+  supply trusted model metadata through `provider_config_path` before activating
+  a pinned health model; LiteLLM `/model/new` registration alone is insufficient.
+  Unavailable request-alias diagnostics no longer describe aliases as pins.
+
 - **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
   (#1362).** Serialized budget definitions, reservation identities, and usage
   evidence are bound as text before PostgreSQL parses JSONB, preventing a
