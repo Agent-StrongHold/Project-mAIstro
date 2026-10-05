@@ -166,7 +166,7 @@ def model_call(request):
     return call
 
 
-async def assert_no_model_effect(s):
+async def assert_no_model_effect(s, earlier_usage):
     assert s.sent == []
     assert not await s.effects.invocation_store.list_effect(
         run_id=s.identity[0],
@@ -174,7 +174,7 @@ async def assert_no_model_effect(s):
         binding_id="declared",
         effect_key="agent-llm-1",
     )
-    assert s.effects.usage_log.events_for("gpt-5") == []
+    assert s.effects.usage_log.events_for("gpt-5") == earlier_usage
 
 
 @pytest.mark.parametrize("workspace", ["workspace", None])
@@ -202,16 +202,22 @@ async def test_materialized_agent_uses_persisted_scope_actor_and_operator_bindin
     assert row.status is InvocationStatus.COMPLETED
     assert row.usage.input_units == 7
     assert row.usage.output_units == 3
-    assert len(s.effects.usage_log.events_for("gpt-5")) == 1
+    events = [
+        event
+        for event in s.effects.usage_log.events_for("gpt-5")
+        if event.invocation_id == row.invocation_id
+    ]
+    assert len(events) == 1
 
 
 async def test_definition_workspace_is_a_restriction_not_authority(
     monkeypatch, tmp_path, model_call
 ):
     s, agent = await materialized(monkeypatch, tmp_path, workspace="foreign")
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(RunIntegrityError, match="workspace"):
         await model_call(s, agent)
-    await assert_no_model_effect(s)
+    await assert_no_model_effect(s, earlier_usage)
 
 
 @pytest.mark.parametrize(
@@ -223,18 +229,20 @@ async def test_materialized_agent_refuses_missing_disabled_or_revoked_binding(
     s, agent = await materialized(monkeypatch, tmp_path, **options)
     if revoked:
         await s.effects.bindings.revoke("declared")
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(BindingResolutionError):
         await model_call(s, agent)
-    await assert_no_model_effect(s)
+    await assert_no_model_effect(s, earlier_usage)
 
 
 async def test_materialized_agent_requires_real_live_attempt_lease(
     monkeypatch, tmp_path, model_call
 ):
     s, agent = await materialized(monkeypatch, tmp_path, leased=False)
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(RunIntegrityError, match="lease"):
         await model_call(s, agent)
-    await assert_no_model_effect(s)
+    await assert_no_model_effect(s, earlier_usage)
 
 
 @pytest.mark.parametrize("temperature", [None, 0.0, 0.3])
@@ -310,9 +318,10 @@ async def test_only_none_definition_scope_is_unrestricted(
     monkeypatch, tmp_path, workspace, model_call
 ):
     s, agent = await materialized(monkeypatch, tmp_path, workspace=workspace)
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(RunIntegrityError, match="workspace"):
         await model_call(s, agent)
-    await assert_no_model_effect(s)
+    await assert_no_model_effect(s, earlier_usage)
 
 
 async def test_materialized_client_rechecks_revocation_before_replay(
@@ -323,6 +332,8 @@ async def test_materialized_client_rechecks_revocation_before_replay(
     assert len(s.sent) == 1
     await s.effects.bindings.revoke("declared")
     agent._llm.clear_turn()
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(BindingResolutionError):
         await model_call(s, agent)
     assert len(s.sent) == 1
+    assert s.effects.usage_log.events_for("gpt-5") == earlier_usage

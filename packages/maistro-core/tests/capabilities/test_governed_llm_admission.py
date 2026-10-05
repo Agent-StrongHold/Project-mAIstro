@@ -226,4 +226,10 @@ async def test_agent_stream_replay_rechecks_binding_revocation() -> None:
             await anext(llm.stream([], "request-alias"))
     assert len(s.sent) == 1
     assert len(await rows(s)) == 1
-    assert len(s.effects.usage_log.events_for("request-alias")) == 1
+    (invocation,) = await rows(s)
+    events = [
+        event
+        for event in s.effects.usage_log.events_for("request-alias")
+        if event.invocation_id == invocation.invocation_id
+    ]
+    assert len(events) == 1
