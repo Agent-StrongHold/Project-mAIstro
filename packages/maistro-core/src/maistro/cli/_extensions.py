@@ -262,6 +262,15 @@ def extensions_preflight(
             "every installed extension as enabled (the conservative default).",
         ),
     ] = [],  # noqa: B006
+    all_disabled: Annotated[
+        bool,
+        Option(
+            "--all-disabled",
+            help="The host has every installed extension disabled. Without either "
+            "this flag or --enabled, every installed extension is treated as "
+            "enabled (the conservative default).",
+        ),
+    ] = False,
     as_json: Annotated[
         bool, Option("--json", help="Print the canonical machine-readable report.")
     ] = False,
@@ -274,6 +283,11 @@ def extensions_preflight(
     --policy strict the command exits non-zero while blocking extensions
     remain enabled — that exit is the gate an upgrade flow must honor.
     """
+    if all_disabled and enabled:
+        console.print(
+            "[red]--all-disabled contradicts --enabled; pass one or the other.[/red]"
+        )
+        raise Exit(code=1)
     try:
         policy = PreflightPolicy.from_name(policy_name)
     except ValueError as exc:
@@ -308,7 +322,7 @@ def extensions_preflight(
         records,
         target,
         policy=policy,
-        enabled=frozenset(enabled) if enabled else None,
+        enabled=frozenset() if all_disabled else (frozenset(enabled) if enabled else None),
     )
     if as_json:
         # soft_wrap: the canonical JSON is one long token; rich would break it

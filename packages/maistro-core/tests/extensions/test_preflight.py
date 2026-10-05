@@ -953,6 +953,56 @@ def test_cli_preflight_disabled_blocker_proceeds_under_strict(tmp_path: Path) ->
     assert "the upgrade can proceed" in result.output
 
 
+def test_cli_preflight_all_disabled_flag_proceeds_under_strict(tmp_path: Path) -> None:
+    """--all-disabled must reach the library as frozenset(), not None.
+
+    None means "treat every installed extension as enabled" (the conservative
+    default when the flag is omitted); frozenset() means nothing is enabled and
+    a strict policy cannot be refused by any blocker. Collapsing the explicitly
+    empty set to None would make an all-disabled install unrepresentable.
+    """
+    db_path = tmp_path / "installs.db"
+    _seed_db(db_path, _blocking_bundle())
+
+    result = runner.invoke(
+        app,
+        [
+            "preflight",
+            str(db_path),
+            "2.0.0",
+            "--contract-version",
+            "2.0.0",
+            "--policy",
+            "strict",
+            "--all-disabled",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "ext-block" in result.output  # still reported, as disabled
+    assert "the upgrade can proceed" in result.output
+
+
+def test_cli_preflight_all_disabled_conflicts_with_enabled(tmp_path: Path) -> None:
+    db_path = tmp_path / "installs.db"
+    _seed_db(db_path, _blocking_bundle())
+
+    result = runner.invoke(
+        app,
+        [
+            "preflight",
+            str(db_path),
+            "2.0.0",
+            "--contract-version",
+            "2.0.0",
+            "--all-disabled",
+            "--enabled",
+            "other.extension",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "contradicts" in result.output
+
+
 def test_cli_preflight_reproducible_json_output(tmp_path: Path) -> None:
     db_path = tmp_path / "installs.db"
     _seed_db(db_path, _blocking_bundle())
