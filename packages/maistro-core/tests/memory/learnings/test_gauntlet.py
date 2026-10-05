@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from maistro.agents.context_builder import _render_learnings_block
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.gauntlet import (
     ChainedGauntlet,
     OutcomeEvidenceGauntlet,
@@ -146,7 +147,7 @@ class TestChainedGauntlet:
 
 class TestPromoterWithGauntlet:
     async def test_validated_learning_joins_repertoire(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(hit_count=10)
         await store.store(lr)
 
@@ -162,7 +163,7 @@ class TestPromoterWithGauntlet:
         assert [p.id for p in await store.get_promoted()] == [lr.id]
 
     async def test_rejected_learning_stays_local_and_active(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(hit_count=10, success_after_use=0, failure_after_use=1)
         await store.store(lr)
 
@@ -179,7 +180,7 @@ class TestPromoterWithGauntlet:
         assert await store.get_promoted() == []
 
     async def test_below_threshold_candidate_is_never_judged(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(hit_count=2)
         await store.store(lr)
 
@@ -188,7 +189,7 @@ class TestPromoterWithGauntlet:
         assert lr.stage is LearningStage.MEMORY
 
     async def test_gauntlet_gates_skill_mutation(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         good = _used_learning(hit_count=10, tool_name="shell")
         bad = _used_learning(
             trigger_keys=["deploy", "verify"],
@@ -218,7 +219,7 @@ class TestPromoterWithGauntlet:
         # machine validation decides, and the legacy gate path is not entered.
         from maistro.memory.learnings.approval import LearningApprovalGate
 
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(hit_count=10)
         await store.store(lr)
 
@@ -235,7 +236,7 @@ class TestPromoterWithGauntlet:
     async def test_anti_pattern_failure_knowledge_is_promotable(self) -> None:
         # #121: failure knowledge follows the same validated road to the
         # repertoire as any other learning -- no separate door, none barred.
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(
             epistemic_type=EpistemicType.ANTI_PATTERN,
             learning="never force-push to main",
@@ -253,7 +254,7 @@ class TestPromoterWithGauntlet:
         assert lr.epistemic_type is EpistemicType.ANTI_PATTERN
 
     async def test_legacy_path_unchanged_without_gauntlet(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(hit_count=10, run_id="")
         await store.store(lr)
 
@@ -265,7 +266,7 @@ class TestPromoterWithGauntlet:
 
 class TestCaptureAntiPatterns:
     async def test_ineffective_learnings_become_anti_patterns(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(success_after_use=0, failure_after_use=4)
         await store.store(lr)
 
@@ -281,7 +282,7 @@ class TestCaptureAntiPatterns:
         assert lr.stage is LearningStage.MEMORY
 
     async def test_effective_and_unmeasured_learnings_are_left_alone(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         effective = _used_learning()  # 4/5 successes
         unmeasured = _used_learning(trigger_keys=["fresh"], learning="no outcomes yet")
         await store.store(effective)
@@ -293,7 +294,7 @@ class TestCaptureAntiPatterns:
         assert unmeasured.epistemic_type is EpistemicType.EMPIRICAL
 
     async def test_org_scoping_and_double_capture(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         org1 = _used_learning(org_id="org-1", success_after_use=0, failure_after_use=4)
         org2 = _used_learning(org_id="org-2", success_after_use=0, failure_after_use=4)
         await store.store(org1)
@@ -318,7 +319,7 @@ class TestCaptureAntiPatterns:
     async def test_captured_anti_pattern_can_then_be_validated(self) -> None:
         # The full #121 path: a captured anti-pattern with good later-Run
         # evidence joins the repertoire through the same Gauntlet.
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(
             run_id="",
             success_after_use=0,
@@ -354,7 +355,7 @@ class TestAntiPatternKnowledgeReuse:
     async def test_captured_anti_pattern_is_surfaced_as_scoped_advisory_guidance(
         self,
     ) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         anti = _used_learning(
             trigger_keys=["force-push"],
             learning="never force-push to main",
@@ -418,7 +419,7 @@ class TestAntiPatternKnowledgeReuse:
         assert promoted_block.startswith('<maistro:corrections type="promoted">')
 
     async def test_contrary_evidence_supersedes_a_captured_anti_pattern(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         anti = _used_learning(
             learning="never deploy on Fridays",
             success_after_use=0,
@@ -451,7 +452,7 @@ class TestAntiPatternKnowledgeReuse:
         assert await store.get(anti.id or 0) is anti
 
     async def test_repeated_failures_measured_before_and_after_adoption(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _used_learning(success_after_use=0, failure_after_use=4)
         await store.store(lr)
 

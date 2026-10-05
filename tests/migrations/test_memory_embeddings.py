@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.vectors import (
     EMBEDDING_DIMENSIONS,
     require_matching_dimension,
@@ -184,7 +185,7 @@ async def store(migrated_url):
     assert pool is not None
     try:
         await pool.execute("TRUNCATE learnings")
-        yield PgLearningStore(pool)
+        yield PgLearningStore(pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     finally:
         await pool.close()
 
