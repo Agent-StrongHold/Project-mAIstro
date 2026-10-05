@@ -83,6 +83,12 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Pre-launch Attempts settle when a terminal Run fence wins admission (#1085).**
+  The canonical execution service cancels its already-persisted leased Attempt
+  if logical preparation observes a terminal Run before physical owner registration.
+  Nonterminal or unreadable preparation failures retain their lease for recovery;
+  domain adapters never write physical Attempt outcomes to repair this race.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was
