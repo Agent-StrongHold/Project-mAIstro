@@ -426,17 +426,18 @@ Open §7 issues → land P0 checks red with baselines → P0.1–P0.4 green → 
 green → **M1 RunStore unification (#251)** → Phase 1 steps 1–6 (step 7 deferred v1.1), each PR
 retiring its ledger row → Phase 2 deletes → epics close by ac-state, never by keyword.
 
-### Phase 0 progress (2026-10-02)
+### Phase 0 progress (2026-10-05, L1046 verification round)
 
 | Item | State |
 |---|---|
-| §5 retirement ledger + gate | in review, [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766); delete-by values follow the §9 v1.0 amendments |
-| §6 epic-closure guard | in review, [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) |
-| AC-P1–P9 registration | in review, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
-| P0.1, P0.2 grants | in review, [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
-| P0.1, P0.2 checks | in review, [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805); red until #1804 is in its merge base |
-| P0.3 check | in review; 64 raw fetch + 142 hand-typed declarations banked |
-| P0.4, P0.6–P0.9 checks | not started |
+| §5 retirement ledger + gate | **landed** with [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766) (`6b74fc14b`); delete-by values follow the §9 v1.0 amendments; verified green locally against `HEAD~1` (89 ledger entries match the tree) and runs in `quality.yml` as `check-workspace-retirement.py` |
+| §6 epic-closure guard | **landed** with [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) (`059a3e4f5`); `check-closure-targets.py` runs in `ci.yml` |
+| AC-P1–P9 registration | **landed** with [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) (`168fb1a0c`); [SPEC-100126-c041](../specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md) declares AC-1..AC-9 with the plan's AC-P labels as aliases |
+| P0.1, P0.2 grants | **landed** with [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804) (`d896e7751`); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
+| P0.1, P0.2 checks | **landed** with [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805) (`41663c63b`); verified green locally against `HEAD~1` (4 tolerated principal-identity violations, none new) |
+| P0.3 check | **landed** with [#1814](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1814) (`082dadb8a`); verified green locally against `HEAD~1` — the raw-fetch ratchet has already shrunk from the 64 banked at review to 60 tolerated, plus 142 hand-typed declarations, none new |
+| P0.6 check | **landed** with [#1807](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1807) (`6f9f1a9e4`); `check-cross-package-imports.py` reports no new flat modules under `packages/*/backend/` (6 tolerated, shrink-only) |
+| P0.4, P0.7–P0.9 checks | not started |
 | P0.5 | backend selection landed with #1321 (see P0.5 "Today"); durable approvals and one process-wide context remain; the check is not started |
 
 An early draft of the P0.1/P0.2 checks reached `develop` without review on 2026-10-01 and
