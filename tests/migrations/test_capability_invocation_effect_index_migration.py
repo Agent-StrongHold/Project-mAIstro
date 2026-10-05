@@ -172,8 +172,7 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
 
     assert directory.get_heads() == ["043_invocation_quota_door"]
     walked = {
-        item.revision
-        for item in directory.walk_revisions("base", "043_invocation_quota_door")
+        item.revision for item in directory.walk_revisions("base", "043_invocation_quota_door")
     }
     # The claim chain this branch folded the #1194 corrections into, and every
     # develop collision the chronicle above records, must stay on the one
