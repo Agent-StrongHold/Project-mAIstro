@@ -9,5 +9,3 @@ try:
     __version__ = importlib.metadata.version("maistro-core")
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
-
-__all__ = ["__version__"]

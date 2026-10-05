@@ -119,8 +119,7 @@ use the context it was handed. The SDK's import path is `maistro.extensions`.
 Its single static anchor is the runtime package (`maistro.runtime` imports it
 with a documented reason): the contract is the runtime-facing SDK, and this
 keeps it visible to the reachability ratchet as wired while leaving the
-package root — which every `import maistro` executes — byte-identical to
-before, so no optional dependency (e.g. cryptography, required by the
+package root — which every `import maistro` executes — free of new imports, so no optional dependency (e.g. cryptography, required by the
 capability credential plane) can become an import-time requirement of the
 library as a whole.
 
