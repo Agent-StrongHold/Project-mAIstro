@@ -89,6 +89,15 @@ or placeholder-only section.
   Nonterminal or unreadable preparation failures retain their lease for recovery;
   domain adapters never write physical Attempt outcomes to repair this race.
 
+- **Explicit no-gateway ordinary DAG dry runs remain available (#1085, #87).**
+  `ALLOW_STUB_LLM=true` returns the existing clearly labelled static stub only
+  when no real model endpoint or model grant is configured and no Binding is
+  requested. Without opt-in the refusal retains actionable configuration guidance.
+  Configured calls never fall back after admission, credential, policy, quota or
+  transport failure. The server records the ordinary model mode on the admitted
+  Run, so recovery cannot change a real run into a stub or upgrade a dry run into
+  billable model work. Sandbox and model-backed tool behavior is unchanged.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was

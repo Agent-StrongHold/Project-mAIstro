@@ -290,6 +290,18 @@ async def test_dag_node_without_effect_authority_fails_closed_without_raw_dispat
 
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setenv("ALLOW_STUB_LLM", "true")
+    # This is a configured real caller with missing admission, not dry-run mode.
+    import config
+
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: SimpleNamespace(
+            allow_stub_llm=True,
+            litellm_api_base="http://configured.test",
+            maistro_model_bindings=[],
+        ),
+    )
     transport = _GatewayTransport(_gateway_body(usage=None))
     with override_transport(httpx.MockTransport(transport)):
         result = await runner.execute_dag(

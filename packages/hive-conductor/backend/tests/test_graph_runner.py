@@ -168,6 +168,18 @@ async def test_execute_dag_streaming_fails_without_an_admitted_model_runtime(
     from services import graph_runner as gr
 
     monkeypatch.setattr(runner, "_container", lambda: None)
+    import config
+
+    # A configured caller must refuse missing authority even when stubs are on.
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: SimpleNamespace(
+            allow_stub_llm=True,
+            litellm_api_base="http://configured.test",
+            maistro_model_bindings=[],
+        ),
+    )
 
     events = [
         ev
