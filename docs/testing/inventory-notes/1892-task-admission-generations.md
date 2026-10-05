@@ -92,3 +92,23 @@ sentinel (`test_effect_index_migration_follows_the_chain_tip`) walks to head
 one transaction, so a refusing 055 rolls 053 and 054 back with it (stamp
 stays `052`), and a refused downgrade leaves the stamp at head `055`. No
 test added or removed — delta above unchanged.
+
+Repair at this lane (develop sync, third landing, #1047 re-parents past the tip):
+the next develop sync (`cd5618223`) brought develop's
+`054_learning_applicability_epistemics` (#119) plus the admission tip renumbered
+to `055_task_admission_generations`, colliding with this branch's
+`055_user_model_facts` (#1047) on the same parent. Per the chain's collision
+convention the #1047 revision — landing third — re-parents onto the admission
+tip as `056_user_model_facts` (`down_revision = "055"`). The chain sentinel
+walks to head `056`; the refusal-path stamp assertions hold unchanged: the
+upgrade run is one transaction, so a refusing 055 rolls 053 and 054 back with
+it (stamp stays `052`), and a refused downgrade leaves the stamp at head `056`
+(the previously head-pinned assertion tracks the new tip). No test added or
+removed — delta above unchanged.
+
+Update (auto-1572 develop sync, Goal-store collision): the Goal-store lane
+(#1572) had independently landed `056_canonical_goals` on the same quota door,
+so the merged tree renumbers this revision — the later-integrated one — onto
+that landed tip as `057_user_model_facts` (`down_revision = "056"`). The
+chain sentinel walks to head `057`; the head-tracking stamp assertions follow
+it. No test added or removed — delta above unchanged.

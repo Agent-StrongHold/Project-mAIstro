@@ -369,6 +369,13 @@ jobs:
       # its suite joins this producer by that same rule: elsewhere its
       # PostgreSQL legs skip and the store scores as untested code.
       #
+      # `memory/user_model` joins for that same reason (#1047):
+      # PostgresUserModelStore is PG-only, needs the migrated chain's
+      # user-model tables (056 after two develop-collision re-parents; 054
+      # when written), and without a producer here the diff gate scores the
+      # new store as untested code while its conformance cases pass in the
+      # `postgres` job.
+      #
       # The claim-driven `task_idempotency` purge (#325) is one file, not the
       # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
       # race, are the only ones under `tasks` that need a server.
@@ -388,6 +395,7 @@ jobs:
             packages/maistro-core/tests/scheduling \
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
             packages/maistro-core/tests/security/test_elevation_durable.py \
+            packages/maistro-core/tests/memory/user_model \
             packages/maistro-core/tests/quota -v --tb=short
           # `tests/quota` is here for the same reason the canvas lane below is:
           # test_pg_invocation_quota_boundary.py gates all three of its tests on

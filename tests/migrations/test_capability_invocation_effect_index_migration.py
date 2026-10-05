@@ -87,9 +87,16 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # 052, 053, 054, and now `055` — onto that same `055` parent, the one this
     # branch's Goal store had already claimed. Per this chain's standing
     # convention — the later-integrated revision re-parents onto the landed
-    # tip, never the reverse — the Goal store re-parents onto the quota door,
-    # so the single linear head is again `056`, now continuing develop's
-    # quota-door revision.
+    # tip, never the reverse — the Goal store re-parented onto the quota door,
+    # so the single linear head became `056`, continuing develop's quota-door
+    # revision. The same sync now lands #1047's user-model tables, which on
+    # develop had taken the identical slot — re-parented past the admission
+    # generations onto that quota door as `056_user_model_facts` — colliding
+    # a fourth time, this time with the branch's landed `056_canonical_goals`
+    # itself. The convention resolves it the same way: the later-integrated
+    # revision renumbers and re-parents onto the landed tip, so the
+    # user-model tables continue the Goal store as `057_user_model_facts` and
+    # the single linear head is now `057`.
     walked = {item.revision for item in directory.walk_revisions("base", "056")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
@@ -107,7 +114,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "055" in walked
     assert "043_invocation_quota_door" in walked
     assert "056" in walked
-    assert directory.get_heads() == ["056"]
+    assert "057" in walked
+    assert directory.get_heads() == ["057"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

@@ -175,6 +175,13 @@ EXPECTED_TABLES = frozenset(
         # a second Run (#1176).
         "task_idempotency",
         "tasks",
+        # The durable cross-Workspace user model (#1047, 057 after four
+        # collision re-parents, now continuing this branch's Goal store):
+        # one row per fact
+        # revision, plus the owner-bound statement keys that keep a tombstone
+        # blocking every wording its lineage ever held.
+        "user_model_facts",
+        "user_model_statement_keys",
         "trigger_definitions",
     }
 )
