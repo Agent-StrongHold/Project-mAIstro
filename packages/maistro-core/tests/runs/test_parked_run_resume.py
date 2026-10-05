@@ -779,6 +779,7 @@ class TestThePollDeadlineCanNowBeReached:
                 "parent_key": "PROJ-100",
                 "pat": "x",
                 "timeout_seconds": 60,
+                "poll_interval_seconds": 60,
             },
             ctx,
         )

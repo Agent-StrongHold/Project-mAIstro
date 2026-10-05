@@ -17,12 +17,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from maistro.memory.exposure import Actor
 from maistro.memory.vectors import require_matching_dimension
 
 if TYPE_CHECKING:
+    from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.persistence.pg_learnings import PgLearningStore
     from maistro.protocols.embeddings import EmbeddingClient
-    from maistro.types.memory import Learning
+    from maistro.types.memory import Learning, LearningStage
 
 logger = logging.getLogger("maistro.memory.learnings.durable_hybrid")
 
@@ -167,8 +169,46 @@ class DurableHybridLearningStore:
             agent_id=agent_id,
         )
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Delegate: the ineffective read is the wrapped store's to answer (#121)."""
+        return await self._store.list_ineffective(min_uses)
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Delegate: durability of the reclassification is the store's to keep (#121)."""
+        return await self._store.mark_anti_pattern(learning_id, confidence_floor, org_id=org_id)
+
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
         return await self._store.list_all(org_id, limit)
+
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+        authority: Actor = Actor.AGENT,
+    ) -> Learning:
+        """Delegate: the ladder and its ledger are the wrapped store's.
+
+        The ADR-057 principal is forwarded so the wrapped store's gate
+        decides on the caller's authority, not the default.
+        """
+        return await self._store.advance_stage(
+            learning_id,
+            to_stage=to_stage,
+            actor=actor,
+            reason=reason,
+            org_id=org_id,
+            authority=authority,
+        )
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """Delegate: the audit trail is the wrapped store's to answer."""
+        return await self._store.stage_history(learning_id, org_id=org_id)
 
 
 __all__ = ["DurableHybridLearningStore"]

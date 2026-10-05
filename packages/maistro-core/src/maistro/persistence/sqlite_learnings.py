@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import itertools
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
+from maistro.memory.learnings.lifecycle import (
+    InvalidStageTransition,
+    StageTransition,
+    plan_advance,
+)
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
@@ -13,7 +20,13 @@ from maistro.persistence.learning_contract import (
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.sqlite_schema import serialized_schema_upgrade
-from maistro.types.memory import Learning, MemoryScope
+from maistro.types.memory import (
+    DEFAULT_LEARNING_CONFIDENCE,
+    EpistemicType,
+    Learning,
+    LearningStage,
+    MemoryScope,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -39,7 +52,36 @@ CREATE TABLE IF NOT EXISTS learnings (
     failure_after_use INTEGER NOT NULL DEFAULT 0,
     run_id TEXT,
     node_run_id TEXT,
-    attempt_id TEXT
+    attempt_id TEXT,
+    stage TEXT NOT NULL DEFAULT 'memory',
+    epistemic_type TEXT NOT NULL DEFAULT 'empirical',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    applicability TEXT NOT NULL DEFAULT '{}',
+    reinforcement_count INTEGER NOT NULL DEFAULT 0,
+    contradiction_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    last_confirmed_at TEXT,
+    validated_by TEXT NOT NULL DEFAULT '',
+    validated_at TEXT,
+    supersedes INTEGER,
+    superseded_by INTEGER,
+    promoted_by TEXT NOT NULL DEFAULT ''
+)
+"""
+
+#: Append-only ladder audit trail (ADR-103). One row per accepted transition;
+#: nothing ever updates or deletes from it. `org_id` is copied from the row at
+#: transition time so the audit read can scope exactly like every other read.
+_STAGE_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS learning_stage_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    learning_id INTEGER NOT NULL,
+    org_id TEXT NOT NULL DEFAULT '',
+    from_stage TEXT NOT NULL,
+    to_stage TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )
 """
 
@@ -55,6 +97,31 @@ _LEGACY_UPGRADE_COLUMNS = {
 #: nullable in PostgreSQL: a row written with no execution in scope names none,
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
+
+#: The knowledge-ladder + lifecycle/epistemics columns (ADR-103, ADR-100126-8c2d),
+#: with their in-place upgrade types. NOT NULL with defaults: every pre-ladder
+#: row lands on the bottom rung as the local empirical learning it was, with no
+#: actor recorded — nothing validated or promoted it, and fabricating one would
+#: lie about when knowledge was confirmed or replaced. Instants and supersession
+#: links stay nullable because an old row genuinely has none.
+#: A dict literal (not a tuple + subscript): the retention inventory's AST
+#: scan resolves DDL f-strings only from `.items()` over a module-level dict,
+#: and a schema statement it cannot verify statically fails the suite.
+_LIFECYCLE_UPGRADE_COLUMNS = {
+    "stage": "TEXT NOT NULL DEFAULT 'memory'",
+    "epistemic_type": "TEXT NOT NULL DEFAULT 'empirical'",
+    "confidence": "REAL NOT NULL DEFAULT 0.5",
+    "applicability": "TEXT NOT NULL DEFAULT '{}'",
+    "reinforcement_count": "INTEGER NOT NULL DEFAULT 0",
+    "contradiction_count": "INTEGER NOT NULL DEFAULT 0",
+    "created_at": "TEXT",
+    "last_confirmed_at": "TEXT",
+    "validated_by": "TEXT NOT NULL DEFAULT ''",
+    "validated_at": "TEXT",
+    "supersedes": "INTEGER",
+    "superseded_by": "INTEGER",
+    "promoted_by": "TEXT NOT NULL DEFAULT ''",
+}
 
 # Kept next to the SQL so the conformance test can detect a new Learning field
 # that is not represented by both persistence twins.
@@ -80,14 +147,35 @@ _SQLITE_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "stage",
+    "epistemic_type",
+    "confidence",
+    "applicability",
+    "reinforcement_count",
+    "contradiction_count",
+    "created_at",
+    "last_confirmed_at",
+    "validated_by",
+    "validated_at",
+    "supersedes",
+    "superseded_by",
+    "promoted_by",
 )
 
 
 class SqliteLearningStore:
-    """SQLite-backed learning store implementing the same protocol as PgLearningStore."""
+    """SQLite-backed learning store implementing the same protocol as PgLearningStore.
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    Same ADR-057 write-authority gate as the PostgreSQL twin: no declared mode
+    refuses every mutation; ``SYSTEM_MANAGED`` denies agent-actor writes and
+    promotions before any SQL runs.
+    """
+
+    def __init__(
+        self, conn: aiosqlite.Connection, exposure_mode: MemoryExposureMode | None = None
+    ) -> None:
         self._conn = conn
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Create the learnings table, and upgrade one created before its columns.
@@ -118,6 +206,16 @@ class SqliteLearningStore:
             for column in _PROVENANCE_COLUMNS:
                 if column not in columns:
                     await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
+            # And for the ladder + lifecycle columns (ADR-103, ADR-100126-8c2d): a
+            # file created before M4-B holds rows whose pipeline state was
+            # implicit, so the ALTERs stamp the defaults that state always
+            # meant — the bottom rung, no actors, local empirical belief.
+            for column, column_type in _LIFECYCLE_UPGRADE_COLUMNS.items():
+                if column not in columns:
+                    await self._conn.execute(
+                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"  # nosec B608
+                    )
+            await self._conn.execute(_STAGE_HISTORY_SCHEMA)
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
             )
@@ -129,12 +227,14 @@ class SqliteLearningStore:
                 "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         Resolved before the dedup probe for the same reason as the PostgreSQL
-        original: the deduplicating branch returns early (#709).
+        original: the deduplicating branch returns early (#709). The
+        write-authority gate precedes both (ADR-057): a denial executes no SQL.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
@@ -150,8 +250,14 @@ class SqliteLearningStore:
                 agent_id, user_id, org_id, team_id, scope, hit_count, status,
                 rca_category, rca_prevention,
                 success_after_use, failure_after_use,
-                run_id, node_run_id, attempt_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                run_id, node_run_id, attempt_id,
+                stage, epistemic_type, confidence, applicability,
+                reinforcement_count, contradiction_count,
+                created_at, last_confirmed_at,
+                validated_by, validated_at,
+                supersedes, superseded_by, promoted_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -170,6 +276,21 @@ class SqliteLearningStore:
                 learning.success_after_use,
                 learning.failure_after_use,
                 *provenance.as_columns(),
+                learning.stage,
+                learning.epistemic_type,
+                learning.confidence,
+                json.dumps(learning.applicability),
+                learning.reinforcement_count,
+                learning.contradiction_count,
+                _utc_text(learning.created_at),
+                _utc_text(learning.last_confirmed_at)
+                if learning.last_confirmed_at is not None
+                else None,
+                learning.validated_by,
+                _utc_text(learning.validated_at) if learning.validated_at is not None else None,
+                learning.supersedes,
+                learning.superseded_by,
+                learning.promoted_by,
             ),
         )
         await self._conn.commit()
@@ -306,12 +427,61 @@ class SqliteLearningStore:
         )
         await self._conn.commit()
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        cursor = await self._conn.execute(
+            """SELECT * FROM learnings
+               WHERE success_after_use + failure_after_use >= ?
+                 AND failure_after_use > success_after_use
+               ORDER BY id DESC""",
+            (min_uses,),
+        )
+        columns = [d[0] for d in cursor.description]
+        rows = await cursor.fetchall()
+        return [_row_to_learning(dict(zip(columns, row, strict=True))) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        cursor = await self._conn.execute(
+            """UPDATE learnings
+               SET epistemic_type = 'anti_pattern',
+                   confidence = MAX(confidence, ?)
+               WHERE id = ? AND org_id = ?""",
+            (confidence_floor, learning_id, org_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
     async def check_auto_promotions(
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
-        """Promote learnings with hit_count >= threshold."""
+        """Promote learnings with hit_count >= threshold.
+
+        The ADR-057 ``promote`` authority: agent-actor promotions are denied
+        under ``SYSTEM_MANAGED`` before the UPDATE runs.
+        """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         cursor = await self._conn.execute(
             "SELECT id FROM learnings WHERE status = 'active' AND hit_count >= ? AND org_id = ?",
             (threshold, org_id),
@@ -371,6 +541,115 @@ class SqliteLearningStore:
         rows = await cursor.fetchall()
         return [_row_to_learning(dict(zip(columns, r, strict=True))) for r in rows]
 
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+        authority: Actor = Actor.AGENT,
+    ) -> Learning:
+        """Move a learning one rung up the ladder, durably and auditably.
+
+        The guarded UPDATE (`AND stage = <expected from>`) makes a concurrent
+        double-transition fail loudly instead of applying twice, and the
+        ledger row is written in the same transaction as the row update, so a
+        crash between them can produce neither a moved row without a record
+        nor a record without a moved row. Both writes commit together or not
+        at all — that is what makes the transition *durable* (ADR-103).
+
+        ADR-057: the gate is the first statement — a denied or undeclared
+        call touches neither the row nor the ledger. `authority` is the
+        ADR-057 principal (default agent), distinct from the ADR-103
+        attribution string in `actor`.
+        """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
+        row = await self._scoped_row(learning_id, org_id=org_id)
+        current = LearningStage(row.get("stage") or "memory")
+        candidate = _row_to_learning(row)
+        updated, transition = plan_advance(candidate, to_stage=to_stage, actor=actor, reason=reason)
+        cursor = await self._conn.execute(
+            "UPDATE learnings SET stage = ?, validated_by = ?, promoted_by = ?, "
+            "status = ? WHERE id = ? AND stage = ? AND org_id = ?",
+            (
+                updated.stage,
+                updated.validated_by,
+                updated.promoted_by,
+                updated.status,
+                learning_id,
+                current,
+                row.get("org_id") or "",
+            ),
+        )
+        if cursor.rowcount == 0:
+            # The row moved underneath us between the read and the guarded
+            # UPDATE — a concurrent transition won this rung first. Raise
+            # rather than half-apply: the ledger INSERT below never runs, so
+            # the audit trail never records a transition the row does not
+            # carry (ADR-103 rule 3; same contract as PgLearningStore's
+            # `UPDATE 0`). The failed UPDATE matched no rows, so no rollback
+            # is needed — the shared connection's in-flight writer is untouched.
+            raise InvalidStageTransition(
+                f"learning #{learning_id} left stage {candidate.stage} "
+                "before the transition committed"
+            )
+        await self._conn.execute(
+            "INSERT INTO learning_stage_transitions "
+            "(learning_id, org_id, from_stage, to_stage, actor, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                learning_id,
+                transition.org_id,
+                transition.from_stage,
+                transition.to_stage,
+                transition.actor,
+                transition.reason,
+            ),
+        )
+        await self._conn.commit()
+        return updated
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """The durable audit trail for one learning, oldest first."""
+        await self._scoped_row(learning_id, org_id=org_id)
+        cursor = await self._conn.execute(
+            "SELECT learning_id, org_id, from_stage, to_stage, actor, reason "
+            "FROM learning_stage_transitions WHERE learning_id = ? ORDER BY id",
+            (learning_id,),
+        )
+        return [
+            StageTransition(
+                learning_id=int(raw[0]),
+                org_id=str(raw[1] or ""),
+                from_stage=LearningStage(raw[2]),
+                to_stage=LearningStage(raw[3]),
+                actor=str(raw[4] or ""),
+                reason=str(raw[5] or ""),
+            )
+            for raw in await cursor.fetchall()
+        ]
+
+    async def _scoped_row(self, learning_id: int, *, org_id: str) -> dict[str, Any]:
+        """The one learning row this id names, visible to this org scope.
+
+        Same write-visibility rule as `mark_outcome`: a caller may only move
+        state on rows it could have been served. An unknown id and an
+        other-org id raise identically, so a guessed id leaks nothing.
+        """
+        cursor = await self._conn.execute(
+            "SELECT * FROM learnings WHERE id = ? AND org_id = ?",
+            (learning_id, org_id),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise KeyError(f"no learning #{learning_id} visible in this scope")
+        columns = [d[0] for d in cursor.description]
+        return dict(zip(columns, row, strict=True))
+
 
 def _text(row: dict[str, Any], name: str) -> str:
     """Read a nullable text column as the empty string the dataclass expects.
@@ -382,26 +661,92 @@ def _text(row: dict[str, Any], name: str) -> str:
     return str(row.get(name) or "")
 
 
+def _provenance_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": json.loads(row.get("trigger_keys") or "[]"),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name") or "",
+        "source_query": _text(row, "source_query"),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": _text(row, "team_id"),
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status") or "active",
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention") or "",
+        "run_id": _text(row, "run_id"),
+        "node_run_id": _text(row, "node_run_id"),
+        "attempt_id": _text(row, "attempt_id"),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
+    }
+
+
+def _lifecycle_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d).
+
+    Defaults mirror the dataclass so a pre-M4B row reads back as the local
+    empirical learning on the bottom rung that it was, not as something the
+    system never claimed.
+    """
+    return {
+        "stage": LearningStage(row.get("stage") or "memory"),
+        "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
+        "confidence": (
+            float(row["confidence"])
+            if row.get("confidence") is not None
+            else DEFAULT_LEARNING_CONFIDENCE
+        ),
+        "applicability": _load_applicability(row.get("applicability")),
+        "reinforcement_count": row.get("reinforcement_count") or 0,
+        "contradiction_count": row.get("contradiction_count") or 0,
+        "created_at": _load_moment(row.get("created_at")) or datetime.now(UTC),
+        "last_confirmed_at": _load_moment(row.get("last_confirmed_at")),
+        "validated_by": _text(row, "validated_by"),
+        "validated_at": _load_moment(row.get("validated_at")),
+        "supersedes": row.get("supersedes"),
+        "superseded_by": row.get("superseded_by"),
+        "promoted_by": _text(row, "promoted_by"),
+    }
+
+
 def _row_to_learning(row: dict[str, Any]) -> Learning:
-    return Learning(
-        id=row["id"],
-        category=row.get("category") or "",
-        trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
-        learning=row["learning"],
-        tool_name=row.get("tool_name") or "",
-        source_query=_text(row, "source_query"),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=_text(row, "team_id"),
-        scope=MemoryScope(row.get("scope") or "agent"),
-        hit_count=row.get("hit_count", 0),
-        status=row.get("status") or "active",
-        rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention") or "",
-        run_id=_text(row, "run_id"),
-        node_run_id=_text(row, "node_run_id"),
-        attempt_id=_text(row, "attempt_id"),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
-    )
+    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
+
+
+def _utc_text(moment: datetime) -> str:
+    """An instant as text that sorts in instant order (see sqlite_outcomes)."""
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC).isoformat()
+    return moment.astimezone(UTC).isoformat()
+
+
+def _load_moment(raw: object) -> datetime | None:
+    """Decode an instant column; NULL or unparseable text names no instant."""
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _load_applicability(raw: object) -> dict[str, list[str]]:
+    """Decode `applicability`, tolerating NULL or malformed text like `trigger_keys`."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): [str(v) for v in values] for k, values in raw.items()}
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            return {}
+        if isinstance(decoded, dict):
+            return {str(k): [str(v) for v in values] for k, values in decoded.items()}
+    return {}

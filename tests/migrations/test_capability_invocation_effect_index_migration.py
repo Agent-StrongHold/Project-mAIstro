@@ -64,13 +64,15 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # that; #398's `048_canvas_job_retry_backoff` continues it after `047`,
     # `049_design_artifact_versions` (#780) continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
-    # #780 claimed them — continues after that, and #792's eval-score
-    # evidence re-parents onto that `050` as `051_canonical_run_eval_scores`.
-    # The backlog work-source migration (#98) was renumbered `048` -> `052`
-    # and the authority-cutover ledger (#102) `049` -> `053` as each of those
-    # develop revisions landed, attaching after `051`, so the single linear
-    # head is `053`.
-    walked = {item.revision for item in directory.walk_revisions("base", "053")}
+    # #780 claimed them — continues after that; #792's eval-score evidence
+    # re-parents onto that `050` as `051_canonical_run_eval_scores`; develop
+    # then claimed `052_learning_stage_ladder` (ADR-103) and
+    # `053_learning_lifecycle_columns` on the same chain tip. The backlog
+    # work-source migration (#98) was renumbered `048` -> `052` -> `054` and
+    # the authority-cutover ledger (#102) `049` -> `053` -> `055` as each of
+    # those develop revisions landed, attaching after `053`, so the single
+    # linear head is `055`.
+    walked = {item.revision for item in directory.walk_revisions("base", "055")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -80,7 +82,12 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "048" in walked
     assert "049" in walked
     assert "050" in walked
-    assert directory.get_heads() == ["053"]
+    assert "051" in walked
+    assert "052" in walked
+    assert "053" in walked
+    assert "054" in walked
+    assert "055" in walked
+    assert directory.get_heads() == ["055"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

@@ -7,25 +7,69 @@ FIFO eviction, org-scoped isolation, and outcome tracking.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
-from maistro.memory.types import Learning
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
+from maistro.memory.learnings import lifecycle
+from maistro.memory.learnings.lifecycle import StageTransition, plan_advance
+from maistro.memory.types import Learning, LearningStage
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_scope import matches_learning_scope
+from maistro.types.memory import CONTRADICT_DELTA, REINFORCE_DELTA
 
 logger = logging.getLogger(__name__)
+
+
+def _consolidation_anchor(survivors: list[Learning], lr: Learning) -> Learning | None:
+    """The already-kept duplicate ``lr`` should be absorbed into, if any.
+
+    Duplicates share the tool and scope axes and overlap at least half of
+    their trigger keys (the same rule the store's write-path dedup uses).
+    Extracted from ``consolidate`` so the merge sweep reads as a sweep.
+    """
+    return next(
+        (
+            s
+            for s in survivors
+            if s.tool_name == lr.tool_name
+            and s.org_id == lr.org_id
+            and s.team_id == lr.team_id
+            and s.user_id == lr.user_id
+            and s.agent_id == lr.agent_id
+            and lifecycle.trigger_key_overlap(s.trigger_keys, lr.trigger_keys) >= 0.5
+        ),
+        None,
+    )
+
 
 MAX_LEARNINGS = 10_000
 
 
 class InMemoryLearningStore:
-    """In-memory learning store with dedup, FIFO cap, and org-scoped queries."""
+    """In-memory learning store with dedup, FIFO cap, and org-scoped queries.
 
-    def __init__(self, max_learnings: int = MAX_LEARNINGS) -> None:
+    Write authority (ADR-057): constructed without an ``exposure_mode`` the store
+    refuses every write and promotion with ``MemoryUndeclaredModeError``; with
+    ``SYSTEM_MANAGED``, agent-actor writes and promotions raise
+    ``MemoryWriteDenied`` before any state changes.
+    """
+
+    def __init__(
+        self,
+        max_learnings: int = MAX_LEARNINGS,
+        exposure_mode: MemoryExposureMode | None = None,
+    ) -> None:
         self._learnings: list[Learning] = []
         self._next_id = 1
         self._max = max_learnings
+        self._exposure_mode = exposure_mode
+        # Append-only ladder audit trail (ADR-103). In-memory is the dev/test
+        # backend, so the ledger lives here for the same reason provenance
+        # does: a backend that skipped it would let every behavioural test
+        # pass while only the durable ones did the work.
+        self._stage_history: list[StageTransition] = []
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         The in-memory store fills provenance too. It is the default backend in
@@ -36,7 +80,13 @@ class InMemoryLearningStore:
         Assigned onto the object rather than kept beside it: this store keeps
         the caller's `Learning` and hands the same instance back, so a
         provenance held anywhere else would not survive the read (#709).
+
+        The write-authority gate is the first statement (ADR-057): a denied
+        agent write raises before provenance is filled or the dedup probe runs,
+        so a refusal leaves no partial state and cannot be steered by the
+        learning's content.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
@@ -84,7 +134,6 @@ class InMemoryLearningStore:
         sets in common. Split out so `store` reads as probe-then-insert and
         this stays the one place the threshold and axes live.
         """
-        new_keys = set(learning.trigger_keys)
         for existing in self._learnings:
             if existing.tool_name != learning.tool_name:
                 continue
@@ -96,8 +145,7 @@ class InMemoryLearningStore:
                 continue
             if existing.status != "active":
                 continue
-            existing_keys = set(existing.trigger_keys)
-            overlap = len(existing_keys & new_keys) / max(len(existing_keys | new_keys), 1)
+            overlap = lifecycle.trigger_key_overlap(existing.trigger_keys, learning.trigger_keys)
             if overlap >= 0.5:
                 return existing, overlap
         return None
@@ -142,20 +190,6 @@ class InMemoryLearningStore:
             if learning.id in id_set:
                 learning.hit_count += 1
 
-    def get(self, learning_id: int) -> Learning | None:
-        """Return the stored learning with this id, or None.
-
-        Synchronous by the same reasoning as `list_all`: it answers from the
-        list already in hand. Callers that hold an id from `store` use this to
-        get back the *store's* instance — after a dedup hit, `store` returns
-        the surviving row's id and keeps the pre-existing object, so a caller
-        that kept its own copy is holding an orphan.
-        """
-        for learning in self._learnings:
-            if learning.id == learning_id:
-                return learning
-        return None
-
     async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
         """Return the learnings this Run produced, newest first.
 
@@ -192,8 +226,16 @@ class InMemoryLearningStore:
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
-        """Promote learnings that hit threshold, scoped by org."""
+        """Promote learnings that hit threshold, scoped by org.
+
+        A promotion is the ADR-057 ``promote`` authority, not a write: under
+        ``SYSTEM_MANAGED`` it is admin-only, so an agent-actor call is denied
+        before any status flips (SPEC-062126-6a31, open question 5).
+        """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         promoted: list[Learning] = []
         for learning in self._learnings:
             if learning.status != "active" or learning.hit_count < threshold:
@@ -241,6 +283,144 @@ class InMemoryLearningStore:
                 results.append(lr)
         return results
 
+    async def get(self, learning_id: int, *, org_id: str = "") -> Learning | None:
+        """Point read by id, or None.
+
+        Unlike the scope queries on this store, a blank ``org_id`` here means
+        "no org filter", not "only orgless rows": a point read by identity is
+        not a scope query, and callers that need the scope rule pass an org.
+
+        Callers that hold an id from `store` use this to get back the *store's*
+        instance — after a dedup hit, `store` returns the surviving row's id
+        and keeps the pre-existing object, so a caller that kept its own copy
+        is holding an orphan. `InMemoryLearningLifecycle` leans on exactly that
+        guarantee to track the store's row, not the caller's.
+        """
+        for lr in self._learnings:
+            if lr.id != learning_id:
+                continue
+            if org_id and lr.org_id != org_id:
+                continue
+            return lr
+        return None
+
+    async def reinforce(
+        self,
+        learning_id: int,
+        delta: float = REINFORCE_DELTA,
+        *,
+        org_id: str = "",
+    ) -> Learning | None:
+        """Reinforce one learning: a later Run confirmed it helped (#120)."""
+        lr = await self.get(learning_id, org_id=org_id)
+        if lr is None:
+            return None
+        return lifecycle.reinforce(lr, delta)
+
+    async def contradict(
+        self,
+        learning_id: int,
+        delta: float = CONTRADICT_DELTA,
+        *,
+        org_id: str = "",
+    ) -> Learning | None:
+        """Contradict one learning: a later Run showed it wrong (#120)."""
+        lr = await self.get(learning_id, org_id=org_id)
+        if lr is None:
+            return None
+        return lifecycle.contradict(lr, delta)
+
+    async def supersede(
+        self,
+        old_id: int,
+        replacement: Learning,
+        *,
+        org_id: str = "",
+        actor: Actor = Actor.AGENT,
+    ) -> int:
+        """Retire ``old_id`` in favour of ``replacement``, keeping both rows (#120).
+
+        The old row is retired **before** the replacement is stored so the
+        dedup probe -- which only folds into ``active`` rows -- cannot merge
+        the replacement into the very row it replaces. Raises ``KeyError``
+        when the old id is not in scope: a silent no-op would leave both rows
+        active and the lineage unrecorded.
+
+        ADR-057: superseding restructures the claim set, so the caller needs
+        write authority. The gate is the first statement — a denied call
+        retires nothing and stores nothing, leaving no partial state — and
+        the same actor is carried into the inner ``store`` call so one
+        principal decides the whole operation.
+        """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
+        old = await self.get(old_id, org_id=org_id)
+        if old is None:
+            raise KeyError(old_id)
+        old.status = "superseded"
+        new_id = await self.store(replacement, actor=actor)
+        survivor = await self.get(new_id)
+        if survivor is None:  # pragma: no cover - store() just returned this id
+            raise RuntimeError(f"store returned id {new_id} that cannot be read back")
+        lifecycle.supersede(old, survivor)
+        return new_id
+
+    async def apply_decay(
+        self,
+        *,
+        now: datetime | None = None,
+        half_life_days: float | None = None,
+    ) -> int:
+        """One sweep of time-based confidence decay over live rows (#120).
+
+        Terminal rows (superseded/consolidated) are historical record and do
+        not decay. Returns the count of rows whose confidence actually moved.
+        """
+        moment = now or datetime.now(UTC)
+        decayed = 0
+        for lr in self._learnings:
+            if lr.status in lifecycle.TERMINAL_ROW_STATUSES:
+                continue
+            before = lr.confidence
+            lifecycle.decay(lr, now=moment, half_life_days=half_life_days)
+            if lr.confidence < before:
+                decayed += 1
+        return decayed
+
+    async def consolidate(
+        self,
+        *,
+        org_id: str = "",
+        tool_name: str | None = None,
+        actor: Actor = Actor.AGENT,
+    ) -> list[Learning]:
+        """Merge near-duplicate active learnings, folding their evidence (#120).
+
+        Admin-operation scoping, like ``list_all``: a blank ``org_id`` sweeps
+        every org. Duplicates share the tool and scope axes and overlap at
+        least half of their trigger keys (the same rule ``store`` dedup uses);
+        the earliest row survives and absorbs the rest. Returns the survivors.
+
+        ADR-057: consolidation retires rows, so it is a write — under
+        ``SYSTEM_MANAGED`` an agent-actor call is denied before any row is
+        absorbed, and an undeclared mode fails closed.
+        """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
+        pool = [
+            lr
+            for lr in self._learnings
+            if lr.status == "active"
+            and (not org_id or lr.org_id == org_id)
+            and (tool_name is None or lr.tool_name == tool_name)
+        ]
+        survivors: list[Learning] = []
+        for lr in pool:
+            anchor = _consolidation_anchor(survivors, lr)
+            if anchor is None:
+                survivors.append(lr)
+            else:
+                lifecycle.absorb(anchor, lr)
+        return survivors
+
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
         """List all learnings for an org (admin endpoint)."""
         results: list[Learning] = []
@@ -251,3 +431,64 @@ class InMemoryLearningStore:
             if len(results) >= limit:
                 break
         return results
+
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+        authority: Actor = Actor.AGENT,
+    ) -> Learning:
+        """Move a learning one rung up the knowledge ladder (ADR-103).
+
+        The rules live in `plan_advance`; this store applies them to the
+        stored instance (which it hands back to callers, so identity is
+        preserved exactly as with `store`) and appends the transition to the
+        in-memory ledger. A scoped caller (`org_id`) can only advance a row
+        it could have read — the same write rule `mark_outcome` enforces.
+
+        ADR-057: a stage move is a write (the merged ADR-103 tests say so
+        themselves), so the caller needs write authority. `actor` is the
+        ADR-103 attribution string recorded in the ledger; `authority` is the
+        ADR-057 principal the gate decides on, defaulting to the agent —
+        under ``SYSTEM_MANAGED`` an agent-authority call is denied before the
+        row is read or the ledger touched, and an undeclared mode fails
+        closed. The two names stay distinct on purpose: who is credited for
+        the move is not who is authorized to make it.
+        """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
+        learning = await self._get_for_scope(learning_id, org_id=org_id)
+        updated, transition = plan_advance(learning, to_stage=to_stage, actor=actor, reason=reason)
+        learning.stage = updated.stage
+        learning.validated_by = updated.validated_by
+        learning.promoted_by = updated.promoted_by
+        learning.status = updated.status
+        self._stage_history.append(transition)
+        return learning
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """The audit trail of one learning's ladder transitions, oldest first."""
+        await self._get_for_scope(learning_id, org_id=org_id)
+        return [
+            transition
+            for transition in self._stage_history
+            if transition.learning_id == learning_id
+        ]
+
+    async def _get_for_scope(self, learning_id: int, *, org_id: str) -> Learning:
+        """The stored learning with this id, visible to this org scope.
+
+        The scope rule matches `mark_outcome`: a caller may only move state on
+        rows it could have been served. An unknown id raises the same way —
+        the distinction between "no such row" and "not yours" would leak
+        ids across orgs.
+        """
+        for lr in self._learnings:
+            if lr.id == learning_id and matches_learning_scope(lr, org_id=org_id):
+                return lr
+        raise KeyError(f"no learning #{learning_id} visible in this scope")

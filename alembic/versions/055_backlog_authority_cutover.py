@@ -1,7 +1,8 @@
 """Backlog authority cutover control state (#102).
 
-Follows `052_backlog_work_source` (its pre-renumber id was `049`; develop's
-landed `049_design_artifact_versions` owns that slot now), attaching after the
+Follows `054_backlog_work_source` (its pre-renumber ids were `049` and then
+`053`; develop's landed `049_design_artifact_versions` and
+`053_learning_lifecycle_columns` own those slots now), attaching after the
 work-source tables so the chain stays linear with exactly one head.
 The explicit authority cutover is a recorded, reversible decision, and the
 generated Markdown must be reproducible from the database alone — so the
@@ -27,8 +28,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "053"
-down_revision = "052"
+revision = "055"
+down_revision = "054"
 branch_labels = None
 depends_on = None
 

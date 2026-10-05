@@ -820,6 +820,19 @@
       "notes": "Generic homelab key-value store; callers delete their own keys, no retention sweep."
     },
     {
+      "table": "learning_stage_transitions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/pg_learnings.py",
+      "data_class": "audit",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Append-only ladder audit trail (ADR-103, #117): one row per accepted knowledge-stage transition, with the actor and reason, so provenance stays durable and auditable. INSERT is the only write -- nothing in the tree UPDATEs or DELETEs a row, and pruning one would rewrite how a claim came to be believed. Rows are bounded by the transitions operators and evaluators actually drive; the retention decision is the same open question as its parent `learnings` on #325."
+    },
+    {
       "table": "layers",
       "backends": [
         "postgres"

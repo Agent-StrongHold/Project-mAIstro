@@ -58,8 +58,8 @@ EXPECTED_TABLES = frozenset(
         "books",
         # The canonical Workspace BacklogItem work-source (#98/#102): the
         # item/board state, its append-only event history, the imported
-        # document records and the claim leases (052), plus the authority
-        # ledger that records which work source is authoritative (053).
+        # document records and the claim leases (054), plus the authority
+        # ledger that records which work source is authoritative (055).
         "backlog_authority",
         "backlog_claims",
         "backlog_documents",
@@ -130,6 +130,11 @@ EXPECTED_TABLES = frozenset(
         "handler_invocations",
         "knowledge_nodes",
         "learnings",
+        # The append-only provenance ledger for the knowledge-stage ladder
+        # (049, M4-B1/ADR-103): one row per accepted MEMORY → LEARNING →
+        # VALIDATED → REPERTOIRE transition, written in the same transaction
+        # as the stage update itself.
+        "learning_stage_transitions",
         "memory_entries",
         # The NodeTemplate half of the reusable-definition model (020). Its
         # GraphTemplate sibling has been durable since 014; without this one a

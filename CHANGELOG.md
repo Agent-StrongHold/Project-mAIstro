@@ -75,6 +75,22 @@ or placeholder-only section.
   duplicate [ADR-061526-f383](docs/adr/ADR-061526-f383-foreign-harness-adapters-and-portability.md)
   in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
 
+### Fixed
+
+- **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
+  always invokes Compose with explicit `-f` files, which disables Compose's own
+  automatic override loading, so an override copied into the checkout was
+  silently ignored on installer runs while the docs claimed it was picked up.
+  A repo-root `docker-compose.override.yml` is now included explicitly — last,
+  so operator intent outranks the base file and the wizard's plan override —
+  in both delivery modes, and only when the invoking user owns it and it is
+  not group/world-writable (an override can remap ports, disable sandbox
+  flags, or mount the host Docker socket; anything else aborts the install
+  with remediation). The installer prints the effective Compose files and
+  validates the merged render before startup (`MAISTRO_PRINT_COMPOSE_CONFIG=1`
+  additionally prints the rendered config, credentials included), and
+  `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
+
 ### Security
 
 - **Project wisdom respects GLOBAL organization boundaries (#1247).**
@@ -102,6 +118,29 @@ or placeholder-only section.
   SLSA provenance in mode=max and release.yml refuses a release whose
   provenance attestation does not name every pinned base digest.
 
+- **Memory write authority (ADR-057) is enforced at every memory store
+  boundary (#390, partial).** Every production memory store — learnings
+  (in-memory, SQLite, PostgreSQL and the hybrid-search wrapper's inner store),
+  episodic, outcomes and skill mutations — now calls the exposure-mode gate as
+  the first statement of each mutating method. A store constructed without a
+  declared `MemoryExposureMode` refuses to mutate at all
+  (`MemoryUndeclaredModeError`, fail-closed; SPEC-062126-6a31's no-implicit-
+  default rule), an agent-actor write or promotion under `system_managed`
+  raises `MemoryWriteDenied` before any state changes (denied writes leave no
+  partial durable state), and a system actor writes under every mode. The
+  decision reads only the declared mode, the actor and the per-block tag —
+  never model or persona content. The container declares the deployment's
+  posture from the new `AgentConfig.memory.exposure_mode` setting
+  (`agent_managed` default — the engine's existing behavior, now explicit;
+  set `system_managed` for curated-context deployments). The M4-B lifecycle
+  mutations added by the develop sync — `supersede`, `consolidate` and the
+  store-level `advance_stage` on all three learning-store backends — are
+  gated by the same decision as first statements, behind an explicit ADR-057
+  principal kept distinct from the ADR-103 attribution string, so a denied
+  supersede retires nothing and stores nothing. Not yet wired, and
+  disclosed in KNOWN-GAPS until then: per-call read gating, `hybrid` per-block
+  tags (agent writes fail closed under `hybrid`), `memory.write.denied` event
+  emission, and a product-reachable E2E proving a denied write.
 - **Active root Runs are capped per principal and per Workspace (#1182,
   partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
   refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for

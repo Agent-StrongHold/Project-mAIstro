@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 import aiosqlite
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.persistence.sqlite_learnings import SqliteLearningStore
 from maistro.types.memory import Learning
 
@@ -15,7 +16,7 @@ from maistro.types.memory import Learning
 @pytest.fixture
 async def store() -> AsyncIterator[SqliteLearningStore]:
     conn = await aiosqlite.connect(":memory:")
-    s = SqliteLearningStore(conn)
+    s = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await s.ensure_schema()
     yield s
     await conn.close()
