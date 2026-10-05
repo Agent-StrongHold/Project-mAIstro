@@ -72,3 +72,16 @@ unreachable module. These gates remain blocked until the separately authorized
 parent integration supplies a real consumer or a prior trusted-base
 authorization lands; this inactive leaf cannot repair them without violating
 its scope.
+
+## Current validation refresh
+
+At `9ae7708432f276d22828682fcf52e842c0fa69e7`, the focused DTO suite passed
+76 cases; `ruff check`, `ruff format --check`, and module `mypy` passed; the
+Runs suite passed 1,199 tests (247 skipped); and suite inventory remained
+13,366 node IDs (+76). The exact Vulture command still exits 1 only because
+its trusted base `94781cf6b708` predates the nine reviewed declarative
+identities already recorded in the candidate ledger. Reachability and ratchet
+provenance also exit 1 only for this intentionally inactive module; disposition
+and promotion-surface checks pass. This leaf does not add a baseline,
+disposition, suppression, or fake production import to evade that required
+integration-head gate.
