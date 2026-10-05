@@ -138,7 +138,6 @@
         "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'IDEMPOTENCY_KEY'",
         "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'IMPACT_ESTIMATOR'",
         "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'MERGE_RESOLVER'",
-        "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'trusted'",
         "packages/maistro-core/src/maistro/collaboration/types.py::unused variable 'added_by'",
         "packages/maistro-core/src/maistro/collaboration/types.py::unused variable 'last_seen'",
         "packages/maistro-core/src/maistro/config/models.py::unused variable 'parallel_generations'",
