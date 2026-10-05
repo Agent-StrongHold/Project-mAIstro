@@ -90,6 +90,40 @@ async def test_delegate_agent_mismatching_the_context_is_refused() -> None:
     assert "binds" in (result.error or "")
 
 
+async def test_delegate_with_incoherent_goal_binding_is_refused_at_the_boundary() -> None:
+    """Goal coherence is not left to the dispatching node only: a caller that
+    bypasses `AgentDelegateRemoteNode` cannot send `goal_id` without
+    `goal_revision`, or `subgoal_of` without a Goal, to the peer. The receiver
+    files sender-authored Goal evidence verbatim, so the transport boundary is
+    the last place to refuse it."""
+    audit = InMemoryAuditLogger()
+    manager = GuestPeerManager(audit=audit)
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+    sent: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"task_id": "remote-1"})
+
+    set_test_transport(httpx.MockTransport(handler))
+    for bad in (
+        _context(goal_id="goal-1"),  # a bound Goal names its revision
+        _context(subgoal_of="parent-1"),  # a parent Goal only with a Goal
+        _context(goal_revision=2),  # a revision is meaningless without a Goal
+    ):
+        refused = await manager.delegate(
+            "hub",
+            "planner",
+            [{"role": "user", "content": "x"}],
+            context=bad,
+        )
+        assert refused.status == "rejected", bad
+        assert "incoherent Goal binding" in (refused.error or ""), bad
+    assert "body" not in sent, "nothing reached the peer"
+    assert audit.entries[-1]["detail"].startswith("refused:")
+    assert "Goal/Subgoal" in audit.entries[-1]["detail"]
+
+
 async def test_delegate_claiming_scopes_beyond_the_peer_ceiling_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

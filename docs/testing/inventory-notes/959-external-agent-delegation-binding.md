@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +60
+  packages/maistro-core/tests: +61
   packages/maistro-server/tests: +1
 ---
 # 959 — external Agent delegation bound to canonical identity and evidence
@@ -81,6 +81,13 @@ Each required canonical identity/context field (`caller_principal_id`,
 identity is no attribution at all, so it must fail construction rather than
 ride to a peer as if it were evidence. Optional fields stay verbatim — absent
 stays absent.
+
+**+1 in `tests/a2a/test_guest_peers.py` (boundary Goal-coherence follow-up).**
+The receiver files sender-authored Goal evidence verbatim, so the sending
+boundary re-checks `validate_goal_binding`: a caller that bypasses
+`AgentDelegateRemoteNode` cannot dispatch `goal_id` without `goal_revision`,
+`subgoal_of` without a Goal, or a revision without a Goal — all three are
+refused before any bytes reach the peer, with the refusal audited.
 
 **+20 across the existing delegation/peer files.** `test_guest_peers.py` grew the
 transport-boundary gate (context-less refused, envelope/context agent mismatch,

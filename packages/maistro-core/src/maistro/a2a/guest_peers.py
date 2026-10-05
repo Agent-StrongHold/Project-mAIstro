@@ -13,6 +13,7 @@ from typing import Protocol, runtime_checkable
 from maistro.a2a.delegation_context import (
     DelegationContext,
     DelegationContextError,
+    validate_goal_binding,
 )
 from maistro.http import shared_client
 
@@ -226,6 +227,25 @@ class GuestPeerManager:
                     f"delegation names agent {agent_id!r} but its canonical context "
                     f"binds {context.delegating_agent!r}"
                 ),
+            )
+        # The receiver files sender-authored Goal evidence verbatim, so the
+        # sending boundary is the last place an incoherent Goal/Subgoal
+        # binding (goal_id without goal_revision, subgoal_of without a Goal)
+        # can be refused instead of admitted as if it were evidence. The
+        # dispatching node validates too; this re-check closes the bypass.
+        try:
+            validate_goal_binding(context)
+        except DelegationContextError as exc:
+            await self._audit.log_delegation(
+                peer_name,
+                agent_id,
+                "refused: incoherent Goal/Subgoal binding on the delegation context",
+            )
+            return DelegationResult(
+                task_id="",
+                peer_name=peer_name,
+                status="rejected",
+                error=f"delegation context has an incoherent Goal binding: {exc}",
             )
         return None
 
