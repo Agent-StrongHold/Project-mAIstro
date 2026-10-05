@@ -28,7 +28,7 @@ Historical snapshots ([DECISION-BACKLOG.md](adr/DECISION-BACKLOG.md), [testing/i
 | [security/](security/) | 7 | Identity/sandbox matrices, rendering hardening, DAG-shape admission |
 | [testing/](testing/) | ~760 | Suite inventory + per-change `inventory-notes/` (CI ratchet evidence) |
 | [persistence/](persistence/) | 1 | Durable vs ephemeral container state |
-| [research/](research/) | 1 | Research notes (not governance) |
+| [research/](research/) | 2 | Research notes (not governance) |
 | [exploratory-sessions/](exploratory-sessions/) | 3 | Manual probing session logs |
 
 Root guides: [WAYS-OF-WORKING.md](WAYS-OF-WORKING.md), [quality-gates.md](quality-gates.md), [EXPLORATORY-TESTING.md](EXPLORATORY-TESTING.md).
