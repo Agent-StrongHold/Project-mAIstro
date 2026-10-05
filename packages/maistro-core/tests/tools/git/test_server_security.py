@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from maistro.tools.git.server import git_clone, git_status
+from maistro.tools.git.server import (
+    _TRUSTED_SIGNERS_ENV,
+    _trusted_signature_fprs,
+    git_clone,
+    git_status,
+)
 
 
 @pytest.mark.parametrize("workspace", ["/etc", "/root/.ssh", "/tmp/maistro-workspace-evil/repo"])
@@ -660,3 +666,281 @@ class TestCommitPinning:
             "https://github.com/example/repo.git",
             dest,
         ]
+
+
+# --- Signature trust anchor (#404 AC3) ---------------------------------------
+#
+# AC3's clause is "verify fetched object identity/signature policy". Identity
+# is the digest pin (above). The signature half needs a trust anchor to
+# verify against; `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS` is that anchor: with it
+# set, a clone only succeeds when HEAD carries a cryptographically good
+# signature by one of the named keys. Without it, the documented default is
+# digest identity over authenticated transport — the off-state is asserted
+# so it stays a choice, not an oversight.
+
+_SIG_FPR = "a" * 40
+_OTHER_FPR = "b" * 40
+
+
+def _scripted_git(outputs: dict[str, str]) -> object:
+    """A fake `server._git` answering scripted stdout keyed by a format
+    marker in the argv (`%G?`, `%GF`), so signature verdicts can be unit
+    tested without gpg."""
+
+    async def fake_git(workspace: str, *args: str, timeout: int = 60) -> dict[str, object]:
+        for marker, out in outputs.items():
+            if any(marker in arg for arg in args):
+                return {"success": True, "stdout": out, "exit_code": 0}
+        raise AssertionError(f"unexpected git call: {args}")
+
+    return fake_git
+
+
+class _CloneProc:
+    returncode = 0
+
+    async def communicate(self) -> tuple[bytes, None]:
+        return b"Cloned", None
+
+
+async def _fake_clone_exec(*args: object, **kwargs: object) -> _CloneProc:
+    return _CloneProc()
+
+
+async def test_signature_policy_is_off_without_the_trust_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No anchor configured -> no signature subprocess is spawned at all:
+    the default policy (digest identity over authenticated transport) is the
+    documented off-state, and an unset knob must not add latency or a second
+    failure mode."""
+    monkeypatch.delenv(_TRUSTED_SIGNERS_ENV, raising=False)
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> _CloneProc:
+        calls.append(tuple(str(a) for a in args))
+        return _CloneProc()
+
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
+
+    result = await git_clone(
+        "https://github.com/example/repo.git", "/tmp/maistro-workspace/sig-off"
+    )
+
+    assert result["success"] is True, result
+    assert all("log" not in call for call in calls[1:])  # clone argv only
+    assert "signature_verified" not in result
+
+
+def test_trusted_fprs_normalize_entries_and_drop_empties(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    grouped = f"{_OTHER_FPR[0:8]} {_OTHER_FPR[8:]}"  # spaced like gpg prints them
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, f"  {_SIG_FPR.upper()} , {grouped.upper()} ,,")
+
+    assert _trusted_signature_fprs() == frozenset({_SIG_FPR, _OTHER_FPR})
+
+
+async def test_signature_policy_when_git_status_is_unreadable_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", _fake_clone_exec)
+    monkeypatch.setattr("maistro.tools.git.server._git", _scripted_git({"%G?": ""}))
+
+    result = await git_clone(
+        "https://github.com/example/repo.git", "/tmp/maistro-workspace/sig-unreadable"
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "commit_signature_missing"
+
+
+@pytest.mark.parametrize("verdict", ["N", "B", "X", "E"])
+async def test_signature_policy_rejects_not_good_verdicts(
+    monkeypatch: pytest.MonkeyPatch, verdict: str
+) -> None:
+    """N (unsigned), B (bad), X (expired), E (cannot check) each name a real
+    failure mode; only G/U — cryptographic goodness — can proceed to the
+    fingerprint check."""
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", _fake_clone_exec)
+    monkeypatch.setattr("maistro.tools.git.server._git", _scripted_git({"%G?": verdict}))
+
+    result = await git_clone(
+        "https://github.com/example/repo.git", "/tmp/maistro-workspace/sig-verdict"
+    )
+
+    assert result["success"] is False
+    if verdict == "N":
+        assert result["error_code"] == "commit_signature_missing"
+    else:
+        assert result["error_code"] == "commit_signature_invalid"
+
+
+async def test_signature_policy_rejects_good_signature_by_untrusted_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", _fake_clone_exec)
+    monkeypatch.setattr(
+        "maistro.tools.git.server._git",
+        _scripted_git({"%G?": "G", "%GF": f"{_OTHER_FPR}\n{_OTHER_FPR}"}),
+    )
+
+    result = await git_clone(
+        "https://github.com/example/repo.git", "/tmp/maistro-workspace/sig-foreign"
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "commit_signature_untrusted"
+    assert _TRUSTED_SIGNERS_ENV in result["suggested_action"]
+
+
+@pytest.mark.parametrize(
+    "fprs", [f"{_SIG_FPR}\n{_SIG_FPR}", f"{_OTHER_FPR}\n{_SIG_FPR}"], ids=["primary", "subkey"]
+)
+async def test_signature_policy_accepts_trusted_signer(
+    monkeypatch: pytest.MonkeyPatch, fprs: str
+) -> None:
+    """A good signature by a trusted key — named as primary (%GP) or as the
+    signing subkey (%GF) — passes and the result attests it."""
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", _fake_clone_exec)
+    monkeypatch.setattr("maistro.tools.git.server._git", _scripted_git({"%G?": "G", "%GF": fprs}))
+
+    result = await git_clone(
+        "https://github.com/example/repo.git", "/tmp/maistro-workspace/sig-trusted"
+    )
+
+    assert result["success"] is True, result
+    assert result["signature_verified"] is True
+
+
+# The live proofs below run real gpg: a throwaway keyring (GNUPGHOME), an
+# Ed25519 key, a signed origin commit, and the same `git log %G?`/`%GF` path
+# production runs. Skipped when gpg is absent rather than silently weakening
+# the policy under test.
+
+
+def _gpg(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["gpg", *args], check=False, capture_output=True, text=True, timeout=120)
+
+
+@pytest.fixture
+def _gpg_signer_fpr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    if not shutil.which("gpg"):
+        pytest.skip("gpg is not installed; live signature policy cannot be exercised")
+    home = tmp_path / "gnupg"
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv("GNUPGHOME", str(home))
+    gen = _gpg(
+        "--batch",
+        "--passphrase",
+        "",
+        "--quick-generate-key",
+        "maistro clone policy <signer@example.invalid>",
+        "ed25519",
+        "sign",
+        "never",
+    )
+    if gen.returncode != 0:
+        pytest.skip(f"gpg key generation failed: {gen.stderr.strip()}")
+    colons = _gpg("--list-keys", "--with-colons").stdout
+    for line in colons.splitlines():
+        if line.startswith("fpr:"):
+            return line.split(":")[9].lower()
+    pytest.fail(f"no fingerprint in gpg output: {colons!r}")
+
+
+class TestLiveSignaturePolicy:
+    @pytest.fixture(autouse=True)
+    def _hermetic(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self.root = tmp_path / "workspaces"
+        monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (self.root,))
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+            ("https://", "ssh://", "file://"),
+        )
+
+    async def test_signed_clone_passes_when_signer_is_trusted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _gpg_signer_fpr: str
+    ) -> None:
+        origin = tmp_path / "origins" / "signed"
+        origin.mkdir(parents=True)
+        assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
+        _git("-C", str(origin), "config", "user.email", "s@s")
+        _git("-C", str(origin), "config", "user.name", "s")
+        (origin / "f.txt").write_text("signed\n", encoding="utf-8")
+        assert _git("-C", str(origin), "add", "-A").returncode == 0
+        sign = _git(
+            "-C",
+            str(origin),
+            "-c",
+            f"user.signingkey={_gpg_signer_fpr}",
+            "commit",
+            "-qS",
+            "-m",
+            "s",
+        )
+        assert sign.returncode == 0, sign.stderr
+        tip = _git("-C", str(origin), "rev-parse", "HEAD").stdout.strip()
+
+        monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _gpg_signer_fpr)
+        dest = self.root / "signed-dest"
+        result = await git_clone(f"file://{origin}", str(dest), commit=tip)
+
+        assert result["success"] is True, result
+        assert result["pinned_commit"] == tip
+        assert result["signature_verified"] is True
+
+    async def test_signed_clone_fails_when_trust_anchor_names_another_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _gpg_signer_fpr: str
+    ) -> None:
+        origin = tmp_path / "origins" / "foreign"
+        origin.mkdir(parents=True)
+        assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
+        _git("-C", str(origin), "config", "user.email", "s@s")
+        _git("-C", str(origin), "config", "user.name", "s")
+        (origin / "f.txt").write_text("signed\n", encoding="utf-8")
+        assert _git("-C", str(origin), "add", "-A").returncode == 0
+        sign = _git(
+            "-C",
+            str(origin),
+            "-c",
+            f"user.signingkey={_gpg_signer_fpr}",
+            "commit",
+            "-qS",
+            "-m",
+            "s",
+        )
+        assert sign.returncode == 0, sign.stderr
+
+        monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _OTHER_FPR)  # a different, valid anchor
+        result = await git_clone(f"file://{origin}", str(self.root / "foreign-dest"))
+
+        assert result["success"] is False
+        assert result["error_code"] == "commit_signature_untrusted"
+        assert "do not use this workspace" in result["suggested_action"].lower()
+
+    async def test_unsigned_origin_fails_when_trust_anchor_is_set(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Unsigned HEAD under a configured anchor fails closed — and this
+        direction needs no gpg at all (git reports N without one), so the
+        fail-closed default holds even on gpg-less runners."""
+        origin = tmp_path / "origins" / "unsigned"
+        origin.mkdir(parents=True)
+        assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
+        _git("-C", str(origin), "config", "user.email", "s@s")
+        _git("-C", str(origin), "config", "user.name", "s")
+        (origin / "f.txt").write_text("unsigned\n", encoding="utf-8")
+        assert _git("-C", str(origin), "add", "-A").returncode == 0
+        assert _git("-C", str(origin), "commit", "-qm", "u").returncode == 0
+
+        monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
+        result = await git_clone(f"file://{origin}", str(self.root / "unsigned-dest"))
+
+        assert result["success"] is False
+        assert result["error_code"] == "commit_signature_missing"
+        assert "do not use this workspace" in result["suggested_action"].lower()

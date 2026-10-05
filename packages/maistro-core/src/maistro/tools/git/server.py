@@ -66,6 +66,18 @@ GIT_CLONE_TIMEOUT = 300
 #   URL, which passes policy itself). This server never runs `git submodule
 #   update`; the pin above means even a hypothetical submodule fetch over
 #   git:// dies in transport selection.
+#
+# Signature policy (#404 AC3's "identity/signature policy" clause): the
+# deployment names its trust anchor in `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS`
+# (comma-separated full OpenPGP key fingerprints; the corresponding public
+# keys must be in the runner's keyring, which is what `git log %G?` consults).
+# With the anchor set, every clone must land on a commit whose signature is
+# cryptographically good (`%G?` G, or U — good but locally untrusted) and made
+# by a trusted key (`%GP`/`%GF` fingerprint match); anything else fails with
+# its own error code. Without the anchor the policy stays digest-identity over
+# authenticated transport (`commit=` pin + host allowlist) — that default is
+# documented here, not silent: a deployment that wants provenance signs its
+# candidate sources and configures the anchor.
 _ALLOWED_CLONE_SCHEMES = ("https://", "ssh://")
 _DEFAULT_ALLOWED_CLONE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "ssh.github.com")
 _ALLOWED_CLONE_HOSTS: tuple[str, ...] = _DEFAULT_ALLOWED_CLONE_HOSTS
@@ -91,6 +103,24 @@ def _clone_policy_hosts() -> tuple[str, ...]:
     override = os.environ.get("MAISTRO_GIT_CLONE_ALLOWED_HOSTS", "")
     hosts = tuple(host.strip().lower() for host in override.split(",") if host.strip())
     return hosts or _ALLOWED_CLONE_HOSTS
+
+
+# #404 AC3 signature trust anchor: full OpenPGP fingerprints (40/64 hex,
+# spaces allowed) this deployment trusts to sign candidate clone sources.
+_TRUSTED_SIGNERS_ENV = "MAISTRO_GIT_CLONE_TRUSTED_SIGNERS"
+# git log %G? verdicts that mean "cryptographically good signature": G is
+# good; U is good with unknown *local* keyring trust, which is a keyring
+# setting, not a cryptographic verdict, and must not fail a policy whose
+# anchor is the fingerprint allowlist anyway.
+_GOOD_SIGNATURE_STATUSES = frozenset({"G", "U"})
+
+
+def _trusted_signature_fprs() -> frozenset[str]:
+    """Normalized (space-stripped, lowercased) signer key fingerprints from
+    `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS`. Empty frozenset — no signature
+    requirement — when the deployment has not configured the anchor."""
+    raw = os.environ.get(_TRUSTED_SIGNERS_ENV, "")
+    return frozenset(fpr.replace(" ", "").lower() for fpr in raw.split(",") if fpr.strip())
 
 
 def _url_host(url: str) -> str | None:
@@ -268,6 +298,13 @@ async def git_clone(
     after every fetch, so a ref that moves mid-clone (TOCTOU) cannot change
     what the caller receives. The checkout is exactly the requested digest or
     the call fails.
+
+    Signature policy (#404): when the deployment sets
+    `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS` (comma-separated OpenPGP key
+    fingerprints), the landed HEAD commit must additionally carry a
+    cryptographically good signature by one of those keys; the result then
+    reports `signature_verified: True`. Without the anchor, transport
+    authentication plus the digest pin is the policy.
     """
     try:
         validate_clone_source(url)
@@ -321,9 +358,12 @@ async def _clone_and_maybe_pin(
         output = stdout.decode() if stdout else "Cloned"
         code = proc.returncode or 0
         if code == 0 and commit is not None:
-            return await _verify_pinned_checkout(dest, commit, timeout, output)
+            pinned = await _verify_pinned_checkout(dest, commit, timeout, output)
+            if not pinned["success"]:
+                return pinned
+            return await _enforce_signature_policy(dest, pinned, timeout)
         if code == 0:
-            return ok(stdout=output, exit_code=code)
+            return await _enforce_signature_policy(dest, ok(stdout=output, exit_code=code), timeout)
         return fail(
             stdout=output,
             exit_code=code,
@@ -345,6 +385,73 @@ async def _clone_and_maybe_pin(
             recoverable=True,
             suggested_action="Retry with a longer timeout, or check repo size/network conditions.",
         )
+
+
+async def _enforce_signature_policy(
+    dest: str, result: dict[str, Any], timeout: int
+) -> dict[str, Any]:
+    """Apply the #404 AC3 signature policy to a finished, identity-verified
+    clone.
+
+    No-op unless the deployment configured a trust anchor
+    (`MAISTRO_GIT_CLONE_TRUSTED_SIGNERS`): the default policy is digest
+    identity over authenticated transport, documented in the module header.
+    With the anchor set, HEAD's signature must be cryptographically good
+    (`%G?` G or U) and made by a trusted key (`%GP`/`%GF` fingerprint match) —
+    the checked-out commit is the object the caller receives, so its
+    signature is the provenance being attested.
+    """
+    trusted = _trusted_signature_fprs()
+    if not trusted:
+        return result
+    status = await _git(dest, "log", "-1", "--pretty=format:%G?", timeout=timeout)
+    verdict = status["stdout"].strip() if status["success"] else ""
+    if verdict == "N" or not verdict:
+        return fail(
+            stdout=(result.get("stdout", "") or "")
+            + f"\ncommit signature policy: HEAD is not signed ({verdict or 'unreadable'})",
+            error_code="commit_signature_missing",
+            suggested_action=(
+                f"{_TRUSTED_SIGNERS_ENV} requires signed candidate sources; the "
+                "cloned HEAD carries no valid OpenPGP signature. Do not use this "
+                "workspace."
+            ),
+        )
+    if verdict not in _GOOD_SIGNATURE_STATUSES:
+        return fail(
+            stdout=(result.get("stdout", "") or "")
+            + f"\ncommit signature policy: HEAD signature is not good ({verdict})",
+            error_code="commit_signature_invalid",
+            suggested_action=(
+                f"{_TRUSTED_SIGNERS_ENV} is set, so the cloned HEAD must carry a "
+                f"good signature; git reports {verdict!r}. The source or the local "
+                "keyring is wrong — do not use this workspace."
+            ),
+        )
+    fprs = await _git(dest, "log", "-1", "--pretty=format:%GF%n%GP", timeout=timeout)
+    landed = (
+        {
+            line.strip().replace(" ", "").lower()
+            for line in fprs["stdout"].splitlines()
+            if line.strip()
+        }
+        if fprs["success"]
+        else set()
+    )
+    if not landed & trusted:
+        return fail(
+            stdout=(result.get("stdout", "") or "")
+            + f"\ncommit signature policy: signer {sorted(landed) or 'unknown'} "
+            "is not on the trusted-signer allowlist",
+            error_code="commit_signature_untrusted",
+            suggested_action=(
+                f"The signature is good but the key is not one of the fingerprints "
+                f"in {_TRUSTED_SIGNERS_ENV}. Do not use this workspace."
+            ),
+        )
+    augmented = dict(result)
+    augmented["signature_verified"] = True
+    return augmented
 
 
 async def _verify_pinned_checkout(
