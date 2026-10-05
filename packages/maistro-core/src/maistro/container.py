@@ -141,6 +141,8 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.service import ExtensionInstallService
+    from maistro.extensions.store import InMemoryExtensionStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -465,6 +467,11 @@ class Container:
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
     durable_event_cursor: int = 0
+    # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
+    # in-memory records until the B1 signing/identity substrate (#952) lands;
+    # this is a records-and-authority store, never an execution authority.
+    extension_install_store: InMemoryExtensionStore | None = None
+    extension_install_service: ExtensionInstallService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -2014,6 +2021,26 @@ class Container:
             secret_resolver,
             id_token_verifier=default_id_token_verifier(),
         )
+
+    def ensure_extension_install_service(self) -> ExtensionInstallService:
+        """Return the governed extension install lifecycle service (#953).
+
+        Lazily built over the process-lifetime in-memory store. The activation
+        loader is deliberately unwired at this layer: a deployment without an
+        activation substrate can inspect and decide, but installation fails
+        closed with a clear error instead of improvising code execution. Hosts
+        that own activation replace ``extension_install_service`` with one
+        built over their own loader.
+        """
+        from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
+        from maistro.extensions.store import InMemoryExtensionStore
+
+        if self.extension_install_service is None:
+            self.extension_install_service = ExtensionInstallService(
+                self.extension_install_store or InMemoryExtensionStore(),
+                loader=UnwiredExtensionLoader(),
+            )
+        return self.extension_install_service
 
 
 def _wire_schedule_admission(
