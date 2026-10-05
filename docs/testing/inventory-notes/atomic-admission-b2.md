@@ -655,3 +655,24 @@ campaign-level, unblock path re-proven at this exact head via probe
 `300718b20`) and (b) the sibling `auto-41` branch's failing checks. No code,
 test or `quality/` change was warranted beyond the develop sync and this
 note.
+
+**Mid-round develop advance (final head `e96cd6b27`).** While this round
+ran, develop advanced again `658a8f78c` -> `159fbafe9` (M6 cleanup #1980:
+git-MCP transport hardening, builders TUI, RSI tests, one vulture row
+retired). It was merged too (clean, no conflicts). Multiset audit:
+vulture 1342 (develop's retirement of the `code_registry/types.py` unused
+`trusted` row correctly taken — we never touched that row; no develop row
+lost), reachability 170 + our 2 = 172 unchanged, dispositions unchanged.
+Re-run at `e96cd6b27`: `ruff check .` clean, `ruff format --check .` 2976
+files clean, CI-exact vulture -> exit 0 (1342 = 1342, still nothing
+unbanked — amendment stays moot), `check-reachability.py` exit 0 (1285
+modules / 172 unreachable), dispositions + convergence + shipped-surface
+exit 0, focused pytest -> 139 passed / 0 skipped, suite inventory ok for
+both maistro-core and maistro-rsi (develop's new #452 tests recorded
+upstream). The grant probe was refreshed at this exact final head
+(`9f10db267` = `e96cd6b27` + `3235229f5fed`, worktree
+`probe-1893-round9b`): `RATCHET_BASE_REV=3235229f5fed...` aggregator exit 0
+(all 10 sub-ratchets OK, both admission identities authorized),
+shipped-surface and vulture exit 0 under the same base. Develop still
+carries no admission grant at `159fbafe9`; the campaign landing action is
+unchanged.
