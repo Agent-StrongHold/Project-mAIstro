@@ -63,6 +63,21 @@ adoption-safe guarded add, lockstep-grepped call shape, exact CHECK domain
 strings — are unchanged. No test added, removed or renamed; the recorded
 suite inventory is untouched.
 
+Develop-sync note (this round): the third collision re-parented the
+revision onto develop's `055_task_admission_generations` as `056`
+(`054_learning_applicability_epistemics` and the admission generations
+claimed 054/055 while this branch was open), and
+`043_invocation_quota_door` followed the merged head. Renumbering only:
+file name, `revision`/`down_revision`, the chain-tip sentinel in
+`test_capability_invocation_effect_index_migration.py` (which now also
+asserts the quota-door head develop's side already asserted), the filename
+probes in `test_status_domain_lockstep.py`/`test_run_store_planner_stability.py`,
+and the migration id cited by the store comments and this note. One test
+method renamed with its subject (`test_056s_indexes_exist_and_the_redundant_one_is_gone`);
+counts and enforced properties are unmoved, and the recorded suite
+inventory still matches (`scripts/check-suite-inventory.py` ok at the
+merged head).
+
 ## `test_run_store_planner_stability.py` (20: 5 static + 15 live)
 
 The planner half. Postgres switches long-lived prepared statements (sweepers,
