@@ -26,6 +26,44 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
 
 
+def _list_run_ids_by_status_query(
+    status_value: str,
+    *,
+    project_id: str | None = None,
+    after: tuple[datetime, str] | None = None,
+    limit: int,
+) -> tuple[str, list[Any]]:
+    """The exact SQL `list_run_ids_by_status` runs, as a module function so a
+    test can `EXPLAIN` the query that actually ships — the same reason
+    `pg_store` exposes `_list_by_status_query`.
+
+    Two literal statements rather than one `$2 IS NULL OR project_id = $2`:
+    an OR whose first arm does not reference the indexed column can never
+    become an index condition, so the single-statement shape degraded to a
+    scan-plus-sort even where `ix_graph_continuations_status_created`
+    (migration 057) carries the exact `(status, created_at, run_id)` order
+    (#863). Without a project, `status` equality alone yields the ordering;
+    with one, `project_id` filters inline over the same ordered scan —
+    bounded by that status's rows, which is the population the query names
+    anyway. `status = $1` stays a parameter on purpose: the serving index is
+    unconditional, so a generic prepared plan needs no predicate proof.
+    """
+    if project_id is None:
+        sql = "SELECT run_id FROM graph_continuations WHERE status = $1"
+        params: list[Any] = [status_value]
+    else:
+        sql = "SELECT run_id FROM graph_continuations WHERE status = $1 AND project_id = $2"
+        params = [status_value, project_id]
+    if after is not None:
+        after_created, after_run_id = after
+        cursor_param = len(params) + 1
+        sql += f" AND (created_at, run_id) > (${cursor_param}, ${cursor_param + 1})"
+        params.extend([after_created, after_run_id])
+    sql += f" ORDER BY created_at ASC, run_id ASC LIMIT ${len(params) + 1}"
+    params.append(limit)
+    return sql, params
+
+
 class PgGraphContinuationStore:
     """Durable continuation store beside the canonical spine."""
 
@@ -94,18 +132,13 @@ class PgGraphContinuationStore:
         project_id: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[str]:
-        sql = (
-            "SELECT run_id FROM graph_continuations "
-            "WHERE status = $1 AND ($2::text IS NULL OR project_id = $2)"
+        """Continuation ids in ``status``, oldest first, per project when named."""
+        sql, params = _list_run_ids_by_status_query(
+            status.value,
+            project_id=project_id,
+            after=None if after is None else (datetime.fromisoformat(after[0]), after[1]),
+            limit=limit,
         )
-        params: list[Any] = [status.value, project_id]
-        if after is not None:
-            after_created, after_run_id = after
-            cursor_param = len(params) + 1
-            sql += f" AND (created_at, run_id) > (${cursor_param}, ${cursor_param + 1})"
-            params.extend([datetime.fromisoformat(after_created), after_run_id])
-        sql += f" ORDER BY created_at ASC, run_id ASC LIMIT ${len(params) + 1}"
-        params.append(limit)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return [str(row["run_id"]) for row in rows]
