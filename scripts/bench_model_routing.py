@@ -339,7 +339,10 @@ class Policy:
     name: str = "policy"
 
     def __init__(self, seed: int) -> None:
-        self._rng = random.Random(seed)
+        # Seeded so every episode is reproducible run-to-run; the seedable,
+        # non-cryptographic PRNG *is* the design here, and nothing in the
+        # offline bench touches a secret or a security boundary.
+        self._rng = random.Random(seed)  # DevSkim: ignore DS148264 until 2027-12-31
 
     def select(self, ctx: Ctx, usage_pcts: dict[str, float], step: int) -> int:
         raise NotImplementedError
@@ -674,7 +677,9 @@ def run_episode(
     Bernoulli noise the policies must learn through.
     """
     policy = POLICY_FACTORIES[policy_name](seed)
-    world_rng = random.Random(seed * 1_000_003 + 17)
+    # Seeded offline-bench PRNG, not a security function (DS148264 note at
+    # Policy.__init__ explains why a non-cryptographic generator is the design).
+    world_rng = random.Random(seed * 1_000_003 + 17)  # DevSkim: ignore DS148264 until 2027-12-31
     channel = FeedbackChannel(delay, delay, label_rate, world_rng, policy.observe)
     usage: dict[str, float] = {}
 
@@ -781,7 +786,9 @@ def generate_logged_dataset(n: int, eps: float, seed: int, phase: int = 0) -> li
     p(a|x) = (1-eps)·1{a = static_pick} + eps/N — the bias later corrected by
     IPS clipping. Rewards are Bernoulli draws of the true outcome model.
     """
-    rng = random.Random(seed * 7_919 + 101)
+    # Seeded offline-bench PRNG, not a security function (DS148264 note at
+    # Policy.__init__ explains why a non-cryptographic generator is the design).
+    rng = random.Random(seed * 7_919 + 101)  # DevSkim: ignore DS148264 until 2027-12-31
     rows: list[LogRow] = []
     for _ in range(n):
         ctx = sample_context(rng)
