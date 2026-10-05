@@ -244,6 +244,42 @@ def empty_database():
     _drop_all_tables()
 
 
+class TestAuditCursorIndexes:
+    def test_indexes_upgrade_and_reverse_without_losing_audit_rows(self, empty_database) -> None:
+        """The shipping chain installs every seek and rolls back only its indexes."""
+        assert _alembic("upgrade", "053").returncode == 0
+        _execute("INSERT INTO audit_log (boundary, user_id) VALUES ('login', 'alice')")
+
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        indexes = dict(
+            _query(
+                "SELECT indexname, indexdef FROM pg_indexes "
+                "WHERE schemaname = 'public' AND tablename = 'audit_log' "
+                "AND indexname LIKE %s",
+                ("ix_audit_page_%",),
+            )
+        )
+        assert set(indexes) == {f"ix_audit_page_{index}" for index in range(8)}
+        assert all("org_id" in definition for definition in indexes.values())
+        assert all('"timestamp" DESC, id DESC' in definition for definition in indexes.values())
+
+        result = _alembic("downgrade", "053")
+        assert result.returncode == 0, result.stderr
+        assert not _query(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'audit_log' AND indexname LIKE %s",
+            ("ix_audit_page_%",),
+        )
+        assert _query("SELECT boundary, user_id FROM audit_log") == [("login", "alice")]
+        # The preceding learning-lifecycle migration must still be present.
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'learnings' "
+            "AND column_name = 'confidence'"
+        ) == [("confidence",)]
+
+
 class TestTheChainApplies:
     def test_upgrade_head_succeeds_on_an_empty_database(self, empty_database) -> None:
         """The exact command the README gives, against the state it assumes."""
