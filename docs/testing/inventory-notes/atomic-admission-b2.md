@@ -53,6 +53,33 @@ proof — there are no skips in this file.
 - Error messages never quote snapshot bytes or owner tokens, and parsing
   chains are suppressed (`__suppress_context__` asserted).
 
+## Repair-round revalidation evidence (L1893, head 532944f92)
+
+After syncing the coordinated develop base (8a4bc239f, via merges a8931abb0
+and 532944f92 — the `_vulture_whitelist.py` conflict resolved as the exact
+union of both sides' rows, no row dropped), every gate in this leaf's scope
+was re-run at the merged head:
+
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py -q`
+  -> 66 passed (matches the +66 delta above).
+- `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py
+  packages/maistro-core/tests/tasks -q` -> 551 passed, 16 skipped (the skips
+  are the PG-DSN-gated durability tests; not counted as proof, per the issue).
+- `uv run ruff check .` and `uv run ruff format --check .` -> clean.
+- `uv run mypy packages/maistro-core/src/maistro/tasks
+  packages/maistro-core/src/maistro/runs/admission_identity.py` -> clean.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> 1338 reviewed
+  identities, 1338 banked, exit 0.
+- `check-reachability-dispositions.py`, `check-suite-inventory.py`,
+  `check-convergence-matrix.py`, `check-backlog-consistency.py`,
+  `check-execution-lifecycles.py`, `check-model-egress.py`,
+  `check-doc-links.py` -> all exit 0.
+- `check-reachability.py` -> exit 1, reporting exactly the newly-unreachable
+  `maistro.tasks.admission_codec` predicted below. Unchanged by design: this
+  leaf makes no baseline edit, so the gate stays honestly red until the C
+  leaf/integration round wires the consumer and reconciles the ledger.
+
 ## Reachability expectation (integration head)
 
 `maistro.tasks.admission_codec` is production code with no runtime consumer
