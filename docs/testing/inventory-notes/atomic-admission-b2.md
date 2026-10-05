@@ -329,3 +329,52 @@ makes it green is fully specified and now execution-proven: land the grant
 commit (fast-forward `3235229f5fed` or an equivalent two-entry
 `reachability` grant) on develop, then merge origin/develop here — the probe
 merge `0521ce4fd252` is that exact state and passes every gate.
+
+## CI-repair round 5 (L1893, head b739b00dd — develop sync to 30677b185)
+
+The merge-queue evaluation reported `test: failure` with develop advanced to
+`30677b185` (two commits this branch did not have: `1885c8eda` research #919 +
+`30677b185` epic M8-J docs). The branch merged `origin/develop` cleanly
+(merge `b739b00dd`; only docs + `packages/maistro-rsi/tests/
+test_m8b5_corouting_benchmark_research.py` + that leaf's inventory note came
+in — no production code, no ledger, no frontend/OpenAPI surface). Every
+Python step of the `test` job re-run at the merged head in CI's form:
+
+- `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/ --ignore=
+  tests/tools/registry` -> 4413 passed, 104 skipped.
+- `packages/maistro-core/tests` -> 12540 passed, 888 skipped, 1 xfailed;
+  `packages/maistro-bootstrap/tests` -> 237 passed; `packages/maistro-
+  server/tests packages/maistro-canvas/tests` -> 958 passed, 83 skipped;
+  `packages/maistro-turing/tests packages/maistro-turing/backend/tests
+  packages/maistro-design/tests` -> 840 passed; `PYTHONPATH=packages/
+  maistro-rsi/src:packages/maistro-evolve/src ... packages/maistro-rsi/tests
+  packages/maistro-evolve/tests` -> 2015 passed, 6 skipped (includes develop's
+  new #919 file).
+- `python scripts/check-suite-inventory.py` (full, 14 suites) -> ok,
+  26186 node IDs; `scripts/check-test-duplicates.py` -> ok; `ruff check .` +
+  `ruff format --check .` -> clean; CI's nine-package `mypy` -> "Success: no
+  issues found in 943 source files"; `verify-monorepo-layout.sh`,
+  `check-merge-markers.py`, `check-cross-package-imports.py` -> ok.
+- The `test` steps not runnable here (npm lint/build/audit, hive-conductor
+  backend venv, generated-OpenAPI-types diff, one-process combined run) are
+  unchanged by diff — `git diff --stat origin/develop...HEAD` touches only the
+  ten declared B2 surfaces, none under hive-conductor/frontend/maistro-server
+  — and were hosted-green at head `7035433722` (`test` check-run success), so
+  the `test` failure is accounted for by the un-synced develop divergence
+  this round removed.
+
+Gates at the merged head: vulture CI-exact 1338 -> 1338 exit 0 (still nothing
+unbanked — the mandated vulture-ledger amendment remains moot);
+`check-shipped-surface-truth.py` exit 0; radon 143 -> 143 exit 0;
+`check-convergence-matrix.py` OK (1268 modules, 174 unreachable attributed);
+`RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` exit 1 on
+exactly the two reachability provenance gates (NEW unreachable
+`maistro.runs.admission_identity` + `maistro.tasks.admission_codec`, NEW
+dispositions; trusted base resolves to `9a5eb7ba6`, which has 11 reachability
+grants, none admission). Probe re-executed at the post-sync head: merge
+`730f71ff1d` = `b739b00dd` + grant `3235229f5fed` (branch
+`probe/grant-1893-b739b`), `RATCHET_BASE_REV=3235229f5fed...` -> full
+aggregator exit 0 (174 unreachable, dispositions "new debt uses prior
+reachability authorization"), vulture + shipped-surface exit 0 under the same
+base. The grant-landing unblock path is therefore re-proven at the current
+head, not inherited from round 4.
