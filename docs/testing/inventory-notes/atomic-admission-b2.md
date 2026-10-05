@@ -148,3 +148,64 @@ Re-run at the repaired head (all locally executed):
   (`admission_identity.py` 98%, `admission_codec.py` 92%);
   `_vulture_whitelist.py` sits outside every measured root and is named
   unmeasured, per the gate's own output.
+
+## CI-repair round 2 (L1893, head 8d76655aa after develop sync + radon fix)
+
+CI at `b9ddf1b75` failed exactly two checks: the Quality gate's **radon CC
+ratchet** step and the **exact-debt-ledger** job. The previous section's
+"fixed here" claim about the Quality gate was therefore incomplete — the
+reachability banking fixed the gate's reachability/disposition steps and the
+`test` job, but the gate stayed red for a second, unrecorded cause: radon.
+Recorded here so the note matches the measured gate, per the drift finding.
+
+- **Radon (fixed here, in-branch refactor):**
+  `scripts/check-radon-baseline.py` reported one new unbaselined block vs the
+  trusted base: `admission_codec.py:202 decode_admission_header -> C (11)`.
+  The block was refactored, not banked: the inline format-version coercion
+  and scope/fingerprint hex validation moved into two new A-graded helpers
+  (`_coerce_format_version`, `_require_hex`), leaving the public function at
+  A (1); `_hex64` became a `TypeGuard[str]` so the extraction stays mypy-clean.
+  Behavior is preserved by the existing tests — including the
+  `bad_format in [3, 0, -1, None, "1", True, 1.0]` parametrization that pins
+  bool/float rejection. No radon ledger entry was added or needed.
+- **Exact-debt-ledger (structural residual, unchanged):**
+  `scripts/check-ratchet-provenance.py` still fails on exactly the two NEW
+  unreachable modules / NEW dispositions (`maistro.runs.admission_identity`,
+  `maistro.tasks.admission_codec`) relative to the merge base —
+  `ratchet_provenance.load_authorizations` reads grants from the merge base,
+  so a candidate-side bank is inert (two-merge rule). Every other ratchet in
+  the wrapper reports no candidate-approved expansion. Resolution stays
+  campaign-level: land the reachability authorizations on the integration
+  base first, then re-evaluate. The issue itself forbids the in-branch
+  "fixes" (wiring the C consumer, `__init__` re-exports, exclusion entries).
+
+Re-run at this head (all locally executed, develop synced first — merge of
+`origin/develop` `94781cf6b` brought #1976's handler-identity gate, no
+conflicts, no production-module change):
+
+- `uv run python scripts/check-radon-baseline.py` -> exit 0; 143 -> 143
+  C-or-worse blocks vs base `94781cf6b`, 0 new / 0 regressed / 0 stale.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  -> 139 passed (the two focused files; +66 delta above unchanged).
+- `uv run pytest packages/maistro-core/tests/tasks
+  packages/maistro-core/tests/runs -q` -> 1674 passed, 263 skipped
+  (skips are PG-DSN-gated; not counted as proof).
+- `uv run ruff check .` and `uv run ruff format --check .` -> clean.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py` -> clean;
+  the 5 remaining `packages/maistro-core/src` errors are pre-existing
+  `maistro_bootstrap` import-not-found (bootstrap extra not synced in the
+  worktree), identical on the merge parent — zero new mypy errors.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> exit 0.
+- `uv run python scripts/check-shipped-surface-truth.py` -> exit 0.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` -> ok (13429 identities match inventory).
+- `uv run python scripts/check-reachability.py` -> exit 0 (1267 production
+  modules, 174 unreachable; the committed baseline still matches the tree
+  after the develop sync) and `uv run pytest
+  tests/test_check_reachability.py tests/test_reachability_baseline_identity.py
+  -q` -> 38 passed.
+- `scripts/check-ratchet-provenance.py` -> exit 1, residual exactly the two
+  campaign-level items above; nothing else moved.

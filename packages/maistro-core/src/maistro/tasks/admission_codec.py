@@ -60,7 +60,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, TypeGuard
 from uuid import UUID
 
 from maistro.runs.admission_identity import (
@@ -209,40 +209,14 @@ def decode_admission_header(row: Mapping[str, object]) -> AdmissionRowHeader:
     """
     _require_columns(row, _HEADER_COLUMNS, scope_key=None)
 
-    raw_format = row["format_version"]
-    format_version: Literal[1, 2]
-    if isinstance(raw_format, int) and not isinstance(raw_format, bool) and raw_format == 1:
-        format_version = 1
-    elif isinstance(raw_format, int) and not isinstance(raw_format, bool) and raw_format == 2:
-        format_version = 2
-    else:
-        raise AdmissionRowDecodeError(
-            "format_version must be exactly 1 or 2",
-            code=AdmissionDecodeCode.UNSUPPORTED_FORMAT,
-            scope_key=None,
-        ) from None
-
-    raw_scope = row["scope_key"]
-    if not isinstance(raw_scope, str) or _HEX64_RE.fullmatch(raw_scope) is None:
-        raise AdmissionRowDecodeError(
-            "scope_key must match lowercase [0-9a-f]{64} exactly",
-            code=AdmissionDecodeCode.INVALID_HEADER,
-            scope_key=None,
-        ) from None
-    scope_key = raw_scope
-
-    raw_fingerprint = row["fingerprint"]
-    if not isinstance(raw_fingerprint, str) or _HEX64_RE.fullmatch(raw_fingerprint) is None:
-        raise AdmissionRowDecodeError(
-            "fingerprint must match lowercase [0-9a-f]{64} exactly",
-            code=AdmissionDecodeCode.INVALID_HEADER,
-            scope_key=scope_key,
-        ) from None
+    format_version = _coerce_format_version(row["format_version"])
+    scope_key = _require_hex(row, "scope_key", scope_key=None)
+    fingerprint = _require_hex(row, "fingerprint", scope_key=scope_key)
 
     return AdmissionRowHeader(
         scope_key=scope_key,
         format_version=format_version,
-        fingerprint=raw_fingerprint,
+        fingerprint=fingerprint,
         created_at_us=_scalar_timestamp(row["created_at"], "created_at", scope_key),
         expires_at_us=_scalar_timestamp(row["expires_at"], "expires_at", scope_key),
         lease_expires_at_us=_scalar_timestamp(
@@ -315,9 +289,39 @@ def encode_admission_record(record: AdmissionRecordV2) -> dict[str, object]:
     }
 
 
-def _hex64(value: object) -> bool:
-    """Exactly a lowercase ``[0-9a-f]{{64}}`` string."""
+def _hex64(value: object) -> TypeGuard[str]:
+    """Exactly a lowercase ``[0-9a-f]{64}`` string."""
     return isinstance(value, str) and _HEX64_RE.fullmatch(value) is not None
+
+
+def _coerce_format_version(value: object) -> Literal[1, 2]:
+    """Exactly the ``int`` 1 or 2; ``bool`` is an ``int`` subclass and loses.
+
+    Any other value — including NULL — is ``unsupported_format`` and can
+    never fall through to a legacy interpretation.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value == 1:
+            return 1
+        if value == 2:
+            return 2
+    raise AdmissionRowDecodeError(
+        "format_version must be exactly 1 or 2",
+        code=AdmissionDecodeCode.UNSUPPORTED_FORMAT,
+        scope_key=None,
+    ) from None
+
+
+def _require_hex(row: Mapping[str, object], column: str, *, scope_key: str | None) -> str:
+    """One header digest column: exactly lowercase ``[0-9a-f]{64}``, or fail."""
+    value = row[column]
+    if _hex64(value):
+        return value
+    raise AdmissionRowDecodeError(
+        f"{column} must match lowercase [0-9a-f]{64} exactly",
+        code=AdmissionDecodeCode.INVALID_HEADER,
+        scope_key=scope_key,
+    ) from None
 
 
 def _int64(value: object) -> bool:
