@@ -575,7 +575,15 @@ def parse_remote_card(payload: Mapping[str, Any] | str) -> RemoteAgentDescriptor
     version = _required_text(raw, "version")
     endpoint_url = _required_text(raw, "url")
     provider = raw.get("provider")
-    publisher = provider.get("organization", "").strip() if isinstance(provider, Mapping) else ""
+    publisher = ""
+    if isinstance(provider, Mapping):
+        organization = provider.get("organization", "")
+        if not isinstance(organization, str):
+            raise DescriptorInvalid(
+                f"descriptor field 'provider.organization' must be a string, "
+                f"got {type(organization).__name__}"
+            )
+        publisher = organization.strip()
     explicit_id = raw.get("id")
     agent_id = (
         explicit_id.strip()

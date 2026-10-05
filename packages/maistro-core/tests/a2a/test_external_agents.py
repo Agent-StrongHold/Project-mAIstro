@@ -164,6 +164,28 @@ def test_malformed_payloads_fail_with_the_field_named() -> None:
         parse_remote_card("[1, 2]")
 
 
+def test_non_string_provider_organization_is_descriptor_invalid_not_a_crash() -> None:
+    """Untrusted discovery data must fail through the documented channel.
+
+    A syntactically valid card whose ``provider.organization`` is not a
+    string used to reach ``.strip()`` on the raw value and escape as
+    ``AttributeError`` — an exception ingestion callers that correctly catch
+    ``DescriptorError`` cannot handle. It must raise ``DescriptorInvalid``
+    with the offending field named, like every other malformed field.
+    """
+    with pytest.raises(DescriptorInvalid, match=r"provider\.organization"):
+        parse_remote_card(_card(provider={"organization": 123}))
+    with pytest.raises(DescriptorInvalid, match=r"provider\.organization"):
+        parse_remote_card(_card(provider={"organization": None}))
+    # Legitimate shapes stay tolerated: absent key, empty string, and a
+    # non-mapping provider all degrade to the "unknown" publisher.
+    assert parse_remote_card(_card(provider={})).publisher == "unknown"
+    assert parse_remote_card(_card(provider={"organization": "  "})).publisher == "unknown"
+    assert parse_remote_card({k: v for k, v in _card().items() if k != "provider"}).publisher == (
+        "unknown"
+    )
+
+
 # AC: "unsupported/unknown capabilities fail explicitly"
 
 

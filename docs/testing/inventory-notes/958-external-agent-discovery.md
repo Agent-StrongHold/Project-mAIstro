@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +46
+  packages/maistro-core/tests: +47
 ---
 # 958-external-agent-discovery
 
@@ -8,11 +8,12 @@ External Agent discovery/card ingestion and canonical capability projection
 lands (#958, epic M9-D #941) as `packages/maistro-core/src/maistro/a2a/external.py`,
 exported through `maistro.a2a`.
 
-**+46 `packages/maistro-core/tests/a2a/test_external_agents.py`** — one test
+**+47 `packages/maistro-core/tests/a2a/test_external_agents.py`** — one test
 (or parametrized matrix) per rule, each naming the acceptance criterion it
-pins (+35 from the initial implementation, +11 from repair rounds: the
+pins (+35 from the initial implementation, +12 from repair rounds: the
 6-case non-boolean capability-flag matrix, the 3 identity-mismatch
-refusals, and the 2 central surface-clamp tests below):
+refusals, the 2 central surface-clamp tests below, and the non-string
+`provider.organization` refusal):
 
 - *descriptor inspection without invocation* (4): JSON-string and dict
   payloads parse identically; the registry takes no transport/invoker argument
@@ -20,7 +21,11 @@ refusals, and the 2 central surface-clamp tests below):
   contacting anything; slug-id derivation (explicit `id` wins); legacy
   `inputModes`/`outputModes` keys with the A2A `text` default; payload-digest
   stability; unknown agent ids fail loudly; malformed payloads fail with the
-  offending field named (8-case matrix + bad JSON + non-object + non-payload).
+  offending field named (8-case matrix + bad JSON + non-object + non-payload);
+  a non-string `provider.organization` raises `DescriptorInvalid` naming the
+  field instead of escaping as `AttributeError` from `.strip()` on untrusted
+  discovery bytes, while absent/empty/non-mapping providers still degrade to
+  the `"unknown"` publisher.
 - *unsupported/unknown capabilities fail explicitly* (5-case parametrized +
   1, plus the 6-case repair-round matrix): `pushNotifications`/
   `stateTransitionHistory` asserted, unknown capability keys, and capability
@@ -79,8 +84,8 @@ reverting the `_parse_capabilities` unknown-key raise makes the unsupported-
 capability matrix pass by silent degradation. Both mutations were reverted
 before commit.
 
-Validation on this head: `pytest packages/maistro-core/tests/a2a` 169 passed
-(123 pre-existing + 46); `mypy --strict packages/maistro-core/src` clean
+Validation on this head: `pytest packages/maistro-core/tests/a2a` 170 passed
+(123 pre-existing + 47); `mypy --strict packages/maistro-core/src` clean
 (721 files);
 `ruff check`/`format --check` clean on touched trees;
 `check-reachability.py` (1284 modules / 170 unreachable — unchanged), and the
