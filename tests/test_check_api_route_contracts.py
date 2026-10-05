@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from scripts.shipped_surface_truth import _LOG_LIKE_CALL_NAMES as TRUTH_LOG_LIKE_CALL_NAMES
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-api-route-contracts.py"
@@ -81,6 +82,51 @@ def test_any_other_call_is_real_work() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# observability-only calls (#1857): logging/metrics cannot make a canned
+# literal acknowledgement truthful, so they are not real-work evidence
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'logger.info("requested")',
+        'LOGGER.warning("requested")',  # root matching is case-insensitive
+        'log.debug("requested")',
+        'metrics.increment("requests")',
+        'print("requested")',
+    ],
+)
+def test_observability_call_alone_is_not_real_work(statement: str) -> None:
+    source = f"def h():\n    {statement}\n    return {{'status': 'ok'}}\n"
+    assert mod._performs_real_work(_func(source)) is False
+
+
+def test_call_without_a_name_root_is_not_observability_evidence() -> None:
+    """`self.log.info(...)` has no plain-name root: it is never exempted."""
+    source = "def h():\n    self.log.info('requested')\n    return {'status': 'ok'}\n"
+    assert mod._performs_real_work(_func(source)) is True
+
+
+def test_non_observability_call_is_real_work() -> None:
+    """A name that merely resembles a log root is still real-work evidence."""
+    source = "def h():\n    logwrapper.info('requested')\n    return {'status': 'ok'}\n"
+    assert mod._performs_real_work(_func(source)) is True
+
+
+def test_observability_vocabulary_matches_shipped_surface_truth() -> None:
+    """One evidence vocabulary, two gates: never two conflicting definitions.
+
+    The route-contract gate deliberately mirrors #1144's shipped-surface
+    classification instead of importing it (the gates are standalone scripts,
+    not a package); this equality is the reconciliation, and it fails loudly
+    if either side's vocabulary moves without the other.
+    """
+    expected = {"log", "logger", "logging", "metrics", "print"}
+    assert mod._LOG_LIKE_CALL_NAMES == TRUTH_LOG_LIKE_CALL_NAMES == expected
+
+
+# --------------------------------------------------------------------------- #
 # _router_decorator: (method, path) extraction
 # --------------------------------------------------------------------------- #
 
@@ -125,6 +171,13 @@ def refuse():
     raise HTTPException(status_code=501, detail="unsupported")
 """
 
+LOGGING_ONLY = """
+@router.post("/reload")
+def reload_settings():
+    logger.info("reload requested")
+    return {"status": "ok"}
+"""
+
 NO_RETURN = """
 @router.get("/streams")
 def streams():
@@ -152,6 +205,52 @@ def test_canned_handlers_flags_only_constant_noop_handlers(tmp_path, monkeypatch
     assert len(findings) == 1
     assert "canned_things" in findings[0]
     assert "GET /canned" in findings[0]
+
+
+def test_logging_only_constant_handler_is_flagged(tmp_path, monkeypatch) -> None:
+    """#1857: `logger.info(...)` must not suppress the canned finding."""
+    routes = _write_routes(tmp_path, LOGGING_ONLY)
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    findings = mod._canned_handlers(mod._handlers())
+    assert len(findings) == 1
+    assert "reload_settings" in findings[0]
+    assert "POST /reload" in findings[0]
+
+
+def test_domain_call_with_constant_acknowledgement_is_not_canned(tmp_path, monkeypatch) -> None:
+    """A real operation followed by a constant acknowledgement stays valid."""
+    routes = _write_routes(
+        tmp_path,
+        """
+@router.post("/flush")
+def flush():
+    store.flush()
+    return {"status": "ok"}
+""",
+    )
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    assert mod._canned_handlers(mod._handlers()) == []
+
+
+def test_gate_rejects_logging_only_handler_without_disposition(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The full gate fails the logging-only success handler: no disposition
+    in the registry can justify a literal acknowledgement for an operation
+    the handler only logged."""
+    routes = _write_routes(tmp_path, LOGGING_ONLY)
+    registry = tmp_path / "registry.json"
+    registry.write_text('{"routes": []}')
+    inventory_doc = tmp_path / "inventory.md"
+    inventory_doc.write_text("# inventory\n")
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    monkeypatch.setattr(mod, "REGISTRY", registry)
+    monkeypatch.setattr(mod, "INVENTORY_DOC", inventory_doc)
+    assert mod.main() == 1
+    out = capsys.readouterr().out
+    assert "canned route handler" in out
+    assert "reload_settings" in out
+    assert "POST /reload" in out
 
 
 # --------------------------------------------------------------------------- #

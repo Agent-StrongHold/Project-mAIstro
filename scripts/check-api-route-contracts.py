@@ -25,7 +25,35 @@ when:
 - it is decorated with `@router.<method>(...)`, and
 - every `return` statement's value is a literal composed purely of constants,
   and
-- the body contains no `Call` node except `HTTPException(...)`.
+- the body contains no `Call` node except `HTTPException(...)` and
+  logging/metrics statements.
+
+Logging and metrics do not make a literal acknowledgement truthful (#1857): a
+route that only logs and answers `{"status": "ok"}` still answered success
+for an operation that did nothing, so observability calls are not real-work
+evidence. What counts as observability is name-matching only — see the
+limitations below.
+
+The observability vocabulary and its limits
+-------------------------------------------
+This is syntactic evidence, not semantic verification of arbitrary calls.
+A call is treated as observability exactly when its target is rooted in a
+plain name whose lowercased form is one of `log`, `logger`, `logging`,
+`metrics`, `print` — the same vocabulary the shipped-surface gate applies
+to the same judgment (#1144, `shipped_surface_truth._LOG_LIKE_CALL_NAMES`;
+an equality test in `tests/test_check_api_route_contracts.py` fails if the
+two definitions ever diverge). The gate cannot prove that any other call is
+meaningful: a call rooted outside the vocabulary makes the handler "real
+work" and the constant return an acknowledgement rather than a payload —
+which is the valid shape (`store.flush(); return {"status": "ok"}`), but it
+is classified by name shape, not by proving the call did anything. The
+mirror risk is bounded the same way: a call rooted in a variable *named*
+`logger` that actually performs I/O would be misread as observability, and
+attribute-rooted targets (`self.log.info(...)`, anything without a plain
+name root) are deliberately never exempted. Handlers whose canned shape
+hides behind nested definitions, non-decorator registration forms, or
+non-literal returns are separate, known detector leaves (#1144 owns the
+shipped-surface detector class).
 
 The inventory
 -------------
@@ -76,19 +104,54 @@ def _pure_constant(node: ast.expr) -> bool:
     return False
 
 
+#: Calls this gate accepts as observability rather than real work, when their
+#: target is rooted in one of these plain names (`log(...)`, `logger.info(...)`).
+#: A route that only logs (or reports metrics) and returns a literal still
+#: answers success for an operation that did nothing, so observability cannot
+#: justify the acknowledgement (#1857). The vocabulary is #1144's
+#: `shipped_surface_truth._LOG_LIKE_CALL_NAMES`, mirrored rather than imported
+#: because these gates are standalone scripts, not a package; an equality test
+#: in `tests/test_check_api_route_contracts.py` fails if the two diverge.
+_LOG_LIKE_CALL_NAMES = {"log", "logger", "logging", "metrics", "print"}
+
+
+def _call_root_name(call: ast.Call) -> str | None:
+    """The plain name a call's target is rooted in, mirroring #1144's
+    ``shipped_surface_truth._call_root_name``: the base of an attribute chain
+    only when that base is a name (`logger` in `logger.info(...)`); a bare
+    name names itself; anything else has no root and is never observability."""
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        base = func.value
+        return base.id if isinstance(base, ast.Name) else None
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
 def _performs_real_work(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True when the body calls anything except HTTPException construction.
+    """True when the body calls anything beyond HTTPException construction and
+    logging/metrics statements.
 
     Walks the body statements, not the whole function node: the handler's own
     ``@router.<method>(...)`` decorator is a Call on every decorated handler,
     and counting it here made every handler look like it did real work — the
     detector could never fire (found by the in-process coverage tests).
+
+    Observability calls are exempt (#1857): their root name (case-insensitive)
+    is in ``_LOG_LIKE_CALL_NAMES``. Everything else — a service call, a store
+    write, a background-task scheduler — is real-work evidence however the
+    ``return`` reads; the gate does not try to prove such a call meaningful,
+    only to recognize the narrow shape that is obviously not.
     """
     for statement in func.body:
         for node in ast.walk(statement):
             if isinstance(node, ast.Call):
                 func_node = node.func
                 if isinstance(func_node, ast.Name) and func_node.id == "HTTPException":
+                    continue
+                root = _call_root_name(node)
+                if root is not None and root.lower() in _LOG_LIKE_CALL_NAMES:
                     continue
                 return True
     return False
