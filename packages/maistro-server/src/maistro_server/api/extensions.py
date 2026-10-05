@@ -1,10 +1,13 @@
 """Governed extension install lifecycle over HTTP (#953, M9-B2).
 
 These routes are the operator surface of the inspect → authorize → install
-state machine; they execute nothing themselves. Every write attributes the
-authenticated principal as the actor, every decision requires a reason, and
-the permissions shown back are read from the install record's immutable
-manifest snapshot — never re-derived from a request body.
+state machine; they execute nothing themselves. Every route is authenticated
+— reads included, because an install record's granted permissions and its
+audit trail are exactly what a credentialless caller must not enumerate.
+Every write attributes the authenticated principal as the actor, every
+decision requires a reason, and the permissions shown back are read from the
+install record's immutable manifest snapshot — never re-derived from a
+request body.
 
 Authorization mapping: a Workspace-scoped install requires canonical
 Workspace ADMINISTER membership for every phase (inspection creates durable
@@ -356,6 +359,7 @@ async def install_extension(
 @router.get("/installations/{install_id}", response_model=InstallRecordView)
 async def get_extension_installation(
     install_id: str,
+    auth: RequireAuth,
     service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
     org_id: Annotated[str, Query(min_length=1)],
     workspace_id: Annotated[str, Query()] = "",
@@ -382,6 +386,7 @@ async def get_extension_installation(
 )
 async def get_extension_installation_transitions(
     install_id: str,
+    auth: RequireAuth,
     service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
     org_id: Annotated[str, Query(min_length=1)],
     workspace_id: Annotated[str, Query()] = "",
@@ -412,6 +417,7 @@ async def sweep_expired_authorizations(
 
 @router.get("/active", response_model=InstallRecordView)
 async def get_active_extension(
+    auth: RequireAuth,
     service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
     org_id: Annotated[str, Query(min_length=1)],
     extension_id: Annotated[str, Query(min_length=1)],

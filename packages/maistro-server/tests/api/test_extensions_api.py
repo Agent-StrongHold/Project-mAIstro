@@ -14,11 +14,13 @@ import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from maistro.config.settings import Settings, get_settings
 from maistro.extensions import (
     InMemoryExtensionStore,
     TrustPolicy,
@@ -437,6 +439,126 @@ class TestAuditTrailEndpoint:
             },
         )
         assert response.status_code == 503
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+class TestReadsAreAuthenticated:
+    """Every route on the extensions router is authenticated, reads included.
+
+    Regression: the three GET handlers (installation record, transition
+    trail, active extension) declared no ``RequireAuth`` dependency, so with
+    API_KEYS configured an unauthenticated caller could read granted
+    permissions and audit trails for any guessable ``org_id`` +
+    ``extension_id`` while every POST answered 401 — contradicting the
+    router's own contract statement in ``main.py``.
+    """
+
+    _AUTH: ClassVar[dict[str, str]] = {"Authorization": "Bearer s3cret"}
+
+    _READS: ClassVar[list[tuple[str, str]]] = [
+        ("installation", "/extensions/installations/{install_id}"),
+        ("transitions", "/extensions/installations/{install_id}/transitions"),
+        ("active", "/extensions/active"),
+    ]
+
+    @staticmethod
+    def _client() -> TestClient:
+        """Real auth (no ``verify_api_key`` override): API_KEYS configured
+        through the same ``get_settings`` dependency the server resolves."""
+        service = ExtensionInstallService(
+            InMemoryExtensionStore(),
+            loader=RecordingLoader(),
+            trust_policy=TRUST_POLICY,
+            platform_api_version="1.0.0",
+        )
+        app = FastAPI()
+        app.state.container = SimpleNamespace(ensure_extension_install_service=lambda: service)
+        app.include_router(extensions_api.router)
+        app.dependency_overrides[get_settings] = lambda: Settings(api_keys=["ops:s3cret"])
+        return TestClient(app)
+
+    def _drive_to_active(self, client: TestClient) -> str:
+        """Produce a record worth protecting: an ACTIVE install whose read
+        views expose granted_permissions and the audit trail."""
+        inspected = client.post(
+            "/extensions/inspections",
+            headers=self._AUTH,
+            json={
+                "org_id": "org-1",
+                "workspace_id": "",  # org-only scope: no workspace authority
+                "manifest_text": _manifest_text(),
+                "payload_b64": _payload_b64(),
+                "trust": {
+                    "publisher_id": "acme",
+                    "signature_present": True,
+                    "signer_key_id": "key-1",
+                    "package_sha256": hashlib.sha256(PAYLOAD).hexdigest(),
+                },
+            },
+        )
+        assert inspected.status_code == 201, inspected.text
+        install_id = inspected.json()["install_id"]
+        decided = client.post(
+            f"/extensions/installations/{install_id}/authorization",
+            headers=self._AUTH,
+            json={
+                "org_id": "org-1",
+                "workspace_id": "",
+                "approve": True,
+                "reason": "reviewed",
+            },
+        )
+        assert decided.status_code == 200, decided.text
+        installed = client.post(
+            f"/extensions/installations/{install_id}/installation",
+            headers=self._AUTH,
+            json={"org_id": "org-1", "workspace_id": "", "payload_b64": _payload_b64()},
+        )
+        assert installed.status_code == 200, installed.text
+        return install_id
+
+    def test_reads_reject_missing_token(self) -> None:
+        client = self._client()
+        install_id = self._drive_to_active(client)
+        for name, path in self._READS:
+            response = client.get(
+                path.format(install_id=install_id),
+                params={"org_id": "org-1", "extension_id": "acme.chart_tools"},
+            )
+            assert response.status_code == 401, (name, response.status_code, response.text)
+            # The leak this regression names: granted authority and its audit
+            # trail must not be readable without a credential.
+            assert "granted_permissions" not in response.text
+            assert "authorized_by" not in response.text
+
+    def test_reads_reject_invalid_token(self) -> None:
+        client = self._client()
+        install_id = self._drive_to_active(client)
+        for name, path in self._READS:
+            response = client.get(
+                path.format(install_id=install_id),
+                params={"org_id": "org-1", "extension_id": "acme.chart_tools"},
+                headers={"Authorization": "Bearer not-the-secret"},
+            )
+            assert response.status_code == 401, (name, response.status_code, response.text)
+
+    def test_reads_accept_valid_token(self) -> None:
+        client = self._client()
+        install_id = self._drive_to_active(client)
+        for name, path in self._READS:
+            response = client.get(
+                path.format(install_id=install_id),
+                params={"org_id": "org-1", "extension_id": "acme.chart_tools"},
+                headers=self._AUTH,
+            )
+            assert response.status_code == 200, (name, response.status_code, response.text)
+        record = client.get(
+            f"/extensions/installations/{install_id}",
+            params={"org_id": "org-1"},
+            headers=self._AUTH,
+        ).json()
+        assert record["granted_permissions"] == ["network.http", "storage.workspace"]
 
 
 @pytest.mark.contract("behavioral")
