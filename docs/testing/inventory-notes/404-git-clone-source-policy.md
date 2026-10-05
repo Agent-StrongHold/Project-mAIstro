@@ -295,3 +295,49 @@ trusting the recorded ones:
   heads is observable from this sandbox and pushing is prohibited here, so
   CI on the exact branch head is recorded UNVERIFIED — the required gates
   were instead proven locally with CI's argv at this head.
+
+## Independent verification round (head e8b8c0352590, develop sync to 2728e3a58145)
+
+Re-executed fresh at the assigned verification head (prior claims not carried
+forward). Merge shape: HEAD is exactly `20113e003` (docs head) merged with the
+declared develop base `2728e3a58145` — the merge's second parent equals the
+declared base SHA. The delta `77017baf1..HEAD` is docs-only (the synced-in
+M8-I research plan plus this note); `git diff --name-only 77017baf1..HEAD --
+packages/maistro-core/src/maistro/tools/git/ packages/maistro-core/tests/
+tools/git/ packages/maistro-rsi/tests/` is empty, so the policy surface is
+byte-identical to the fully-probed round at 77017baf1. `git diff --numstat
+2728e3a58145..HEAD -- quality/` shows only the additive
+`quality/ac-state-notes/auto-404.json` (+17/−0) — no multiset rows lost
+across the merge, and `quality/` is byte-identical to the 77017baf1 round.
+
+- Executed at this head: `ruff check .` clean; `ruff format --check .` 2917
+  files formatted; targeted set `test_server_security.py` + RSI
+  `test_cli.py`/`test_selfbranch.py` → 77 passed (including the real-git
+  `test_pinned_workspace_refuses_submodule_update_over_git_protocol`, which
+  drives `git_clone` and `_git` against real subprocesses and lands the
+  persisted `protocol.allow=never` in the destination config before refusing
+  a git:// submodule fetch); `check-suite-inventory.py` matches for
+  `packages/maistro-core/tests` (13327) and `packages/maistro-rsi/tests`
+  (998).
+- Quality ratchets with CI's exact argv against base 2728e3a58145:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1338 = 1338); `check-radon-baseline.py` exit 0
+  (143 = 143). The develop syncs also brought in
+  `check-api-route-contracts.py`: exit 0 (279 handlers, 15 audited routes,
+  0 canned) and its synced-in `tests/test_check_api_route_contracts.py` →
+  36 passed.
+- No closure keywords in `77017baf1..HEAD` commit subjects/bodies (only the
+  synced-in develop references #908/#1969); PR #1729 body still says
+  "Refs #404" only.
+- Hosted CI on this exact head: combined commit status `pending` at review
+  time (block, DevSkim, Gate C, ADR front-matter, exact-debt-ledger, SAST,
+  devskim SUCCESS; integration-scope and the Quality gate IN_PROGRESS;
+  test, the four coverage jobs, lint-and-type-check, security,
+  formal-conformance, compliance, supply chain, pr-base, workflow-lint
+  QUEUED) — recorded UNVERIFIED, not inferred from the earlier heads. Scope
+  note: the last fully-concluded hosted run is on PR head 2ebefd794f8d
+  (green, recorded above); the only deltas since are the two conflict-free
+  docs-only develop merges and this lane's own docs commits — no source or
+  test surface moved (`2ebefd794..HEAD` touches only
+  `docs/` and the synced-in `scripts/check-api-route-contracts.py` with its
+  test file, both re-run locally here).
