@@ -178,3 +178,22 @@ Coverage was collected for `maistro` and the shipped Hive resolver; the exact
 `check-diff-coverage.py --base 575c686635d5ecfe24e3e21f488ffd8d96a49cbc`
 check passed for all four changed measured files. This is the complete local
 diff-coverage check, not just the node-only measurement above.
+
+## First remote PostgreSQL run and fixture correction
+
+The first PostgreSQL coverage job for published head
+`4092529b4d636bf61544e9b28e6029a5f36b1f39` reached all five new PostgreSQL cases:
+[run 37248090880, job 111569898307](https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/37248090880/job/111569898307).
+It reported 5,548 passed, 92 skipped, one failure and four setup errors.
+The first failure was the fixture's in-memory Project paired with PgRunStore,
+which correctly refused the missing canonical_projects foreign key. The later
+setups reused the same immutable Binding ID for newly allocated Projects;
+the shared PostgreSQL fixture does not truncate capability Bindings.
+
+The correction is test-only: PostgreSQL now creates its Project through
+PgProjectScopeStore and supplies that same authority to PgRunStore. Each case
+allocates one fresh Binding ID, retained by every reconstruction in that case.
+All five test bodies, recovery assertions, production stores and skip rules
+are unchanged. Local rerun: 10 passed, five PostgreSQL skips; actual PostgreSQL
+execution remains pending the corrected head's CI. No production code,
+assertion relaxation, schema workaround or additional test count is introduced.

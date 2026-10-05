@@ -13,6 +13,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import aiosqlite
 import pytest
@@ -37,7 +38,8 @@ from maistro.graph.durable_runs.pg_continuation import PgGraphContinuationStore
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.harness import HarnessHandle, HarnessRequest, HarnessResult
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
-from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.projects.pg_scope_store import PgProjectScopeStore
+from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunStatus
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.sqlite_store import SqliteRunStore
@@ -108,6 +110,7 @@ class Spine:
     graph_store: CanonicalDurableRunStore
     effects: CapabilityEffectContext
     project_id: str
+    binding_id: str
     reconstruct: Callable[
         [], Awaitable[tuple[RunStore, CanonicalDurableRunStore, CapabilityEffectContext]]
     ]
@@ -119,8 +122,13 @@ async def spine(
 ) -> AsyncIterator[Spine]:
     if request.param == "postgres" and pg_pool is None:
         pytest.skip("PostgreSQL service is not configured")
-    projects = InMemoryProjectScopeStore()
+    projects: ProjectScopeStore = (
+        PgProjectScopeStore(pg_pool) if request.param == "postgres" else InMemoryProjectScopeStore()
+    )
     project = await projects.create_root(_WORKSPACE)
+    # The shared PostgreSQL fixture does not truncate capability Bindings.
+    # Recomposition reuses this fixture's identity; other cases cannot collide.
+    binding_id = f"harness-timer-binding-{uuid4().hex}"
     memory_runs = InMemoryRunStore(project_store=projects)
     memory_continuations = InMemoryGraphContinuationStore()
     memory_effects = new_effect_context(policy_evaluator=binding_scope_policy)
@@ -158,7 +166,7 @@ async def spine(
         runs, graph_store, effects = await compose()
         await effects.bindings.put(
             Binding(
-                binding_id="harness-timer-binding",
+                binding_id=binding_id,
                 workspace_id=_WORKSPACE,
                 project_id=project.project_id,
                 node_id="harness",
@@ -166,7 +174,7 @@ async def spine(
                 provider_name="proof",
             )
         )
-        yield Spine(runs, graph_store, effects, project.project_id, compose)
+        yield Spine(runs, graph_store, effects, project.project_id, binding_id, compose)
 
 
 def _resolver(effects: CapabilityEffectContext, remote: Remote) -> Any:
@@ -187,7 +195,7 @@ async def _start(spine: Spine, remote: Remote, *, timeout: int = 60) -> DurableR
                 node_type="agent.spawn_harness",
                 inputs={
                     "harness_type": "proof",
-                    "binding_id": "harness-timer-binding",
+                    "binding_id": spine.binding_id,
                     "task": "bounded remote work",
                     "timeout_seconds": timeout,
                 },
