@@ -190,9 +190,7 @@ def test_an_unverifiable_delegation_envelope_is_refused(
     from maistro_server.api.principal import Principal
 
     monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
-    principal = Principal(
-        user_id="conductor", roles=frozenset({"user"})
-    )
+    principal = Principal(user_id="conductor", roles=frozenset({"user"}))
 
     for envelope in (
         "not-an-envelope",

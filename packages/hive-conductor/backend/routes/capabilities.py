@@ -303,10 +303,7 @@ def resolve_approval(
         authorized = bool(
             actor
             and principal is not None
-            and (
-                principal.is_admin
-                or principal_has_permission(principal, "approvals.resolve")
-            )
+            and (principal.is_admin or principal_has_permission(principal, "approvals.resolve"))
         )
         if not authorized:
             log_audit(
