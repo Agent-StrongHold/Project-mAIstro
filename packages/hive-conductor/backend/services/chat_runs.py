@@ -84,6 +84,23 @@ def _unavailable(detail: str) -> HTTPException:
     )
 
 
+def _release_dispatch_shield(
+    admitter: ChatRunAdmitter | None,
+    run: Run | None,
+    marked: bool,
+) -> None:
+    """Release the dispatch shield exactly when one was set.
+
+    One cleanup invariant for every `admit_turn` failure path -- a full
+    admission ceiling (#1182), a cancellation mid-admission, any other
+    admission failure. `marked` implies both arguments are live: the marker
+    is set only after a successful `mark_dispatch_pending(run.run_id)` on an
+    admitted Run (#338).
+    """
+    if marked and admitter is not None and run is not None:
+        admitter.release_dispatch_pending(run.run_id)
+
+
 def _container() -> Any:
     from services.engine import get_engine
 
@@ -217,25 +234,21 @@ async def admit_turn(
         marked = True
         run = await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
     except asyncio.CancelledError:
-        if marked and admitter is not None and run is not None:
-            admitter.release_dispatch_pending(run.run_id)
+        _release_dispatch_shield(admitter, run, marked)
         await asyncio.shield(container._cancel_incomplete_admission(run))
         raise
     except RunConcurrencyExceeded as exc:
         # Backpressure, not an admission outage (#1182): 429, not the 503 an
-        # ordinary admission failure gets. The same cleanup as below -- there
-        # is no dispatch-pending marker yet and nothing to compensate when the
-        # ceiling refused the create itself, but the invariant is kept for any
-        # capacity refusal that happens after the Run exists.
+        # ordinary admission failure gets. The same cleanup as the other
+        # refusals -- the ceiling usually refuses the create itself, before
+        # any marker exists, but the invariant is not capacity-specific.
         logger.info("chat turn refused: active Run ceiling full", exc_info=True)
-        if marked and admitter is not None and run is not None:
-            admitter.release_dispatch_pending(run.run_id)
+        _release_dispatch_shield(admitter, run, marked)
         await container._cancel_incomplete_admission(run)
         raise _capacity(exc) from exc
     except Exception:
         logger.warning("chat turn could not be admitted as a Run", exc_info=True)
-        if marked and admitter is not None and run is not None:
-            admitter.release_dispatch_pending(run.run_id)
+        _release_dispatch_shield(admitter, run, marked)
         await container._cancel_incomplete_admission(run)
         raise _unavailable("chat turn could not be admitted; retry shortly") from None
     return AdmittedTurn(run=run, agent_id=agent.id, container=container, admitter=admitter)
