@@ -129,7 +129,6 @@
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'effective_permissions'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'resource_kind'",
         "packages/maistro-core/src/maistro/builders/contracts.py::unused variable 'logs'",
-        "packages/maistro-core/src/maistro/capabilities/invocation.py::unused variable 'observed_at'",
         "packages/maistro-core/src/maistro/capabilities/slots/infra.py::unused variable 'blocked_pending_approval'",
         "packages/maistro-core/src/maistro/capabilities/slots/self_repair.py::unused variable 'symptom'",
         "packages/maistro-core/src/maistro/cli/_container/runtime.py::unused variable 'ports'",

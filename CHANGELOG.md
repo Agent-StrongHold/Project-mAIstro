@@ -77,6 +77,17 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Governed harness waits can re-enter on the existing recovery timer (#1192).**
+  New `agent.spawn_harness` waits persist the original dispatch receipt,
+  fixed deadline and canonical poll observation identity before their first
+  read. Recovery can consume a completion without redispatching, and local
+  expiry preserves uncertain remote outcomes. Registered-DAG recovery receives
+  the Container's configured harness adapters. Approval answers cannot become
+  fabricated harness completions, and compatibility terminal answers no longer
+  authorize ungoverned provider polling. Historical waits without a resume
+  instant, the production approval/expiry bridge, and adapter-specific restart
+  readiness remain separately gated; this does not close #1192.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was
