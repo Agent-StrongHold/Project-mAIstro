@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +51
+  packages/maistro-core/tests: +52
   packages/maistro-server/tests: +1
 ---
 # 959 — external Agent delegation bound to canonical identity and evidence
@@ -52,12 +52,17 @@ fresh transport attempt and dispatches, instead of reconciling a dispatch that
 provably never started (the once-only `transport_attempted` claim would
 otherwise park every retry until the delegation timeout).
 
-**+1 in `tests/graph/nodes/test_agent_delegate_remote.py` (crash-replay
-follow-up).** A dispatch Invocation that landed COMPLETED as a peer decline and
-crashed before settlement replays through settlement on the retry — the retry
-returns the recorded rejection and files no child Run — instead of polling for
-a receipt the declined dispatch can never have (the old `_completed_dispatch`
-filter dropped receipt-less COMPLETED rows, sending the retry to recovery).
+**+2 in `tests/graph/nodes/test_agent_delegate_remote.py` (crash-replay and
+approved-resume follow-ups).** A dispatch Invocation that landed COMPLETED as a
+peer decline and crashed before settlement replays through settlement on the
+retry — the retry returns the recorded rejection and files no child Run —
+instead of polling for a receipt the declined dispatch can never have (the old
+`_completed_dispatch` filter dropped receipt-less COMPLETED rows, sending the
+retry to recovery). And a REQUIRE_APPROVAL pause no longer spends the once-only
+transport claim at visit level: the claim moved into the governed executor
+after admission and policy, so the post-approval resume dispatches fresh (the
+policy evaluator flips to ALLOW once `context.approved`) instead of failing the
+claim and parking the approved delegation on reconciliation until timeout.
 
 **+20 across the existing delegation/peer files.** `test_guest_peers.py` grew the
 transport-boundary gate (context-less refused, envelope/context agent mismatch,
