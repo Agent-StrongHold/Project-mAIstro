@@ -10728,3 +10728,81 @@ Criteria #1, #7, #8, #9, #13 require #804/#805/#806 reconciliation + #53
 front door; #2 requires #458 Goal records; parent #773 open; the
 implementation PR #1660 is an unmerged draft. The branch remains a safe,
 develop-current, battery-green waiting position (Refs #777).
+
+---
+
+## Round 162 (2026-10-05, job c73a92352fda46c5a7dfbf69748b104b) — re-validation at repair-round head e80e2e955
+
+**Driver checks: zero, ninth consecutive round** — this job's `manifest.json`
+has `checks: []` and the job directory contains no `check-*.log` files. All
+evidence below was executed fresh by this round's worker on HEAD
+`e80e2e955` (= round 161's end head; working tree clean at start).
+
+**Develop sync:** `git fetch origin` → `origin/develop` unchanged at
+`cd5618223` == the lane's declared base; `git rev-list --count origin/develop
+^HEAD` = 0. **No merge and no conflict resolution was needed.**
+
+**Battery green, re-run fresh on `e80e2e955` (not assumed from round 161):**
+`ruff check .` EXIT 0 (all checks passed); `ruff format --check .` EXIT 0
+(2949 files already formatted); vulture CI-exact
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` EXIT 0 (ratchet base cd5618223 → candidate e80e2e955,
+1338 reviewed identities → 1337 findings, `never_allowlist: 0`, no unbanked
+identities — no dead-code fix and no ledger amendment required);
+`check-api-route-contracts.py` EXIT 0 (279 handlers, 0 canned);
+`check-route-permissions.py` EXIT 0 (23 tolerated undeclared prefixes, none
+new); `check-reachability.py` EXIT 0 (1271 production modules);
+`check-promotion-surface.py` EXIT 0; `check-suite-inventory.py` EXIT 0
+(15/15); `check-backlog-consistency.py` EXIT 0 (167 items). pytest:
+`packages/maistro-design/tests packages/maistro-bootstrap/tests -q` →
+**777 passed, 2 skipped** (40.57s); hive-conductor design-surface subset
+(design service startup/packs/systems/renderers/preview/consistency/scope +
+degraded-mode surface + chat brief interview) → **115 passed** (8.15s).
+
+**Blockers re-proven fresh on `e80e2e955` (grep exit codes captured):**
+- `grep -rlE 'GoalReconciler|delegate_goal' packages/*/src` → 0 matches,
+  exit 1 — the #804 reconciliation API acceptance #1 must consume does not
+  exist.
+- `packages/hive-conductor/backend/services/workspace_agent.py:1` — the only
+  Workspace Agent in tree remains the #1037 per-Workspace identity service
+  ("The one stable Workspace Agent per Workspace (#1037, ADR-092326-7ed7)"),
+  not the #53/#804 persistent reconciliation agent.
+- **No `maistro.goals` module exists** (`ls packages/maistro-core/src/maistro/goals*`
+  → no such file) — and the tree itself testifies to it:
+  `packages/maistro-core/src/maistro/projects/rubric_store.py:34-40`
+  (M7-A2, #1678) states canonical Goal identity is `maistro.goals`
+  (INTEROP-ONTOLOGY-v1), "**That module does not exist yet at this head**, so
+  the store depends on the minimal `GoalRevisionCatalog` Protocol instead of
+  a Goal store; when the canonical Goal persistence lands (#458) it
+  implements the Protocol and is injected." The `GoalRevisionSnapshot` /
+  `GoalRevisionCatalog` there are a Protocol seam awaiting #458, not the
+  canonical Goal record store. `CreativeBrief.goal_id: str` /
+  `goal_revision: int` in `maistro-design/brief.py:282-283` remain plain
+  strings, so acceptance #2 (binding to *one canonical Goal revision*) and
+  #10 (outcome-vs-guidance state split) stay unprovable.
+- Salvage tree `docs/research/777-design-studio-salvage/` still has zero
+  production readers (`grep -rl '777-design-studio-salvage' packages/
+  scripts/ tests/` → exit 1).
+- No Design-Studio-private agent/reconciler was fabricated (stop condition
+  still respected).
+
+**Dependency states (this job's dispatch-context.json, captured
+2026-10-05T13:04:52–13:05:19Z, fresher than round 161's 12:38–12:41Z):**
+issue #777 open; parent #773 **open**; #804 ("[EPIC M3-D] Persistent
+Workspace Agent and Goal reconciliation") **open**; #458 closed (ontology
+only); #805/#806, #53, #774, #776, #93/#95 open per capture. Native
+`blocked_by` API list empty (dependency claim remains the issue body's
+"Depends on:" line). PR #1660 (implementation PR for this exact issue):
+`state: open`, `draft: true`, `merged_at: null`, head `17ad5f75b894`, base
+`develop` — still unmerged; merging it is outside this lane's authority (no
+GitHub mutations).
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds 123–161.
+All 13 acceptance criteria remain UNPROVEN against reachable production
+behavior at `e80e2e955`: #804/#805/#806 reconciliation APIs absent, #458
+canonical Goal persistence absent (in-code testimony at
+rubric_store.py:34-40), #774 CreativeBrief binding to canonical Goal
+revisions impossible, parent #773 open, and the issue's own stop condition
+forbids Design-Studio-private substitutes. The branch remains a safe,
+develop-current, battery-green waiting position. Unblocking requires landing
+#804/#805/#806, #53, #774, #776, #93/#95 upstream (Refs #777).
