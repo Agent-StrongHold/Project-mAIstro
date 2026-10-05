@@ -6,7 +6,7 @@ execution already bound on the correlation context — `RunExecutionService`
 binds `run_id`, `AttemptExecutionService.execute_claimed` binds
 `node_run_id`/`attempt_id` — and must never fabricate an
 agent-turn/agent-node/agent-attempt id to make an unadmitted call look
-governed. These tests pin that adapter boundary with a recording egress
+governed. These tests pin that adapter boundary with a recording admitted-call
 double: exact identity forwarding, refusal on missing/blank/mismatched ids,
 failure-atomic `set_turn`, stale-turn refusal in `complete`, per-task identity
 isolation, and the per-turn effect-key counter.
@@ -19,24 +19,20 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, create_autospec
 
 import pytest
 
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.admitted_model import AdmittedModelCalls
 from maistro.capabilities.model_chat import (
     GovernedLLMClient,
     ModelCallResult,
 )
-from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
 from maistro.observability.correlation import (
     bind_execution_context,
     current_execution_context,
     detached_execution_context,
 )
-from maistro.providers.registry import InMemoryProviderRegistry
-from maistro.providers.router import CostAwareRouter
-from maistro.providers.types import ModelMetadata
 from maistro.runs.store import RunIntegrityError
 
 pytestmark = pytest.mark.contract("behavioral")
@@ -58,40 +54,22 @@ def governed_client() -> tuple[
     GovernedLLMClient,
     AsyncMock,
 ]:
-    """One governed client whose ModelChatEgress is a recording test double.
+    """One governed client whose AdmittedModelCalls is a recording test double.
 
     Only the adapter boundary is exercised: Binding, credential and policy
-    machinery live behind the stubbed `ModelChatEgress.complete`, so every
+    machinery live behind the stubbed `AdmittedModelCalls.complete`, so every
     assertion below is about the identity the client forwards to it.
     """
-    effects = new_in_memory_effect_context()
-    registry = InMemoryProviderRegistry(
-        models=[
-            ModelMetadata(
-                name="fast-model",
-                provider="test-gw",
-                cost_per_1k_input=0.5,
-                cost_per_1k_output=1.0,
-                latency_p50_ms=50,
-            )
-        ]
-    )
-    client = GovernedLLMClient(
-        effects,
-        registry=registry,
-        router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
-        workspace_id="ws-identity",
-        project_id="p1",
-    )
+    calls = create_autospec(AdmittedModelCalls, instance=True)
     recorded = AsyncMock(return_value=_egress_result())
-    client._egress.complete = recorded  # type: ignore[method-assign]
+    calls.complete = recorded
+    client = GovernedLLMClient(calls)
     return client, recorded
 
 
 def _forwarded(recorded: AsyncMock, call: int = 0) -> tuple[str, str, str]:
     kwargs = recorded.call_args_list[call].kwargs
-    return (kwargs["run_id"], kwargs["node_run_id"], kwargs["attempt_id"])
+    return kwargs["identity"]
 
 
 async def _complete(client: GovernedLLMClient) -> dict[str, Any]:
@@ -128,7 +106,7 @@ async def test_omitted_run_id_reads_the_same_bound_tuple(
 async def test_agent_name_cannot_manufacture_a_node_id(
     governed_client: tuple[GovernedLLMClient, AsyncMock],
 ) -> None:
-    """`agent_name` is compatibility only: the bound node id wins."""
+    """`agent_name` qualifies effects only: the bound node id always wins."""
     client, recorded = governed_client
     with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
         client.set_turn(RUN_A, agent_name="writer")
@@ -394,3 +372,50 @@ async def test_identity_is_never_fabricated_when_context_is_absent(
         and "agent-attempt-" not in str(call.kwargs.get("attempt_id", ""))
         for call in recorded.call_args_list
     )
+
+
+@pytest.mark.parametrize("reset", ["ordinary", "clear", "rejected"])
+async def test_effect_scope_is_cleared_without_changing_canonical_identity(
+    governed_client: tuple[GovernedLLMClient, AsyncMock], reset: str
+) -> None:
+    client, recorded = governed_client
+    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
+        client.set_agent_turn(agent_name="writer:with-delimiter", delegation_depth=2)
+        await _complete(client)
+        assert recorded.call_args.kwargs["effect_key"] == "agent-llm:writer:with-delimiter:2:1"
+        assert _forwarded(recorded) == (RUN_A, NODE_A, ATTEMPT_A)
+        if reset == "ordinary":
+            client.set_turn()
+        elif reset == "clear":
+            client.clear_turn()
+        else:
+            with pytest.raises(RunIntegrityError):
+                client.set_turn(RUN_B, agent_name="must-not-leak", delegation_depth=3)
+        assert client._effect_scope.get() is None
+        await _complete(client)
+        assert recorded.call_args.kwargs["effect_key"] == "agent-llm-1"
+        assert _forwarded(recorded, 1) == (RUN_A, NODE_A, ATTEMPT_A)
+
+
+async def test_concurrent_agent_scopes_do_not_cross_tasks(
+    governed_client: tuple[GovernedLLMClient, AsyncMock],
+) -> None:
+    client, recorded = governed_client
+    ready = asyncio.Barrier(2)
+
+    async def call(name: str, depth: int) -> None:
+        with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
+            client.set_agent_turn(agent_name=name, delegation_depth=depth)
+            async with ready:
+                pass
+            await _complete(client)
+            await _complete(client)
+
+    await asyncio.gather(call("outer", 0), call("inner", 1))
+    assert {call.kwargs["effect_key"] for call in recorded.call_args_list} == {
+        "agent-llm:outer:0:1",
+        "agent-llm:outer:0:2",
+        "agent-llm:inner:1:1",
+        "agent-llm:inner:1:2",
+    }
+    assert all(_forwarded(recorded, index) == (RUN_A, NODE_A, ATTEMPT_A) for index in range(4))
