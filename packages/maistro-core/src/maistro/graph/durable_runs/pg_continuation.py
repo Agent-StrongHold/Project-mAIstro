@@ -41,7 +41,7 @@ def _list_run_ids_by_status_query(
     an OR whose first arm does not reference the indexed column can never
     become an index condition, so the single-statement shape degraded to a
     scan-plus-sort even where `ix_graph_continuations_status_created`
-    (migration 053) carries the exact `(status, created_at, run_id)` order
+    (migration 056) carries the exact `(status, created_at, run_id)` order
     (#863). Without a project, `status` equality alone yields the ordering;
     with one, `project_id` filters inline over the same ordered scan —
     bounded by that status's rows, which is the population the query names

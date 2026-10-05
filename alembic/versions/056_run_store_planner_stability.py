@@ -74,11 +74,15 @@ Numbered 052 when written; develop's M4-B1 knowledge-stage ladder
 open, so per this chain's collision convention the revision re-parented
 onto that `052_learning_stage_ladder` tip as 053. Develop's M4-B
 learning-lifecycle columns (ADR-100126-8c2d) then claimed `053` on that
-same parent, and the revision re-parented once more, as 054. One linear
-head, no duplicate revision ids.
+same parent, and the revision re-parented once more, as 054. Develop's
+own learning-applicability migration (M4-B3, #119) then claimed `054` on
+the lifecycle tip and #1892's forward admission-generation representation
+collided in turn, re-parenting onto it as `055`; this revision follows
+them, re-parenting onto that `055_task_admission_generations` as 056.
+One linear head, no duplicate revision ids.
 
-Revision ID: 054
-Revises: 053
+Revision ID: 056
+Revises: 055
 Create Date: 2026-10-04
 """
 
@@ -86,8 +90,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "054"
-down_revision = "053"
+revision = "056"
+down_revision = "055"
 branch_labels = None
 depends_on = None
 

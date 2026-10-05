@@ -69,14 +69,24 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # artifact-version ledger took the same number on the same parent,
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
-    # chain tip, so this branch's learning-lifecycle columns (M4-B,
-    # ADR-100126-8c2d) — which had taken `051` and then `052` in earlier
-    # collisions — re-parent onto that `052_learning_stage_ladder` as
-    # `053_learning_lifecycle_columns`. #863's planner-stability revision —
-    # numbered `052` when written and re-parented onto that tip as `053` in
-    # the previous collision — now re-parents onto the lifecycle columns as
-    # `054`, so the single linear head is `054`.
-    walked = {item.revision for item in directory.walk_revisions("base", "054")}
+    # chain tip as `052_learning_stage_ladder`, and develop's
+    # learning-lifecycle columns (M4-B, ADR-100126-8c2d) continued that as
+    # `053_learning_lifecycle_columns`. Develop's own learning applicability
+    # migration (M4-B3, #119) then claimed `054` on that tip as
+    # `054_learning_applicability_epistemics`, and develop's forward
+    # admission-generation representation (#1892) — originally `053`,
+    # already renumbered to `054` once before this branch last synced —
+    # collided with it and re-parents onto that tip as
+    # `055_task_admission_generations`. #863's planner-stability revision —
+    # numbered `052` when written and re-parented onto the chain tip as `053`
+    # and then `054` in the earlier collisions — re-parents onto that tip as
+    # `056`, and this branch's `043_invocation_quota_door` (#1196/#718)
+    # follows the head it always follows — 046, then 047, 048, 050, 051, 052,
+    # 053, 054, 055, now 056 — so the single linear head is that quota-door
+    # revision.
+    walked = {
+        item.revision for item in directory.walk_revisions("base", "043_invocation_quota_door")
+    }
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -90,7 +100,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "052" in walked
     assert "053" in walked
     assert "054" in walked
-    assert directory.get_heads() == ["054"]
+    assert "055" in walked
+    assert "056" in walked
+    assert directory.get_heads() == ["043_invocation_quota_door"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
