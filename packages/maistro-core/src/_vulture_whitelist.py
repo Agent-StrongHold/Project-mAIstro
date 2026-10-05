@@ -10,13 +10,14 @@ Invocation execution API.
 from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
-from maistro.cli._extensions import extensions_history, extensions_show
+from maistro.cli._extensions import extensions_contract, extensions_history, extensions_show
 from maistro.container import Container
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
 )
+from maistro.extensions.tool_skill.registration import ExtensionToolCatalog
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
@@ -270,6 +271,14 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.get_install,
     InMemoryExtensionInstallStore.get_install,
     SqliteExtensionInstallStore.get_install,
+    extensions_contract,
     extensions_history,
     extensions_show,
+    # Third-party tool/Skill contracts (M9-E3, #964): the host catalog's
+    # exposure and Binding seams are consumed by the products that embed
+    # maistro-core (model-facing tool surface, workspace binding flows), not
+    # by maistro-core itself; the maistro-core test suite is their caller in
+    # this tree. Framework surface, not dead code.
+    ExtensionToolCatalog.exposed_tools,
+    ExtensionToolCatalog.tool_binding,
 )

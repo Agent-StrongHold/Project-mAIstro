@@ -154,7 +154,6 @@
     "maistro.tools.git.shadow",
     "maistro.tools.media",
     "maistro.tools.net_guard",
-    "maistro.tools.reversibility",
     "maistro.tools.reversibility_registry",
     "maistro_canvas.canvas.asset_compositor",
     "maistro_canvas.canvas.asset_executor",
