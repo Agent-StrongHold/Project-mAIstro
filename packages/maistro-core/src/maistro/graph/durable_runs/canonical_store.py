@@ -656,12 +656,26 @@ class CanonicalDurableRunStore:
         return True
 
     def _has_stalled_active_frontier(self, record: DurableRunRecord, moment: datetime) -> bool:
-        """Whether active NodeRuns exist with no live Attempt holding them."""
+        """Whether active NodeRuns exist with no live Attempt holding them.
+
+        An empty active frontier is not by itself evidence of a stall: a live
+        walker that has committed its final empty-frontier checkpoint sits in
+        exactly this state while it writes its terminal Run checkpoint (#1861).
+        Claiming that continuation would advance the version under the walker
+        and kill its final checkpoint with a version regression, so the empty
+        frontier is claimed only once the spine has been quiet for the
+        terminal-settle period -- the same span past which no live walker is
+        assumed anywhere else in this store. A walker that really died in that
+        window is recovered on the first tick after the period; a live one
+        never spends that long between two adjacent writes.
+        """
         active_node_runs = [
             node_run
             for node_run in record.node_runs
             if node_run.status in {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING}
         ]
+        if not active_node_runs:
+            return self._spine_is_quiet(record, moment)
         for node_run in active_node_runs:
             attempts = [
                 attempt

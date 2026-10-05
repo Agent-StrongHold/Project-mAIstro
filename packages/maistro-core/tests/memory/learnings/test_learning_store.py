@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import Learning, MemoryScope
 
@@ -27,19 +28,19 @@ def _lr(
 
 class TestStore:
     async def test_store_returns_id(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _lr()
         id_ = await store.store(lr)
         assert id_ > 0
 
     async def test_get_returns_none_for_an_unknown_id(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr())
-        assert store.get(id_) is not None
-        assert store.get(id_ + 999) is None
+        assert await store.get(id_) is not None
+        assert await store.get(id_ + 999) is None
 
     async def test_store_dedup_same_org_same_tool_overlapping_keys(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr1 = _lr(keys=["foo", "bar"])
         lr2 = _lr(keys=["foo", "bar", "baz"], learning="updated")
         await store.store(lr1)
@@ -50,7 +51,7 @@ class TestStore:
         assert all_lr[0].id == id2
 
     async def test_store_no_dedup_different_org(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr1 = _lr(org="org-A", keys=["foo", "bar"])
         lr2 = _lr(org="org-B", keys=["foo", "bar"])
         await store.store(lr1)
@@ -59,7 +60,9 @@ class TestStore:
         assert len(all_lr) == 2
 
     async def test_store_eviction_at_cap(self) -> None:
-        store = InMemoryLearningStore(max_learnings=3)
+        store = InMemoryLearningStore(
+            max_learnings=3, exposure_mode=MemoryExposureMode.AGENT_MANAGED
+        )
         for i in range(4):
             lr = _lr(keys=[f"key{i}"])
             lr.tool_name = f"tool{i}"
@@ -70,19 +73,19 @@ class TestStore:
 
 class TestFindRelevant:
     async def test_finds_by_trigger_key(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["python", "import"]))
         results = await store.find_relevant("fix the python import error", org_id="org-1")
         assert len(results) == 1
 
     async def test_no_match_returns_empty(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["docker", "build"]))
         results = await store.find_relevant("python import error", org_id="org-1")
         assert results == []
 
     async def test_org_isolation(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["python"], org="org-A"))
         await store.store(_lr(keys=["python"], org="org-B"))
         results = await store.find_relevant("python error", org_id="org-A")
@@ -90,7 +93,7 @@ class TestFindRelevant:
         assert results[0].org_id == "org-A"
 
     async def test_skips_inactive(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["python"], status="promoted"))
         # find_relevant only returns "active" status
         results = await store.find_relevant("python error", org_id="org-1")
@@ -99,14 +102,14 @@ class TestFindRelevant:
 
 class TestMarkUsed:
     async def test_increments_hit_count(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_used([id_])
         all_lr = await store.list_all()
         assert all_lr[0].hit_count == 1
 
     async def test_mark_multiple(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id1 = await store.store(_lr(keys=["a"], tool="t1"))
         id2 = await store.store(_lr(keys=["b"], tool="t2"))
         await store.mark_used([id1, id2])
@@ -116,7 +119,7 @@ class TestMarkUsed:
 
 class TestMarkOutcome:
     async def test_success_increments_success_after_use(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=True, org_id="org-1")
         all_lr = await store.list_all()
@@ -124,7 +127,7 @@ class TestMarkOutcome:
         assert all_lr[0].failure_after_use == 0
 
     async def test_failure_increments_failure_after_use(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=False, org_id="org-1")
         all_lr = await store.list_all()
@@ -132,7 +135,7 @@ class TestMarkOutcome:
         assert all_lr[0].success_after_use == 0
 
     async def test_org_isolation(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_a = await store.store(_lr(keys=["a"], org="org-A"))
         await store.mark_outcome([id_a], success=True, org_id="org-B")
         all_lr = await store.list_all(org_id="__system__")
@@ -140,7 +143,7 @@ class TestMarkOutcome:
         assert target.success_after_use == 0
 
     async def test_empty_ids_noop(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         learning_id = await store.store(_lr(keys=["key"], org="org-1"))
         await store.mark_outcome([], success=True, org_id="org-1")
 
@@ -151,7 +154,7 @@ class TestMarkOutcome:
 
 class TestListIneffective:
     async def test_returns_learnings_with_more_failures_than_successes(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=False, org_id="org-1")
         await store.mark_outcome([id_], success=False, org_id="org-1")
@@ -161,14 +164,14 @@ class TestListIneffective:
         assert results[0].id == id_
 
     async def test_excludes_below_min_uses(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=False, org_id="org-1")
         results = await store.list_ineffective(min_uses=3)
         assert results == []
 
     async def test_excludes_when_successes_tie_or_exceed(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=True, org_id="org-1")
         await store.mark_outcome([id_], success=False, org_id="org-1")
@@ -178,7 +181,7 @@ class TestListIneffective:
 
 class TestPromotion:
     async def test_auto_promotion_at_threshold(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         for _ in range(5):
             await store.mark_used([id_])
@@ -187,7 +190,7 @@ class TestPromotion:
         assert promoted[0].status == "promoted"
 
     async def test_get_promoted_returns_only_promoted(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["active"]))
         id2 = await store.store(_lr(keys=["will-promote"], tool="t2"))
         for _ in range(5):

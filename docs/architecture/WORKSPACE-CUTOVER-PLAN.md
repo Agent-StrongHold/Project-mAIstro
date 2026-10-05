@@ -32,6 +32,10 @@ Two rules follow from the freeze policy and are the spine of this plan:
    with a disposition and a delete-by milestone; the ledger only shrinks; nothing new may
    import a listed module. Same mechanism as `quality/model-egress.json`.
 
+The per-feature Workspace-UI/API/CLI entry-point inventory that this plan's "parity"
+evidence plugs into is [FEATURE-PARITY-MATRIX.md](FEATURE-PARITY-MATRIX.md) (#1874); it
+also records the approved v1.2 Evolution staging (§9) as a preserved decision.
+
 ## What the cutover deprecates, and what it does not
 
 The 2026-09-08 architecture review found nine structural problems with no open owner. They

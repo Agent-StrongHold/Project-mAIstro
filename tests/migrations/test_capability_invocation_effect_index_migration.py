@@ -64,23 +64,24 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # that; #398's `048_canvas_job_retry_backoff` continues it, and #780's
     # `049_design_artifact_versions` continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
-    # `049_design_artifact_versions` continues that; #774's
-    # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
     # #780 claimed them — continues after that. #792's eval-score evidence,
     # which had taken `049` on develop while this branch's artifact-version
     # ledger took the same number on the same parent, re-parents onto that
-    # `050` as `051_canonical_run_eval_scores`. #82's backlog work source,
-    # which had taken `049` on this branch before develop's eval evidence
-    # landed, re-parented onto that 050 as `051` through the 045cfdfbe sync —
-    # and when that sync brought develop's renumbered eval-score `051` onto
-    # the same parent, re-attached after that tip as `052`. The a58656017 sync
-    # then brought develop's knowledge-stage ladder — numbered 048 when
-    # written and re-parented onto the same chain tip as
-    # `052_learning_stage_ladder` (M4-B1, ADR-103) — colliding with the `052`
-    # the backlog migration already held, so the backlog work source
-    # re-attached after that tip as `053`, the same move one more time. The
-    # single linear head is `053`.
-    walked = {item.revision for item in directory.walk_revisions("base", "053")}
+    # `050` as `051_canonical_run_eval_scores`. Develop's knowledge-stage
+    # ladder — numbered 048 when written and re-parented onto the same chain
+    # tip as `052_learning_stage_ladder` (M4-B1, ADR-103) — followed. #82's
+    # backlog work source, which had taken `049` on this branch before
+    # develop's eval evidence landed, re-parented onto that 050 as `051`
+    # through the 045cfdfbe sync — and when that sync brought develop's
+    # renumbered eval-score `051` onto the same parent, re-attached after that
+    # tip as `052`, and after develop's stage ladder claimed `052` on the same
+    # tip, as `053`. Develop's learning-lifecycle columns (M4-B,
+    # ADR-100126-8c2d) — numbered `053` when written — then re-parented onto
+    # that tip as `054`, and #1892's forward admission-generation
+    # representation — numbered `053` when written on the `052` base —
+    # re-parents onto that tip as `055`, so the single linear head is now
+    # `055`.
+    walked = {item.revision for item in directory.walk_revisions("base", "055")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -93,7 +94,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "051" in walked
     assert "052" in walked
     assert "053" in walked
-    assert directory.get_heads() == ["053"]
+    assert "054" in walked
+    assert "055" in walked
+    assert directory.get_heads() == ["055"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
