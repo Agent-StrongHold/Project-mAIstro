@@ -29,7 +29,8 @@ Project instead of the operator-declared canonical Root Project.
 Focused command (from the worktree root):
 
 ```sh
-REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 .venv/bin/python -m pytest --noconftest \
+PYTHONPATH=packages/hive-conductor/backend REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 \
+  .venv/bin/python -m pytest --noconftest \
   packages/hive-conductor/backend/tests/test_maistro_core_adapter.py -q
 ```
 
