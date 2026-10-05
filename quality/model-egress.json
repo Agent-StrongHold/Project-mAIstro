@@ -18,7 +18,6 @@
     "services.canonical_corpus",
     "services.chat_completion",
     "services.eval_bootstrap",
-    "services.evolution",
     "services.legacy_dag_node",
     "services.skill_optimizer",
     "services.tool_executor",
