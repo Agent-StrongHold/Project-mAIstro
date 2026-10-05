@@ -15,7 +15,7 @@ import os
 from collections.abc import AsyncIterator, Collection
 from typing import Any
 
-from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
+from adapters.llm_governed import GovernedModelFailure, build_governed_port, model_effect
 from adapters.telemetry_langfuse import telemetry
 from config import get_settings
 from fastapi import HTTPException
@@ -43,7 +43,6 @@ from services.chat_gate import (
     refusal_content,
 )
 from services.owned_records import Owner, owned_memory_entries
-from services.secrets import litellm_api_key as _resolve_litellm_api_key
 from services.tool_primitives import (
     AIRTABLE_PROVIDER_IDS,
     CONFLUENCE_PROVIDER_IDS,
@@ -77,14 +76,7 @@ def _request_workspace_id(req: ChatCompletionRequest) -> str | None:
 
 
 def build_llm_port() -> LLMPort:
-    s = get_settings()
-    base = os.environ.get("LITELLM_API_BASE") or (s.litellm_api_base or "").strip()
-    key = _resolve_litellm_api_key(s) or os.environ.get("LITELLM_PROXY_KEY")
-    if not base:
-        base = os.environ.get("LITELLM_PROXY_URL")
-    if not base or not key:
-        return StubLLMPort()
-    return HttpOpenAIProtocolLLM(base_url=base, api_key=key, variant=s.llm_http_variant)
+    return build_governed_port()
 
 
 def conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
@@ -1669,48 +1661,40 @@ async def _tool_analyze_dashboard(
     except Exception as e:
         return {"error": f"Screenshot capture failed: {e}"}
 
-    # Send to vision model
-    try:
-        from config import get_settings
-
-        s = get_settings()
-        base = s.litellm_api_base or ""
-        key = _resolve_litellm_api_key(s) or ""
-        if not base or not key:
-            return {"error": "LLM not configured"}
-
-        vision_model = args.get("model", "gpt-4o-mini")
-        prompt = args.get(
-            "prompt",
-            "Analyze this dashboard screenshot. Identify: 1) Widgets that look broken or show useless data, 2) Poor sizing choices, 3) Bad chart type choices for the data shown, 4) Missing widgets that would add value, 5) Layout improvements for better visual flow. Be specific and actionable.",
-        )
-
-        async with shared_client(timeout=60) as client:
-            resp = await client.post(
-                f"{base.rstrip('/')}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": vision_model,
-                    "messages": [
+    # This is a separate model effect of the admitted tool position. Its key
+    # survives retries and rebuilt clients without colliding with another tool.
+    vision_model = args.get("model", "gpt-4o-mini")
+    prompt = args.get(
+        "prompt",
+        "Analyze this dashboard screenshot. Identify: 1) Widgets that look broken or show useless data, 2) Poor sizing choices, 3) Bad chart type choices for the data shown, 4) Missing widgets that would add value, 5) Layout improvements for better visual flow. Be specific and actionable.",
+    )
+    response = await build_governed_port(
+        timeout_s=60.0,
+        sampling=False,
+        effect_suffix="dashboard-analysis",
+        variant="chat_completions",
+    ).complete(
+        ChatCompletionRequest(
+            model=vision_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
                         {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/png;base64,{b64}"},
-                                },
-                            ],
-                        }
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64}"},
+                        },
                     ],
-                    "max_tokens": 2000,
-                },
-            )
-            resp.raise_for_status()
-            analysis = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-            return {"analysis": analysis, "model": vision_model}
-    except Exception as e:
-        return {"error": f"Vision analysis failed: {e}"}
+                }
+            ],
+            max_tokens=2000,
+        )
+    )
+    analysis = response["choices"][0]["message"].get("content")
+    if not isinstance(analysis, str) or not analysis:
+        raise GovernedModelFailure()
+    return {"analysis": analysis, "model": vision_model}
 
 
 async def _tool_suggest_workflows(
@@ -2084,6 +2068,10 @@ async def _gated_execute_tool(
             # trusted test/internal adapters that replace the executor.
             result = await _execute_tool(tool_name, args, user_id)
     except Exception as tool_exc:
+        if isinstance(tool_exc, GovernedModelFailure):
+            # A model sub-effect may be UNKNOWN. Do not turn it into ordinary
+            # tool text and continue with a fresh model effect key.
+            raise
         logger.warning("tool_execution_error name=%s error=%s", tool_name, tool_exc)
         result = {"error": f"Tool '{tool_name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
 
@@ -2183,18 +2171,7 @@ async def run_chat_completion(
     approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """PM Fleet chat — real tools, real data, real LLM synthesis."""
-    try:
-        return await _run_chat_completion_inner(
-            req, user_id, _llm, approval_evidence=approval_evidence
-        )
-    except Exception as exc:
-        logger.exception("run_chat_completion crashed: %s", exc)
-        return {
-            "choices": [
-                {"message": {"role": "assistant", "content": f"Error: {type(exc).__name__}: {exc}"}}
-            ],
-            "model": "error",
-        }
+    return await _run_chat_completion_inner(req, user_id, _llm, approval_evidence=approval_evidence)
 
 
 async def _run_chat_completion_inner(
@@ -2236,7 +2213,7 @@ async def _run_chat_completion_inner(
         messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Tool-use loop (max 5 iterations)
-    for _ in range(5):
+    for iteration in range(5):
         tool_req = ChatCompletionRequest(
             messages=messages,
             model=model,
@@ -2244,7 +2221,8 @@ async def _run_chat_completion_inner(
             max_tokens=req.max_tokens,
             tools=get_scoped_tools(getattr(req, "tools_scope", None)),
         )
-        out = await llm.complete(tool_req)
+        with model_effect(f"hive-chat:turn:{iteration}"):
+            out = await llm.complete(tool_req)
 
         choice = (out.get("choices") or [{}])[0]
         msg = choice.get("message", {})
@@ -2261,7 +2239,7 @@ async def _run_chat_completion_inner(
         messages.append(
             {"role": "assistant", "content": msg.get("content") or None, "tool_calls": tool_calls}
         )
-        for tc in tool_calls:
+        for tool_index, tc in enumerate(tool_calls):
             fn = tc.get("function", {})
             name = fn.get("name", "")
             try:
@@ -2270,13 +2248,14 @@ async def _run_chat_completion_inner(
                 args = {}
 
             logger.info("tool_call name=%s args=%s user=%s", name, args, user_id)
-            result, _summary = await _gated_execute_tool(
-                name,
-                args,
-                user_id,
-                gate_id,
-                approval_evidence=approval_evidence,
-            )
+            with model_effect(f"hive-chat:turn:{iteration}:tool:{tool_index}"):
+                result, _summary = await _gated_execute_tool(
+                    name,
+                    args,
+                    user_id,
+                    gate_id,
+                    approval_evidence=approval_evidence,
+                )
             logger.info(
                 "tool_result name=%s keys=%s",
                 name,
@@ -2292,8 +2271,11 @@ async def _run_chat_completion_inner(
             )
 
     # Final synthesis after tool loop exhausted — call WITHOUT tools to force content
-    final_req = ChatCompletionRequest(messages=messages, model=model, temperature=req.temperature)
-    final_out = await llm.complete(final_req)
+    final_req = ChatCompletionRequest(
+        messages=messages, model=model, temperature=req.temperature, max_tokens=req.max_tokens
+    )
+    with model_effect("hive-chat:synthesis"):
+        final_out = await llm.complete(final_req)
     # Ensure we never return raw tool_calls to the frontend
     choice = (final_out.get("choices") or [{}])[0]
     content = choice.get("message", {}).get("content")
@@ -2398,35 +2380,41 @@ async def _stream_turn(
     cancellation or caller work between SSE yields cannot retain OTel context.
     A full-stream span would cross those yields and leak current-span context.
     """
-    with telemetry.generation(
-        name="chat_completion",
-        model=model,
-        allowed_models=allowed_models,
-        metadata={"iteration": iteration, "streaming": True},
-    ):
-        stream = llm.stream(turn_req).__aiter__()
-        try:
-            chunk = await anext(stream)
-        except StopAsyncIteration:
-            return
+    stream = llm.stream(turn_req).__aiter__()
+    try:
+        with telemetry.generation(
+            name="chat_completion",
+            model=model,
+            allowed_models=allowed_models,
+            metadata={"iteration": iteration, "streaming": True},
+        ):
+            try:
+                with model_effect(f"hive-chat:turn:{iteration}"):
+                    chunk = await anext(stream)
+            except StopAsyncIteration:
+                return
 
-    while True:
-        choices = chunk.get("choices") or []
-        if choices:
-            delta = choices[0].get("delta") or {}
-            piece = delta.get("content")
-            if piece:
-                content_out.append(piece)
-                yield {"type": "delta", "content": piece}
-            think = delta.get("reasoning_content")
-            if think:
-                yield {"type": "thinking", "content": think}
-            if tools_acc is not None and delta.get("tool_calls"):
-                tools_acc.add_deltas(delta["tool_calls"])
-        try:
-            chunk = await anext(stream)
-        except StopAsyncIteration:
-            return
+        while True:
+            choices = chunk.get("choices") or []
+            if choices:
+                delta = choices[0].get("delta") or {}
+                piece = delta.get("content")
+                if piece:
+                    content_out.append(piece)
+                    yield {"type": "delta", "content": piece}
+                think = delta.get("reasoning_content")
+                if think:
+                    yield {"type": "thinking", "content": think}
+                if tools_acc is not None and delta.get("tool_calls"):
+                    tools_acc.add_deltas(delta["tool_calls"])
+            try:
+                chunk = await anext(stream)
+            except StopAsyncIteration:
+                return
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            await close()
 
 
 async def _complete_turn(
@@ -2436,13 +2424,17 @@ async def _complete_turn(
     model: str,
     allowed_models: Collection[str],
     iteration: int,
+    effect_key: str | None = None,
 ) -> dict[str, Any]:
     """Await one non-streaming model call inside a content-free span."""
-    with telemetry.generation(
-        name="chat_completion",
-        model=model,
-        allowed_models=allowed_models,
-        metadata={"iteration": iteration, "streaming": False},
+    with (
+        telemetry.generation(
+            name="chat_completion",
+            model=model,
+            allowed_models=allowed_models,
+            metadata={"iteration": iteration, "streaming": False},
+        ),
+        model_effect(effect_key or f"hive-chat:turn:{iteration}"),
     ):
         return await llm.complete(turn_req)
 
@@ -2526,8 +2518,11 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
 
         acc = _ToolCallAccumulator()
         content_parts: list[str] = []
-        try:
-            async for evt in _stream_turn(
+        # Transport failure and empty/ambiguous output are not evidence that
+        # the model was not called. Only the admitted authority may retry a
+        # proven non-application; never mint another effect here.
+        async with contextlib.aclosing(
+            _stream_turn(
                 llm,
                 tool_req,
                 acc,
@@ -2535,37 +2530,14 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 model=model,
                 allowed_models=allowed_models,
                 iteration=iteration,
-            ):
+            )
+        ) as events:
+            async for evt in events:
                 yield evt
-            collected_content = "".join(content_parts)
-            collected_tool_calls = acc.finalize() if acc else None
-        except Exception:
-            # Fall back to non-streaming
-            out = await _complete_turn(
-                llm,
-                tool_req,
-                model=model,
-                allowed_models=allowed_models,
-                iteration=iteration,
-            )
-            choice = (out.get("choices") or [{}])[0]
-            msg = choice.get("message", {})
-            collected_content = msg.get("content", "")
-            collected_tool_calls = msg.get("tool_calls")
-
-        # If streaming yielded nothing, fall back to non-streaming
+        collected_content = "".join(content_parts)
+        collected_tool_calls = acc.finalize() if acc else None
         if not collected_content and not collected_tool_calls:
-            out = await _complete_turn(
-                llm,
-                tool_req,
-                model=model,
-                allowed_models=allowed_models,
-                iteration=iteration,
-            )
-            choice = (out.get("choices") or [{}])[0]
-            msg = choice.get("message", {})
-            collected_content = msg.get("content", "")
-            collected_tool_calls = msg.get("tool_calls")
+            raise GovernedModelFailure()
 
         if not collected_tool_calls:  # noqa: SIM102  keep detection comment attached to inner condition
             # Detect model outputting tool calls as text instead of structured tool_calls
@@ -2578,13 +2550,14 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                     if (t.get("function") or {}).get("name")
                 )
             ):
-                logger.warning("Model leaked tool calls as text — retrying non-streaming")
+                logger.warning("Completed model output needs structured tool correction")
                 out = await _complete_turn(
                     llm,
                     tool_req,
                     model=model,
                     allowed_models=allowed_models,
                     iteration=iteration,
+                    effect_key=f"hive-chat:turn:{iteration}:tool-correction",
                 )
                 choice = (out.get("choices") or [{}])[0]
                 msg = choice.get("message", {})
@@ -2607,7 +2580,7 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
             }
         )
 
-        for tc in collected_tool_calls:
+        for tool_index, tc in enumerate(collected_tool_calls):
             fn = tc.get("function", {})
             name = fn.get("name", "")
             try:
@@ -2620,12 +2593,15 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
             # cross the external telemetry boundary. The model-provided name
             # exports only when it matches this turn's server-advertised tools;
             # every other value collapses to one fixed sentinel.
-            with telemetry.trace(
-                name="tool_call",
-                model=model,
-                allowed_models=allowed_models,
-                metadata={"iteration": iteration, "tool_name": name},
-                allowed_tool_names=registered_tool_names,
+            with (
+                telemetry.trace(
+                    name="tool_call",
+                    model=model,
+                    allowed_models=allowed_models,
+                    metadata={"iteration": iteration, "tool_name": name},
+                    allowed_tool_names=registered_tool_names,
+                ),
+                model_effect(f"hive-chat:turn:{iteration}:tool:{tool_index}"),
             ):
                 # `_gated_execute_tool` scans the call, enforces the dispatch
                 # policy, executes, and scans the result at the tool_result
@@ -2653,13 +2629,16 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
 
     # Final synthesis
     yield {"type": "status", "message": "Finalizing…"}
-    final_req = ChatCompletionRequest(messages=messages, model=model, temperature=req.temperature)
+    final_req = ChatCompletionRequest(
+        messages=messages, model=model, temperature=req.temperature, max_tokens=req.max_tokens
+    )
     final_out = await _complete_turn(
         llm,
         final_req,
         model=model,
         allowed_models=allowed_models,
         iteration=5,
+        effect_key="hive-chat:synthesis",
     )
     content = (final_out.get("choices") or [{}])[0].get("message", {}).get("content", "")
     yield {"type": "done", "content": content, "model": model}

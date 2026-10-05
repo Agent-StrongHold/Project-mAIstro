@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 ModelTier = Literal["fast", "balanced", "powerful"]
+ModelIngress = Literal["chat_completions", "responses"]
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,20 @@ class ModelMetadata:
     reasoning_capable: bool = False
     max_tokens: int = 4096
     fallback_to: tuple[str, ...] = field(default_factory=tuple)
+    # None means unknown, never unsupported. An operator declaration is exhaustive.
+    supported_ingresses: tuple[ModelIngress, ...] | None = None
+
+    def __post_init__(self) -> None:
+        lanes = self.supported_ingresses
+        if lanes is not None and (
+            not isinstance(lanes, tuple)
+            or not lanes
+            or any(lane not in ("chat_completions", "responses") for lane in lanes)
+            or len(set(lanes)) != len(lanes)
+        ):
+            raise ValueError(
+                "supported_ingresses must be a nonempty tuple of unique implemented lanes"
+            )
 
 
 @dataclass(frozen=True)

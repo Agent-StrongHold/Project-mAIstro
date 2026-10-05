@@ -1,8 +1,11 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from main import app
+
+from maistro.http import override_transport
 
 # Model-reaching turns are admitted as canonical chat Runs (#1037).
 pytestmark = pytest.mark.usefixtures("chat_run_spine")
@@ -297,16 +300,25 @@ def test_install_session_unknown_key_is_422_naming_the_key() -> None:
     assert r2.json()["answers"]["sandbox_profile"] == "developer"
 
 
-def test_chat_complete_stub() -> None:
+def test_chat_complete_without_model_authority_fails_closed() -> None:
+    """A Run spine alone cannot authorize a model or manufacture a stub answer."""
     c = _login()
-    r = c.post(
-        "/v1/chat/complete",
-        json={"messages": [{"role": "user", "content": "ping"}], "model": "gpt-4"},
-    )
-    assert r.status_code == 200
+    sent: list[httpx.Request] = []
+
+    def forbidden(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        raise AssertionError("unconfigured chat must not reach a model transport")
+
+    with override_transport(httpx.MockTransport(forbidden)):
+        r = c.post(
+            "/v1/chat/complete",
+            json={"messages": [{"role": "user", "content": "ping"}], "model": "gpt-4"},
+        )
+    assert r.status_code == 503
     body = r.json()
-    assert "choices" in body
-    assert body["choices"][0]["message"]["role"] == "assistant"
+    assert "governed model" in body["detail"]
+    assert "choices" not in body
+    assert sent == []
 
 
 def test_chat_complete_with_mock_llm_port() -> None:
