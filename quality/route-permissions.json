@@ -7,6 +7,12 @@
     "quality/route-permissions-baseline.json; ratchet that file to zero."
   ],
   "prefixes": {
+    "/v1/invocations": {
+      "permission": "invocations.reconcile",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "GET requires invocations.inspect and POST requires invocations.reconcile; canonical Workspace membership and explicit Project grants with inherited deny-wins scope are checked again by the service."
+    },
     "/v1/agents": {
       "permission": "agents.write",
       "owner": "@BlakeMatthews-dev",
