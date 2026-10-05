@@ -294,6 +294,7 @@ def record_from_json(raw: str) -> InstallRecord:
 # M9-B2: activation state machine (issue #953)
 # --------------------------------------------------------------------------
 
+
 class ExtensionState(StrEnum):
     """Durable states of one extension install record.
 

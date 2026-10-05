@@ -27,8 +27,8 @@ from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from maistro.extensions.types import (
-    ExtensionInstallRecord,
     ExtensionIdentityConflict,
+    ExtensionInstallRecord,
     ExtensionRegistryError,
     ExtensionScope,
     ExtensionState,
@@ -248,6 +248,7 @@ class InMemoryExtensionInstallStore:
 # --------------------------------------------------------------------------
 # M9-B2: activation store (issue #953)
 # --------------------------------------------------------------------------
+
 
 @runtime_checkable
 class ExtensionStore(Protocol):
