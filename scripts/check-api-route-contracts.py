@@ -60,9 +60,10 @@ The inventory
 The audited routes and their dispositions live in
 `quality/api-route-contracts.json`, with the human-readable contract table in
 `docs/api/route-contract-inventory.md`. Every registered entry must still
-resolve to a live handler (method + path matched against the decorator), so
-the inventory cannot rot: removing a route means updating the inventory in the
-same change. A canned handler that is *not* registered fails the gate unless
+resolve to a live handler (method + path matched against the decorator) whose
+name equals the entry's `handler` field, so the inventory cannot rot: removing
+a route means updating the inventory in the same change, and renaming a
+handler means reconciling its declaration. A canned handler that is *not* registered fails the gate unless
 it carries a `temporary` disposition with a tracking issue and an unexpired
 review date — the same escape shape `check-public-routes.py` uses, because
 "we know, it is tracked" must be writable and must expire.
@@ -244,12 +245,20 @@ def _check_registry(
                 f"(one of {sorted(DISPOSITIONS)})"
             )
         identity = (str(entry["file"]), str(entry["method"]), str(entry["path"]))
-        if by_identity.get(identity) is None:
+        func = by_identity.get(identity)
+        if func is None:
             failures.append(
                 f"inventory rot: {entry['method'].upper()} {entry['route']} "
                 f"({entry['file']} @{entry['path']}) does not resolve to a live handler"
             )
             continue
+        declared_handler = str(entry["handler"])
+        if declared_handler != func.name:
+            failures.append(
+                f"handler identity drift: {entry['method'].upper()} {entry['route']} "
+                f"({entry['file']} @{entry['path']}) declares handler {declared_handler!r} "
+                f"but the live function is {func.name!r}; reconcile the inventory entry"
+            )
         if disposition == "temporary":
             if not entry.get("issue"):
                 failures.append(f"{entry['route']}: temporary disposition needs an issue")
