@@ -72,8 +72,42 @@ only reason the delta is 46 rather than 45 collected-and-passing.
 
 ## What did not move
 
-No package suite changed: the gate and the fixture are root-tree tooling, the
-reference extension's own tests live under `extensions/` (deliberately
-outside `testpaths` — they are run by the isolation fixture in a venv that
-holds no part of this repository, which is the property being proven), and
+No package suite changed: the gate and the fixture are root-tree tooling, and
 `packages/` is untouched.
+
+## The extension suite's own row (repair round)
+
+The first cut left `extensions/reference-greeter/tests` out of the inventory
+entirely, on the reading that a suite run only inside the isolation fixture is
+not part of the root environment's surface. That reading failed the first
+independent validation: `uv run pytest
+extensions/reference-greeter/tests/test_reference_greeter.py` — the command
+any author, verifier, or driver runs for a file that exists in the tree —
+collects the module in the root dev environment, where `reference_greeter` was
+not installed, and died with `ModuleNotFoundError` before an assertion could
+run; and `check-suite-inventory.py --suite extensions/reference-greeter/tests`
+had no collection recipe to name. A suite that only the fixture can execute is
+invisible to both.
+
+The repair keeps the division of labor and closes the gap:
+
+- The reference extension joins the uv workspace
+  (`members = ["packages/*", "extensions/reference-greeter"]`) and the root
+  `dev` extra installs it editable. `uv run pytest extensions/...` now runs
+  the five self-contract tests in the root env — the same assertions the
+  fixture runs in the clean venv.
+- The boundary is untouched. Membership is build wiring: the extension still
+  declares zero dependencies, still imports nothing first-party (its own test
+  asserts it), the static gate still fails any product-private or
+  repo-relative import, and the isolation fixture still proves the wheel
+  builds and tests in a venv that holds none of this repository — the
+  clean-environment acceptance criterion is the fixture's, not the root
+  install's.
+- The suite is registered: a `RECIPES` entry (plain collection — the editable
+  install makes `reference_greeter` importable with no PYTHONPATH repair), a
+  `SUITE-INVENTORY.md` row, and its baseline count (5). No delta line is
+  recorded for it: a baseline entry is how a newly registered suite enters
+  the ledger, and an outstanding delta on top would double-count it (the
+  gate would then expect 10 where the suite collects 5). A future change
+  that breaks the extension suite's collection is inventory drift, loud like
+  any other.
