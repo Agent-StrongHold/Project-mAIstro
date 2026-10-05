@@ -522,3 +522,59 @@ async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired()
         "the ledger's schema was never ensured on the wired pool"
     )
     assert await context.invocation_store.get("inv-absent") is None
+
+
+async def test_postgres_effect_context_reuses_already_selected_stores() -> None:
+    """#1133 AC-8, the PostgreSQL leg of the injection contract covered above
+    for SQLite: if the Container already selected durable Invocation/Event/
+    Approval stores on this pool, the builder must thread those exact
+    instances through rather than opening a second store behind them -- two
+    objects reading and writing the same tables without knowing about each
+    other.
+    """
+    from maistro.capabilities.approval_store import PgApprovalStore
+    from maistro.events.pg_envelope import PgEventStore
+
+    class _Transaction:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class _SchemaConnection:
+        async def execute(self, query: str, *args: Any) -> str:
+            return "OK"
+
+        def transaction(self) -> _Transaction:
+            return _Transaction()
+
+    class _Acquire:
+        def __init__(self) -> None:
+            self._conn = _SchemaConnection()
+
+        async def __aenter__(self) -> _SchemaConnection:
+            return self._conn
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class _SchemaPool(_FakePgInvocationPool):
+        def acquire(self) -> _Acquire:
+            return _Acquire()
+
+    pool = _SchemaPool()
+    invocation_store = PgInvocationStore(pool)
+    event_store = PgEventStore(pool)
+    approvals = PgApprovalStore(pool)
+
+    context = await new_postgres_effect_context(
+        pool,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        approvals=approvals,
+    )
+
+    assert context.invocation_store is invocation_store
+    assert context.event_store is event_store
+    assert context.approval_store is approvals
