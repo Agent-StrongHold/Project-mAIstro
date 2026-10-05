@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +52
+  packages/maistro-core/tests: +60
   packages/maistro-server/tests: +1
 ---
 # 959 — external Agent delegation bound to canonical identity and evidence
@@ -63,6 +63,24 @@ transport claim at visit level: the claim moved into the governed executor
 after admission and policy, so the post-approval resume dispatches fresh (the
 policy evaluator flips to ALLOW once `context.approved`) instead of failing the
 claim and parking the approved delegation on reconciliation until timeout.
+
+**+1 in `test_agent_delegate_remote_governance.py` (crashed-dispatch recovery
+follow-up).** A worker that dies after the peer accepted (durable dispatch
+Invocation left RUNNING with `dispatch_active=True`) settles on the next visit
+from the peer's idempotent receipt, filed with the `stale_before` cutoff the
+recovery vouches for at query time — instead of raising `UnsafeEffectRetry` on
+every recovery visit until the delegation timeout. The test asserts the
+receipt query happens and no re-POST occurs, the child Run's provenance carries
+the peer's task id, and the Invocation terminalizes COMPLETED with the receipt
+attached.
+
+**+7 in `tests/a2a/test_delegation_context.py` (blank-identity follow-up).**
+Each required canonical identity/context field (`caller_principal_id`,
+`delegating_agent`, `workspace_id`, `project_id`, `run_id`, `node_run_id`,
+`delegation_key`) refuses whitespace-only values at construction: a blank
+identity is no attribution at all, so it must fail construction rather than
+ride to a peer as if it were evidence. Optional fields stay verbatim — absent
+stays absent.
 
 **+20 across the existing delegation/peer files.** `test_guest_peers.py` grew the
 transport-boundary gate (context-less refused, envelope/context agent mismatch,

@@ -324,11 +324,6 @@ def normalize_touched_path(path: str) -> str:
     return normalized
 
 
-<<<<<<< Updated upstream
-=======
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
 def _matches_segment_patterns(path: str, patterns: tuple[str, ...]) -> bool:
     """Segment-boundary matching shared by both pattern tiers.
 
@@ -368,10 +363,6 @@ def matches_evaluator_oracle_pattern(path: str) -> bool:
     return _matches_segment_patterns(normalize_touched_path(path), EVALUATOR_ORACLE_PATTERNS)
 
 
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
->>>>>>> Stashed changes
 def matches_sensitive_pattern(path: str) -> bool:
     """True if ``path`` falls on the containment surface.
 

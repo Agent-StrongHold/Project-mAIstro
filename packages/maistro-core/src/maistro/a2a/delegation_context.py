@@ -19,9 +19,9 @@ Goal/Run/Invocation identity (ADR-081226-6b46, ADR-082526-7f02).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationInfo
 
 
 class DelegationContextError(ValueError):
@@ -30,6 +30,23 @@ class DelegationContextError(ValueError):
 
 class DelegationScopeExceeded(DelegationContextError):
     """The delegation claims capability scopes beyond its declared ceiling."""
+
+
+def _refuse_blank(value: str, info: ValidationInfo) -> str:
+    """Refuse a whitespace-only canonical identity value.
+
+    A blank identity is no attribution at all, so it must fail construction
+    rather than ride to a peer as if it were evidence. Referenced through
+    ``Annotated`` below (the same shape as ``scheduling.model``), so the
+    validator is applied where each identity field is declared.
+    """
+    if not value.strip():
+        raise ValueError(f"{info.field_name} must not be blank")
+    return value
+
+
+#: A canonical identity/context string: non-blank, never whitespace-only.
+_IdentityStr = Annotated[str, AfterValidator(_refuse_blank)]
 
 
 def validate_goal_binding(context: DelegationContext) -> None:
@@ -87,12 +104,16 @@ class DelegationContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    caller_principal_id: str = Field(min_length=1)
-    delegating_agent: str = Field(min_length=1)
-    workspace_id: str = Field(min_length=1)
-    project_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    node_run_id: str = Field(min_length=1)
+    # The canonical identity fields refuse whitespace-only values: a blank
+    # identity is no attribution at all, so it must fail construction rather
+    # than ride to a peer as if it were evidence. Optional fields (attempt_id,
+    # the Goal/Subgoal context) stay verbatim — absent stays absent.
+    caller_principal_id: _IdentityStr = Field(min_length=1)
+    delegating_agent: _IdentityStr = Field(min_length=1)
+    workspace_id: _IdentityStr = Field(min_length=1)
+    project_id: _IdentityStr = Field(min_length=1)
+    run_id: _IdentityStr = Field(min_length=1)
+    node_run_id: _IdentityStr = Field(min_length=1)
     # A dispatching Attempt exists in production execution; it stays optional
     # so transport-level constructions that have not entered an Attempt yet
     # can still carry the rest of the binding truthfully.
@@ -111,7 +132,7 @@ class DelegationContext(BaseModel):
     # The attenuated capability envelope the delegatee may exercise. Empty
     # means no caller authority is delegated at all, which is the safe default.
     delegated_scopes: tuple[str, ...] = ()
-    delegation_key: str = Field(min_length=1)
+    delegation_key: _IdentityStr = Field(min_length=1)
 
     def as_payload(self) -> dict[str, Any]:
         """The wire/provenance form: explicit, JSON-ready, no absent facts."""

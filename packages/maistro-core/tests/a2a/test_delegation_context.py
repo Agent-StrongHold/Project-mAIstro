@@ -76,6 +76,22 @@ class TestDelegationContextValidation:
         with pytest.raises(ValidationError):
             _context(actor_id="someone")  # type: ignore[arg-type]
 
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "caller_principal_id",
+            "delegating_agent",
+            "workspace_id",
+            "project_id",
+            "run_id",
+            "node_run_id",
+            "delegation_key",
+        ],
+    )
+    def test_whitespace_only_identity_fields_are_refused(self, field: str) -> None:
+        with pytest.raises(ValidationError, match="must not be blank"):
+            _context(**{field: "   "})
+
 
 class TestAttenuation:
     def test_the_ceiling_narrows_claims_and_preserves_order(self) -> None:
