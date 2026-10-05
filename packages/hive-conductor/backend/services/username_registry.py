@@ -257,7 +257,9 @@ class UsernameRegistry:
         if not atomic(claims, records):
             raise UsernameAllocationError("username rollback did not match its accounts")
 
-    def _rollback_memory(self, batch: list[HiveAccount], claims: list[tuple[str, str, str]]) -> None:
+    def _rollback_memory(
+        self, batch: list[HiveAccount], claims: list[tuple[str, str, str]]
+    ) -> None:
         for _, key, expected_id in claims:
             record = self._claims.get(key)
             if not isinstance(record, dict) or record.get("user_id") != expected_id:
