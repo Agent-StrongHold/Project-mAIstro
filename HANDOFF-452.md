@@ -194,3 +194,40 @@ mutation-capable driver — this lane is prohibited from GitHub mutations.
 - `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` — exit 0 (1337=1337)
 - `uv run python scripts/check-suite-inventory.py` — ok, 14 suites
 - `uv run python scripts/check-api-route-contracts.py` — OK (279 handlers); its tests 36 passed
+
+## This round's delta — the coverage-gate failure closed (repair round at 756112f60)
+
+CI's `Coverage gate (publish-set floor + diff coverage)` failed at
+`756112f60` with exactly one file below the per-file floor:
+`packages/maistro-rsi/src/maistro_rsi/__main__.py` at 87.5% of its 24 scored
+changed lines (need 90%), uncovered 755, 766, 767. Those are the digest-guard
+`raise` and the two checkout calls of `_run_harvest_clone` — unreachable by
+`test_an_allowed_clone_url_resolves_then_fetches_a_digest_under_pins`, which
+stubs `subprocess.run` and raises at the fetch on purpose.
+
+Repair is test-only (no source change, so the scored line set is untouched):
+`packages/maistro-rsi/tests/test_harvest_clone_source.py` (new, 5 tests) runs
+real git against a local `file://` origin — happy path lands branch/HEAD on
+the resolved digest with a materialized work tree and the `core.autocrlf=false`
+pin persisted; the no-matching-ref and unreachable-remote shapes both refuse
+before `git init` creates a workspace. Inventory delta recorded in
+`docs/testing/inventory-notes/452-harvest-clone-pinned-source.md` (+5 rsi).
+
+Validation:
+
+- `scripts/check-diff-coverage.py coverage.xml --base 879d66a1` (CI's exact
+  merge-group base): `__main__.py` 24/24 scored changed lines covered;
+  `audit()` failures NONE — the exact failing gate passes locally
+- Publish-set floor reproduced locally (core/canvas/evolve/rsi/bootstrap
+  producers, CI's argv): 92% total, floor 87 — passes; CI's own floor step
+  passed at this head too (unit/postgres/archive producer jobs all green)
+- `uv run pytest packages/maistro-rsi/tests -q` — 1085 passed (incl. the 5 new)
+- `uv run python scripts/check-suite-inventory.py` (core+rsi) — ok
+- vulture CI-exact argv — exit 0, zero unbanked identities, no ledger edit
+- ruff check + format — clean
+
+Note: `packages/maistro-core/tests/test_container_postgres.py::
+test_an_unreachable_server_is_an_error_not_a_fallback` is a local-environment
+flake (needs ~62s of container startup; the suite's `--timeout=30` kills it).
+Untouched by this branch; passes with `--timeout=120`; CI's coverage jobs
+passed it at this head.
