@@ -58,3 +58,8 @@ async def get_current_user(
         org_id=DEFAULT_ORG_ID,
         roles=frozenset({"user"}),
     )
+
+
+def scope_org_id(principal: Principal) -> str:
+    """Non-optional org scope for canvas stores (single-tenant default)."""
+    return principal.org_id or DEFAULT_ORG_ID
