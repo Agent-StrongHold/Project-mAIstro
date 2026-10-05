@@ -105,4 +105,3 @@ Checkpoint: checked 1 assigned issue, done 1 bounded CI diagnosis, skipped 0
 assigned items, errors 0 validation commands (one missing-path lookup recorded
 above); issue completion remains blocked. Commit this report locally; no push,
 PR, issue closure, policy change, or integration approval.
-
