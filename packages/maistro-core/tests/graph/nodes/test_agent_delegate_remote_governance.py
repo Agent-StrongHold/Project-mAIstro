@@ -488,7 +488,13 @@ class TestDelegatedAuthorityIsAttenuated:
         store, project = await _spine()
         ctx, _parent = await _parent_and_ctx(store, project.project_id)
 
-        async def require_approval(_binding: Any, _request: Any, _context: Any) -> PolicyVerdict:
+        async def require_approval(
+            _binding: Any, _request: Any, context: Any
+        ) -> PolicyVerdict:
+            # The real engine's shape: a human approval satisfies the
+            # REQUIRE_APPROVAL rule, so the approved re-run is ALLOW.
+            if getattr(context, "approved", False):
+                return PolicyVerdict(Decision.ALLOW, rule="test")
             return PolicyVerdict(
                 Decision.REQUIRE_APPROVAL, reason="delegation needs a human", rule="test"
             )
