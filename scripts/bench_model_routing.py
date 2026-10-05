@@ -25,8 +25,13 @@ What it addresses from the issue, mechanically:
                           model improves) while catalog metadata stays stale;
 * exploration risk      — "unsafe" picks (true success < SAFETY_FLOOR) are
                           decomposed into picks the static router would also
-                          have made vs picks attributable to learning-driven
-                          deviation;
+                          have made, picks made by a policy's exploration
+                          mechanism (explore-start, ε-draw, optimism bonus,
+                          posterior sampling), and picks that merely deviated
+                          greedily from the static router — a greedy exploit
+                          of a wrong estimate is exploitation risk, not
+                          exploration risk, and the two must not share a
+                          bucket;
 * propensity bias       — a held-out logged dataset from an eps-greedy
                           static-router logger carries recorded propensities;
                           IPS and doubly-robust off-policy estimates are
@@ -334,7 +339,15 @@ class FeedbackChannel:
 class Policy:
     """A routing policy. select() must be deterministic given internal state
     plus (for exploration) its own rng; observe() is invoked only for
-    delivered feedback."""
+    delivered feedback.
+
+    select() must leave ``last_choice_exploratory`` recording whether THIS
+    choice came from the policy's exploration mechanism (forced explore-start,
+    ε-draw, optimism bonus, posterior sampling) rather than a greedy or
+    exploitative decision — the unsafe-risk accounting splits on exactly this
+    flag, so mislabelling a greedy pick as exploration would launder
+    exploitation mistakes into the exploration-risk metric.
+    """
 
     name: str = "policy"
 
@@ -343,6 +356,7 @@ class Policy:
         # non-cryptographic PRNG *is* the design here, and nothing in the
         # offline bench touches a secret or a security boundary.
         self._rng = random.Random(seed)  # DevSkim: ignore DS148264 until 2027-12-31
+        self.last_choice_exploratory = False
 
     def select(self, ctx: Ctx, usage_pcts: dict[str, float], step: int) -> int:
         raise NotImplementedError
@@ -409,14 +423,17 @@ class CatalogPriorMeanPolicy(Policy):
         if step < self._explore_start and self._forced < self._explore_start:
             arm = self._forced % N_ARMS
             self._forced += 1
+            self.last_choice_exploratory = True
             return arm
         if self._epsilon > 0.0 and self._rng.random() < self._epsilon:
+            self.last_choice_exploratory = True
             return self._rng.randrange(N_ARMS)
         best_arm, best_mean = 0, -math.inf
         for arm in range(N_ARMS):
             m = self._mean(ctx.key(), arm)
             if m > best_mean:
                 best_arm, best_mean = arm, m
+        self.last_choice_exploratory = False
         return best_arm
 
     def observe(self, ctx: Ctx, arm: int, reward: float) -> None:
@@ -522,6 +539,10 @@ class LinUCBPolicy(Policy):
         return mean + self._alpha * math.sqrt(max(var, 0.0))
 
     def select(self, ctx: Ctx, usage_pcts: dict[str, float], step: int) -> int:
+        # Optimism IS the exploration mechanism here: every selection is
+        # exploration-driven by construction, so the unsafe-risk accounting
+        # treats all of this policy's deviations as exploration.
+        self.last_choice_exploratory = True
         best_arm, best_val = 0, -math.inf
         for arm in range(N_ARMS):
             v = self._ucb(ctx, arm)
@@ -535,7 +556,15 @@ class LinUCBPolicy(Policy):
         a = self._a[arm]
         for i in range(len(x)):
             for j in range(len(x)):
-                a[i][j] = g * a[i][j] + x[i] * x[j]
+                # Discounted update WITH ridge renewal: re-injecting (1-g) on
+                # the diagonal keeps the prior at exactly the identity (an
+                # easy induction from A₀ = I). Without it the ridge decays as
+                # γⁿ, and ctx_features is rank-deficient — the two constant
+                # 1.0 slots make the (6,7) block identical — so the singular
+                # direction's eigenvalue IS the fading ridge and mat_inverse
+                # starts raising ZeroDivisionError after ~2750 labels on one
+                # arm. The renewal pins that eigenvalue at 1.0 forever.
+                a[i][j] = g * a[i][j] + (1.0 - g) * (1.0 if i == j else 0.0) + x[i] * x[j]
         self._b[arm] = [g * bv + xv * reward for bv, xv in zip(self._b[arm], x, strict=True)]
         self._a_inv[arm] = mat_inverse(a)
         self._labels += 1
@@ -578,6 +607,10 @@ class ThompsonLinearPolicy(Policy):
         return [mu[i] + sum(low[i][k] * z[k] for k in range(i + 1)) for i in range(x_dim)]
 
     def select(self, ctx: Ctx, usage_pcts: dict[str, float], step: int) -> int:
+        # Posterior sampling IS the exploration mechanism here: every
+        # selection is exploration-driven by construction, so the unsafe-risk
+        # accounting treats all of this policy's deviations as exploration.
+        self.last_choice_exploratory = True
         x = ctx_features(ctx)
         best_arm, best_val = 0, -math.inf
         for arm in range(N_ARMS):
@@ -593,7 +626,11 @@ class ThompsonLinearPolicy(Policy):
         a = self._a[arm]
         for i in range(len(x)):
             for j in range(len(x)):
-                a[i][j] = g * a[i][j] + x[i] * x[j]
+                # Ridge renewal as in LinUCBPolicy.observe: without the
+                # re-injected (1-g) diagonal the rank-deficient feature block
+                # drives A singular (γⁿ below mat_inverse's pivot floor) once
+                # one arm accrues enough labels.
+                a[i][j] = g * a[i][j] + (1.0 - g) * (1.0 if i == j else 0.0) + x[i] * x[j]
         self._b[arm] = [g * bv + xv * reward for bv, xv in zip(self._b[arm], x, strict=True)]
         self._a_inv[arm] = None  # lazily re-inverted on next selection
         self._labels += 1
@@ -652,6 +689,7 @@ class RunResult:
     recovery_step: int | None
     unsafe_total: int
     unsafe_exploration: int
+    unsafe_greedy_deviation: int
     unsafe_static: int
     arm_switches: int
     mean_true_quality: float
@@ -688,7 +726,7 @@ def run_episode(
     post_steps = post_regret = 0
     quality_sum = 0.0
     cost_sum = 0.0
-    unsafe_total = unsafe_exploration = unsafe_static = 0
+    unsafe_total = unsafe_exploration = unsafe_greedy = unsafe_static = 0
     switches = 0
     prev_arm = -1
     tracker = RecoveryTracker()
@@ -725,8 +763,15 @@ def run_episode(
             unsafe_total += 1
             if arm == static_pick:
                 unsafe_static += 1
-            else:
+            elif policy.last_choice_exploratory:
                 unsafe_exploration += 1
+            else:
+                # Greedy exploitation of a wrong estimate: a deviation from
+                # the static pick that came from NO exploration mechanism.
+                # Counting it as exploration (the pre-fix behavior) let a
+                # pure-greedy policy launder exploitation mistakes into the
+                # exploration-risk metric.
+                unsafe_greedy += 1
         if prev_arm != -1 and arm != prev_arm:
             switches += 1
         prev_arm = arm
@@ -754,6 +799,7 @@ def run_episode(
         recovery_step=tracker.recovery_step,
         unsafe_total=unsafe_total,
         unsafe_exploration=unsafe_exploration,
+        unsafe_greedy_deviation=unsafe_greedy,
         unsafe_static=unsafe_static,
         arm_switches=switches,
         mean_true_quality=round(quality_sum / steps, 6),
@@ -806,15 +852,6 @@ def fit_on_log(policy: Policy, rows: Sequence[LogRow]) -> None:
         policy.observe(row.ctx, row.arm, row.reward)
 
 
-def policy_value_truth(policy: Policy, rows: Sequence[LogRow], phase: int) -> float:
-    """Expected on-policy value of a (deterministic-at-eval) policy on rows."""
-    total = 0.0
-    for row in rows:
-        arm = policy.select(row.ctx, LOG_USAGE_PCTS, 10**9)
-        total += true_success_prob(arm, row.ctx, phase)
-    return total / max(len(rows), 1)
-
-
 def direct_model_fit(
     train_rows: Sequence[LogRow], prior_weight: float = 4.0
 ) -> Callable[[Ctx, int], float]:
@@ -859,13 +896,20 @@ def evaluate_ope(
     Propensity bias is handled the standard ways — recorded propensities, IPS
     weighting, clipping against the heavy tail of 1/p — and the residual bias
     is *measured* against the ground-truth value rather than assumed away.
+
+    The truth is the exact expected success of the very actions the policy
+    took on these eval rows (common random numbers): re-rolling a stochastic
+    policy (eps-greedy's ε-draws, Thompson's posterior samples) would measure
+    Monte-Carlo disagreement between two target rollouts, not estimator bias.
     """
     model = direct_model_fit(train_rows)
     ips_sum = 0.0
     dr_sum = 0.0
+    truth_sum = 0.0
     clipped = 0
     for row in eval_rows:
         chosen = policy.select(row.ctx, LOG_USAGE_PCTS, 10**9)
+        truth_sum += true_success_prob(chosen, row.ctx, phase=0)
         if row.arm == chosen:
             p = max(row.propensity, clip_min)
             if row.propensity < clip_min:
@@ -875,7 +919,7 @@ def evaluate_ope(
             dr_sum += (row.reward - model(row.ctx, chosen)) * w
         dr_sum += model(row.ctx, chosen)
     n = max(len(eval_rows), 1)
-    truth = policy_value_truth(policy, eval_rows, phase=0)
+    truth = truth_sum / n
     ips = ips_sum / n
     dr = dr_sum / n
     return OpeResult(
@@ -905,7 +949,10 @@ def aggregate(
         def stat(runs: list[RunResult], pick: Callable[[RunResult], float]) -> dict[str, float]:
             vals = [pick(r) for r in runs]
             mean = sum(vals) / len(vals)
-            var = sum((v - mean) ** 2 for v in vals) / len(vals)
+            # Sample standard deviation (n-1): the advertised dispersion of a
+            # 5-seed sample; the population denominator understated every
+            # displayed std by ~10.6%.
+            var = sum((v - mean) ** 2 for v in vals) / (len(vals) - 1) if len(vals) > 1 else 0.0
             return {"mean": round(mean, 6), "std": round(math.sqrt(var), 6)}
 
         recoveries = [r.recovery_step for r in rs if r.recovery_step is not None]
@@ -915,6 +962,7 @@ def aggregate(
             "regret_rate_post": stat(rs, lambda r: r.regret_rate_post),
             "unsafe_total": stat(rs, lambda r: float(r.unsafe_total)),
             "unsafe_exploration": stat(rs, lambda r: float(r.unsafe_exploration)),
+            "unsafe_greedy_deviation": stat(rs, lambda r: float(r.unsafe_greedy_deviation)),
             "unsafe_static": stat(rs, lambda r: float(r.unsafe_static)),
             "arm_switches": stat(rs, lambda r: float(r.arm_switches)),
             "mean_true_quality": stat(rs, lambda r: r.mean_true_quality),
@@ -975,8 +1023,18 @@ def run_bench(
 
     sample_efficiency: dict[str, dict[str, float]] = {}
     for name in POLICY_FACTORIES:
-        first = next((r for r in results if r.policy == name), None)
-        sample_efficiency[name] = first.regret_at_labels if first else {}
+        runs = [r for r in results if r.policy == name]
+        # Mean regret-at-checkpoint ACROSS seeds: picking the first matching
+        # run silently reported seed 0 alone, so --seeds changed nothing here
+        # and one noisy seed could decide the sample-efficiency ordering.
+        per_checkpoint: dict[int, list[float]] = {}
+        for r in runs:
+            for checkpoint, regret in r.regret_at_labels.items():
+                per_checkpoint.setdefault(int(checkpoint), []).append(regret)
+        sample_efficiency[name] = {
+            str(checkpoint): round(sum(vals) / len(vals), 4)
+            for checkpoint, vals in sorted(per_checkpoint.items())
+        }
     return {
         "config": {
             "steps": steps,
@@ -1014,7 +1072,7 @@ def print_report(report: dict) -> None:
     )
     hdr = (
         f"{'policy':<18}{'regret±':<16}{'pre-rate':<10}{'post-rate':<10}"
-        f"{'recover':<10}{'unsafeE':<9}{'quality':<9}{'cost':<7}{'frontier'}"
+        f"{'recover':<10}{'unsafeE':<9}{'unsafeG':<9}{'quality':<9}{'cost':<7}{'frontier'}"
     )
     print(hdr)
     for name in order:
@@ -1030,6 +1088,7 @@ def print_report(report: dict) -> None:
             f"{p['regret_rate_post']['mean']:.4f}   "
             f"{p['recovery_step_mean']!s:<10}"
             f"{p['unsafe_exploration']['mean']:<9.1f}"
+            f"{p['unsafe_greedy_deviation']['mean']:<9.1f}"
             f"{p['mean_true_quality']['mean']:.4f}  "
             f"{p['mean_list_cost']['mean']:.3f}  "
             f"{frontier}"
@@ -1055,6 +1114,18 @@ def main() -> int:
     ap.add_argument("--drift-at", type=int, default=700)
     ap.add_argument("--output", type=Path, default=None)
     args = ap.parse_args()
+
+    # A run with no post-drift phase would report a perfect-looking
+    # regret_rate_post of 0.0 (and never recover), and an empty seed list
+    # would crash the OPE stage on seeds[0] — both fail loudly here instead.
+    if not 0 < args.drift_at < args.steps:
+        ap.error(
+            f"--drift-at must satisfy 0 < drift-at < steps "
+            f"(got drift-at={args.drift_at}, steps={args.steps}); a run with "
+            f"no post-drift phase would report regret_rate_post=0.0"
+        )
+    if args.seeds < 1:
+        ap.error(f"--seeds must be >= 1 (got {args.seeds}); there would be no episodes to run")
 
     report = run_bench(
         steps=args.steps,

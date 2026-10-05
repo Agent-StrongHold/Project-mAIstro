@@ -254,6 +254,32 @@ class TestPolicies:
         assert picks != {3}, "a half-known arm must not be pure-exploited"
         assert 0 in picks  # all-unobserved UCBs tie at 1.0; argmax keeps arm 0
 
+    def test_linear_policies_keep_their_ridge_at_full_strength(self) -> None:
+        """Discounted covariance with ridge renewal never goes singular.
+
+        ctx_features is rank-deficient: the two constant-1.0 slots make the
+        (6,7) block identical, so the eigenvalue of the singular direction IS
+        the ridge term. Without re-injecting (1-gamma) each update it decayed
+        as gamma^n and mat_inverse raised ZeroDivisionError after ~2750
+        observations of one arm — reachable via supported --steps values.
+        The renewal pins that eigenvalue at 1.0, so long runs keep inverting.
+        """
+        for name in ("linucb", "thompson-linear"):
+            policy = bench.POLICY_FACTORIES[name](seed=0)
+            for _ in range(3000):
+                policy.observe(CTX, 0, 1.0)
+            a = policy._a[0]
+            # The degenerate direction's eigenvalue: identical (6,6) and
+            # (6,7) outer-product contributions leave exactly the renewed
+            # ridge — 1.0 within float tolerance, never a fading gamma^n.
+            assert abs(a[6][6] - a[6][7] - 1.0) < 1e-9, (
+                f"{name} ridge must stay at full prior strength, not decay"
+            )
+            # And the posterior is still invertible after 3000 labels.
+            if name == "thompson-linear":
+                policy._a_inv[0] = None  # force the lazy re-inversion path
+            assert policy.select(CTX, {}, 10**9) in range(bench.N_ARMS)
+
     def test_linucb_survives_degenerate_covariance_reset(self) -> None:
         # Thompson's lazy A-inverse (None until first select after observe)
         # and LinUCB's per-observe re-inversion both run through mat_inverse;
@@ -324,7 +350,10 @@ class TestEpisodes:
             drift_at=30,
             checkpoints=[],
         )
-        assert result.unsafe_static + result.unsafe_exploration == result.unsafe_total
+        assert (
+            result.unsafe_static + result.unsafe_exploration + result.unsafe_greedy_deviation
+            == result.unsafe_total
+        )
         # The static baseline itself never deviates from itself.
         static = bench.run_episode(
             "static-router",
@@ -336,7 +365,70 @@ class TestEpisodes:
             checkpoints=[],
         )
         assert static.unsafe_exploration == 0
+        assert static.unsafe_greedy_deviation == 0
         assert static.unsafe_total == static.unsafe_static
+
+    def test_unsafe_buckets_follow_the_actual_exploration_branch(self) -> None:
+        """The exploration/greedy split tracks the branch that made the pick.
+
+        A pure-greedy policy (no explore-start, no ε) that deviates from the
+        static router is exploiting a wrong estimate — exploitation risk, not
+        exploration risk — so every one of its unsafe deviations must land in
+        ``unsafe_greedy_deviation`` and none in ``unsafe_exploration``.
+        Pinning the branch attribution, not wall-clock counts, is what stops
+        a greedy failure from being laundered into the exploration metric.
+        """
+        kwargs = {"steps": 300, "delay": 10, "label_rate": 1.0, "drift_at": 30, "checkpoints": []}
+        greedy_episode = self._run_with_pure_greedy(**kwargs)
+        assert greedy_episode.unsafe_total > 0, "world must produce unsafe picks post-drift"
+        assert greedy_episode.unsafe_exploration == 0
+        assert (
+            greedy_episode.unsafe_greedy_deviation + greedy_episode.unsafe_static
+            == greedy_episode.unsafe_total
+        )
+
+        # Branch-level contract, directly on the policy objects: the forced
+        # explore-start and ε-draws are exploration; the greedy argmax is not.
+        forced = bench.CatalogPriorMeanPolicy(seed=0, explore_start_rounds=2)
+        flags = []
+        for step in range(2 * bench.N_ARMS + 3):
+            forced.select(CTX, {}, step)
+            flags.append(forced.last_choice_exploratory)
+        assert flags == [True] * (2 * bench.N_ARMS) + [False, False, False]
+
+        eps = bench.EpsilonGreedyPolicy(seed=0, epsilon=1.0)
+        for step in range(20):
+            eps.select(CTX, {}, step)
+            assert eps.last_choice_exploratory, "an ε=1 draw is exploration by definition"
+
+        # Optimism / posterior sampling ARE the exploration mechanisms of the
+        # linear policies: every selection is exploration-driven.
+        for name in ("linucb", "thompson-linear"):
+            pol = bench.POLICY_FACTORIES[name](seed=0)
+            pol.select(CTX, {}, 0)
+            assert pol.last_choice_exploratory, f"{name} explores by its selection rule"
+
+        static = bench.StaticRouterPolicy(seed=0)
+        static.select(CTX, {}, 0)
+        assert not static.last_choice_exploratory
+
+    @staticmethod
+    def _run_with_pure_greedy(**kwargs: Any) -> bench.RunResult:
+        """run_episode builds policies from POLICY_FACTORIES (seed only), so a
+        pure-greedy CatalogPriorMeanPolicy rides in as a registered factory,
+        restored afterwards so other tests see the published policy set."""
+        saved = dict(bench.POLICY_FACTORIES)
+
+        def factory(seed: int) -> bench.Policy:
+            return bench.CatalogPriorMeanPolicy(seed, explore_start_rounds=0, epsilon=0.0)
+
+        factory.__name__ = "pure-greedy"
+        bench.POLICY_FACTORIES["pure-greedy"] = factory  # type: ignore[index]
+        try:
+            return bench.run_episode("pure-greedy", 0, **kwargs)
+        finally:
+            bench.POLICY_FACTORIES.clear()
+            bench.POLICY_FACTORIES.update(saved)
 
     def test_learner_beats_static_after_drift_on_fixed_seed(self) -> None:
         # The issue's hypothesis, pinned: across several fixed seeds the
@@ -382,6 +474,34 @@ class TestOffPolicyEvaluation:
         expected_seen = (5.0 + 4.0 * global_mean) / (10 + 4.0)
         assert math.isclose(model(CTX, 0), expected_seen)
 
+    def test_ope_truth_is_the_evaluated_trajectory_for_stochastic_policies(
+        self,
+    ) -> None:
+        """For a stochastic policy, truth must come from the same arm sequence
+        the IPS/DR pass evaluated, not a second random rollout: two rollouts
+        of eps-greedy disagree by Monte-Carlo noise, and folding that
+        disagreement into 'bias' mis-measures the estimator. Reproducing the
+        fit + select sequence with an identically-seeded policy must yield
+        exactly the true_value evaluate_ope reported.
+        """
+        rows = bench.generate_logged_dataset(600, eps=0.2, seed=3)
+        split = int(len(rows) * 0.6)
+        train_rows, eval_rows = rows[:split], rows[split:]
+        policy = bench.EpsilonGreedyPolicy(seed=3)
+        bench.fit_on_log(policy, train_rows)
+        result = bench.evaluate_ope(policy, eval_rows, train_rows)
+        replica = bench.EpsilonGreedyPolicy(seed=3)
+        bench.fit_on_log(replica, train_rows)
+        chosen = [replica.select(row.ctx, bench.LOG_USAGE_PCTS, 10**9) for row in eval_rows]
+        expected_truth = round(
+            sum(
+                bench.true_success_prob(a, r.ctx, 0) for a, r in zip(chosen, eval_rows, strict=True)
+            )
+            / len(eval_rows),
+            6,
+        )
+        assert result.true_value == expected_truth
+
     def test_ope_tracks_known_truth_and_clips(self) -> None:
         rows = bench.generate_logged_dataset(1500, eps=0.2, seed=2)
         split = int(len(rows) * 0.6)
@@ -422,6 +542,7 @@ class TestAggregation:
             recovery_step=None,
             unsafe_total=0,
             unsafe_exploration=0,
+            unsafe_greedy_deviation=0,
             unsafe_static=0,
             arm_switches=0,
             mean_true_quality=quality,
@@ -447,7 +568,12 @@ class TestAggregation:
         b.recovery_step = 42
         agg = bench.aggregate([a, b])
         stats = agg["a"]["cumulative_regret"]
-        assert stats["mean"] == 15.0 and stats["std"] == 5.0
+        # Sample std (n-1 denominator): variance (25+25)/1 = 50 → √50. The
+        # population denominator would have reported 5.0 here and understated
+        # every displayed dispersion by ~10.6% at 5 seeds.
+        assert stats["mean"] == 15.0 and stats["std"] == round(math.sqrt(50.0), 6)
+        single = bench.aggregate([a])
+        assert single["a"]["cumulative_regret"]["std"] == 0.0, "one seed: no dispersion to report"
         assert agg["a"]["recovery_step_mean"] == 42.0
         assert agg["a"]["recovery_step_hits"] == "1/2"
         # Same-seed values across policies must not blend: policy is the key.
@@ -455,6 +581,56 @@ class TestAggregation:
 
 
 class TestMainAndReport:
+    def test_main_rejects_configurations_that_fake_or_break_the_measurement(
+        self, monkeypatch: Any, capsys: Any
+    ) -> None:
+        """--drift-at >= --steps leaves an empty post-drift phase whose
+        regret_rate_post reports a perfect-looking 0.0 without ever entering
+        the drifted world, and --seeds 0 would crash the OPE stage on
+        seeds[0]. Both unsupported configurations must fail loudly at the
+        CLI boundary instead of emitting a plausible-looking artifact.
+        """
+        cases = (
+            (["--steps", "500", "--drift-at", "700"], "no post-drift phase"),
+            (["--steps", "200", "--drift-at", "200"], "no post-drift phase"),
+            (["--steps", "200", "--drift-at", "100", "--seeds", "0"], "no episodes"),
+        )
+        for argv, expected_fragment in cases:
+            monkeypatch.setattr(sys, "argv", ["bench_model_routing.py", *argv])
+            with pytest.raises(SystemExit) as exc:
+                bench.main()
+            assert exc.value.code == 2, f"{argv} must be an argparse error, not a crash"
+            assert expected_fragment in capsys.readouterr().err
+
+        # The valid default configuration still parses and runs end to end.
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["bench_model_routing.py", "--steps", "40", "--seeds", "1", "--drift-at", "20"],
+        )
+        assert bench.main() == 0
+
+    def test_sample_efficiency_averages_every_requested_seed(self) -> None:
+        # The checkpoint metric must average all matching runs, not report the
+        # first one (seed 0) — otherwise --seeds changes nothing here and one
+        # noisy seed decides the sample-efficiency ordering the note quotes.
+        report = bench.run_bench(steps=400, seeds=[0, 1], delay=25, label_rate=0.8, drift_at=100)
+        by_key = {(run["policy"], run["seed"]): run for run in report["run_results"]}
+        assert len(by_key) == len(bench.POLICY_FACTORIES) * 2
+        for name, reported in report["sample_efficiency"].items():
+            if name == bench.StaticRouterPolicy.name:
+                assert reported == {}, "static-router never observes labels"
+                continue
+            assert reported, f"{name} must cross the 100-label checkpoint at this scale"
+            for checkpoint, value in reported.items():
+                per_seed = [
+                    by_key[(name, seed)]["regret_at_labels"][checkpoint]
+                    for seed in (0, 1)
+                    if checkpoint in by_key[(name, seed)]["regret_at_labels"]
+                ]
+                assert per_seed, f"{name} checkpoint {checkpoint} must exist in run_results"
+                assert value == round(sum(per_seed) / len(per_seed), 4)
+
     def test_main_writes_the_published_payload_shape(
         self, tmp_path: Path, capsys: Any, monkeypatch: Any
     ) -> None:
@@ -509,6 +685,7 @@ class TestMainAndReport:
                     "recovery_step_mean": None,
                     "recovery_step_hits": "0/1",
                     "unsafe_exploration": {"mean": 0.0, "std": 0.0},
+                    "unsafe_greedy_deviation": {"mean": 0.0, "std": 0.0},
                     "mean_true_quality": {"mean": 0.8, "std": 0.0},
                     "mean_list_cost": {"mean": 1.0, "std": 0.0},
                 },

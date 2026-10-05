@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +26
+  tests/: +31
 ---
 # 916 offline model-routing research bench
 
@@ -20,19 +20,25 @@ All additions, no removals:
 - `scripts/bench_model_routing.py` — the bench itself (measured root:
   `scripts/` is covered by the quality.yml producer, and this file sits at
   99% line / 98% branch under `tests/test_bench_model_routing.py`).
-- `tests/test_bench_model_routing.py` — **+26 tests** in the root `tests/`
+- `tests/test_bench_model_routing.py` — **+31 tests** in the root `tests/`
   suite: the static baseline provably routes through production
   `score_candidate` including its no-paygo filter path; world drift mutates
   ground truth while catalog metadata stays stale; the feedback channel
   never delivers dropped labels or early ones; explore-start/epsilon/greedy
   policy contracts; LinUCB/Thompson learn a rewarded arm only once all arms
   hold evidence (unobserved arms keep their optimism bonus by design) and
-  optimism still abandons a mediocre observed arm; `RecoveryTracker` fires
-  once at threshold on a sliding window; episode determinism and the
-  unsafe-pick decomposition (`static + exploration == total`); the learner
+  optimism still abandons a mediocre observed arm; the discounted linear
+  posteriors keep their ridge at full strength (no singular covariance after
+  thousands of labels on one arm); `RecoveryTracker` fires once at threshold
+  on a sliding window; episode determinism; the unsafe-pick three-way
+  decomposition (`static + exploration + greedy deviation == total`) with
+  each bucket pinned to the branch that actually made the pick; the learner
   halves static-router cumulative regret across fixed seeds after drift;
-  OPE estimators track known truth and clipping biases downward; frontier
-  dominance/tie logic; and `main()`'s published JSON payload shape.
+  OPE estimators track known truth (truth taken from the exact evaluated
+  trajectory, even for stochastic policies), track clipping, and the CLI
+  rejects configurations that would fake a post-drift phase or run zero
+  seeds; sample-efficiency checkpoints average every requested seed;
+  frontier dominance/tie logic; and `main()`'s published JSON payload shape.
 
 The bench is deterministic (seeded RNGs, no wall-clock assertions), so every
 property above is pinned exactly, and runs offline at small scale to respect
