@@ -55,10 +55,10 @@ paragraph is updated to match.
 - `test_gate_rejects_logging_only_handler_without_disposition` (+1): the full
   `main()` gate fails the logging-only handler registered with no disposition.
 
-## Fail-before proof (recorded before the detector change)
+## Fail-before proof (recorded before the detector change; re-executed in the repair round)
 
 `uv run pytest tests/test_check_api_route_contracts.py -q` against the
-unmodified detector: **8 failed, 34 passed** — the five parametrized
+unmodified detector: **8 failed, 39 passed** — the five parametrized
 observability cases, the drift guard, `test_logging_only_constant_handler_is_flagged`,
 and `test_gate_rejects_logging_only_handler_without_disposition` (the gate
 printed `check-api-route-contracts: OK (1 handlers scanned, 0 audited routes
@@ -66,12 +66,30 @@ registered, 0 canned)` for the logging-only route). The two conservative
 cases and the domain-acknowledgement case passed before and after, as
 intended.
 
+Reconciliation: an earlier draft of this note recorded "8 failed, 34 passed"
+/ "42 passed"; those runs predate the parametrization of
+`test_observability_call_alone_is_not_real_work` (+5 collected cases), so they
+undercounted the same suite by exactly those five cases. The numbers above are
+re-executed against the committed 47-case file: the develop-base
+(`94781cf6b708`) `scripts/check-api-route-contracts.py` (which contains no
+`_LOG_LIKE_CALL_NAMES`) was run under a synthetic root holding the committed
+test file plus the shipped `routes/`, `quality/api-route-contracts.json`, and
+`docs/api/route-contract-inventory.md`; the failure set is exactly the eight
+regressions named above, and `test_registry_happy_path_on_the_shipped_inventory`
+/ `test_main_passes_on_this_tree` pass on the base detector too — independently
+confirming "0 handlers newly flagged" on the shipped tree.
+
 ## Validation (this tree)
 
 After the change: `uv run pytest tests/test_check_api_route_contracts.py -q` →
-42 passed. `uv run pytest packages/hive-conductor/backend/tests/test_noop_route_contracts.py -q`
+47 passed. `uv run pytest packages/hive-conductor/backend/tests/test_noop_route_contracts.py -q`
 → 15 passed (the shipped-behavior proof runs the gate as a subprocess against
 the real tree). `uv run python scripts/check-api-route-contracts.py` → `OK
 (279 handlers scanned, 15 audited routes registered, 0 canned)`, exit 0.
-`uv run ruff check` / `ruff format --check` clean on the changed files.
-`scripts/check-suite-inventory.py` clean after recording this note's delta.
+`scripts/check-shipped-surface-truth.py` → exit 0 (the mirrored vocabulary
+leaves #1144's gate green on the same tree). `uv run ruff check` /
+`ruff format --check` clean on the changed files. `scripts/check-suite-inventory.py`
+clean after recording this note's delta (`tests/: 4552` = baseline +11), and
+`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` → exit 0 (1338 reviewed identities = 1338 findings; the
+change touches only `scripts/` and `tests/`).
