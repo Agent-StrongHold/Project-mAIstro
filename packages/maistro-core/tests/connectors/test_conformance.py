@@ -278,3 +278,82 @@ def test_cli_verify_requires_the_source_reference(argv: list[str]) -> None:
     result = runner.invoke(app, argv)
 
     assert result.exit_code != 0
+
+
+def test_cli_verify_provisions_declared_secrets_for_secret_using_connectors():
+    """A connector that resolves its declared secret during listing verifies.
+
+    Pins the operator-surface repair: verify binds a secret authority for the
+    run, so a conformant secret-using connector passes once the operator
+    provisions the declared names, instead of failing with an unsatisfiable
+    'check raised LookupError: ... no secret authority is bound'.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            "connectors.connector_fixtures:SecretUsingConnector",
+            "--workspace",
+            "ws-primary",
+            "--secret",
+            "api_token=hunter2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "conformant" in result.output
+
+
+def test_cli_verify_reports_an_unprovisioned_declared_secret_as_the_operator_gap():
+    """Without provisioning, the canonical LookupError names the missing pair.
+
+    The failure is honest — the sync cannot run without the token — but it
+    says exactly which (Workspace, secret) pair lacks a value rather than
+    blaming the connector or reporting a bare exception type.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            "connectors.connector_fixtures:SecretUsingConnector",
+            "--workspace",
+            "ws-primary",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "no secret provisioned for 'api_token' in workspace 'ws-primary'" in result.output
+
+
+def test_cli_verify_refuses_a_secret_the_descriptor_never_declared():
+    """Provisioning an undeclared name is refused, not silently provisioned."""
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            "connectors.connector_fixtures:SecretUsingConnector",
+            "--workspace",
+            "ws-primary",
+            "--secret",
+            "admin_password=hunter2",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "not declared" in result.output
+    assert "api_token" in result.output
+
+
+def test_cli_verify_rejects_a_malformed_secret_provision():
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            "connectors.connector_fixtures:SecretUsingConnector",
+            "--secret",
+            "api-token-without-a-value",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "NAME=VALUE" in result.output

@@ -70,8 +70,14 @@ def _instance(source: ScriptedConnector) -> ConnectorInstance:
     )
 
 
+@pytest.mark.contract("behavioral")
 async def test_crash_before_checkpoint_replays_without_loss_or_duplicate():
-    """The load-bearing restart test: crash at the commit seam, then recover."""
+    """The load-bearing restart test: crash at the commit seam, then recover.
+
+    The marked contract (ADR-104, behavioral): checkpoints commit after items,
+    so a crash between the two replays the last committed cursor and dedup
+    makes the recovery idempotent — at-least-once, no duplicates, no loss.
+    """
     source = _two_page_connector()
     inner = MemoryCheckpointStore()
     checkpoints = CrashingCheckpointStore(inner)

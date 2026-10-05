@@ -134,3 +134,23 @@ class DeclaringSecretsConnector(ScriptedConnector):
             connector_id="vendor.secrets",
             secret_refs=(SecretRef(name="api_token", description="Upstream API token"),),
         )
+
+
+class SecretUsingConnector(ScriptedConnector):
+    """Zero-arg connector that resolves its declared secret during listing.
+
+    This is the connector shape that exposed the CLI gap: it needs its token
+    to list, so a verify run without a provisioned value cannot exercise the
+    sync at all. ``maistro connectors verify --secret api_token=...`` is the
+    operator path that makes such a connector verifiable.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            connector_id="vendor.secretuser",
+            secret_refs=(SecretRef(name="api_token", description="Upstream API token"),),
+        )
+
+    async def list_items(self, ctx: SyncContext) -> SyncPage:
+        await ctx.session.resolve_secret("api_token")
+        return await super().list_items(ctx)

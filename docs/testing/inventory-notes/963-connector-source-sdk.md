@@ -1,12 +1,12 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +60
+  packages/maistro-core/tests: +64
 ---
 
 Issue #963 (M9-E2) adds the connector/source SDK — `maistro.connectors` — with the
 canonical sync engine, scope/secret enforcement, and the shared conformance suite.
 
-`packages/maistro-core/tests/connectors/` (+60 total) covers the six acceptance
+`packages/maistro-core/tests/connectors/` (+64 total) covers the six acceptance
 criteria. `test_sdk_public_surface.py` (+14) drives an external-style connector that
 imports only the public SDK through the engine: full provenance on every record
 (connector id/version, source/external identity, item version, content hash,
@@ -23,12 +23,15 @@ checkpoints, that undeclared secret names raise `ConnectorScopeError` while decl
 unprovisioned ones raise `LookupError`, that sessions cannot be re-scoped, and that raw
 `httpx` 429/transport/503 failures normalize to the canonical errors (parsed
 `Retry-After`, checkpoint untouched) with a page-budget failure for non-terminating
-cursors. `test_conformance.py` (+15) runs the shared suite over the in-tree reference
+cursors. `test_conformance.py` (+19) runs the shared suite over the in-tree reference
 and external-style connectors (both pass with zero violations), over multi-page streams,
 and over deliberately broken connectors that fail with named violations; it also drives
 `maistro connectors verify`/`describe` end-to-end through the CLI for conformant,
 broken, unloadable, and non-connector targets, in both `module:Class` and `module.Class`
-spellings. `test_conformance_teeth.py` (+13) proves the suite cannot pass vacuously:
+spellings, and pins the operator secret path: a connector that resolves its declared
+secret during listing verifies once `--secret NAME=VALUE` provisions it, fails with the
+canonical `LookupError` naming the missing (Workspace, secret) pair when unprovisioned,
+and undeclared or malformed `--secret` values are refused. `test_conformance_teeth.py` (+13) proves the suite cannot pass vacuously:
 sabotaged stores (never persisting, leaking checkpoints across Workspaces, mismatched
 cursors) and misbehaving connectors (shifting replays, nondeterministic queries, wrong-
 identity fetches, fabricated fetches, repeated secret names, empty versions/capabilities,

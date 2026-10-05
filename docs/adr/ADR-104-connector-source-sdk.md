@@ -95,9 +95,13 @@ report = await engine.run(source, ConnectorInstance(descriptor, workspace_ids, s
 violations = await run_connector_conformance(source)    # shared built-in/external suite
 ```
 
-Operator surface: `maistro connectors verify MODULE:CLASS [--workspace W ...]` runs the
-shared conformance suite against a loaded connector and exits non-zero on violations;
-`maistro connectors describe MODULE:CLASS` prints the declaration installers approve.
+Operator surface: `maistro connectors verify MODULE:CLASS [--workspace W ...] [--secret
+NAME=VALUE ...]` runs the shared conformance suite against a loaded connector and exits
+non-zero on violations; `--secret` provisions a declared name for the run in every
+declared Workspace, so a connector that needs its token to list is verifiable, and a
+declared-but-unprovisioned name surfaces as the canonical LookupError naming the missing
+pair. `maistro connectors describe MODULE:CLASS` prints the declaration installers
+approve.
 
 Hosts bind durable stores to the `IngestStore`/`CheckpointStore` protocols and their
 canonical secret backend to the `SecretAuthority` port (the SDK ships in-memory reference
