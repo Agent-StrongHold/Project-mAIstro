@@ -11325,3 +11325,70 @@ reconciliation machinery), #53, #774/#776, #93/#95, and PR #1660 must land
 before any #777 acceptance criterion becomes verifiable in-tree. The
 branch stays a develop-current (b672b799a), battery-green waiting position
 (Refs #777).
+
+## Round 171 (job 829b3f85f0104688a12465b8325053e1, repair, head `54e759f10`)
+
+Fresh re-verification after the round-170 BLOCKED. The "previous block"
+was the round-170 worker's own BLOCKED record, not a failed validation:
+prior artifact `53a891c9a0034cca9fb73d2b5c1c1e33/result.json` shows a
+clean tree and `checks: []`, so nothing to salvage; worktree clean at the
+equal lane head `54e759f10e94`. No driver `check-*.log` files exist in
+this job's directory (manifest `checks: []` — 17th consecutive zero-check
+round), so the full battery below was worker-executed fresh. No code
+changed (inventory delta zero).
+
+**Sync check:** `git fetch origin` EXIT 0 → `origin/develop` unchanged at
+`b672b799aba6` == the lane base; **not a sync conflict, nothing to
+merge**. The stale `53d5e08bf/check-2.log` ruff-format failure stays
+disproven: `ruff format --check
+packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py`
+→ "1 file already formatted", EXIT 0.
+
+**Blockers re-proven fresh at `54e759f10e94` (nothing assumed):**
+`grep -rEl 'GoalReconciler|delegate_goal' packages/*/src --include='*.py'`
+→ 0 files (exit 1); `packages/maistro-core/src/maistro/goals/` absent;
+`routes/design.py` + `services/design_service.py` → 0 matches for
+`workspace_agent|control_mode|delegat`; `workspace_agent.py:1` remains
+the #1037 one-identity-per-Workspace roster service; salvage tree
+(`docs/research/777-design-studio-salvage/`) still has zero production
+readers (`grep -rl '777-design-studio-salvage' packages/ scripts/ tests/
+--include='*.py'` → exit 1). The only `delegat` matches under
+`maistro-design/src` are `brief.py:22-24` non-authoritative annotations
+("the canonical delegation/authorization authorities are untouched"),
+`goal_delegation_ref` (brief.py:383) and their creative-graph consumers —
+not the #804/#458 machinery. `maistro_design/workspace_agent.py` source
+does not exist (only a gitignored `__pycache__` .pyc residue).
+`git diff --numstat origin/develop -- quality/` → exactly `0 1`
+(`vulture-baseline.json`, the standing round-65 row removal; multiset
+intact).
+
+**Validation battery, all worker-executed at `54e759f10e94`:** ruff check
+exit 0 (All checks passed); ruff format exit 0 (2981 files already
+formatted); vulture CI-exact exit 0 (base `b672b799aba6` → candidate
+`54e759f10e94`, 1342 reviewed identities → 1341 findings, unclassified 0,
+never-allowlist 0); api-route-contracts exit 0; route-permissions exit 0;
+reachability exit 0; promotion-surface exit 0; ratchet-provenance exit 0;
+suite-inventory exit 0 (15/15); backlog exit 0 (167 items); pytest
+`packages/maistro-design/tests packages/maistro-bootstrap/tests` → 772
+passed / 7 skipped (21.62s); pytest hive-conductor backend `-k "design or
+workspace or creative or brief"` → 389 passed / 5 skipped, 2957
+deselected (22.19s). Suite counts unchanged from baseline — inventory
+delta zero.
+
+**Dependency states (this job's dispatch-context.json, captured
+2026-10-05T18:12:36Z, 61 sources, complete_for_scope true — ~22 min
+newer than the round-170 capture):** unchanged — #773/#774/#776/#804/
+#805/#806/#53/#93/#95 open; #775 closed; `blocked_by` API `[]` (the
+"Depends on:" body line governs); PR #1660 still open **draft**,
+`merged: false`, head unchanged at `17ad5f75b894`; its check-runs and
+statuses captured for that same head. The 82 issue comments end in
+campaign progress markers (17:50Z/17:56Z) — no new substantive
+direction.
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
+123–170. None of the 13 acceptance criteria is provable at this head;
+every delegated/reconciliation/ownership criterion requires
+#804/#805/#806, which remain open with zero code in tree, and the
+implementation vehicle PR #1660 remains an unmerged draft. The branch
+stays a develop-current (b672b799a), battery-green waiting position
+(Refs #777).
