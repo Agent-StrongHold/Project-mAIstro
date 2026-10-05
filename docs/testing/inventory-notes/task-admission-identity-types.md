@@ -97,3 +97,16 @@ against trusted base `94781cf6b708`; `check-reachability.py` reports only
 through that trusted-base reachability gate. This inactive leaf cannot remove
 those failures without the explicitly prohibited production consumer,
 reachability ledger/disposition, suppression, or authorization grant.
+
+## Current repair validation
+
+At repair head `8b041d56be80bc288633c4648ccb1fb3b9e80afe`, the focused suite
+passed 76 cases and the module passed Ruff check/format and mypy. The recorded
+core suite inventory is now 13,727 node IDs; this suite's `+76` delta remains
+unchanged. Validation confirms the module-local 21-name `__all__` contract
+while retaining the repository's required sorted declaration order. The exact
+Vulture and reachability gates remain blocked by the deliberately unwired
+module (nine trusted-base
+Vulture identities and `maistro.runs.admission_identity`, respectively), which
+cannot be repaired in this leaf without violating its no-production-consumer
+constraint.
