@@ -21,7 +21,7 @@ Historical snapshots ([DECISION-BACKLOG.md](adr/DECISION-BACKLOG.md), [testing/i
 |--------|------:|---------|
 | [adr/](adr/) | ~206 | Architecture Decision Records + [ADR-INDEX.md](adr/ADR-INDEX.md) |
 | [specs/](specs/) | ~216 | Engine design specs + [README.md](specs/README.md) |
-| [architecture/](architecture/) | 10 | Convergence matrix, cutover plan, foreign-harness nodes, persistence/ontology contracts |
+| [architecture/](architecture/) | 12 | Convergence matrix, feature-parity matrix, cutover plan, foreign-harness nodes, persistence/ontology contracts |
 | [ci/](ci/) | 11 | Branch protection, merge queue, autonomous merges, ratchets |
 | [install/](install/) | 17 | Bootstrap, Copier answers, deployment topology |
 | [product/](product/) | 4 | Terminology, deployment stance, Design Studio |

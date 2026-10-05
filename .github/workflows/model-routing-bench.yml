@@ -1,39 +1,39 @@
 name: Model-routing bench
 
-# Manual only, on purpose.
+# Manual only, on purpose (same pattern as working-memory-bench.yml).
 #
-# This runs scripts/bench_model_routing.py — the #916 (RESEARCH M8-B3)
-# measurement behind docs/research/916-contextual-bandit-model-routing.md:
-# outcome-learned routing policies (contextual means with catalog-prior
-# shrinkage + forgetting, eps-greedy, LinUCB, contextual Thompson) against the
-# shipped static scorer under delayed, sparsified, nonstationary feedback,
-# plus off-policy (clipped IPS / doubly robust) evaluation. It is
-# deterministic and offline, so the results it uploads are comparable
-# run-to-run. It is not a gate and not a per-PR job: the research numbers are
-# re-measured when the router, the world model, or the policies change, not on
-# every commit.
+# This runs scripts/bench_model_routing.py — the #914 / epic #900 M8-B1
+# measurement: the shipped static router (CostAwareRouter) routed against
+# task-conditioned candidate policies over one shared corpus and one shared,
+# policy-independent outcome table. It is deterministic and offline (generated
+# corpus, blake2b-hashed draws, no network), so results are comparable
+# run-to-run; the checked-in numbers live in
+# docs/benchmarks/model-routing-baseline.json. It is not a gate and not a
+# per-PR job: run it when the router, the model catalog, or the outcome model
+# changes. The research disposition lives in
+# docs/research/914-task-conditioned-model-routing.md; nothing here wires any
+# candidate policy into production.
 #
 # It is also what makes `scripts/bench_model_routing.py` a *real* entry point
 # rather than a script nobody can reach: `scripts/check-reachability.py` roots
-# tooling at the workflow steps that execute it, matching on filename. This
-# job runs it (same pattern as working-memory-bench.yml).
+# tooling at the workflow steps that execute it, matching on filename.
 on:
   workflow_dispatch:
     inputs:
-      steps:
-        description: "Routing decisions simulated per policy per seed"
+      tasks-per-class:
+        description: "Synthetic tasks per capability class (corpus = 6 × this)"
         required: false
-        default: "1500"
+        default: "400"
         type: string
-      seeds:
-        description: "Number of seeds (0..N-1) to average over"
+      seed:
+        description: "Corpus/outcome seed (same seed reproduces the same run)"
         required: false
-        default: "5"
+        default: "routing-bench-v1"
         type: string
-      drift-at:
-        description: "Step at which the ground-truth model quality drifts"
+      scenario:
+        description: "Availability scenario: all-available or opus-degraded"
         required: false
-        default: "700"
+        default: "all-available"
         type: string
 
 permissions:
@@ -53,12 +53,12 @@ jobs:
       - uses: ./.github/actions/setup-uv
       - name: uv sync (dev deps)
         run: uv sync --locked --extra dev
-      - name: Benchmark outcome-learned model routing against the static scorer
+      - name: Benchmark task-conditioned model routing
         run: >-
           uv run python scripts/bench_model_routing.py
-          --steps ${{ inputs.steps }}
-          --seeds ${{ inputs.seeds }}
-          --drift-at ${{ inputs.drift-at }}
+          --tasks-per-class ${{ inputs.tasks-per-class }}
+          --seed ${{ inputs.seed }}
+          --scenario ${{ inputs.scenario }}
           --output model-routing-bench.json
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
