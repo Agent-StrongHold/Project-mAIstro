@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +54
+  packages/maistro-core/tests: +60
 ---
 
 # 1572-canonical-goal-store
@@ -9,11 +9,12 @@ Issue #1572 ships the canonical Goal store (`maistro.goals`): `Goal`,
 append-only `GoalRevision` chain, Subgoal lineage, recorded lifecycle and
 ownership transitions, one protocol over in-memory/SQLite/PostgreSQL
 backends, Workspace-seam authorization, and immutable Run-admission binding.
-Fifty-four node IDs arrive with it, all in
+Fifty-four node IDs arrived with the first implementation and six more with
+the coverage repair below — sixty in all, in
 `packages/maistro-core/tests/goals/` except two gained legs of an existing
 suite, described last.
 
-`test_goal_store_conformance.py` (+14, parametrized ×3) is one suite over all
+`test_goal_store_conformance.py` (+20, parametrized ×3) is one suite over all
 three backends — the in-memory reference and the SQLite and PostgreSQL
 durable twins — because "the durable stores behave like the reference" is a
 comparison only when the same bodies run over all three. It holds every
@@ -72,7 +73,7 @@ must carry both sides of their kind.
 
 Finally, the existing
 `workspaces/test_sqlite_alembic_schema_parity.py` (+0 node IDs) now walks
-the three Goal tables too: SQLite's own DDL and migration 053 are held to
+the three Goal tables too: SQLite's own DDL and migration 054 are held to
 one dialect-neutral spec (column sets, nullability, integer/timestamptz/doc
 types, keys, the self-referential lineage cascade, and the project index),
 so the two descriptions of the same tables cannot drift the way the scope
@@ -81,7 +82,7 @@ tables once did (#1135).
 ## Repair-round validation evidence (2026-10-04, head d635a9c90)
 
 Re-proven on a fresh PG18 container (`pgvector/pgvector:pg18`) after
-`alembic upgrade head` (000→053) with `MAISTRO_REQUIRE_PG_LEGS=1` and
+`alembic upgrade head` (000→054) with `MAISTRO_REQUIRE_PG_LEGS=1` and
 `MAISTRO_TEST_PG_DSN` set — no leg skipped:
 
 - `pytest packages/maistro-core/tests/goals
@@ -105,3 +106,94 @@ Re-proven on a fresh PG18 container (`pgvector/pgvector:pg18`) after
   lands in `quality/execution-lifecycles.json` via a separate earlier PR
   (the gate reads authorizations from the merge base `91996e192`, so no edit
   on this branch can satisfy it). This ledger stays untouched here.
+
+## Repair round 2 (2026-10-04, after merging develop `35f2e0158`)
+
+The develop merge collided with this branch in three places, all fixed here
+and all proven against real PostgreSQL servers (pgvector pg17 and pg18):
+
+- **Migration number collision (was breaking every alembic step in CI):**
+  develop landed its own `053_learning_lifecycle_columns` while this branch
+  carried `053_canonical_goals` — two revision 053s, two heads, so
+  `alembic upgrade head` failed outright. Renumbered to `054_canonical_goals`
+  with `down_revision = "053"`, following the re-parent convention that
+  develop's own 053 records. The upgrade was also made adoption-tolerant
+  (`CREATE TABLE IF NOT EXISTS`, the 046/047 style) because
+  `tests/migrations/test_migration_chain.py`'s stamp-back-and-re-upgrade
+  walk re-runs the revision over its own schema. Every textual `053`
+  reference in `maistro.goals`, the tests and this note moved to `054`.
+- **`EXPECTED_TABLES` in the chain test** now names the three Goal tables,
+  so `test_upgrade_head_creates_every_expected_table` asserts them on the
+  live catalog instead of failing on the extras.
+- **`PgRunStore.prepare_run` lost the Goal-binding parameters in the
+  merge** (develop's #1845 split of `create_run`): the kwargs referenced
+  names that no longer existed in `prepare_run`'s scope — ruff F821 at
+  rest, a `NameError` on every PostgreSQL admission at runtime. The
+  parameters moved onto `prepare_run` with `create_run` passing them
+  through.
+
+Coverage repair: the new `goals/pg_store.py` was measured at 25% by the
+diff-coverage producers — `coverage (no services)` runs the whole core suite
+but its PostgreSQL legs skip, and `coverage (PostgreSQL)`'s suite list did
+not include `tests/goals`, so the durable store's arcs were measured
+nowhere. The suite joined the `coverage (PostgreSQL)` producer (the
+workflow's own rule: a new PostgreSQL store means an edit there, every
+time) and gained a step in ci.yml's `postgres` matrix so both supported
+majors carry the verdict. Two seam tests (`+6` node IDs) close the
+authorization paths the isolation tests could not reach — an authorized
+member driving append/transition/reassign and both chain reads through
+`ScopedGoalStore`, and a substrate `LookupError` converting to the one
+`GoalNotVisible` — taking `goals/authorization.py` from 87% to covered and
+every changed goals file over the 90% line / 80% branch per-file floors.
+
+Re-proven after the fixes, both majors: migration chain apply/downgrade/
+re-apply (`tests/migrations`), persistence + `test_container_postgres.py`
+(745 passed on pg17), `tests/goals` + schema parity + workspaces with
+`MAISTRO_REQUIRE_PG_LEGS=1` (60 + 56 + 330 on pg17; 397 combined on pg18),
+canvas supported path (7 passed), full `packages/maistro-core/tests`
+(12305 passed), server + canvas + bootstrap suites (1194 passed),
+wheel-imports from built wheels, and the gate battery (`ruff check`,
+`ruff format --check`, vulture ledger with CI's exact scan arguments,
+radon, durable-table inventory, M1 convergence freeze, enumerations,
+doc links, workspace retirement, route permissions, principal identity,
+backlog, release consistency, reachability, promotion surface,
+reachability dispositions, suite inventory).
+
+Still structurally red on this branch, unchanged in kind from the first
+round: `check-execution-lifecycles.py` (part of the `quality-gate` job)
+refuses `maistro.goals.model::GoalStatus` because the merge-base ledger
+`35f2e0158` carries no authorization for the new vocabulary and the gate
+reads authorizations from the base — "a candidate may not introduce a
+lifecycle and approve it in the same change", its own docstring. The
+sanctioned path is a separate grant PR classifying `GoalStatus` (DOMAIN:
+desired-state vocabulary, not execution state; the M1 convergence freeze
+passes), merged before this branch. Until that lands and develop is
+re-merged, the quality-gate job fails on exactly this one finding.
+`quality/execution-lifecycles.json` is deliberately untouched here.
+
+## Repair round 3 (2026-10-05, head 69d6411d4, independent re-verification)
+
+Every round-2 claim re-executed from scratch on fresh databases, node ID for
+node ID, with no edits to the round-2 tree:
+
+- Fresh pg18 **and** pg17 containers, empty databases: `alembic upgrade head`
+  walks 000→054 on both; `tests/migrations` chain tests green; single head 054.
+- `tests/goals` with `MAISTRO_REQUIRE_PG_LEGS=1`: **60 passed, 0 skipped on
+  both majors**; schema parity 2 passed on both.
+- The `prepare_run` Goal-binding fix driven from the consumer side: runs
+  admission + PG admission atomicity/coordinator suites green with legs
+  required (25 + 14 passed).
+- Full `packages/maistro-core/tests` (no services): 12309 passed, 802
+  skipped, 1 xfailed.
+- Coverage battery reproduced locally with PG legs (core suite + the root
+  `scripts` producer over `tests/`), then the gate itself:
+  `check-diff-coverage.py --base 35f2e0158` — **ok**, every measured changed
+  file at or above the 90%-line / 80%-branch floors.
+- Gate battery: `ruff check` / `ruff format --check`, vulture ledger with
+  CI's exact scan arguments (1339 = 1339), durable-table inventory (92
+  tables), enumerations provenance, M1 convergence freeze
+  (`--base 35f2e0158`), suite inventory (13112 node IDs, matching).
+- The one red remains exactly as documented above: the shipped-ledger test
+  `tests/test_check_execution_lifecycles.py::
+  test_the_shipped_ledger_matches_the_shipped_code` fails on the same single
+  `GoalStatus` finding, and `quality/` is untouched.

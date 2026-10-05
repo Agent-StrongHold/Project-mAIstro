@@ -72,8 +72,13 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # chain tip, so this branch's learning-lifecycle columns (M4-B,
     # ADR-100126-8c2d) — which had taken `051` and then `052` in earlier
     # collisions — re-parent onto that `052_learning_stage_ladder` as `053`.
-    # The single linear head is `053`.
-    walked = {item.revision for item in directory.walk_revisions("base", "053")}
+    # This branch's canonical Goal store (#1572) had also taken `053` off the
+    # same `052` head; after develop's learning-lifecycle columns claimed the
+    # number, it re-parents onto that `053` as `054_canonical_goals` — and its
+    # upgrade is adoption-tolerant (`CREATE TABLE IF NOT EXISTS`, the 046/047
+    # style) because the chain's stamp-back-and-re-upgrade walk re-runs it.
+    # The single linear head is `054`.
+    walked = {item.revision for item in directory.walk_revisions("base", "054")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -86,7 +91,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "051" in walked
     assert "052" in walked
     assert "053" in walked
-    assert directory.get_heads() == ["053"]
+    assert "054" in walked
+    assert directory.get_heads() == ["054"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

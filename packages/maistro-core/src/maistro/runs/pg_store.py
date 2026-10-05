@@ -230,6 +230,8 @@ class PgRunStore:
             provenance=provenance,
             retention_expires_at=retention_expires_at,
             initial_status=initial_status,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         async with self._pool.acquire() as conn:
             try:
@@ -256,6 +258,8 @@ class PgRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         """Build one Run without writing anything — the admission-side half.
 

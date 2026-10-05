@@ -29,7 +29,7 @@ The acceptance criteria this suite holds every backend to (issue #1572):
 
 The PostgreSQL leg needs a real migrated server and skips without one, and a
 skipped leg is untested rather than passing: `MAISTRO_REQUIRE_PG_LEGS` turns
-that skip into a failure in the jobs that own a server. Migration ``053``
+that skip into a failure in the jobs that own a server. Migration ``054``
 owns the PostgreSQL tables; the SQLite twin carries its own DDL, and
 `test_goal_schema_parity.py` holds the two descriptions to one spec.
 """
@@ -50,6 +50,7 @@ from maistro.goals import (
     GoalRevisionDraft,
     GoalStatus,
     GoalTransitionError,
+    GoalTransitionKind,
     InMemoryGoalStore,
     ScopedGoalStore,
 )
@@ -509,6 +510,85 @@ async def test_a_foreign_goal_answers_exactly_like_a_missing_one(scoped) -> None
     )
     assert type(mutate_missing) is type(mutate_foreign) is GoalNotVisible
     assert str(mutate_missing) == str(mutate_foreign)
+
+
+async def test_an_authorized_member_drives_every_seam_path(scoped) -> None:
+    """Membership is enough: the seam's write paths and chain reads answer a
+    member exactly as the raw store would, with the CAS expectation travelling
+    with each call. The refusals are proven by the isolation tests above; this
+    is the other half — that authorization gates the calls instead of
+    replacing them."""
+    _store, seam = scoped
+    goal = await seam.create_goal(
+        principal_id="alice",
+        workspace_id="ws-1",
+        project_id="prj-1",
+        agent_id="agent-7",
+        draft=_draft(),
+    )
+
+    revised = await seam.append_revision(
+        goal.goal_id,
+        _draft("v2"),
+        principal_id="alice",
+        expected_revision=1,
+    )
+    assert revised.current_revision == 2
+    assert await seam.get_goal(goal.goal_id, principal_id="alice") == revised
+
+    # A stale expectation is the store's own CAS refusal, passed through —
+    # the seam decides *whether* a principal may write, never *what*.
+    with pytest.raises(GoalRevisionConflict):
+        await seam.append_revision(
+            goal.goal_id,
+            _draft("stale"),
+            principal_id="alice",
+            expected_revision=1,
+        )
+
+    reassigned = await seam.reassign_agent(
+        goal.goal_id,
+        "agent-9",
+        principal_id="alice",
+        expected_revision=2,
+        actor="alice",
+    )
+    assert reassigned.agent_id == "agent-9"
+
+    satisfied = await seam.transition_goal(
+        goal.goal_id,
+        GoalStatus.SATISFIED,
+        principal_id="alice",
+        expected_revision=2,
+        actor="alice",
+    )
+    assert satisfied.status is GoalStatus.SATISFIED
+
+    # The chain reads answer the member with the store's own records.
+    revisions = await seam.list_goal_revisions(goal.goal_id, principal_id="alice")
+    assert [revision.revision for revision in revisions] == [1, 2]
+    transitions = await seam.list_goal_transitions(goal.goal_id, principal_id="alice")
+    assert {record.kind for record in transitions} == {
+        GoalTransitionKind.AGENT_REASSIGN,
+        GoalTransitionKind.STATUS,
+    }
+
+
+async def test_a_substrate_lookup_failure_is_the_one_refusal(scoped) -> None:
+    """``get_goal`` may legally answer a missing id with ``None`` or with a
+    ``LookupError`` (every shipped store answers ``None``; the protocol
+    allows both). The seam converts either into the one :class:`GoalNotVisible`
+    — a substrate's refusal shape must not leak into a caller's hands as a
+    different exception for the same invisible Goal."""
+    _store, seam = scoped
+
+    class RaisingStore(InMemoryGoalStore):
+        async def get_goal(self, goal_id: str) -> Goal | None:
+            raise GoalNotFound(goal_id)
+
+    raiser = ScopedGoalStore(RaisingStore(), seam.workspace_store)
+    refused = await _refusal_of(raiser.get_goal("goal-absent", principal_id="alice"))
+    assert type(refused) is GoalNotVisible
 
 
 async def _refusal_of(awaitable):
