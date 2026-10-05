@@ -1,3 +1,53 @@
+# Handoff — issue #452 (M6 deferred-cleanup initiative), lane L452, job e325340c796d497285789c0a1a8e3f3c
+
+Head at close: this round's commit on `a285a95ad` (the prior merge of develop
+`2728e3a58`). Worktree clean after commit.
+
+## This round's delta — the three verifier findings closed
+
+Independent verification left three findings against reachable #404 behavior;
+all three are closed in tree with tests pinning the closures (note:
+`docs/testing/inventory-notes/404-pinned-defaults-and-builders-policy.md`,
+delta +12 core / +3 rsi):
+
+1. **Builders TUI cloned outside the shared source policy.** `_open_repo`
+   rejected `git://` but cloned every other classified URL (`http://`, any
+   https host, scp-style, `.git`-suffixed flag strings) with a raw argv — no
+   `validate_clone_source`, no pins, no `--`. It now gates through the shared
+   policy (one verdict with the MCP tool and RSI harvest) and the clone argv
+   carries the `-c` enforcement pins and the `--` separator. The test that
+   asserted `http://example.com/repo.git` was accepted is gone; refusal is
+   now pinned at runtime for http:// (both casings), off-allowlist hosts,
+   scp-style, and flag strings, with an admitted https URL proving the pins
+   and separator.
+2. **The digest-pin fetch carried no argv pins.** `_verify_pinned_checkout`'s
+   fetch-by-digest now passes the same `-c protocol.git.allow=never` /
+   `http.followRedirects=false` pins in its own argv (shared
+   `_ENFORCEMENT_CONFIG` with the clone), so the enforcement is executable,
+   not inherited from whatever config the clone happened to persist.
+3. **RSI "pin" defaulted to unpinned.** `source_commit`/`commit` = None
+   cloned whatever the remote tip was at fetch time. None now resolves the
+   remote's HEAD to a digest first — new `git_remote_tip`
+   (`maistro.tools.git.server`): policy-gated pre-spawn, ls-remote under the
+   pins with the URL after `--`, non-digest resolutions refused — and the
+   clone is always fetch-by-digest with the `rev-parse` verdict. A failed
+   resolution fails the attempt closed before any clone; an explicit pin
+   skips resolution. Every successful run reports a verified
+   `cloned_commit`.
+
+Validation at this head: `ruff check .` / `ruff format --check .` clean;
+`pytest packages/maistro-core/tests -q` 12476 passed; `pytest
+packages/maistro-rsi/tests -q` 1013 passed; canonical mypy battery clean;
+`check-vulture-baseline.py` (CI args) exit 0, no amendment needed;
+`check-suite-inventory.py` ok after the recorded delta. Live probes: resolver
+names the origin tip digest, resolve→pin→clone lands HEAD == pin, policy
+verdicts (http://, git://, off-host, flag string) all refuse with distinct
+codes.
+
+---
+
+# Prior rounds (context)
+
 # Handoff — issue #452 (M6 deferred-cleanup initiative), lane L452, job f1c5ce96c0fc4338a29b2097d332160e
 
 Head at close: `30d16275d` (= develop base `94781cf6b` merged cleanly into

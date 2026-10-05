@@ -13,6 +13,7 @@ from maistro.tools.git.server import (
     _TRUSTED_SIGNERS_ENV,
     _trusted_signature_fprs,
     git_clone,
+    git_remote_tip,
     git_status,
 )
 
@@ -617,6 +618,53 @@ class TestCommitPinning:
         assert pinned["success"] is True, pinned
         assert await _cloned_head(pinned_dest) == self.first  # the pin did not
 
+    async def test_pinned_fetch_argv_carries_the_enforcement_pins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The digest-pin fetch is a second network operation against the
+        remote; it carries the same `-c` protocol/redirect pins as the clone
+        in its own argv, so the enforcement does not depend on the config the
+        clone happened to persist into the new repository."""
+        calls: list[tuple[str, ...]] = []
+
+        class _Proc:
+            returncode = 0
+
+            def __init__(self, out: bytes = b"") -> None:
+                self._out = out
+
+            async def communicate(self) -> tuple[bytes, None]:
+                return self._out, None
+
+        landed_otherwise = "e" * 40  # clone HEAD != pin, forcing the fetch path
+
+        async def fake_exec(*args: object, **kwargs: object) -> _Proc:
+            argv = tuple(str(a) for a in args)
+            calls.append(argv)
+            if "rev-parse" in argv:
+                # First verdict: what the clone landed on. Second verdict:
+                # after fetch+checkout, the pinned digest itself.
+                out = self.first if any("fetch" in call for call in calls) else landed_otherwise
+                return _Proc(out=f"{out}\n".encode())
+            return _Proc()
+
+        monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
+
+        dest = str(self.root / "fetch-argv")
+        result = await git_clone("https://github.com/example/repo.git", dest, commit=self.first)
+
+        assert result["success"] is True, result
+        fetch_calls = [call for call in calls if "fetch" in call]
+        assert len(fetch_calls) == 1
+        fetch_argv = fetch_calls[0]
+        assert fetch_argv[1:5] == (
+            "-c",
+            "protocol.git.allow=never",
+            "-c",
+            "http.followRedirects=false",
+        )
+        assert list(fetch_argv[-4:]) == ["fetch", "--depth=1", "origin", self.first]
+
     async def test_pinned_clone_argv_verifies_before_returning(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -666,6 +714,119 @@ class TestCommitPinning:
             "https://github.com/example/repo.git",
             dest,
         ]
+
+
+# --- Resolving the remote tip (#404 AC3) -------------------------------------
+#
+# "Pin candidate source to a commit digest" needs a digest to pin. When a
+# caller has none of its own, `git_remote_tip` is the one network read that
+# produces one — policy-gated, pin-enforced, digest-validated — so the
+# RSI cycle's default path is a verified pin, never "whatever the ref
+# points at when the fetch happens".
+
+
+class TestRemoteTipResolution:
+    @staticmethod
+    def _fake_exec(calls: list[tuple[str, ...]], out: bytes, returncode: int = 0):
+        class _Proc:
+            def __init__(self) -> None:
+                self.returncode = returncode
+
+            async def communicate(self) -> tuple[bytes, None]:
+                return out, None
+
+        async def fake_exec(*args: object, **kwargs: object) -> _Proc:
+            calls.append(tuple(str(a) for a in args))
+            return _Proc()
+
+        return fake_exec
+
+    async def test_resolution_argv_carries_pins_and_parses_the_digest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[str, ...]] = []
+        digest = "a" * 40
+        monkeypatch.setattr(
+            "maistro.tools.git.server.asyncio.create_subprocess_exec",
+            self._fake_exec(calls, f"{digest}\tHEAD\n".encode()),
+        )
+
+        result = await git_remote_tip("https://github.com/example/repo.git")
+
+        assert result["success"] is True, result
+        assert result["commit"] == digest
+        argv = calls[0]
+        assert argv[1:5] == (
+            "-c",
+            "protocol.git.allow=never",
+            "-c",
+            "http.followRedirects=false",
+        )
+        assert list(argv[-4:]) == ["ls-remote", "--", "https://github.com/example/repo.git", "HEAD"]
+
+    @pytest.mark.parametrize("url", ["git://github.com/example/repo.git", "--upload-pack=x.git"])
+    async def test_refused_sources_spawn_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        async def fail_exec(*args: object, **kwargs: object) -> object:  # pragma: no cover
+            raise AssertionError(f"{url!r} must never reach the ls-remote subprocess")
+
+        monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
+
+        result = await git_remote_tip(url)
+
+        assert result["success"] is False
+        assert result["error_code"] in {"blocked_unauthenticated_transport", "blocked_url_scheme"}
+
+    async def test_a_non_digest_resolution_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolution that names a ref, not an object, is not a pin — the
+        resolver must never hand `commit=` a repointable name."""
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(
+            "maistro.tools.git.server.asyncio.create_subprocess_exec",
+            self._fake_exec(calls, b"refs/heads/main\tmain\n"),
+        )
+
+        result = await git_remote_tip("https://github.com/example/repo.git")
+
+        assert result["success"] is False
+        assert result["error_code"] == "remote_tip_unresolved"
+
+    async def test_a_failing_ls_remote_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(
+            "maistro.tools.git.server.asyncio.create_subprocess_exec",
+            self._fake_exec(calls, b"fatal: could not read remote", returncode=128),
+        )
+
+        result = await git_remote_tip("https://github.com/example/repo.git")
+
+        assert result["success"] is False
+        assert result["error_code"] == "remote_tip_unresolved"
+
+    async def test_live_ls_remote_names_the_origin_head_digest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
+        _git("-C", str(origin), "config", "user.email", "t@t")
+        _git("-C", str(origin), "config", "user.name", "t")
+        (origin / "f.txt").write_text("one\n", encoding="utf-8")
+        assert _git("-C", str(origin), "add", "-A").returncode == 0
+        assert _git("-C", str(origin), "commit", "-qm", "one").returncode == 0
+        tip = _git("-C", str(origin), "rev-parse", "HEAD").stdout.strip()
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+            ("https://", "ssh://", "file://"),
+        )
+
+        result = await git_remote_tip(f"file://{origin}")
+
+        assert result["success"] is True, result
+        assert result["commit"] == tip
 
 
 # --- Signature trust anchor (#404 AC3) ---------------------------------------

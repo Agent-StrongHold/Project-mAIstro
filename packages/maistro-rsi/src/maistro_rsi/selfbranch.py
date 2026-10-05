@@ -25,6 +25,7 @@ from maistro.tools.git.server import (
     git_commit,
     git_diff,
     git_push,
+    git_remote_tip,
     github_create_pr,
 )
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox, WorkspaceProbeFn
@@ -55,13 +56,14 @@ def paths_touched_by_diff(diff: str) -> list[str]:
 class SelfBranchAttempt:
     """One self-modification attempt: where it happens and how it's judged.
 
-    ``commit`` optionally pins the source checkout (#404 AC3): a full 40-
-    or 64-hex digest that `git_clone` fetches directly and verifies with a
-    final `rev-parse HEAD` verdict. An attempt without a pin is still
-    policy-vetted (`git_clone` runs `validate_clone_source` on every call)
-    but clones whatever the remote's default branch points at when the
-    cycle runs — operators that need reproducible candidate source supply
-    the digest.
+    ``commit`` pins the source checkout (#404 AC3): a full 40- or 64-hex
+    digest that `git_clone` fetches directly and verifies with a final
+    `rev-parse HEAD` verdict. None is not "unpinned" — the attempt resolves
+    the remote's HEAD digest first (`git_remote_tip`, itself policy-gated and
+    pin-enforced) and clones *that*, so a ref moving mid-cycle cannot change
+    what gets branched and the result always names the source object it
+    started from. Operators with their own provenance supply an explicit
+    digest instead of whatever the remote's tip is when the cycle runs.
     """
 
     branch_name: str
@@ -83,10 +85,10 @@ class SelfBranchResult:
     pr_url: str | None = None
     error: str | None = None
     # The verified content identity of the cloned source (#404): the digest
-    # the attempt pinned and `git_clone` proved via `rev-parse HEAD`. None
-    # means the attempt was unpinned (policy-vetted transport, unpinned
-    # content) — downstream scoring/audit reads this to know exactly which
-    # source object the cycle branched from.
+    # the attempt pinned — explicitly, or by resolving the remote tip — and
+    # `git_clone` proved via `rev-parse HEAD`. Set on every successful run, so
+    # downstream scoring/audit always knows exactly which source object the
+    # cycle branched from. None means the source was never checked out.
     cloned_commit: str | None = None
     quarantine: QuarantineVerdict | None = None
     # Differential workspace evidence: the same probe run before the patch
@@ -147,7 +149,24 @@ async def run_self_branch_attempt(
     change. Probes that need test artifacts should run those commands
     themselves; the probe sees the workspace state, not the later test run.
     """
-    clone = await git_clone(attempt.repo_url, workspace, commit=attempt.commit)
+    # Resolve the pin (#404 AC3): an explicit digest is used as-is; otherwise
+    # the remote's HEAD is resolved to a digest first, so the clone below is
+    # always fetch-by-digest with a verified checkout — never "whatever the
+    # ref points at when the fetch happens". A resolution failure fails the
+    # attempt before any clone: no pin, no candidate source.
+    pin = attempt.commit
+    if pin is None:
+        resolved = await git_remote_tip(attempt.repo_url)
+        if not resolved.get("success") or not resolved.get("commit"):
+            return SelfBranchResult(
+                attempt=attempt,
+                test_exit_code=1,
+                test_output="",
+                diff="",
+                error=f"source pin unresolved: {resolved}",
+            )
+        pin = str(resolved["commit"])
+    clone = await git_clone(attempt.repo_url, workspace, commit=pin)
     if not clone.get("ok", True) or clone.get("exit_code", 0) != 0:
         return SelfBranchResult(
             attempt=attempt,

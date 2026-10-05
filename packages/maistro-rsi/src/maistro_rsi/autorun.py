@@ -141,9 +141,9 @@ class AutorunConfig:
     open_prs: bool = False
     workspace_root: str = DEFAULT_WORKSPACE_ROOT
     base_branch: str = "main"
-    # Optional source pin (#404 AC3) threaded into every cycle's clone: a
-    # full 40/64-hex digest. None clones the remote default-branch tip
-    # (transport/host policy still applies, content unpinned).
+    # Source pin (#404 AC3) threaded into every cycle's clone: a full
+    # 40/64-hex digest. None resolves the remote's HEAD digest first and pins
+    # to that — candidate source is always digest-verified.
     source_commit: str | None = None
     # Stop growing the tree once this much wall-clock has elapsed (checked
     # between cycles; a running cycle is never interrupted).

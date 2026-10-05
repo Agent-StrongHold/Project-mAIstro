@@ -29,6 +29,10 @@ class FakeGitOps:
         self.clone_ok = clone_ok
         self.pr_created = False
         self.clone_commit: str | None = None
+        # The tip digest the fake resolver hands out ("d"*40 by default); None
+        # simulates a remote whose tip cannot be resolved.
+        self.resolved_tip: str | None = "d" * 40
+        self.resolution_calls = 0
 
     async def git_clone(self, url, dest, commit=None):
         self.calls.append("clone")
@@ -37,6 +41,23 @@ class FakeGitOps:
         if commit is not None:
             result["pinned_commit"] = commit
         return result
+
+    async def git_remote_tip(self, url):
+        self.resolution_calls += 1
+        if self.resolved_tip is None:
+            return {
+                "success": False,
+                "exit_code": 128,
+                "stdout": "fatal: unavailable",
+                "error_code": "remote_tip_unresolved",
+                "suggested_action": "resolve manually",
+            }
+        return {
+            "success": True,
+            "exit_code": 0,
+            "stdout": f"{self.resolved_tip}\tHEAD\n",
+            "commit": self.resolved_tip,
+        }
 
     async def git_branch(self, workspace, name, checkout=True):
         self.calls.append("branch")
@@ -70,6 +91,7 @@ def patch_git_ops(monkeypatch):
     fake = FakeGitOps()
 
     monkeypatch.setattr(selfbranch, "git_clone", fake.git_clone)
+    monkeypatch.setattr(selfbranch, "git_remote_tip", fake.git_remote_tip)
     monkeypatch.setattr(selfbranch, "git_branch", fake.git_branch)
     monkeypatch.setattr(selfbranch, "git_add", fake.git_add)
     monkeypatch.setattr(selfbranch, "git_commit", fake.git_commit)
@@ -332,9 +354,10 @@ class TestPathsTouchedByDiff:
 
 
 class TestSourceCommitPinning:
-    """#404 AC3 on the RSI self-branch surface: candidate source is pinnable to
-    a commit digest, the pin reaches the clone, and the verified digest comes
-    back on the result for audit/scoring."""
+    """#404 AC3 on the RSI self-branch surface: candidate source is always
+    pinned to a commit digest — an explicit pin is used as-is, and an attempt
+    without one resolves the remote's HEAD digest first — and the verified
+    digest comes back on the result for audit/scoring."""
 
     @pytest.mark.asyncio
     async def test_attempt_commit_reaches_git_clone_pin(self, patch_git_ops):
@@ -348,17 +371,48 @@ class TestSourceCommitPinning:
         assert fake.clone_commit == digest
 
     @pytest.mark.asyncio
-    async def test_unpinned_attempt_clones_without_a_pin_by_default(self, patch_git_ops):
+    async def test_unpinned_attempt_resolves_the_remote_tip_and_pins_the_clone(
+        self, patch_git_ops
+    ) -> None:
         fake = patch_git_ops
         attempt = new_attempt("https://github.com/org/repo.git", "pytest -q")
 
         result = await run_self_branch_attempt(FakeSandbox(), "/ws", attempt, _noop_patch)
 
         assert result.error is None
-        # Unpinned is the explicit default: the transport is still policy-vetted
-        # inside git_clone, but no digest is asserted and none is reported.
-        assert fake.clone_commit is None
-        assert result.cloned_commit is None
+        # None is not "unpinned": the cycle resolves the remote's HEAD digest
+        # first and clones that, so the checkout is always digest-verified and
+        # the result always names the source object it branched from.
+        assert fake.resolution_calls == 1
+        assert fake.clone_commit == fake.resolved_tip
+        assert result.cloned_commit == fake.resolved_tip
+
+    @pytest.mark.asyncio
+    async def test_unresolved_tip_fails_closed_before_the_clone(self, patch_git_ops):
+        """No digest, no candidate source: a failed resolution ends the
+        attempt before any clone runs — it never degrades to an unpinned
+        fetch of whatever the ref points at."""
+        fake = patch_git_ops
+        fake.resolved_tip = None
+        attempt = new_attempt("https://github.com/org/repo.git", "pytest -q")
+
+        result = await run_self_branch_attempt(FakeSandbox(), "/ws", attempt, _noop_patch)
+
+        assert result.error is not None
+        assert "source pin unresolved" in result.error
+        assert fake.calls == []  # no clone, no branch, nothing downstream
+
+    @pytest.mark.asyncio
+    async def test_explicit_pin_skips_the_resolution(self, patch_git_ops):
+        fake = patch_git_ops
+        digest = "a" * 40
+        attempt = new_attempt("https://github.com/org/repo.git", "pytest -q", commit=digest)
+
+        result = await run_self_branch_attempt(FakeSandbox(), "/ws", attempt, _noop_patch)
+
+        assert result.error is None
+        assert fake.resolution_calls == 0
+        assert fake.clone_commit == digest
 
     @pytest.mark.asyncio
     async def test_verified_pin_is_recorded_on_the_result(self, patch_git_ops):
@@ -447,6 +501,58 @@ class TestLiveSourceCommitPinning:
             ["git", "rev-parse", "HEAD~1"], cwd=workspace, capture_output=True, text=True
         )
         assert checked_out.stdout.strip() == pinned
+
+    @pytest.mark.asyncio
+    async def test_live_unpinned_attempt_branches_from_the_resolved_tip(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The default path end-to-end against real git: an attempt with no
+        explicit pin resolves the origin's HEAD via ls-remote (policy-gated,
+        pin-enforced) and the workspace it patches sits exactly on that
+        digest — `cloned_commit` is populated, not None."""
+        import subprocess
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=origin, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=origin, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=origin, check=True)
+        (origin / "README.md").write_text("v1\n")
+        subprocess.run(["git", "add", "."], cwd=origin, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=origin, check=True)
+        subprocess.run(["git", "branch", "-M", "main"], cwd=origin, check=True)
+        tip = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=origin, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        workspace_root = tmp_path / "maistro-workspace"
+        monkeypatch.setattr(
+            "maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS",
+            (workspace_root,),
+        )
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+            ("https://", "ssh://", "file://"),
+        )
+        monkeypatch.setenv("GIT_AUTHOR_NAME", "rsi-test")
+        monkeypatch.setenv("GIT_AUTHOR_EMAIL", "rsi-test@example.com")
+        monkeypatch.setenv("GIT_COMMITTER_NAME", "rsi-test")
+        monkeypatch.setenv("GIT_COMMITTER_EMAIL", "rsi-test@example.com")
+        workspace = str(workspace_root / "run-resolved")
+
+        async def add_a_file(_sandbox, ws: str, model=None) -> None:
+            (Path(ws) / "resolved_marker.py").write_text("print('resolved')\n")
+
+        attempt = new_attempt(f"file://{origin}", "true", base_branch="main")
+        assert attempt.commit is None  # the default path, not an explicit pin
+        result = await run_self_branch_attempt(FakeSandbox(), workspace, attempt, add_a_file)
+
+        assert result.error is None, result.error
+        assert result.cloned_commit == tip
+        checked_out = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"], cwd=workspace, capture_output=True, text=True
+        )
+        assert checked_out.stdout.strip() == tip
 
 
 class TestCapturedDiffIsNonEmpty:

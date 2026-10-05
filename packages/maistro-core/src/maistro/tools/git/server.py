@@ -78,6 +78,14 @@ GIT_CLONE_TIMEOUT = 300
 # authenticated transport (`commit=` pin + host allowlist) — that default is
 # documented here, not silent: a deployment that wants provenance signs its
 # candidate sources and configures the anchor.
+# Executable #404 enforcement, one tuple for every git transport this module
+# spawns — the initial clone *and* any later network fetch into a cloned
+# workspace (the digest-pin fetch below). Carrying the pins in each argv —
+# not relying on the config the clone happens to persist into the new
+# repository — is the standard the module committed to: a second fetch added
+# tomorrow, or a workspace whose .git/config was not written by this clone
+# path, must not silently lose the enforcement.
+_ENFORCEMENT_CONFIG = ("protocol.git.allow=never", "http.followRedirects=false")
 _ALLOWED_CLONE_SCHEMES = ("https://", "ssh://")
 _DEFAULT_ALLOWED_CLONE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "ssh.github.com")
 _ALLOWED_CLONE_HOSTS: tuple[str, ...] = _DEFAULT_ALLOWED_CLONE_HOSTS
@@ -225,15 +233,24 @@ def _pr_cache_key(repo: str, branch: str, title: str, body: str, base: str) -> s
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-async def _git(workspace: str, *args: str, timeout: int = 60) -> dict[str, Any]:
-    """Run a git command in the given workspace. Returns structured result."""
+async def _git(
+    workspace: str, *args: str, timeout: int = 60, config: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """Run a git command in the given workspace. Returns structured result.
+
+    `config` names `-c key=value` pairs inserted before the command — the
+    executable enforcement pins network operations must carry (see
+    `_ENFORCEMENT_CONFIG`).
+    """
     try:
         workspace = _validate_git_workspace(workspace)
     except ValueError:
         return _blocked_workspace_result(workspace)
+    config_argv = [part for pair in config for part in ("-c", pair)]
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
+            *config_argv,
             "-C",
             workspace,
             *args,
@@ -337,15 +354,12 @@ async def _clone_and_maybe_pin(
 ) -> dict[str, Any]:
     """Run the policy-pinned clone subprocess; verify the digest pin if set."""
     try:
+        # Executable #404 enforcement (see the constant block above): git
+        # itself refuses the git:// transport and refuses to follow
+        # redirects, whatever a URL or .gitmodules entry asks for.
         proc = await asyncio.create_subprocess_exec(
             "git",
-            # Executable #404 enforcement (see the constant block above): git
-            # itself refuses the git:// transport and refuses to follow
-            # redirects, whatever a URL or .gitmodules entry asks for.
-            "-c",
-            "protocol.git.allow=never",
-            "-c",
-            "http.followRedirects=false",
+            *[part for pair in _ENFORCEMENT_CONFIG for part in ("-c", pair)],
             "clone",
             "--depth=1",
             "--",
@@ -473,7 +487,19 @@ async def _verify_pinned_checkout(
             exit_code=0,
             pinned_commit=commit,
         )
-    fetch = await _git(dest, "fetch", "--depth=1", "origin", commit, timeout=timeout)
+    # The fetch-by-digest is a second network operation against the remote,
+    # so it carries the same executable enforcement pins as the clone — git
+    # refuses the git:// transport and refuses redirects for this fetch too,
+    # whatever the (allowed) origin's response asks for.
+    fetch = await _git(
+        dest,
+        "fetch",
+        "--depth=1",
+        "origin",
+        commit,
+        timeout=timeout,
+        config=_ENFORCEMENT_CONFIG,
+    )
     if not fetch["success"]:
         return fail(
             stdout=fetch["stdout"],
@@ -511,6 +537,80 @@ async def _verify_pinned_checkout(
         exit_code=0,
         pinned_commit=commit,
     )
+
+
+async def git_remote_tip(url: str, timeout: int = 60) -> dict[str, Any]:
+    """Resolve a policy-vetted remote's HEAD to a full commit digest (#404 AC3).
+
+    The one network read a caller needs to turn "clone whatever the tip is
+    right now" into a verified digest pin: the returned digest feeds
+    `git_clone(commit=...)`, whose fetch-by-digest and post-fetch `rev-parse`
+    verdict then prove the checkout IS that object. `ls-remote` is itself a
+    network transport, so it gates through `validate_clone_source` first — a
+    refused URL spawns no subprocess — and carries the same executable
+    enforcement pins as every other transport this module spawns.
+    """
+    try:
+        validate_clone_source(url)
+    except ClonePolicyError as exc:
+        return fail(
+            stdout=exc.message,
+            error_code=exc.error_code,
+            suggested_action=exc.suggested_action,
+        )
+    config_argv = [part for pair in _ENFORCEMENT_CONFIG for part in ("-c", pair)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            *config_argv,
+            "ls-remote",
+            "--",
+            url,
+            "HEAD",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        output = stdout.decode("utf-8", errors="replace") if stdout else ""
+    except FileNotFoundError:
+        return fail(
+            stdout="git binary not found",
+            error_code="git_not_found",
+            suggested_action="Ensure git is installed in the execution environment.",
+        )
+    except TimeoutError:
+        return fail(
+            stdout=f"git ls-remote timed out after {timeout}s",
+            exit_code=124,
+            error_code="git_timeout",
+            recoverable=True,
+            suggested_action="Retry with a longer timeout, or check network conditions.",
+        )
+    if proc.returncode != 0:
+        return fail(
+            stdout=output,
+            exit_code=proc.returncode or 1,
+            error_code="remote_tip_unresolved",
+            recoverable=True,
+            suggested_action=(
+                "Could not read the remote's HEAD digest; verify the source is "
+                "reachable and pass the digest to clone explicitly instead."
+            ),
+        )
+    digest = output.split()[0] if output.split() else ""
+    # Never trust a resolution that is not itself a digest: the whole point of
+    # the resolution is to feed an immutable pin, not a repointable name.
+    if not _COMMIT_DIGEST_RE.match(digest):
+        return fail(
+            stdout=output,
+            error_code="remote_tip_unresolved",
+            suggested_action=(
+                "The remote's HEAD did not resolve to a full 40/64-hex digest; "
+                "resolve it manually (git ls-remote) and pass the digest to "
+                "clone explicitly instead."
+            ),
+        )
+    return ok(stdout=output, commit=digest.lower())
 
 
 @mcp.tool()

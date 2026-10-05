@@ -39,6 +39,7 @@ from maistro.cli._builders_sessions import (
     make_session_id,
     record_session,
 )
+from maistro.tools.git.server import ClonePolicyError, validate_clone_source
 
 _GIT_URL_PREFIXES = ("http://", "https://", "git@", "ssh://")
 _BUILDERS_CACHE_DIR = Path.home() / ".maistro" / "builders_repos"
@@ -51,6 +52,12 @@ def _is_git_url(repo: str) -> bool:
     # below would otherwise wave `git://host/repo.git` straight through, and
     # git parses remote schemes case-insensitively (RFC 3986), so the check is
     # case-insensitive too.
+    #
+    # Classification is not acceptance: a URL classified here still has to
+    # pass `validate_clone_source` in `_open_repo` before any subprocess —
+    # the same verdict as the MCP git tool, so `http://` (unauthenticated
+    # transport), off-allowlist hosts, scp-style spellings and `-`-prefixed
+    # flag strings are refused on every surface, not just this one.
     if repo.lower().startswith("git://"):
         return False
     return repo.startswith(_GIT_URL_PREFIXES) or repo.endswith(".git")
@@ -302,11 +309,40 @@ class BuildersApp(App[None]):
                 )
                 return
             if _is_git_url(repo):
+                # Same source policy as the MCP git tool (#404): one verdict,
+                # every surface. Classification above only says "this is a
+                # URL"; only https/ssh to an allowlisted host (or a verified
+                # local path) may become candidate source the coding agent
+                # will read and execute.
+                try:
+                    validate_clone_source(repo)
+                except ClonePolicyError as exc:
+                    recent.update(
+                        f"\n  [red]Blocked: {exc.message}[/red]"
+                        f"\n  [dim]{exc.suggested_action}[/dim]"
+                    )
+                    return
                 recent.update(f"\n  [dim]Cloning {repo}…[/dim]")
                 work_dir = _BUILDERS_CACHE_DIR / session_id
                 work_dir.parent.mkdir(parents=True, exist_ok=True)
+                # Same executable enforcement as the MCP tool's clone argv:
+                # git itself refuses the git:// transport (even via a
+                # redirect or .gitmodules entry) and refuses to follow
+                # redirects, and the URL sits after `--` where no scheme can
+                # be re-read as flags.
                 result = subprocess.run(
-                    ["git", "clone", "--depth", "1", repo, str(work_dir)],
+                    [
+                        "git",
+                        "-c",
+                        "protocol.git.allow=never",
+                        "-c",
+                        "http.followRedirects=false",
+                        "clone",
+                        "--depth=1",
+                        "--",
+                        repo,
+                        str(work_dir),
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=120,

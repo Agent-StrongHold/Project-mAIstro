@@ -142,13 +142,18 @@ class TestGitUrlClassification:
             "https://example.com/repo",
             "ssh://git@example.com/repo",
             "git@github.com:example/repo.git",
-            "http://example.com/repo.git",
-            "https://example.com/some.path.git",  # suffix rule intact for authenticated forms
+            "https://example.com/some.path.git",  # suffix rule intact for schemed forms
         ],
     )
-    def test_authenticated_transports_still_classify_as_urls(
+    def test_url_forms_still_classify_as_urls(
         self, monkeypatch: pytest.MonkeyPatch, url: str
     ) -> None:
+        # Classification says "treat this as a URL", not "this may be
+        # cloned": acceptance is `validate_clone_source`'s verdict in
+        # `_open_repo`, asserted at runtime below. `http://` deliberately
+        # classifies as a URL — and is deliberately refused by the policy
+        # gate, because unauthenticated transport is exactly what #404
+        # removes.
         _is_git_url = _import_is_git_url(monkeypatch)
 
         assert _is_git_url(url) is True
@@ -227,9 +232,12 @@ class _FakeRecent:
 
 class TestTheCloneGateStopsTheSubprocess:
     """`_open_repo` is where classification becomes a `git clone` subprocess
-    (#404). The git:// rejection must fire at runtime — naming the policy in
-    the UI — before any subprocess, session record, or screen change,
-    whatever casing the operator typed."""
+    (#404). A source the policy refuses must be named and blocked at runtime —
+    before any subprocess, session record, or screen change: the git://
+    verdict whatever casing the operator typed, and the shared
+    `validate_clone_source` verdict for everything else (unauthenticated
+    http://, off-allowlist hosts, scp-style spellings, `-`-prefixed flag
+    strings that the `.git` suffix rule would otherwise march into argv)."""
 
     @staticmethod
     def _drive(monkeypatch: pytest.MonkeyPatch, repo: str) -> list[str]:
@@ -237,6 +245,7 @@ class TestTheCloneGateStopsTheSubprocess:
         import subprocess
 
         tui = _import_builders_tui(monkeypatch)
+        monkeypatch.delenv("MAISTRO_GIT_CLONE_ALLOWED_HOSTS", raising=False)
         label = _FakeRecent()
         app = object.__new__(tui.BuildersApp)
         app.query_one = lambda *args: label  # type: ignore[method-assign]
@@ -254,15 +263,25 @@ class TestTheCloneGateStopsTheSubprocess:
         asyncio.run(app._open_repo(repo))  # @work is the identity under the stub
         return label.messages
 
-    @pytest.mark.parametrize("repo", ["git://github.com/org/repo.git", "GIT://github.com/org/repo"])
-    def test_git_protocol_is_named_and_blocked_at_runtime(
+    @pytest.mark.parametrize(
+        "repo",
+        [
+            "git://github.com/org/repo.git",
+            "GIT://github.com/org/repo",
+            "http://example.com/repo.git",
+            "HTTP://example.com/repo.git",
+            "https://evil.example/repo.git",
+            "git@github.com:example/repo.git",
+            "--upload-pack=evil.git",
+        ],
+    )
+    def test_policy_refused_sources_are_named_and_blocked_at_runtime(
         self, monkeypatch: pytest.MonkeyPatch, repo: str
     ) -> None:
         messages = self._drive(monkeypatch, repo)
 
         assert len(messages) == 1
-        assert "git:// is unauthenticated transport" in messages[0]
-        assert "#404" in messages[0]
+        assert "Blocked" in messages[0]
 
     def test_a_local_path_still_takes_the_directory_branch(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -275,3 +294,62 @@ class TestTheCloneGateStopsTheSubprocess:
 
         assert len(messages) == 1
         assert "Not a directory" in messages[0]
+
+
+class TestTheAllowedTransportClonesUnderTheSamePolicy:
+    """A URL the policy admits still reaches git — but through the same
+    executable enforcement as the MCP tool: the `-c` protocol/redirect pins
+    ride in the argv and the URL sits after `--`, where no scheme can be
+    re-read as flags."""
+
+    def test_allowed_https_source_reaches_git_with_pins_and_separator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+        import subprocess
+        from dataclasses import dataclass
+
+        tui = _import_builders_tui(monkeypatch)
+        monkeypatch.delenv("MAISTRO_GIT_CLONE_ALLOWED_HOSTS", raising=False)
+        label = _FakeRecent()
+        app = object.__new__(tui.BuildersApp)
+        app.query_one = lambda *args: label  # type: ignore[method-assign]
+        seen: list[list[str]] = []
+
+        @dataclass
+        class _Completed:
+            returncode: int
+            stderr: str = ""
+            stdout: str = ""
+
+        def capture_run(argv: list[str], **kwargs: object) -> _Completed:
+            seen.append([str(a) for a in argv])
+            return _Completed(returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", capture_run)
+
+        def no_record(*args: object, **kwargs: object) -> None:
+            raise AssertionError("test ends at the subprocess boundary")
+
+        monkeypatch.setattr(tui, "record_session", no_record)
+
+        async def no_screen(*args: object, **kwargs: object) -> None:
+            raise AssertionError("test ends at the subprocess boundary")
+
+        monkeypatch.setattr(tui.BuildersApp, "_open_coding_screen", no_screen)
+
+        asyncio.run(app._open_repo("https://github.com/example/repo.git"))
+
+        assert label.messages and "Blocked" not in label.messages[0]
+        assert len(seen) == 1
+        argv = seen[0]
+        assert argv[0] == "git"
+        assert argv[1:5] == [
+            "-c",
+            "protocol.git.allow=never",
+            "-c",
+            "http.followRedirects=false",
+        ]
+        assert argv[5] == "clone"
+        assert argv[-3:] == ["--", "https://github.com/example/repo.git", argv[-1]]
+        assert argv[-1].startswith(str(tui._BUILDERS_CACHE_DIR))
