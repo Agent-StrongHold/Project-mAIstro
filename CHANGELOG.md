@@ -57,6 +57,18 @@ or placeholder-only section.
 
 ### Changed
 
+- **Evolve model effects require declared, execution-scoped authority (#1087).**
+  Manual/request-scoped Evolve work now resolves an operator-declared `model.chat`
+  Binding in its canonical Run's Workspace/Project/Node scope and records the real
+  Run, NodeRun, Attempt and admitted actor on each Invocation. Configure a model
+  Binding for that Project; missing/ambiguous/disabled authority fails closed.
+  The synthetic cycle identities, `agent-runtime` scope and raw HTTP fallback are
+  removed. Recovered Attempts reuse completed paid effects without duplicate
+  quota, while ambiguous or failed model work cannot publish accepted scores.
+  Existing replay-safe population/archive/finalize recovery behavior is retained.
+  Unattended cadence actor/readiness remains the separate owner-decision hold
+  (#1867); this change does not select a service actor or enable cadence.
+
 - **Advisory DAG-shape proportionality judge failures are explicit, not silent allows (#1191).**
   `LLMProportionalityJudge` no longer collapses a timeout, provider error, malformed response
   envelope, or malformed judgment into `justified=True`. `ProportionalityVerdict` now carries a
