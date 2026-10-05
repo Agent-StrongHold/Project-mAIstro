@@ -242,6 +242,39 @@ async def test_core_decision_audit_is_admin_scoped(
     assert marker not in response.text
 
 
+async def test_core_detail_cannot_bypass_admin_scope_via_legacy_replica(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stores
+    from routes.audit import log_audit
+
+    await _login(client, _USER[1], _USER[2])
+    marker = f"private-detail-{uuid4().hex}"
+    log_audit("gate_block", _USER[1], detail={"decision": marker}, severity="warning")
+    mirrored = [row for row in stores.audit_log.values() if marker in str(row)]
+    assert len(mirrored) == 1
+    assert any(marker in row.detail for row in await _core_rows(booted))
+    path = f"/v1/audit/{mirrored[0]['id']}"
+
+    # A known ID must not expose the replica of an admin-only decision, even
+    # when its actor is the requesting principal. List/export deny this too.
+    response = await client.get(path)
+    assert response.status_code == 403
+    assert marker not in response.text
+
+    def forbidden_lookup(*args, **kwargs):
+        pytest.fail("canonical authorization must precede legacy detail lookup")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stores.audit_log, "get", forbidden_lookup)
+        for detail_path in (path, "/v1/audit/nonexistent-detail"):
+            denied = await client.get(detail_path)
+            assert denied.status_code == 403
+            assert denied.json() == response.json()
+
+
 async def test_audit_route_reads_the_core_audit_log(
     client: httpx.AsyncClient, booted: Container
 ) -> None:
