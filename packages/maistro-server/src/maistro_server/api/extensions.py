@@ -160,6 +160,7 @@ class InstallRecordView(BaseModel):
     authority_delta: tuple[str, ...]
     artifact_sha256: str | None
     failure_reason: str | None
+    status_reason: str | None = None
     requested_by: str
     authorized_by: str | None
     installed_by: str | None
@@ -208,6 +209,7 @@ def _record_view(
         authority_delta=record.authority_delta,
         artifact_sha256=record.artifact_sha256,
         failure_reason=record.failure_reason,
+        status_reason=record.status_reason,
         requested_by=record.requested_by,
         authorized_by=record.authorized_by,
         installed_by=record.installed_by,

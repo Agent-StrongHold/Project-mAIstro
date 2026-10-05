@@ -90,6 +90,15 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _mark_superseded(detail: str) -> Callable[[ExtensionInstallRecord], ExtensionInstallRecord]:
+    """A transition mutate carrying the supersede reason on the record."""
+
+    def mark(record: ExtensionInstallRecord) -> ExtensionInstallRecord:
+        return replace(record, status_reason=detail)
+
+    return mark
+
+
 #: States whose records must carry the reason on the record itself, so the
 #: durable answer to "why is this not active" survives next to the state.
 _FAILURE_STATES = frozenset(
@@ -1155,7 +1164,7 @@ class ExtensionInstallService:
                     actor=actor,
                     reason=detail,
                     now=self._clock(),
-                    mutate=lambda r, detail=detail: replace(r, status_reason=detail),
+                    mutate=_mark_superseded(detail),
                 )
             )
         return tuple(superseded)

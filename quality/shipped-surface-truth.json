@@ -2242,6 +2242,136 @@
       "production_enabled": true,
       "reason": "records observed budget consumption against the campaign's stop conditions",
       "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/inspections",
+      "handler": "inspect_extension",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "governed install lifecycle phase 1: parses manifest bytes, verifies the payload digest, evaluates compatibility/trust/authority and parks the record in awaiting_authorization; never imports extension code",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.inspect"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/authorization",
+      "handler": "decide_extension_authorization",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies the explicit operator authorization decision; approval freezes the grant from the immutable snapshot, denial is terminal",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.authorize + store audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/installation",
+      "handler": "install_extension",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "governed install phase 3: re-verifies the bound artifact digest and runs the host activation loader - the only code-execution seam - after authorization; failures recorded truthfully as FAILED",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.install"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/expired-authorizations",
+      "handler": "sweep_expired_authorizations",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "maintenance sweep moving expired authorization requests to ABANDONED so they can never reach ACTIVE",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.expire_abandoned"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/pins",
+      "handler": "pin_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "pins the extension's active version against version changes; every pin is audited; conflicting pins fail closed",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.pin + store pin events"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/pins/release",
+      "handler": "release_extension_pin",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "releases the version pin (idempotent) with the release audited",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.unpin"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/upgrades",
+      "handler": "upgrade_extension",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "upgrade preflight + governed inspection of a candidate version; computes the authority delta against the active grant; activation is a separate explicit call; never imports extension code",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.upgrade"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/upgrade-activation",
+      "handler": "activate_extension_upgrade",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "activates an authorized upgrade through the loader seam, swaps the scope pointer once and retains the predecessor as superseded rollback material",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.activate_upgrade"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/rollback",
+      "handler": "rollback_extension",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "restores a superseded version only after the preflight proves compatibility and digest integrity; restoring dropped authority requires the explicit allow_broadened acknowledgment; refusals change nothing",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.rollback"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/disable",
+      "handler": "disable_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "suspends the extension: the active pointer is dropped so invocation resolution stops immediately; record, grant and audit trail are retained",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.disable"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/resume",
+      "handler": "resume_extension",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "re-activates a disabled extension from its exact bound artifact through the loader seam; the frozen grant stands, no new authorization",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.resume"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/removal",
+      "handler": "remove_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "uninstalls: authority and pointer end, canonical evidence (records, transitions) is never deleted, owned-resource cleanup runs after the transition and is reported in audited removal notes",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.remove"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/reconciliation",
+      "handler": "reconcile_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "crash-recovery maintenance: repairs pointer/state invariants (orphan ACTIVE records superseded, pointers to non-ACTIVE records cleared) with every repair an audited transition",
+      "effect_owner": "maistro.extensions.service.ExtensionInstallService.reconcile"
     }
   ],
   "frontend_surfaces": [
