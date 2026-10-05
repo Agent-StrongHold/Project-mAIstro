@@ -411,8 +411,12 @@ class SpecialistProjection:
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe form for inspection surfaces."""
+        # AgentCard.to_dict() omits scope; the external clamp is a
+        # security-relevant classification, so re-attach it explicitly
+        # instead of letting consumers fall back to the ``builtin`` default.
+        card = {**self.card.to_dict(), "scope": self.card.scope}
         return {
-            "card": self.card.to_dict(),
+            "card": card,
             "descriptor": {
                 "agent_id": self.descriptor.agent_id,
                 "name": self.descriptor.name,
@@ -527,8 +531,7 @@ def _parse_capabilities(raw: Mapping[str, Any]) -> RemoteCapabilities:
         elif key_text in SUPPORTED_CARD_FEATURES:
             if not isinstance(value, bool):
                 raise DescriptorInvalid(
-                    f"card capability {key_text!r} must be a boolean, "
-                    f"got {type(value).__name__}"
+                    f"card capability {key_text!r} must be a boolean, got {type(value).__name__}"
                 )
             streaming = streaming or value
         elif key_text in _KNOWN_UNSUPPORTED_FEATURES:
@@ -777,10 +780,33 @@ class ExternalAgentRegistry:
                 protocol_version=descriptor.protocol_version,
                 remote_version=descriptor.version,
             ),
-            # The card never authorizes itself: every grant comes from the policy.
-            authorization=self._policy.authorize(descriptor, now=now),
+            # The card never authorizes itself: every grant comes from the policy —
+            # clamped to the declared surface before storage, so the record (and
+            # every projection/serialization derived from it) can never claim a
+            # capability the descriptor does not declare, whatever a policy returns.
+            authorization=self._effective_authorization(descriptor, now=now),
             availability=Availability(),
             active=active,
+        )
+
+    def _effective_authorization(
+        self, descriptor: RemoteAgentDescriptor, *, now: datetime
+    ) -> CapabilityAuthorization:
+        """The policy's decision, clamped to the declared capability surface.
+
+        The policy decides *which declared* capabilities are granted; it can
+        never widen what the descriptor declares. Grants outside
+        ``descriptor.capabilities.surface()`` are dropped here — centrally, at
+        the single point where records are built — and ``authorized`` is
+        derived from the effective grant, so a policy whose grants all fall
+        outside the surface cannot mark a specialist eligible.
+        """
+        raw = self._policy.authorize(descriptor, now=now)
+        effective = frozenset(raw.capabilities & descriptor.capabilities.surface())
+        return replace(
+            raw,
+            authorized=raw.authorized and bool(effective),
+            capabilities=effective,
         )
 
     def _project(self, record: RegisteredExternalAgent) -> SpecialistProjection:

@@ -238,6 +238,72 @@ def test_policy_cannot_mint_capabilities_the_card_does_not_declare() -> None:
     assert card.tools == ()
 
 
+@dataclass
+class VerbatimPolicy:
+    """Policy returning grants verbatim — deliberately no surface intersection.
+
+    Unlike ``StaticPolicy`` it does not clamp itself, so any passing assertion
+    below is evidence of the registry's own central clamp, not the fixture's.
+    """
+
+    capabilities: frozenset[str]
+
+    def policy_id(self) -> str:
+        return "verbatim-policy"
+
+    def authorize(
+        self, descriptor: RemoteAgentDescriptor, *, now: datetime
+    ) -> CapabilityAuthorization:
+        return CapabilityAuthorization(
+            authorized=True,
+            capabilities=frozenset(self.capabilities),
+            policy_id=self.policy_id(),
+            decided_at=now,
+        )
+
+    def allows_refresh(
+        self, current: RemoteAgentDescriptor, candidate: RemoteAgentDescriptor
+    ) -> bool:
+        return False
+
+
+def test_stored_authorization_is_clamped_to_the_declared_surface() -> None:
+    """Out-of-surface policy grants are dropped before storage, not at render.
+
+    ``authorization.capabilities`` is consumed directly by callers and
+    serialized output, so the declared ∩ authorized invariant is enforced
+    centrally in the registry: an undeclared ``tool:shell`` never reaches the
+    stored record, the projection, or its ``to_dict()``.
+    """
+    registry = _registry(
+        policy=VerbatimPolicy(capabilities=frozenset({"tool:web_search", "tool:shell"}))
+    )
+    record = registry.register(_card())
+    declared = record.descriptor.capabilities.surface()
+    assert record.authorization.capabilities == frozenset({"tool:web_search"})
+    assert record.authorization.capabilities <= declared
+    projection = registry.project("deep-researcher")
+    assert projection.authorization.capabilities <= declared
+    assert projection.to_dict()["authorization"]["capabilities"] == ["tool:web_search"]
+
+
+def test_policy_whose_grants_are_entirely_out_of_surface_is_not_authorized() -> None:
+    """A verbatim-authorized grant with no declared intersection is no grant.
+
+    ``authorized`` is derived from the effective (clamped) grant, so a policy
+    claiming ``authorized=True`` over only undeclared capabilities cannot make
+    the specialist eligible through ``projection.authorization``.
+    """
+    registry = _registry(policy=VerbatimPolicy(capabilities=frozenset({"tool:shell"})))
+    record = registry.register(_card())
+    assert record.authorization.capabilities == frozenset()
+    assert record.authorization.authorized is False
+    projection = registry.project("deep-researcher")
+    assert projection.card.active is False
+    assert projection.card.tools == ()
+    assert registry.eligible_specialists(require_available=False) == []
+
+
 # AC: "canonical Agent/capability projection retains remote provenance/version"
 
 
@@ -461,6 +527,7 @@ def test_serialization_surfaces_render_decisions() -> None:
     assert blob["provenance"]["publisher"] == "Example Labs"
     assert blob["eligible"] is True
     assert blob["declared_surface"]  # capability tokens, sorted
+    assert blob["card"]["scope"] == "external"  # clamp survives serialization
 
 
 def test_ingestion_of_unreachable_type_fails_closed() -> None:
