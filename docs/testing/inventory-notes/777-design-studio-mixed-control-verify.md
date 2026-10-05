@@ -11171,3 +11171,58 @@ delegated/reconciliation/ownership criterion requires #804/#805/#806, which
 remain open with zero code in tree, and the implementation vehicle PR #1660
 remains an unmerged draft. The branch stays a develop-current (159fbafe9),
 battery-green waiting position (Refs #777).
+
+## Round 168 (job 7694da2ba, 2026-10-05) — fresh re-verification at d1539772d
+
+No test or production files changed this round (inventory delta: none); the
+note below only records evidence gathered independently at the round head —
+prior-round claims were re-proven, not assumed.
+
+**Develop sync:** origin/develop advanced `159fbafe9` → `b672b799a` ("Burn
+P0.2 route-permissions debt: declare 23 authenticated-only exempts (#1992)").
+Merged cleanly into `auto-777` at merge commit `d1539772d` (parents
+`bc85a0816` + `b672b799a`), zero conflicts. Re-fetched origin at round start:
+`origin/develop` still `b672b799a` — no further drift, no pending sync.
+`quality/vulture-baseline.json` vs `origin/develop` is exactly `0 1` by
+`git diff --numstat` (the round-166 `builders/agent_loop.py::tool_definitions`
+row deletion preserved through the merge; develop deleted a different row,
+`code_registry/types.py::trusted`, also preserved — multiset intact).
+
+**Blockers re-proven fresh at `d1539772d`:** `grep -rn
+'GoalReconciler\|delegate_goal' packages/*/src` → 0 matches;
+`packages/maistro-core/src/maistro/goals/` absent; `routes/design.py` and
+`services/design_service.py` 0 matches for workspace_agent|control_mode|delegat;
+salvage tree (`docs/research/777-design-studio-salvage/`) still has zero
+production readers (grep for readers in packages/*/src + */backend: 0). The
+#775-derived production surfaces that DO exist (`packages/maistro-design/`:
+`brief.py`, `brief_store.py`, `creative_graph.py`, `creative_nodes.py` with
+`goal_delegation_ref`) are non-authoritative creative-graph references, not
+the #804/#458 Goal machinery #777 must consume.
+
+**Validation battery, all worker-executed at `d1539772d` (job manifest
+carried `checks: []` — no driver-run logs existed this round):** ruff check
+exit 0 (All checks passed); ruff format exit 0 (2981 files — the round-165
+`agent_loop.py` format failure stays resolved); vulture CI-exact exit 0 (base
+`b672b799a` → candidate `d1539772d`, 1342 reviewed identities → 1341
+findings, never-allowlist 0); api-route-contracts exit 0 (279 handlers, 15
+audited routes, 0 canned); route-permissions exit 0 (40 declared, 0 tolerated
+undeclared, none new — 23 former tolerances now declared by develop #1992);
+reachability exit 0 (1283 production modules); promotion-surface exit 0;
+ratchet-provenance exit 0 (49 consumers); suite-inventory exit 0 (15/15);
+backlog exit 0 (167 items); pytest `packages/maistro-design/tests
+packages/maistro-bootstrap/tests` → 772 passed / 7 skipped (23.22s); pytest
+hive-conductor `-k "design or workspace or creative or brief"` → 389 passed /
+5 skipped (24.52s).
+
+**Dependency states (dispatch-context.json, captured 2026-10-05T16:22Z, 61
+sources):** unchanged — #773/#774/#776/#804/#805/#806/#53/#93/#95 open;
+#775 closed; PR #1660 still open **draft**, `merged: false`, head unchanged
+at `17ad5f75b894`. The prior job `710cbe7ed` produced no work (provider
+timeout, `failure_kind: provider_error`, zero checks).
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds 123–167.
+None of the 13 acceptance criteria is provable at this head; every
+delegated/reconciliation/ownership criterion requires #804/#805/#806, which
+remain open with zero code in tree, and the implementation vehicle PR #1660
+remains an unmerged draft. The branch stays a develop-current (b672b799a),
+battery-green waiting position (Refs #777).
