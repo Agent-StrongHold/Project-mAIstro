@@ -102,51 +102,57 @@ def manifest_from_json(text: str | bytes) -> ExtensionManifest:
     return manifest_from_dict(data)
 
 
-def _unique_key_safe_loader(yaml: Any) -> Any:
-    """Build a ``SafeLoader`` that rejects duplicate mapping keys.
+def _reject_duplicate_mapping_keys(yaml: Any, text: str) -> None:
+    """Reject duplicate explicit mapping keys before ``yaml.safe_load`` runs.
 
-    PyYAML's ``safe_load`` silently keeps the last occurrence of a
-    duplicated key, so the YAML front door must not use it as-is: the same
-    last-wins ambiguity ``json.loads`` has (see ``_no_duplicate_keys``)
-    would let a manifest present one authority set to review and another
-    to ``validate_manifest``. Duplicate detection runs on the explicit
-    pairs before ``flatten_mapping`` expands merge keys (``<<``):
-    spec-defined merge precedence (explicit key wins, first anchor wins)
-    is not ambiguity, so merges stay legal. Defined as a factory because
+    PyYAML's ``safe_load`` silently keeps the last occurrence of a duplicated
+    key, so the YAML front door walks the composed node tree first: the same
+    last-wins ambiguity ``json.loads`` has (see ``_no_duplicate_keys``) would
+    let a manifest present one authority set to review and another to
+    ``validate_manifest``. The walk is inspection, not execution — ``compose``
+    builds the node graph without running a constructor, so no tag can build
+    a Python object here; construction happens afterwards, exclusively through
+    ``yaml.safe_load``.
+
+    Detection runs on the explicit pairs before merge keys (``<<``) are
+    expanded by ``safe_load``: spec-defined merge precedence (explicit key
+    wins, first anchor wins) is resolution, not ambiguity, so merges stay
+    legal. Non-scalar keys are skipped, mirroring the constructor, which
+    cannot hash them either. Defined as a function taking the module because
     ``yaml`` is an optional import.
     """
 
-    class UniqueKeySafeLoader(yaml.SafeLoader):  # type: ignore[misc]  # yaml is Any (optional extra)
-        def construct_mapping(self, node: Any, deep: bool = False) -> Any:
-            seen: set[Any] = set()
-            for key_node, _ in node.value:
+    def walk(node: Any) -> None:
+        if isinstance(node, yaml.MappingNode):
+            seen: set[tuple[str, str]] = set()
+            for key_node, value_node in node.value:
                 if key_node.tag == "tag:yaml.org,2002:merge":  # '<<' merge key
-                    continue  # expanded by flatten_mapping below
-                key = self.construct_object(key_node, deep=deep)
-                try:
-                    duplicate = key in seen
-                except TypeError:
-                    continue  # unhashable key: construct_mapping reports it
-                if duplicate:
-                    raise yaml.constructor.ConstructorError(
-                        "while constructing a mapping",
-                        node.start_mark,
-                        f"found duplicate key {key!r}",
-                        key_node.start_mark,
-                    )
-                seen.add(key)
-            # super() flattens merge keys and builds the mapping, resolving
-            # spec-defined merge overlaps first-wins.
-            return super().construct_mapping(node, deep=deep)
+                    continue  # expanded by flatten_mapping inside safe_load
+                if isinstance(key_node, yaml.ScalarNode):
+                    identity = (key_node.tag, key_node.value)
+                    if identity in seen:
+                        raise yaml.constructor.ConstructorError(
+                            None,
+                            None,
+                            f"found duplicate key {key_node.value!r}",
+                            key_node.start_mark,
+                        )
+                    seen.add(identity)
+                walk(value_node)
+        elif isinstance(node, yaml.SequenceNode):
+            for item in node.value:
+                walk(item)
 
-    return UniqueKeySafeLoader
+    walk(yaml.compose(text))
 
 
 def manifest_from_yaml(text: str) -> ExtensionManifest:
     """Parse and validate a YAML manifest (requires the ``[yaml]`` extra).
 
     Duplicate mapping keys are rejected rather than resolved last-wins (see
-    ``_unique_key_safe_loader``), mirroring the JSON front door.
+    ``_reject_duplicate_mapping_keys``), mirroring the JSON front door.
+    Construction goes through ``yaml.safe_load`` — the loader cannot build
+    ``!!python/...`` objects from a manifest.
     """
     try:
         import yaml
@@ -155,7 +161,8 @@ def manifest_from_yaml(text: str) -> ExtensionManifest:
             "YAML manifest support requires the 'yaml' extra: install maistro-ext-sdk[yaml]"
         ) from exc
     try:
-        data = yaml.load(text, Loader=_unique_key_safe_loader(yaml))
+        _reject_duplicate_mapping_keys(yaml, text)
+        data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise ExtensionManifestError(f"manifest is not valid YAML: {exc}") from exc
     if not isinstance(data, dict):
