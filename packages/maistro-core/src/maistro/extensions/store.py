@@ -17,6 +17,9 @@ from maistro.extensions.types import (
     ExtensionScope,
     ExtensionState,
     ExtensionTransition,
+    PinEvent,
+    PinRecord,
+    RemovalNote,
 )
 
 
@@ -58,14 +61,54 @@ class ExtensionStore(Protocol):
 
     async def next_seq(self) -> int: ...
 
+    # -- B3 (#954): post-install lifecycle ---------------------------------
+
+    async def clear_active(self, scope: ExtensionScope, extension_id: str) -> None:
+        """Drop the scope's active pointer for the extension, if set.
+
+        Disable and remove use this to stop invocation resolution
+        immediately; the pointer must never outlive the authority.
+        """
+        ...
+
+    async def get_pin(self, scope: ExtensionScope, extension_id: str) -> PinRecord | None: ...
+
+    async def set_pin(self, pin: PinRecord) -> None:
+        """Write the scope's pin for the record's extension (one per key)."""
+        ...
+
+    async def clear_pin(self, scope: ExtensionScope, extension_id: str) -> bool:
+        """Remove the pin, returning whether one existed."""
+        ...
+
+    async def append_pin_event(self, event: PinEvent) -> None: ...
+
+    async def pin_events(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> tuple[PinEvent, ...]: ...
+
+    async def append_removal_note(self, note: RemovalNote) -> None: ...
+
+    async def removal_notes_for(self, install_id: str) -> tuple[RemovalNote, ...]: ...
+
 
 class InMemoryExtensionStore:
-    """Process-lifetime implementation of :class:`ExtensionStore`."""
+    """Process-lifetime implementation of :class:`ExtensionStore`.
+
+    Append-only by policy: records are replaced with new immutable versions,
+    and transitions, pin events and removal notes are only ever appended.
+    Canonical evidence therefore survives disable and remove (#954's
+    retention criterion) for the process lifetime; the durable twin is a
+    PostgreSQL backend behind the same protocol.
+    """
 
     def __init__(self) -> None:
         self._records: dict[str, ExtensionInstallRecord] = {}
         self._active: dict[tuple[str, str, str], str] = {}
         self._transitions: list[ExtensionTransition] = []
+        self._pins: dict[tuple[str, str, str], PinRecord] = {}
+        self._pin_events: list[PinEvent] = []
+        self._removal_notes: list[RemovalNote] = []
         self._seq = 0
 
     async def save_record(self, record: ExtensionInstallRecord) -> None:
@@ -126,3 +169,35 @@ class InMemoryExtensionStore:
     async def next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    # -- B3 (#954): post-install lifecycle ---------------------------------
+
+    async def clear_active(self, scope: ExtensionScope, extension_id: str) -> None:
+        self._active.pop((scope.org_id, scope.workspace_id, extension_id), None)
+
+    async def get_pin(self, scope: ExtensionScope, extension_id: str) -> PinRecord | None:
+        return self._pins.get((scope.org_id, scope.workspace_id, extension_id))
+
+    async def set_pin(self, pin: PinRecord) -> None:
+        self._pins[(pin.org_id, pin.workspace_id, pin.extension_id)] = pin
+
+    async def clear_pin(self, scope: ExtensionScope, extension_id: str) -> bool:
+        return self._pins.pop((scope.org_id, scope.workspace_id, extension_id), None) is not None
+
+    async def append_pin_event(self, event: PinEvent) -> None:
+        self._pin_events.append(event)
+
+    async def pin_events(self, scope: ExtensionScope, extension_id: str) -> tuple[PinEvent, ...]:
+        return tuple(
+            event
+            for event in self._pin_events
+            if event.org_id == scope.org_id
+            and event.workspace_id == scope.workspace_id
+            and event.extension_id == extension_id
+        )
+
+    async def append_removal_note(self, note: RemovalNote) -> None:
+        self._removal_notes.append(note)
+
+    async def removal_notes_for(self, install_id: str) -> tuple[RemovalNote, ...]:
+        return tuple(note for note in self._removal_notes if note.install_id == install_id)

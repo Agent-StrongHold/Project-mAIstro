@@ -37,6 +37,26 @@ class ExtensionState(StrEnum):
     inspection, so a denied or abandoned request never leaves an active
     extension behind. ``FAILED`` is the recoverable post-authorization state —
     the grant stands, the artifact bound at inspection may be presented again.
+
+    B3 (#954) finishes the lifecycle on this same machine with three durable
+    post-install states:
+
+    - ``DISABLED`` — suspended by an operator. The scope's active pointer is
+      dropped, so invocation resolution stops immediately; the record, its
+      frozen grant and its audit trail are retained verbatim.
+    - ``SUPERSEDED`` — was ACTIVE, replaced by another version of the same
+      extension (an upgrade activation, a rollback away, or crash
+      reconciliation). Retained as the rollback candidate pool: its bound
+      artifact digest and frozen grant are exactly what a rollback restores.
+    - ``REMOVED`` — uninstalled. Terminal for the record's authority; the
+      record and its transitions are canonical historical evidence and are
+      never deleted. The (scope, extension, version) key is released so the
+      same version can be reinstalled through a fresh authorization track.
+
+    Resume and rollback re-enter ``INSTALLING`` rather than jumping straight
+    to ``ACTIVE``: the loader is the only code-execution seam, so restoring a
+    runtime handle goes through the same checked activation path as a first
+    install, never around it.
     """
 
     INSPECTING = "inspecting"
@@ -44,6 +64,9 @@ class ExtensionState(StrEnum):
     AUTHORIZED = "authorized"
     INSTALLING = "installing"
     ACTIVE = "active"
+    DISABLED = "disabled"
+    SUPERSEDED = "superseded"
+    REMOVED = "removed"
     DENIED = "denied"
     REJECTED = "rejected"
     ABANDONED = "abandoned"
@@ -52,8 +75,9 @@ class ExtensionState(StrEnum):
 
 #: The legal transition table. Every state is named here so an unfamiliar
 #: edge fails loudly at lookup instead of silently widening the machine.
-#: ``ACTIVE`` has no outgoing edges in B2 — pin/upgrade/disable/remove is
-#: #954's lifecycle and must not grow here by accident.
+#:
+#: B2 installed the inspect→authorize→install edges; B3 (#954) finishes the
+#: post-install lifecycle on the same machine — one table, one authority.
 TRANSITIONS: dict[ExtensionState, frozenset[ExtensionState]] = {
     ExtensionState.INSPECTING: frozenset(
         {ExtensionState.AWAITING_AUTHORIZATION, ExtensionState.REJECTED}
@@ -65,23 +89,65 @@ TRANSITIONS: dict[ExtensionState, frozenset[ExtensionState]] = {
             ExtensionState.ABANDONED,
         }
     ),
-    ExtensionState.AUTHORIZED: frozenset({ExtensionState.INSTALLING}),
+    # B3: an authorized grant may be released without ever activating — the
+    # operator withdraws before install. REMOVED is terminal.
+    ExtensionState.AUTHORIZED: frozenset({ExtensionState.INSTALLING, ExtensionState.REMOVED}),
     ExtensionState.INSTALLING: frozenset({ExtensionState.ACTIVE, ExtensionState.FAILED}),
     # A failed activation is retried with the same bound artifact: re-entering
-    # INSTALLING is the recovery path, not a new authority grant.
-    ExtensionState.FAILED: frozenset({ExtensionState.INSTALLING}),
-    ExtensionState.ACTIVE: frozenset(),
+    # INSTALLING is the recovery path, not a new authority grant. B3: a failed
+    # install may also be abandoned outright, releasing its (scope, extension,
+    # version) key for a fresh inspection of fixed bytes.
+    ExtensionState.FAILED: frozenset({ExtensionState.INSTALLING, ExtensionState.REMOVED}),
+    # B3: the post-install lifecycle. DISABLED suspends invocation resolution;
+    # SUPERSEDED retires a version while keeping it rollback-eligible;
+    # REMOVED uninstalls. Resume and rollback re-enter INSTALLING so restored
+    # code goes through the loader seam again, never around it.
+    ExtensionState.ACTIVE: frozenset(
+        {
+            ExtensionState.DISABLED,
+            ExtensionState.SUPERSEDED,
+            ExtensionState.REMOVED,
+        }
+    ),
+    ExtensionState.DISABLED: frozenset({ExtensionState.INSTALLING, ExtensionState.REMOVED}),
+    ExtensionState.SUPERSEDED: frozenset({ExtensionState.INSTALLING, ExtensionState.REMOVED}),
+    ExtensionState.REMOVED: frozenset(),
     ExtensionState.DENIED: frozenset(),
     ExtensionState.REJECTED: frozenset(),
     ExtensionState.ABANDONED: frozenset(),
 }
 
 #: States that can never reach ``ACTIVE`` without a brand-new inspection.
+#: ``REMOVED`` is deliberately absent: removal is terminal for the record's
+#: authority, but the (scope, extension, version) key it held is released —
+#: reinstalling the same version must open a *fresh* authorization track,
+#: which a terminal classification would silently forbid by handing the old
+#: record back (see ``ExtensionInstallService.inspect``).
 TERMINAL_STATES: frozenset[ExtensionState] = frozenset(
     {
         ExtensionState.DENIED,
         ExtensionState.REJECTED,
         ExtensionState.ABANDONED,
+    }
+)
+
+#: States whose records hold neither an open authorization track nor any
+#: authority: re-inspecting the same key never resumes the old record, it
+#: opens a new one.
+INSPECT_SKIP_STATES: frozenset[ExtensionState] = TERMINAL_STATES | frozenset(
+    {ExtensionState.REMOVED}
+)
+
+#: States an install record may be removed from (#954). The fail-closed
+#: terminals hold nothing to remove — they never held a grant — and REMOVED
+#: is already the target state.
+REMOVABLE_STATES: frozenset[ExtensionState] = frozenset(
+    {
+        ExtensionState.AUTHORIZED,
+        ExtensionState.FAILED,
+        ExtensionState.ACTIVE,
+        ExtensionState.DISABLED,
+        ExtensionState.SUPERSEDED,
     }
 )
 
@@ -125,6 +191,23 @@ class ArtifactMismatch(ExtensionLifecycleError):
 
     No transition is recorded: the record keeps its state, because a payload
     that fails the digest check never happened to the machine.
+    """
+
+
+class PreflightError(ExtensionLifecycleError):
+    """A version-change preflight (upgrade or rollback) refused.
+
+    Raised before any state change, any transition, and any record write: a
+    refused preflight leaves the scope exactly as it was. The message names
+    every failed check so the refusal is auditable from the log alone.
+    """
+
+
+class PinConflict(PreflightError):
+    """The operation contradicts the scope's version pin.
+
+    A pin holds one version against version changes; moving to another
+    version requires an explicit unpin first. Nothing is mutated.
     """
 
 
@@ -257,6 +340,11 @@ class ExtensionInstallRecord:
     #: Decision deadline for the AWAITING_AUTHORIZATION state. Expired
     #: requests become ABANDONED — lazily on touch and via the sweep.
     expires_at: datetime | None = None
+    #: Why the record sits in its current lifecycle state, for the B3
+    #: post-install states that are not failures (DISABLED, SUPERSEDED,
+    #: REMOVED). Failure-shaped states keep carrying ``failure_reason``;
+    #: this is the durable answer to "why is this disabled/superseded/removed".
+    status_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -274,3 +362,62 @@ class ExtensionTransition:
     from_state: ExtensionState
     to_state: ExtensionState
     reason: str
+
+
+@dataclass(frozen=True)
+class PinRecord:
+    """A version pin (#954): the scope holds this extension at this version.
+
+    Pinning is operator metadata with authority consequences — upgrade and
+    rollback preflights refuse version changes that contradict it — so it is
+    persisted in the same store as the records it constrains and every
+    pin/unpin is audited (see :class:`PinEvent`). At most one pin exists per
+    (scope, extension); re-pinning the same version refreshes it.
+    """
+
+    org_id: str
+    workspace_id: str
+    extension_id: str
+    version: str
+    pinned_by: str
+    reason: str
+    pinned_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PinEvent:
+    """One audited pin/unpin operation (canonical evidence, #939/#954)."""
+
+    seq: int
+    at: datetime
+    org_id: str
+    workspace_id: str
+    extension_id: str
+    action: str
+    #: The pinned version for ``pin``/``refresh``; ``None`` for ``unpin``.
+    version: str | None
+    actor: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class RemovalNote:
+    """The owned-resource cleanup report of one remove operation (#954).
+
+    Canonical evidence (records and transitions) is never deleted; what
+    removal *may* delete is the extension's owned operational resources, via
+    a host-supplied janitor. This note records what that policy actually
+    purged — and what it failed to purge — so a removal is auditable down to
+    its cleanup, including the retries of a crashed cleanup.
+    """
+
+    seq: int
+    at: datetime
+    install_id: str
+    org_id: str
+    workspace_id: str
+    extension_id: str
+    version: str
+    actor: str
+    purged: tuple[str, ...]
+    failed: tuple[str, ...]
