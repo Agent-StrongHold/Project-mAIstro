@@ -10,7 +10,7 @@ Invocation execution API.
 from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
-from maistro.cli._extensions import extensions_history, extensions_show
+from maistro.cli._extensions import extensions_history, extensions_preflight, extensions_show
 from maistro.container import Container
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
@@ -270,6 +270,15 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.get_install,
     InMemoryExtensionInstallStore.get_install,
     SqliteExtensionInstallStore.get_install,
+    # The lock-state read seam (#957): the upgrade preflight consumes the
+    # whole installed set, not one extension's history. The CLI preflight
+    # command is its in-tree caller (typer dispatch, same posture as the
+    # other `maistro extensions` read commands); the library-level caller is
+    # the #957 test suite.
+    ExtensionInstallStore.all_installs,
+    InMemoryExtensionInstallStore.all_installs,
+    SqliteExtensionInstallStore.all_installs,
     extensions_history,
+    extensions_preflight,
     extensions_show,
 )

@@ -89,6 +89,16 @@ class ExtensionInstallStore(Protocol):
         """The record for an exact installed-version identity, or ``None``."""
         ...
 
+    async def all_installs(self) -> list[InstallRecord]:
+        """Every install record across every extension, oldest first per name.
+
+        The whole installed lock state in one read — the input surface the
+        upgrade preflight evaluates. Records from different extensions are
+        ordered by extension name; records for one extension keep install
+        order.
+        """
+        ...
+
 
 def make_trust_evidence(
     publisher: PublisherIdentity, identity: PackageIdentity, *, now: datetime
@@ -229,6 +239,13 @@ class InMemoryExtensionInstallStore:
             if identity_key(record.identity) == wanted:
                 return record
         return None
+
+    async def all_installs(self) -> list[InstallRecord]:
+        """Every install record across every extension, oldest first per name."""
+        records: list[InstallRecord] = []
+        for name in sorted(self._installs):
+            records.extend(self._installs[name])
+        return records
 
     def _existing(self, identity: PackageIdentity) -> InstallRecord:
         """The already-persisted record for ``identity`` (idempotent path)."""
