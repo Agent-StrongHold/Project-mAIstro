@@ -11050,3 +11050,74 @@ strengthens the governed effect path (#12's substrate) but lands no
 Workspace Agent/reconciliation. All 13 acceptance criteria remain
 UNPROVEN at 53391af70a; the branch remains a develop-current,
 battery-green waiting position (Refs #777).
+
+## Round 166 — 2026-10-05 (job 067befd86912426bb81771ef8e0100fe)
+
+Repair round at exact starting head `9b469367f0203f35bd3b02ed0cac70c48bcebf4a`
+(develop base `658a8f78c1800d264759a81dc8d87dd447f0f7f2`). Manifest
+`checks: []` — 16th zero-check round; every gate below was worker-run fresh at
+`9b469367f`. Docs-only round; no production or test code changed (inventory
+delta +0 across all suites, hence the unchanged front-matter).
+
+**Sync check:** `git fetch origin` then `git rev-parse origin/develop` →
+`658a8f78c` — unchanged since round 165 merged it at `53391af70a`; **no sync
+conflict this round**. The NEEDS-REPAIR from job `53d5e08bf` (check-2.log,
+`ruff format --check` failing on
+`packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py` at
+stale head `a99c6bd784`) is confirmed resolved: fresh `ruff format --check .`
+reports 2980 files already formatted, EXIT 0.
+
+**Battery green fresh at `9b469367f`:** `ruff check .` EXIT 0; `ruff format
+--check .` EXIT 0 (2980 files); vulture CI-exact (`scripts/check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) EXIT 0, base
+`658a8f78c` -> cand `9b469367f`, 1343 -> 1342 reviewed identities,
+never_allowlist 0; `check-api-route-contracts.py` EXIT 0 (279 handlers, 0
+canned); `check-route-permissions.py` EXIT 0 (23 tolerated undeclared
+prefixes, none new); `check-reachability.py` EXIT 0 (1283 production modules);
+`check-promotion-surface.py` EXIT 0; `check-ratchet-provenance.py` EXIT 0 (49
+quality JSON consumers); `check-suite-inventory.py` EXIT 0 (15/15 suites under
+`uv run`); `check-backlog-consistency.py` EXIT 0 (167 items).
+
+**pytest fresh at `9b469367f`:** `packages/maistro-design/tests
+packages/maistro-bootstrap/tests` → **772 passed, 7 skipped** (21.64s);
+hive-conductor `-k "design or workspace or agent or creative"` → **507 passed,
+5 skipped** (24.10s; includes the #775 creative-graph and #774 brief tests
+landed by the develop merge).
+
+**Tree delta vs round 165 (all from the merged develop base, none #777 work):**
+- #775 **closed**; its creative Graph is in tree (`creative_graph.py` via PR
+  #1668 `8bb0f1f01`, complexity-trimmed by #1831 `8f19acc1f`) and
+  `brief.py`/`creative_nodes.py` carry `goal_delegation_ref` — per
+  `brief.py:22-23` these are **non-authoritative references/annotations**;
+  canonical delegation/authorization authorities are untouched.
+- #776's working graph confirmed production-wired
+  (`packages/maistro-core/src/maistro/container.py:66-67` imports
+  `WorkspaceWorkingMemoryManager` + wiring); hive-conductor
+  `dag_run_inspection.py` exposes creative DAG inspection.
+- Stale bytecode `maistro_design/__pycache__/workspace_agent.cpython-312.pyc`
+  has **no source file** (gitignored build residue, not tree content).
+
+**Blockers re-proven fresh at `9b469367f`:** `grep -rn
+'GoalReconciler\|delegate_goal' packages/*/src` → 0 matches (exit 1) — the
+#804/#805 reconciliation surface does not exist;
+`packages/maistro-core/src/maistro/goals/` absent (canonical Goal persistence
+unlanded); `routes/design.py` 0 matches for workspace_agent|control_mode|delegat
+— the Design Studio front door consumes no Workspace Agent;
+`workspace_agent.py:1` is the #1037 one-identity-per-Workspace roster service,
+not a reconciler front door.
+
+**Dependency states (dispatch-context.json, captured
+2026-10-05T15:21:59Z):** #773 open; #804/#805/#806 open; #774 open; #776 open;
+#53 open; #93/#95 open; #39/#458/#775 closed; PR #1660 open **draft**,
+`merged: false`, `mergeable_state: clean`, head `17ad5f75b894` — the
+implementation vehicle is unmerged; merging it is outside this lane's
+authority (no GitHub mutations). Issue #777 `blocked_by` API returns `[]` but
+the body's `Depends on:` list (verified verbatim in the same capture) names
+the same open set.
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
+123–165. The develop merge advanced two substrate items (#775 closed, #776
+wired) but none of the 13 acceptance criteria is provable: every delegated/
+reconciliation/ownership criterion requires #804/#805/#806, which remain open
+with zero code in tree. The branch remains a develop-current, battery-green
+waiting position (Refs #777).
