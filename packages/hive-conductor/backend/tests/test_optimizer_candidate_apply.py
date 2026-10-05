@@ -49,12 +49,13 @@ def _isolated():
     from services.optimizer_candidates import set_template_store
 
     from maistro.graph.templates import InMemoryGraphTemplateStore
+    from maistro.memory.exposure import MemoryExposureMode
 
     for s in (stores.audit_log, stores.eval_verdicts, stores.optimizer_proposals, stores.dags):
         _wipe(s)
     edit_lock.clear()
     prev_fb = get_outcome_store()
-    set_outcome_store(InMemoryOutcomeStore())
+    set_outcome_store(InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED))
     prev_m = _get_metrics_store()
     _set_metrics_store(NodeMetricsStore())
     store = InMemoryGraphTemplateStore()

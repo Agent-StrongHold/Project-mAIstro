@@ -27,6 +27,7 @@ import pytest
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.episodic.tiers import clamp_weight
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.persistence.episodic_rows import COLUMNS
 from maistro.persistence.pg_episodic import PgEpisodicStore
 from maistro.types.memory import REINFORCE_DELTA, EpisodicMemory, MemoryScope, MemoryTier
@@ -52,7 +53,7 @@ async def _sqlite_store(path: str) -> tuple[Any, Any]:
     from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 
     conn = await aiosqlite.connect(path)
-    store = SqliteEpisodicStore(conn)
+    store = SqliteEpisodicStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.ensure_schema()
     return store, conn
 
@@ -76,7 +77,7 @@ async def durable_store(
         return
     if pg_pool is None:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-    store = PgEpisodicStore(pg_pool)
+    store = PgEpisodicStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.ensure_schema()
     yield store
 
@@ -105,14 +106,16 @@ class TestAMemoryOutlivesItsProcess:
         if pg_pool is None:
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
         asyncpg = pytest.importorskip("asyncpg")
-        store = PgEpisodicStore(pg_pool)
+        store = PgEpisodicStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         await store.store(_memory("m1", tier=MemoryTier.WISDOM, weight=0.9))
         await store.reinforce("m1", delta=0.02)
 
         other = await asyncpg.create_pool(postgres_dsn(), min_size=1, max_size=2)
         try:
-            [found] = await PgEpisodicStore(other).list_by_scope(org_id="org-a")
+            [found] = await PgEpisodicStore(
+                other, exposure_mode=MemoryExposureMode.AGENT_MANAGED
+            ).list_by_scope(org_id="org-a")
         finally:
             await other.close()
 
@@ -236,7 +239,7 @@ class TestTheDecayLadderIsDurable:
         a memory already resting on its floor is swept without moving — a
         distinction hard-coded expectations get wrong (this test did, first
         time round) and the reference store cannot."""
-        volatile = InMemoryEpisodicStore()
+        volatile = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         corpus = [
             _memory("observation", tier=MemoryTier.OBSERVATION, weight=0.5),
             _memory("wisdom", tier=MemoryTier.WISDOM, weight=0.9),
@@ -291,7 +294,7 @@ class TestTheDecayLadderIsDurable:
 class TestTheThreeStoresAgree:
     @pytest.mark.ac("SPEC-083026-ba26/AC-6")
     async def test_retrieve_and_list_return_the_same_memories(self, durable_store: Any) -> None:
-        volatile = InMemoryEpisodicStore()
+        volatile = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         corpus = [
             _memory("alpha", content="postgres notes on indexes", weight=0.8),
             _memory("beta", content="notes on decay", weight=0.6),
@@ -311,7 +314,7 @@ class TestTheThreeStoresAgree:
 
     @pytest.mark.ac("SPEC-083026-ba26/AC-6")
     async def test_reinforce_moves_the_weight_the_same_way(self, durable_store: Any) -> None:
-        volatile = InMemoryEpisodicStore()
+        volatile = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         memory = _memory("m1", tier=MemoryTier.OPINION, weight=0.5)
         await volatile.store(memory)
         await durable_store.store(memory)
@@ -333,7 +336,7 @@ class TestTheThreeStoresAgree:
         await durable_store.reinforce("never-stored", delta=0.1)
 
     async def test_a_min_weight_floor_selects_the_same_set(self, durable_store: Any) -> None:
-        volatile = InMemoryEpisodicStore()
+        volatile = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         for memory in (_memory("heavy", weight=0.8), _memory("light", weight=0.1)):
             await volatile.store(memory)
             await durable_store.store(memory)
@@ -430,7 +433,7 @@ class TestTwoWorkersReinforcingTheSameMemory:
         if pg_pool is None:
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
         asyncpg = pytest.importorskip("asyncpg")
-        store = PgEpisodicStore(pg_pool)
+        store = PgEpisodicStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         memory_id = await store.store(_memory("shared", tier=MemoryTier.OPINION, weight=0.3))
 
@@ -438,7 +441,9 @@ class TestTwoWorkersReinforcingTheSameMemory:
         try:
             await asyncio.gather(
                 store.reinforce(memory_id, delta=0.1),
-                PgEpisodicStore(other).reinforce(memory_id, delta=0.1),
+                PgEpisodicStore(other, exposure_mode=MemoryExposureMode.AGENT_MANAGED).reinforce(
+                    memory_id, delta=0.1
+                ),
             )
         finally:
             await other.close()
@@ -464,7 +469,7 @@ class TestEqualWeightsOrderTheSameEverywhere:
         """Every new memory defaults to weight 0.3, so `limit` cuts through an
         equal-weight group constantly. A stable sort on weight alone returns
         insertion order, which no SQL query reproduces (Codex, #710)."""
-        volatile = InMemoryEpisodicStore()
+        volatile = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         for memory_id in ("gamma", "alpha", "beta"):
             memory = _memory(memory_id, weight=0.3)
             await volatile.store(memory)
@@ -475,7 +480,7 @@ class TestEqualWeightsOrderTheSameEverywhere:
         assert mine == theirs == ["alpha", "beta", "gamma"]
 
     async def test_a_limit_through_a_tie_keeps_the_same_memories(self, durable_store: Any) -> None:
-        volatile = InMemoryEpisodicStore()
+        volatile = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         for memory_id in ("gamma", "alpha", "beta"):
             memory = _memory(memory_id, weight=0.3)
             await volatile.store(memory)
@@ -499,7 +504,7 @@ class TestTheContextSurvivesAsItselfOnAnyPool:
         """`EpisodicMemory.context` is `dict[str, Any]` and the in-memory store
         keeps what it was handed, so a durable store that coerced to `str` would
         answer differently (Codex, #710)."""
-        volatile = InMemoryEpisodicStore()
+        volatile = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         memory = _memory("m1", context=dict(self._RICH))
         await volatile.store(memory)
         await durable_store.store(memory)
@@ -526,7 +531,7 @@ class TestTheContextSurvivesAsItselfOnAnyPool:
 
         raw = await asyncpg.create_pool(postgres_dsn(), min_size=1, max_size=2)
         try:
-            store = PgEpisodicStore(raw)
+            store = PgEpisodicStore(raw, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
             await store.ensure_schema()
             async with raw.acquire() as conn:
                 await conn.execute("TRUNCATE episodic_memories")
@@ -559,7 +564,7 @@ class TestTheContextSurvivesAsItselfOnAnyPool:
         """
         if pg_pool is None:
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-        store = PgEpisodicStore(pg_pool)
+        store = PgEpisodicStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         await store.store(_memory("m1", context=dict(self._RICH)))
 
