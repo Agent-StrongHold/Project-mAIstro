@@ -546,7 +546,13 @@ class TestTheDowngrade:
 
         assert result.returncode != 0, "the downgrade discarded live v2 identity"
         assert "format_version" in result.stderr + result.stdout
-        assert _stamped_version() == "054"
+        # A multi-revision `alembic downgrade` is one transaction: the refusal
+        # at 054's own downgrade rolls the whole attempt back, so the stamp
+        # never moves off whatever head it started from -- not the fixed
+        # literal "054", which was only ever an artifact of that being the
+        # chain tip when this test was written. #1362's quota-door revision
+        # re-parented onto 054 as the new tip, so that is the head now.
+        assert _stamped_version() == "043_invocation_quota_door"
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 
