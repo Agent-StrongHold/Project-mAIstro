@@ -1,11 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import {
-  type AuditEntry,
-  type AuthenticatedUser,
-  type ChatSessionSummary,
-  type MemoryEntry,
-  type WhoamiResponse,
-} from "../api/entities";
+import type { AuditEntry, AuthenticatedUser, ChatSessionSummary, MemoryEntry, WhoamiResponse } from "../api/entities";
 import { apiGet } from "../lib/api";
 import { useToast } from "../components/shared";
 import { claimUiState, clearUiState, storedUiState } from "../lib/uiState";
@@ -35,6 +29,7 @@ export default function Profile() {
 
         // Streaming chat stays on raw fetch — api client has a 30s body timeout
         // and no SSE helper (#1423).
+        // frontend-typed-client: allow SSE stream — shared api client times out on long bodies
         const r = await fetch("/v1/chat/stream", {
           method: "POST", credentials: "same-origin",
           headers: { "Content-Type": "application/json" },

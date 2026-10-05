@@ -4,6 +4,8 @@ import { AppShell } from "./components/AppShell";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
+import type { SetupStatusResponse, WhoamiResponse } from "./api/entities";
+import { apiGet } from "./lib/api";
 import { claimUiState } from "./lib/uiState";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import Login from "./pages/Login";
@@ -96,8 +98,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserInfo | null>(null);
 
   async function loadSession(): Promise<UserInfo | null> {
-    const whoRes = await fetch("/v1/auth/whoami", { credentials: "same-origin" });
-    return whoamiToUser(await whoRes.json());
+    return whoamiToUser(await apiGet<WhoamiResponse>("/v1/auth/whoami"));
   }
 
   useEffect(() => {
@@ -111,15 +112,15 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         // Setup wizard: on a fresh, unconfigured instance a slow or
         // never-settling whoami must not hold up detecting that setup isn't
         // done, so whoami is only awaited once setup is confirmed complete.
-        const setupPromise = fetch("/v1/setup/status", { credentials: "same-origin" });
-        const whoPromise = fetch("/v1/auth/whoami", { credentials: "same-origin" });
-        const setupData = await (await setupPromise).json();
+        const setupPromise = apiGet<SetupStatusResponse>("/v1/setup/status");
+        const whoPromise = apiGet<WhoamiResponse>("/v1/auth/whoami");
+        const setupData = await setupPromise;
         if (!setupData.setup_complete) {
           setSetupDone(false);
           setReady(true);
           return;
         }
-        const whoData = await (await whoPromise).json();
+        const whoData = await whoPromise;
         setSetupDone(true);
         setUser(whoamiToUser(whoData));
       } catch {

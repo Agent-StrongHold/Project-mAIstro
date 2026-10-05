@@ -1,35 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
+import type { MemoryEntry } from "../api/entities";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 
-type Entry = {
-  id: string; key: string; value: string; namespace: string;
-  tags: string[]; embedding: string | null;
-  created_at: string; updated_at: string;
-  accessed_count: number; ttl_seconds: number | null;
-};
-
 export default function Memory() {
   const toast = useToast();
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [sel, setSel] = useState<Entry | null>(null);
+  const [entries, setEntries] = useState<MemoryEntry[]>([]);
+  const [sel, setSel] = useState<MemoryEntry | null>(null);
   const [nsFilter, setNsFilter] = useState("");
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<MemoryEntry | null>(null);
   const [form, setForm] = useState({ key: "", value: "", namespace: "general", tags: "" });
   const [editForm, setEditForm] = useState({ key: "", value: "", tags: "" });
 
   const load = useCallback(async () => {
-    try { setEntries(await apiGet<Entry[]>("/v1/memory/entries")); } catch { /* */ }
+    try { setEntries(await apiGet<MemoryEntry[]>("/v1/memory/entries")); } catch { /* */ }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
   async function createEntry() {
     if (!form.key.trim()) return;
     try {
-      const created = await apiPost<Entry>("/v1/memory/entries", { key: form.key.trim(), value: form.value, namespace: form.namespace, tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean) });
+      const created = await apiPost<MemoryEntry>("/v1/memory/entries", { key: form.key.trim(), value: form.value, namespace: form.namespace, tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean) });
       setEntries((prev) => [...prev, created]);
       setCreating(false);
       setForm({ key: "", value: "", namespace: "general", tags: "" });
@@ -47,13 +41,13 @@ export default function Memory() {
   async function updateEntry() {
     if (!sel) return;
     const previous = sel;
-    const tags = editForm.tags ? editForm.tags.split(",").map((t) => t.trim()).filter(Boolean) : previous.tags;
-    const optimistic: Entry = { ...previous, key: editForm.key || previous.key, value: editForm.value || previous.value, tags };
+    const tags = editForm.tags ? editForm.tags.split(",").map((t) => t.trim()).filter(Boolean) : (previous.tags ?? []);
+    const optimistic: MemoryEntry = { ...previous, key: editForm.key || previous.key, value: editForm.value || previous.value, tags };
     setEntries((prev) => prev.map((e) => (e.id === previous.id ? optimistic : e)));
     setSel(optimistic);
     setEditing(false);
     try {
-      const updated = await apiPut<Entry>(`/v1/memory/entries/${previous.id}`, { key: editForm.key || undefined, value: editForm.value || undefined, tags: editForm.tags ? tags : undefined });
+      const updated = await apiPut<MemoryEntry>(`/v1/memory/entries/${previous.id}`, { key: editForm.key || undefined, value: editForm.value || undefined, tags: editForm.tags ? tags : undefined });
       // `setEntries` cannot be conditioned on "is this still current" from out
       // here: whether the updater above already ran is not observable
       // synchronously, so the only reliable check is inside `setSel`'s own
@@ -103,8 +97,8 @@ export default function Memory() {
     }
   }
 
-  function startEdit(e: Entry) {
-    setEditForm({ key: e.key, value: e.value, tags: e.tags.join(", ") });
+  function startEdit(e: MemoryEntry) {
+    setEditForm({ key: e.key, value: e.value, tags: (e.tags ?? []).join(", ") });
     setEditing(true);
   }
 
@@ -113,7 +107,7 @@ export default function Memory() {
     if (nsFilter && e.namespace !== nsFilter) return false;
     if (search) {
       const q = search.toLowerCase();
-      return e.key.toLowerCase().includes(q) || e.value.toLowerCase().includes(q) || e.tags.some((t) => t.toLowerCase().includes(q));
+      return e.key.toLowerCase().includes(q) || e.value.toLowerCase().includes(q) || (e.tags ?? []).some((t) => t.toLowerCase().includes(q));
     }
     return true;
   });
@@ -171,9 +165,9 @@ export default function Memory() {
                   {e.embedding ? <Hex variant="ok">embedded</Hex> : null}
                 </div>
               </div>
-              {e.tags.length > 0 && (
+              {(e.tags ?? []).length > 0 && (
                 <div style={{ display: "flex", gap: 3, marginTop: 4 }}>
-                  {e.tags.map((t) => <Hex key={t} variant="">{t}</Hex>)}
+                  {(e.tags ?? []).map((t) => <Hex key={t} variant="">{t}</Hex>)}
                 </div>
               )}
             </div>
@@ -224,11 +218,11 @@ export default function Memory() {
                   {sel.value}
                 </div>
               </div>
-              {sel.tags.length > 0 && (
+              {(sel.tags ?? []).length > 0 && (
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4, textTransform: "uppercase" }}>Tags</div>
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                    {sel.tags.map((t) => <Hex key={t}>{t}</Hex>)}
+                    {(sel.tags ?? []).map((t) => <Hex key={t}>{t}</Hex>)}
                   </div>
                 </div>
               )}

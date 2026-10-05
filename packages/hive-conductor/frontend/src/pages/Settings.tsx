@@ -1,25 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiGet, apiPatch } from "../lib/api";
+import type { PatchSettingsBody, SettingsModel } from "../api/entities";
+import { apiGet, apiPatch, apiPost } from "../lib/api";
 import { PageHeader, SecretField } from "../components/shared";
 
-type Settings = Record<string, unknown>;
-
 export default function Settings() {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settings, setSettings] = useState<SettingsModel | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [editVal, setEditVal] = useState("");
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [elevating, setElevating] = useState(false);
   const [elevPassword, setElevPassword] = useState("");
   const [elevatingFor, setElevatingFor] = useState<string | null>(null);
-  const load = useCallback(async () => { try { setSettings(await apiGet<Settings>("/v1/settings")); } catch { /* */ } }, []);
+  const load = useCallback(async () => { try { setSettings(await apiGet<SettingsModel>("/v1/settings")); } catch { /* */ } }, []);
   useEffect(() => { void load(); apiGet<{ models: string[] }>("/v1/settings/models").then((r) => setAvailableModels(r.models)).catch(() => {}); }, [load]);
 
   async function saveSetting(key: string) {
     if (!settings) return;
     try {
-      await apiPatch("/v1/settings", { [key]: parseVal(editVal, settings[key]) });
+      await apiPatch("/v1/settings", { [key]: parseVal(editVal, settings[key as keyof SettingsModel]) } as PatchSettingsBody);
       setEditing(null);
       await load();
     } catch {
@@ -30,11 +29,10 @@ export default function Settings() {
 
   async function elevateAndSave(key: string) {
     try {
-      await fetch("/v1/auth/elevate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ password: elevPassword, permissions: ["config.write"], task_id: `settings-edit-${key}-${Date.now()}` }),
+      await apiPost("/v1/auth/elevate", {
+        password: elevPassword,
+        permissions: ["config.write"],
+        task_id: `settings-edit-${key}-${Date.now()}`,
       });
       setElevating(false);
       setElevPassword("");
@@ -47,7 +45,7 @@ export default function Settings() {
   function startEdit(key: string) {
     if (!settings) return;
     setEditing(key);
-    const v = settings[key];
+    const v = settings[key as keyof SettingsModel];
     setEditVal(typeof v === "object" ? JSON.stringify(v, null, 2) : String(v));
   }
 

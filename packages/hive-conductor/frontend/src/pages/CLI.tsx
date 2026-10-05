@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import type { Agent, ChatSessionSummary, HealthResponse, MCPServer } from "../api/entities";
+import { apiGet } from "../lib/api";
 import { PageHeader } from "../components/shared";
 
 export default function CLI() {
@@ -7,24 +9,21 @@ export default function CLI() {
 
   const load = useCallback(async () => {
     try {
-      const health = await fetch("/health").then((r) => r.json());
-      const agents = await fetch("/v1/agents").then((r) => r.json()).catch(() => []);
-      const mcp = await fetch("/v1/mcp/servers").then((r) => r.json()).catch(() => []);
-      const connected = mcp.filter((s: { status: string }) => s.status === "connected").length;
+      const health = await apiGet<HealthResponse>("/health");
+      const agents = await apiGet<Agent[]>("/v1/agents").catch(() => [] as Agent[]);
+      const mcp = await apiGet<MCPServer[]>("/v1/mcp/servers").catch(() => [] as MCPServer[]);
+      const connected = mcp.filter((s) => s.status === "connected").length;
       const total = mcp.length;
-      // M3-B7 (#97): status names what is degraded, not just whether the
-      // process is up — the same degraded_services list /health computes and
-      // the shell banner renders.
       const degraded: { service: string; reason: string }[] = Array.isArray(health.degraded_services)
-        ? health.degraded_services
+        ? (health.degraded_services as { service: string; reason: string }[])
         : [];
       const degradedLines = degraded.length
         ? degraded.map((s) => `! degraded: ${s.service}${s.reason ? ` — ${s.reason}` : ""}`)
         : ["\u2713 no degraded optional services"];
       setLines([
         `$ hctl status`,
-        `\u2713 hive-conductor running (pid 1, uptime ${Math.floor((Date.now() - new Date(health.started_at ?? Date.now()).getTime()) / 60000)}m)`,
-        `\u2713 router model: ${health.router_model ?? "cerebras-qwen-3-235b-a22b-2507"}`,
+        `\u2713 hive-conductor running (pid 1, uptime ${Math.floor((Date.now() - new Date(String(health.started_at ?? Date.now())).getTime()) / 60000)}m)`,
+        `\u2713 router model: ${String(health.router_model ?? "cerebras-qwen-3-235b-a22b-2507")}`,
         `\u2713 ${agents.length} agents ready`,
         `\u2713 ${connected}/${total} MCP servers connected`,
         `\u2713 vault: ${health.vault_enabled ? "enabled" : "disabled"} · state: ${health.state_enabled ? "enabled" : "disabled"} · reactor: ${health.reactor_enabled ? "enabled" : "disabled"}`,
@@ -51,18 +50,15 @@ export default function CLI() {
 
     try {
       if (c === "hctl agents") {
-        // frontend-typed-client: allow pre-existing banked raw fetch (was :44); line shifted by the #97 degraded-status block in load().
-        const data = await fetch("/v1/agents").then((r) => r.json());
-        setLines((prev) => [...prev, ...data.map((a: { name: string; status: string; model: string; tasks_completed: number }) => `  ${a.name.padEnd(20)} ${a.status.padEnd(10)} ${a.model.padEnd(30)} ${a.tasks_completed} tasks`)]);
+        const data = await apiGet<Agent[]>("/v1/agents");
+        setLines((prev) => [...prev, ...data.map((a) => `  ${a.name.padEnd(20)} ${a.status.padEnd(10)} ${a.model.padEnd(30)} ${a.tasks_completed} tasks`)]);
       } else if (c === "hctl health") {
-        // frontend-typed-client: allow pre-existing banked raw fetch (was :47); line shifted by the #97 degraded-status block in load().
-        const data = await fetch("/health").then((r) => r.json());
+        const data = await apiGet<HealthResponse>("/health");
         const jsonLines = JSON.stringify(data, null, 2).split("\n").map((l: string) => `  ${l}`);
         setLines((prev) => [...prev, ...jsonLines]);
       } else if (c === "hctl sessions") {
-        // frontend-typed-client: allow pre-existing banked raw fetch (was :51); line shifted by the #97 degraded-status block in load().
-        const data = await fetch("/v1/chat/sessions").then((r) => r.json());
-        setLines((prev) => [...prev, ...data.map((s: { id: string; title: string; message_count: number }) => `  ${s.id.slice(0, 8)}  ${s.title.padEnd(30)} ${s.message_count} msgs`)]);
+        const data = await apiGet<ChatSessionSummary[]>("/v1/chat/sessions");
+        setLines((prev) => [...prev, ...data.map((s) => `  ${s.id.slice(0, 8)}  ${s.title.padEnd(30)} ${s.message_count} msgs`)]);
       } else if (c === "help" || c === "hctl") {
         setLines((prev) => [...prev, "  hctl status    — show system status", "  hctl agents    — list agents", "  hctl health    — health check JSON", "  hctl sessions  — list chat sessions", "  help           — this message"]);
       } else {
