@@ -191,6 +191,14 @@ def test_unasserted_unsupported_flags_and_off_extensions_are_tolerated() -> None
     assert parsed.capabilities.streaming is True
 
 
+@pytest.mark.parametrize("non_boolean", ("false", "0", "", 1, None, [True]))
+def test_non_boolean_supported_feature_flags_are_rejected(non_boolean: Any) -> None:
+    # A truthy-but-non-boolean value (e.g. the string "false") must not be
+    # coerced into an advertised capability.
+    with pytest.raises(DescriptorInvalid, match="'streaming' must be a boolean"):
+        parse_remote_card(_card(capabilities={"streaming": non_boolean}))
+
+
 # AC: "remote card/descriptor does not mint canonical Workspace root authority"
 
 

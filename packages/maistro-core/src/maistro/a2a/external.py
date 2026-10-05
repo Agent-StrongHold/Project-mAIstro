@@ -525,7 +525,12 @@ def _parse_capabilities(raw: Mapping[str, Any]) -> RemoteCapabilities:
         if key_text == "extensions":
             _reject_extensions(value)
         elif key_text in SUPPORTED_CARD_FEATURES:
-            streaming = streaming or bool(value)
+            if not isinstance(value, bool):
+                raise DescriptorInvalid(
+                    f"card capability {key_text!r} must be a boolean, "
+                    f"got {type(value).__name__}"
+                )
+            streaming = streaming or value
         elif key_text in _KNOWN_UNSUPPORTED_FEATURES:
             if value:
                 raise UnsupportedCapability(
@@ -694,7 +699,8 @@ class ExternalAgentRegistry:
         # Availability evidence belongs to the endpoint, not to this payload;
         # it is retained (with its probed_at stamp) rather than reset to
         # unknown, so staleness stays visible instead of silently vanishing.
-        self._records[agent_id] = replace(record, availability=current.availability)
+        record = replace(record, availability=current.availability)
+        self._records[agent_id] = record
         return record
 
     def report_availability(
