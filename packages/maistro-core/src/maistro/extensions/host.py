@@ -16,15 +16,8 @@ that drives extensions through it keeps calling ``AttemptExecutionService``.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from maistro.capabilities.binding import Binding
-from maistro.capabilities.governed_invocation import GovernedInvocationExecutionService
-from maistro.capabilities.invocation import (
-    ProviderExecutor,
-    ProviderResolver,
-    UsageExtractor,
-)
 from maistro.events.envelope import EventEnvelope, EventStore
 from maistro.extensions.context import (
     EffectDispatcher,
@@ -41,6 +34,22 @@ from maistro.extensions.lifecycle import (
     run_deactivation,
     run_invocation,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # The governed capability authorities are annotation-only here, and the
+    # import must stay that way: any `maistro.capabilities` import executes
+    # that package's __init__, which pulls the credential plane (and its
+    # cryptography dependency) into every `import maistro`. The auth module's
+    # fail-closed degradation depends on cryptography staying optional at
+    # import time. Host composition code that builds routes imports the real
+    # types itself — it is host-side and already has the authorities loaded.
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.governed_invocation import GovernedInvocationExecutionService
+    from maistro.capabilities.invocation import (
+        ProviderExecutor,
+        ProviderResolver,
+        UsageExtractor,
+    )
 
 PROGRESS_EVENT_TYPE = "extension.progress"
 EFFECT_EVENT_TYPE = "extension.effect.invoked"

@@ -39,6 +39,8 @@ from maistro.extensions import (
     run_invocation,
 )
 
+pytestmark = pytest.mark.contract("behavioral")
+
 IDENTITY = ExtensionIdentity(extension_id="conformance.probe", version="1.2.3")
 
 

@@ -50,6 +50,8 @@ from maistro.runs.store import InMemoryRunStore
 from maistro.runtime import PythonExecutionRuntime
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
+pytestmark = pytest.mark.contract("behavioral")
+
 WORKSPACE = "extension-ws"
 PROJECT = "extension-project"
 
