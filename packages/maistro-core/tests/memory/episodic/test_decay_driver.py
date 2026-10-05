@@ -21,6 +21,7 @@ from maistro.memory.episodic.decay_driver import (
     supports_decay,
 )
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 from maistro.types.memory import DEFAULT_DECAY_RATE
 
@@ -46,7 +47,7 @@ def _mem(
 
 
 async def _store_with(*memories: EpisodicMemory) -> InMemoryEpisodicStore:
-    store = InMemoryEpisodicStore()
+    store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     for mem in memories:
         await store.store(mem)
     return store
@@ -60,7 +61,10 @@ async def _weight_of(store: InMemoryEpisodicStore, memory_id: str) -> float:
 
 class TestSupportsDecay:
     def test_in_memory_store_is_decayable(self) -> None:
-        assert supports_decay(InMemoryEpisodicStore()) is True
+        assert (
+            supports_decay(InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED))
+            is True
+        )
 
     def test_arbitrary_object_is_not(self) -> None:
         assert supports_decay(object()) is False
