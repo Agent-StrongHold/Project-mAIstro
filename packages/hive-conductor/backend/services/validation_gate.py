@@ -47,7 +47,7 @@ async def validate_proposal(
     task = dag_data.get("description", dag_data.get("name", ""))
     try:
         score_b = await evaluate_dag_run(result_b, task)
-        total_b = score_b.get("total", 0)
+        total_b = score_b["total"]
     except Exception as e:
         logger.warning("validation_score_failed: %s", e)
         return {**proposal, "validated": False, "reason": f"Scoring failed: {e}"}
@@ -187,7 +187,7 @@ async def hill_climb_params(
             result = await execute_dag(variant, scope=scope)
             task = dag_data.get("description", dag_data.get("name", ""))
             score = await evaluate_dag_run(result, task)
-            total = float(score.get("total", 0))
+            total = float(score["total"])
             improved = total > baseline_score
             logger.info("param_test %s=%s: score=%s improved=%s", param, value, total, improved)
             return {
@@ -328,6 +328,11 @@ async def hill_climb_models(
     models_to_test = [m for m in CANDIDATE_MODELS if m != current_model]
     results = await asyncio.gather(*[test_model(m) for m in models_to_test])
 
+    # A failed execution/evaluation has no quality measurement. Do not turn
+    # that absence into zero and promote it as a cheaper match for a measured
+    # zero baseline. A genuine zero score remains eligible for cost savings.
+    scored_results = [r for r in results if "variant_b_score" in r]
+
     # Pareto-optimal selection: best quality/cost/latency composite
     MODEL_COST = {
         "gemini-3.1-flash-lite": 0.02,
@@ -345,8 +350,8 @@ async def hill_climb_models(
         "claude-sonnet-4-6": 1.50,
         "o4-mini": 0.30,
     }
-    for r in results:
-        score = float(r.get("variant_b_score", 0))
+    for r in scored_results:
+        score = float(r["variant_b_score"])
         model = r.get("model_tested", "")
         cost = MODEL_COST.get(model, 0.20)
         latency_s = r.get("latency_ms", 10000) / 1000.0
@@ -367,13 +372,13 @@ async def hill_climb_models(
         r["_quality"] = score
         r["_latency_ms"] = r.get("latency_ms", 0)
 
-    results.sort(key=lambda r: r.get("_composite", 0), reverse=True)
+    scored_results.sort(key=lambda r: r.get("_composite", 0), reverse=True)
 
     # Winner: beats baseline on quality OR same quality at lower cost OR same quality+cost but faster
     current_cost = MODEL_COST.get(current_model, 0.20)
     winners = []
-    for r in results:
-        q = r.get("variant_b_score", 0)
+    for r in scored_results:
+        q = r["variant_b_score"]
         c = r.get("_cost", 999)
         if q > baseline_score:
             r["validated"] = True

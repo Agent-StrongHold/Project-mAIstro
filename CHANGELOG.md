@@ -23,6 +23,17 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Benchmark judgments use admitted execution and configured model authority (#1085, #1370).**
+  The evaluator creates a canonical leased child execution with its parent's
+  persisted actor and exact Workspace/Project scope. It selects an existing
+  scoped model Binding without issuing grants or copying ambient gateway keys.
+  Refusal and malformed-rubric errors no longer become zero-score optimizer
+  baselines or cheaper-model winners. Refusals record a failed one-shot operation
+  with typed authorization evidence; actual cancellation remains cancelled.
+  Completed judge Invocations and usage survive rubric rejection.
+
 ### Added
 
 - **Governed model streaming is available at the canonical Provider seam (#1084).**

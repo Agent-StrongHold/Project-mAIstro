@@ -81,7 +81,11 @@ async def trigger_optimizer(
 
         dag_data = stores.dags.get(dag_id)
         if dag_data:
-            from services.benchmark_eval import evaluate_dag_run
+            from services.benchmark_eval import (
+                BenchmarkAuthorizationError,
+                BenchmarkEvaluationError,
+                evaluate_dag_run,
+            )
             from services.graph_runner import execute_dag
             from services.validation_gate import validate_and_filter_proposals
 
@@ -90,9 +94,19 @@ async def trigger_optimizer(
                 baseline_result = await execute_dag(dict(dag_data), scope=scope)
                 task = dag_data.get("description", dag_data.get("name", ""))
                 baseline_eval = await evaluate_dag_run(baseline_result, task)
-                baseline = float(baseline_eval.get("total", 0))
-            except Exception:
-                baseline = 0.0
+                baseline = float(baseline_eval["total"])
+            except BenchmarkAuthorizationError as exc:
+                raise HTTPException(
+                    status_code=403, detail="Optimizer baseline evaluation is not authorized"
+                ) from exc
+            except BenchmarkEvaluationError as exc:
+                raise HTTPException(
+                    status_code=502, detail="Optimizer baseline evaluation failed"
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502, detail="Optimizer baseline execution or evaluation failed"
+                ) from exc
 
             validated = await validate_and_filter_proposals(
                 dict(dag_data),

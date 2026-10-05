@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -87,6 +88,39 @@ async def _correlated_runtime(
     return runtime, run_store, parent_run_id, project_id
 
 
+async def _benchmark_runtime(runtime: Any, project_id: str) -> Any:
+    """An operator-configured evaluator grant, not a consumer-issued one."""
+    from services.benchmark_eval import BenchmarkRuntime
+
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+    from maistro.types.config import AgentConfig, ModelBindingConfig
+
+    config = AgentConfig(
+        workspace_id="ws-1",
+        litellm_key="configured-test-key",
+        model_bindings=[
+            ModelBindingConfig(
+                binding_id="configured-evaluator",
+                project_id=project_id,
+                node_id="benchmark-evaluation",
+            )
+        ],
+    )
+    await bootstrap_model_bindings(config, runtime.effects)
+    return BenchmarkRuntime(
+        runs=runtime.run_store,
+        calls=AdmittedModelCalls(
+            runtime.effects,
+            registry=runtime.registry,
+            router=runtime.router,
+            endpoint=GatewayEndpoint(base_url="http://gateway"),
+            run_store=runtime.run_store,
+            binding_ids=("configured-evaluator",),
+        ),
+    )
+
+
 def _plain_runtime():
     from services.governed_model import GovernedModelRuntime
 
@@ -124,7 +158,34 @@ class _Response:
 def fake_gateway(monkeypatch: pytest.MonkeyPatch):
     body = {
         "model": "judge-model-v2",
-        "choices": [{"message": {"content": '{"total": 42, "pass": true}'}}],
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            **{
+                                name: {
+                                    "score": 8.4,
+                                    "evidence": "specific evidence",
+                                    "fix": "specific fix",
+                                }
+                                for name in (
+                                    "correctness",
+                                    "completeness",
+                                    "test_coverage",
+                                    "style",
+                                    "security",
+                                )
+                            },
+                            "total": 42,
+                            "pass": True,
+                            "summary": "review summary",
+                            "suggested_prompt_improvement": "better prompt",
+                        }
+                    )
+                }
+            }
+        ],
         "usage": {"prompt_tokens": 12, "completion_tokens": 8},
     }
     calls: list[tuple[str, dict[str, Any]]] = []
@@ -156,7 +217,8 @@ async def test_benchmark_evaluation_records_correlated_invocation(
     import services.benchmark_eval as benchmark_eval
 
     runtime, run_store, parent_run_id, project_id = await _correlated_runtime()
-    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
+    evaluator = await _benchmark_runtime(runtime, project_id)
+    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: evaluator)
 
     score = await benchmark_eval.evaluate_code_output(
         "implement add",
@@ -206,19 +268,19 @@ async def test_benchmark_evaluation_without_canonical_run_is_refused(
     import services.benchmark_eval as benchmark_eval
 
     runtime, _run_store, _parent_run_id, project_id = await _correlated_runtime()
-    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
+    evaluator = await _benchmark_runtime(runtime, project_id)
+    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: evaluator)
 
-    result = await benchmark_eval.evaluate_code_output(
-        "task",
-        "plan",
-        "code",
-        run_id="no-such-canonical-run",
-        workspace_id="ws-1",
-        project_id=project_id,
-    )
+    with pytest.raises(benchmark_eval.BenchmarkAuthorizationError):
+        await benchmark_eval.evaluate_code_output(
+            "task",
+            "plan",
+            "code",
+            run_id="no-such-canonical-run",
+            workspace_id="ws-1",
+            project_id=project_id,
+        )
 
-    assert result["error_kind"] == "authorization"
-    assert result["pass"] is False
     # No model HTTP happened and no Invocation was minted against fiction.
     assert fake_gateway == []
     assert (
@@ -234,12 +296,10 @@ async def test_benchmark_evaluation_without_canonical_run_is_refused(
 
 @pytest.mark.asyncio
 async def test_evaluation_without_canonical_scope_is_truthful() -> None:
-    from services.benchmark_eval import evaluate_code_output
+    from services.benchmark_eval import BenchmarkAuthorizationError, evaluate_code_output
 
-    result = await evaluate_code_output("task", "plan", "code")
-
-    assert result["error_kind"] == "authorization"
-    assert result["pass"] is False
+    with pytest.raises(BenchmarkAuthorizationError):
+        await evaluate_code_output("task", "plan", "code")
 
 
 @pytest.mark.asyncio
@@ -750,11 +810,11 @@ async def test_settle_records_failed_and_cancelled_operations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_benchmark_authorization_denial_settles_cancelled(
+async def test_benchmark_authorization_denial_settles_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A policy-deny on the judge call returns an authorization error kind and
-    settles the evaluation operation as CANCELLED."""
+    """A policy-deny on the judge call raises an authorization error and
+    settles the evaluation operation as FAILED."""
     import services.benchmark_eval as benchmark_eval
 
     async def deny(*args: Any, **kwargs: Any) -> PolicyVerdict:
@@ -762,21 +822,21 @@ async def test_benchmark_authorization_denial_settles_cancelled(
         return PolicyVerdict(Decision.DENY, reason="benchmark denied", rule="test-deny")
 
     runtime, run_store, parent_run_id, project_id = await _correlated_runtime(policy_evaluator=deny)
-    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
+    evaluator = await _benchmark_runtime(runtime, project_id)
+    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: evaluator)
 
-    score = await benchmark_eval.evaluate_code_output(
-        "task",
-        "plan",
-        "code",
-        run_id=parent_run_id,
-        workspace_id="ws-1",
-        project_id=project_id,
-        model="judge-model",
-    )
+    with pytest.raises(benchmark_eval.BenchmarkAuthorizationError):
+        await benchmark_eval.evaluate_code_output(
+            "task",
+            "plan",
+            "code",
+            run_id=parent_run_id,
+            workspace_id="ws-1",
+            project_id=project_id,
+            model="judge-model",
+        )
 
-    assert score["error_kind"] == "authorization"
-    assert score["pass"] is False
-    cancelled = await run_store.list_by_status(RunStatus.CANCELLED, limit=10)
+    cancelled = await run_store.list_by_status(RunStatus.FAILED, limit=10)
     children = [
         run for run in cancelled if run.provenance.get("operation") == "benchmark-evaluation"
     ]
@@ -795,7 +855,8 @@ async def test_benchmark_transport_failure_settles_failed(
     import services.benchmark_eval as benchmark_eval
 
     runtime, run_store, parent_run_id, project_id = await _correlated_runtime()
-    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
+    evaluator = await _benchmark_runtime(runtime, project_id)
+    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: evaluator)
 
     class _DeadClient:
         async def __aenter__(self) -> _DeadClient:
@@ -815,18 +876,17 @@ async def test_benchmark_transport_failure_settles_failed(
 
     monkeypatch.setattr(llm_gateway, "shared_client", _dead_shared_client)
 
-    score = await benchmark_eval.evaluate_code_output(
-        "task",
-        "plan",
-        "code",
-        run_id=parent_run_id,
-        workspace_id="ws-1",
-        project_id=project_id,
-        model="judge-model",
-    )
+    with pytest.raises(benchmark_eval.BenchmarkEvaluationError):
+        await benchmark_eval.evaluate_code_output(
+            "task",
+            "plan",
+            "code",
+            run_id=parent_run_id,
+            workspace_id="ws-1",
+            project_id=project_id,
+            model="judge-model",
+        )
 
-    assert score["error_kind"] == "evaluation"
-    assert score["total"] == 0
     failed = await run_store.list_by_status(RunStatus.FAILED, limit=10)
     children = [run for run in failed if run.provenance.get("operation") == "benchmark-evaluation"]
     assert len(children) == 1
@@ -852,7 +912,8 @@ async def test_evaluate_dag_run_joins_aggregated_outputs(
             latency_p50_ms=100,
         )
     )
-    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
+    evaluator = await _benchmark_runtime(runtime, project_id)
+    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: evaluator)
 
     result = {
         "run_id": parent_run_id,
