@@ -1,7 +1,8 @@
 # Issue #1862 — production loading before generic composition-guard collection, revalidated at lane head
 
 Lane L1862 (implement + verify + repair), jobs `1a2aec658d754c9ba3f9344245ce27fa`,
-`6ecf8f7921b14dc493f2fe4b5a394413` and `5f46927cb45842eea37f0befbc796d27`,
+`6ecf8f7921b14dc493f2fe4b5a394413`, `5f46927cb45842eea37f0befbc796d27`,
+`8ce9ef57e7ae4bb7853990d846f5197c` and `972e31ec3da8408fbb52cc7dee0dc512`,
 worktree `~/Git/wt/auto-1862`, branch `auto-1862`, base = head before this
 note = `afb8659ac4829ad8d674fdd7e92ad24e2a4dc2a9` (develop tip). Every piece of evidence below was executed in this lane against
 that exact revision; nothing is inherited from prior-round claims. The
@@ -118,27 +119,81 @@ All acceptance evidence re-executed at the lane head; no code changed
   --min-confidence 60 --exclude '*/third_party/*'`: 1338 reviewed identities
   = 1338 findings, exit 0.
 
-### Hosted CI status at this head (the one open gate)
+### Hosted CI status at this head (resolved)
 
-Every required check run executed successfully on `56343cd19` (31 check runs
-captured 2026-10-05T07:56Z; last producer, `integration-scope`, completed
-07:40:09Z; `Container scan + SBOM + cosign` skipped as out of scope). The
-required `gates-ran` commit status is **pending**, published 07:24:52Z while
-evidence was still arriving. Reproducing CI's exact evaluator locally on the
-complete captured evidence — `python3 scripts/check-gates-ran.py
+The required `gates-ran` commit status on `56343cd19`, recorded below as
+`pending` while the Gates Ran publisher run stayed queued, has since published
+**success** — "All required checks executed on this exact head",
+2026-10-05T08:06:16Z, publisher run 37279033401 (captured commit-status
+evidence). Every required check run had already executed successfully on that
+head (31 check runs captured 2026-10-05T07:56Z; `Container scan + SBOM +
+cosign` skipped as out of scope). The PR carrying this lane (#1978) then
+entered the GitHub merge queue and was blocked once (GH006) while that status
+was still pending; the block cleared when the status published. The PR's
+content landed on develop as `a235299ff` and the lane continued as the
+develop-sync round below. Hosted queue management stayed outside the lane's
+authority throughout; no branch-side action was required or taken for it.
+
+### The pending window (as recorded at the time)
+
+The required `gates-ran` commit status was **pending**, published 07:24:52Z
+while evidence was still arriving. Every required check run had already
+executed successfully on `56343cd19` (31 check runs captured 2026-10-05T07:56Z;
+last producer, `integration-scope`, completed 07:40:09Z; `Container scan +
+SBOM + cosign` skipped as out of scope). Reproducing CI's exact evaluator
+locally on the complete captured evidence — `python3 scripts/check-gates-ran.py
 --check-runs <captured> --require-complete --base-branch develop
 --event-name pull_request --changed-files <this note>` — returns **"ok: all
 28 required check(s) ran on this head", exit 0**. The publisher run for this
 candidate (created 07:40:13Z, immediately after the final producer
-completion) has stayed `queued` amid a repo-wide publisher-run storm with
-heavy cancellation churn; later publisher runs that completed published for
-other candidates (this head's status timestamp never moved). Nothing in the
-branch can change this: `gates-ran.yml` deliberately judges from protected
+completion) stayed `queued` amid a repo-wide publisher-run storm with heavy
+cancellation churn; later publisher runs that completed published for other
+candidates (this head's status timestamp never moved). Nothing in the branch
+could change this: `gates-ran.yml` deliberately judges from protected
 default-branch code so a candidate cannot rewrite its own judge, and pushing
-is outside this lane's authority. This is a hosted-infra condition requiring
-operator action (drain/re-run the Gates Ran publisher, or the admin-bypass
-merge that `branch-protection.json` grants `OrganizationAdmin`/
-`RepositoryRole:admin`), not a repairable branch finding.
+is outside this lane's authority.
+
+## Develop-sync round (job `972e31ec3da8408fbb52cc7dee0dc512`, head `d12b1c456`)
+
+develop advanced past the lane head by four commits (`aee4e0845` #1845,
+`2bdad33dd` #1874, `a235299ff` = this lane's own PR #1978 squash-landed,
+`9a5eb7ba6` #1858) while the branch sat in the merge-queue block, so the lane
+synced: `git merge origin/develop` at `1bc60c520` -> **one add/add conflict**,
+in this note only (develop carried the pre-repair text of this same record);
+resolved by keeping the lane's extended version. Post-merge
+`git diff origin/develop..HEAD -- packages/ scripts/ quality/` is empty:
+the lane's only artifact remains this note. All acceptance evidence
+re-executed at `d12b1c456879`:
+
+- Both guard modules only, fresh interpreter: **137 passed** in 9.28s;
+  single-file collection still shows exactly the eleven `creative.*`
+  identities (11 unique `creative.*` params enumerated from `--collect-only`).
+- Counterfactual by hand: bare `maistro.graph.nodes` import -> **19 non-test
+  kinds, zero `creative.*`**; importing the real production module
+  `maistro_design.creative_nodes` -> **30 non-test kinds, 11 creative**.
+- Collection order: node-composition alone **99 passed**, container alone
+  **38 passed**, reversed order **137 passed**, broader four-file selection
+  (node-composition + container + `test_base_contract.py` +
+  `test_sync_kinds.py`) **164 passed**.
+- Loader-import failure: out-of-tree `sys.meta_path` shim raising
+  `ImportError` on `maistro_design.creative_nodes` -> **both** guard files
+  error at collection ("Interrupted: 1 error during collection", exit 2).
+- Universe proof **13 passed**; structural pins (sweeps-use-this-universe,
+  declaring-sweep-subset, bare-core counterfactual, test-shaped exclusion,
+  unreachable-module exclusion, coverage-of-declarable-authorities): **6
+  passed**. Negative `-k "refuses or missing or omitting or neither or
+  bare_core or fail_closed or denies"` over node-composition: **36 passed,
+  63 deselected**; container default-deny seam pin: **1 passed**.
+- Full CI `test`-job selection (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run
+  pytest packages/maistro-core/tests -v --tb=short`, ci.yml:519): **12401
+  passed, 888 skipped, 1 xfailed, exit 0** in 313.81s — identical to rounds 2
+  and 3; the develop sync moved no core test.
+- Gates: `ruff check .` clean; `ruff format --check .` clean (2921 files);
+  `scripts/check-suite-inventory.py` ok (14 suites match, no test added, no
+  `inventory-delta`); `scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> 1338 reviewed
+  identities = 1338 findings, exit 0; `scripts/check-reachability.py` -> 1266
+  production modules, exit 0.
 
 ## Repair round 3 (job `5f46927cb45842eea37f0befbc796d27`, head `adb2a77fd`)
 
