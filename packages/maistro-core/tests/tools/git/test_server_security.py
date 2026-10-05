@@ -269,6 +269,70 @@ async def test_git_clone_passes_transport_hardening_flags(
     assert clone_argv.index("http.followRedirects=false") < clone_argv.index("clone")
 
 
+@pytest.fixture
+def _redirecting_http_server():
+    """A local HTTP server whose every response is a 302 to another http URL."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/moved.git/info/refs")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Redirect)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/x.git"
+    server.shutdown()
+    thread.join(timeout=5)
+
+
+async def test_git_clone_functionally_refuses_redirects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _redirecting_http_server: str
+) -> None:
+    """Real git, real HTTP: the redirect is refused (git quotes the 302),
+    the destination is never populated — a server response cannot move the
+    fetch to a URL the host/scheme policy never vetted. The merged policy is
+    stricter than the develop-side original this test restores: plain http://
+    is refused outright by the protocol whitelist, so the proof widens the
+    whitelist the way a (hypothetical, hostile-config) deployment would and
+    pins the resulting argv — even then `http.followRedirects=false` refuses
+    the redirect. (Restored from the develop-side #404 suite the develop-sync
+    merge had dropped.)"""
+
+    root = tmp_path / "workspaces"
+    dest = root / "dest"
+    monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (root,))
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES", ("https://", "ssh://", "http://")
+    )
+    # The merged policy host-gates every remote scheme (develop only gated
+    # https/ssh), so the local server's host must be allowlisted for the
+    # request to reach git at all — otherwise the URL gate refuses it before
+    # any subprocess, which is the even-earlier refusal the policy prefers.
+    monkeypatch.setenv("MAISTRO_GIT_CLONE_HOSTS", "127.0.0.1")
+    # Let http connect at all (the whitelist forbids it by default), keeping
+    # the rest of the pin — above all http.followRedirects=false — intact.
+    monkeypatch.setattr(
+        "maistro.tools.git.server._CLONE_CONFIG_HARDENING",
+        (*_CLONE_CONFIG_HARDENING, "-c", "protocol.http.allow=always"),
+    )
+
+    result = await git_clone(_redirecting_http_server, str(dest), timeout=60)
+
+    assert result["success"] is False
+    # The default clone path now resolves a digest first; the same redirect
+    # pin rejects the network read before a checkout can be attempted.
+    assert result["error_code"] == "remote_tip_unresolved"
+    assert "302" in result["stdout"]
+    assert not dest.exists() or not any(dest.iterdir())
+
+
 async def test_git_clone_reports_resolved_head_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

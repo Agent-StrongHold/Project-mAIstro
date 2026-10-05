@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +14
+  packages/maistro-core/tests: +15
 ---
 # #404 repair: restore the deployment-wide signature trust anchor dropped by the develop-sync merge
 
 Repair-round note for the exact-debt-ledger / Quality gate failure at merge
-head b25f053796f4. No existing suite count changed shape: this round adds 14
+head b25f053796f4. No existing suite count changed shape: this round adds 15
 node IDs to `packages/maistro-core/tests/tools/git/test_server_security.py`
 and removes none.
 
@@ -52,7 +52,7 @@ the genuine-use fix: the `trusted` name is used by real shipped behavior
 again, the finding disappears, and the banked row was pruned (the candidate
 ledger is byte-identical to origin/develop's again).
 
-## The +14
+## The +15
 
 All in `test_server_security.py`, adapted from the develop-side suite the
 merge had dropped, on the file's `_ScriptedGit` harness (exact-argv-element
@@ -68,13 +68,18 @@ matching, so the verification sequence itself is under test):
 6. `test_signature_policy_accepts_trusted_signer[primary/subkey]` — 2 nodes.
 7. `test_git_clone_trust_anchor_composes_with_require_signed` — merge-specific:
    both policies' subprocesses scripted in one flow.
-8. `TestLiveSignaturePolicy` — 3 real-git/real-gpg end-to-end nodes
+8. `test_git_clone_functionally_refuses_redirects` — real git,
+   real HTTP: the 302 is refused and the destination never populated (the
+   merged policy refuses plain http at the protocol whitelist, so the test
+   widens it exactly as a hostile-config deployment would and proves the
+   `http.followRedirects=false` pin still fires).
+9. `TestLiveSignaturePolicy` — 3 real-git/real-gpg end-to-end nodes
    (throwaway GNUPGHOME, Ed25519 key, signed origin, the production
    `%G?`/`%GF` path), skipped only when gpg is absent.
 
 Measured: canonical collection (`uv run pytest packages/maistro-core/tests
 --collect-only -q` under `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1`) 13707 at
-b25f0537 → 13721 with this round; `packages/maistro-rsi/tests` unchanged at
+b25f0537 → 13722 with this round; `packages/maistro-rsi/tests` unchanged at
 1111.
 
 ## Residual risk (out of lane, measured, not introduced here)
