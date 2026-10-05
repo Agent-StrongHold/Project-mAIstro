@@ -86,3 +86,13 @@ and promotion-surface checks pass. Beyond the CI-repair-permitted Vulture
 ledger entries, this leaf adds no reachability baseline, disposition,
 suppression, or fake production import to evade that required integration-head
 gate.
+
+At evidence head `45476f48d1951c67c5f7fc2abcc1a71aa013a61c`, the focused
+suite again passed 76 cases; focused Ruff check/format and module mypy passed;
+and the core inventory remained 13,366 node IDs (+76). The required exact
+Vulture command still reports the same nine candidate-ledger identities as new
+against trusted base `94781cf6b708`; `check-reachability.py` reports only
+`maistro.runs.admission_identity`; and `check-ratchet-provenance.py` fails only
+through that trusted-base reachability gate. This inactive leaf cannot remove
+those failures without the explicitly prohibited production consumer,
+reachability ledger/disposition, suppression, or authorization grant.
