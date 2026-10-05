@@ -70,7 +70,7 @@ from maistro.capabilities.governed_invocation import (
     InvocationDenied,
 )
 from maistro_server.api.auth import RequireAuth
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 
 router = APIRouter(prefix="/v2/canvas", tags=["canvas"])
 

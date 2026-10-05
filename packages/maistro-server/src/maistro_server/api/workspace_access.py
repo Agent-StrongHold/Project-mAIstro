@@ -11,7 +11,7 @@ from maistro.workspaces import (
     WorkspaceMembership,
     WorkspaceStore,
 )
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 
 _workspace_store: WorkspaceStore | None = None
 

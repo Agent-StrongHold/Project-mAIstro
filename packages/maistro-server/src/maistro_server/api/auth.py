@@ -18,7 +18,7 @@ from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from maistro.config.settings import Settings, get_settings
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 from maistro.security.secret_equal import secret_equal
 
 security_scheme = HTTPBearer(auto_error=False)

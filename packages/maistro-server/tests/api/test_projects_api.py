@@ -13,7 +13,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 from maistro_server.api.projects import (
     AddProjectMembershipBody,
     add_project_membership,

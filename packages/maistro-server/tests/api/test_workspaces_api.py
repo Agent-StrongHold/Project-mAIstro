@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceOwnershipError
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 

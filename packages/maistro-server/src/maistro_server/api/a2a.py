@@ -14,7 +14,7 @@ from maistro.graph.definitions import Graph, Node
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.store import RunStore
 from maistro_server.api.auth import RequireAuth
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 
 router = APIRouter(prefix="/a2a", tags=["a2a"])
 
