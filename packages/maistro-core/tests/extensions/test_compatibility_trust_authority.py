@@ -250,3 +250,20 @@ class TestAuthority:
     def test_requested_set_is_a_set_not_a_multiset(self) -> None:
         delta = compute_authority_delta(("a.b", "a.b"), AuthorityBaseline())
         assert delta.new == ("a.b",)
+
+    def test_scope_refuses_a_non_string_org_id(self) -> None:
+        """The guard is isinstance-first: a non-str must raise the same
+        ValueError a blank id raises, not surface a downstream AttributeError."""
+        with pytest.raises(ValueError, match="org_id is required"):
+            ExtensionScope(org_id=None)  # type: ignore[arg-type]
+
+    def test_scope_refuses_a_blank_org_id(self) -> None:
+        with pytest.raises(ValueError, match="org_id is required"):
+            ExtensionScope(org_id="   ")
+
+    def test_describe_names_the_workspace_only_when_scoped_to_one(self) -> None:
+        assert (
+            ExtensionScope(org_id="org-1", workspace_id="ws-1").describe
+            == "org:org-1/workspace:ws-1"
+        )
+        assert ExtensionScope(org_id="org-1").describe == "org:org-1"
