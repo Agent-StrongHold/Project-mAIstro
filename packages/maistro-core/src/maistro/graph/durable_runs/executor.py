@@ -1076,6 +1076,77 @@ def _maybe_increment_synth_depth(
     return _replace_record(record, graph_state=state)
 
 
+def _detach_json_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Ordinary, independently mutable JSON containers for frozen graph state."""
+    thawed = thaw_json_value(value)
+    return dict(thawed) if isinstance(thawed, Mapping) else {}
+
+
+def _current_pause_carry(record: DurableRunRecord, node_id: str) -> dict[str, Any] | None:
+    """Carry this node's own current persisted pause entry, or None when absent.
+
+    Selection reads only ``graph_state.metadata['pauses'][node_id]`` — never the
+    singleton ``metadata['pause']`` (which names whichever frontier member
+    checkpointed first, i.e. often a sibling) and never another node's entry.
+    A current entry outranks any answered pause stamped under
+    ``hitl_answers[node_id]['_pause']``: the answer belongs to an older visit,
+    so a newer elapsed pause on the same node must not be replaced by it.
+
+    Absence of the pauses key is absence. A present entry that is not a JSON
+    object — including ``None`` — is corrupt evidence and raises rather than
+    silently borrowing a stale answer or a sibling's pause. Metadata detaches
+    through the public ``thaw_json_value`` so the node receives containers it
+    may mutate without touching the frozen record; the wrapper ``resume_at``
+    is stamped last and therefore wins any same-name inner value.
+    """
+    state_metadata = record.graph_state.metadata
+    if "pauses" not in state_metadata:
+        return None
+    pauses = state_metadata["pauses"]
+    if not isinstance(pauses, Mapping):
+        raise ValueError(
+            f"run {record.run_id!r} graph state pauses must be a JSON object, "
+            f"got {type(pauses).__name__}"
+        )
+    if node_id not in pauses:
+        return None
+    entry = pauses[node_id]
+    if not isinstance(entry, Mapping):
+        raise ValueError(
+            f"run {record.run_id!r} node {node_id!r} has a corrupt persisted "
+            f"pause entry: expected a JSON object, got {type(entry).__name__}"
+        )
+    if "metadata" in entry:
+        pause_metadata = entry["metadata"]
+        if not isinstance(pause_metadata, Mapping):
+            raise ValueError(
+                f"run {record.run_id!r} node {node_id!r} persisted pause "
+                f"metadata must be a JSON object, got {type(pause_metadata).__name__}"
+            )
+        carried = _detach_json_mapping(pause_metadata)
+    else:
+        carried = {}
+    carried["resume_at"] = entry.get("resume_at")
+    return carried
+
+
+def _answered_pause_carry(answered: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Carry the server-stamped ``_pause`` of an answered HITL visit.
+
+    The pre-existing fallback for records whose node has no current pause
+    entry: the executor copies the pause payload the durable answer seam
+    stamped (see ``stores.answer_record``), preserving current answer
+    behavior, with the same detached JSON copying as the current-entry path.
+    """
+    pause = answered.get("_pause")
+    if not isinstance(pause, Mapping):
+        return None
+    pause_metadata = pause.get("metadata")
+    carried = _detach_json_mapping(pause_metadata) if isinstance(pause_metadata, Mapping) else {}
+    carried["resume_at"] = pause.get("resume_at")
+    return carried
+
+
 def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
     """Build the runtime execution context for one canonical NodeRun."""
     from maistro.graph.types import GraphBlackboard
@@ -1098,14 +1169,12 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         "hitl_answers": dict(record.hitl_answers),
         "synth_depth": synth_depth,
     }
-    answered = record.hitl_answers.get(node_id)
-    if isinstance(answered, Mapping):
-        pause = answered.get("_pause")
-        if isinstance(pause, Mapping):
-            pause_metadata = pause.get("metadata")
-            carried = dict(pause_metadata) if isinstance(pause_metadata, Mapping) else {}
-            carried["resume_at"] = pause.get("resume_at")
-            metadata[RESUMED_PAUSE_KEY] = carried
+    carried = _current_pause_carry(record, node_id)
+    if carried is None:
+        answered = record.hitl_answers.get(node_id)
+        carried = _answered_pause_carry(answered) if isinstance(answered, Mapping) else None
+    if carried is not None:
+        metadata[RESUMED_PAUSE_KEY] = carried
     return NodeContext(
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,

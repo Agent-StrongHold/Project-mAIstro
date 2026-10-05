@@ -6,6 +6,7 @@ import pytest
 
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier, Outcome
 from maistro.projects.store import InMemoryProjectStore
@@ -30,8 +31,8 @@ def _mem(
 @pytest.fixture
 def policy() -> DefaultContextAssemblyPolicy:
     return DefaultContextAssemblyPolicy(
-        episodic_store=InMemoryEpisodicStore(),
-        outcome_store=InMemoryOutcomeStore(),
+        episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+        outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
         project_store=InMemoryProjectStore(),
     )
 
