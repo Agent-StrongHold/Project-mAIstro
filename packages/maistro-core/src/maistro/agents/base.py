@@ -717,7 +717,9 @@ class Agent:
         set_turn = getattr(self._llm, "set_turn", None)
         clear_turn = getattr(self._llm, "clear_turn", None)
         if callable(set_turn):
-            set_turn(turn_id, agent_name=self.identity.name)
+            # Domain turn/session ids are not canonical Run ids. The client
+            # adopts the identity already bound by the Attempt executor.
+            set_turn(agent_name=self.identity.name)
         try:
             return await self._run_strategy(
                 context_messages, model, tool_defs, strategy_kwargs, trace
