@@ -445,21 +445,18 @@ class EngineService:
             # submission through the generic materialized roster; execution
             # has one authority regardless of legacy POC environment values.
             #
-            # #718: that one authority is the bridge's canonical model-chat
-            # egress, not a bare `run_task`. Handing the raw function here
-            # left every demo task completion off the Invocation/quota
-            # ledger while per-provider rows presented as complete — the
-            # same defect the maistro-server `/tasks` worker had before it
-            # supplied its egress. `None` (stub port, no bridge) keeps the
-            # raw call: that process has no canonical authority to cross.
-            bridge_egress = getattr(self._agent_port, "governed_egress", None)
-            bridge_workspace = settings.hive_default_workspace_id
+            # The bridge owns the same admitted-call adapter as its roster.
+            # A missing bridge/configuration remains fail-closed at run_task;
+            # no synthetic identity or direct HTTP escape is available.
+            admitted_calls = getattr(self._agent_port, "admitted_calls", None)
+            container = getattr(self._agent_port, "container", None)
+            router = getattr(container, "llm_router", None)
 
             async def governed_executor(task: Any) -> Any:
                 return await run_task(
                     task,
-                    governed_egress=bridge_egress,
-                    workspace_id=bridge_workspace,
+                    admitted_calls=admitted_calls,
+                    router=router,
                 )
 
             backend = LocalTaskBackend(

@@ -16,6 +16,7 @@ reached, so no external effect occurred and the Invocation may fail retryably.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -23,6 +24,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.capabilities.binding import ResolvedCapabilityProvider
 from maistro.capabilities.invocation import EffectNotApplied
+from maistro.capabilities.providers.model_stream_protocol import (
+    ChatStreamAccumulator,
+    ModelStreamProtocolError,
+    parse_chunk,
+    sse_data,
+)
 from maistro.http import shared_client
 from maistro.providers.types import ModelMetadata
 
@@ -164,8 +171,8 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
     return payload
 
 
-def _checked_body(response: Any) -> dict[str, object]:
-    """Map gateway statuses to the error shapes the shipped model paths raise."""
+def _check_status(response: Any) -> None:
+    """Map gateway statuses without consuming a successful streaming body."""
 
     if response.status_code == 401:
         raise LlmAuthError(
@@ -177,6 +184,11 @@ def _checked_body(response: Any) -> dict[str, object]:
         raise LlmHttpError(
             f"llm_http_error status={response.status_code}", status_code=response.status_code
         )
+
+
+def _checked_body(response: Any) -> dict[str, object]:
+    """Map gateway statuses to the error shapes the shipped model paths raise."""
+    _check_status(response)
     body = response.json()
     if not isinstance(body, dict):
         raise RuntimeError("model gateway returned a non-object response body")
@@ -250,6 +262,52 @@ async def execute_model_chat(
     return _checked_body(response)
 
 
+async def execute_model_chat_stream(
+    provider: ResolvedCapabilityProvider,
+    request: object,
+    *,
+    endpoint: GatewayEndpoint,
+    on_chunk: Callable[[dict[str, Any]], Awaitable[None]],
+) -> dict[str, Any]:
+    """Consume real gateway SSE inside one canonical Invocation executor.
+
+    The callback is awaited before reading more events, providing backpressure.
+    Raw deltas are forwarded; only the final assembled body is persisted by the
+    existing Invocation owner. EOF without protocol completion is not success.
+    """
+    if not isinstance(provider, LlmGatewayProvider):
+        raise TypeError("model-chat stream resolved a non-gateway provider")
+    if not isinstance(request, ModelChatRequest):
+        raise TypeError("model-chat stream received a foreign request")
+    payload = _chat_payload(provider, request)
+    payload.update(stream=True, stream_options={"include_usage": True})
+    response_started = False
+    accumulator = ChatStreamAccumulator()
+    try:
+        async with (
+            shared_client(timeout=endpoint.timeout_s) as client,
+            client.stream(
+                "POST",
+                f"{endpoint._base}/chat/completions",
+                headers=endpoint.authorization_header(),
+                json=payload,
+            ) as response,
+        ):
+            response_started = True
+            _check_status(response)
+            async for data in sse_data(response.aiter_lines()):
+                if data == "[DONE]":
+                    return accumulator.finish()
+                chunk = parse_chunk(data)
+                accumulator.add(chunk)
+                await on_chunk(chunk)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        if response_started:
+            raise
+        raise EffectNotApplied("model gateway unreachable, no stream effect occurred") from exc
+    raise ModelStreamProtocolError("model stream ended without [DONE]")
+
+
 __all__ = [
     "DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF",
     "MODEL_CHAT_CAPABILITY",
@@ -261,5 +319,6 @@ __all__ = [
     "ModelChatRequest",
     "ProviderRegistrationError",
     "execute_model_chat",
+    "execute_model_chat_stream",
     "register_provider_models",
 ]

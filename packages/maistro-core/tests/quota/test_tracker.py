@@ -184,22 +184,3 @@ class TestInMemoryQuotaTracker:
         await tracker.record_invocation("inv-r1", "openai", "daily", 50, 50, True)
 
         assert await tracker.get_usage_pct("openai", "daily", 200) == 0.5
-
-
-class TestDefaultQuotaTrackerSingleton:
-    async def test_registered_tracker_is_returned_until_cleared(self) -> None:
-        from maistro.quota.default_tracker import (
-            get_default_quota_tracker,
-            set_default_quota_tracker,
-        )
-
-        # Save/restore: container-creating tests in the same process register
-        # their own default via the composition root, so the ambient value is
-        # not asserted — only this test's own registration round-trip is.
-        previous = get_default_quota_tracker()
-        tracker = InMemoryQuotaTracker()
-        try:
-            set_default_quota_tracker(tracker)
-            assert get_default_quota_tracker() is tracker
-        finally:
-            set_default_quota_tracker(previous)

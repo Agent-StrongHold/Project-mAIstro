@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Added
 
+- **Governed model streaming is available at the canonical Provider seam (#1084).**
+  Incremental chat/completions chunks retain one Invocation, scoped credentials,
+  authoritative terminal state and usage accounting. Interrupted or malformed
+  streams stay unknown; completed effects replay without a second provider call.
+  Hive chat-route and Responses-protocol migration remain separate work.
+
 - **API-wide HTTP content negotiation (ADR-076) is implemented (#96).**
   `maistro-server` and hive-conductor now run the shared
   `maistro.api_versioning.VersionNegotiationMiddleware` from `maistro-core`.
@@ -92,6 +98,14 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **Conductor model calls require persisted execution and configured authority (#1084).**
+  Server and Hive task callers now resolve the actual Run, NodeRun, leased Attempt
+  and admitted actor before resolving an operator-declared model Binding. Missing
+  admission or scoped credentials refuses dispatch. Raw HTTP fallback and
+  generated conductor identities are removed. Circuit admission uses the configured
+  Binding pin and actual gateway, with no fallback around a pin. Automatic retries
+  require proved non-dispatch; UNKNOWN outcomes are not redispatched under new keys.
 
 - **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
   (#1362).** Serialized budget definitions, reservation identities, and usage

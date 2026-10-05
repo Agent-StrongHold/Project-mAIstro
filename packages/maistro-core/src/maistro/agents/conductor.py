@@ -31,23 +31,24 @@ from maistro.agents.circuit_breaker import (
 )
 from maistro.agents.prompts import CONDUCTOR_SYSTEM
 from maistro.agents.types import ConductorOutput, LLMProviderError, PlanOutput, SubTask
-from maistro.capabilities.binding import Binding
-from maistro.capabilities.model_chat import ModelChatEgress, ModelChatRequest
-from maistro.capabilities.providers.llm_gateway import (
-    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-    MODEL_CHAT_CAPABILITY,
+from maistro.capabilities.admitted_model import AdmittedModelCalls
+from maistro.capabilities.binding_store import BindingResolutionError
+from maistro.capabilities.governed_invocation import InvocationApprovalRequired, InvocationDenied
+from maistro.capabilities.invocation import (
+    CapabilityUnavailable,
+    EffectNotApplied,
+    UnsafeEffectRetry,
 )
+from maistro.capabilities.model_chat import ModelChatRequest
 from maistro.config.model_resolver import resolve_model
 from maistro.config.models import DEFAULT_TIERS, Tier, TierConfig
 from maistro.config.settings import get_settings
 from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
-from maistro.http import shared_client
+from maistro.credentials.router import CredentialScopeError
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
 from maistro.providers.errors import ModelNotFoundError
-from maistro.quota.default_tracker import get_default_quota_tracker
-from maistro.quota.usage_log import get_default_usage_log
-from maistro.quota.usage_report import reported_usage
+from maistro.quota.invocation_quota import InvocationQuotaDenied
 from maistro.tasks.models import TaskCreate
 
 if TYPE_CHECKING:
@@ -56,9 +57,6 @@ if TYPE_CHECKING:
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
 
 logger = structlog.get_logger()
-
-# HTTP status codes that indicate transient failures worth retrying
-_RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 
 # JSON schema appended to the system prompt for Ollama JSON-mode fallback
 _CONDUCTOR_JSON_SCHEMA = """\
@@ -99,9 +97,8 @@ def build_conductor(
 ) -> ConductorCall:
     """Resolve the call parameters for the conductor.
 
-    The conductor talks directly to the OpenAI-compatible LiteLLM gateway over HTTP
-    (no pydantic-ai). It always requests JSON output and validates the result into
-    ConductorOutput — i.e. the former Ollama JSON-mode path is now the only path.
+    Physical HTTP is owned by the admitted model egress (no pydantic-ai).
+    It always requests JSON output and validates the result into ConductorOutput.
     """
     litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
     api_key = litellm_key if litellm_key else "ollama"
@@ -116,34 +113,16 @@ async def _governed_completion(
     call: ConductorCall,
     user_prompt: str,
     max_tokens: int,
-    governed_egress: ModelChatEgress,
+    admitted_calls: AdmittedModelCalls,
     invocation_identity: tuple[str, str, str] | None,
     invocation_number: int,
-    workspace_id: str,
-    project_id: str,
+    *,
+    timeout: float | None = None,
 ) -> str:
-    """Run one conductor completion across canonical Binding -> Invocation (#718).
-
-    The Binding names the deployment's registered default gateway key:
-    Binding-scoped credential routing (#1091) refuses a Binding that names no
-    credential, and acquire still fails closed unless that ref exists in
-    exactly this Workspace/Project scope, so naming it widens nothing.
-    """
-    run_id, node_run_id, attempt_id = invocation_identity or (
-        f"conductor-run-{id(call)}",
-        "conductor-node",
-        "conductor-attempt",
-    )
-    result = await governed_egress.complete(
-        binding=Binding(
-            workspace_id=workspace_id,
-            project_id=project_id,
-            capability=MODEL_CHAT_CAPABILITY,
-            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
-        ),
-        run_id=run_id,
-        node_run_id=node_run_id,
-        attempt_id=attempt_id,
+    """Resolve persisted execution and configured Binding before any model effect."""
+    result = await admitted_calls.complete(
+        identity=invocation_identity,
+        timeout_s=timeout,
         effect_key=f"conductor-llm-{invocation_number}",
         request=ModelChatRequest(
             model=call.model,
@@ -166,140 +145,46 @@ async def _governed_completion(
     return content
 
 
-async def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
-    """Record one raw-gateway call's usage evidence on the process usage log.
-
-    #718: the canonical recording path is Invocation terminalization, and the
-    production server crosses it via ``governed_egress``. A composition that
-    crosses no canonical authority (e.g. a demo bridge with no egress) still
-    leaves evidence here — actual tokens when the gateway reported usage, an
-    explicit ``usage_reported=False`` marker when it did not. Never a silent
-    zero, and never a fabricated Invocation identity: the event carries
-    provider provenance only.
-
-    When the process registered a quota ledger (the Container composition
-    root sets the process default), the same evidence also reaches that
-    ledger — reported tokens as usage, a missing report as an unreported
-    marker — so a process that carries a ledger can never present complete
-    quota percentages while omitting this call class. The ledger write is
-    isolated: a failing ledger must not take down a call that already
-    succeeded.
-
-    Returns whether the gateway reported usage, for the caller's log line.
-    """
-    reported = reported_usage(data)
-    input_tokens, output_tokens = reported or (0, 0)
-    get_default_usage_log().record(
-        model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        provider=model,
-        usage_reported=reported is not None,
-    )
-    tracker = get_default_quota_tracker()
-    if tracker is not None:
-        # Same billing-cycle default as CanonicalInvocationUsageRecorder, so
-        # ungoverned evidence lands in the provider/cycle rows the ledger's
-        # readers already reconcile. This call has no Invocation identity by
-        # construction (egress was None), so it never charges through
-        # ``record_invocation`` — usage tokens via the event-log path, a
-        # missing report via the unreported marker.
-        try:
-            if reported is not None:
-                await tracker.record_usage(model, "monthly", input_tokens, output_tokens)
-            else:
-                record_unreported = getattr(tracker, "record_unreported", None)
-                if record_unreported is not None:
-                    await record_unreported(model, "monthly")
-        except Exception:
-            await logger.awarning(
-                "conductor_ungoverned_quota_ledger_write_failed", model=model, exc_info=True
-            )
-    return reported is not None
-
-
 async def _call_gateway(
     call: ConductorCall,
     user_prompt: str,
     max_tokens: int,
     timeout: float,
     on_response: OnResponseHook | None = None,
-    governed_egress: ModelChatEgress | None = None,
+    admitted_calls: AdmittedModelCalls | None = None,
     invocation_identity: tuple[str, str, str] | None = None,
     invocation_number: int = 0,
-    workspace_id: str = "default",
-    project_id: str = "agent-runtime",
 ) -> str:
-    """POST one chat-completion to the OpenAI-compatible gateway; return the message content.
+    """Complete only through canonical admission; there is no direct HTTP fallback.
 
-    The production server supplies ``governed_egress`` so this call crosses
-    canonical Binding -> Invocation. Without it, the raw HTTP fallback below
-    still records usage evidence on the process usage log (#718) — an
-    explicitly marked ungoverned call, never invisible usage. ``on_response``
-    is retained only for legacy callers that have not migrated to that
-    authority.
+    ``timeout`` bounds both the outer call and the approved Provider's HTTP.
+    ``on_response`` is a retired compatibility parameter: canonical Invocation
+    terminalization owns usage evidence. A hook cannot authorize raw HTTP.
     """
-    if governed_egress is not None:
-        return await _governed_completion(
-            call,
-            user_prompt,
-            max_tokens,
-            governed_egress,
-            invocation_identity,
-            invocation_number,
-            workspace_id,
-            project_id,
-        )
-
-    if not call.base_url:
-        raise LLMProviderError(
-            "conductor: no gateway base_url configured (set MAISTRO_LLM_BASE_URL)"
-        )
-    url = call.base_url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": call.model,
-        "messages": [
-            {"role": "system", "content": call.system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "response_format": {"type": "json_object"},
-        "max_tokens": max_tokens,
-    }
-    headers = {"Authorization": f"Bearer {call.api_key}"}
-    async with shared_client(timeout=timeout) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-    # This physical call crossed no canonical Invocation authority, so the
-    # canonical recorder never sees it. Record its usage evidence on the
-    # process usage log and the process default quota ledger (when one is
-    # registered) and say so loudly: an ungoverned call class must stay
-    # visible instead of silently shrinking the quota ledger (#718).
-    usage_reported = await _record_ungoverned_fallback_usage(call.model, data)
-    await logger.awarning(
-        "conductor_ungoverned_llm_call",
-        model=call.model,
-        usage_reported=usage_reported,
+    if admitted_calls is None:
+        raise LLMProviderError("conductor: admitted model calls are not configured")
+    return await _governed_completion(
+        call,
+        user_prompt,
+        max_tokens,
+        admitted_calls,
+        invocation_identity,
+        invocation_number,
+        timeout=timeout,
     )
-    if on_response is not None:
-        try:
-            on_response(data, resp)
-        except Exception:
-            await logger.awarning("conductor_on_response_hook_failed", exc_info=True)
-    return str(data["choices"][0]["message"]["content"])
 
 
-def _is_retryable(exc: Exception) -> bool:
-    """Check if an exception represents a transient failure worth retrying."""
-    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
-        return True
-    # A connect timeout at the gateway is as transient as a refused one.
-    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in _RETRYABLE_STATUS_CODES
-    # A malformed/invalid JSON response is often transient — re-prompt may fix it.
-    return isinstance(exc, (json.JSONDecodeError, ValidationError, KeyError))
+def _is_retryable(exc: Exception, *, response_completed: bool = False) -> bool:
+    """Retry proven non-dispatch or repair validation after a completed response.
+
+    HTTP failures and timeouts can leave an UNKNOWN Invocation. A new effect
+    key must not bypass its ambiguity fence. Provider JSON decoding can fail
+    before terminalization too, so only conductor-side validation of a returned
+    response may start a distinct bounded repair operation.
+    """
+    return isinstance(exc, EffectNotApplied) or (
+        response_completed and isinstance(exc, (json.JSONDecodeError, ValidationError))
+    )
 
 
 def _parse_json_output(raw: str) -> ConductorOutput:
@@ -327,8 +212,9 @@ async def _admitted_fallback_call(
 
     The chain comes from the router's registry-declared ``fallback_to`` edges
     (ADR-079), so fallback stays inside canonical routing configuration — it
-    never widens what the call may touch, and quota recording continues on
-    the same ``on_response`` seam. ``None`` when no candidate is admitting.
+    never widens what the call may touch. Every candidate still crosses the
+    same configured Binding and canonical Invocation boundary. ``None`` when no
+    candidate is admitting.
     """
     try:
         chain = await router.fallback_chain(call.model)
@@ -372,20 +258,38 @@ async def _admit_call(
     return call, domain
 
 
+async def _configured_call(
+    call: ConductorCall,
+    admitted_calls: AdmittedModelCalls | None,
+    invocation_identity: tuple[str, str, str] | None,
+    router: LLMRouter | None,
+) -> tuple[ConductorCall, LLMRouter | None]:
+    """Read the configured physical target before its circuit is consulted."""
+    if admitted_calls is None:
+        raise LLMProviderError("conductor requires admitted model-call authority")
+    pinned_model = await admitted_calls.pinned_model(identity=invocation_identity)
+    actual_call = replace(
+        call,
+        model=pinned_model or call.model,
+        base_url=admitted_calls.gateway_base_url,
+    )
+    # A configured pin cannot fall back. Circuit selection must describe
+    # the actual pinned Provider and endpoint before any admission check.
+    return actual_call, None if pinned_model else router
+
+
 async def _run_with_retry(
     call: ConductorCall,
     prompt: str,
     tier_config: TierConfig,
     max_tokens: int,
     on_response: OnResponseHook | None = None,
-    governed_egress: ModelChatEgress | None = None,
+    admitted_calls: AdmittedModelCalls | None = None,
     invocation_identity: tuple[str, str, str] | None = None,
-    workspace_id: str = "default",
-    project_id: str = "agent-runtime",
     circuits: DomainCircuitBank | None = None,
     router: LLMRouter | None = None,
 ) -> ConductorOutput:
-    """Call the gateway with timeout and retry logic for transient failures.
+    """Call the gateway, retrying only proven-safe failures or response repair.
 
     Circuit scope (#1203, ADR-038): breaker state is keyed to the call's
     failure domain — gateway endpoint x upstream provider — so one flaky
@@ -398,13 +302,17 @@ async def _run_with_retry(
     the first candidate whose own domain admits traffic. Without a router the
     blocked call fails with :class:`CircuitOpenError`, as before.
     """
+    from maistro.runs.store import RunIntegrityError
+
     bank = circuits if circuits is not None else llm_circuits
+    call, router = await _configured_call(call, admitted_calls, invocation_identity, router)
     call, domain = await _admit_call(call, bank, router)
 
     last_exc: Exception | None = None
     shared_failure = False
 
     for attempt in range(tier_config.max_llm_retries):
+        response_completed = False
         try:
             llm_requests_total.inc()
             raw = await asyncio.wait_for(
@@ -414,35 +322,50 @@ async def _run_with_retry(
                     max_tokens,
                     tier_config.timeout,
                     on_response,
-                    governed_egress,
+                    admitted_calls,
                     invocation_identity,
                     attempt,
-                    workspace_id,
-                    project_id,
                 ),
                 timeout=tier_config.timeout,
             )
+            response_completed = True
             result = _parse_json_output(raw)
             bank.record_success(domain)
             return result
-        except TimeoutError as exc:
+        except (
+            BindingResolutionError,
+            InvocationDenied,
+            InvocationApprovalRequired,
+            InvocationQuotaDenied,
+            CredentialScopeError,
+            CapabilityUnavailable,
+            UnsafeEffectRetry,
+            RunIntegrityError,
+        ):
+            # These typed admission refusals prove no Provider dispatch. They
+            # neither authorize retries nor describe the Provider's health.
+            raise
+        except TimeoutError:
             # A slow response is routed-upstream evidence, not proof the shared
             # endpoint died — a dead gateway refuses connections instead.
-            last_exc = exc
-            shared_failure = False
             await logger.awarning(
                 "llm_timeout",
                 attempt=attempt + 1,
                 max_retries=tier_config.max_llm_retries,
                 timeout=tier_config.timeout,
             )
+            bank.record_failure(domain)
+            llm_errors_total.inc(error_type="non_retryable")
+            raise
         except Exception as exc:
-            if _is_retryable(exc):
+            if _is_retryable(exc, response_completed=response_completed):
                 last_exc = exc
                 # Both connect failures are shared-endpoint evidence: the
                 # TCP/TLS handshake to the gateway never completed, so no
                 # routed upstream could be at fault.
-                shared_failure = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+                shared_failure = isinstance(exc, EffectNotApplied) and isinstance(
+                    exc.__cause__, (httpx.ConnectError, httpx.ConnectTimeout)
+                )
                 await logger.awarning(
                     "llm_transient_error",
                     attempt=attempt + 1,
@@ -474,10 +397,8 @@ async def run_task(
     task: TaskCreate,
     on_response: OnResponseHook | None = None,
     *,
-    governed_egress: ModelChatEgress | None = None,
+    admitted_calls: AdmittedModelCalls | None = None,
     invocation_identity: tuple[str, str, str] | None = None,
-    workspace_id: str = "default",
-    project_id: str = "agent-runtime",
     router: LLMRouter | None = None,
 ) -> ConductorOutput:
     """Execute a full engineering task through the conductor pipeline.
@@ -488,9 +409,10 @@ async def run_task(
     3. Runs the agent with timeout and retry logic
     4. Returns structured output
 
-    ``governed_egress`` is forwarded on every physical retry, and each retry
-    gets its own canonical Invocation effect key. ``on_response`` remains a
-    compatibility hook for legacy callers only.
+    ``admitted_calls`` resolves persisted canonical Run/NodeRun/Attempt records
+    and an operator-configured Binding on every retry. Each retry gets its own
+    Invocation effect key. ``on_response`` is retained for signature compatibility
+    only; canonical Invocation terminalization owns usage recording.
 
     `router`, if given, lets a provider-scoped circuit block (#1203) fall
     forward through the router's declared fallback chain to a healthy
@@ -548,10 +470,8 @@ async def run_task(
         tier_config,
         max_tokens=max_tokens,
         on_response=on_response,
-        governed_egress=governed_egress,
+        admitted_calls=admitted_calls,
         invocation_identity=invocation_identity,
-        workspace_id=workspace_id,
-        project_id=project_id,
         router=router,
     )
     await logger.ainfo("conductor_complete", success=result.success)
