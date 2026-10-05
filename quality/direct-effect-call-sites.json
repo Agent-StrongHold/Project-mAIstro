@@ -199,17 +199,6 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/services/evolution.py::_EvolutionService._build_raw_llm_call._llm_call::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/services/evolution.py",
-      "qualname": "_EvolutionService._build_raw_llm_call._llm_call",
-      "line": 474,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Renamed from _EvolutionService._build_llm_call._llm_call when #718 split the builder: governed Evolve production cycles now cross the canonical Invocation authority, and this raw call survives only as the no-canonical-authority fallback (ungoverned fallback evidence recorded); #56 owns final governed egress retirement."
-    },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_build_llm_call._httpx_llm::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_build_llm_call._httpx_llm",
