@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +10
+  tests/: +15
 ---
 # #1858 Ignore uncalled nested-helper work when detecting canned API routes
 
@@ -27,7 +27,7 @@ lexical limit, documented in the gate: the detector does not follow into a
 called helper's body, and per the issue's scope note no interprocedural
 analysis was added.
 
-## Test delta (+10, all in `tests/test_check_api_route_contracts.py`)
+## Test delta (+15, all in `tests/test_check_api_route_contracts.py`)
 
 Seven fail before the fix, reproducible on `develop@8a4bc239f` (verified:
 7 failed, 34 passed before the script change; the synthetic route
@@ -45,10 +45,50 @@ exit 0):
   disposition registered;
 - a nested computed return no longer rescues a constant-only handler.
 
-Three preserve behavior across the change (all passed before and after): a
+Eight preserve behavior across the change (all passed before and after): a
 called helper justifies its route through the call site; a nested constant
 return does not condemn a handler whose own return computes; def-time
 expressions of nested definitions still count as work.
 
 The shipped tree is unchanged in classification: the gate reports OK (279
 handlers, 15 audited routes, 0 canned) before and after.
+
+## Repair round: review findings on the executed-scope model
+
+The PR review produced two model errors, both reproduced failing on the
+pre-repair head before this round's script change:
+
+- **Postponed annotations (PEP 563).** 44/46 shipped route modules set
+  `from __future__ import annotations`, which stores every annotation as a
+  string: a call inside a nested def's annotation never executes. The walk
+  still counted it, so a constant-only handler with
+  `def helper(value: marker()): ...` escaped the gate. Fix: `_handlers`
+  detects the mode (`_postpones_annotations`) and erases annotations at the
+  parse boundary (`_drop_postponed_annotations`), module-wide. Fail-first:
+  `test_postponed_annotation_call_cannot_justify_the_route` (flagged 0
+  before, 1 after); the mirror control
+  `test_evaluated_annotation_call_is_real_work` (module without the future
+  import) passed before and after, pinning that evaluated annotations still
+  justify a handler.
+- **Decorator application.** A decorator is applied, not stored: Python
+  calls it with the function the moment the def runs, so a lambda
+  decorator's body executes exactly once — but the executed-scope walk
+  discarded it, condemning as canned a route whose decorator really runs
+  `store.write()` (a case the pre-#1858 whole-tree scan caught). Fix:
+  `_definition_time_expressions` also yields a lambda decorator's body.
+  Fail-first: `test_lambda_decorator_is_applied_so_its_body_runs_once` and
+  `test_lambda_decorator_route_is_not_canned`; the stored-lambda cases
+  (deferred body) still fail to justify, pinned by the existing lambda
+  tests.
+
+The third review note asked to treat ordinary fallthrough as an implicit
+constant `None` return. Not taken: a return-less handler with no own-scope
+`yield`/`raise` cannot be distinguished from the gate's allowed shapes —
+generator responses (`yield`) and raise-only `HTTPException` refusals are
+pinned return-less fixtures — so condemning fallthrough would change those
+discovery/refusal cases, which the issue forbids. The limit is documented
+in the gate's docstring and in `_canned_handlers` instead; no shipped
+handler's classification changes either way (gate still OK, 0 canned).
+
+Net test delta for this round: +5 (4 fail-first, 1 control); 51 pass in the
+suite after the repair, 46 before it.

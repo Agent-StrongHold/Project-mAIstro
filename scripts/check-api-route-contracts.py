@@ -29,14 +29,26 @@ when:
   route's, and
 - the handler's executed scope contains no `Call` node except
   `HTTPException(...)`. Executed scope: a statement that only *defines* a
-  nested function or lambda runs the definition — its decorators, defaults
-  and annotations — but not its body, which waits for an invocation the
-  detector does not speculate about. A route may define helpers it never
-  calls, so their calls are the helper's, not the route's (#1858). When the
-  helper *is* called, the call site itself is a `Call` in this scope and
-  counts. That credit is deliberately lexical, not interprocedural: the
-  detector does not follow into a called helper's body, so work performed
-  only there is invisible to it.
+  nested function or lambda runs the definition — its decorators (Python
+  applies a decorator the moment the def runs, so a lambda decorator's body
+  executes exactly once here), its defaults, and its annotations, unless
+  the module defers annotation evaluation with `from __future__ import
+  annotations` (as most route modules do — those annotations are strings at
+  runtime and are dropped at the parse boundary, able to justify nothing)
+  — but not the nested body, which waits for an invocation the detector
+  does not speculate about. A route may define helpers it never calls, so
+  their calls are the helper's, not the route's (#1858). When the helper
+  *is* called, the call site itself is a `Call` in this scope and counts.
+  That credit is deliberately lexical, not interprocedural: the detector
+  does not follow into a called helper's body, so work performed only
+  there is invisible to it.
+
+  One more deliberate limit sits in `_canned_handlers`: a handler with no
+  own-scope `return` is not classified at all. Treating fallthrough as an
+  implicit constant `None` would also condemn the shapes the gate exists
+  to allow — generator responses (`yield`) and raise-only `HTTPException`
+  refusals — so return-less handlers stay with review instead of a guessed
+  control-flow rule.
 
 The inventory
 -------------
@@ -89,6 +101,42 @@ def _pure_constant(node: ast.expr) -> bool:
     return False
 
 
+def _parameters(args: ast.arguments) -> list[ast.arg]:
+    """Every parameter node of a signature, position-only through ``**``."""
+    return [
+        parameter
+        for parameter in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
+        if parameter is not None
+    ]
+
+
+def _postpones_annotations(tree: ast.Module) -> bool:
+    """True when the module defers all annotation evaluation (PEP 563)."""
+    return any(
+        isinstance(statement, ast.ImportFrom)
+        and statement.module == "__future__"
+        and any(alias.name == "annotations" for alias in statement.names)
+        for statement in tree.body
+    )
+
+
+def _drop_postponed_annotations(tree: ast.Module) -> None:
+    """Model PEP 563 at the parse boundary: annotations never execute.
+
+    Under ``from __future__ import annotations`` the compiler stores every
+    annotation as a string, so a call written inside one never runs — not
+    in a handler's signature and not in a nested helper's. Erasing them
+    keeps the executed-scope walk from crediting work the module cannot
+    perform, for every function in the file.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        node.returns = None
+        for parameter in _parameters(node.args):
+            parameter.annotation = None
+
+
 def _definition_time_expressions(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> list[ast.expr]:
@@ -96,17 +144,21 @@ def _definition_time_expressions(
 
     Decorators, argument defaults and annotations execute in the enclosing
     scope the moment the def statement is reached; only the body defers to
-    call time.
+    call time. A decorator is not merely evaluated — Python applies it,
+    calling it with the function object at once — so a lambda decorator's
+    body also runs here, exactly once. (Annotations of a module that
+    postpones them never reach this list: `_drop_postponed_annotations`
+    erases them at the parse boundary.)
     """
     args = node.args
-    parameters = [
-        parameter
-        for parameter in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
-        if parameter is not None
-    ]
-    eager: list[ast.expr] = [*node.decorator_list, *args.defaults]
+    eager: list[ast.expr] = []
+    for decorator in node.decorator_list:
+        eager.append(decorator)
+        if isinstance(decorator, ast.Lambda):
+            eager.append(decorator.body)
+    eager.extend(args.defaults)
     eager.extend(default for default in args.kw_defaults if default is not None)
-    eager.extend(parameter.annotation for parameter in parameters if parameter.annotation)
+    eager.extend(parameter.annotation for parameter in _parameters(args) if parameter.annotation)
     if node.returns is not None:
         eager.append(node.returns)
     return eager
@@ -183,6 +235,8 @@ def _handlers() -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, 
     found: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
     for path in sorted(ROUTES_DIR.glob("*.py")):
         tree = ast.parse(path.read_text())
+        if _postpones_annotations(tree):
+            _drop_postponed_annotations(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -197,6 +251,14 @@ def _handlers() -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, 
 def _canned_handlers(
     handlers: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, str]],
 ) -> list[str]:
+    """The handlers answering canned data without an accepted disposition.
+
+    Only handlers with at least one own-scope `return` are classified: a
+    nested helper's return belongs to the helper (#1858), and a handler
+    with none of its own — generator responses (`yield`), raise-only
+    `HTTPException` refusals — is left to review rather than condemned by
+    an implicit-`None` rule that would sweep in those deliberate shapes.
+    """
     findings: list[str] = []
     for filename, func, method, route_path in handlers:
         returns = _own_scope_returns(func)

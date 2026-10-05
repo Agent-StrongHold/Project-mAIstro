@@ -154,6 +154,32 @@ def test_nested_class_body_executes_but_its_methods_do_not() -> None:
     assert mod._performs_real_work(_func(deferred)) is False
 
 
+def test_lambda_decorator_is_applied_so_its_body_runs_once() -> None:
+    """A decorator is not stored, it is applied: the def calls it at once.
+
+    Python evaluates the decorator expression and immediately calls it with
+    the function object, so a lambda decorator's body executes exactly once
+    while the def statement runs — route work, not deferred work.
+    """
+    source = (
+        "def h():\n"
+        "    @(lambda fn: (store.write(), fn)[1])\n"
+        "    async def inner(): ...\n"
+        "    return {'status': 'ok'}\n"
+    )
+    assert mod._performs_real_work(_func(source)) is True
+
+
+def test_postponed_annotation_mode_is_detected_from_the_module() -> None:
+    """Only ``from __future__ import annotations`` defers annotation calls."""
+    postponed = ast.parse("from __future__ import annotations\nx = 1\n")
+    other_import = ast.parse("from typing import annotations\nx = 1\n")
+    plain = ast.parse("x = 1\n")
+    assert mod._postpones_annotations(postponed) is True
+    assert mod._postpones_annotations(other_import) is False
+    assert mod._postpones_annotations(plain) is False
+
+
 # --------------------------------------------------------------------------- #
 # _router_decorator: (method, path) extraction
 # --------------------------------------------------------------------------- #
@@ -213,10 +239,29 @@ async def flush_cache():
     return {"status": "ok"}
 """
 
+ANNOTATION_CALL_ROUTE = """
+@router.post("/annotated")
+async def annotated_route():
+    def helper(value: marker()): ...
+    return {"status": "ok"}
+"""
+
+LAMBDA_DECORATOR = """
+@router.post("/decolambda")
+async def deco_lambda_route():
+    @(lambda fn: (store.write(), fn)[1])
+    async def inner(): ...
+    return {"status": "ok"}
+"""
+
 
 def _write_routes(tmp_path: Path, *bodies: str) -> Path:
     for index, body in enumerate(bodies):
+        # The future import is the shipped route modules' mode (44/46 set it):
+        # synthetic modules exercise the detector under the same annotation
+        # semantics the real tree runs with.
         (tmp_path / f"routes_{index}.py").write_text(
+            "from __future__ import annotations\n"
             "from fastapi import APIRouter, HTTPException\nrouter = APIRouter()\n" + body
         )
     return tmp_path
@@ -284,6 +329,44 @@ def test_full_gate_rejects_uncalled_helper_route_without_disposition(
     out = capsys.readouterr().out
     assert "canned route handler" in out
     assert "flush_cache" in out
+
+
+def test_postponed_annotation_call_cannot_justify_the_route(tmp_path, monkeypatch) -> None:
+    """PEP 563: an annotation call never executes, so it justifies nothing.
+
+    Under ``from __future__ import annotations`` — the mode most shipped
+    route modules run in — even a nested def's annotation is stored as a
+    string. The module parse boundary must model that, or a constant-only
+    handler with ``def helper(value: marker()): ...`` escapes the gate.
+    """
+    routes = _write_routes(tmp_path, ANNOTATION_CALL_ROUTE)
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    findings = mod._canned_handlers(mod._handlers())
+    assert len(findings) == 1
+    assert "annotated_route" in findings[0]
+
+
+def test_evaluated_annotation_call_is_real_work(tmp_path, monkeypatch) -> None:
+    """The mirror control: without the future import an annotation really is
+    evaluated when the def runs, so its call justifies the handler."""
+    (tmp_path / "routes_0.py").write_text(
+        "from fastapi import APIRouter, HTTPException\nrouter = APIRouter()\n"
+        + ANNOTATION_CALL_ROUTE
+    )
+    monkeypatch.setattr(mod, "ROUTES_DIR", tmp_path)
+    assert mod._performs_real_work(mod._handlers()[0][1]) is True
+    assert mod._canned_handlers(mod._handlers()) == []
+
+
+def test_lambda_decorator_route_is_not_canned(tmp_path, monkeypatch) -> None:
+    """End to end: applying a work-performing lambda decorator is route work.
+
+    The old whole-tree scan caught the decorator's call; the executed-scope
+    walk must keep catching it — a decorator is applied, not stored.
+    """
+    routes = _write_routes(tmp_path, LAMBDA_DECORATOR)
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    assert mod._canned_handlers(mod._handlers()) == []
 
 
 def test_canned_handlers_flags_only_constant_noop_handlers(tmp_path, monkeypatch) -> None:
