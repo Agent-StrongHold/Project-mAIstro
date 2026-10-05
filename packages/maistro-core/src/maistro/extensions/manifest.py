@@ -117,26 +117,28 @@ def _parse_entry_points(raw: object) -> tuple[ExtensionEntryPoint, ...]:
     return tuple(points)
 
 
+def _parse_dependency(item: object, ids: set[str]) -> ExtensionDependency:
+    """Validate one dependency entry against the ids seen so far."""
+    if not isinstance(item, dict) or set(item) != {"id", "range"}:
+        raise _reject("each dependency must be an object with exactly id and range")
+    dep_id, range_spec = item["id"], item["range"]
+    if not isinstance(dep_id, str) or _ID_RE.match(dep_id) is None:
+        raise _reject(f"malformed dependency id: {dep_id!r}")
+    if not isinstance(range_spec, str) or not range_spec.strip():
+        raise _reject(f"malformed dependency range for {dep_id!r}")
+    if dep_id in ids:
+        raise _reject(f"duplicate dependency: {dep_id!r}")
+    ids.add(dep_id)
+    return ExtensionDependency(extension_id=dep_id, range_spec=range_spec)
+
+
 def _parse_dependencies(raw: object) -> tuple[ExtensionDependency, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
         raise _reject("dependencies must be a list")
-    deps: list[ExtensionDependency] = []
     ids: set[str] = set()
-    for item in raw:
-        if not isinstance(item, dict) or set(item) != {"id", "range"}:
-            raise _reject("each dependency must be an object with exactly id and range")
-        dep_id, range_spec = item["id"], item["range"]
-        if not isinstance(dep_id, str) or _ID_RE.match(dep_id) is None:
-            raise _reject(f"malformed dependency id: {dep_id!r}")
-        if not isinstance(range_spec, str) or not range_spec.strip():
-            raise _reject(f"malformed dependency range for {dep_id!r}")
-        if dep_id in ids:
-            raise _reject(f"duplicate dependency: {dep_id!r}")
-        ids.add(dep_id)
-        deps.append(ExtensionDependency(extension_id=dep_id, range_spec=range_spec))
-    return tuple(deps)
+    return tuple(_parse_dependency(item, ids) for item in raw)
 
 
 def _parse_document(raw: bytes) -> dict[str, object]:

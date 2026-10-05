@@ -46,6 +46,7 @@ from maistro.extensions.types import (
     ArtifactMismatch,
     ExtensionInstallRecord,
     ExtensionLifecycleError,
+    ExtensionManifest,
     ExtensionPackage,
     ExtensionScope,
     ExtensionState,
@@ -167,6 +168,34 @@ class ExtensionInstallService:
 
     # -- phase 1: inspect ---------------------------------------------------
 
+    async def _reinspection_outcome(
+        self,
+        scope: ExtensionScope,
+        manifest: ExtensionManifest,
+        existing: ExtensionInstallRecord | None,
+    ) -> ExtensionInstallRecord | None:
+        """Reconcile a re-inspection against an open record, if any.
+
+        Returns the existing record when the candidate bytes are identical
+        (idempotent re-inspection), raises ``InspectionConflict`` when the
+        candidate changed under an open authorization request, and returns
+        ``None`` when there is nothing to reconcile (no record, or a terminal
+        one that no longer gates a new request).
+        """
+        if existing is None or existing.state in TERMINAL_STATES:
+            return None
+        same_manifest = existing.manifest.source_sha256 == manifest.source_sha256
+        same_artifact = existing.artifact_sha256 == manifest.artifact_sha256
+        if same_manifest and same_artifact:
+            # Idempotent re-inspection: one authorization track per
+            # (scope, extension, version), never a fork.
+            return existing
+        raise InspectionConflict(
+            f"an install record for {manifest.extension_id} {manifest.version} "
+            f"is already {existing.state} in {scope.describe} with different bytes; "
+            "a candidate may not change under an open authorization request"
+        )
+
     async def inspect(
         self,
         *,
@@ -186,18 +215,9 @@ class ExtensionInstallService:
 
         manifest = inspect_manifest(package.manifest_bytes)
         existing = await self._store.latest_record(scope, manifest.extension_id, manifest.version)
-        if existing is not None and existing.state not in TERMINAL_STATES:
-            same_manifest = existing.manifest.source_sha256 == manifest.source_sha256
-            same_artifact = existing.artifact_sha256 == manifest.artifact_sha256
-            if same_manifest and same_artifact:
-                # Idempotent re-inspection: one authorization track per
-                # (scope, extension, version), never a fork.
-                return existing
-            raise InspectionConflict(
-                f"an install record for {manifest.extension_id} {manifest.version} "
-                f"is already {existing.state} in {scope.describe} with different bytes; "
-                "a candidate may not change under an open authorization request"
-            )
+        reinspection = await self._reinspection_outcome(scope, manifest, existing)
+        if reinspection is not None:
+            return reinspection
 
         now = self._clock()
         record = ExtensionInstallRecord(

@@ -618,3 +618,45 @@ class TestFailClosedDefaultLoader:
             params={"org_id": "org-1", "workspace_id": "", "extension_id": "acme.chart_tools"},
         )
         assert active.status_code == 404
+
+
+class TestPublicSurfaceDeclaration:
+    """Every @router handler in extensions.py must be declared in ``__all__``.
+
+    FastAPI registers handlers from the decorators, which static import
+    scanning cannot see. The module's ``__all__`` (the a2a.py/canvas.py
+    convention) is what declares the handlers as the module's public surface
+    and keeps them out of the fastapi-route-handler Vulture ledger; a new
+    handler that skips the declaration would resurface as unbanked dead-code
+    debt and fail the exact-debt-ledger CI gate. This catches that drift here
+    first, with an actionable message.
+    """
+
+    def test_all_covers_every_route_handler(self) -> None:
+        import ast
+        from pathlib import Path
+
+        import maistro_server.api.extensions as extensions_module
+
+        source = Path(str(extensions_module.__file__)).read_text(encoding="utf-8")
+        handlers = {
+            node.name
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(
+                isinstance(dec, ast.Call)
+                and isinstance(dec.func, ast.Attribute)
+                and isinstance(dec.func.value, ast.Name)
+                and dec.func.value.id == "router"
+                for dec in node.decorator_list
+            )
+        }
+        declared = set(extensions_module.__all__)
+        missing = sorted(handlers - declared)
+        assert not missing, (
+            f"route handlers missing from extensions.py __all__: {missing}. "
+            "FastAPI registers handlers dynamically, so every @router handler "
+            "must be declared in the module's __all__ (see a2a.py and the "
+            "comment above extensions.py's __all__) rather than re-entering the "
+            "fastapi-route-handler Vulture ledger as unbanked debt."
+        )

@@ -433,3 +433,23 @@ async def get_active_extension(
             detail=f"no active extension {extension_id!r} in this scope",
         )
     return _record_view(record)
+
+
+# The handlers are this module's public surface: FastAPI registers them from
+# the decorators, which static import scanning cannot see. Declaring them here
+# is the same statement a2a.py's __all__ makes (see the comment there), and is
+# what keeps this module's route handlers out of the fastapi-route-handler
+# Vulture ledger: a new handler must join this list (the drift is caught by
+# test_all_covers_every_route_handler), not silently re-enter the dead-code
+# ratchet as unbanked debt.
+__all__ = [
+    "decide_extension_authorization",
+    "get_active_extension",
+    "get_extension_installation",
+    "get_extension_installation_transitions",
+    "get_extension_service",
+    "inspect_extension",
+    "install_extension",
+    "router",
+    "sweep_expired_authorizations",
+]
