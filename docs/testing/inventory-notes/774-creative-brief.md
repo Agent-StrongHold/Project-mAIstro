@@ -417,3 +417,13 @@ its admission-generation revision to `055_task_admission_generations`, so
 **`056_user_model_facts`** (`down_revision = "055"`). The chain test now
 walks to `056` and asserts `get_heads() == ["056"]`; `054` and `055` are
 interior revisions on its ancestor path.
+
+Update (auto-1047 develop sync, quota-door collision): develop's
+#1196/#718 quota door took the child slot under `055` on develop as
+**`043_invocation_quota_door`**, colliding with this branch's `056` on the
+same parent. Per the convention the branch-side revision re-parents onto
+the incoming develop tip: `056_user_model_facts` now revises the quota door
+and the single linear head remains `056`. The chain test walks to `056`
+(traversing the quota door, now itself asserted on the walked path) and
+still asserts `get_heads() == ["056"]`; the refused-downgrade stamp
+assertion continues to track the head, so it stays at `056`.
