@@ -43,10 +43,14 @@ disposition, or grant was added for it (none is permitted for this leaf), and
 no `IdempotencyKeyMismatch`/HTTP mapping was touched. Gates run with CI's
 invocations (`uv sync --locked --all-extras` first, as `quality.yml` does):
 
-- `check-reachability.py` exits 1 listing exactly one new unreachable module,
-  `maistro.tasks.admission_generation` (176 live vs 175 baselined);
-  `tests/test_check_reachability.py::test_baseline_matches_the_tree` fails for
-  the same single-module delta and nothing else.
+- `check-reachability.py` exits 1 listing the two leaf modules as NEWLY
+  UNREACHABLE — `maistro.runs.admission_identity` (#1851 sibling) and
+  `maistro.tasks.admission_generation` (this leaf); both
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree` and the
+  two `tests/test_reachability_baseline_identity.py` gate-identity tests fail
+  for that same two-module delta and nothing else (re-derived at round 13;
+  earlier sections quote one module because the #1851 sibling had not landed
+  yet when they were written).
 - `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
   '*/third_party/*'` exits 0: 1342 reviewed identities -> 1342 findings, no
   new identity (the name-based scanner sees `_assess` used by the live flow's
@@ -1029,3 +1033,71 @@ Acceptance battery at this head: focused classifier suite 131 passed;
 passed; import-spy test by exact node ID 1 passed; driver-equivalent checks
 (ruff check/format repo-wide, two-file pytest selection, scoped suite
 inventory) all rc=0.
+
+## CI-repair round 13 (2026-10-05, head 02dc2f8a894c + this commit): candidate reachability rows removed
+
+The lane brief named `exact-debt-ledger` as the one red merge-queue check and
+prescribed the vulture-ledger amendment procedure. Executed in order:
+
+- **The prescribed vulture amendment is empty (13th consecutive round).**
+  `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exits 0 at 1342 reviewed
+  identities -> 1342 findings, unclassified 0. `quality/vulture-baseline.json`
+  stays byte-identical to the base; there is nothing to bank or remove.
+- **The two candidate reachability ledger rows and their paired disposition
+  entries are removed.** `quality/reachability-baseline.json` (rows for
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`)
+  and `quality/reachability-dispositions.json` (groups
+  `runs-root-admission-contracts`, `tasks-admission-generation-assessor`) are
+  restored byte-for-byte to the develop trusted base (c560d4ccad82). They were
+  prohibited additions for this leaf — "No fake callers, baseline additions,
+  grants, disabled gates or quality waivers are permitted" — and the
+  dispositions provenance sub-ratchet rejected them outright. Round 12 kept
+  them because removal "would only re-break `check-reachability.py` and its
+  meta-tests"; that trade is reversed here: the provenance outcome is
+  identical in kind with or without the rows (see below), so the branch now
+  carries zero prohibited ledger rows and eats the sanctioned red gates
+  instead.
+- **`check-ratchet-provenance.py` (exact-debt-ledger step 1) after the
+  repair**: the reachability-dispositions sub-ratchet is now green; the
+  reachability sub-ratchet still exits 1, on exactly four lines — both
+  modules "NEW unreachable module absent from trusted base and not previously
+  authorized" and both "current unreachable module missing from candidate
+  baseline". This is the two-merge rule, not a ledger defect:
+  `load_authorizations` reads grants from base c560d4ccad82, which has none
+  for either module, so no in-branch state (rows banked or removed) can turn
+  step 1 green. Steps 2 and 3 pass: `check-shipped-surface-truth.py` exit 0;
+  the vulture command above exit 0.
+- **Consequential red gates, re-derived and issue-sanctioned** (the staging
+  constraint's "report implementation/test readiness plus the explicit merge
+  blocker"): `check-reachability.py` exit 1 listing exactly the two leaf
+  modules as NEWLY UNREACHABLE;
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree` and both
+  `tests/test_reachability_baseline_identity.py` gate-identity tests fail for
+  that same two-module delta and nothing else.
+- **Everything else is green at this head**: `check-reachability-dispositions.py`
+  (49 groups give all 170 unreachable modules a disposition),
+  `check-convergence-matrix.py` (after reverting both matrix rows to the
+  base-computed share word `none`, with the disposition prose now saying
+  "newly unreachable — not baselined, in-leaf unauthorized" instead of the
+  false "baselined-unreachable"), `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py`, `check-radon-baseline.py` (138 -> 138),
+  ruff check + format repo-wide, mypy on the classifier, focused suites
+  (131 + 112 passed), scoped suite inventory (13972 node IDs, unchanged —
+  no tests moved in this round).
+- **Mutation proof re-executed independently** (module restored byte-exact
+  after each run, md5-verified): swap TAKEOVER/REPLACE_EXPIRED -> 50 failed;
+  lease before binding -> 14 failed; legacy pending treated as v2 -> 10
+  failed; mismatch before expiry (true reorder — the mismatch row moved above
+  the expiry row; note that naively "swapping" the two adjacent lines around
+  the interleaved comment block reproduces the original order and proves
+  nothing) -> 22 failed. All four issue-named regression mutations are caught
+  by the focused suite as it stands at this head.
+
+What actually retires the blocker, in the only order the gates allow: land
+authorizations for the two reachability identities on develop (outside this
+lane's authority — no-push/no-PR rules), then rebase this stack and bank the
+baseline + disposition rows; or land the #1845 integration consumer, wiring
+both modules and pruning the entries the moment they are reached. Until one
+of those happens the stack stays unmerged by design, with implementation and
+focused-test readiness complete.
