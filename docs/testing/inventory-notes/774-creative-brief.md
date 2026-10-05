@@ -396,6 +396,15 @@ IDs moved; the inventory deltas are unchanged.
 
 Update (auto-119 develop sync, M4-B3 merge): #119's applicability migration
 had also taken `052` on parent `051`, the same collision; it re-parents onto
-the ladder as **`054_learning_applicability_epistemics`**. The chain test now
-walks to `054` and asserts `get_heads() == ["054"]`; every assertion this
+the ladder as **`054_learning_applicability_epistemics`**. The chain test then
+walked to `054` and asserted `get_heads() == ["054"]`; every assertion this
 round added still holds with `052` an interior revision.
+
+Update (auto-119 develop sync, admission-generation collision): develop's
+#1892 admission-generation revision — `054` on develop, unaware of this
+branch's open `054` — met `054_learning_applicability_epistemics` on parent
+`053`. Landing second for the second time, it re-parents onto the
+applicability tip as **`055_task_admission_generations`**
+(`down_revision = "054"`). The chain test now walks to `055` and asserts
+`get_heads() == ["055"]`; `054` is an interior revision on its ancestor
+path.
