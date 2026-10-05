@@ -134,7 +134,6 @@
         "docs/specs/SPEC-208-foreign-harness-adapter.md [boundary]",
         "docs/specs/SPEC-209-core-schemas-and-registry.md [boundary]",
         "docs/specs/SPEC-210-structured-output-parser.md [boundary]",
-        "docs/specs/SPEC-216-learning-store.md [behavioral]",
         "docs/specs/SPEC-218-ontology-semantic-layer.md [behavioral]",
         "docs/specs/SPEC-218-ontology-semantic-layer.md [boundary]",
         "docs/specs/SPEC-220-canvas-asset-store.md [behavioral]",
