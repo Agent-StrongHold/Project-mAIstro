@@ -28,6 +28,12 @@ to the gateway with absent cost metadata. No fallback may widen a pin.
   cases failed. The configured success case already passed. The final focused
   set contains 34 passing cases, including existing alias, cost, router,
   credential, policy, deduplication, and retry regression coverage.
+- Exact-head CI exposed two existing DAG quota fixtures which pinned a model
+  against an intentionally empty registry. They now use the real in-memory
+  registry with explicit test metadata, preserving strict pin refusal and all
+  quota assertions. Both failures reproduced before the fixture repair; the
+  expanded hermetic cohort passes 38 cases. No test identities were added or
+  removed by this follow-up.
 
 ## Configuration prerequisite and limits
 
