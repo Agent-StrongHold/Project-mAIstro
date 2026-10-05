@@ -154,3 +154,35 @@ def test_unconfigured_service_is_a_503_never_a_fake_answer() -> None:
     finally:
         client.close()
         app.dependency_overrides.clear()
+
+
+async def test_a_configured_runtime_binds_the_durable_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A runtime with a spine pool and a session factory gets the durable twin.
+
+    The complement of the 503 test above: once PostgreSQL is configured, the
+    lifespan binds a ``UserModelService`` over ``PostgresUserModelStore`` —
+    the Agent/API-shared service (#1047), not an in-process lookalike.
+    Constructors are inert, so no server is needed to pin the wiring.
+    """
+    import maistro.memory.store as memory_store
+    import maistro_server.main as main_module
+
+    factory = object()
+    monkeypatch.setattr(memory_store, "get_async_session_factory", lambda: factory)
+
+    class _FakePool:
+        pass
+
+    try:
+        await main_module._configure_user_model(_FakePool())
+
+        service = user_model_api.get_user_model_service()
+        assert isinstance(service, UserModelService)
+        from maistro.memory.user_model.pg_store import PostgresUserModelStore
+
+        assert isinstance(service.store, PostgresUserModelStore)
+        assert service.store._factory is factory
+    finally:
+        user_model_api.configure_user_model_service(None)

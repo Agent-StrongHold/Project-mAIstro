@@ -16,6 +16,7 @@ import pytest
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 from maistro.memory.user_model import (
     FactSensitivity,
+    FactState,
     InMemoryUserModelStore,
     RecallQuery,
     UserModelFact,
@@ -256,6 +257,114 @@ async def test_recall_never_crosses_owners(owner: str, task: str) -> None:
 
     assert await recall(store, _query(owner, task)) == []
     assert await recall(store, _query("BOB", "owns a Canon 7D camera body")) == []
+
+
+def test_a_query_without_owner_clock_or_calibrated_confidence_is_refused() -> None:
+    """A query no scorer could answer is a constructor error, not a silent 0.0.
+
+    A blank owner would widen recall to every principal; a naive ``now``
+    would shift every temporal-validity window by the local offset; an
+    out-of-range confidence floor would gate nothing or everything.
+    """
+    with pytest.raises(ValueError, match="owner_user_id"):
+        RecallQuery(owner_user_id="   ", now=_NOW)
+    naive = datetime(2026, 10, 4, 12, 0, 0)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        RecallQuery(owner_user_id="alice", now=naive)
+    with pytest.raises(ValueError, match="min_confidence"):
+        RecallQuery(owner_user_id="alice", now=_NOW, min_confidence=1.5)
+    with pytest.raises(ValueError, match="min_confidence"):
+        RecallQuery(owner_user_id="alice", now=_NOW, min_confidence=-0.1)
+
+
+async def test_a_fact_that_is_not_yet_valid_is_not_surfaced() -> None:
+    """Temporal validity has a lower bound too: ``valid_from`` in the future.
+
+    The expiry tests above pin the upper bound; without this arc a fact
+    scheduled to become true next month would be recalled today.
+    """
+    store = InMemoryUserModelStore()
+    await store.append_revision(
+        UserModelFact(
+            lineage_id="lin-future",
+            revision=1,
+            supersedes=None,
+            owner_user_id="alice",
+            kind="status",
+            statement="relocates to Lisbon in November",
+            valid_from=_NOW + timedelta(days=30),
+        )
+    )
+
+    assert await recall(store, _query("alice", "where should I stay in lisbon")) == []
+    opened = RecallQuery(
+        owner_user_id="alice",
+        task_text="where should I stay in lisbon",
+        now=_NOW + timedelta(days=31),
+    )
+    assert [item.fact.lineage_id for item in await recall(store, opened)] == ["lin-future"]
+
+
+async def test_under_review_facts_are_not_surfaced() -> None:
+    """UNDER_REVIEW means the model is contradicting itself: not asserted."""
+    store = InMemoryUserModelStore()
+    await store.append_revision(
+        UserModelFact(
+            lineage_id="lin-review",
+            revision=1,
+            supersedes=None,
+            owner_user_id="alice",
+            kind="possession",
+            statement="drives a manual transmission car",
+            state=FactState.UNDER_REVIEW,
+        )
+    )
+
+    assert await recall(store, _query("alice", "rent or drive a car in the city")) == []
+
+
+async def test_exclude_kinds_remove_matching_facts_from_recall() -> None:
+    """Negative evidence: "do not surface possessions here" is honoured.
+
+    The same fact is recalled without the exclusion, so the kind filter —
+    not a scoring accident — is what kept it out.
+    """
+    store = InMemoryUserModelStore()
+    await store.append_revision(
+        UserModelFact(
+            lineage_id="lin-gear",
+            revision=1,
+            supersedes=None,
+            owner_user_id="alice",
+            kind="possession",
+            statement="owns a Canon 7D camera body",
+        )
+    )
+    query = _query("alice", "which camera should I take")
+
+    assert len(await recall(store, query)) == 1
+    excluded = _query("alice", "which camera should I take", exclude_kinds=("possession",))
+    assert await recall(store, excluded) == []
+
+
+async def test_limit_caps_recall_without_changing_the_ranking() -> None:
+    store = await _store_with("alice", "owns a Canon 7D camera body")
+    await store.append_revision(
+        UserModelFact(
+            lineage_id="lin-grip",
+            revision=1,
+            supersedes=None,
+            owner_user_id="alice",
+            kind="possession",
+            statement="owns a Canon 7D camera battery grip",
+        )
+    )
+    query = _query("alice", "which camera body and grip")
+
+    everything = await recall(store, query)
+    assert len(everything) == 2
+    capped = await recall(store, _query("alice", "which camera body and grip", limit=1))
+    assert [item.fact.fact_id for item in capped] == [item.fact.fact_id for item in everything[:1]]
 
 
 async def test_recall_order_is_deterministic() -> None:

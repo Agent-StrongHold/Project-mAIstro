@@ -218,3 +218,77 @@ async def test_service_promotes_corrects_and_forgets_through_the_durable_twin(
         )
     # The audited promotions are in the log; the in-memory audit recorded them.
     assert await audit.get_entries(user_id="pg-alice")
+
+
+async def test_an_unconfigured_store_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store with no database configured refuses to impersonate durable storage.
+
+    The API takes the routes offline (503) rather than serve a lookalike store
+    (#1047); the store side of that contract is the loud RuntimeError here.
+    """
+    monkeypatch.setattr(
+        "maistro.memory.store.get_async_session_factory", lambda: None, raising=True
+    )
+    unconfigured = PostgresUserModelStore()
+
+    with pytest.raises(RuntimeError, match="No database configured"):
+        await unconfigured.current("lin-whatever")
+
+
+async def test_a_tombstoned_lineage_refuses_new_revisions(
+    store: PostgresUserModelStore,
+) -> None:
+    """The lineage check fires before the statement-key check.
+
+    The tombstone test above proves a deleted *wording* stays blocked under a
+    fresh lineage; this proves the deleted lineage itself is closed too —
+    a stale client re-appending to the deleted lineage cannot revive it.
+    """
+    lineage = "lin-pg-closed"
+    head = await store.append_revision(_fact("pg-alice", "to be forgotten", lineage_id=lineage))
+    await store.tombstone(lineage, acting_user_id="pg-alice", reason="user asked to forget")
+
+    with pytest.raises(TombstonedLineageError):
+        await store.append_revision(
+            dataclasses.replace(
+                _fact("pg-alice", "to be forgotten", lineage_id=lineage),
+                fact_id="rev-after-tomb",
+                revision=head.revision + 1,
+                supersedes=head.fact_id,
+            )
+        )
+
+
+async def test_a_statement_belongs_to_exactly_one_lineage(
+    store: PostgresUserModelStore,
+) -> None:
+    """A second lineage claiming a wording that is already claimed conflicts."""
+    await store.append_revision(_fact("pg-alice", "one canonical wording", lineage_id="lin-a"))
+
+    with pytest.raises(RevisionConflictError):
+        await store.append_revision(_fact("pg-alice", "one canonical wording", lineage_id="lin-b"))
+    # The first claimant is untouched by the refused theft.
+    assert await store.is_tombstoned(fact_key("pg-alice", "one canonical wording")) is False
+    assert (await store.current("lin-a")) is not None
+    assert await store.current("lin-b") is None
+
+
+async def test_a_blank_revision_claims_no_statement_key(
+    store: PostgresUserModelStore,
+) -> None:
+    """Only a wording can be promised-unique; a blank one claims nothing.
+
+    Tombstone revisions are appended with an empty statement; if those wrote
+    statement keys, the key index would grow one nonsense row per tombstone.
+    """
+    lineage = "lin-blank"
+    appended = await store.append_revision(
+        _fact("pg-alice", "   ", lineage_id=lineage),
+    )
+
+    assert appended.statement == "   "
+    assert await store.is_tombstoned(fact_key("pg-alice", "   ")) is False
+    # The revision itself is kept; only the key claim is skipped.
+    assert (await store.current(lineage)) is not None
