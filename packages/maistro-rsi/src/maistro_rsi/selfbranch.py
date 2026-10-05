@@ -53,7 +53,16 @@ def paths_touched_by_diff(diff: str) -> list[str]:
 
 @dataclass
 class SelfBranchAttempt:
-    """One self-modification attempt: where it happens and how it's judged."""
+    """One self-modification attempt: where it happens and how it's judged.
+
+    ``commit`` optionally pins the source checkout (#404 AC3): a full 40-
+    or 64-hex digest that `git_clone` fetches directly and verifies with a
+    final `rev-parse HEAD` verdict. An attempt without a pin is still
+    policy-vetted (`git_clone` runs `validate_clone_source` on every call)
+    but clones whatever the remote's default branch points at when the
+    cycle runs — operators that need reproducible candidate source supply
+    the digest.
+    """
 
     branch_name: str
     repo_url: str
@@ -62,6 +71,7 @@ class SelfBranchAttempt:
     pr_title: str
     pr_body: str = ""
     base_branch: str = "main"
+    commit: str | None = None
 
 
 @dataclass
@@ -72,6 +82,12 @@ class SelfBranchResult:
     diff: str
     pr_url: str | None = None
     error: str | None = None
+    # The verified content identity of the cloned source (#404): the digest
+    # the attempt pinned and `git_clone` proved via `rev-parse HEAD`. None
+    # means the attempt was unpinned (policy-vetted transport, unpinned
+    # content) — downstream scoring/audit reads this to know exactly which
+    # source object the cycle branched from.
+    cloned_commit: str | None = None
     quarantine: QuarantineVerdict | None = None
     # Differential workspace evidence: the same probe run before the patch
     # (baseline) and after it (candidate), so downstream scoring battles over
@@ -90,6 +106,7 @@ def new_attempt(
     *,
     base_branch: str = "main",
     label: str = "rsi",
+    commit: str | None = None,
 ) -> SelfBranchAttempt:
     """Build an attempt with a unique, collision-free branch name."""
     run_id = uuid.uuid4().hex[:10]
@@ -100,6 +117,7 @@ def new_attempt(
         commit_message=f"RSI attempt {run_id}: self-proposed improvement",
         pr_title=f"[RSI {run_id}] Self-proposed improvement",
         base_branch=base_branch,
+        commit=commit,
     )
 
 
@@ -129,7 +147,7 @@ async def run_self_branch_attempt(
     change. Probes that need test artifacts should run those commands
     themselves; the probe sees the workspace state, not the later test run.
     """
-    clone = await git_clone(attempt.repo_url, workspace)
+    clone = await git_clone(attempt.repo_url, workspace, commit=attempt.commit)
     if not clone.get("ok", True) or clone.get("exit_code", 0) != 0:
         return SelfBranchResult(
             attempt=attempt,
@@ -138,6 +156,9 @@ async def run_self_branch_attempt(
             diff="",
             error=f"clone failed: {clone}",
         )
+    # The verified source identity when the attempt pinned (#404): a digest
+    # git_clone already proved with a post-fetch `rev-parse HEAD` verdict.
+    cloned_commit = clone.get("pinned_commit")
 
     await git_branch(workspace, attempt.branch_name, checkout=True)
     baseline_metrics = await probe(sandbox, workspace) if probe is not None else None
@@ -194,6 +215,7 @@ async def run_self_branch_attempt(
         test_output=output,
         diff=diff,
         pr_url=pr_url,
+        cloned_commit=cloned_commit,
         quarantine=quarantine_verdict,
         baseline_metrics=baseline_metrics,
         candidate_metrics=candidate_metrics,

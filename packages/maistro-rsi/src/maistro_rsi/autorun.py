@@ -141,6 +141,10 @@ class AutorunConfig:
     open_prs: bool = False
     workspace_root: str = DEFAULT_WORKSPACE_ROOT
     base_branch: str = "main"
+    # Optional source pin (#404 AC3) threaded into every cycle's clone: a
+    # full 40/64-hex digest. None clones the remote default-branch tip
+    # (transport/host policy still applies, content unpinned).
+    source_commit: str | None = None
     # Stop growing the tree once this much wall-clock has elapsed (checked
     # between cycles; a running cycle is never interrupted).
     max_wall_clock_s: float | None = None
@@ -760,6 +764,7 @@ def build_executor(
         workspace_root=config.workspace_root,
         open_prs=config.open_prs,
         base_branch=config.base_branch,
+        source_commit=config.source_commit,
         benchmark_commands=dict(config.benchmark_commands),
     )
 

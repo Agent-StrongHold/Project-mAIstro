@@ -28,10 +28,15 @@ class FakeGitOps:
         self.calls: list[str] = order if order is not None else []
         self.clone_ok = clone_ok
         self.pr_created = False
+        self.clone_commit: str | None = None
 
-    async def git_clone(self, url, dest):
+    async def git_clone(self, url, dest, commit=None):
         self.calls.append("clone")
-        return {"ok": self.clone_ok, "exit_code": 0 if self.clone_ok else 1}
+        self.clone_commit = commit
+        result = {"ok": self.clone_ok, "exit_code": 0 if self.clone_ok else 1}
+        if commit is not None:
+            result["pinned_commit"] = commit
+        return result
 
     async def git_branch(self, workspace, name, checkout=True):
         self.calls.append("branch")
@@ -324,6 +329,124 @@ class TestPathsTouchedByDiff:
     def test_empty_diff_yields_no_paths(self):
         """selfbranch-7: a diff with no `diff --git` headers touches no paths."""
         assert paths_touched_by_diff("") == []
+
+
+class TestSourceCommitPinning:
+    """#404 AC3 on the RSI self-branch surface: candidate source is pinnable to
+    a commit digest, the pin reaches the clone, and the verified digest comes
+    back on the result for audit/scoring."""
+
+    @pytest.mark.asyncio
+    async def test_attempt_commit_reaches_git_clone_pin(self, patch_git_ops):
+        fake = patch_git_ops
+        digest = "a" * 40
+        attempt = new_attempt("https://github.com/org/repo.git", "pytest -q", commit=digest)
+
+        result = await run_self_branch_attempt(FakeSandbox(), "/ws", attempt, _noop_patch)
+
+        assert result.error is None
+        assert fake.clone_commit == digest
+
+    @pytest.mark.asyncio
+    async def test_unpinned_attempt_clones_without_a_pin_by_default(self, patch_git_ops):
+        fake = patch_git_ops
+        attempt = new_attempt("https://github.com/org/repo.git", "pytest -q")
+
+        result = await run_self_branch_attempt(FakeSandbox(), "/ws", attempt, _noop_patch)
+
+        assert result.error is None
+        # Unpinned is the explicit default: the transport is still policy-vetted
+        # inside git_clone, but no digest is asserted and none is reported.
+        assert fake.clone_commit is None
+        assert result.cloned_commit is None
+
+    @pytest.mark.asyncio
+    async def test_verified_pin_is_recorded_on_the_result(self, patch_git_ops):
+        digest = "b" * 40
+        attempt = new_attempt("https://github.com/org/repo.git", "pytest -q", commit=digest)
+
+        result = await run_self_branch_attempt(FakeSandbox(), "/ws", attempt, _noop_patch)
+
+        # git_clone reports pinned_commit only after its rev-parse HEAD verdict;
+        # the result carries that verified identity downstream.
+        assert result.cloned_commit == digest
+
+    @pytest.mark.asyncio
+    async def test_clone_failure_leaves_no_cloned_commit(self, patch_git_ops):
+        patch_git_ops.clone_ok = False
+        digest = "c" * 40
+        attempt = new_attempt("https://github.com/org/repo.git", "pytest -q", commit=digest)
+
+        result = await run_self_branch_attempt(FakeSandbox(), "/ws", attempt, _noop_patch)
+
+        assert result.error is not None
+        assert result.cloned_commit is None
+
+
+class TestLiveSourceCommitPinning:
+    """Real-git end-to-end for the source pin: same fixture shadow as
+    TestCapturedDiffIsNonEmpty — the module-level autouse FakeGitOps is
+    disabled so the actual clone/branch/commit sequence runs."""
+
+    @pytest.fixture(autouse=True)
+    def patch_git_ops(self):
+        """Shadow the module-level autouse fixture — real git, not FakeGitOps."""
+        yield None
+
+    @pytest.mark.asyncio
+    async def test_live_pinned_attempt_branches_from_the_pinned_object(self, tmp_path, monkeypatch):
+        """End-to-end against real git: the attempt pins the origin's HEAD
+        digest, and the workspace that gets branched/patched is exactly that
+        object — reported as cloned_commit for the cycle's audit trail."""
+        import subprocess
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=origin, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=origin, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=origin, check=True)
+        (origin / "README.md").write_text("v1\n")
+        subprocess.run(["git", "add", "."], cwd=origin, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=origin, check=True)
+        subprocess.run(["git", "branch", "-M", "main"], cwd=origin, check=True)
+        pinned = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=origin, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        workspace_root = tmp_path / "maistro-workspace"
+        monkeypatch.setattr(
+            "maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS",
+            (workspace_root,),
+        )
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+            ("https://", "ssh://", "file://"),
+        )
+        # A clone does not inherit the origin's git identity config; the
+        # patch commit below runs in the cloned workspace, so pin the author/
+        # committer via git's env contract instead of relying on a global
+        # ~/.gitconfig existing in the test environment.
+        monkeypatch.setenv("GIT_AUTHOR_NAME", "rsi-test")
+        monkeypatch.setenv("GIT_AUTHOR_EMAIL", "rsi-test@example.com")
+        monkeypatch.setenv("GIT_COMMITTER_NAME", "rsi-test")
+        monkeypatch.setenv("GIT_COMMITTER_EMAIL", "rsi-test@example.com")
+        workspace = str(workspace_root / "run-pinned")
+
+        async def add_a_file(_sandbox, ws: str, model=None) -> None:
+            (Path(ws) / "pinned_marker.py").write_text("print('pinned')\n")
+
+        attempt = new_attempt(f"file://{origin}", "true", base_branch="main", commit=pinned)
+        result = await run_self_branch_attempt(FakeSandbox(), workspace, attempt, add_a_file)
+
+        assert result.error is None, result.error
+        assert result.cloned_commit == pinned
+        # The branch was cut from the pinned object: the patch commit sits on
+        # top of the pinned digest, so the patched workspace's history starts
+        # exactly at the audited object.
+        checked_out = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"], cwd=workspace, capture_output=True, text=True
+        )
+        assert checked_out.stdout.strip() == pinned
 
 
 class TestCapturedDiffIsNonEmpty:

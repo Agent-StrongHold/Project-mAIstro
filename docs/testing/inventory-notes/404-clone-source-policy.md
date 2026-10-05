@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +32
-  packages/maistro-rsi/tests: +6
+  packages/maistro-rsi/tests: +12
 ---
 # Clone-source policy: hosts, digest pins, executable redirect/submodule enforcement (#404)
 
@@ -11,6 +11,14 @@ the remaining acceptance gaps: the scheme gate accepted every https host on
 earth (no explicit source policy), nothing pinned candidate source to a
 commit digest, the redirect/submodule argument was comment-only, and the
 tests covered case variants only. This change closes those gaps.
+
+A follow-up round closed the last unpinned production clone surface: the RSI
+self-branch cycle (`maistro_rsi.selfbranch`) cloned policy-vetted URLs with
+no way to name the digest it was branching from. `SelfBranchAttempt.commit`
+now carries an optional full-digest pin, `RsiCycleConfig.source_commit`
+feeds it, and `SelfBranchResult.cloned_commit` reports the digest `git_clone`
+verified with its post-fetch `rev-parse HEAD` verdict — the cycle's audit
+trail names the exact source object it branched, patched and tested.
 
 ## Policy (`maistro.tools.git.server`)
 
@@ -42,7 +50,7 @@ requires a configured trust anchor (whose keys sign what?) and no production
 surface configures one; the digest pin over an authenticated transport is the
 identity policy that exists end to end today.
 
-Test delta (+32 node IDs in `packages/maistro-core/tests`, +6 in
+Test delta (+32 node IDs in `packages/maistro-core/tests`, +12 in
 `packages/maistro-rsi/tests`):
 
 - `tests/tools/git/test_server_security.py` (+29):
@@ -75,6 +83,15 @@ Test delta (+32 node IDs in `packages/maistro-core/tests`, +6 in
   four refused URLs exit 2 with no subprocess and no work tree (including
   the named git:// verdict), and the allowed transport reaches git with the
   enforcement pins and the `--` separator.
+- `tests/test_selfbranch.py` (+5, `TestSourceCommitPinning`): the self-branch
+  clone surface closes the last unpinned #404 gap — an attempt's `commit`
+  pin reaches `git_clone`; the unpinned default is explicit (no pin passed,
+  no `cloned_commit` reported); a verified pin is recorded on the result;
+  a failed clone reports no identity; and an end-to-end run against real git
+  pins the origin's HEAD digest and proves the branched/patched workspace
+  sits exactly on that object.
+- `tests/test_runner.py` (+1): `RsiCycleConfig.source_commit` is threaded
+  into the attempt the cycle hands to `run_self_branch_attempt`.
 
 Existing tests updated, counts unchanged: `test_server.py` and two
 `test_server_security.py` cases cloned from `example.com`, which the new
