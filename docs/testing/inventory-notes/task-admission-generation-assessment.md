@@ -651,3 +651,87 @@ this note only. The unblock sequence is unchanged and belongs to the
 separately scoped #1845 integration change: land the reachability
 authorizations on the base (grant first, change second), wire the reviewed
 consumer, then converge the unchanged gates at its final head.
+
+## CI-repair round 9 (2026-10-05): exact-debt-ledger reproduced at 4efbb5ce0fc7
+## across the moved merge base; develop tip still carries no grants after the
+## #1944 sibling leaf; synthetic-merge cleanliness proven by merge-tree
+
+Trigger: the merge-queue evaluation at 4efbb5ce0fc7 failed `exact-debt-ledger`
+(actions run 37286530916, job 111686641054) and the lane brief again
+prescribed the vulture-ledger amendment. Everything re-executed at this head,
+not assumed; new facts beyond round 8 are marked:
+
+- Step-for-step reproduction of the exact-debt-ledger job with CI's exact
+  arguments and `RATCHET_BASE_REV=origin/develop`: step 1
+  `check-ratchet-provenance.py` exits 1 on exactly the same two of its nine
+  sub-ratchets — `reachability` ("NEW unreachable module absent from trusted
+  base and not previously authorized") and `reachability-dispositions`
+  ("NEW disposition absent from trusted ledger and not covered by an
+  already-landed reachability authorization"), each naming only
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`;
+  step 2 `check-shipped-surface-truth.py` exits 0; step 3
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exits 0 at 1338 reviewed identities ->
+  1338 findings, unclassified 0, never_allowlist 0. The prescribed
+  amendment has an empty fix-list for the ninth consecutive round:
+  `git diff origin/develop HEAD -- quality/vulture-baseline.json` is empty
+  (and so is the diff for `quality/ratchet-authorizations.json`); nothing
+  is genuinely dead to retire. Both ledgers stay untouched.
+- NEW: the trusted base moved and the failure survived it. This head merged
+  develop's b3662bb3719a (PR #1968 research commit), so the merge base with
+  origin/develop advanced from 94781cf6b708 (round 8) to b3662bb3719a; the
+  provenance output now reads "baseline: base b3662bb3719a" and fails on
+  the identical two identities. The defect is therefore independent of
+  where the base sits — it is the two-merge rule itself
+  (`scripts/ratchet_provenance.py:478-498`, `load_authorizations` reads the
+  base revision; the in-repo rule "a grant never authorizes the change that
+  introduces it").
+- NEW: develop tip (30677b185) landed a sibling #1845 leaf — aee4e0845,
+  PR #1944, the `054_task_admission_generations` migration from #1892 — and
+  even after that merge `git ls-tree origin/develop` still contains neither
+  `maistro/runs/admission_identity.py` nor
+  `maistro/tasks/admission_generation.py`, and develop's
+  `quality/ratchet-authorizations.json` still has no `reachability` entry
+  mentioning either module (`grep -c admission` on both ledgers at
+  origin/develop: 0). The unblock action therefore remains pending upstream
+  and unchanged in kind by develop's advance.
+- NEW: `git merge-tree --write-tree HEAD origin/develop` exits 0 — the
+  branch synthesizes cleanly with develop tip 30677b185, so the merge-queue
+  candidate builds and the red job is purely the provenance rule; there is
+  no develop-sync conflict component to repair. A branch-side merge of
+  origin/develop was considered and skipped as non-remedial: it cannot add
+  the missing base-landed grants, so the gate outcome is identical.
+- Mutation teeth re-proven at this head in a throwaway
+  `git worktree` clone (assigned tree untouched, clone restored
+  byte-identical afterwards): MISMATCH moved before the expiry row -> 17
+  focused failures; the lease row moved above the binding row -> 10
+  failures; the LEGACY_UNRESOLVED row deleted (legacy treated as v2) ->
+  7 failures. (Fourth issue-named mutation — TAKEOVER/REPLACE_EXPIRED swap
+  — was executed at this exact content in round 8's step list: 36/4
+  failures by row.)
+- Acceptance battery re-executed at 4efbb5ce0fc7: the three focused files
+  (`test_admission_generation_assessment.py` + `test_root_admission_identity.py`
+  + unchanged `test_idempotency.py`) 217 passed; import-spy test passes
+  (`-k import_spy` 1 passed); mypy clean on both new modules; driver checks
+  0-4 all rc=0 (ruff check, ruff format --check 2923 files, focused pytest
+  178, suite inventory `--suite packages/maistro-core/tests` ok at 13468);
+  full `check-suite-inventory.py` ok (14 suites, 26171 identities, zero
+  duplicate evidence); `check-convergence-matrix.py` ok (52 subsystems
+  classify all 1268 production modules, 174 attributed); no production
+  module imports either new module (grep over `packages/*/src` excluding
+  the two modules and the whitelist: no matches), and `tasks/__init__.py`,
+  `runs/__init__.py`, `tasks/idempotency.py` have a zero-line diff vs the
+  merge base.
+
+No source, test, or ledger file changed in this round: this commit edits
+this note only. The unblock sequence is unchanged and now proven stable
+across a base move and a sibling-leaf landing: (1) the separately scoped
+#1845 integration change lands `reachability` authorizations for
+`maistro.runs.admission_identity` and `maistro.tasks.admission_generation`
+on the base first (grant merge, then banking/wiring merge — the repo's own
+precedent shape: the #61 events quartet and #458 interop pair grants), (2)
+wires the reviewed consumer, and (3) converges the unchanged full quality
+gates at its final head. Until (1), every merge-queue evaluation of this
+stack deterministically fails exact-debt-ledger at step 1, exactly as the
+leaf contract ("A candidate baseline update cannot grant itself permission")
+requires it to.
