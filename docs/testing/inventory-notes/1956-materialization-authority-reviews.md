@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: 11
+  packages/maistro-core/tests: 13
   packages/hive-conductor/backend/tests: 20
 ---
 
@@ -39,7 +39,10 @@ separate Agents sharing one admitted Attempt. Existing name/delegation-depth
 scoping fixes that collision and tests retain same-visit replay without a new
 physical call. Existing exact execution-identity, tool-choice, Agent quota and
 factory tests use admitted fixtures. New core cases cover five definition-scope
-restrictions, four effect-scope cases and two factory composition cases (+11).
+restrictions, four effect-scope cases, two factory composition cases, and two real Agent.handle
+tail-delegation hook cases (+13). The hook cases verify actual depths 0 and 1
+and compatibility with an older client; disabling the new production hook makes
+the modern case fail while its legacy control still passes.
 Hive adds 20 transport/admission cases. No suite baselines or grants are changed.
 
 Verification uses isolated source overlays and CI-shaped coverage producers,

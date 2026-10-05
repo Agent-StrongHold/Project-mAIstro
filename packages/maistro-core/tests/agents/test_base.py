@@ -1741,3 +1741,41 @@ class TestClassifiedTaskTypeFromIntent:
         )
 
         assert strategy.calls[0].get("classified_task_type") == "chat"
+
+
+@pytest.mark.parametrize("modern", [True, False], ids=["agent-hook", "legacy-hook"])
+async def test_real_tail_delegation_uses_client_turn_hook_and_actual_depth(modern: bool) -> None:
+    from types import SimpleNamespace
+
+    recorded: list[tuple[str, int | None]] = []
+    cleared: list[bool] = []
+    legacy_calls: list[dict[str, Any]] = []
+
+    def legacy(**kwargs: Any) -> None:
+        legacy_calls.append(kwargs)
+        recorded.append((kwargs["agent_name"], None))
+
+    client = SimpleNamespace(set_turn=legacy, clear_turn=lambda: cleared.append(True))
+    if modern:
+        client.set_agent_turn = lambda **kwargs: recorded.append(
+            (kwargs["agent_name"], kwargs["delegation_depth"])
+        )
+    leaf = _make_agent(
+        _RecordingStrategy(ReasoningResult(response="delegated")),
+        identity=AgentIdentity(name="leaf", model="test-model"),
+        llm=client,
+    )
+    coordinator = _make_agent(
+        _RecordingStrategy(ReasoningResult(response=None, done=False, delegate_to="leaf")),
+        llm=client,
+        agent_resolver={"leaf": leaf}.get,
+    )
+    response = await coordinator.handle(
+        messages=[{"role": "user", "content": "delegate"}], auth=_Auth(), turn_id="domain-turn"
+    )
+    assert response.content == "delegated"
+    assert recorded == (
+        [("tester", 0), ("leaf", 1)] if modern else [("tester", None), ("leaf", None)]
+    )
+    assert cleared == [True, True]
+    assert legacy_calls == ([] if modern else [{"agent_name": "tester"}, {"agent_name": "leaf"}])
