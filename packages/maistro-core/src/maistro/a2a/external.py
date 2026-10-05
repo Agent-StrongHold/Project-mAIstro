@@ -30,6 +30,11 @@ The rules this module enforces, each pinned by a test in
   (:meth:`ProjectionPolicy.allows_refresh`); otherwise
   :class:`AuthorityEscalationRefused`. Effective capabilities are re-evaluated
   (declared ∩ authorized) on every accepted refresh.
+* **Refresh never re-identifies the registration.** A candidate whose agent
+  id — explicit or name-derived — differs from the id it is refreshed under is
+  refused (:class:`DescriptorIdentityMismatch`); the lookup key, descriptor,
+  and projected ``AgentCard.id`` cannot drift apart, and a refresh can never
+  mint or spoof a second canonical identity.
 """
 
 from __future__ import annotations
@@ -54,6 +59,7 @@ __all__ = [
     "CapabilityAuthorization",
     "DefaultDenyProjectionPolicy",
     "DescriptorAlreadyRegistered",
+    "DescriptorIdentityMismatch",
     "DescriptorInvalid",
     "DescriptorProvenance",
     "EndpointConflict",
@@ -126,6 +132,19 @@ class DescriptorAlreadyRegistered(DescriptorError):
     Re-registration is reserved for the idempotent identical payload; changed
     bytes must go through :meth:`ExternalAgentRegistry.refresh_descriptor`, the path that
     evaluates policy before anything broadens.
+    """
+
+
+class DescriptorIdentityMismatch(DescriptorError):
+    """A refresh payload carries a different agent id than the registration.
+
+    One registered id permanently names one canonical identity. A card whose
+    explicit ``id`` — or name-derived slug — differs from the id it is
+    refreshed under would leave the record keyed under the requested id while
+    its descriptor and projected :class:`~maistro.agents.catalog.AgentCard.id`
+    answer to another, splitting lookups from projections. Renaming is a
+    lifecycle decision (deregister and register the new identity), never a
+    silent refresh side effect.
     """
 
 
@@ -633,14 +652,22 @@ class ExternalAgentRegistry:
     ) -> RegisteredExternalAgent:
         """Refresh a registered descriptor from new bytes.
 
-        A candidate that stays within the current declared surface is accepted
-        and re-authorized (policy evaluation runs on every refresh). A
-        broadening candidate is accepted only when the policy approves it;
-        otherwise :class:`AuthorityEscalationRefused` — a refresh can never
-        silently widen what the remote can do.
+        A candidate that re-identifies itself (a card whose explicit ``id`` or
+        name-derived slug differs from ``agent_id``) is refused with
+        :class:`DescriptorIdentityMismatch` — identity changes are a lifecycle
+        decision, not a refresh. A candidate that stays within the current
+        declared surface is accepted and re-authorized (policy evaluation runs
+        on every refresh). A broadening candidate is accepted only when the
+        policy approves it; otherwise :class:`AuthorityEscalationRefused` — a
+        refresh can never silently widen what the remote can do.
         """
         current = self._lookup(agent_id)
         candidate = parse_remote_card(payload)
+        if candidate.agent_id != agent_id:
+            raise DescriptorIdentityMismatch(
+                f"refresh for {agent_id!r} carries card id {candidate.agent_id!r}; "
+                "identity changes are a lifecycle decision, not a refresh"
+            )
         if candidate.endpoint_url != current.descriptor.endpoint_url:
             raise EndpointConflict(
                 f"refresh for {agent_id!r} names endpoint {candidate.endpoint_url!r} "

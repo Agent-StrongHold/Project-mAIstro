@@ -20,6 +20,7 @@ from maistro.a2a.external import (
     CapabilityAuthorization,
     DefaultDenyProjectionPolicy,
     DescriptorAlreadyRegistered,
+    DescriptorIdentityMismatch,
     DescriptorInvalid,
     EndpointConflict,
     ExternalAgentRegistry,
@@ -386,6 +387,40 @@ def test_refresh_to_a_different_endpoint_is_conflict_not_overwrite() -> None:
     registry.register(_card())
     with pytest.raises(EndpointConflict, match="names endpoint"):
         registry.refresh_descriptor("deep-researcher", _card(url="https://other.example.com/agent"))
+
+
+# AC: "a refresh can never re-identify the registration" — neither an explicit
+# id change nor a name whose derived slug differs may slip through, or the
+# record's lookup key and projected AgentCard.id would disagree.
+
+
+def test_refresh_with_a_changed_explicit_id_is_refused() -> None:
+    registry = _registry()
+    registry.register(_card(id="deep-researcher"))
+    with pytest.raises(DescriptorIdentityMismatch, match="carries card id"):
+        registry.refresh_descriptor("deep-researcher", _card(id="impostor"))
+    # The refusal left the record untouched under its registered identity:
+    assert registry.project("deep-researcher").card.id == "deep-researcher"
+    assert registry.agents() == ("deep-researcher",)
+
+
+def test_refresh_whose_name_derives_a_different_slug_is_refused() -> None:
+    registry = _registry()
+    registry.register(_card())  # slug of "Deep Researcher" -> deep-researcher
+    with pytest.raises(DescriptorIdentityMismatch):
+        registry.refresh_descriptor("deep-researcher", _card(name="Deep Researcher Pro"))
+    assert registry.project("deep-researcher").descriptor.name == "Deep Researcher"
+    assert registry.agents() == ("deep-researcher",)
+
+
+def test_refresh_under_the_registered_id_still_succeeds() -> None:
+    registry = _registry()
+    registry.register(_card(id="deep-researcher"))
+    refreshed = registry.refresh_descriptor(
+        "deep-researcher", _card(id="deep-researcher", version="2.5.0")
+    )
+    assert refreshed.descriptor.agent_id == "deep-researcher"
+    assert registry.project("deep-researcher").card.version == "2.5.0"
 
 
 def test_registering_changed_bytes_for_a_registered_id_sends_the_caller_to_refresh() -> None:
