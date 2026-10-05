@@ -127,6 +127,22 @@ jobs:
       # with an import-time side effect runs here.
       - name: Cross-package imports name modules and attributes that exist
         run: python3 scripts/check-cross-package-imports.py
+      # The same boundary one audience further out (#951). Extension packages
+      # are third-party-shaped: they may import the public extension SDK and
+      # their own declared dependencies, never the product's private modules,
+      # never a repo-relative root, never a sys.path repair. Static, against
+      # the namespace policy the SDK epic publishes, so an import inside a
+      # function or a TYPE_CHECKING block is still caught.
+      - name: Extension packages import only the public SDK
+        run: python3 scripts/check-extension-imports.py
+      # The physical half of the same claim (#951): build each extension as a
+      # wheel, install it plus pytest into a fresh venv, prove the product's
+      # own modules are unimportable there, and run its tests with that
+      # interpreter. A fresh venv holds none of this repository, so a pass
+      # here is the executed proof that an extension needs no repo-relative
+      # import to build or test.
+      - name: Reference extension builds and tests in a clean environment
+        run: python3 scripts/check-reference-extension.py
       # The same question one seam further out. That one asks whether an import
       # names something that exists; this asks whether the path the frontend
       # fetches reaches a route the backend registers. `fetch` does not reject
