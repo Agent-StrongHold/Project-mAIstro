@@ -181,6 +181,13 @@
       "disposition": "MANUAL_DIAGNOSTIC",
       "triggers": ["workflow_dispatch"],
       "rationale": "On-demand #916 (RESEARCH M8-B3) model-routing benchmark (scripts/bench_model_routing.py: outcome-learned policies vs the shipped static scorer under delayed, sparsified, drifting feedback, plus clipped-IPS/doubly-robust off-policy evaluation); deterministic and offline, re-measured when the router, the world model, or the policies change — a measurement, not a gate."
+    },
+    {
+      "id": "speculative-parallel-bench",
+      "file": ".github/workflows/speculative-parallel-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #917 / epic #900 M8-B4 speculative-parallel model-call benchmark (serial-fallback vs single-strong vs parallel-early-stop vs parallel-verifier over the governed model seam); deterministic and offline, run when the candidate-policy assumptions change — a measurement, not a gate."
     }
   ],
   "retained_branches": [
