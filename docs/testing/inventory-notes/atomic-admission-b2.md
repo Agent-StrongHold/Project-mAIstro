@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +66
+  packages/maistro-core/tests: +67
 ---
 # atomic-admission-b2
 
@@ -10,9 +10,10 @@ B2 of the #1845 admission-decode stack (#1893): the new
 `maistro.tasks.admission_codec` module turns forward-schema admission rows
 into exact #1851 immutable DTOs or typed fail-closed errors, and the new
 `packages/maistro-core/tests/tasks/test_admission_codec.py` pins that
-contract with 66 tests. All 66 are pure unit tests over `Mapping` rows — no
-database, no clock, no HTTP — because the forward schema itself is B1
-(#1892), which is not on this branch yet.
+contract with 67 tests. All 67 are pure unit tests over `Mapping` rows — no
+database, no clock, no HTTP. At the original B2 leaf B1 (#1892) was not yet
+on the coordinated branch; this leaf tests the mapper rather than claiming a
+database durability proof.
 
 ## Base provenance
 
@@ -26,12 +27,12 @@ against `origin/develop` by row diff), then the codec leaf on top.
 The issue gates database round-trip tests on B1: "The forward schema leaf
 #1892 (B1) is required for database round-trip tests; pure codec work may be
 prepared earlier." The prospective
-`test_raw_and_production_pool_codecs_read_identical_text_snapshots` is
-therefore pinned at the value level here (snapshots are TEXT str in both
-pool kinds; a pre-decoded value is rejected, never silently accepted), and
-the real raw-asyncpg vs `_register_json_codecs` two-pool contrast against
-the migrated schema lands with B1. No skipped test is counted as durability
-proof — there are no skips in this file.
+`test_raw_and_production_pool_codecs_read_identical_text_snapshots` remains
+pinned at the value level here (snapshots are TEXT str in both pool kinds; a
+pre-decoded value is rejected, never silently accepted). The real raw-asyncpg
+vs `_register_json_codecs` two-pool contrast against the migrated schema is
+still required for durability proof; no skipped test is counted as such —
+there are no skips in this file.
 
 ## Contracts worth remembering
 

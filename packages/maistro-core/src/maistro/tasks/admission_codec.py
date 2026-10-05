@@ -91,8 +91,8 @@ _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 
 #: The validated header columns, by storage name. The forward representation
-#: keeps the legacy timestamp column names and renames the legacy ``request``
-#: TEXT column to ``request_snapshot`` for both formats (#1845 mapping).
+#: keeps the legacy timestamp column names and the physical ``request`` TEXT
+#: column. ``request_snapshot`` is the DTO field it maps to (#1845 mapping).
 _HEADER_COLUMNS = (
     "scope_key",
     "format_version",
@@ -114,7 +114,7 @@ _V2_COLUMNS = (
     "actor_principal_id",
     "action",
     "receipt_id",
-    "request_snapshot",
+    "request",
     "receipt_snapshot",
     "provenance_snapshot",
     "task_id",
@@ -280,7 +280,7 @@ def encode_admission_record(record: AdmissionRecordV2) -> dict[str, object]:
         "actor_principal_id": envelope.actor_principal_id,
         "action": envelope.action,
         "receipt_id": envelope.receipt_id,
-        "request_snapshot": envelope.request_snapshot.text,
+        "request": envelope.request_snapshot.text,
         "receipt_snapshot": envelope.receipt_snapshot.text,
         "provenance_snapshot": envelope.provenance_snapshot.text,
         "task_id": None,
@@ -494,7 +494,7 @@ def _decode_v2_record(row: Mapping[str, object], header: AdmissionRowHeader) -> 
     owner_token = _storage_uuid(row["claim_token"], "claim_token", scope_key)
 
     identities = _v2_identities(row, scope_key)
-    request_snapshot = _parse_snapshot(row, "request_snapshot", scope_key)
+    request_snapshot = _parse_snapshot(row, "request", scope_key)
     receipt_snapshot = _parse_snapshot(row, "receipt_snapshot", scope_key)
     provenance_snapshot = _parse_snapshot(row, "provenance_snapshot", scope_key)
 
@@ -593,7 +593,7 @@ def _decode_legacy_record(
             scope_key=scope_key,
         ) from None
 
-    request_snapshot = _parse_snapshot(row, "request_snapshot", scope_key)
+    request_snapshot = _parse_snapshot(row, "request", scope_key)
 
     try:
         return LegacyAdmissionRecord(

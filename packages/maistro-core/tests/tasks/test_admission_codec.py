@@ -100,7 +100,7 @@ def _legacy_row(**overrides: Any) -> dict[str, object]:
         "created_at": overrides.pop("created_at", _CREATED_US),
         "expires_at": overrides.pop("expires_at", _EXPIRES_US),
         "lease_expires_at": overrides.pop("lease_expires_at", _LEASE_US),
-        "request_snapshot": overrides.pop("request_snapshot", _REQUEST_TEXT),
+        "request": overrides.pop("request", _REQUEST_TEXT),
         "task_id": None,
         "run_id": None,
     }
@@ -133,7 +133,8 @@ def test_v2_round_trip_preserves_all_snapshot_bytes() -> None:
     assert record.envelope.provenance_snapshot.text == _PROVENANCE_TEXT
     # The evidence tag survives verbatim: the codec must not decode tag
     # objects (a double decode would turn the tagged dict into a bare float).
-    reparsed = json.loads(reencoded["request_snapshot"])
+    assert "request" in reencoded and "request_snapshot" not in reencoded
+    reparsed = json.loads(reencoded["request"])
     assert reparsed["program_context"]["readings"][1] == {"__maistro_non_finite__": "nan"}
     assert record.format_version == 2 and record.admitted
 
@@ -190,7 +191,7 @@ def test_expired_legacy_header_does_not_invent_missing_identity() -> None:
 
 
 def test_header_preserves_expiry_even_when_legacy_snapshot_decode_fails() -> None:
-    row = _legacy_row(request_snapshot='{"created": 1, "created": 2}')
+    row = _legacy_row(request='{"created": 1, "created": 2}')
     header = decode_admission_header(row)
     assert header.expires_at_us == _EXPIRES_US
     assert header.created_at_us == _CREATED_US
@@ -254,9 +255,7 @@ def test_tagged_nonfinite_snapshots_round_trip_without_fingerprint_change() -> N
         }
         row = _v2_row(
             fingerprint=_OTHER_FINGERPRINT,
-            row_overrides={
-                "request_snapshot": json.dumps(tagged, sort_keys=True, separators=(",", ":"))
-            },
+            row_overrides={"request": json.dumps(tagged, sort_keys=True, separators=(",", ":"))},
         )
         header = decode_admission_header(row)
         assert header.fingerprint == _OTHER_FINGERPRINT
@@ -281,7 +280,7 @@ def test_tagged_nonfinite_snapshots_round_trip_without_fingerprint_change() -> N
     ],
 )
 def test_invalid_and_duplicate_json_is_rejected(broken: str) -> None:
-    row = _legacy_row(request_snapshot=broken)
+    row = _legacy_row(request=broken)
     header = decode_admission_header(row)  # header evidence survives
     with pytest.raises(AdmissionRowDecodeError) as excinfo:
         decode_admission_record(row, header=header)
@@ -300,16 +299,16 @@ def test_raw_and_production_pool_codecs_read_identical_text_snapshots() -> None:
     # that arrives pre-decoded (what a JSON codec registered over these
     # columns would produce) is rejected instead of silently accepted.
     row = _v2_row()
-    assert isinstance(row["request_snapshot"], str)
+    assert isinstance(row["request"], str)
 
-    as_read_by_raw_pool = row["request_snapshot"]
-    as_read_by_registered_pool = row["request_snapshot"]
+    as_read_by_raw_pool = row["request"]
+    as_read_by_registered_pool = row["request"]
     assert as_read_by_raw_pool == as_read_by_registered_pool
     record = decode_admission_record(row, header=decode_admission_header(row))
     assert record.envelope.request_snapshot.text == as_read_by_raw_pool
 
     misdecoded = dict(row)
-    misdecoded["request_snapshot"] = json.loads(row["request_snapshot"])
+    misdecoded["request"] = json.loads(row["request"])
     with pytest.raises(AdmissionRowDecodeError) as excinfo:
         _decode_full(misdecoded)
     assert excinfo.value.code is AdmissionDecodeCode.INVALID_SNAPSHOT
@@ -348,7 +347,7 @@ def test_missing_header_columns_is_unsupported_schema() -> None:
 
 
 @pytest.mark.parametrize(
-    "column", ["generation_id", "claim_token", "receipt_snapshot", "acknowledged_at"]
+    "column", ["generation_id", "claim_token", "request", "receipt_snapshot", "acknowledged_at"]
 )
 def test_missing_v2_columns_is_unsupported_schema(column: str) -> None:
     row = _v2_row()
@@ -387,7 +386,7 @@ def test_decode_error_scope_key_is_only_a_validated_hash() -> None:
     assert error.code is AdmissionDecodeCode.INVALID_HEADER
     assert error.scope_key is None
 
-    ok = _legacy_row(request_snapshot="broken")
+    ok = _legacy_row(request="broken")
     assert _code_of(ok).scope_key == _SCOPE
 
 
