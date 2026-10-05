@@ -254,9 +254,10 @@ services:
       - OAUTH_SUCCESS_PATH=${OAUTH_SUCCESS_PATH:-/}
       - HARDWARE_PRESET=${HARDWARE_PRESET:-laptop}
       # The embedded Container's Sentinel table (ADR-072726-0d6b, #66). Fail-
-      # closed at "none"; this stack arms the reviewed dangerous-tools preset
-      # so agents can hold tool authority in dev without a second config file.
-      - MAISTRO_PERMISSION_PRESET=dangerous_tools_admin
+      # closed at "none"; this stack arms the preset matching the tools the
+      # Conductor's dispatch_tool can actually execute, so agents hold usable
+      # tool authority in dev without a second config file.
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
     volumes:
       - conductor-data:/data
     depends_on:

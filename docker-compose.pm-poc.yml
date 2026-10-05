@@ -41,7 +41,7 @@ services:
       # - ATLASSIAN_API_TOKEN=${ATLASSIAN_API_TOKEN:-}
       # Same Sentinel preset as the dev stack (#66); the PM overlay inherits
       # the base hive-conductor service but replaces its environment block.
-      - MAISTRO_PERMISSION_PRESET=dangerous_tools_admin
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
     depends_on:
       - maistro-engine
     profiles:
