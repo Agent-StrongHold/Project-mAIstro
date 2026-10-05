@@ -58,7 +58,10 @@ call `packages/maistro-ext-sdk`'s own hygiene test makes about itself):
   scan;
 - importing a **third-party root the extension does not declare** in its own
   ``pyproject.toml`` — an undeclared import cannot survive a clean
-  environment, which is the property the isolation fixture proves.
+  environment, which is the property the isolation fixture proves. A declared
+  dependency is accepted under the import roots its distribution actually
+  ships (``PyYAML`` provides ``yaml``, ``Pillow`` provides ``PIL``), not
+  merely under its own normalized name.
 
 What it deliberately does not do
 --------------------------------
@@ -78,6 +81,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
+import importlib.metadata
 import json
 import re
 import sys
@@ -96,6 +101,23 @@ _REPO_RELATIVE_ROOTS = frozenset({"packages", "extensions"})
 _SYS_PATH_METHODS = frozenset({"insert", "append", "extend"})
 
 _DEP_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+#: Distributions whose import root no string transform can derive from their
+#: name: ``PyYAML`` is imported as ``yaml`` and ``Pillow`` as ``PIL``, and
+#: replacing separators never gets there. Keys are PEP 503-normalized
+#: distribution names (see ``_canonical_dep_name``). The alias keeps the gate
+#: correct even when the checker's own environment has none of the
+#: extension's dependencies installed; installed metadata widens the
+#: acceptance beyond this table (``_distribution_import_roots``).
+_IMPORT_ROOT_ALIASES = {
+    "beautifulsoup4": "bs4",
+    "opencv-python": "cv2",
+    "opencv-python-headless": "cv2",
+    "pillow": "PIL",
+    "pyyaml": "yaml",
+    "python-dateutil": "dateutil",
+    "scikit-learn": "sklearn",
+}
 
 _FIRST_PARTY_SRC = "packages/*/src"
 
@@ -206,14 +228,64 @@ def discover_extensions(repo_root: Path, policy: Policy) -> list[Path]:
     return found
 
 
-def declared_dependencies(pyproject: Path) -> set[str]:
+def _canonical_dep_name(name: str) -> str:
+    """PEP 503 normalization: a dependency name's case/separator-insensitive form."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+@functools.cache
+def _distribution_import_roots(name: str) -> frozenset[str]:
+    """Import roots the installed distribution ``name`` ships, per its metadata.
+
+    Reads ``top_level.txt`` when the distribution provides one and falls back
+    to inverting ``importlib.metadata.packages_distributions`` when it does
+    not. A dependency that is not installed in the checker's environment
+    resolves to nothing here — the alias table and name normalization still
+    cover it, so acceptance never depends on what happens to be installed.
+    """
+    normalized = _canonical_dep_name(name).replace("-", "_")
+    roots: set[str] = set()
+    try:
+        top_level = importlib.metadata.distribution(name).read_text("top_level.txt")
+    except importlib.metadata.PackageNotFoundError:
+        top_level = None
+    if top_level:
+        roots.update(line.strip() for line in top_level.splitlines() if line.strip())
+    if not roots:
+        for root, distributions in importlib.metadata.packages_distributions().items():
+            if any(_canonical_dep_name(d).replace("-", "_") == normalized for d in distributions):
+                roots.add(root)
+    return frozenset(roots)
+
+
+def declarable_import_roots(pyproject: Path) -> set[str]:
+    """Import roots an extension's declared runtime dependencies may appear under.
+
+    A dependency is importable under the roots its distribution actually
+    ships, which need not resemble the distribution's name (``PyYAML`` →
+    ``yaml``, ``Pillow`` → ``PIL``, ``beautifulsoup4`` → ``bs4``). Each
+    declared name is therefore accepted as its normalized self, under the
+    canonical alias when one exists, and under whatever import roots the
+    installed distribution's metadata resolves to.
+    """
+    roots: set[str] = set()
+    for dep in data_project_dependencies(pyproject):
+        roots.add(dep.replace("-", "_"))
+        alias = _IMPORT_ROOT_ALIASES.get(_canonical_dep_name(dep))
+        if alias:
+            roots.add(alias)
+        roots.update(_distribution_import_roots(dep))
+    return roots
+
+
+def data_project_dependencies(pyproject: Path) -> list[str]:
     """Runtime dependency names declared in an extension's ``pyproject.toml``."""
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    deps: set[str] = set()
+    deps: list[str] = []
     for dep in data.get("project", {}).get("dependencies", []):
         match = _DEP_NAME_RE.match(dep)
         if match:
-            deps.add(match.group(1).replace("-", "_"))
+            deps.append(match.group(1))
     return deps
 
 
@@ -380,7 +452,7 @@ def scan_extension(extension_dir: Path, policy: Policy) -> list[Violation]:
     always allowed.
     """
     pyproject = extension_dir / "pyproject.toml"
-    deps = declared_dependencies(pyproject)
+    deps = declarable_import_roots(pyproject)
     own_root = own_import_root(pyproject)
 
     violations: list[Violation] = []

@@ -281,6 +281,46 @@ def test_undeclared_dependency_fails_but_declaring_it_passes(
     assert scan(gate, declared, write_policy(tmp_path / "b")) == []
 
 
+def test_dependency_whose_import_root_differs_from_its_distribution_name(
+    gate: types.ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared dep is accepted under the root it actually ships.
+
+    ``PyYAML``/``Pillow``/``beautifulsoup4`` import as ``yaml``/``PIL``/
+    ``bs4`` — no separator normalization derives those roots, so the gate
+    carries an explicit distribution-to-import-root mapping instead of
+    assuming the names match. The decision must not depend on what this
+    machine happens to have installed, so the test hides installed metadata
+    entirely and holds the alias table alone responsible.
+    """
+
+    def _absent(name: str) -> object:
+        raise gate.importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(gate.importlib.metadata, "distribution", _absent)
+    monkeypatch.setattr(gate.importlib.metadata, "packages_distributions", lambda: {})
+    gate._distribution_import_roots.cache_clear()
+    try:
+        for dep, root in [
+            ("PyYAML>=6", "yaml"),
+            ("Pillow>=10", "PIL"),
+            ("beautifulsoup4>=4", "bs4"),
+        ]:
+            extension = make_extension(
+                tmp_path / root, dependencies=[dep], files={"mod.py": f"import {root}\n"}
+            )
+            assert scan(gate, extension, write_policy(tmp_path / root)) == [], (
+                f"{dep} declared but `import {root}` rejected"
+            )
+        # an undeclared third-party root is still a violation
+        undeclared = make_extension(tmp_path / "x", files={"mod.py": "import yaml\n"})
+        assert any("undeclared" in v for v in scan(gate, undeclared, write_policy(tmp_path / "x")))
+    finally:
+        # entries cached while the metadata was hidden must not outlive the
+        # patch and leak into other tests over the module-scoped gate
+        gate._distribution_import_roots.cache_clear()
+
+
 def test_test_only_roots_are_allowed_only_under_tests(
     gate: types.ModuleType, tmp_path: Path
 ) -> None:

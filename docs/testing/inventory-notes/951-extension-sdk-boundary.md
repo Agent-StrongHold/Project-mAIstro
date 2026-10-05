@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +60
+  tests/: +61
 ---
 # 951-extension-sdk-boundary
 
@@ -130,6 +130,29 @@ The first cut flagged any call whose terminal name was `import_module` or
 `__import__`; the matrix cases (`importlib.import_module("maistro")`, bare
 `__import__(...)`, `dynamic_import_module("x")`, argument-less calls) keep
 their recorded verdicts under the binding-table rule.
+
+## The review-repair round (fourth)
+
+The declared-dependency rule learned that a distribution and its import root
+need not share a name — one node ID in `tests/test_check_extension_imports.py`
+(the review's P2 on the first cut: `PyYAML` imports as `yaml`, `Pillow` as
+`PIL`, `beautifulsoup4` as `bs4`, and no separator transform derives any of
+them). `declarable_import_roots` accepts a declared dependency under its
+PEP 503-normalized self, under a canonical alias (`_IMPORT_ROOT_ALIASES`), and
+under whatever import roots the installed distribution's metadata reports
+(`top_level.txt`, else inverted `packages_distributions()`) — so acceptance is
+*widened* by installed metadata but never *depends* on it.
+
+`test_dependency_whose_import_root_differs_from_its_distribution_name` pins
+that independence mechanically: it hides installed metadata (patched
+`PackageNotFoundError`, empty `packages_distributions()`, the resolver cache
+cleared on both sides) and holds the alias table alone responsible for
+accepting `import yaml` / `import PIL` / `import bs4` from extensions that
+declare the matching distributions — while an undeclared `import yaml` still
+fails. The table's Pillow entry is the root's real spelling (`PIL`): a
+lower-cased alias would be dead for the only root Pillow ships, and the test
+would silently ride this machine's site-packages instead of the gate's own
+mechanism.
 
 ## What did not move
 
