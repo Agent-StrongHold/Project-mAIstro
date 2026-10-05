@@ -73,11 +73,14 @@ Numbered 053 when written on the develop base whose chain tip was
 ``052_canonical_goals`` on a sibling line). Develop has since claimed ``053``
 for its learning-lifecycle columns (M4-B, ADR-100126-8c2d), so per this
 chain's documented collision convention (see 052, 051 and 036) this revision
-— landing second — re-parents onto that ``053_learning_lifecycle_columns``
-tip as ``054``. No duplicate ids.
+— landing second — re-parented onto that ``053_learning_lifecycle_columns``
+tip as ``054``. The collisions then kept coming: the M4-B3 lane (#119)
+delivered ``054_learning_applicability_epistemics`` on the same parent, so
+— landing second once more — this revision re-parents onto that
+applicability tip as ``055``. No duplicate ids.
 
-Revision ID: 054
-Revises: 053
+Revision ID: 055
+Revises: 054
 Create Date: 2026-10-04
 """
 
@@ -86,8 +89,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "054"
-down_revision = "053"
+revision = "055"
+down_revision = "054"
 branch_labels = None
 depends_on = None
 
@@ -218,7 +221,7 @@ def upgrade() -> None:
         # meeting this revision without it means somebody is stamping head
         # over a database the chain never touched. Refuse, loudly.
         raise RuntimeError(
-            "task_idempotency does not exist but revision 054 assumes it; "
+            "task_idempotency does not exist but revision 055 assumes it; "
             "the migration chain cannot stamp a forward admission-generation "
             "shape over a database that never ran 038"
         )
@@ -412,5 +415,5 @@ def _add_v2_check(bind: sa.Connection) -> None:
 def _malformed_message(kind: str, malformed: list[str]) -> str:
     return (
         f"task_idempotency exists with an incompatible {kind} shape; refusing "
-        f"to stamp revision 054 over it: " + "; ".join(malformed)
+        f"to stamp revision 055 over it: " + "; ".join(malformed)
     )
