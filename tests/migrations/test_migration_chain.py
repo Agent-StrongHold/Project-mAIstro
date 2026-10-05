@@ -168,6 +168,12 @@ EXPECTED_TABLES = frozenset(
         # a second Run (#1176).
         "task_idempotency",
         "tasks",
+        # The durable cross-Workspace user model (#1047, 056, re-parented past
+        # develop's 054 and 055): one row per fact
+        # revision, plus the owner-bound statement keys that keep a tombstone
+        # blocking every wording its lineage ever held.
+        "user_model_facts",
+        "user_model_statement_keys",
         "trigger_definitions",
     }
 )
@@ -252,7 +258,7 @@ def empty_database():
 class TestAuditCursorIndexes:
     def test_indexes_upgrade_and_reverse_without_losing_audit_rows(self, empty_database) -> None:
         """The shipping chain installs every seek and rolls back only its indexes."""
-        assert _alembic("upgrade", "043_invocation_quota_door").returncode == 0
+        assert _alembic("upgrade", "056").returncode == 0
         _execute("INSERT INTO audit_log (boundary, user_id) VALUES ('login', 'alice')")
 
         result = _alembic("upgrade", "head")
@@ -269,7 +275,7 @@ class TestAuditCursorIndexes:
         assert all("org_id" in definition for definition in indexes.values())
         assert all('"timestamp" DESC, id DESC' in definition for definition in indexes.values())
 
-        result = _alembic("downgrade", "043_invocation_quota_door")
+        result = _alembic("downgrade", "056")
         assert result.returncode == 0, result.stderr
         assert not _query(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
@@ -278,8 +284,10 @@ class TestAuditCursorIndexes:
         )
         assert _query("SELECT boundary, user_id FROM audit_log") == [("login", "alice")]
         # Rolling back audit indexes must not undo develop's preceding revision.
-        assert _query("SELECT version_num FROM alembic_version") == [("043_invocation_quota_door",)]
+        assert _query("SELECT version_num FROM alembic_version") == [("056",)]
         assert {
+            "user_model_facts",
+            "user_model_statement_keys",
             "invocation_quota_allocations",
             "invocation_quota_budgets",
             "invocation_quota_evidence",
