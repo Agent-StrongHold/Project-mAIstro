@@ -50,6 +50,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
@@ -379,6 +381,7 @@ class ProviderAdapterCatalog:
         self._adapters: dict[str, ProviderAdapter] = {}
         self._models: dict[str, tuple[str, AdapterModelSpec]] = {}
         self._unhealthy: dict[str, bool] = {}
+        self._availability_sync: Callable[[str, bool], None] | None = None
 
     def register(self, adapter: ProviderAdapter) -> tuple[ModelMetadata, ...]:
         """Validate, conformance-check, and record one adapter.
@@ -488,19 +491,42 @@ class ProviderAdapterCatalog:
             self.note_health(adapter_id, results[adapter_id])
         return results
 
+    def set_availability_sync(self, sync: Callable[[str, bool], None]) -> None:
+        """Fan recorded health out to canonical availability per model.
+
+        The sync receives ``(model_name, healthy)`` for every model the
+        probed adapter owns. Composition wires it to the ProviderRegistry's
+        availability seam so the cost-aware router skips an unhealthy
+        adapter's models *during* selection — falling through each
+        candidate's fallback chain (ADR-038) — instead of selecting one and
+        refusing after the fact.
+        """
+
+        self._availability_sync = sync
+
+    def _sync_adapter_availability(self, adapter_id: str, healthy: bool) -> None:
+        sync = self._availability_sync
+        if sync is None:
+            return
+        for model_name in self.model_names(adapter_id):
+            sync(model_name, healthy)
+
     def note_health(self, adapter_id: str, healthy: bool) -> None:
         """Record one provider health/capacity signal for canonical selection.
 
         Health recorded here is read inside canonical provider resolution — the
         same fail-closed seam as registry availability, minus a second mutation
         path: an adapter that failed its probe resolves as unavailable until a
-        later probe (or an explicit operator call) restores it.
+        later probe (or an explicit operator call) restores it. When an
+        availability sync is wired, the signal is also applied to registry
+        availability so routing excludes the adapter's models up front.
         """
 
         if healthy:
             self._unhealthy.pop(adapter_id, None)
         else:
             self._unhealthy[adapter_id] = False
+        self._sync_adapter_availability(adapter_id, healthy)
 
     def is_healthy(self, adapter_id: str) -> bool:
         """The latest recorded health for an adapter (unknown counts as healthy).
@@ -883,6 +909,30 @@ def default_adapter_catalog() -> ProviderAdapterCatalog | None:
 # --- Operator bootstrap ------------------------------------------------------
 
 
+def registry_availability_sync(
+    registry: InMemoryProviderRegistry,
+) -> Callable[[str, bool], None]:
+    """Translate adapter health into canonical registry availability.
+
+    This is the seam the cost-aware router already consults: an unhealthy
+    adapter's models become unavailable, so ``CostAwareRouter.select`` falls
+    through to the next healthy candidate or fallback instead of selecting a
+    model that resolution must then refuse. A model that was never registered
+    cannot be selected, so marking one is a no-op.
+    """
+
+    from maistro.providers.errors import ModelNotFoundError
+
+    def sync(model_name: str, healthy: bool) -> None:
+        if healthy:
+            registry.mark_available(model_name)
+            return
+        with suppress(ModelNotFoundError):
+            registry.mark_unavailable(model_name)
+
+    return sync
+
+
 async def bootstrap_provider_adapters(
     config: AgentConfig,
     effects: CapabilityEffectContext,
@@ -911,6 +961,10 @@ async def bootstrap_provider_adapters(
     allowing one would authorize a Binding that can never acquire a credential.
     """
 
+    # Health probes feed registry availability so the cost-aware router
+    # routes past an unhealthy adapter instead of selecting one of its models
+    # and refusing after selection.
+    catalog.set_availability_sync(registry_availability_sync(registry))
     loaded: list[Binding] = []
     for declared in config.provider_adapters:
         adapter = await _entry_adapter(catalog, registry, declared)
@@ -918,8 +972,10 @@ async def bootstrap_provider_adapters(
         workspace_id = declared.workspace_id.strip() or config.workspace_id
         credential_refs = _entry_credential_refs(declared, spec)
         _provision_entry_credential(effects, declared, spec, workspace_id)
-        await _probe_entry_health(catalog, declared)
+        # Rows before probe: the availability sync can only mark models the
+        # registry already knows.
         await _entry_registry_rows(catalog, registry, declared, adapter)
+        await _probe_entry_health(catalog, declared)
         binding = Binding.model_validate(
             {
                 "binding_id": declared.binding_id,
@@ -1075,6 +1131,7 @@ __all__ = [
     "default_adapter_catalog",
     "reference_adapter_spec",
     "register_adapter_models",
+    "registry_availability_sync",
     "release_default_adapter_catalog",
     "reset_default_adapter_catalog",
     "run_adapter_conformance",

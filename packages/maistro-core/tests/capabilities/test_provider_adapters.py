@@ -58,6 +58,7 @@ from maistro.capabilities.provider_adapters import (
     default_adapter_catalog,
     reference_adapter_spec,
     register_adapter_models,
+    registry_availability_sync,
     release_default_adapter_catalog,
     reset_default_adapter_catalog,
     run_adapter_conformance,
@@ -905,13 +906,55 @@ async def test_recovery_probe_restores_canonical_selection(
 
     monkeypatch.setattr("maistro.capabilities.providers.llm_gateway.probe_adapter_health", flapping)
     catalog, store = await _catalog_with(AcmeAdapter(_spec(health_path="/healthz")))
+    catalog.set_availability_sync(registry_availability_sync(store))
     await catalog.probe_all()
     assert not catalog.is_healthy("acme.models")
+    assert not store.is_available("acme-mini")  # excluded from routing up front
     await catalog.probe_all()
     assert catalog.is_healthy("acme.models")
+    assert store.is_available("acme-mini")  # recovery restores routing
     resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
     resolved = await resolver(_binding())
     assert isinstance(resolved, AdapterGatewayProvider)
+
+
+async def test_unpinned_routing_falls_through_unhealthy_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One unhealthy adapter cannot take unpinned model traffic offline.
+
+    With the availability sync wired, the cost-aware router skips the
+    unhealthy adapter's models during selection and falls through to the
+    healthy candidate instead of resolving one and refusing after the fact.
+    """
+
+    async def unhealthy(adapter: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "maistro.capabilities.providers.llm_gateway.probe_adapter_health", unhealthy
+    )
+    catalog, store = await _catalog_with(AcmeAdapter(_spec(health_path="/healthz")))
+    # A healthy gateway alternative with worse latency: without the sync the
+    # router deterministically prefers acme-mini (120ms) and resolution would
+    # refuse; with it, selection never picks the unhealthy adapter's model.
+    store.register_model(
+        ModelMetadata(
+            name="gateway-mini",
+            provider="litellm",
+            cost_per_1k_input=0.2,
+            cost_per_1k_output=0.8,
+            latency_p50_ms=300,
+            tier="fast",
+        )
+    )
+    catalog.set_availability_sync(registry_availability_sync(store))
+    await catalog.probe_all()
+    assert not store.is_available("acme-mini")
+    resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
+    resolved = await resolver(_binding(provider_name=""))
+    assert isinstance(resolved, LlmGatewayProvider)
+    assert resolved.name == "gateway-mini"
 
 
 async def test_adapter_without_a_declared_probe_is_never_marked_unhealthy() -> None:

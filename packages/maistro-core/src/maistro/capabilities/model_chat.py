@@ -102,10 +102,13 @@ def _adapter_health_refusal(
 ) -> str | None:
     """Why canonical selection refuses an adapter whose latest probe failed.
 
-    Health/capacity signals are exposed to the canonical router exactly where
-    it resolves providers: an adapter that failed its probe resolves as
-    unavailable here — the same fail-closed seam as registry availability —
-    until a later probe records recovery.
+    Unpinned routing never reaches this refusal on the happy path: recorded
+    health is synced into registry availability, so ``CostAwareRouter.select``
+    skips an unhealthy adapter's models up front and falls through to the next
+    healthy candidate or fallback (ADR-038) — one failed adapter cannot take
+    unpinned traffic offline. The check remains as the fail-closed backstop
+    for catalogs wired without a sync and for pinned/aliased selections,
+    which never fall back by policy.
     """
 
     if (
@@ -186,6 +189,9 @@ def resolve_model_chat_provider(
             adapters.resolve_provider(selected.name, selected) if adapters is not None else None
         )
         if routed is not None:
+            # Backstop only: with the availability sync wired (bootstrap),
+            # selection already skipped unhealthy adapter models, so the
+            # router's fallback chain continued past them.
             refusal = _adapter_health_refusal(adapters, routed)
             if refusal is not None:
                 return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
