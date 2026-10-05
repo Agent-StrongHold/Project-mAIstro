@@ -55,14 +55,19 @@ Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
 
 ## Final validation refresh
 
-At repair head `4c55cd58fa40f6a5b79e6252e2e273b789721ca8`, the focused suite
-passed 74 cases, module mypy passed, and the core suite inventory remained
+At validation head `8d6727b19d6a5900e5693e1d97606d8d63aadb7a`, the focused
+suite passed 74 cases, module mypy passed, the complete core suite passed
+12,475 tests (888 skipped, 1 xfailed), and the core suite inventory remained
 13,364 node IDs (+74 for this file). The required exact Vulture command
-reported the nine reviewed-but-new declarative identities as trusted-base debt
-(rc=1) against trusted base `8a4bc239fe9a`; that base does not contain this
-module. `check-reachability.py` likewise reported the deliberately unreachable
-`maistro.runs.admission_identity` (rc=1). `check-reachability-dispositions.py`
-and `check-promotion-surface.py` passed. These two gates must remain blocked
+reported nine declarative identities as new trusted-base debt (rc=1) against
+trusted base `8a4bc239fe9a`; that base does not contain this module. The
+candidate ledger has the reviewed identities as permitted by this CI-repair
+round, but candidate ledger edits cannot authorize new debt under the
+trusted-base two-merge rule. `check-reachability.py` likewise reported the
+deliberately unreachable `maistro.runs.admission_identity` (rc=1).
+`check-reachability-dispositions.py` and `check-promotion-surface.py` passed;
+`check-ratchet-provenance.py` failed only because its reachability provenance
+sub-gate rejects that same new unreachable module. These gates remain blocked
 until the separately authorized parent integration supplies a real consumer or
 a prior trusted-base authorization lands; this inactive leaf cannot repair them
 without violating its scope.
