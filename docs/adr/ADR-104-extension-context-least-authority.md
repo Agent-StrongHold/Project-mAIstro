@@ -21,10 +21,11 @@ tests:
   - packages/maistro-core/tests/extensions/test_extension_contract_conformance.py
   - packages/maistro-core/tests/extensions/test_extension_reference_execution.py
 ac-modules:
-  AC-1: maistro.extensions.ExtensionContext
-  AC-2: maistro.extensions.ExtensionLifecycle
-  AC-3: maistro.extensions.ExtensionHost
-  AC-4: maistro.extensions.GovernedEffectRoute
+  AC-1: maistro.extensions.context
+  AC-2: maistro.extensions.lifecycle
+  AC-3: maistro.extensions.host
+  AC-4: maistro.extensions.host
+  AC-5: maistro.extensions
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -129,6 +130,40 @@ keeps it visible to the reachability ratchet as wired while leaving the
 package root — which every `import maistro` executes — free of new imports, so no optional dependency (e.g. cryptography, required by the
 capability credential plane) can become an import-time requirement of the
 library as a whole.
+
+## Acceptance Criteria
+
+The five acceptance criteria of issue #950, stated as checkable claims. Each
+is ticked and proven by the `@pytest.mark.ac("ADR-104/AC-N")` markers in the
+two suites this ADR's `tests:` field names.
+
+- [x] **AC-1**: the context an extension receives is the complete authority
+  surface: exactly the documented seams (`descriptor`, `identity`, `scope`,
+  `config`, `cancellation`, `progress`, `service()`, `invoke_effect()`,
+  `report_progress()`), a `__slots__` object with no `__dict__`, carrying no
+  store, session, container, or connection handle, and exposing canonical
+  Workspace/Agent/Run/NodeRun/Attempt identifiers only.
+- [x] **AC-2**: the lifecycle is three hooks that receive only the public
+  context; activation/deactivation run only on a context outside any Attempt
+  and invocation only inside one — the exported drivers refuse a mismatched
+  pair before any hook code runs — and a raising hook is attributed to the
+  extension identity with the original cause preserved.
+- [x] **AC-3**: authority is declared, then granted, and both halves are
+  required: the host drops undeclared configuration values and undeclared
+  service grants at composition so they never reach context storage, and the
+  accessors refuse undeclared names (configuration refuses even the key's
+  presence).
+- [x] **AC-4**: authority-sensitive operations cross the canonical governed
+  seam only: a declared, routed effect produces a real canonical `Invocation`
+  row with run/node-run/attempt correlation through the
+  `Capability → Provider → Binding → Invocation` path; undeclared, routeless,
+  outside-Attempt, and cross-workspace dispatch are refused; cancellation is a
+  read-only view over the canonical Attempt fence, and provenance lands in the
+  canonical event envelope with the extension identity.
+- [x] **AC-5**: the public interface contracts have conformance tests
+  independent of any one extension implementation: the conformance suite's
+  lifecycles are throwaways defined in the test file, and it binds no module
+  outside the public SDK (`maistro.extensions`).
 
 ## Alternatives considered
 

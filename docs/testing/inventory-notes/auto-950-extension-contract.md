@@ -1,34 +1,44 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +26
+  packages/maistro-core/tests: +30
 ---
 # auto-950 — M9-A2 canonical extension context and lifecycle (#950)
 
 Adds the `packages/maistro-core/tests/extensions/` suite pinning the new
 public extension contract (`maistro.extensions`, ADR-104, issue #950). The
-26 tests split across two files by what they pin:
+30 tests split across two files by what they pin:
 
-- `test_extension_contract_conformance.py` (21) — the interface contracts
+- `test_extension_contract_conformance.py` (24) — the interface contracts
   themselves, independent of any one extension implementation: the closed
-  public context surface (no store/container/db handles, `__slots__`-pinned),
-  declared-only configuration access, service grants requiring declaration
-  AND host grant, effect dispatch requiring declaration AND route plus a
-  cancellation pre-check, the cancellation view's read-only semantics over
-  the canonical task fence (including never swallowing `CancelledError`),
-  progress-hook validation, structural lifecycle protocol conformance, and
-  extension-attributed lifecycle error wrapping.
+  public context surface (no store/container/db handles, `__slots__`-pinned,
+  and the host-side config/service mappings filtered against the descriptor
+  before they reach context storage), declared-only configuration access,
+  service grants requiring declaration AND host grant, effect dispatch
+  requiring declaration AND route plus a cancellation pre-check, governed
+  routes refusing cross-workspace dispatch, lifecycle drivers refusing
+  hook/context scope mismatches before any hook code runs, the cancellation
+  view's read-only semantics over the canonical task fence (including never
+  swallowing `CancelledError`), progress-hook validation, structural
+  lifecycle protocol conformance, extension-attributed lifecycle error
+  wrapping, and the suite's own SDK-only import closure (ADR-104 AC-5).
 
-- `test_extension_reference_execution.py` (5) — a reference extension
+- `test_extension_reference_execution.py` (6) — a reference extension
   executing through the canonical `Graph → Run → NodeRun → Attempt` path
   (`AttemptExecutionService` over `PythonExecutionRuntime`): its governed
   effect produces a real canonical `Invocation` row with full correlation,
   provenance and progress land on the canonical event stream with the
   extension identity in the envelope `provenance` field, undeclared effects
-  and activation-scope dispatch are refused, and `service.cancel(attempt_id)`
-  reaches the extension's cancellation view while the Attempt settles
-  CANCELLED with NodeRun/Run terminal.
+  and activation-scope dispatch are refused, a route resolved for one
+  workspace refuses a scope carrying another's workspace id, and
+  `service.cancel(attempt_id)` reaches the extension's cancellation view
+  while the Attempt settles CANCELLED with NodeRun/Run terminal.
 
-No existing tests were removed or renamed; the delta is purely additive.
+Delta history within this lane: +26 at `f348fa3e0bfb`; +1
+(`test_governed_route_refuses_cross_workspace_dispatch`, commit `002113aa8`);
++1 (`test_host_drops_undeclared_config_and_service_grants`, commit
+`6183194cd`); +1 (`test_lifecycle_drivers_enforce_hook_scope_pairing`); +1
+(`test_conformance_suite_binds_no_concrete_extension`, pins ADR-104 AC-5) =
++30. No existing tests were removed or renamed; the delta is purely additive.
 
 ## Validation battery (executed at head `f348fa3e0bfb…`, branch `auto-950`)
 
@@ -89,3 +99,67 @@ below are unchanged; the newly executed provenance gates are appended.
   `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
   --exclude '*/third_party/*'` (1338=1338, `unclassified: 0`) → all exit 0;
   `quality/` is byte-identical to the base (no ledger rows added).
+
+## Validation battery (re-executed at head `6183194cdc30` + the scope-pairing
+## salvage round, branch `auto-950`)
+
+Re-executed after the two follow-up fixes (`002113aa8` cross-workspace
+refusal, `6183194cd` undeclared-grant filtering at host composition) and the
+uncommitted scope-pairing enforcement in the lifecycle drivers, plus the
+ADR-104 acceptance-criteria retrofit (AC-1..AC-5 with `@pytest.mark.ac`
+markers, module-identity anchors, and the earned design-coverage bank). With
+a live migrated pgvector/pg18 (`docker run pgvector/pgvector:pg18`, alembic
+head):
+
+Executed this round (all exit 0 unless stated):
+
+- `uv run ruff check .` and `uv run ruff format --check .` (2931 files).
+- `uv run mypy --strict packages/maistro-core/src` → 712 files clean (after
+  `uv sync --locked --all-extras`; with `--extra dev` only, the bootstrap
+  import-not-found errors are environmental, not findings).
+- `uv run pytest packages/maistro-core/tests -q` minus `tests/integration`,
+  with `MAISTRO_TEST_PG_DSN` against the live migrated pg18 → **13133
+  passed, 198 skipped, 1 xfailed** (the earlier "12422 passed / 888 skipped"
+  figure ran without PG; the two `test_schedule_winner_crash.py` pg cases are
+  latency-sensitive and failed 3/3 in one isolated re-run, then passed in
+  the full-suite runs — their subsystem is byte-identical from this branch's
+  fork point through current develop, so the flake is not this lane's).
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → 1338=1338, exit 0; xenon 143 blocks ≤ 145,
+  0 module/average violations; pyright 21 = baseline 21; radon ratchet ok.
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py` → exit 0; all ten ratchets flat vs
+  the trusted base (merge-base 1885c8eda); `check-shipped-surface-truth.py`,
+  `check_enumerations.py`, `check-reachability.py`,
+  `check-reachability-dispositions.py`, `check-convergence-matrix.py`,
+  `check-contract-markers.py`, `check-execution-lifecycles.py`,
+  `check-doc-links.py`, `check-adr-index.py`, `check-workspace-retirement.py`,
+  `check-route-permissions.py`, `check-principal-identity.py`,
+  `check-frontend-typed-client.py`, `check-model-egress.py`,
+  `check-foreign-harness-egress.py`, `check-security-inventory.py`,
+  `check-agent-store-writes.py`, `check-wiring-reads.py`,
+  `check-backlog-consistency.py`, `bump_version.py --check`,
+  `check-release-consistency.py`, `check-m1-convergence-freeze.py --base
+  1885c8eda` → all exit 0.
+- `scripts/check-diff-coverage.py` (coverage over the extensions suite plus
+  `tests/test_verify_wheel_imports.py` under `--source=scripts`, base
+  1885c8eda) → ok at 90% lines / 80% branch floors.
+- `tests/test_verify_wheel_imports.py tests/test_check_enumerations.py
+  tests/test_check_citation_status.py` → 282 passed;
+  `maistro_registry.cli lint . --strict` → 431 files clean.
+- `scripts/check-suite-inventory.py` → 14 suites match (this note carries the
+  +30 delta).
+- `scripts/check-ac-state.py --run-tests --ratchet --mandate 1885c8eda` →
+  exit 0: 10 ceilings exact, 1 floor exact, all 5 newly claimed ADR-104
+  criteria proven, 0 new absent links. ADR-104 carried its own AC-N criteria
+  for the first time this round, which removed it from
+  `adrs_without_implementing_spec` (32 → 31, back on the inherited ceiling)
+  and raised design coverage 42.506 → 42.8609; the raise is banked in this
+  round's own note `quality/ac-state-notes/auto-950.json` (a pure floor
+  raise; the gate's fold-weakening guard permits nothing else).
+- Regression-naming proof for the scope-pairing test: driving the pre-repair
+  `lifecycle.py` (git show HEAD:…) through the three exported drivers with
+  deliberately mismatched hook/context pairs ran all three hooks
+  (`['activate', 'deactivate', 'invoke']`); the repaired drivers raise
+  `ScopeMismatch` before any hook code runs, which is what
+  `test_lifecycle_drivers_enforce_hook_scope_pairing` pins.

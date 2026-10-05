@@ -207,6 +207,7 @@ def _extension_scope(
     )
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_reference_extension_executes_through_canonical_attempt(
     host_with_route: Any,
 ) -> None:
@@ -290,6 +291,7 @@ async def test_reference_extension_executes_through_canonical_attempt(
     assert extension.result["clock"] == "wall-clock"
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_reference_extension_effect_requires_canonical_invocation_path(
     host_with_route: Any,
 ) -> None:
@@ -307,6 +309,7 @@ async def test_reference_extension_effect_requires_canonical_invocation_path(
         await context.invoke_effect("undeclared-effect", {"value": 1})
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_governed_route_refuses_dispatch_outside_an_attempt(
     host_with_route: Any,
 ) -> None:
@@ -335,6 +338,7 @@ async def test_governed_route_refuses_dispatch_outside_an_attempt(
         await route.dispatch(scope=activation.scope, request={})
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_governed_route_refuses_cross_workspace_dispatch(
     host_with_route: Any,
 ) -> None:
@@ -371,6 +375,7 @@ async def test_governed_route_refuses_cross_workspace_dispatch(
     assert await events.list_stream("workspace:other-workspace") == []
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_cancellation_through_attempt_fence_reaches_the_extension(
     host_with_route: Any,
 ) -> None:

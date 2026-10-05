@@ -10,7 +10,9 @@ suite.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -164,6 +166,7 @@ def test_invocation_scope_requires_correlated_execution_ids() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-104/AC-1")
 def test_context_public_surface_is_exactly_the_documented_seams() -> None:
     """The context exposes the documented seams and nothing else.
 
@@ -204,6 +207,7 @@ def test_context_public_surface_is_exactly_the_documented_seams() -> None:
     assert not hasattr(context, "__dict__")
 
 
+@pytest.mark.ac("ADR-104/AC-1")
 def test_context_identity_and_scope_expose_canonical_identifiers_only() -> None:
     context = _context()
     assert context.identity is IDENTITY
@@ -230,6 +234,7 @@ def test_context_identity_and_scope_expose_canonical_identifiers_only() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-104/AC-3")
 def test_config_view_reads_only_declared_keys() -> None:
     view = ExtensionConfigView(
         extension_id=IDENTITY.extension_id,
@@ -274,6 +279,7 @@ def test_config_view_snapshots_host_values_and_detaches_copies() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-104/AC-3")
 def test_service_access_requires_declaration_and_grant() -> None:
     context = _context()
     assert context.service("clock") == "granted-clock"
@@ -293,6 +299,7 @@ def test_service_access_requires_declaration_and_grant() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-104/AC-3")
 def test_host_drops_undeclared_config_and_service_grants() -> None:
     """Undeclared authorities never reach context storage at all (#950 review).
 
@@ -329,6 +336,7 @@ def test_host_drops_undeclared_config_and_service_grants() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_declared_routed_effect_crosses_dispatcher_and_returns_receipt() -> None:
     dispatched: list[tuple[str, Any]] = []
 
@@ -347,6 +355,7 @@ async def test_declared_routed_effect_crosses_dispatcher_and_returns_receipt() -
     assert receipt.result == {"value": 41}
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_undeclared_effect_is_refused_before_any_dispatch() -> None:
     dispatched: list[str] = []
 
@@ -360,6 +369,7 @@ async def test_undeclared_effect_is_refused_before_any_dispatch() -> None:
     assert dispatched == []
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_declared_effect_without_a_host_route_is_refused() -> None:
     """Authority needs both halves: the descriptor declares, the host routes."""
     host = ExtensionHost(
@@ -379,6 +389,7 @@ async def test_declared_effect_without_a_host_route_is_refused() -> None:
         await context.invoke_effect("echo", {"value": 1})
 
 
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_effect_dispatch_checks_cancellation_first() -> None:
     cancelled = asyncio.Event()
     dispatched: list[str] = []
@@ -501,6 +512,7 @@ def test_lifecycle_protocol_is_structural() -> None:
     assert not isinstance(object(), ExtensionLifecycle)
 
 
+@pytest.mark.ac("ADR-104/AC-2")
 async def test_host_drives_all_three_hooks_with_narrowed_contexts() -> None:
     host = ExtensionHost(descriptor=_descriptor(), service_grants={"clock": "granted-clock"})
     lifecycle = _ProbeLifecycle()
@@ -534,18 +546,86 @@ def test_invocation_context_rejects_activation_scope() -> None:
         host.invocation_context(InvocationScope(workspace_id="ws-1", agent_id="agent-1"))
 
 
+@pytest.mark.ac("ADR-104/AC-2")
+async def test_lifecycle_drivers_enforce_hook_scope_pairing() -> None:
+    """The exported drivers refuse mismatched hook/context pairs (#950).
+
+    Activation and deactivation occur outside any Attempt and must never run
+    with execution correlation — otherwise an activation hook could dispatch
+    on a governed effect route it has no authority to spend — while invoke
+    requires it.
+    """
+
+    host = ExtensionHost(descriptor=_descriptor())
+    activation = host.activation_context(workspace_id="ws-1", agent_id="agent-1")
+    invocation = host.invocation_context(
+        InvocationScope(
+            workspace_id="ws-1",
+            agent_id="agent-1",
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+        )
+    )
+    lifecycle = _ProbeLifecycle()
+
+    with pytest.raises(ScopeMismatch, match="activate"):
+        await run_activation(lifecycle, invocation)
+    with pytest.raises(ScopeMismatch, match="deactivate"):
+        await run_deactivation(lifecycle, invocation)
+    with pytest.raises(ScopeMismatch, match="invoke"):
+        await run_invocation(lifecycle, activation)
+    # No hook ran on a rejected pairing.
+    assert lifecycle.hooks == []
+
+
+@pytest.mark.ac("ADR-104/AC-5")
+def test_conformance_suite_binds_no_concrete_extension() -> None:
+    """The contract evidence binds nothing outside the public SDK (#950 AC-5).
+
+    The conformance suite's lifecycles are throwaways defined in this file. If
+    it ever imported the reference extension (or any product-private module),
+    a change to that implementation could silently become a change to the
+    contract evidence — the exact coupling the issue's last acceptance
+    criterion forbids.
+    """
+
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    maistro_imports = {
+        name for name in imported if name == "maistro" or name.startswith("maistro.")
+    }
+    outside_sdk = {name for name in maistro_imports if not name.startswith("maistro.extensions")}
+    assert not outside_sdk, f"conformance suite imports outside the SDK: {sorted(outside_sdk)}"
+
+
+@pytest.mark.ac("ADR-104/AC-2")
 async def test_lifecycle_failures_are_attributed_to_the_extension() -> None:
     host = ExtensionHost(descriptor=_descriptor())
-    context = host.activation_context(workspace_id="ws-1", agent_id="agent-1")
+    activation = host.activation_context(workspace_id="ws-1", agent_id="agent-1")
+    invocation = host.invocation_context(
+        InvocationScope(
+            workspace_id="ws-1",
+            agent_id="agent-1",
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+        )
+    )
     lifecycle = _ExplodingLifecycle()
 
     with pytest.raises(ExtensionLifecycleError, match=r"conformance\.probe.*activate"):
-        await run_activation(lifecycle, context)
+        await run_activation(lifecycle, activation)
     with pytest.raises(ExtensionLifecycleError, match=r"conformance\.probe.*invoke"):
-        await run_invocation(lifecycle, context)
+        await run_invocation(lifecycle, invocation)
     with pytest.raises(ExtensionLifecycleError, match=r"conformance\.probe.*deactivate"):
-        await run_deactivation(lifecycle, context)
+        await run_deactivation(lifecycle, activation)
     # The wrapper preserves the original failure for diagnosis.
     with pytest.raises(ExtensionLifecycleError) as exc_info:
-        await run_invocation(lifecycle, context)
+        await run_invocation(lifecycle, invocation)
     assert isinstance(exc_info.value.__cause__, RuntimeError)

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.extensions.context import ExtensionContext
-from maistro.extensions.errors import ExtensionLifecycleError
+from maistro.extensions.errors import ExtensionLifecycleError, ScopeMismatch
 
 
 @runtime_checkable
@@ -42,8 +42,29 @@ def _lifecycle_label(context: ExtensionContext, hook: str) -> str:
     )
 
 
+def _require_scope(context: ExtensionContext, hook: str, *, in_attempt: bool) -> None:
+    """Enforce the hook/scope pairing before any hook code runs.
+
+    Activation and deactivation occur outside any Attempt, so their contexts
+    must carry no execution correlation; invocation occurs inside one and
+    must carry all of it. Enforcing this in the exported drivers keeps a
+    mismatched hook/context pair from ever reaching the extension — and from
+    an activation/deactivation hook dispatching on a governed effect route
+    that only an Attempt-scoped context may spend.
+    """
+
+    if context.scope.in_attempt is not in_attempt:
+        expected = "inside" if in_attempt else "outside"
+        raise ScopeMismatch(
+            f"cannot run {_lifecycle_label(context, hook)}: {hook} occurs "
+            f"{expected} an Attempt, but the context scope is "
+            f"{'in' if context.scope.in_attempt else 'not in'} one"
+        )
+
+
 async def run_activation(lifecycle: ExtensionLifecycle, context: ExtensionContext) -> None:
     """Drive ``activate`` with extension-attributed error handling."""
+    _require_scope(context, "activate", in_attempt=False)
     try:
         await lifecycle.activate(context)
     except ExtensionLifecycleError:
@@ -56,6 +77,7 @@ async def run_activation(lifecycle: ExtensionLifecycle, context: ExtensionContex
 
 async def run_invocation(lifecycle: ExtensionLifecycle, context: ExtensionContext) -> Any:
     """Drive ``invoke`` with extension-attributed error handling."""
+    _require_scope(context, "invoke", in_attempt=True)
     try:
         return await lifecycle.invoke(context)
     except ExtensionLifecycleError:
@@ -68,6 +90,7 @@ async def run_invocation(lifecycle: ExtensionLifecycle, context: ExtensionContex
 
 async def run_deactivation(lifecycle: ExtensionLifecycle, context: ExtensionContext) -> None:
     """Drive ``deactivate`` with extension-attributed error handling."""
+    _require_scope(context, "deactivate", in_attempt=False)
     try:
         await lifecycle.deactivate(context)
     except ExtensionLifecycleError:
