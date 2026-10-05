@@ -10,6 +10,7 @@ Invocation execution API.
 from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import extensions_history, extensions_show
 from maistro.container import Container
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
@@ -272,4 +273,13 @@ _VULTURE_WHITELIST = (
     SqliteExtensionInstallStore.get_install,
     extensions_history,
     extensions_show,
+    # Connector/source SDK (M9-E2, #963). The Typer callbacks are dispatched
+    # by registration, and the protocol members below are the public SDK
+    # surface out-of-tree connectors implement and call — the same
+    # consumed-outside-this-scan posture the core-public-api-surface ledger
+    # rule records. SyncEngine.query_items routing keeps query_items called in
+    # src; the rest of the SDK surface (dataclass fields, store/protocol
+    # members) is exercised by the engine and the shared conformance suite.
+    connectors_verify,
+    connectors_describe,
 )
