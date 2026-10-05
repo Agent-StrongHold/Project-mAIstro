@@ -26,9 +26,7 @@ from maistro_server.main import app as server_app
 
 
 def _as_user(app: FastAPI, user_id: str) -> None:
-    principal = Principal(
-        user_id=user_id, roles=frozenset({"user"})
-    )
+    principal = Principal(user_id=user_id, roles=frozenset({"user"}))
     app.dependency_overrides[verify_api_key] = lambda: principal
 
 

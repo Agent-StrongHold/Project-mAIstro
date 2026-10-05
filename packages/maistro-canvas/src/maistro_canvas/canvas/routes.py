@@ -45,9 +45,9 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 
+from maistro.identity import Principal
 from maistro.runs.store import RunIntegrityError
 from maistro.tasks.idempotency import InvalidIdempotencyKey, normalize_idempotency_key
-from maistro.identity import Principal
 from maistro_canvas.auth import get_current_user
 from maistro_canvas.canvas.limits import load_image_limits, validate_scale
 from maistro_canvas.types import (
