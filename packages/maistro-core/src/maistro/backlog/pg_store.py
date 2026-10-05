@@ -55,7 +55,7 @@ from maistro.backlog.store import (
     _require_fresh_version,
     _require_valid_outcome,
 )
-from maistro.runs.evidence_json import json_of, model_of
+from maistro.runs.evidence_json import decode_payload, json_of, model_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -784,7 +784,7 @@ class PgDocumentState:
         )
         if row is None:
             return None
-        return tuple((str(kind), str(value)) for kind, value in row[0])
+        return _token_pairs(row[0])
 
     async def put_tokens(self, document_id: str, tokens: Sequence[tuple[str, str]]) -> None:
         payload = json.dumps([[kind, value] for kind, value in tokens])
@@ -797,6 +797,25 @@ class PgDocumentState:
             payload,
             _now(None),
         )
+
+
+def _token_pairs(payload: object) -> tuple[tuple[str, str], ...]:
+    """Stored document tokens as pairs, however the driver handed them over.
+
+    The same pool-independence rule `decode_payload` states for spine payloads:
+    `maistro.persistence.get_pool` registers a JSON codec, so a pooled read of
+    the jsonb `tokens` column returns the decoded array, while a raw
+    `asyncpg.create_pool` (conformance tests, tools) leaves the default `str`
+    codec in place and returns text. A store whose correctness depends on how
+    somebody else constructed the pool is the hidden coupling
+    `pg_learnings._load_keys` names — decode defensively and be right either
+    way.
+    """
+    decoded = decode_payload(payload)
+    if not isinstance(decoded, list):
+        msg = f"backlog document tokens must be a jsonb array, got {type(decoded).__name__}"
+        raise TypeError(msg)
+    return tuple((str(kind), str(value)) for kind, value in decoded)
 
 
 __all__ = [

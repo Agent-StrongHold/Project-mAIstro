@@ -10,6 +10,7 @@ means new connections reading what a closed connection wrote.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 
@@ -271,3 +272,28 @@ async def test_revert_restores_markdown_authority_and_keeps_history() -> None:
     # The imported state survives the revert: re-cutting over is a re-proof,
     # not a re-import from scratch.
     assert await documents.get_tokens("BACKLOG.md") is not None
+
+
+# ---------------------------------------------------------------------------
+# Pool-shape independence of the pg token read
+# ---------------------------------------------------------------------------
+
+
+def test_pg_token_reads_are_pool_shape_independent() -> None:
+    """`_token_pairs` decodes the jsonb `tokens` column defensively (#102).
+
+    `maistro.persistence.get_pool` registers a JSON codec, so a pooled read of
+    the column returns the decoded array; a raw `asyncpg.create_pool` (the
+    conformance suite's own pool, tools) leaves the default `str` codec in
+    place and returns text. A store whose correctness depends on how somebody
+    else built the pool is the hidden coupling `decode_payload` names — decode
+    defensively and be right either way. The live restart leg exercises the
+    raw shape against a real server; this pins the contract offline too.
+    """
+    from maistro.backlog.pg_store import _token_pairs
+
+    pairs = (("furniture", "# Backlog"), ("item", "- [ ] one"))
+    assert _token_pairs(json.dumps([list(pair) for pair in pairs])) == pairs
+    assert _token_pairs([list(pair) for pair in pairs]) == pairs
+    with pytest.raises(TypeError, match="jsonb array"):
+        _token_pairs({"kind": "furniture"})
