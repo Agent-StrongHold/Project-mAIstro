@@ -47,6 +47,7 @@ from maistro_server.api import (
     models,
     runs,
     tasks,
+    user_model,
     webhooks,
     workspaces,
     ws,
@@ -66,6 +67,38 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _runner: TaskRunner | None = None
+
+
+async def _configure_user_model(spine_pool: Any) -> None:
+    """Bind the durable user-model service (#1047), or take the routes offline.
+
+    PostgreSQL-only by design (ADR-092526-4391): an in-process fallback would
+    silently forget that a fact must survive restart, so without a database
+    the routes stay offline (503) rather than serving a lookalike store.
+    """
+    from maistro_server.api import user_model
+
+    if spine_pool is None or memory_store.get_async_session_factory() is None:
+        user_model.configure_user_model_service(None)
+        await structlog.get_logger().awarning(
+            "user_model_offline",
+            detail=(
+                "no PostgreSQL database is configured, so /v1/user-model routes "
+                "answer 503 instead of serving facts that could not survive restart"
+            ),
+        )
+        return
+    from maistro.memory.user_model.pg_store import PostgresUserModelStore
+    from maistro.memory.user_model.service import UserModelService
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    user_model.configure_user_model_service(
+        UserModelService(
+            store=PostgresUserModelStore(memory_store.get_async_session_factory()),
+            audit_log=PgAuditLog(spine_pool),
+        )
+    )
+
 
 # Single source of truth for version — read from installed package metadata
 try:
@@ -442,6 +475,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         workspace_id=settings.workspace_id,
     )
     workspaces.configure_workspace_store(container.workspace_store)
+    await _configure_user_model(spine_pool)
     # The OpenAI-compatible door now routes through the same Container (#142),
     # which owns the Gate scan, the Run admission and the terminalization that
     # #150 had to build here for want of one.
@@ -684,6 +718,7 @@ app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
 app.include_router(webhooks.router, prefix=API_V1_PREFIX)
 app.include_router(ws.router, prefix=API_V1_PREFIX)
+app.include_router(user_model.router, prefix=API_V1_PREFIX)
 
 # API v2 — canvas ability boundary (ADR-045 / SPEC-070226-8239 Phase 1).
 # The router carries its own /v2/canvas prefix (ADR-042 mount). Deployments
@@ -699,5 +734,6 @@ app.include_router(chat_completions.router)
 app.include_router(models.router)
 app.include_router(webhooks.router)
 app.include_router(ws.router)
+app.include_router(user_model.router)
 
 # Legacy Knights dashboard removed — Hive Conductor (port 8101) is the product UI.
