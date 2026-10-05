@@ -190,11 +190,9 @@ async def activate_provider(name: str, request: Request) -> dict[str, Any]:
         ProviderHealthError,
         _runtime,
         control_plane_binding,
+        control_plane_binding_definition,
         ensure_binding,
-        mint_operation_identity,
-        register_and_health_check,
         resolve_binding,
-        settle_operation_identity,
     )
     from services.request_principal import require_actor_id
 
@@ -208,8 +206,7 @@ async def activate_provider(name: str, request: Request) -> dict[str, Any]:
         if runtime.project_scope_store is None:
             raise RuntimeError("canonical project scope is unavailable")
         root_project = await runtime.project_scope_store.root_for_workspace(workspace_id)
-        binding = control_plane_binding(
-            runtime,
+        binding = control_plane_binding_definition(
             binding_id=f"provider-activation:{name}",
             workspace_id=workspace_id,
             project_id=root_project.project_id,
@@ -217,17 +214,14 @@ async def activate_provider(name: str, request: Request) -> dict[str, Any]:
         )
         binding = await ensure_binding(runtime, binding)
         binding = await resolve_binding(runtime, binding)
-        # Each activation is its own canonical operation: a fresh child Run,
-        # NodeRun and Attempt correlate the health Invocation to real records
-        # (#1088), and a re-activation genuinely re-tests instead of replaying
-        # a previous activation's completed effect.
-        identity = await mint_operation_identity(
+        # Refresh the existing deployment credential only after immutable scope
+        # and revocation checks. The helper preserves existing health/backoff.
+        control_plane_binding(
             runtime,
-            operation=f"provider-activation:{name}",
-            workspace_id=workspace_id,
-            project_id=root_project.project_id,
-            actor_principal_id=actor_principal_id,
-            provenance={"activation_source": "routes.providers", "provider": name},
+            binding_id=binding.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            provider_name=binding.provider_name,
         )
     except (BindingResolutionError, LookupError) as exc:
         raise HTTPException(
@@ -236,51 +230,39 @@ async def activate_provider(name: str, request: Request) -> dict[str, Any]:
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    from services.provider_activation import activate
+
     try:
-        # The vault owns the secret lifetime. The callback returns only the
-        # operation result, never the credential; Invocation stores request and
-        # usage metadata but not this transient registration key.
-        result = vault.use(
-            p["env_key"],
-            lambda api_key: register_and_health_check(
-                runtime=runtime,
-                binding=binding,
-                run_id=identity.run_id,
-                node_run_id=identity.node_run_id,
-                attempt_id=identity.attempt_id,
-                provider_name=p["test_model"],
-                models=tuple(p["models"]),
-                api_key=api_key,
-            ),
+        result = await activate(
+            runtime=runtime,
+            binding=binding,
+            actor_principal_id=actor_principal_id,
+            name=name,
+            provider_name=p["test_model"],
+            models=tuple(p["models"]),
+            vault=vault,
+            secret_name=p["env_key"],
         )
-        result = await result
     except SecretMissingError:
-        await settle_operation_identity(
-            runtime, identity, outcome="cancelled", error="secret missing"
-        )
         raise HTTPException(
             status_code=409,
             detail=f"No key stored for '{name}' — PUT /v1/providers/{name}/key first.",
         ) from None
-    except ProviderActivationError as exc:
-        await settle_operation_identity(runtime, identity, outcome="failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ProviderAuthorizationError as exc:
-        await settle_operation_identity(runtime, identity, outcome="cancelled", error=str(exc))
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ProviderHealthError as exc:
-        await settle_operation_identity(runtime, identity, outcome="failed", error=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except (ProviderActivationError, ProviderHealthError) as exc:
         raise HTTPException(
             status_code=502,
             detail=f"Provider health check failed for {name}: {exc}",
-        ) from exc
-
-    await settle_operation_identity(
-        runtime,
-        identity,
-        outcome="completed",
-        result={"invocation_id": result.invocation_id, "model": result.model},
-    )
+        ) from None
+    except (BindingResolutionError, LookupError):
+        raise HTTPException(
+            status_code=403, detail="Provider health authorization failed"
+        ) from None
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503, detail="Canonical provider activation unavailable"
+        ) from None
 
     _record_activation(name)
     logger.info("provider activated (governed health check OK): %s", name)
