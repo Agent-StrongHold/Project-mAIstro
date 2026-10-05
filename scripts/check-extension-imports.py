@@ -48,6 +48,11 @@ call `packages/maistro-ext-sdk`'s own hygiene test makes about itself):
   string that resolves to any of the above — a dynamic import is still an
   import, and reading it statically is what keeps this gate from needing to
   run any extension code;
+- naming a **manifest ``entrypoint.module`` outside the extension's own
+  packaged namespace** — a host imports that module as the extension's code,
+  so ``maistro.security.warden`` as an entrypoint reaches a product-private
+  module without a single Python ``import`` statement for the loop above to
+  scan;
 - importing a **third-party root the extension does not declare** in its own
   ``pyproject.toml`` — an undeclared import cannot survive a clean
   environment, which is the property the isolation fixture proves.
@@ -56,7 +61,9 @@ What it deliberately does not do
 --------------------------------
 It does not validate manifest *schemas* (that is the SDK package's job,
 M9-A1) and does not decide grants (M9-A2). It reads the one boundary the epic
-assigns this issue: which modules an extension may name.
+assigns this issue: which modules an extension may name — in Python imports
+and, because a host imports it as extension code, in the manifest's
+``entrypoint.module``.
 
 Usage
 -----
@@ -313,7 +320,80 @@ def scan_extension(extension_dir: Path, policy: Policy) -> list[Violation]:
             violation = _classify(root, detail, policy, deps, own_root, in_tests)
             if violation is not None:
                 violations.append(Violation(path, lineno, violation))
+    violations.extend(manifest_entrypoint_violations(extension_dir, policy, own_root))
     return violations
+
+
+def manifest_entrypoint_violations(
+    extension_dir: Path, policy: Policy, own_root: str
+) -> list[Violation]:
+    """The manifest's ``entrypoint.module``, held to the same boundary as imports.
+
+    A host imports this module as the extension's code, yet nothing in the
+    tree needs to ``import`` it — so a manifest can name a product-private
+    path (``maistro.security.warden``) or a repo-relative root and pass every
+    Python-level scan while both gates stay green. The entrypoint must be code
+    the extension itself ships: its own packaged import root, never a private
+    or repo-relative one.
+    """
+    manifest = extension_dir / "extension.json"
+    if not manifest.is_file():
+        return []  # no entrypoint named; manifest absence is the artifact gate's
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return [Violation(manifest, 1, f"unreadable extension manifest: {exc}")]
+
+    entrypoint = data.get("entrypoint")
+    module = entrypoint.get("module") if isinstance(entrypoint, dict) else None
+    if not isinstance(module, str) or not module:
+        return []  # an entrypoint must exist at all — that is schema, not boundary
+
+    def violation(message: str) -> Violation:
+        return Violation(manifest, _manifest_line(manifest, module), message)
+
+    parts = module.split(".")
+    root = parts[0]
+    if root == own_root:
+        if any(segment.startswith("_") for segment in parts[1:]):
+            return [
+                violation(
+                    f"private entrypoint (entrypoint.module {module}); "
+                    "underscore-prefixed modules are internal even within the "
+                    "extension's own namespace"
+                )
+            ]
+        return []
+    if root in _REPO_RELATIVE_ROOTS:
+        return [
+            violation(
+                f"repo-relative entrypoint (entrypoint.module {module}); extensions "
+                "depend on releases, not checkouts"
+            )
+        ]
+    if root in policy.product_private_namespaces:
+        return [
+            violation(
+                f"product-private entrypoint (entrypoint.module {module}); a host "
+                "imports this as extension code, and product-private modules are "
+                "not stable for extensions"
+            )
+        ]
+    return [
+        violation(
+            f"entrypoint outside the extension's own namespace (entrypoint.module "
+            f"{module}; expected import root {own_root}); an entrypoint must be "
+            "code the extension itself ships"
+        )
+    ]
+
+
+def _manifest_line(manifest: Path, needle: str) -> int:
+    """The line a manifest names a module on, so the violation points at it."""
+    for lineno, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
+        if needle in line:
+            return lineno
+    return 1
 
 
 def _classify(
@@ -358,10 +438,15 @@ def _private_imports_in_tree(tree: ast.AST, public: set[str]) -> list[tuple[int,
                         )
                     )
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            if node.module.split(".")[0] not in public:
+            parts = node.module.split(".")
+            if parts[0] not in public:
                 continue
+            # a private module can hide in the path itself
+            # (``from root._internal import thing``), so inspect every
+            # segment exactly as ast.Import does.
+            private_module = any(segment.startswith("_") for segment in parts[1:])
             for alias in node.names:
-                if alias.name.startswith("_"):
+                if private_module or alias.name.startswith("_"):
                     found.append(
                         (
                             node.lineno,

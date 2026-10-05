@@ -26,6 +26,11 @@
     "                        them as runtime dependencies (test tooling is not",
     "                        a shipped dependency). Outside a tests/ directory",
     "                        these are undeclared-dependency violations.",
+    "required_artifacts      File names every extension wheel must ship, as",
+    "                        verified from the installed distribution by",
+    "                        scripts/check-reference-extension.py. Today the",
+    "                        discovery manifest: a wheel without it installs",
+    "                        but can never be discovered by a host.",
     "",
     "Classification is closed: every import root shipped under packages/*/src",
     "must appear in exactly one of the two namespace lists, so a new product",
@@ -52,5 +57,8 @@
   ],
   "test_only_namespaces": [
     "pytest"
+  ],
+  "required_artifacts": [
+    "extension.json"
   ]
 }

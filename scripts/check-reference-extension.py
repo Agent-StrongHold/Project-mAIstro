@@ -15,9 +15,15 @@ same claim physically. For every extension package under the policy's
 3. **asserts the venv is clean**: every product-private import root from the
    namespace policy, plus the repo-relative sentinels ``packages`` and
    ``extensions``, must be UNIMPORTABLE from that venv;
-4. **runs the extension's test suite** with that venv's interpreter from a
-   neutral working directory, with pytest's conftest discovery cut off at the
-   extension root so the repository's own ``conftest.py`` cannot participate.
+4. **verifies the required artifacts from the installed distribution**: the
+   discovery manifest (``extension.json``) must be present in what the wheel
+   actually installed, read back via ``importlib.metadata`` — packaging that
+   drops it fails here instead of at a host's discovery time;
+5. **runs a staged copy of the extension's tests** (copied into the sandbox,
+   so no test can read a resource that lives only in the checkout — a
+   checkout-run suite would stay green even if the wheel omitted the files
+   it reads) with that venv's interpreter from a neutral working directory,
+   with pytest's conftest discovery cut off at the sandbox.
 
 A fresh venv contains no part of this repository. So if the suite passes
 there, the extension needed no repo-relative import, no ``sys.path`` repair,
@@ -44,6 +50,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,6 +63,11 @@ DEFAULT_POLICY = REPO_ROOT / "extensions" / "namespace-policy.json"
 #: Repo-relative sentinels probed alongside the policy's private roots: if a
 #: venv can import ``packages`` or ``extensions``, the checkout leaked in.
 _REPO_RELATIVE_SENTINELS = ("packages", "extensions")
+
+#: Placeholder in the plan for the distribution name of the wheel the run
+#: builds; ``isolate`` substitutes the real name from the built wheel's
+#: filename so the artifact check reads back that exact distribution.
+_WHEEL_DIST_NAME_ARG = "@WHEEL_DIST_NAME@"
 
 _SUBPROCESS_TIMEOUT_S = 900
 
@@ -147,7 +159,14 @@ def isolation_plan(extension_dir: Path, policy: dict[str, object], workdir: Path
     dist = workdir / "dist"
     venv = workdir / "venv"
     venv_python = venv / "bin" / "python"
-    tests = extension_dir / "tests"
+    # The tests the isolated run executes are the staged copy under the
+    # sandbox, never the checkout's tests/ directory (``isolate`` copies
+    # them in before any step executes).
+    tests = workdir / "sandbox" / "tests"
+    declared = policy.get("required_artifacts", ["extension.json"])
+    if not isinstance(declared, list) or not all(isinstance(a, str) for a in declared):
+        raise FixtureError("policy required_artifacts must be a list of file names")
+    required_artifacts = tuple(declared)
     return (
         [
             Step("build wheel", ("uv", "build", "--wheel", "--out-dir", str(dist))),
@@ -170,17 +189,41 @@ def isolation_plan(extension_dir: Path, policy: dict[str, object], workdir: Path
         ]
         + [
             Step(
-                "run the extension's tests with the fresh venv's interpreter",
+                "installed distribution carries the extension's required artifacts",
+                (
+                    str(venv_python),
+                    "-c",
+                    "import importlib.metadata, sys; "
+                    "installed = {f.name for f in (importlib.metadata.files(sys.argv[1]) or [])}; "
+                    "missing = sorted(set(sys.argv[2:]) - installed); "
+                    "sys.exit(f'installed {sys.argv[1]} lacks required artifacts: {missing}' "
+                    "if missing else 0)",
+                    _WHEEL_DIST_NAME_ARG,
+                    *required_artifacts,
+                ),
+            )
+        ]
+        + [
+            Step(
+                "run the staged copy of the extension's tests with the fresh venv's interpreter",
                 (
                     str(venv_python),
                     "-m",
                     "pytest",
                     str(tests),
                     "-q",
+                    # The staged copy has no pyproject.toml above it, so the
+                    # extension's pytest options are pinned here: importlib
+                    # mode keeps pytest from inserting the tests dir on
+                    # sys.path, and conftest discovery is cut off at the
+                    # sandbox so neither the repository's nor the checkout's
+                    # conftest.py can participate.
+                    "--import-mode=importlib",
+                    "--strict-markers",
                     "--rootdir",
-                    str(extension_dir),
+                    str(tests.parent),
                     "--confcutdir",
-                    str(extension_dir),
+                    str(tests.parent),
                     "-p",
                     "no:cacheprovider",
                 ),
@@ -196,6 +239,18 @@ def isolate(extension_dir: Path, policy: dict[str, object], workdir: Path) -> No
     # runs inside the venv may resolve the checkout by accident of cwd.
     sandbox = workdir / "sandbox"
     sandbox.mkdir(parents=True, exist_ok=True)
+    # Stage a copy of the tests inside the sandbox: a suite executed straight
+    # out of the checkout could still read sibling checkout resources
+    # (``extension.json``, fixture files) the installed wheel does not carry,
+    # and pass for the wrong reason. From here on, only venv-visible files
+    # exist.
+    staged_tests = sandbox / "tests"
+    shutil.rmtree(staged_tests, ignore_errors=True)
+    shutil.copytree(
+        extension_dir / "tests",
+        staged_tests,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"),
+    )
 
     steps = isolation_plan(extension_dir, policy, workdir)
     build = steps[0]
@@ -206,15 +261,25 @@ def isolate(extension_dir: Path, policy: dict[str, object], workdir: Path) -> No
         raise FixtureError(f"expected exactly one wheel for {extension_dir.name}, got {wheels}")
 
     _run(steps[1], cwd=sandbox)
-    # The plan spells the wheel as a glob; substitute the built wheel's real
-    # path so the install pins the artifact this run just produced.
+    # The plan spells the wheel as a glob and the artifact check's target
+    # distribution as a placeholder; substitute both from the wheel this run
+    # just built so the install pins — and the artifact check reads back —
+    # that distribution, not whatever a stale cache holds.
     install = steps[2]
     glob_arg = f"{dist}/*.whl"
-    install_argv = tuple(wheels[0] if arg == glob_arg else arg for arg in install.argv)
-    _run(Step(install.description, install_argv), cwd=sandbox)
+    dist_name = wheels[0].name.split("-")[0]
+
+    def pin(arg: str) -> str:
+        if arg == glob_arg:
+            return str(wheels[0])
+        return dist_name if arg == _WHEEL_DIST_NAME_ARG else arg
+
+    install_argv = tuple(pin(arg) for arg in install.argv)
+    _run(Step(install.description, install_argv, install.expect_failure), cwd=sandbox)
 
     for step in steps[3:-1]:
-        _run(step, cwd=sandbox)
+        pinned = Step(step.description, tuple(pin(arg) for arg in step.argv), step.expect_failure)
+        _run(pinned, cwd=sandbox)
 
     _run(steps[-1], cwd=sandbox)
 

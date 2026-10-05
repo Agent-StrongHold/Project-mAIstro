@@ -163,6 +163,7 @@ def test_conformance_fails_when_the_reference_extension_imports_private_modules(
         ("value = __import__('maistro_server')\n", "product-private import"),
         ("from maistro_ext_sdk import _internal\n", "private import"),
         ("import maistro_ext_sdk._internal\n", "private import"),
+        ("from maistro_ext_sdk._internal import thing\n", "private import"),
     ],
 )
 def test_violation_classes_are_named(
@@ -187,6 +188,84 @@ def test_allowed_imports_pass(gate: types.ModuleType, tmp_path: Path) -> None:
         tests={"test_ok.py": "import pytest\n\ndef test_ok():\n    assert True\n"},
     )
     assert scan(gate, ext, write_policy(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# the manifest entrypoint: a host imports it as extension code, so the
+# boundary applies with no Python import statement for the .py scans to see
+# ---------------------------------------------------------------------------
+
+
+def write_manifest(ext: Path, entrypoint_module: str) -> None:
+    """An extension.json whose entrypoint names the given module path."""
+    (ext / "extension.json").write_text(
+        json.dumps(
+            {
+                "id": "test.ext",
+                "version": "1.0.0",
+                "contract": ">=1.0.0",
+                "family": "tool",
+                "entrypoint": {"module": entrypoint_module, "object": "PLUGIN"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_entrypoint_in_the_own_namespace_passes(gate: types.ModuleType, tmp_path: Path) -> None:
+    ext = make_extension(tmp_path, files={"plugin.py": ""})
+    write_manifest(ext, "my_ext.plugin")
+    assert scan(gate, ext, write_policy(tmp_path)) == []
+
+
+@pytest.mark.parametrize(
+    ("module", "expected_fragment"),
+    [
+        ("maistro.security.warden", "product-private entrypoint"),
+        ("maistro_server", "product-private entrypoint"),
+        ("packages.maistro_core.plugin", "repo-relative entrypoint"),
+        ("extensions.evil", "repo-relative entrypoint"),
+        ("maistro_ext_sdk.plugin", "outside the extension's own namespace"),
+        ("httpx", "outside the extension's own namespace"),
+    ],
+)
+def test_entrypoints_outside_the_own_namespace_fail(
+    gate: types.ModuleType, tmp_path: Path, module: str, expected_fragment: str
+) -> None:
+    ext = make_extension(tmp_path)  # no .py import anywhere — the point of this check
+    write_manifest(ext, module)
+    violations = scan(gate, ext, write_policy(tmp_path))
+    assert any(expected_fragment in v and module in v for v in violations), violations
+
+
+def test_private_entrypoint_under_the_own_namespace_fails(
+    gate: types.ModuleType, tmp_path: Path
+) -> None:
+    ext = make_extension(tmp_path, files={"_impl.py": ""})
+    write_manifest(ext, "my_ext._impl.plugin")
+    assert any("private entrypoint" in v for v in scan(gate, ext, write_policy(tmp_path)))
+
+
+def test_unreadable_manifest_fails(gate: types.ModuleType, tmp_path: Path) -> None:
+    ext = make_extension(tmp_path)
+    (ext / "extension.json").write_text("{ not json", encoding="utf-8")
+    assert any(
+        "unreadable extension manifest" in v for v in scan(gate, ext, write_policy(tmp_path))
+    )
+
+
+def test_reference_extension_entrypoint_names_its_own_namespace(
+    gate: types.ModuleType,
+) -> None:
+    """The real manifest: entrypoint root == the wheel's packaged import root."""
+    policy = gate.load_policy(REAL_POLICY)
+    ext = gate.discover_extensions(ROOT, policy)[0]
+    assert (
+        gate.manifest_entrypoint_violations(
+            ext, policy, gate.own_import_root(ext / "pyproject.toml")
+        )
+        == []
+    )
 
 
 def test_undeclared_dependency_fails_but_declaring_it_passes(

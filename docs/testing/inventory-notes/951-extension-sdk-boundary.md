@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +46
+  tests/: +57
 ---
 # 951-extension-sdk-boundary
 
@@ -10,7 +10,7 @@ directories plus two tests over the real one.
 
 ## What moved
 
-`tests/test_check_extension_imports.py` (+30) covers
+`tests/test_check_extension_imports.py` (+41) covers
 `scripts/check-extension-imports.py`:
 
 - the acceptance criterion the issue names, tested against the real reference
@@ -36,7 +36,10 @@ directories plus two tests over the real one.
 A test also pins a gate refinement the tests forced: a call such as
 `dynamic_import_module("x")` is a helper with an unfortunate name, not a
 dynamic import — the gate matches `import_module`/`__import__` precisely
-(attribute or bare name), so plausible non-imports pass.
+(attribute or bare name), so plausible non-imports pass. The violation-class
+matrix includes the third private spelling (`from root._internal import
+thing`), where the underscore hides in the `from` path rather than in the
+alias.
 
 `tests/test_check_reference_extension.py` (+16) covers
 `scripts/check-reference-extension.py`:
@@ -68,7 +71,40 @@ executes the whole physical run (uv build, a fresh venv, a wheel install) and
 is run unconditionally by its dedicated CI step
 (`scripts/check-reference-extension.py` in the `lint-and-type-check` job);
 setting `MAISTRO_TEST_EXTENSION_ISOLATION=1` runs it locally. The skip is the
-only reason the delta is 46 rather than 45 collected-and-passing.
+only reason the delta is 57 rather than 56 collected-and-passing.
+
+## The review-repair round (second)
+
+The independent review of the first cut left findings; the repair adds the
+eleven node IDs this note's delta now carries, all in
+`tests/test_check_extension_imports.py`:
+
+- the manifest `entrypoint.module` is held to the same boundary as imports
+  (`manifest_entrypoint_violations`): a host imports it as extension code, so
+  a manifest could otherwise reach `maistro.security.warden` or a
+  repo-relative root without a single import statement for the scan to see.
+  Covered both ways on fabricated trees — one test for the passing shape
+  (own namespace, no underscore segments) and a parametrized matrix for the
+  failing ones (product-private, repo-relative, another public SDK root,
+  any other foreign root), plus a private entrypoint under the extension's
+  own namespace and an unreadable manifest failing loudly — and once against
+  the real reference extension, whose entrypoint must name its own packaged
+  namespace;
+- the private-member scan learned the `from` path spelling: `from
+  maistro_ext_sdk._internal import thing` is now named, joining the two
+  spellings the first cut already caught.
+
+The fixture suite's count is unchanged (+16): its repair changed assertions
+on existing tests, not their number — the plan now verifies the installed
+distribution carries the policy's required artifacts (`extension.json`) via
+`importlib.metadata`, and executes a staged copy of the extension's tests
+from the sandbox instead of the checkout's `tests/` directory, so a suite
+cannot read a resource the wheel does not ship. The wheel carries the
+manifest via `force-include`; the extension's root-environment suite reads
+the installed distribution first and falls back to the extension root's copy
+only under the editable install, where no wheel exists to read — in the
+isolation sandbox the fallback file does not exist, so the fixture still
+fails a wheel that drops the manifest.
 
 ## What did not move
 

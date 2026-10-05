@@ -12,15 +12,32 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+from importlib.resources import files as resource_files
 from pathlib import Path
 
 import reference_greeter
 
-MANIFEST_PATH = Path(__file__).resolve().parents[1] / "extension.json"
-
 
 def _manifest() -> dict[str, object]:
-    return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    # A host discovers an extension through the ``extension.json`` its wheel
+    # ships, so the installed distribution is what this suite reads first.
+    try:
+        text = (
+            resource_files("reference_greeter")
+            .joinpath("extension.json")
+            .read_text(encoding="utf-8")
+        )
+    except FileNotFoundError:
+        # The root dev environment installs this extension editable, and an
+        # editable install maps only the package directory: the manifest
+        # lives at the extension root and ``force-include`` maps it into the
+        # wheel. There the extension root's copy is read instead. In the
+        # isolation fixture the staged suite has no such sibling file, so
+        # the fallback cannot exist there — if the wheel dropped the
+        # manifest, these tests cannot run, and the fixture's artifact check
+        # names the missing file before the suite even starts.
+        text = (Path(__file__).resolve().parents[1] / "extension.json").read_text(encoding="utf-8")
+    return json.loads(text)
 
 
 def test_manifest_declares_least_authority() -> None:

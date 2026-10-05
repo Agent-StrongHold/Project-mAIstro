@@ -118,6 +118,13 @@ What proves what:
 - To see the negative control yourself:
   `.venv-isolated/bin/python -c "import maistro"` must print
   `ModuleNotFoundError`.
+- The manifest rides in the wheel: the fixture reads `extension.json` back
+  out of the installed distribution before running your tests, so packaging
+  that drops the manifest fails the fixture instead of surfacing when a host
+  first tries to discover your extension.
+- The fixture stages your `tests/` into its sandbox before running them, so
+  a suite can only read files the installed wheel actually ships — never a
+  resource that happens to sit next to the checkout's tests.
 
 The wheel is what a host installs. Tests import your package through the
 venv's `site-packages`, exactly as a user's runtime would.

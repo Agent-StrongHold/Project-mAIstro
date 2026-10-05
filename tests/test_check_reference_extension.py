@@ -2,11 +2,12 @@
 
 The fixture (`scripts/check-reference-extension.py`) builds each extension as
 a wheel, installs it plus pytest into a fresh venv, proves the product's own
-modules are unimportable there, and runs the extension's tests with that
-interpreter.
+modules are unimportable there, verifies the required artifacts from the
+installed distribution, and runs a staged copy of the extension's tests with
+that interpreter.
 
 Most of what can be tested in-process is the plan: the exact commands, their
-order (build → venv → install → negative controls → tests), and the
+order (build → venv → install → negative controls → artifact check → tests), and the
 documentation contract — the authoring guide quotes the fixture's sequence,
 because "documentation contains enough information to build the reference
 package from a clean environment" is only true while the commands are true.
@@ -68,6 +69,7 @@ def test_fixture_and_gate_share_one_policy_file(
     assert fixture.DEFAULT_POLICY.is_file()
     policy = fixture.load_policy(POLICY)
     assert policy["extension_trees"] == ["extensions/*"]
+    assert policy["required_artifacts"] == ["extension.json"]
 
 
 def test_discover_finds_the_reference_extension(fixture: types.ModuleType) -> None:
@@ -114,7 +116,7 @@ def test_plan_builds_venv_installs_probes_then_tests(
     # The negative controls are the product-private roots plus the
     # repo-relative sentinels, each expected to FAIL (the import must not
     # resolve in the fresh venv).
-    probes = plan[3:-1]
+    probes = plan[3:-2]
     private_roots = list(policy["product_private_namespaces"])
     assert [step.argv[-1].removeprefix("import ") for step in probes] == [
         *private_roots,
@@ -123,12 +125,29 @@ def test_plan_builds_venv_installs_probes_then_tests(
     ]
     assert all(step.expect_failure for step in probes)
 
+    # The artifact check reads the installed distribution — named by the
+    # wheel (substituted at run time), never by a checkout path — so a wheel
+    # that drops the discovery manifest fails the fixture here.
+    check = plan[-2]
+    assert not check.expect_failure
+    assert check.description.startswith("installed distribution")
+    assert "@WHEEL_DIST_NAME@" in check.argv
+    assert "importlib.metadata" in check.argv[check.argv.index("-c") + 1]
+    assert "extension.json" in check.argv
+
     run = plan[-1]
-    assert run.argv[1:4] == ("-m", "pytest", str(REFERENCE_EXTENSION / "tests"))
-    # conftest discovery cut off at the extension root: the repository's own
-    # conftest.py cannot participate in the isolated run.
+    # The suite runs from the staged copy inside the sandbox, not the
+    # checkout's tests/ directory: no test can read a resource the wheel
+    # does not ship.
+    staged = tmp_path / "sandbox" / "tests"
+    assert run.argv[1:4] == ("-m", "pytest", str(staged))
+    # The staged copy has no pyproject.toml above it, so importlib mode is
+    # pinned on the command line ...
+    assert "--import-mode=importlib" in run.argv
+    # ... and conftest discovery is cut off at the sandbox: neither the
+    # repository's nor the checkout's conftest.py can participate.
     assert "--confcutdir" in run.argv
-    assert run.argv[run.argv.index("--confcutdir") + 1] == str(REFERENCE_EXTENSION)
+    assert run.argv[run.argv.index("--confcutdir") + 1] == str(tmp_path / "sandbox")
 
 
 def test_clean_env_strips_inherited_interpreter_state(
@@ -244,7 +263,11 @@ def test_isolate_runs_build_venv_install_probes_tests_in_order(
     # The install step must pin the wheel this run built, not a glob.
     assert descriptions[2].startswith("install wheel")
     assert descriptions[3].startswith("product-private root 'maistro' is unimportable")
-    assert descriptions[-1].startswith("run the extension's tests")
+    assert descriptions[-2].startswith("installed distribution")
+    assert descriptions[-1].startswith("run the staged copy")
+    # The suite was staged into the sandbox: the isolated run executes a
+    # copy, never the checkout's tests/ directory.
+    assert (workdir / "sandbox" / "tests" / "test_reference_greeter.py").is_file()
     # The build runs in the extension; everything else runs in the sandbox.
     assert executed[0][1] == str(REFERENCE_EXTENSION)
     assert all(cwd.endswith("sandbox") for _, cwd in executed[1:])
