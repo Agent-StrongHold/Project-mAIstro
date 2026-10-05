@@ -14,14 +14,15 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
-from maistro.capabilities.approval_store import (
-    InMemoryApprovalStore,
-    SqliteApprovalStore,
-)
+from maistro.capabilities.approval_store import SqliteApprovalStore
 from maistro.capabilities.binding_store import InMemoryBindingStore, SqliteBindingStore
-from maistro.capabilities.effect_context import default_effect_context
+from maistro.capabilities.effect_context import (
+    default_effect_context,
+    new_sqlite_effect_context,
+)
 from maistro.capabilities.invocation import InMemoryInvocationStore
 from maistro.capabilities.invocation_store import SqliteInvocationStore
 from maistro.container import create_container
@@ -101,11 +102,7 @@ async def test_postgres_url_selects_durable_effect_stores() -> None:
 async def test_default_effect_context_is_the_container_instance() -> None:
     container = await _container(database_url="memory://")
     try:
-        same = default_effect_context() is container.capability_effects
-        if "default_effect_context_is_container" in KNOWN_GAPS:
-            assert not same, "default_effect_context() is the container now; delete the gap"
-        else:
-            assert same
+        assert default_effect_context() is container.capability_effects
     finally:
         await container.aclose()
 
@@ -115,12 +112,40 @@ async def test_governed_invocations_use_a_durable_approval_store_on_sqlite() -> 
     container = await _container(database_url=f"sqlite:///{db_path}")
     try:
         approvals = container.capability_effects.invocations._approvals
-        if "approval_store_wired" in KNOWN_GAPS:
-            assert approvals is None, "approval store is wired now; delete the gap"
-        else:
-            assert isinstance(approvals, (SqliteApprovalStore, InMemoryApprovalStore))
+        assert isinstance(approvals, SqliteApprovalStore)
+        assert approvals is container.capability_effects.approval_store
     finally:
         await container.aclose()
+
+
+async def test_sqlite_effect_context_reuses_already_selected_stores(tmp_path: Path) -> None:
+    """#1133 AC-8: when the Container already chose durable stores, the
+    builder must thread those exact instances through rather than silently
+    opening a second invocation/event/approval store behind them -- which
+    would split one logical ledger across two objects reading/writing the
+    same table without knowing about each other.
+    """
+    conn = await aiosqlite.connect(tmp_path / "effect-context-injected.db")
+    try:
+        invocation_store = SqliteInvocationStore(conn)
+        await invocation_store.ensure_schema()
+        event_store = SqliteEventStore(conn)
+        await event_store.ensure_schema()
+        approvals = SqliteApprovalStore(conn)
+        await approvals.ensure_schema()
+
+        context = await new_sqlite_effect_context(
+            conn,
+            invocation_store=invocation_store,
+            event_store=event_store,
+            approvals=approvals,
+        )
+
+        assert context.invocation_store is invocation_store
+        assert context.event_store is event_store
+        assert context.approval_store is approvals
+    finally:
+        await conn.close()
 
 
 async def test_capability_effects_and_container_share_one_invocation_store() -> None:
