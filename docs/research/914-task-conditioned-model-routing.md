@@ -119,14 +119,16 @@ callers hit):
 |---------------------|--------:|---------------:|------:|--------:|
 | shipped-router      | 0.384   | 0              | 0.000 | 0.148   |
 | budget-conditioned  | 0.357   | 0.272          | 0.272 | 0.137   |
-| tier-conditioned    | 0.826   | 0              | 0.037 | 0.607   |
+| tier-conditioned    | 0.826   | 0.038          | 0.037 | 0.607   |
 | oracle              | 0.930   | 0              | 0.000 | 0.768   |
 
 The degraded run is the sharpest finding: budget-conditioned routing **collapses
 below the static baseline** — with the only reasoning-capable model gone, the
 `reasoning=True` constraint fails hard (fact 3 above) and 27% of tasks get no
 route at all — while the tier-conditioned candidate degrades gracefully to
-82.6% success by letting the remaining powerful-tier model absorb the work.
+82.6% success by letting the remaining powerful-tier model absorb the work
+(the residual 3.8% route failures are tasks whose context exceeds that
+model's 32k window — unrecoverable without a capacity-adequate model).
 Capability conditioning expressed through today's seam is *more fragile* than
 no conditioning at all.
 
