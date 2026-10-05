@@ -224,9 +224,12 @@ fleet-declaration load via `load_provider_registry`, plus a
   `maistro.capabilities.providers.llm_gateway` present — P9.
 
 Absence scan (same head): zero matches for speculative decoding,
-quantization, LoRA, mixture-of-experts, vLLM, SGLang, or llama.cpp across
-shipped `packages/*/src`; the only caching seams are the bootstrap Anthropic
-prefix breakpoint and the RSI no-cache bodies.
+quantization, LoRA, mixture-of-experts, SGLang, or llama.cpp across shipped
+`packages/*/src`; the single vLLM mention is a comment
+(`maistro_bootstrap/builders/responses_callable.py:325`) naming engines that
+gateway-native auto-cache a stable prefix — no engine is configured
+anywhere. The only caching seams are the bootstrap Anthropic prefix
+breakpoint and the RSI no-cache bodies.
 
 ## Record
 
