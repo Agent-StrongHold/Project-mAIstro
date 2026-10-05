@@ -11876,3 +11876,71 @@ All 13 acceptance criteria remain unprovable against reachable production
 behavior; the issue's stop condition forbids building the missing #804/#458/
 #53/#774/#776/#93/#95 surfaces in this lane. The branch remains a
 develop-current (2779c99a72b4) battery-green waiting position (Refs #777).
+
+## Round 180 (2026-10-05, job b2c4a329044940ddba6576cc9a574068) — develop sync 2779c99a→291bdd18 merged, battery re-proven green
+
+**Develop sync performed (this resolves the prior attention request's sync
+hypothesis with an actual move):** `git fetch origin develop` advanced
+`origin/develop` from `2779c99a72b464f9399306dfc40e6ce82a76b59e` to
+`291bdd187a512a9cda5a33cb98cff655564d7f4d` — exactly one commit, #1954
+"fix(hive): govern model-backed DAG tools (#1085 slice)", 11 files
+(CHANGELOG, salvage note, hive `governed_model.py`/`legacy_dag_node.py`/
+`tool_executor.py` + tests, core `llm_gateway.py` + test, and two quality
+ledgers). Zero file overlap with this branch's changes (verified via
+`comm -12` of both diff file lists), so `git merge origin/develop` resolved
+with the ort strategy, no conflicts; merge head `6b5684ee478e`.
+
+**Ledger integrity after merge (quality/*.json merge cleanly while losing
+rows):** `git diff --numstat origin/develop -- quality/` shows exactly one
+changed file, `quality/vulture-baseline.json` (0 add / 1 del — the standing
+round-166 row). `direct-effect-call-sites.json` and `model-egress.json`
+(correctly reduced upstream by #1954) took develop's side; every other
+ledger matches origin/develop byte-wise by row count.
+
+**Fresh battery at merge head `6b5684ee478e`:**
+- `uv run ruff check .` EXIT 0; `uv run ruff format --check .` EXIT 0
+  (2993 files).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` EXIT 0, base
+  `291bdd187a51` → candidate `6b5684ee478e`, 1342 reviewed → 1341 findings,
+  unclassified 0, never-allowlist 0.
+- 8 CI-exact gates EXIT 0: check-cross-package-imports (run this round
+  because both merge sides touched hive-conductor; #1954's own message
+  documents a prior semantic merge this gate catches),
+  check-api-route-contracts (279 handlers), check-route-permissions (40
+  declared), check-promotion-surface, check-reachability (1287 modules),
+  check-ratchet-provenance (49 consumers), check-suite-inventory (15
+  suites, 26793 unique identities), check-backlog-consistency (167 items).
+- **Interpreter trap recorded:** `check-suite-inventory.py` run with ambient
+  `python3` failed EXIT 1 with `ModuleNotFoundError: No module named
+  'structlog'` in two hive suites — the documented fresh-worktree-venv
+  failure mode (AGENTS.md), not a tree defect; green via `uv run python ...`
+  after `uv sync --locked --extra dev` (resolved 246 packages, no changes).
+- `uv run pytest packages/maistro-design/tests packages/maistro-bootstrap/tests -q`
+  → 772 passed, 7 skipped (19.60s).
+- `uv run pytest packages/hive-conductor -q -k "design or workspace or
+  creative or brief"` → 390 passed, 8 skipped, 3041 deselected (21.05s);
+  +34 deselected vs round 179 = #1954's new `test_dag_model_tools.py`.
+- #1954's new/changed suites run directly: `test_dag_model_tools.py` +
+  `test_legacy_dag_node.py` + `test_llm_gateway_branches.py` → 72 passed.
+
+**Blockers re-proven fresh at `6b5684ee478e` (this round's own greps):**
+`grep -rEl 'GoalReconciler|delegate_goal' --include='*.py' packages/` → 0
+files; `packages/maistro-core/src/maistro/goals/` absent;
+`workspace_agent|control_mode|delegat` in
+`packages/hive-conductor/backend/services/design_service.py` → 0 matches;
+`git merge-base --is-ancestor 17ad5f75b894 HEAD` holds (PR #1660 WIP head
+still salvaged in-branch, still unmerged upstream).
+
+**Dependency states (this job's dispatch-context.json, captured
+2026-10-05T23:20:39Z, 61 sources, complete_for_scope true):** unchanged —
+#773/#774/#776/#779/#780/#804/#805/#806/#53/#93/#95 open; #775/#39/#458
+closed. PR #1660 open **draft**, `merged: false`, head `17ad5f75b894`.
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds 123–179.
+The sync action item is discharged — the branch is develop-current at
+`291bdd187a51` and battery-green — but every acceptance criterion of #777
+still targets canonical surfaces owned by open issues (#804/#805/#806
+reconciliation, #774 CreativeBrief, #776 working graph, #53 front-door,
+#93/#95 production Canvas), which the stop condition forbids building in
+this lane (Refs #777).
