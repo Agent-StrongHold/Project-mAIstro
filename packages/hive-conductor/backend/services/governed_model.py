@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from maistro.agents.types import LLMProviderError
+from maistro.capabilities.admitted_model import AdmittedModelCalls
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.effect_context import CapabilityEffectContext
@@ -161,16 +162,11 @@ def control_plane_binding(
 
 
 def dag_node_runtime(container: Any) -> GovernedModelRuntime | None:
-    """Compose the authorities a legacy-DAG node model call needs, or None.
+    """Retain the existing model-backed tool runtime composition.
 
-    Legacy DAG LLM nodes route their physical completion through the canonical
-    Binding -> Invocation egress (#718) whenever the bridge Container is live
-    and the deployment gateway is configured. None — which makes the node fall
-    back to its compatibility builder — means no canonical authority exists to
-    compose (standalone tests, direct construction, unconfigured gateway); it
-    never means a second gateway is fabricated here. Precedence lives with the
-    node: the governed egress wins over any injected raw builder, because the
-    canonical effect path owns the authoritative recording hook once.
+    Ordinary model nodes use ``dag_node_model_calls``. This compatibility
+    composition keeps the tool path's gateway selection unchanged until that
+    caller's own migration; a missing runtime makes model-backed tools refuse.
     """
 
     if container is None:
@@ -192,62 +188,78 @@ def dag_node_runtime(container: Any) -> GovernedModelRuntime | None:
     )
 
 
+def dag_node_model_calls(container: Any) -> AdmittedModelCalls | None:
+    """Compose ordinary model dispatch without granting credentials or Bindings.
+
+    The selected Container owns execution, configuration and every authority.
+    Absence makes real model calls fail closed. Explicit zero-effect dry runs
+    have a separate no-configuration check; isolated and tool model paths
+    retain their separate composition until their own migration.
+    """
+    if container is None:
+        return None
+    effects = getattr(container, "capability_effects", None)
+    registry = getattr(container, "provider_registry", None)
+    router = getattr(container, "llm_router", None)
+    run_store = getattr(container, "run_store", None)
+    config = getattr(container, "config", None)
+    if any(value is None for value in (effects, registry, router, run_store, config)):
+        return None
+    base_url = str(config.litellm_url or "").strip()
+    if not base_url:
+        return None
+    return AdmittedModelCalls(
+        effects,
+        registry=registry,
+        router=router,
+        endpoint=GatewayEndpoint(base_url=base_url),
+        run_store=run_store,
+        binding_ids=tuple(binding.binding_id for binding in config.model_bindings),
+    )
+
+
+def dag_node_unconfigured(container: Any) -> bool:
+    """Prove absence of real model configuration before permitting dry-run mode.
+
+    Missing admission collaborators alone do not prove a no-gateway deployment.
+    A configured endpoint or any declared model grant keeps the real path
+    fail-closed. Settings owns gateway aliases; do not re-resolve them here.
+    """
+    config = getattr(container, "config", None)
+    if config is not None and (config.litellm_url or config.model_bindings):
+        return False
+    from config import get_settings
+
+    try:
+        settings = get_settings()
+        return not (settings.litellm_api_base or settings.maistro_model_bindings)
+    except Exception:
+        # Unavailable configuration is not evidence of deliberate dry-run mode.
+        return False
+
+
 async def dag_node_completion(
-    runtime: GovernedModelRuntime,
+    calls: AdmittedModelCalls,
     *,
-    run_id: str,
-    node_run_id: str,
-    attempt_id: str,
-    node_id: str,
-    workspace_id: str,
-    project_id: str,
+    ctx: NodeContext,
+    binding_id: str = "",
     system: str,
     user: str,
     model: str,
+    timeout_s: float,
 ) -> str:
-    """Run one legacy-DAG node completion across canonical Binding -> Invocation.
+    """Use admitted execution and configured authority for one ordinary node.
 
-    The physical call is the governed model egress, so its usage evidence lands
-    on the quota ledger through the Invocation authority's single
-    terminalization recorder (#718) — no per-node callback, no second ledger.
-    The request shape (JSON response format, temperature 0.3) preserves what the
-    legacy raw builder sent, so node outputs do not change with the cutover.
-    The Binding names the deployment's registered default gateway key; the
-    credential is added to this Run's own Workspace/Project scope idempotently
-    and without discarding health state (#1248), exactly as control-plane
-    effects do.
+    The model is request data, never a self-issued Binding pin. Persisted
+    execution owns actor/scope/lease validation, and canonical terminalization
+    records usage once. The logical effect survives a later Attempt so replay
+    and UNKNOWN protection cannot be bypassed by retrying the node.
     """
-
-    runtime.effects.credentials.add(
-        workspace_id=workspace_id,
-        project_id=project_id,
-        record=CredentialRecord(
-            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
-            api_key=runtime.endpoint.api_key,
-        ),
-    )
-    result = await ModelChatEgress(
-        runtime.effects,
-        registry=runtime.registry,
-        router=runtime.router,
-        endpoint=runtime.endpoint,
-    ).complete(
-        binding=Binding(
-            workspace_id=workspace_id,
-            project_id=project_id,
-            node_id=node_id,
-            capability=MODEL_CHAT_CAPABILITY,
-            # Pin the node's requested model: the persisted Binding/Invocation
-            # then names exactly which provider/model the physical call used,
-            # which is the attribution the quota ledger rows carry.
-            provider_name=model,
-            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
-        ),
-        run_id=run_id,
-        node_run_id=node_run_id,
-        attempt_id=attempt_id,
-        effect_key=f"dag-llm-{node_id}-{attempt_id}",
+    result = await calls.complete(
+        identity=(ctx.run_id, ctx.node_run_id, ctx.attempt_id),
+        binding_id=binding_id,
+        effect_key="dag:model",
+        timeout_s=timeout_s,
         request=ModelChatRequest(
             model=model,
             messages=[
