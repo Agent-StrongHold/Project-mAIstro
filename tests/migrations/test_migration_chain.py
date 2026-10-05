@@ -436,6 +436,19 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
         "expires_at",
         "lease_expires_at",
     }
+    FORWARD_GENERATION_COLUMNS: ClassVar[set[str]] = {
+        "format_version",
+        "generation_id",
+        "workspace_id",
+        "project_id",
+        "origin_principal_id",
+        "actor_principal_id",
+        "action",
+        "receipt_id",
+        "receipt_snapshot",
+        "provenance_snapshot",
+        "acknowledged_at",
+    }
 
     def _provision_at_runtime(self) -> None:
         """What wiring does on a spine-ready pool below head: the real
@@ -470,7 +483,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
 
         result = _alembic("upgrade", "head")
         assert result.returncode == 0, result.stderr
-        assert self._claim_columns() == self.CLAIM_COLUMNS
+        assert self._claim_columns() == self.CLAIM_COLUMNS | self.FORWARD_GENERATION_COLUMNS
         assert "ix_task_idempotency_expires" in {
             str(row[0])
             for row in _query(
