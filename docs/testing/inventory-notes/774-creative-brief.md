@@ -396,6 +396,6 @@ IDs moved; the inventory deltas are unchanged.
 
 Update (auto-119 develop sync, M4-B3 merge): #119's applicability migration
 had also taken `052` on parent `051`, the same collision; it re-parents onto
-the ladder as **`053_learning_applicability_epistemics`**. The chain test now
-walks to `053` and asserts `get_heads() == ["053"]`; every assertion this
+the ladder as **`054_learning_applicability_epistemics`**. The chain test now
+walks to `054` and asserts `get_heads() == ["054"]`; every assertion this
 round added still holds with `052` an interior revision.
