@@ -2246,16 +2246,6 @@
   ],
   "frontend_surfaces": [
     {
-      "source": "packages/hive-conductor/frontend/src/components/AccountBanner.tsx",
-      "signal": "mutating-api-call",
-      "method": "POST",
-      "route": "/v1/auth/logout",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "signs out through the real backend route",
-      "effect_owner": "routes/auth.py logout (session store + audit)"
-    },
-    {
       "source": "packages/hive-conductor/frontend/src/components/AppShell.tsx",
       "signal": "mutating-api-call",
       "method": "POST",
@@ -2264,26 +2254,6 @@
       "production_enabled": true,
       "reason": "signs out through the real backend route",
       "effect_owner": "routes/auth.py logout (session store + audit)"
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/components/LlmProviders.tsx",
-      "signal": "mutating-api-call",
-      "method": "POST",
-      "route": "/v1/providers/${name}/activate",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "activates the provider through the real backend route",
-      "effect_owner": "routes/providers.py activate_provider (LiteLLM registration + test completion)"
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/components/LlmProviders.tsx",
-      "signal": "mutating-api-call",
-      "method": "PUT",
-      "route": "/v1/providers/${name}/key",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "stores the provider key through the real backend route",
-      "effect_owner": "routes/providers.py put_provider_key (vault)"
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Chat.tsx",
@@ -2472,16 +2442,6 @@
       "production_enabled": true,
       "owner_issue": 359,
       "reason": "the scanned timer is the #359 backoff re-arm (setTimeout(() => void run(false), backoffDelayMs())), which polls real backend state; the status words the detector matches inside its lazily captured body are the runs-list JSX (`r.status === 'running'`), which renders the backend's own status rather than a client-timer success animation. Unresolved only because the detector cannot yet distinguish a re-arm timer from a success-animation timer, not because any state is faked."
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/pages/Settings.tsx",
-      "signal": "mutating-api-call",
-      "method": "POST",
-      "route": "/v1/auth/elevate",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "elevates through the real backend route",
-      "effect_owner": "routes/auth.py elevate"
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Setup.tsx",
