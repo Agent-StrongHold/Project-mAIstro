@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 import aiosqlite
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.evidence import merge_applicability
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.learnings.wisdom import learning_from_wisdom
@@ -30,7 +31,7 @@ from maistro.types.memory import (
 @pytest.mark.ac("SPEC-100126-5445/AC-6")
 async def test_rewording_keeps_applicability_and_evidence_union() -> None:
     """Dedup replaces the text; the contexts and evidence underneath union."""
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     first = Learning(
         trigger_keys=["deploy"],
         learning="snapshot first",
@@ -91,7 +92,7 @@ async def test_merge_applicability_keeps_measured_over_reported_prior() -> None:
 @pytest.mark.ac("SPEC-100126-5445/AC-2")
 async def test_epistemic_type_breaks_keyword_ties_in_retrieval() -> None:
     """Equal keyword hits: the tested claim outranks the counterfactual one."""
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     tested = Learning(
         trigger_keys=["deploy"],
         learning="tested path",
@@ -117,7 +118,7 @@ async def test_epistemic_type_breaks_keyword_ties_in_retrieval() -> None:
 @pytest.mark.ac("SPEC-100126-5445/AC-2")
 async def test_epistemic_bonus_never_overrides_relevance() -> None:
     """A one-hit match beats a max-bonus zero-hit miss: bonuses stay < 1.0."""
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     relevant = Learning(trigger_keys=["deploy"], learning="relevant", tool_name="a")
     exotic = Learning(
         trigger_keys=["other"],
@@ -183,7 +184,7 @@ class TestSqliteEpistemicRoundTrip:
     @pytest.fixture
     async def store(self) -> AsyncIterator[SqliteLearningStore]:
         conn = await aiosqlite.connect(":memory:")
-        s = SqliteLearningStore(conn)
+        s = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await s.ensure_schema()
         yield s
         await conn.close()
@@ -303,7 +304,7 @@ class TestSqliteEpistemicRoundTrip:
         with no applicability recorded — the state they implicitly had, never
         a fabricated measurement or validation claim."""
         conn = await aiosqlite.connect(":memory:")
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await conn.execute(
             "CREATE TABLE learnings ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL DEFAULT 'general',"

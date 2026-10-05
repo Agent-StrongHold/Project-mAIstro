@@ -12,6 +12,9 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import (
+    MemoryExposureMode,
+)
 from maistro.memory.learnings.lifecycle import InvalidStageTransition
 from maistro.persistence.pg_learnings import PgLearningStore
 from maistro.types.memory import Learning, LearningStage
@@ -124,7 +127,9 @@ def conn() -> TransactionedFakeConnection:
 
 @pytest.fixture
 def store(conn: TransactionedFakeConnection) -> PgLearningStore:
-    return PgLearningStore(FakePool(conn))  # type: ignore[arg-type]
+    # Stage semantics are under test here, not the ADR-057 fail-closed matrix,
+    # so declare the exposure mode the gate requires for mutations.
+    return PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.AGENT_MANAGED)  # type: ignore[arg-type]
 
 
 def make_learning(**overrides: Any) -> Learning:

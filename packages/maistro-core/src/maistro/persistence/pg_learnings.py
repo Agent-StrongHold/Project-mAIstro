@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.learnings.evidence import (
     DEFAULT_MIN_PROMOTION_CONFIDENCE,
     merge_applicability,
@@ -155,10 +156,18 @@ def similarity_query(
 
 
 class PgLearningStore:
-    """PostgreSQL-backed learning store."""
+    """PostgreSQL-backed learning store.
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    Write authority (ADR-057): constructed without an ``exposure_mode`` the
+    store refuses every write and promotion with ``MemoryUndeclaredModeError``;
+    with ``SYSTEM_MANAGED``, agent-actor writes and promotions raise
+    ``MemoryWriteDenied``. The gate is the first statement of each mutating
+    method, so a refusal executes no SQL and leaves no partial state.
+    """
+
+    def __init__(self, pool: asyncpg.Pool, exposure_mode: MemoryExposureMode | None = None) -> None:
         self._pool = pool
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Add the `org_id` column and its index if they are missing.
@@ -229,7 +238,7 @@ class PgLearningStore:
                 "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         Resolved before the dedup read, not after: the deduplicating branch
@@ -238,7 +247,11 @@ class PgLearningStore:
         record (not just the insert) carries it: a learning that relies on the
         ambient `bind_execution_context` for its ids must still contribute the
         current Run to the surviving row's evidence when it dedupes.
+
+        The write-authority gate precedes even the provenance read (ADR-057): a
+        denied agent write executes no SQL.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
@@ -657,6 +670,7 @@ class PgLearningStore:
         org_id: str = "",
         *,
         min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
         """Promote learnings at threshold that also carry validation evidence.
 
@@ -664,7 +678,12 @@ class PgLearningStore:
         SQL predicate — one rule for all three backends. A learning missing
         source Run/evaluation ids or measured confidence stays `active`
         however often it is hit (M4-B3).
+
+        A promotion is also the ADR-057 ``promote`` authority: under
+        ``SYSTEM_MANAGED`` it is admin-only, so an agent-actor call is denied
+        before the UPDATE runs (SPEC-062126-6a31, open question 5).
         """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM learnings "
@@ -750,6 +769,7 @@ class PgLearningStore:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         """Move a learning one rung up the ladder, durably and auditably.
 
@@ -759,7 +779,15 @@ class PgLearningStore:
         between them can produce neither a moved row without a record nor a
         record without a moved row — that is what makes the transition
         durable (ADR-103).
+
+        ADR-057: the gate is the first statement, before the transaction —
+        a denied or undeclared call opens no transaction and writes no row.
+        `authority` is the ADR-057 principal (default agent), distinct from
+        the ADR-103 attribution string in `actor`.
         """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT * FROM learnings WHERE id = $1 AND org_id = $2",

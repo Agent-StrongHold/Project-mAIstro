@@ -20,6 +20,7 @@ from maistro.memory.learnings.evidence import (
     outcome_confidence,
     promotion_blockers,
 )
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.extractor import RCAExtractor
 from maistro.memory.learnings.promoter import LearningPromoter
 from maistro.memory.learnings.store import InMemoryLearningStore
@@ -130,7 +131,7 @@ class TestDistillationIsNotEvidence:
         # M4-B3's INFERRED, named for its RCA source.
         assert learning.epistemic_type == EpistemicType.INFERENTIAL
 
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(learning)
         for _ in range(10):
             await store.mark_used([learning.id])
@@ -151,7 +152,7 @@ class TestDistillationIsNotEvidence:
         )
         assert learning is not None
         learning.run_id = "run-7"
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(learning)
         await store.mark_used([learning.id])
         await store.mark_outcome([learning.id], success=True)
@@ -163,7 +164,7 @@ class TestDistillationIsNotEvidence:
 class TestStoreGate:
     @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_hits_alone_do_not_promote(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         bare = _evidenced(run_id="", confidence=None)
         await store.store(bare)
         for _ in range(6):
@@ -173,7 +174,7 @@ class TestStoreGate:
 
     @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_min_confidence_flows_through(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         learning = _evidenced(confidence=0.7)
         await store.store(learning)
         assert await store.check_auto_promotions(threshold=5, min_confidence=0.8) == []
@@ -183,7 +184,7 @@ class TestStoreGate:
         """With an approval gate, unevidenced candidates never reach the queue."""
         from maistro.memory.learnings.approval import LearningApprovalGate
 
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         bare = _evidenced(run_id="", confidence=None)
         backed = _evidenced(trigger_keys=["rollback"], learning="rollback first")
         await store.store(bare)

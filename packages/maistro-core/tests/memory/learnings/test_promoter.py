@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.approval import LearningApprovalGate
 from maistro.memory.learnings.promoter import LearningPromoter
 from maistro.memory.learnings.store import InMemoryLearningStore
@@ -36,7 +37,7 @@ class _RaisingForge:
 
 
 async def test_check_and_promote_without_gate_auto_promotes() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     learning = Learning(
         trigger_keys=["deploy"],
         learning="snapshot first",
@@ -53,7 +54,7 @@ async def test_check_and_promote_without_gate_auto_promotes() -> None:
 
 
 async def test_auto_promote_skips_skill_mutation_when_no_tool_name() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.store(Learning(trigger_keys=["x"], learning="no tool here", hit_count=10))
     forge = _StubForge({"status": "mutated"})
 
@@ -64,7 +65,7 @@ async def test_auto_promote_skips_skill_mutation_when_no_tool_name() -> None:
 
 
 async def test_auto_promote_skips_skill_mutation_when_no_forge_configured() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.store(
         Learning(
             trigger_keys=["x"],
@@ -81,7 +82,7 @@ async def test_auto_promote_skips_skill_mutation_when_no_forge_configured() -> N
 
 
 async def test_try_mutate_skill_records_mutation_on_success() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.store(
         Learning(
             trigger_keys=["x"],
@@ -93,7 +94,7 @@ async def test_try_mutate_skill_records_mutation_on_success() -> None:
         )
     )
     forge = _StubForge({"status": "mutated", "old_hash": "aaa", "new_hash": "bbb"})
-    mutation_store = InMemorySkillMutationStore()
+    mutation_store = InMemorySkillMutationStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
     promoter = LearningPromoter(
         store, threshold=5, skill_forge=forge, mutation_store=mutation_store
@@ -109,7 +110,7 @@ async def test_try_mutate_skill_records_mutation_on_success() -> None:
 
 
 async def test_try_mutate_skill_no_record_when_mutation_store_absent() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.store(
         Learning(
             trigger_keys=["x"],
@@ -130,7 +131,7 @@ async def test_try_mutate_skill_no_record_when_mutation_store_absent() -> None:
 
 
 async def test_try_mutate_skill_logs_warning_on_error_status() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.store(
         Learning(
             trigger_keys=["x"],
@@ -151,7 +152,7 @@ async def test_try_mutate_skill_logs_warning_on_error_status() -> None:
 
 
 async def test_try_mutate_skill_swallows_exception_from_forge() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.store(
         Learning(
             trigger_keys=["x"],
@@ -169,7 +170,7 @@ async def test_try_mutate_skill_swallows_exception_from_forge() -> None:
 
 
 async def test_gate_approved_promotion_triggers_skill_mutation() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     learning = Learning(
         trigger_keys=["x"],
         learning="has tool",
@@ -193,7 +194,7 @@ async def test_gate_approved_promotion_triggers_skill_mutation() -> None:
 
 
 async def test_try_mutate_skill_noop_when_no_forge_called_directly() -> None:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     promoter = LearningPromoter(store, threshold=5)
     learning = Learning(trigger_keys=["x"], learning="x", tool_name="search")
     await promoter._try_mutate_skill(learning)

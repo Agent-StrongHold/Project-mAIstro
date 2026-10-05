@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.learnings.evidence import (
     DEFAULT_MIN_PROMOTION_CONFIDENCE,
     merge_applicability,
@@ -204,10 +205,18 @@ async def _add_missing_columns(
 
 
 class SqliteLearningStore:
-    """SQLite-backed learning store implementing the same protocol as PgLearningStore."""
+    """SQLite-backed learning store implementing the same protocol as PgLearningStore.
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    Same ADR-057 write-authority gate as the PostgreSQL twin: no declared mode
+    refuses every mutation; ``SYSTEM_MANAGED`` denies agent-actor writes and
+    promotions before any SQL runs.
+    """
+
+    def __init__(
+        self, conn: aiosqlite.Connection, exposure_mode: MemoryExposureMode | None = None
+    ) -> None:
         self._conn = conn
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Create the learnings table, and upgrade one created before its columns.
@@ -240,15 +249,17 @@ class SqliteLearningStore:
                 "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         Resolved before the dedup probe for the same reason as the PostgreSQL
         original: the deduplicating branch returns early (#709). The probe
         receives the resolved record so a learning relying on the ambient
         `bind_execution_context` still contributes its Run to the surviving
-        row's evidence when it dedupes.
+        row's evidence when it dedupes. The write-authority gate precedes
+        both (ADR-057): a denial executes no SQL.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
@@ -549,6 +560,7 @@ class SqliteLearningStore:
         org_id: str = "",
         *,
         min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
         """Promote learnings at threshold that also carry validation evidence.
 
@@ -556,7 +568,11 @@ class SqliteLearningStore:
         rather than a second SQL predicate: the rule lives in one place, and a
         learning missing evidence stays `active` however often it is hit
         (M4-B3).
+
+        The ADR-057 ``promote`` authority: agent-actor promotions are denied
+        under ``SYSTEM_MANAGED`` before the UPDATE runs.
         """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         cursor = await self._conn.execute(
             "SELECT * FROM learnings WHERE status = 'active' AND hit_count >= ? AND org_id = ?",
             (threshold, org_id),
@@ -627,6 +643,7 @@ class SqliteLearningStore:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         """Move a learning one rung up the ladder, durably and auditably.
 
@@ -636,7 +653,15 @@ class SqliteLearningStore:
         crash between them can produce neither a moved row without a record
         nor a record without a moved row. Both writes commit together or not
         at all — that is what makes the transition *durable* (ADR-103).
+
+        ADR-057: the gate is the first statement — a denied or undeclared
+        call touches neither the row nor the ledger. `authority` is the
+        ADR-057 principal (default agent), distinct from the ADR-103
+        attribution string in `actor`.
         """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
         row = await self._scoped_row(learning_id, org_id=org_id)
         current = LearningStage(row.get("stage") or "memory")
         candidate = _row_to_learning(row)

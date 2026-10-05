@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import Actor
 from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
 from maistro.memory.learnings.lifecycle import StageTransition
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS
@@ -120,6 +121,7 @@ class _Store:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         self._record(
             "advance_stage",
@@ -128,6 +130,7 @@ class _Store:
             actor=actor,
             reason=reason,
             org_id=org_id,
+            authority=authority,
         )
         return _learning(14)
 
@@ -241,9 +244,10 @@ async def test_mark_anti_pattern_forwards_id_floor_and_org(wrapped) -> None:
 
 
 async def test_advance_stage_forwards_the_whole_ladder_call(wrapped) -> None:
-    """The ladder call is keyword-only downstream; dropping one of the five
-    arguments here would silently move the wrong rung or lose the actor the
-    audit ledger exists to record."""
+    """The ladder call is keyword-only downstream; dropping one of the six
+    arguments here would silently move the wrong rung, lose the actor the
+    audit ledger exists to record, or flatten the ADR-057 principal to the
+    default instead of the caller's authority (#390)."""
     hybrid, store = wrapped
 
     advanced = await hybrid.advance_stage(
@@ -252,6 +256,7 @@ async def test_advance_stage_forwards_the_whole_ladder_call(wrapped) -> None:
         actor="gauntlet-7",
         reason="passed",
         org_id="org-1",
+        authority=Actor.SYSTEM,
     )
 
     assert store.calls == [
@@ -263,6 +268,7 @@ async def test_advance_stage_forwards_the_whole_ladder_call(wrapped) -> None:
                 "actor": "gauntlet-7",
                 "reason": "passed",
                 "org_id": "org-1",
+                "authority": Actor.SYSTEM,
             },
         )
     ]

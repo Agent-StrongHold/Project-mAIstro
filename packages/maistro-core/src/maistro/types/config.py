@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from maistro.memory.exposure import MemoryExposureMode
+
 
 class RoutingConfig(BaseModel):
     """Model routing parameters."""
@@ -49,6 +51,24 @@ class LearningsConfig(BaseModel):
     rca_enabled: bool = True
     rca_model: str = ""
     promotion_threshold: int = 5
+
+
+class MemoryConfig(BaseModel):
+    """Deployment-level memory posture (ADR-057 / SPEC-062126-6a31).
+
+    ``exposure_mode`` is the declaration the write-authority gate requires: the
+    container passes it to every memory store it builds, and a store that
+    receives none refuses to mutate at all (the store-level default is ``None``
+    — fail-closed — so bypassing this config never silently inherits a mode).
+
+    The config-level default is ``AGENT_MANAGED``: that is the engine's existing
+    posture, declared here explicitly rather than inherited silently — the same
+    move SPEC-062126-6a31 made for maistro-turing's recipes. A curated-context
+    deployment sets ``system_managed`` and the agent loop loses all memory
+    write and promotion authority at the store boundary.
+    """
+
+    exposure_mode: MemoryExposureMode = MemoryExposureMode.AGENT_MANAGED
 
 
 class SecurityConfig(BaseModel):
@@ -190,6 +210,7 @@ class AgentConfig(BaseModel):
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     sessions: SessionsConfig = Field(default_factory=SessionsConfig)
     learnings: LearningsConfig = Field(default_factory=LearningsConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     cors: CORSConfig = Field(default_factory=CORSConfig)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
