@@ -76,16 +76,75 @@ was re-run at the merged head:
   `check-execution-lifecycles.py`, `check-model-egress.py`,
   `check-doc-links.py` -> all exit 0.
 - `check-reachability.py` -> exit 1, reporting exactly the newly-unreachable
-  `maistro.tasks.admission_codec` predicted below. Unchanged by design: this
-  leaf makes no baseline edit, so the gate stays honestly red until the C
-  leaf/integration round wires the consumer and reconciles the ledger.
+  `maistro.tasks.admission_codec` predicted below. Unchanged by design at that
+  head: this leaf made no baseline edit, so the gate stayed honestly red until
+  the codec leaf itself reconciled the ledger (next section).
 
-## Reachability expectation (integration head)
+## CI-repair round (L1893, branch head after 0d663a48e)
 
-`maistro.tasks.admission_codec` is production code with no runtime consumer
-until the C leaf lands, and this leaf deliberately makes **no**
-baseline/grant/gate edits: at the integration head the reachability gate is
-expected to report the new module (and to require pruning
-`maistro.runs.admission_identity`, which this codec genuinely imports). That
-reconciliation belongs to the integration/disposition round per the issue's
-common-acceptance text, not to this leaf.
+CI at `0d663a48e` failed four checks with one shared root cause and one
+structural residual, both now measured locally:
+
+- **Shared root cause (fixed here):** `maistro.tasks.admission_codec` was
+  newly unreachable and absent from the candidate ledger. That single fact
+  red `check-reachability.py`, the three root-suite tests that pin the
+  committed baseline to the tree
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries` and
+  `::test_the_baseline_is_exactly_the_unreachable_set` — i.e. the `test` job),
+  the Quality gate's reachability/disposition steps, and the Coverage gate's
+  combine step (which re-runs the root suite as the `scripts` producer and
+  aborts on its failure). The repair banks the module in
+  `quality/reachability-baseline.json` (unreachable, `_generated_from`
+  refreshed to the measured 1266) and extends the existing CONNECT group
+  `runs-root-admission-contracts` in `quality/reachability-dispositions.json`
+  to cover it, naming the C leaf's consumer as the reaching root; the
+  convergence matrix's `Task queue and runner` row moves `none` -> `few` to
+  match the recomputed 1/16 share (same repair as #1851's matrix sync). This
+  is the ledger describing the tree, not a gate change: the module is
+  recorded as built-but-never-wired with an owner and a named future
+  consumer, and the entry leaves the baseline when the C leaf lands.
+- **Structural residual (recorded, not fixable in-branch):**
+  `scripts/check-ratchet-provenance.py` (the exact-debt-ledger wrapper) still
+  fails: both `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_codec` are NEW unreachable modules and NEW
+  dispositions relative to the merge base `8a4bc239f`, and
+  `ratchet_provenance.load_authorizations` reads
+  `quality/ratchet-authorizations.json` **from the merge base**, so a
+  candidate-side grant is inert by construction ("banking is not
+  authorizing"; the two-merge rule). The only in-branch "fixes" — wiring the
+  consumer (forbidden: the C leaf owns it and this leaf forbids live
+  `_assess` changes), an `__init__` re-export (the issue itself rules
+  package exports out as runtime reachability), or an
+  `_EXCLUDED_PACKAGE_PYTHON` entry (gate modification) — are all dishonest or
+  out of scope. Resolution requires the campaign to land the reachability
+  authorizations on the integration base first, then re-evaluate this
+  branch; until then the exact-debt-ledger red is the truthful state.
+
+Re-run at the repaired head (all locally executed):
+
+- `uv run python scripts/check-reachability.py` -> exit 0, 1266 production
+  modules, 174 unreachable, 0 newly unreachable.
+- `uv run python scripts/check-reachability-dispositions.py` -> exit 0, 50
+  groups give all 174 modules a disposition (150 CONNECT, 22 LIBRARY,
+  2 RETIRE).
+- `uv run python scripts/check-convergence-matrix.py` -> exit 0, 52
+  subsystems classify all 1266 modules; 174 unreachable attributed.
+- `uv run pytest tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py -q` -> 38 passed (the three
+  previously failing tests included).
+- `uv run pytest tests/test_m1_542_policy_coverage.py
+  tests/test_m1_convergence_freeze.py tests/test_check_citation_status.py
+  tests/test_check_reachability_dispositions.py -q` -> 301 passed.
+- `scripts/check-ratchet-provenance.py` -> exit 1, residual exactly the two
+  unauthorized NEW unreachable modules and two NEW dispositions above; every
+  other ratchet in the wrapper (adr-status-language, citation-status,
+  promotion-surface, shell-execution, contract-markers, enumerations,
+  lifecycle) reports no candidate-approved expansion.
+- Diff coverage (core producer, `scripts/check-diff-coverage.py` with the
+  `--source=packages/maistro-core/src/maistro` producer XML): both new
+  modules clear the 90% line / 80% branch floors per file
+  (`admission_identity.py` 98%, `admission_codec.py` 92%);
+  `_vulture_whitelist.py` sits outside every measured root and is named
+  unmeasured, per the gate's own output.

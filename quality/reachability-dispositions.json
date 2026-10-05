@@ -609,10 +609,11 @@
       "id": "runs-root-admission-contracts",
       "subsystem": "Run / NodeRun / Attempt lifecycle",
       "disposition": "CONNECT",
-      "rationale": "#1851 ships the immutable root-admission identity contracts (admission generation, separately fenced lease owner, canonical request/receipt/provenance snapshots, explicit claim/mutation results) as an inactive contract leaf of the #1845 integration: its scope forbids any production import or RunStore-protocol change, so nothing reaches the module yet and it is expected to read as built-but-never-wired until the parent integration lands its consumer. The contracts give the future admission backend typed identity facts without importing task models into RunStore; activation is wiring, not redesign, and this entry is expected to leave the baseline when the #1845 admission backend lands.",
-      "root": "the #1845 parent integration's admission backend — the RunStore-side admission path and the tasks/idempotency assessor that will consume maistro.runs.admission_identity",
+      "rationale": "#1851 ships the immutable root-admission identity contracts (admission generation, separately fenced lease owner, canonical request/receipt/provenance snapshots, explicit claim/mutation results) as an inactive contract leaf of the #1845 integration: its scope forbids any production import or RunStore-protocol change, so nothing reaches the module yet and it is expected to read as built-but-never-wired until the parent integration lands its consumer. #1893 (B2) adds the second half of the same inactive stack: maistro.tasks.admission_codec decodes forward-schema admission rows into those exact immutable DTOs or typed fail-closed errors, with no SQL mutation, HTTP mapping, queue change or live _assess change of its own — the decode order (valid header, inclusive expiry, fingerprint mismatch, full snapshot/binding) is the C leaf's to drive. The contracts give the future admission backend typed identity facts without importing task models into RunStore; activation is wiring, not redesign, and this entry is expected to leave the baseline when the #1845 admission backend lands.",
+      "root": "the #1845 parent integration's admission backend — the RunStore-side admission path and the tasks/idempotency assessor that will consume maistro.runs.admission_identity and maistro.tasks.admission_codec",
       "modules": [
-        "maistro.runs.admission_identity"
+        "maistro.runs.admission_identity",
+        "maistro.tasks.admission_codec"
       ]
     }
   ]
