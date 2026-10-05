@@ -110,3 +110,23 @@ module (nine trusted-base
 Vulture identities and `maistro.runs.admission_identity`, respectively), which
 cannot be repaired in this leaf without violating its no-production-consumer
 constraint.
+
+## CI-repair validation
+
+At CI-repair head `ee9481aec1520dea19427a2fe3f9d40483e4a4e4`, the focused
+DTO suite passed 76 cases, the Runs suite passed 1,199 tests (247 skipped),
+and module Ruff check, format check, and mypy passed. The core inventory
+remained 13,727 node IDs, preserving this suite's `+76` delta.
+
+The exact Vulture command reports nine declarative DTO identities as new
+against trusted base `658a8f78c180`; all nine are already the reviewed entries
+in the candidate `quality/vulture-baseline.json`, as permitted for this
+CI-repair lane. The trusted-base two-merge rule therefore still rejects them;
+a candidate ledger cannot authorize itself. `check-reachability.py` reports
+only the deliberately unwired `maistro.runs.admission_identity`, while
+`check-reachability-dispositions.py` and `check-promotion-surface.py` pass.
+`check-ratchet-provenance.py` fails only through that unauthorized unreachable
+module. No production import, reachability ledger/disposition, suppression, or
+quality waiver was added because each is prohibited by this staged leaf's
+scope; parent integration must provide the real consumer before it can pass
+integration-head quality.
