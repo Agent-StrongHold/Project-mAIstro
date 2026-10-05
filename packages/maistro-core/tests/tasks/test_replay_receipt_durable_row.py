@@ -133,7 +133,6 @@ async def _admitted_then_dead(monkeypatch: pytest.MonkeyPatch) -> _Replica:
     scope = admission_scope_key(
         principal="alice",
         workspace_id="w1",
-        project_id=project.project_id,
         action=TASK_SUBMIT_ACTION,
         key="key-1",
     )

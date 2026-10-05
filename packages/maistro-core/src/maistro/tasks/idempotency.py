@@ -116,7 +116,7 @@ task_idempotency_purge_failures_total = registry.counter(
 
 #: Domain separation for the scope digest. Versioned: a change to the scope
 #: tuple's meaning must not silently reinterpret claims recorded before it.
-IDEMPOTENCY_SCOPE_DOMAIN = "maistro-task-admission:v2"
+IDEMPOTENCY_SCOPE_DOMAIN = "maistro-task-admission:v1"
 
 #: The admission action every task submission claims under. Part of the scope
 #: so a future second admission action (chat, webhooks with their own keys)
@@ -246,26 +246,23 @@ def admission_scope_key(
     workspace_id: str,
     action: str,
     key: str,
-    project_id: str = "",
 ) -> str:
     """The storage key one submission claims under, and the collision answer.
 
     Every scope component is length-prefixed before the join, so the tuple ->
-    digest mapping is injective: no choice of principal, Workspace, Project,
-    action or key can produce another tuple's digest, which is what makes
-    cross-tenant collision structurally impossible rather than merely
-    unlikely. The principal inside the digest is also what keeps another
-    caller from *resolving* a claim it did not make — it computes a different
-    scope and finds nothing, and the Run behind someone else's claim is
-    reachable only through its owner-scoped read paths. ``project_id`` is
-    optional for callers that do not have a canonical Run binding yet; the
-    queue always supplies the effective Project when a Run admitter is wired.
+    digest mapping is injective: no choice of principal, Workspace, action or
+    key can produce another tuple's digest, which is what makes cross-tenant
+    collision structural rather than merely unlikely. The principal inside the
+    digest is also what keeps another caller from *resolving* a claim it did
+    not make — it computes a different scope and finds nothing, and the Run
+    behind someone else's claim is reachable only through its owner-scoped read
+    paths. This v1 tuple is a durable replay contract: a Run's Project is
+    provenance, not a new admission-scope component.
     """
     parts = (
         IDEMPOTENCY_SCOPE_DOMAIN,
         principal,
         workspace_id,
-        project_id,
         action,
         key,
     )

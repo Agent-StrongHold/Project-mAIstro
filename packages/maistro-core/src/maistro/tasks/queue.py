@@ -580,11 +580,10 @@ class TaskQueue:
         owner = user_id or request.user_id or ""
         fingerprint = request_fingerprint(request)
         textual = key if key is not None else f"{DERIVED_KEY_PREFIX}{fingerprint}"
-        effective_workspace, effective_project = await self._scope_binding(workspace_id)
+        effective_workspace, _ = await self._scope_binding(workspace_id)
         scope_key = admission_scope_key(
             principal=owner,
             workspace_id=effective_workspace,
-            project_id=effective_project,
             action=TASK_SUBMIT_ACTION,
             key=textual,
         )

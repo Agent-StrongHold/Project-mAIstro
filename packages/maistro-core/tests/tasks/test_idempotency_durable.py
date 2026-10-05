@@ -322,7 +322,6 @@ async def test_completion_write_fault_reconciles_the_committed_run_after_store_r
         scope = admission_scope_key(
             principal="alice",
             workspace_id="workspace",
-            project_id=project.project_id,
             action="tasks.submit",
             key="completion-fault",
         )

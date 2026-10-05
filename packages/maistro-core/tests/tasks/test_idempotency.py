@@ -74,6 +74,9 @@ def test_the_same_tuple_yields_one_scope() -> None:
         principal="u1", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k"
     )
     assert first == second
+    # The durable v1 scope contract intentionally excludes Project. Changing
+    # this digest would strand valid 24-hour retries on a second physical Run.
+    assert first == "b1fe4e8c41b544b076c0a72e7ad65cac3be3d3677ff3f56a4c88257c328f63f1"
 
 
 def test_a_key_cannot_cross_principals_workspaces_or_actions() -> None:
@@ -93,19 +96,6 @@ def test_a_key_cannot_cross_principals_workspaces_or_actions() -> None:
     )
     assert base != admission_scope_key(
         principal="u1", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k2"
-    )
-    assert admission_scope_key(
-        principal="u1",
-        workspace_id="w1",
-        project_id="p1",
-        action=TASK_SUBMIT_ACTION,
-        key="k",
-    ) != admission_scope_key(
-        principal="u1",
-        workspace_id="w1",
-        project_id="p2",
-        action=TASK_SUBMIT_ACTION,
-        key="k",
     )
 
 
@@ -739,7 +729,7 @@ async def test_an_explicit_retry_reconciles_to_the_first_run(scoped) -> None:
     assert run_ids == [first.run_id]
 
 
-async def test_same_key_in_distinct_projects_mints_distinct_runs(scoped) -> None:
+async def test_same_key_in_distinct_projects_replays_the_original_run(scoped) -> None:
     projects, runs, root, first_project = scoped
     second_project = await projects.create(
         workspace_id="w1", parent_project_id=root.project_id, name="Other Tasks"
@@ -761,12 +751,15 @@ async def test_same_key_in_distinct_projects_mints_distinct_runs(scoped) -> None
     first = await first_queue.submit(request, user_id="alice")
     second = await second_queue.submit(request, user_id="alice")
 
-    assert first.run_id is not None and second.run_id is not None
-    assert second.run_id != first.run_id
-    first_run = await runs.get_run(first.run_id)
-    second_run = await runs.get_run(second.run_id)
-    assert first_run is not None and first_run.project_id == first_project.project_id
-    assert second_run is not None and second_run.project_id == second_project.project_id
+    # Project is deliberately not part of the v1 scope contract. A retry
+    # reaching a different bound queue must preserve the original admission,
+    # rather than minting duplicate physical work under a new scope digest.
+    assert second.task_id == first.task_id
+    assert second.run_id == first.run_id
+    assert first.run_id is not None
+    original = await runs.get_run(first.run_id)
+    assert original is not None and original.project_id == first_project.project_id
+    assert await runs.list_by_status(RunStatus.QUEUED, project_id=second_project.project_id) == []
 
 
 async def test_a_derived_key_reconciles_a_byte_identical_retry(scoped) -> None:
@@ -1051,7 +1044,6 @@ async def test_a_failed_admission_releases_its_claim(scoped) -> None:
     scope = admission_scope_key(
         principal="alice",
         workspace_id="w1",
-        project_id="no-such-project",
         action=TASK_SUBMIT_ACTION,
         key="k",
     )
@@ -1332,7 +1324,6 @@ async def test_a_death_after_the_mint_resolves_to_the_existing_run(scoped, monke
         admission_scope_key(
             principal="alice",
             workspace_id="w1",
-            project_id=project.project_id,
             action=TASK_SUBMIT_ACTION,
             key="k",
         )
@@ -1360,7 +1351,6 @@ async def test_ambiguous_resolution_rechecks_a_claim_that_lost_a_race(scoped, mo
     scope = admission_scope_key(
         principal="alice",
         workspace_id="w1",
-        project_id=project.project_id,
         action=TASK_SUBMIT_ACTION,
         key="k",
     )
@@ -1441,7 +1431,6 @@ async def test_a_crash_between_mint_and_queue_is_resumed_not_stranded(scoped) ->
     scope = admission_scope_key(
         principal="alice",
         workspace_id="w1",
-        project_id=project.project_id,
         action=TASK_SUBMIT_ACTION,
         key="k",
     )
