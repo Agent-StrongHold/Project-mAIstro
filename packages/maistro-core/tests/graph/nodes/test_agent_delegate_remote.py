@@ -12,11 +12,17 @@ from unittest.mock import AsyncMock
 
 from maistro.a2a.delegate import A2ADelegator
 from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
+from maistro.graph import Graph, Node
 from maistro.graph.nodes import NodeContext, get_node, list_kinds
 from maistro.graph.nodes.agent_delegate_remote import (
     AgentDelegateRemoteNode,
     DelegationNotConfiguredError,
 )
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+
+from ._delegation_governance import delegation_effects, guest_peers_with_hub
 
 
 def _ctx(**overrides: Any) -> NodeContext:
@@ -130,23 +136,75 @@ async def test_in_process_resume_with_timed_out_flag() -> None:
 # --- cross-instance delegation (GuestPeerManager) -------------------------
 
 
+async def _external_spine(
+    *,
+    delegate_result: DelegationResult | None = None,
+    register_hub: bool = True,
+) -> tuple[AgentDelegateRemoteNode, dict[str, Any]]:
+    """A fully governed external-dispatch fixture (issue #959 wiring).
+
+    The external path requires a canonical parent Run, an authorized
+    `agent_delegation` Binding and a registered peer; the transport is mocked
+    at the `GuestPeerManager.delegate` seam so tests observe the call.
+    """
+    project_store = InMemoryProjectScopeStore()
+    root = await project_store.create_root("workspace-1")
+    project = await project_store.create(
+        workspace_id="workspace-1", parent_project_id=root.project_id, name="Project"
+    )
+    store = InMemoryRunStore(project_store=project_store)
+    parent = await store.create_run(
+        Graph(
+            workspace_id="workspace-1",
+            project_id=project.project_id,
+            name="Delegating pipeline",
+            nodes=[Node(node_id="delegate-2", node_type="agent.delegate_remote")],
+        ),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    node_run = await store.create_node_run(parent.run_id, node_id="delegate-2")
+    effects = await delegation_effects(workspace_id="workspace-1", project_id=project.project_id)
+    peers = guest_peers_with_hub() if register_hub else GuestPeerManager()
+    if delegate_result is not None:
+        peers.delegate = AsyncMock(return_value=delegate_result)  # type: ignore[method-assign]
+    node = AgentDelegateRemoteNode(
+        guest_peers=peers,
+        run_store=store,
+        effect_context=effects,
+    )
+    ctx = _ctx(
+        node_id="delegate-2",
+        run_id=parent.run_id,
+        node_run_id=node_run.node_run_id,
+        attempt_id="attempt-1",
+        workspace_id="workspace-1",
+        project_id=project.project_id,
+    )
+    inputs = {
+        "from_agent": "planner",
+        "task": "x",
+        "peer_name": "hub",
+        "binding_id": "binding-hub",
+    }
+    return node, {"inputs": inputs, "ctx": ctx, "peers": peers, "store": store}
+
+
 async def test_cross_instance_first_reach_pauses_with_task_id() -> None:
-    guest_peers = GuestPeerManager()
-    guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
-        return_value=DelegationResult(task_id="remote-1", peer_name="hub", status="submitted")
+    node, fixture = await _external_spine(
+        delegate_result=DelegationResult(task_id="remote-1", peer_name="hub", status="submitted")
     )
-    node = AgentDelegateRemoteNode(guest_peers=guest_peers)
-    result = await node.run(
-        {"from_agent": "planner", "task": "x", "peer_name": "hub"},
-        _ctx(node_id="delegate-2"),
-    )
+    result = await node.run(fixture["inputs"], fixture["ctx"])
     assert result.status == "paused"
     assert result.metadata["paused_reason"] == "awaiting_remote_delegation"
     assert result.metadata["mode"] == "guest_peer"
     assert result.metadata["peer_name"] == "hub"
     assert result.metadata["task_id"] == "remote-1"
-    guest_peers.delegate.assert_called_once_with(
-        "hub", "planner", [{"role": "user", "content": "x"}]
+    fixture["peers"].delegate.assert_called_once_with(
+        "hub",
+        "planner",
+        [{"role": "user", "content": "x"}],
+        idempotency_key=result.metadata["replay_effect_key"],
+        context=fixture["peers"].delegate.await_args.kwargs["context"],
     )
 
 
@@ -165,29 +223,28 @@ async def test_cross_instance_no_guest_peers_configured_is_a_refusal_not_a_resul
 
 
 async def test_cross_instance_peer_rejected_returns_without_pausing() -> None:
-    guest_peers = GuestPeerManager()  # "hub" never registered
-    node = AgentDelegateRemoteNode(guest_peers=guest_peers)
-    result = await node.run(
-        {"from_agent": "planner", "task": "x", "peer_name": "hub"}, _ctx(node_id="delegate-2")
-    )
+    node, fixture = await _external_spine(register_hub=False)
+    result = await node.run(fixture["inputs"], fixture["ctx"])
     assert result.status == "completed"
+    assert result.output is not None
     assert result.output.status == "rejected"
     assert result.output.error == "peer not found"
 
 
-async def test_cross_instance_peer_delegation_failed_returns_without_pausing() -> None:
-    guest_peers = GuestPeerManager()
-    guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
-        return_value=DelegationResult(
+async def test_cross_instance_peer_delegation_failed_parks_for_reconciliation() -> None:
+    """A transport failure leaves acceptance unknown: the reserved child stays
+    and the node parks on reconciliation, never completing an outcome."""
+    node, fixture = await _external_spine(
+        delegate_result=DelegationResult(
             task_id="", peer_name="hub", status="failed", error="connection refused"
         )
     )
-    node = AgentDelegateRemoteNode(guest_peers=guest_peers)
-    result = await node.run(
-        {"from_agent": "planner", "task": "x", "peer_name": "hub"}, _ctx(node_id="delegate-2")
-    )
-    assert result.output.status == "failed"
-    assert result.output.error == "connection refused"
+    result = await node.run(fixture["inputs"], fixture["ctx"])
+    assert result.status == "paused"
+    assert result.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
+    child = await fixture["store"].get_run(result.metadata["child_run_id"])
+    assert child is not None
+    assert "a2a_task_id" not in child.provenance
 
 
 async def test_cross_instance_resume_with_completed_result() -> None:

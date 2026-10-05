@@ -15,6 +15,16 @@ Two delegation paths, matching the two delegation models already in
     `GuestPeerManager`'s registered `PeerTrust`s (`a2a/guest_peers.py`), and
     dispatched over HTTP to the remote Conductor/session.
 
+The cross-instance path is an *external Agent call* and is governed as such
+(issue #959, M9-D2): admission binds it to the canonical caller, the
+Workspace/Project scope, the delegated Goal/Subgoal context and the
+dispatching Run/NodeRun/Attempt (:class:`DelegationContext`, recorded on the
+delegated child Run and carried on the request), attenuates the claimed
+capability scopes against the peer's declared ceiling, and crosses the
+canonical Binding -> Invocation seam as one `agent_delegation` Invocation
+beneath the dispatching Attempt. The remote peer's task id is a receipt;
+it never replaces canonical identity.
+
 Audit trail goes through the existing `AuditLogger` Protocol from
 `guest_peers.py` (used only on the cross-instance path, since that's the
 only path that already defines one) rather than a new one.
@@ -29,7 +39,26 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
 from pydantic import BaseModel, Field
 
 from maistro.a2a.delegate import A2ADelegator, DelegationMode
-from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
+from maistro.a2a.delegation_context import (
+    DelegationContext,
+    DelegationContextError,
+    DelegationScopeExceeded,
+    validate_goal_binding,
+)
+from maistro.a2a.guest_peers import GuestPeerManager, PeerTrust
+from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
+from maistro.capabilities.binding_store import BindingNotFound
+from maistro.capabilities.effect_context import CapabilityEffectContext
+from maistro.capabilities.governed_invocation import InvocationDenied
+from maistro.capabilities.invocation import (
+    CapabilityUnavailable,
+    Invocation,
+    InvocationStatus,
+    ReconciliationDisposition,
+    UnsafeEffectRetry,
+)
+from maistro.capabilities.types import Unavailable
+from maistro.graph.nodes.capability_effect import invoke_capability_effect
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -57,6 +86,14 @@ if TYPE_CHECKING:
     from maistro.runs.model import NodeRun, Run
     from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
+
+
+#: The canonical capability every external Agent delegation fulfills
+#: (ADR-081226-6b46: agent/A2A is a protocol family beneath
+#: Capability -> Provider -> Binding -> Invocation). A cross-instance
+#: dispatch is authorized by a Workspace/Project-scoped Binding of this
+#: capability and is recorded as one governed Invocation.
+AGENT_DELEGATION_CAPABILITY = "agent_delegation"
 
 
 class DelegationReconciliationExpired(RuntimeError):
@@ -98,6 +135,38 @@ DelegationStatus = Literal["completed", "failed", "rejected", "timed_out", "unce
 #: Statuses accepted from a remote responder. The response remains a receipt
 #: projection; the canonical child lifecycle is persisted through RunStore.
 _KNOWN_DELEGATION_STATUSES = frozenset({"completed", "failed", "rejected", "timed_out"})
+
+
+class _PeerAdmissionRefused(Exception):
+    """The external dispatch was refused before any child Run or transport."""
+
+
+class _PeerDelegationProvider:
+    """The registered peer, viewed as the delegation capability's provider.
+
+    Provider metadata only -- the trust tier is the operator-declared one on
+    :class:`PeerTrust`, and the credential never touches this object (the
+    transport reads it just in time for the one POST). It satisfies
+    :class:`ResolvedCapabilityProvider` so the governed Invocation can persist
+    the exact provider decision beside the effect.
+    """
+
+    def __init__(self, peer: PeerTrust) -> None:
+        self.peer = peer
+
+    @property
+    def name(self) -> str:
+        return self.peer.peer_name
+
+    @property
+    def slot(self) -> str:
+        return AGENT_DELEGATION_CAPABILITY
+
+    @property
+    def trust_tier(self) -> str:
+        return self.peer.trust_tier
+
+
 #: Node kind recorded for delegated work whose shape this instance does not
 #: know. Deliberately *not* `agent.delegate_remote`: a child snapshot naming
 #: this node describes the dispatch rather than the work, and replaying it
@@ -131,6 +200,27 @@ class DelegateRemoteIn(BaseModel):
     to_project_id: str | None = Field(
         default=None, description="Destination Project (None = the delegating Run's)"
     )
+    # External-delegation governance (issue #959): a cross-instance dispatch
+    # is a governed capability effect. The Binding is the Workspace/Project
+    # authorization for the external Agent call; naming an id grants nothing
+    # the Binding store does not resolve.
+    binding_id: str = Field(
+        default="",
+        description="Authorized agent_delegation Binding for a cross-instance dispatch",
+    )
+    # The Goal/Subgoal context this delegation advances. Absent stays absent;
+    # a bound Goal names its revision (canonical Goal identity carries one).
+    goal_id: str = Field(default="", description="Goal this delegation advances")
+    goal_revision: int | None = Field(
+        default=None, ge=1, description="Revision of the bound Goal (required with goal_id)"
+    )
+    subgoal_of: str = Field(default="", description="Parent Goal when the bound Goal is a subgoal")
+    # The capability scopes claimed for the delegatee. Attenuated against the
+    # peer's declared ceiling before dispatch; a claim beyond the ceiling is
+    # refused rather than silently narrowed.
+    delegated_scopes: tuple[str, ...] = Field(
+        default=(), description="Capability scopes delegated to the external Agent"
+    )
 
 
 class DelegateRemoteOut(BaseModel):
@@ -141,6 +231,9 @@ class DelegateRemoteOut(BaseModel):
     #: The canonical child Run. `task_id` stays a receipt of the A2A transport;
     #: this is the execution identity the resumed result correlates to.
     run_id: str = ""
+    #: Remote Agent provenance reported back with the answer, when the peer
+    #: provides it. Recorded beside the canonical identity, never instead of it.
+    remote_agent_version: str = ""
     result: str | None = None
     error: str | None = None
     timed_out: bool = False
@@ -206,6 +299,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         "a2a_delegator": "a2a_delegator",
         "guest_peers": "guest_peers",
         "run_store": "run_store",
+        "effect_context": "effect_context",
     }
     kind_category: ClassVar = "wait"
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
@@ -225,17 +319,26 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         a2a_delegator: A2ADelegator | None = None,
         guest_peers: GuestPeerManager | None = None,
         run_store: RunStore | None = None,
+        effect_context: CapabilityEffectContext | None = None,
     ) -> None:
-        """Wire in the delegator, the guest-peer manager and the Run store.
+        """Wire in the delegator, the guest-peer manager, the Run store and
+        the canonical effect authority.
 
         `run_store` is what turns delegated work into a canonical child Run
         rather than an `A2ATask` with its own competing lifecycle. Optional so
         the node stays constructible in tests that only exercise dispatch, but
         `build_node_resolver` supplies it in production.
+
+        `effect_context` is the governed Binding/Invocation authority the
+        cross-instance dispatch crosses (issue #959): the external Agent call
+        is one `agent_delegation` Invocation beneath the dispatching Attempt.
+        Without it, the cross-instance path is a wiring fault and refuses
+        rather than dispatching an unrecorded external call.
         """
         self._a2a_delegator = a2a_delegator
         self._guest_peers = guest_peers
         self._run_store = run_store
+        self._effects = effect_context
 
     async def _execute(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> DelegateRemoteOut:
         """Dispatch on first run, or return the resumed delegation result."""
@@ -275,11 +378,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         parent: Run | None,
         mode: str,
         target: str,
+        context: DelegationContext | None = None,
     ) -> str:
         """Reserve once; a concurrent replica adopts the unique-key winner."""
         try:
             return await self._create_child_run(
-                inputs, ctx, parent=parent, mode=mode, target=target
+                inputs, ctx, parent=parent, mode=mode, target=target, context=context
             )
         except Exception:
             existing = await self._existing_child(self._delegation_key(inputs, ctx))
@@ -352,6 +456,10 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             status=status,
             task_id=str(resumed.get("task_id") or ""),
             run_id=run_id,
+            # Remote Agent provenance (issue #959), when the answering peer
+            # reported it. Carried beside the canonical identity; an answer
+            # without it stays without it.
+            remote_agent_version=str(resumed.get("remote_agent_version") or ""),
             result=resumed.get("result"),
             error=error,
             timed_out=bool(resumed.get("timed_out", False)),
@@ -374,14 +482,25 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
 
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
+        child = await self._run_store.get_run(run_id)
         open_node_runs = await self._open_child_node_runs(run_id)
         if not open_node_runs:
             return
 
+        # The dispatch-time provenance (peer endpoint, canonical identity
+        # binding) is durable on the child; the settling Attempt's evidence
+        # cites it so the answer and its provenance travel together.
+        provenance = child.provenance if child is not None else {}
+        peer_provenance = {
+            key: provenance[key] for key in ("a2a_peer_url", "peer_name") if provenance.get(key)
+        }
+
         lifecycle = AttemptLifecycleReconciler(self._run_store)
         cancelled_node_runs: list[str] = []
         for node_run in open_node_runs:
-            if await self._record_node_run_attempt(node_run, out, lifecycle):
+            if await self._record_node_run_attempt(
+                node_run, out, lifecycle, peer_provenance=peer_provenance
+            ):
                 cancelled_node_runs.append(node_run.node_run_id)
 
         if cancelled_node_runs:
@@ -412,6 +531,8 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         node_run: NodeRun,
         out: DelegateRemoteOut,
         lifecycle: AttemptLifecycleReconciler,
+        *,
+        peer_provenance: dict[str, Any] | None = None,
     ) -> bool:
         """Write the response as one NodeRun's Attempt evidence.
 
@@ -445,15 +566,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             # still need their evidence recorded.
             return True
 
-        # The peer's response is a completed transport Attempt. The logical
-        # projection distinguishes a successful result from a remote
-        # failure while preserving the four-value DelegateRemoteOut contract.
-        # The receipt rides on this Attempt's evidence when the answer carries
         # one (ADR-082526-7f02: dispatch identity belongs to the Attempt); an
         # answer without a receipt records its absence instead of a placeholder.
-        evidence: dict[str, Any] = {"status": out.status, "result": out.result}
-        if out.task_id:
-            evidence["task_id"] = out.task_id
+        # The remote endpoint/version provenance rides beside the receipt: the
+        # answer cites where the work ran, so the evidence survives storage,
+        # replay, and later extension/Agent version changes (issue #959).
+        evidence = self._answer_evidence(out, peer_provenance)
         attempt = await self._run_store.transition_attempt(
             attempt.attempt_id,
             AttemptStatus.COMPLETED,
@@ -471,6 +589,22 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         await lifecycle.accept_outcome(accepted)
         return False
 
+    @staticmethod
+    def _answer_evidence(
+        out: DelegateRemoteOut,
+        peer_provenance: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """The settling Attempt's evidence: outcome, receipt, provenance."""
+        evidence: dict[str, Any] = {"status": out.status, "result": out.result}
+        if out.task_id:
+            evidence["task_id"] = out.task_id
+        if out.remote_agent_version:
+            evidence["remote_agent_version"] = out.remote_agent_version
+        for key, value in (peer_provenance or {}).items():
+            if value:
+                evidence[key] = value
+        return evidence
+
     async def _cancel_child(
         self, run_id: str, node_run_ids: list[str], *, error: str | None
     ) -> None:
@@ -481,7 +615,13 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         await self._run_store.transition_run(run_id, RunStatus.CANCELLED, error=error)
 
     async def _recover_cross_instance(
-        self, inputs: DelegateRemoteIn, key: str, child_id: str
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        *,
+        binding: Binding,
+        key: str,
+        child_id: str,
     ) -> DelegateRemoteOut:
         """Reconcile a claimed boundary without submitting a second request."""
         assert self._guest_peers is not None
@@ -493,6 +633,17 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return DelegateRemoteOut()
         reconciled = await self._guest_peers.reconcile(inputs.peer_name or "", key)
         if reconciled.status == "submitted" and reconciled.task_id:
+            # The peer's idempotent receipt query answered: settle the
+            # dispatch Invocation the first visit left unresolved, then attach
+            # the receipt it names. The Invocation evidence and the child Run
+            # converge on the same accepted fact.
+            await self._settle_dispatch_invocation(
+                ctx,
+                binding,
+                key,
+                task_id=reconciled.task_id,
+                peer_url=reconciled.peer_url,
+            )
             await self._attach_receipt(child_id, reconciled.task_id)
             self._pause(inputs, task_id=reconciled.task_id, mode="guest_peer", run_id=child_id)
             return DelegateRemoteOut()
@@ -500,6 +651,53 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             inputs,
             child_id,
             error=reconciled.error or "transport acceptance is uncertain; reconcile required",
+        )
+
+    async def _settle_dispatch_invocation(
+        self,
+        ctx: NodeContext,
+        binding: Binding,
+        key: str,
+        *,
+        task_id: str,
+        peer_url: str = "",
+    ) -> None:
+        """File recovery evidence on the dispatch Invocation, through the seam.
+
+        The row is found by its own effect key -- the delegation key the child
+        Run carries -- and settled APPLIED with the receipt as evidence. A row
+        from another process's private ledger is simply absent here; the
+        receipt attach remains the canonical recovery either way, so an
+        unavailable or absent row is not a failure of the recovery.
+        """
+        if self._effects is None:
+            return
+        latest = await self._effects.invocations.latest_effect(
+            binding=binding,
+            run_id=ctx.run_id,
+            node_run_id=ctx.node_run_id,
+            effect_key=key,
+            logical_effect=True,
+        )
+        if latest is None or latest.status in {
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+        }:
+            return
+        await self._effects.invocations.reconcile(
+            latest.invocation_id,
+            disposition=ReconciliationDisposition.APPLIED,
+            source="a2a-peer-reconcile",
+            actor="system:a2a",
+            reason="peer idempotent receipt query reported the delegation accepted",
+            evidence={"task_id": task_id, "peer_url": peer_url},
+            workspace_id=latest.workspace_id or binding.workspace_id,
+            project_id=latest.project_id or binding.project_id,
+            result={
+                "status": "submitted",
+                "task_id": task_id,
+                "peer_url": peer_url,
+            },
         )
 
     @staticmethod
@@ -572,21 +770,34 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     async def _dispatch_cross_instance(
         self, inputs: DelegateRemoteIn, ctx: NodeContext
     ) -> DelegateRemoteOut:
-        """Delegate to a trusted external peer via `GuestPeerManager`, then pause."""
-        if self._guest_peers is None:
-            msg = (
-                "agent.delegate_remote reached a cross-instance dispatch with no "
-                "guest_peers manager. This is a wiring fault in this instance, not "
-                "a refusal by the remote peer -- see build_node_resolver (#147)."
-            )
-            raise DelegationNotConfiguredError(msg)
+        """Delegate to a trusted external peer, then pause.
 
-        parent = await self._preflight_child_scope(inputs, ctx)
+        An external Agent call is a governed capability effect (issue #959,
+        ADR-081226-6b46): admission resolves the canonical identity binding,
+        attenuates the claimed scopes against the peer's declared ceiling, and
+        crosses the Binding -> Invocation seam before any bytes reach the
+        peer. The POST itself is one `agent_delegation` Invocation beneath the
+        dispatching Attempt, keyed by the same delegation key the child Run
+        and the transport share.
+        """
+        self._require_cross_instance_wiring()
+        try:
+            parent, peer, context, binding = await self._admit_external_dispatch(inputs, ctx)
+        except _PeerAdmissionRefused as refused:
+            # Refused before admission, so no child Run is filed and no
+            # transport was touched -- the same shape as a peer-side decline.
+            return DelegateRemoteOut(status="rejected", error=str(refused))
+
         key = self._delegation_key(inputs, ctx)
         child = await self._existing_child(key)
         if child is None:
             child_id = await self._reserve_child(
-                inputs, ctx, parent=parent, mode="guest_peer", target=inputs.peer_name or ""
+                inputs,
+                ctx,
+                parent=parent,
+                mode="guest_peer",
+                target=inputs.peer_name or "",
+                context=context,
             )
         else:
             child_id = child.run_id
@@ -594,91 +805,369 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 return DelegateRemoteOut()
             await self._ensure_child_evidence(child_id)
 
+        # A previous visit may have crossed the Invocation boundary and died
+        # before the pause was persisted. Its COMPLETED dispatch is the
+        # accepted effect: adopt its receipt instead of dispatching again.
+        replayed = await self._completed_dispatch(binding=binding, ctx=ctx, key=key)
+        if replayed is not None:
+            task_id = str((replayed.result or {}).get("task_id") or "")
+            if task_id:
+                await self._attach_receipt(child_id, task_id)
+                self._pause(inputs, task_id=task_id, mode="guest_peer", run_id=child_id)
+                return DelegateRemoteOut()  # unreachable
+
         claimed = await self._claim_transport_attempt(child_id)
         if not claimed:
             # Another replica may have crossed the boundary while this one was
             # reserving the same child. Reconcile; never POST a second time.
-            return await self._recover_cross_instance(inputs, key, child_id)
+            return await self._recover_cross_instance(
+                inputs, ctx, binding=binding, key=key, child_id=child_id
+            )
 
-        result = await self._submit_to_peer(inputs, key)
-        return await self._settle_peer_submission(inputs, child_id, result)
+        return await self._invoke_peer_dispatch(
+            inputs,
+            ctx,
+            binding=binding,
+            peer=peer,
+            context=context,
+            key=key,
+            child_id=child_id,
+        )
 
-    async def _settle_peer_submission(
-        self, inputs: DelegateRemoteIn, child_id: str, result: DelegationResult
+    def _require_cross_instance_wiring(self) -> None:
+        """Refuse the external path when this instance cannot govern it.
+
+        Both are wiring faults of this instance, not refusals by the remote
+        peer: an unwired manager cannot even name a target, and a missing
+        effect authority would mean dispatching an external Agent call no
+        Invocation records (issue #959). The node fails loudly instead.
+        """
+        if self._guest_peers is None:
+            raise DelegationNotConfiguredError(
+                "agent.delegate_remote reached a cross-instance dispatch with no "
+                "guest_peers manager. This is a wiring fault in this instance, not "
+                "a refusal by the remote peer -- see build_node_resolver (#147)."
+            )
+        if self._effects is None:
+            raise DelegationNotConfiguredError(
+                "agent.delegate_remote reached a cross-instance dispatch with no "
+                "effect_context. An external Agent call is a governed Invocation; "
+                "dispatching one without the canonical effect authority would "
+                "create an unrecorded external call -- see build_node_resolver."
+            )
+
+    async def _admit_external_dispatch(
+        self, inputs: DelegateRemoteIn, ctx: NodeContext
+    ) -> tuple[Run, PeerTrust, DelegationContext, Binding]:
+        """Resolve everything admission owes before any reservation or POST.
+
+        The Binding is the Workspace/Project authorization for the external
+        call; the peer's trust record supplies the authority ceiling the
+        claimed scopes are attenuated against. A peer this instance does not
+        trust, or a scope claim beyond the ceiling, refuses here -- before a
+        child Run exists, so a rejection never files an execution.
+        """
+        if not inputs.binding_id.strip():
+            raise BindingNotFound(
+                "agent.delegate_remote requires a pre-authorized binding_id "
+                "before an external Agent dispatch"
+            )
+        parent = await self._preflight_child_scope(inputs, ctx)
+        peer = self._guest_peers.get_peer(inputs.peer_name or "") if self._guest_peers else None
+        if peer is None:
+            raise _PeerAdmissionRefused("peer not found")
+        if not peer.active:
+            raise _PeerAdmissionRefused("peer inactive")
+        context = self._canonical_context(inputs, ctx, parent=parent, peer=peer)
+        assert self._effects is not None, "wiring checked before admission"
+        assert parent is not None, "_canonical_context refuses a parentless dispatch"
+        binding = await self._effects.bindings.resolve(
+            inputs.binding_id,
+            workspace_id=context.workspace_id,
+            project_id=context.project_id,
+            node_id=ctx.node_id,
+            capability=AGENT_DELEGATION_CAPABILITY,
+        )
+        return parent, peer, context, binding
+
+    def _canonical_context(
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        *,
+        parent: Run | None,
+        peer: PeerTrust,
+    ) -> DelegationContext:
+        """Bind the dispatch to the canonical caller, scope and execution.
+
+        The canonical caller is the parent Run's actor principal -- the same
+        identity the Run model already requires -- and the Workspace/Project
+        scope is the parent's, which `_preflight_child_scope` has already
+        settled. No external Agent call is admitted without both, so a
+        store-less construction (which cannot know them) is refused here
+        rather than dispatched with an invented identity.
+
+        The claimed scopes are attenuated against the peer's declared ceiling;
+        an excess claim is a policy refusal filed before any child Run exists.
+        """
+        if parent is None or not ctx.node_run_id:
+            raise DelegationContextError(
+                "an external Agent delegation requires the delegating Run's canonical "
+                "caller and scope; dispatch without a correlated parent NodeRun is refused"
+            )
+        try:
+            context = DelegationContext(
+                # The Run model already requires a non-empty actor principal;
+                # a context without one is refused here by the field itself.
+                caller_principal_id=str(parent.actor_principal_id or ""),
+                delegating_agent=inputs.from_agent.strip(),
+                workspace_id=parent.workspace_id,
+                project_id=parent.project_id,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                goal_id=inputs.goal_id.strip(),
+                goal_revision=inputs.goal_revision,
+                subgoal_of=inputs.subgoal_of.strip(),
+                delegated_scopes=tuple(inputs.delegated_scopes),
+                delegation_key=self._delegation_key(inputs, ctx),
+            )
+            validate_goal_binding(context)
+        except ValueError as exc:
+            raise DelegationContextError(
+                f"external Agent delegation lacks its canonical identity binding: {exc}"
+            ) from exc
+        try:
+            return context.narrowed(peer.allowed_scopes)
+        except DelegationScopeExceeded as exc:
+            # A scope claim beyond the peer's declared ceiling is a policy
+            # refusal the Graph may branch on, filed before any child Run
+            # exists and before any transport was touched.
+            raise _PeerAdmissionRefused(str(exc)) from exc
+
+    def _in_process_context(
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        *,
+        parent: Run | None,
+    ) -> DelegationContext | None:
+        """The identity binding for an in-process delegation, or None.
+
+        Same record as the external path minus the transport fields that do
+        not apply: no peer ceiling attenuates it (the delegator's own
+        allow-lists govern in-process targets) and no Attempt is claimed yet.
+        None keeps store-less test constructions working -- those have no
+        canonical caller to name, and they dispatch nothing external.
+        """
+        if parent is None or not ctx.node_run_id:
+            return None
+        try:
+            context = DelegationContext(
+                caller_principal_id=str(parent.actor_principal_id or ""),
+                delegating_agent=inputs.from_agent.strip(),
+                workspace_id=parent.workspace_id,
+                project_id=parent.project_id,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                goal_id=inputs.goal_id.strip(),
+                goal_revision=inputs.goal_revision,
+                subgoal_of=inputs.subgoal_of.strip(),
+                delegated_scopes=tuple(inputs.delegated_scopes),
+                delegation_key=self._delegation_key(inputs, ctx),
+            )
+            validate_goal_binding(context)
+        except ValueError:
+            # An in-process delegation with a malformed Goal binding still
+            # dispatches (the delegator's allow-lists govern it); the binding
+            # simply stays unrecorded rather than lying about the Goal.
+            return None
+        return context
+
+    async def _completed_dispatch(
+        self, *, binding: Binding, ctx: NodeContext, key: str
+    ) -> Invocation | None:
+        """A dispatch Invocation this Run already completed, or None.
+
+        A lease-loss retry derives the same delegation key, so the canonical
+        row the first visit recorded replays here instead of the transport
+        being asked a second time. Scoped to this Run, exactly as the effect
+        service scopes its own replays.
+        """
+        latest = await self._effects.invocations.latest_effect(  # type: ignore[union-attr]
+            binding=binding,
+            run_id=ctx.run_id,
+            node_run_id=ctx.node_run_id,
+            effect_key=key,
+            logical_effect=True,
+        )
+        if latest is None or latest.status is not InvocationStatus.COMPLETED:
+            return None
+        result = latest.result if isinstance(latest.result, dict) else {}
+        if not str(result.get("task_id") or ""):
+            return None
+        return latest
+
+    async def _invoke_peer_dispatch(
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        *,
+        binding: Binding,
+        peer: PeerTrust,
+        context: DelegationContext,
+        key: str,
+        child_id: str,
     ) -> DelegateRemoteOut:
-        """Turn one peer POST response into the node's pause or outcome."""
-        if result.status == "rejected":
+        """Cross the governed Invocation boundary, then settle the dispatch.
+
+        The executor performs the physical POST through `GuestPeerManager`;
+        everything around it -- policy, admission, effect identity, the
+        persisted row with its Workspace/Run/NodeRun/Attempt correlation --
+        belongs to the canonical Invocation service. Transport failure keeps
+        the reserved child and parks on reconciliation: the peer's acceptance
+        is unknown, so no outcome here may read as completed.
+        """
+        assert self._guest_peers is not None
+        assert self._effects is not None
+        request_payload = {
+            "peer_name": peer.peer_name,
+            "agent_id": context.delegating_agent,
+            "task": inputs.task,
+            "idempotency_key": key,
+            "delegation_context": context.as_payload(),
+        }
+
+        async def resolve_provider(
+            authorized: Binding,
+        ) -> ResolvedCapabilityProvider | Unavailable:
+            if authorized.provider_name and authorized.provider_name != peer.peer_name:
+                return Unavailable(
+                    slot=AGENT_DELEGATION_CAPABILITY,
+                    reason=(
+                        f"Binding pins provider {authorized.provider_name!r}, not "
+                        f"requested peer {peer.peer_name!r}"
+                    ),
+                )
+            return _PeerDelegationProvider(peer)
+
+        async def execute_provider(provider: ResolvedCapabilityProvider, request: Any) -> Any:
+            return await self._execute_peer_delegation(
+                provider,
+                request,
+                context=context,
+                key=key,
+                messages=[{"role": "user", "content": inputs.task}],
+            )
+
+        try:
+            invocation = await invoke_capability_effect(
+                lambda: self._effects.invocations.invoke(  # type: ignore[union-attr]
+                    binding=binding,
+                    run_id=ctx.run_id,
+                    node_run_id=ctx.node_run_id,
+                    attempt_id=ctx.attempt_id,
+                    effect_key=key,
+                    request=request_payload,
+                    resolver=resolve_provider,
+                    executor=execute_provider,
+                    actor_id=context.caller_principal_id,
+                    logical_effect=True,
+                ),
+                effect_key=key,
+            )
+        except (CapabilityUnavailable, InvocationDenied):
+            # Nothing was dispatched: the provider is missing or policy said
+            # no before admission. That is a refusal this instance owns, so
+            # the node fails loudly instead of parking work that never
+            # crossed the boundary.
+            raise
+        except UnsafeEffectRetry:
+            # The ledger holds an unresolved dispatch for this exact logical
+            # effect. Recover it through the peer's idempotent receipt query;
+            # re-POSTing is the one thing the rules forbid.
+            return await self._recover_cross_instance(
+                inputs, ctx, binding=binding, key=key, child_id=child_id
+            )
+        except Exception as exc:
+            await self._pause_for_reconciliation(
+                inputs,
+                child_id,
+                error=str(exc) or "external delegation transport is uncertain",
+            )
+
+        return await self._settle_invoked_dispatch(inputs, invocation, child_id=child_id)
+
+    async def _settle_invoked_dispatch(
+        self,
+        inputs: DelegateRemoteIn,
+        invocation: Invocation,
+        *,
+        child_id: str,
+    ) -> DelegateRemoteOut:
+        """Turn one completed dispatch Invocation into the node's outcome."""
+        result = invocation.result if isinstance(invocation.result, dict) else {}
+        if str(result.get("status") or "") == "rejected":
             await self._release_unaccepted_child(child_id)
             # No child Run: nothing was admitted, so there is no execution to
             # give an identity to. The peer declining is a legitimate outcome
             # the Graph may branch on, unlike the misconfiguration above.
-            return DelegateRemoteOut(status="rejected", task_id=result.task_id, error=result.error)
-        failure = await self._failed_transport_outcome(inputs, child_id, result)
-        if failure is not None:
-            return failure
-        if not result.task_id:
+            return DelegateRemoteOut(
+                status="rejected",
+                task_id=str(result.get("task_id") or ""),
+                error=result.get("error"),
+            )
+        task_id = str(result.get("task_id") or "")
+        if not task_id:
             await self._pause_for_reconciliation(
                 inputs,
                 child_id,
                 error="peer accepted work without a transport receipt",
             )
-        if result.status != "submitted" or not result.task_id:
-            # A submitted delegation without a receipt cannot be resumed or
-            # correlated to the child Run. Treat the peer response as a
-            # protocol failure rather than pausing an untraceable execution.
-            return DelegateRemoteOut(
-                status="failed",
-                task_id=result.task_id,
-                error=(result.error or "peer returned an invalid delegation receipt"),
-            )
-
-        await self._attach_receipt(child_id, result.task_id)
-        self._pause(inputs, task_id=result.task_id, mode="guest_peer", run_id=child_id)
+        await self._attach_receipt(child_id, task_id)
+        self._pause(inputs, task_id=task_id, mode="guest_peer", run_id=child_id)
         return DelegateRemoteOut()  # unreachable
 
-    async def _submit_to_peer(self, inputs: DelegateRemoteIn, key: str) -> DelegationResult:
-        """POST the task to the peer, keyed only when receipts can be stored.
+    async def _execute_peer_delegation(
+        self,
+        provider: ResolvedCapabilityProvider,
+        request: Any,
+        *,
+        context: DelegationContext,
+        key: str,
+        messages: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """The one physical POST, translated into Invocation result evidence.
 
-        The idempotency key rides on the request only when a Run store is
-        wired: without one the receipt cannot be made durable across a
-        restart, so an unkeyed attempt is the honest shape.
+        A transport refusal is a completed call with a declined outcome. A
+        transport failure raises: the peer's acceptance is unknown, so the
+        Invocation must land UNKNOWN -- the state that forces reconciliation
+        -- never COMPLETED with a guessed outcome.
         """
         assert self._guest_peers is not None
-        messages = [{"role": "user", "content": inputs.task}]
-        if self._run_store is None:
-            # Preserve the transport-only construction used by callers that do
-            # not have canonical admission available; it cannot claim durable
-            # recovery semantics, so it must not pretend to send a key.
-            return await self._guest_peers.delegate(
-                inputs.peer_name or "", inputs.from_agent, messages
-            )
-        return await self._guest_peers.delegate(
-            inputs.peer_name or "",
-            inputs.from_agent,
+        if not isinstance(provider, _PeerDelegationProvider):
+            raise TypeError("delegation Invocation resolved a non-peer provider")
+        result = await self._guest_peers.delegate(
+            provider.peer.peer_name,
+            str(request["agent_id"]),
             messages,
             idempotency_key=key,
+            context=context,
         )
-
-    async def _failed_transport_outcome(
-        self, inputs: DelegateRemoteIn, child_id: str, result: DelegationResult
-    ) -> DelegateRemoteOut | None:
-        """The outcome for a transport failure, or None when none applies.
-
-        Once a request crossed the transport boundary, an exception does not
-        prove that the peer did not accept it. Keep the reservation and park on
-        reconciliation; a retry must not blindly POST again. Without a Run
-        store nothing durable is at stake, so the failure is reported as the
-        delegation outcome it is.
-        """
-        if result.status != "failed":
-            return None
-        if self._run_store is not None:
-            await self._pause_for_reconciliation(
-                inputs,
-                child_id,
-                error=result.error or "transport acceptance is uncertain",
+        if result.status == "rejected":
+            return {"status": "rejected", "task_id": "", "error": result.error}
+        if result.status != "submitted" or not result.task_id:
+            raise RuntimeError(
+                result.error or "peer delegation transport failed; acceptance unknown"
             )
-        return DelegateRemoteOut(status="failed", task_id=result.task_id, error=result.error)
+        return {
+            "status": "submitted",
+            "task_id": result.task_id,
+            "peer_url": result.peer_url,
+            "agent_version": result.agent_version,
+            "protocol_version": result.protocol_version,
+        }
 
     async def _recover_in_process(
         self, inputs: DelegateRemoteIn, key: str, child_id: str
@@ -716,6 +1205,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
 
         parent = await self._preflight_child_scope(inputs, ctx)
         key = self._delegation_key(inputs, ctx)
+        # In-process delegation is not an external call, so it needs no
+        # Binding/Invocation seam -- the child Run is the admission. It still
+        # carries the canonical identity/Goal binding on its provenance when
+        # the delegating Run is known (issue #959), so both delegation paths
+        # leave the same traceability record.
+        context = self._in_process_context(inputs, ctx, parent=parent)
         child = await self._existing_child(key)
         if child is None:
             try:
@@ -728,7 +1223,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             except ValueError as exc:
                 return DelegateRemoteOut(status="rejected", error=str(exc))
             child_id = await self._reserve_child(
-                inputs, ctx, parent=parent, mode="in_process", target=target
+                inputs, ctx, parent=parent, mode="in_process", target=target, context=context
             )
         else:
             child_id = child.run_id
@@ -820,6 +1315,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         parent: Run | None,
         mode: str,
         target: str,
+        context: DelegationContext | None = None,
     ) -> str:
         """File the delegated work as a child Run of the delegating NodeRun.
 
@@ -902,6 +1398,20 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 "delegating_agent": inputs.from_agent,
                 "target_agent": target,
                 "peer_name": inputs.peer_name,
+                # The canonical identity/Goal binding (issue #959): recorded
+                # beside the key, so the delegated work is traceable to the
+                # caller, the Workspace scope, and the Goal/Subgoal it
+                # advances without re-deriving any of it from the transport.
+                **({"delegation_context": context.as_payload()} if context is not None else {}),
+                # Remote endpoint provenance known before dispatch: which
+                # registered peer endpoint the work was pointed at. The
+                # receipt and any remote Agent version land later, where the
+                # transport that produced them can vouch for them.
+                **(
+                    {"a2a_peer_url": peer_url}
+                    if (peer_url := self._registered_peer_url(inputs.peer_name))
+                    else {}
+                ),
             },
             # CREATED, never QUEUED. The evidence writes below are what move
             # the child through RUNNING and park it WAITING; admitting the row
@@ -918,6 +1428,13 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         )
         await self._write_child_evidence(child.run_id, graph.nodes, mode=mode)
         return child.run_id
+
+    def _registered_peer_url(self, peer_name: str | None) -> str:
+        """The endpoint a registered peer names, or nothing when it is not one."""
+        if not peer_name or self._guest_peers is None:
+            return ""
+        peer = self._guest_peers.get_peer(peer_name)
+        return peer.peer_url if peer is not None else ""
 
     async def _write_child_evidence(self, run_id: str, nodes: Sequence[Node], *, mode: str) -> None:
         """Give the child its NodeRuns and their yielded transport Attempts.

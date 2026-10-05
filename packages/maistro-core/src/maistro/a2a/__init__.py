@@ -17,6 +17,12 @@ from maistro.a2a.broker import (
     Transport,
 )
 from maistro.a2a.delegate import A2ADelegator, A2ATask, DelegationMode, TaskStatus
+from maistro.a2a.delegation_context import (
+    DelegationContext,
+    DelegationContextError,
+    DelegationScopeExceeded,
+    attenuate_scopes,
+)
 from maistro.a2a.guest_peers import (
     AuditLogger,
     DelegationResult,
@@ -35,9 +41,12 @@ __all__ = [
     "AuditLogger",
     "CardResolver",
     "DelegationBudget",
+    "DelegationContext",
+    "DelegationContextError",
     "DelegationMode",
     "DelegationRefused",
     "DelegationResult",
+    "DelegationScopeExceeded",
     "GuestPeerManager",
     "InMemoryAuditLogger",
     "LocalTransport",
@@ -48,4 +57,5 @@ __all__ = [
     "Transport",
     "WorkerConfig",
     "WorkerPool",
+    "attenuate_scopes",
 ]
