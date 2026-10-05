@@ -68,13 +68,16 @@ Reconciliation contract, per case:
   pre-migration origin is not provable at downgrade time, so they stay, and
   the upgrade above recognizes exactly that safe-downgrade shape.
 
-Numbered 053 on the develop base whose chain tip is ``052_learning_stage_
-ladder``. The #1855 branch currently holds its own ``052_canonical_goals``;
-per this chain's documented collision convention (see 052 and 036), whichever
-revision lands second re-parents onto the merged tip. No duplicate ids.
+Numbered 053 when written on the develop base whose chain tip was
+``052_learning_stage_ladder`` (with #1855 holding its own
+``052_canonical_goals`` on a sibling line). Develop has since claimed ``053``
+for its learning-lifecycle columns (M4-B, ADR-100126-8c2d), so per this
+chain's documented collision convention (see 052, 051 and 036) this revision
+— landing second — re-parents onto that ``053_learning_lifecycle_columns``
+tip as ``054``. No duplicate ids.
 
-Revision ID: 053
-Revises: 052
+Revision ID: 054
+Revises: 053
 Create Date: 2026-10-04
 """
 
@@ -83,8 +86,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "053"
-down_revision = "052"
+revision = "054"
+down_revision = "053"
 branch_labels = None
 depends_on = None
 
@@ -215,7 +218,7 @@ def upgrade() -> None:
         # meeting this revision without it means somebody is stamping head
         # over a database the chain never touched. Refuse, loudly.
         raise RuntimeError(
-            "task_idempotency does not exist but revision 053 assumes it; "
+            "task_idempotency does not exist but revision 054 assumes it; "
             "the migration chain cannot stamp a forward admission-generation "
             "shape over a database that never ran 038"
         )
@@ -409,5 +412,5 @@ def _add_v2_check(bind: sa.Connection) -> None:
 def _malformed_message(kind: str, malformed: list[str]) -> str:
     return (
         f"task_idempotency exists with an incompatible {kind} shape; refusing "
-        f"to stamp revision 053 over it: " + "; ".join(malformed)
+        f"to stamp revision 054 over it: " + "; ".join(malformed)
     )

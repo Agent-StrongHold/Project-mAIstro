@@ -5,8 +5,11 @@ inventory-delta:
 
 Issue #1892 (M1, parent #1845) adds the forward admission-generation
 representation on `task_idempotency` — alembic revision
-`053_task_admission_generations`, a schema-only leaf on the L41/#1325
-integration line. No writer is activated; nothing here claims mixed old/new
+`054_task_admission_generations` (numbered `053` when written; develop then
+claimed `053` for its learning-lifecycle columns, so per the chain's
+documented collision convention the revision re-parented onto
+`053_learning_lifecycle_columns` as `054`), a schema-only leaf on the
+L41/#1325 integration line. No writer is activated; nothing here claims mixed old/new
 writers are safe.
 
 `tests/migrations/test_task_admission_generation_upgrade.py` (+14) runs the
@@ -39,7 +42,7 @@ without a server, so CI's postgres legs own the coverage). It covers:
 One existing test moves with the chain tip, per that sentinel's own documented
 convention: `test_capability_invocation_effect_index_migration.py`
 `test_effect_index_migration_follows_the_chain_tip` now walks to and pins head
-`053` (was `052`) — same count, updated identity, no delta.
+`054` (was develop's `053`) — same count, updated identity, no delta.
 
 Focused run (issue #1892):
 `uv run pytest tests/migrations/test_task_admission_generation_upgrade.py
@@ -63,3 +66,15 @@ Re-validated on a fresh PostgreSQL database: `tests/migrations` 117 passed;
 CI's coverage-postgres step 2 suites 5077 passed, 8 skipped; canvas leg 516
 passed, 3 skipped; `scripts/check-durable-table-inventory.py` ok (89 durable
 tables); vulture ledger 1340/1340 with CI's exact arguments.
+
+Repair at this lane (develop sync to `35f2e0158` + `origin/develop`): the
+merge reintroduced the revision-id collision — develop's
+`053_learning_lifecycle_columns` and this branch's admission-generation
+revision both claimed `053` on `052`. Resolved per the migration's own
+documented convention (whichever revision lands second re-parents onto the
+merged tip): the branch revision re-parented onto develop's tip as
+`054_task_admission_generations`; refusal-path stamp assertions in
+`test_task_admission_generation_upgrade.py` updated to the new neighbors
+(failed admission upgrades now stamp `053`, the failed downgrade stays at
+`054`); the chain sentinel walks to head `054`. No test added or removed —
+delta above unchanged.
