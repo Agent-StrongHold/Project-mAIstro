@@ -22,7 +22,7 @@ from maistro.tasks.queue import TaskQueue, get_task_queue
 from maistro.tools.sandbox.workspace import validate_workspace_path
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.delegation import resolve_delegated_identity
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 from maistro_server.api.schemas import PaginatedTasks, TaskCancelledResponse, TaskCreatedResponse
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])

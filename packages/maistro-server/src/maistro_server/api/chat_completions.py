@@ -66,7 +66,7 @@ from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus, Run
 from maistro.runs.store import RunStore
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 
 logger = structlog.get_logger()
 

@@ -28,7 +28,7 @@ from maistro.workspaces.campaigns import (
 )
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 
 
 def _principal(user_id: str) -> Principal:

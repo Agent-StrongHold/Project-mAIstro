@@ -20,7 +20,7 @@ from maistro.workspaces.backlog_history import (
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.backlog_history import list_item_history
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 

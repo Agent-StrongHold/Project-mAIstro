@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from maistro.workspaces import InMemoryWorkspaceStore
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 
 
 @pytest.fixture

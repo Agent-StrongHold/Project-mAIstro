@@ -8,7 +8,7 @@ from fastapi import HTTPException, status
 
 from maistro.tasks.http_contract import verify_delegation_context
 from maistro.tasks.models import TaskActorKind
-from maistro.identity import Principal
+from maistro_server.api.principal import Principal
 
 
 def resolve_delegated_identity(
