@@ -389,8 +389,23 @@ jobs:
             packages/maistro-core/tests/workspaces \
             packages/maistro-core/tests/scheduling \
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
+<<<<<<< HEAD
             packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py \
             packages/maistro-core/tests/security/test_elevation_durable.py -v --tb=short
+=======
+            packages/maistro-core/tests/security/test_elevation_durable.py \
+            packages/maistro-core/tests/quota -v --tb=short
+          # `tests/quota` is here for the same reason the canvas lane below is:
+          # test_pg_invocation_quota_boundary.py gates all three of its tests on
+          # MAISTRO_TEST_PG_DSN and skips without it, so in `coverage (no
+          # services)` PgInvocationQuota contributes nothing. Without a producer
+          # here the diff gate scored 176 changed lines in pg_invocation_quota.py
+          # at 23% -- untested code by the measurement, covered by tests that
+          # pass against a real server. The rest of tests/quota is fast and
+          # service-free; it runs twice rather than splitting one directory
+          # across two jobs by filename, which is the kind of split that goes
+          # stale the next time a file is added (#1196/#718).
+>>>>>>> 658a8f78c1800d264759a81dc8d87dd447f0f7f2
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in
