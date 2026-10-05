@@ -11,6 +11,7 @@ from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
@@ -256,4 +257,16 @@ _VULTURE_WHITELIST = (
     AdmissionAssessment.TAKEOVER,
     AdmissionAssessment.REPLACE_EXPIRED,
     AdmissionAssessment.LEGACY_UNRESOLVED,
+    # The one governed promotion contract (M4-A9, #116; ADR/SPEC-100126-a9c4).
+    # The contract ships first by design, the same posture as
+    # CampaignSelector and the learning lifecycle above: its in-tree consumers
+    # are its tests (tests/governance/test_promotion_contract.py), and each
+    # family's store minting PromotionRecords is the spec's recorded follow-up
+    # (family-mapping table, "Record adoption: follow-up"; Non-goals:
+    # "migration of existing stores to the ledger"). `promote` is the only
+    # sanctioned append path; `attach_effect` and `mark_reversed` are the
+    # AC-6 effect-traceability and reversal surfaces those adoptions will call.
+    PromotionContract.promote,
+    PromotionLedger.attach_effect,
+    PromotionLedger.mark_reversed,
 )
