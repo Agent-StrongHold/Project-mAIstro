@@ -25,6 +25,6 @@ pins the contract offline (text shape, decoded shape, non-array rejection) so
 the regression does not depend on a live server to resurface.
 
 Validation this round: live PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18`),
-fresh `alembic upgrade head` walks 052→053→054_backlog_work_source→
-055_backlog_authority_cutover, backlog suites 94 passed + 2 skipped live,
+fresh `alembic upgrade head` walks 052→053→054_task_admission_generations→
+056_backlog_work_source→057_backlog_authority_cutover, backlog suites 94 passed + 2 skipped live,
 103 passed in `tests/migrations` live.

@@ -1,11 +1,13 @@
 """Durable tables for the canonical Workspace BacklogItem work-source (#82).
 
-Attaches after the trunk chain tip `053` (`053_learning_lifecycle_columns`)
-as `054` per the convention 046 records: the branch's original `048`/
-`049` slots were renumbered after develop landed its own `048` (and later
-`049`-`051`), and once more onto `054` after develop claimed `052`
-(`052_learning_stage_ladder`, ADR-103) and `053`
-(`053_learning_lifecycle_columns`) — because a landed trunk migration never
+Attaches after develop's trunk chain tip `054`
+(`054_task_admission_generations`, itself continuing `053`
+`053_learning_lifecycle_columns`) as `056` per the convention 046 records:
+the branch's original `048`/`049` slots were renumbered after develop landed
+its own `048` (and later `049`-`051`), then onto `054`/`055` after develop
+claimed `052` (`052_learning_stage_ladder`, ADR-103) and `053`
+(`053_learning_lifecycle_columns`), and now once more onto `056`/`057`
+after develop claimed `054` (#1892) — because a landed trunk migration never
 moves — the numbering tracks the chain, not the issue number, so the chain
 stays linear with exactly one head.
 
@@ -27,8 +29,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "054"
-down_revision = "053"
+revision = "056"
+down_revision = "054"
 branch_labels = None
 depends_on = None
 

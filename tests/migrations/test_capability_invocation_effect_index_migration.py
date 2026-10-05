@@ -70,9 +70,12 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # `053_learning_lifecycle_columns` on the same chain tip. The backlog
     # work-source migration (#98) was renumbered `048` -> `052` -> `054` and
     # the authority-cutover ledger (#102) `049` -> `053` -> `055` as each of
-    # those develop revisions landed, attaching after `053`, so the single
-    # linear head is `055`.
-    walked = {item.revision for item in directory.walk_revisions("base", "055")}
+    # those develop revisions landed. Develop has now claimed `054` itself
+    # (#1892's `054_task_admission_generations`, written against the `052`
+    # base and re-parented onto the `053` tip), so the backlog pair moves
+    # past it once more — attaching after that `054` as `056` and `057` —
+    # keeping the chain linear with exactly one head, `057`.
+    walked = {item.revision for item in directory.walk_revisions("base", "057")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -86,8 +89,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "052" in walked
     assert "053" in walked
     assert "054" in walked
-    assert "055" in walked
-    assert directory.get_heads() == ["055"]
+    assert "056" in walked
+    assert "057" in walked
+    assert directory.get_heads() == ["057"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
