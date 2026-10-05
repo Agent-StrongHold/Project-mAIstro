@@ -249,3 +249,49 @@ case/encoded spellings, host allowlist ×2, transport hardening argv,
 submodule-URL policy ×5, destination-pin persistence, per-command pin,
 real-git submodule-update refusal). Merge commit messages 2ebefd794..HEAD
 carry no closure keywords.
+
+## Independent verification round (head 77017baf1358)
+
+Re-executed fresh at the docs head that carries every record above (prior
+claims not carried forward), with independent mechanism probes instead of
+trusting the recorded ones:
+
+- Full local gate battery, CI's exact argv: `ruff check .` clean; `ruff
+  format --check .` 2917 files formatted; 120 passed in
+  `packages/maistro-core/tests/tools/git` (incl. the real-git
+  `test_pinned_workspace_refuses_submodule_update_over_git_protocol`, which
+  drives `git_clone` and `_git` against real subprocesses); 34 passed in RSI
+  `test_cli.py` + `test_selfbranch.py`; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` exit 0
+  (1338 = 1338, zero unbanked); `check-radon-baseline.py` exit 0 (143 =
+  143, zero new/regressed/stale); `check-reachability.py`,
+  `check-security-inventory.py` exit 0; `check-suite-inventory.py` all 14
+  suites match (26002 unique identities);
+  `check-api-route-contracts.py` exit 0 (279 handlers, 15 audited routes).
+- Probe (policy entrypoint, real tool): `git_clone` returns
+  `blocked_url_scheme` for `git://`, `GIT://`, and `%67it://` spellings with
+  the subprocess spawner replaced by a tripwire — rejection happens before
+  any process spawns; with the same `_TRANSPORT_PIN` on the command line,
+  real git refuses the transport itself (`ls-remote git://…` → exit 128,
+  "transport 'git' not allowed") — defense in depth re-confirmed.
+- Probe (mechanism, git 2.53.0, offline file:// superproject): plain `git
+  submodule update --init` in a freshly cloned workspace → inner clone
+  refused (`transport 'file' not allowed`), and `git -C dest config
+  protocol.allow` is empty after a `-c`-pinned clone (0 protocol/http keys
+  in dest/.git/config) — the `-c` flags are invocation-scoped, exactly as
+  the rewritten comments state; with `-c protocol.file.allow=always` on the
+  *outer* `submodule update --init`, the inner clone succeeds —
+  GIT_CONFIG_PARAMETERS propagation to child git processes confirmed. Both
+  pin layers (per-command re-application + persisted dest config) remain
+  necessary and neither alone is sufficient.
+- Merge integrity re-verified: `origin/develop` (94781cf6b) is an ancestor
+  of HEAD; `git diff --numstat origin/develop HEAD -- quality/` shows only
+  the additive `quality/ac-state-notes/auto-404.json` (+17/−0). No
+  auto-close keywords in 2ebefd794..HEAD messages (only the synced-in
+  develop PR references #1860/#1976).
+- CI scope of this record: hosted CI concluded success on PR head
+  2ebefd794f8d (recorded above); heads 98a04e147/77017baf1 add only the
+  conflict-free develop merge and this docs commit. No hosted run for those
+  heads is observable from this sandbox and pushing is prohibited here, so
+  CI on the exact branch head is recorded UNVERIFIED — the required gates
+  were instead proven locally with CI's argv at this head.
