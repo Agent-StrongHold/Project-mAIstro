@@ -8,7 +8,11 @@ inventory-delta:
 Issue #863 — make Run-store retention and queue indexes planner-stable at
 scale. The +28 are two new files under `tests/migrations/`; the change to
 `test_capability_invocation_effect_index_migration.py` moves the chain-tip
-sentinel from `051` to `053` without moving any count.
+sentinel from `051` to `054` without moving any count (the revision was
+renumbered 052 → 053 → 054 across two develop collisions, develop's M4-B
+learning-lifecycle columns having claimed `053` on the same `052` parent;
+develop's sync note `auto-121-develop-sync-adr103-053.md` records the
+earlier hop).
 
 ## `test_status_domain_lockstep.py` (8, no server)
 
@@ -19,10 +23,10 @@ names constant statuses (012 live, 013 retention, 017 archive). An
 unconstrained column plus constant predicates means a status added to the
 model — a terminal one especially — silently escapes the sweeps: no error, no
 log line, just a table that grows while every sweeper reports an empty
-backlog. Migration 053 CHECK-constrains each column to its model enum so the
+backlog. Migration 054 CHECK-constrains each column to its model enum so the
 failure is loud at write time; these tests hold the pairing shut statically:
 
-- 053's domain lists equal `RunStatus`/`AttemptStatus` in *declaration* order,
+- 054's domain lists equal `RunStatus`/`AttemptStatus` in *declaration* order,
   and the CHECK DDL strings spell exactly those values (a reordered or
   half-copied domain fails).
 - The three partial-index predicates name exactly the model's
@@ -36,7 +40,7 @@ failure is loud at write time; these tests hold the pairing shut statically:
   status-bearing table must be declared here, with an owner and a domain,
   rather than silently joining the class of columns this issue is about.
 
-Repair note (this branch): 053's constraint adds ride a guarded
+Repair note (this branch): 054's constraint adds ride a guarded
 `_add_check_constraint_if_absent` helper so re-applying the revision over its
 own schema is adoption, not `DuplicateObject` — the lockstep greps were
 updated to that spelling with the enforced property unchanged, and test
@@ -68,9 +72,9 @@ fairness O(every Run) per tick under any plan mode.
 
 The static five pin the shipped SQL shapes as importable objects: literal
 terminal statuses and no `ANY($` in the three sweeps; caller input still
-parameterized; the status listing's order matching 053's index expression; the
+parameterized; the status listing's order matching 054's index expression; the
 continuation listing's two literal statement shapes (an `OR ... IS NULL` arm
-can never become an index condition); and 053 declaring no partial index at
+can never become an index condition); and 054 declaring no partial index at
 all.
 
 The live fifteen apply the whole chain to an empty scratch database, seed a

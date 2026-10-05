@@ -72,11 +72,13 @@ rebuilt.
 Numbered 052 when written; develop's M4-B1 knowledge-stage ladder
 (ADR-103) claimed that id on the same `051` parent while this branch was
 open, so per this chain's collision convention the revision re-parented
-onto that `052_learning_stage_ladder` tip as 053. One linear head, no
-duplicate revision ids.
+onto that `052_learning_stage_ladder` tip as 053. Develop's M4-B
+learning-lifecycle columns (ADR-100126-8c2d) then claimed `053` on that
+same parent, and the revision re-parented once more, as 054. One linear
+head, no duplicate revision ids.
 
-Revision ID: 053
-Revises: 052
+Revision ID: 054
+Revises: 053
 Create Date: 2026-10-04
 """
 
@@ -84,8 +86,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "053"
-down_revision = "052"
+revision = "054"
+down_revision = "053"
 branch_labels = None
 depends_on = None
 
