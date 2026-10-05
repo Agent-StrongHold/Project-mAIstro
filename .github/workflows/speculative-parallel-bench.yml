@@ -1,0 +1,59 @@
+name: Speculative-parallel bench
+
+# Manual only, on purpose.
+#
+# This runs scripts/bench_speculative_parallel.py — the #917 / epic #900 M8-B4
+# measurement that compares serial-fallback, single-strong, bounded parallel
+# with early stopping, and bounded parallel with verifier selection over the
+# one governed model seam. It is deterministic and offline (seeded outcome
+# schedule, simulated provider transport), so the results it uploads are
+# byte-identical run-to-run for a fixed seed. It is not a gate and not a
+# per-PR job: a benchmark's job is to be run when the routing/candidate
+# policy assumptions change, not on every commit.
+#
+# It is also what makes `scripts/bench_speculative_parallel.py` a *real* entry
+# point rather than a script nobody can reach: `scripts/check-reachability.py`
+# roots tooling at the workflow steps that execute it, matching on filename.
+# This job runs it (same pattern as working-memory-bench.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: "Workload size per strategy/topology"
+        required: false
+        default: "120"
+        type: string
+      seed:
+        description: "Outcome-schedule seed (identical seed, identical numbers)"
+        required: false
+        default: "917"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: speculative-parallel-bench
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+      - name: uv sync (dev deps)
+        run: uv sync --locked --extra dev
+      - name: Benchmark speculative parallel model-call strategies
+        run: >-
+          uv run python scripts/bench_speculative_parallel.py
+          --tasks ${{ inputs.tasks }}
+          --seed ${{ inputs.seed }}
+          --output speculative-parallel-bench.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: speculative-parallel-bench
+          path: speculative-parallel-bench.json
