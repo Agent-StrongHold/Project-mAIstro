@@ -526,30 +526,34 @@ class SqliteRunStore:
                 if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
                     raise
                 raise DuplicateOccurrence(*occurrence) from exc
-            await self._admit_root(run)
+            await self._admit_root(run, connection=self._conn)
             await self._conn.commit()
             return run
 
-    async def _admit_root(self, run: Run) -> None:
+    async def _admit_root(self, run: Run, *, connection: aiosqlite.Connection) -> None:
         """Hold a just-inserted root Run to the active ceilings (#1182).
 
         Counted after the insert, under `_write_lock`, so a duplicate
-        occurrence is refused as a duplicate rather than as backpressure. A
-        refusal, or any failure to count, rolls back to the savepoint `create_run` opened before the
-        insert, never the whole transaction and never a commit: this
-        connection is shared with sibling stores, and either would discard or
-        commit their unfinished writes along with this one. No `BEGIN
-        IMMEDIATE` for the same reason -- the SQLite tier is one process, and
-        `_write_lock` is what serializes its admissions.
+        occurrence is refused as a duplicate rather than as backpressure. Every
+        statement runs on the `connection` its caller supplies -- `create_run`
+        passes its own, so admission behaves exactly as before -- and a
+        refusal, or any failure to count, rolls back to the savepoint
+        `create_run` opened before the insert on that same connection, never
+        the whole transaction and never a commit: the connection is shared
+        with sibling stores, and either would discard or commit their
+        unfinished writes along with this one. No `BEGIN IMMEDIATE` for the
+        same reason -- the SQLite tier is one process, and `_write_lock` is
+        what serializes its admissions.
         """
         if run.parent_run_id is not None:
             return
         principal = run.actor_principal_id or None
         try:
-            row = await self._fetchone(
+            cursor = await connection.execute(
                 _ACTIVE_ROOT_COUNTS_SQL,
                 (run.workspace_id, principal),
             )
+            row = await cursor.fetchone()
             assert row is not None  # nosec B101 - a scalar SELECT always yields a row
             self._concurrency_limits.check(
                 workspace_active=int(row[0]) - 1,
@@ -559,8 +563,8 @@ class SqliteRunStore:
             # A refusal, or a count that could not be read: either way the row
             # is not admitted, and a savepoint left open would let the next
             # writer's commit persist it.
-            await self._conn.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
-            await self._conn.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+            await connection.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+            await connection.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             raise
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
