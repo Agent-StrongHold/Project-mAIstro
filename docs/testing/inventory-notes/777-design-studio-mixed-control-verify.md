@@ -10667,3 +10667,64 @@ No acceptance criterion is provable against reachable production behavior at
 this head; the branch is a safe waiting position, now develop-current with a
 green battery on merge commit 2cd657f05. Unblocking requires landing
 #804/#805/#806, #53, #774, #776, #93/#95 upstream (Refs #777).
+
+---
+
+## Round 161 (2026-10-05, job 5d1be0d2) — re-validation after provider-timeout round; battery re-run fresh; tree-state correction
+
+Round 160's worker (job ceb03898) died on a **provider timeout** before running
+any validation (`result.json`: `failure_kind: provider_error`); this job's
+manifest again has `checks: []` (no driver-run deterministic checks). All
+evidence below was executed fresh on HEAD `64730bdf5` by the round-161 worker.
+
+**Branch/develop state:** `git fetch origin` → `origin/develop` unchanged at
+`cd5618223` (== the round-160 merge parent); **no sync needed**. HEAD
+`64730bdf5` is docs-only on top of merge `2cd657f05`
+(`git diff --stat 2cd657f05..HEAD` = the round-160 note, +53 lines, zero code).
+
+**Battery green fresh on `64730bdf5` (doc-head, code-identical to merge):**
+ruff check EXIT 0; ruff format --check EXIT 0 (2949 files); vulture CI-exact
+`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` EXIT 0 (base cd5618223 → candidate 64730bdf5,
+1338 → 1337 findings, never_allowlist 0); api-route-contracts EXIT 0 (279
+handlers, 0 canned); route-permissions EXIT 0 (23 tolerated, none new);
+reachability EXIT 0 (1271 modules); promotion-surface EXIT 0; suite-inventory
+15/15; backlog OK (167). pytest: packages/maistro-design **540P/1S**
+(27.18s), packages/maistro-bootstrap **237P/1S** (16.11s), hive-conductor
+design-surface subset (startup/packs/systems/renderers/consistency routes +
+agent_invocation) **86P** (7.10s).
+
+**Tree-state correction (supersedes round 160's stale claim):** #774's
+CreativeBrief contract **now exists** in
+`packages/maistro-design/src/maistro_design/brief.py` (landed via develop's
+#1664, merge commit 2cd657f05): versioned, immutable-by-version
+`CreativeBrief` (brief.py:352), `CreativeBriefStore` protocol
+(protocols.py:63), `CreativeBriefResolve` node (creative_nodes.py:311), with
+explicit not-a-Goal disclaimers; green under 540P. The round-160 claim "core
+CreativeBrief = rubric.py:6–18 disclaimers" is stale ("structurally rejected"
+disclaimers now live in `maistro_core/ontology/rubric.py` +
+`maistro_core/projects/rubric_store.py`). **This does not unblock #777:**
+`brief.py` stores `goal_id`/`goal_revision` as plain strings — #458 canonical
+Goal records/ownership still do not exist (`grep GoalReconciler|delegate_goal
+packages/*/src` → 0 matches, exit 1), so binding a brief to *one canonical
+Goal revision* (acceptance #2) and delegated control (#7–9, #13) remain
+unprovable.
+
+**Blockers re-proven fresh on `64730bdf5`:** GoalReconciler/delegate_goal 0
+matches in `packages/*/src` (grep exit 1); `workspace_agent.py:1` still the
+#1037 per-Workspace identity service, not the #53/#804 persistent agent;
+`docs/research/777-design-studio-salvage/` still zero readers under packages/.
+
+**Dependency states (this job's dispatch-context.json, captured
+2026-10-05T12:38:23–12:41:15Z, cache age 145.3s):** #773 (parent) and #804
+**open** (issue body: Design Studio "consumes ... Goal reconciliation APIs
+from #804 rather than instantiating a Design-Studio-private root
+Agent/reconciler"); PR #1660 `state: open`, `draft: true`, `merged_at: null`,
+head `17ad5f75b894` — still unmerged; merging it is outside this lane's
+authority (no GitHub mutations).
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds 123–160.
+Criteria #1, #7, #8, #9, #13 require #804/#805/#806 reconciliation + #53
+front door; #2 requires #458 Goal records; parent #773 open; the
+implementation PR #1660 is an unmerged draft. The branch remains a safe,
+develop-current, battery-green waiting position (Refs #777).
