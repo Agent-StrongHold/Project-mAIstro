@@ -16,6 +16,7 @@ members = [
     "maistro-core",
     "maistro-design",
     "maistro-evolve",
+    "maistro-ext-sdk",
     "maistro-registry",
     "maistro-rsi",
     "maistro-server",
@@ -2687,6 +2688,34 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0,<7" },
 ]
 provides-extras = ["ifeval"]
+
+[[package]]
+name = "maistro-ext-sdk"
+version = "0.9.0"
+source = { editable = "packages/maistro-ext-sdk" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+yaml = [
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<3" },
+    { name = "pydantic", specifier = ">=2.4.0,<3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3,<10" },
+    { name = "pyyaml", marker = "extra == 'yaml'", specifier = ">=6.0,<7" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
+]
+provides-extras = ["yaml", "dev"]
 
 [[package]]
 name = "maistro-registry"

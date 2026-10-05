@@ -135,6 +135,9 @@ RECIPES: dict[str, Recipe] = {
     "packages/maistro-server/tests": Recipe(args=[]),
     "packages/maistro-turing/tests": Recipe(args=[]),
     "packages/maistro-design/tests": Recipe(args=[]),
+    # The public extension SDK (#949): no maistro imports, no services, no DB —
+    # the plain uv workspace env collects it.
+    "packages/maistro-ext-sdk/tests": Recipe(args=[]),
     "packages/maistro-bootstrap/tests": Recipe(args=[]),
     "packages/maistro-canvas/tests": Recipe(args=[]),
     "packages/maistro-turing/backend/tests": Recipe(args=[]),
