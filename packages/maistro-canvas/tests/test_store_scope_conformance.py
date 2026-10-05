@@ -43,8 +43,8 @@ from canvas_testing.job_store_contract import ZERO_BACKOFF
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from maistro.testing.postgres import postgres_dsn
 from maistro.identity import Principal
+from maistro.testing.postgres import postgres_dsn
 from maistro_canvas.canvas.asset_store import InMemoryAssetStore
 from maistro_canvas.canvas.store import PgCanvasStore
 from maistro_canvas.layers import (
