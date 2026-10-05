@@ -5,11 +5,9 @@ reusable institutional knowledge on the one ``Learning`` record:
 
     MEMORY -> LEARNING -> VALIDATED -> REPERTOIRE
 
-- ``stage`` is the ladder position (default ``learning`` — rows enter the
-  ladder at the extracted-claim rung per ADR-100126-9a4b, the merged tree's
-  implemented semantics; extraction is the MEMORY -> LEARNING step. The
-  upgrade fabricates no validation or promotion that never happened, and
-  blank ``validated_by``/``promoted_by`` stay blank).
+- ``stage`` is the ladder position (default ``memory`` — every pre-ladder row
+  lands on the bottom rung; the upgrade fabricates no validation or promotion
+  that never happened, and blank ``validated_by``/``promoted_by`` stay blank).
 - ``status`` is unchanged and remains the read surface: ``promoted``-only
   readers keep working. A REPERTOIRE commit flips ``status`` itself.
 - ``learning_stage_transitions`` is the append-only audit trail: one row per
@@ -17,20 +15,17 @@ reusable institutional knowledge on the one ``Learning`` record:
   provenance is durable and auditable rather than recoverable after the fact.
 
 Numbered 048 when written; develop claimed that id for #398
-(`048_canvas_job_retry_backoff`) while the branch that wrote it was open, so
-per this chain's collision convention the revision re-parented onto it — and
-develop kept colliding while that branch stayed open:
-`049_design_artifact_versions` (#780), `050_design_creative_briefs` (#774),
-and — re-parented onto that `050` by its own branch's develop sync —
+(`048_canvas_job_retry_backoff`) while this branch was open, so per this
+chain's collision convention the revision re-parented onto it — and develop
+kept colliding while the branch stayed open: `049_design_artifact_versions`
+(#780), `050_design_creative_briefs` (#774), and — re-parented onto that
+`050` by its own branch's develop sync —
 `051_canonical_run_eval_scores` (#792) each took the next id in turn. The
-ladder first re-parented onto the `051_canonical_run_eval_scores` chain tip
-as 052, but `052_learning_lifecycle_columns` (M4-B, ADR-100126-9a4b) took
-that id on the same parent in the same merge that brought this revision over,
-so the ladder re-parents once more, as `053` on that column revision. One
-linear head, no duplicate revision ids.
+ladder therefore re-parents onto the `051_canonical_run_eval_scores` chain
+tip as 052. One linear head, no duplicate revision ids.
 
-Revision ID: 053
-Revises: 052
+Revision ID: 052
+Revises: 051
 Create Date: 2026-10-01
 """
 
@@ -38,13 +33,13 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "053"
-down_revision = "052"
+revision = "052"
+down_revision = "051"
 branch_labels = None
 depends_on = None
 
 _STAGE_COLUMNS = (
-    "stage TEXT NOT NULL DEFAULT 'learning'",
+    "stage TEXT NOT NULL DEFAULT 'memory'",
     "validated_by TEXT NOT NULL DEFAULT ''",
     "promoted_by TEXT NOT NULL DEFAULT ''",
 )
@@ -79,11 +74,7 @@ def downgrade() -> None:
     # Dropping the ledger loses the audit trail of how claims came to be
     # believed — a downgrade that discards provenance. Kept for chain
     # symmetry, like 047; an operator running it is choosing that.
-    #
-    # Only this revision's own columns go: `promoted_by`. `stage` and
-    # `validated_by` are owned by `052_learning_lifecycle_columns` in the
-    # merged chain (this revision's ADD COLUMN IF NOT EXISTS for them is a
-    # no-op there), so dropping them here would hand revision 052 a schema
-    # missing columns it claims.
     op.execute("DROP TABLE IF EXISTS learning_stage_transitions")
     op.execute("ALTER TABLE learnings DROP COLUMN IF EXISTS promoted_by")
+    op.execute("ALTER TABLE learnings DROP COLUMN IF EXISTS validated_by")
+    op.execute("ALTER TABLE learnings DROP COLUMN IF EXISTS stage")

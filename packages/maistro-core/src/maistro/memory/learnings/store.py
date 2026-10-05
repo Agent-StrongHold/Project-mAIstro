@@ -18,6 +18,29 @@ from maistro.types.memory import CONTRADICT_DELTA, REINFORCE_DELTA
 
 logger = logging.getLogger(__name__)
 
+
+def _consolidation_anchor(survivors: list[Learning], lr: Learning) -> Learning | None:
+    """The already-kept duplicate ``lr`` should be absorbed into, if any.
+
+    Duplicates share the tool and scope axes and overlap at least half of
+    their trigger keys (the same rule the store's write-path dedup uses).
+    Extracted from ``consolidate`` so the merge sweep reads as a sweep.
+    """
+    return next(
+        (
+            s
+            for s in survivors
+            if s.tool_name == lr.tool_name
+            and s.org_id == lr.org_id
+            and s.team_id == lr.team_id
+            and s.user_id == lr.user_id
+            and s.agent_id == lr.agent_id
+            and lifecycle.trigger_key_overlap(s.trigger_keys, lr.trigger_keys) >= 0.5
+        ),
+        None,
+    )
+
+
 MAX_LEARNINGS = 10_000
 
 
@@ -240,6 +263,12 @@ class InMemoryLearningStore:
         Unlike the scope queries on this store, a blank ``org_id`` here means
         "no org filter", not "only orgless rows": a point read by identity is
         not a scope query, and callers that need the scope rule pass an org.
+
+        Callers that hold an id from `store` use this to get back the *store's*
+        instance — after a dedup hit, `store` returns the surviving row's id
+        and keeps the pre-existing object, so a caller that kept its own copy
+        is holding an orphan. `InMemoryLearningLifecycle` leans on exactly that
+        guarantee to track the store's row, not the caller's.
         """
         for lr in self._learnings:
             if lr.id != learning_id:
@@ -323,26 +352,6 @@ class InMemoryLearningStore:
                 decayed += 1
         return decayed
 
-    def _consolidation_anchor(self, survivors: list[Learning], lr: Learning) -> Learning | None:
-        """The already-kept row ``lr`` is a near-duplicate of, or None.
-
-        Same bucket = identical tool and scope axes and at least half of the
-        trigger keys overlapping (the rule ``store`` dedup uses).
-        """
-        return next(
-            (
-                s
-                for s in survivors
-                if s.tool_name == lr.tool_name
-                and s.org_id == lr.org_id
-                and s.team_id == lr.team_id
-                and s.user_id == lr.user_id
-                and s.agent_id == lr.agent_id
-                and lifecycle.trigger_key_overlap(s.trigger_keys, lr.trigger_keys) >= 0.5
-            ),
-            None,
-        )
-
     async def consolidate(
         self,
         *,
@@ -365,7 +374,7 @@ class InMemoryLearningStore:
         ]
         survivors: list[Learning] = []
         for lr in pool:
-            anchor = self._consolidation_anchor(survivors, lr)
+            anchor = _consolidation_anchor(survivors, lr)
             if anchor is None:
                 survivors.append(lr)
             else:

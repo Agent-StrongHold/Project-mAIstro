@@ -192,7 +192,7 @@ async def test_a_row_outside_the_callers_scope_is_not_found(
 ) -> None:
     conn.queue_fetchrow(None)
     with pytest.raises(KeyError):
-        await store.advance_stage(7, to_stage=LearningStage.VALIDATED, actor="x", org_id="org-b")
+        await store.advance_stage(7, to_stage=LearningStage.LEARNING, actor="x", org_id="org-b")
 
 
 @pytest.mark.asyncio
@@ -210,9 +210,6 @@ async def test_stage_history_reads_the_ledger_scoped(
                 {
                     "learning_id": 7,
                     "org_id": ORG,
-                    # A pre-merge ledger row: branches before the M4-B
-                    # reconciliation recorded extraction's rung durably. The
-                    # append-only read surface must still map it faithfully.
                     "from_stage": "memory",
                     "to_stage": "learning",
                     "actor": "planner",
@@ -243,15 +240,9 @@ async def test_store_writes_the_stage_columns(
     await store.store(make_learning(id=None))
 
     insert = next(c for c in conn.calls if "INSERT INTO learnings" in c.query)
-    # The entry rung, with blank provenance: extraction walked MEMORY ->
-    # LEARNING before the row was durable, so the store inserts at LEARNING
-    # and fabricates neither a validation nor a promotion actor. Column
-    # positions come from the statement itself, so the assertion tracks the
-    # INSERT's 32-column list instead of hardcoding offsets.
-    columns = (
-        insert.query.split("(")[1].split(")")[0].replace("\n", " ").replace(" ", "").split(",")
-    )
-    assert len(columns) == len(insert.args) == 32
-    assert insert.args[columns.index("stage")] is LearningStage.LEARNING
-    assert insert.args[columns.index("validated_by")] == ""
-    assert insert.args[columns.index("promoted_by")] == ""
+    # The union insert writes the ladder columns beside the pipeline
+    # epistemics (#117/#121): stage directly after the provenance triple,
+    # validated_by/promoted_by naming no actor on a fresh row.
+    assert insert.args[19] is LearningStage.MEMORY
+    assert insert.args[27] == ""
+    assert insert.args[-1] == ""

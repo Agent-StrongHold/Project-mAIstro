@@ -59,7 +59,7 @@ FAST_DECAY: float = 2.0  # decay_rate multiplier on thumbs-down
 WISDOM_PROMOTE_THRESHOLD: int = 5  # reinforcement_count to promote -> WISDOM
 REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
 
-# Learning pipeline dynamics (ADR-100126-9a4b / EPIC M4-B). A validated learning cannot
+# Learning pipeline dynamics (ADR-100126-8c2d / EPIC M4-B). A validated learning cannot
 # sit below the validation floor -- the Gauntlet accepted its evidence -- and
 # failure knowledge decays slowest: an anti-pattern cost a real failure to
 # learn, and forgetting it re-buys that failure (the Learning-side mirror of
@@ -69,6 +69,46 @@ VALIDATED_CONFIDENCE_FLOOR: float = 0.6
 ANTI_PATTERN_CONFIDENCE_FLOOR: float = 0.6
 EMPIRICAL_HALF_LIFE_DAYS: float = 30.0
 ANTI_PATTERN_HALF_LIFE_DAYS: float = 120.0
+
+
+class LearningStage(StrEnum):
+    """Knowledge-stage ladder over a Learning record (M4-B1 / ADR-103).
+
+    The four semantic states between local execution memory and reusable
+    institutional knowledge, in ascending order:
+
+    - ``MEMORY`` — execution/agent-local remembered evidence/context. The
+      record was captured with its producer provenance but has not been
+      asserted as a reusable claim.
+    - ``LEARNING`` — a claim inferred from that evidence: the correction a
+      later execution is allowed to consider.
+    - ``VALIDATED`` — a claim that survived independent evaluation. Whoever
+      or whatever evaluated it is recorded in ``Learning.validated_by``; the
+      evaluator is not the producer of the claim.
+    - ``REPERTOIRE`` — validated learning explicitly promoted for reuse in
+      shared knowledge. Promotion flips ``status`` to ``promoted`` so every
+      existing promoted-only reader keeps working.
+
+    Not a runtime: the ladder is fields on the one ``Learning`` record plus
+    the transition functions in :mod:`maistro.memory.learnings.lifecycle`.
+    A stage is metadata about knowledge, and it never grants permissions or
+    execution authority — the Sentinel never reads it (ADR-103).
+    """
+
+    MEMORY = "memory"
+    LEARNING = "learning"
+    VALIDATED = "validated"
+    REPERTOIRE = "repertoire"
+
+
+#: Position of each stage on the ladder. Transitions are forward-only and
+#: single-step; the lifecycle functions derive both rules from this map.
+LEARNING_STAGE_ORDER: dict[LearningStage, int] = {
+    LearningStage.MEMORY: 0,
+    LearningStage.LEARNING: 1,
+    LearningStage.VALIDATED: 2,
+    LearningStage.REPERTOIRE: 3,
+}
 
 
 class MemoryScope(StrEnum):
@@ -91,50 +131,6 @@ SCOPE_RANK: dict[MemoryScope, int] = {
     MemoryScope.USER: 2,
     MemoryScope.AGENT: 1,
     MemoryScope.SESSION: 0,
-}
-
-
-class LearningStage(StrEnum):
-    """Knowledge-stage ladder over a Learning record (M4-B1 / ADR-103,
-    completed by ADR-100126-9a4b / M4-B #117-#121).
-
-    MEMORY -> LEARNING -> VALIDATED -> REPERTOIRE:
-
-    - ``MEMORY`` names the source tier: episodic records of what a Run
-      observed. A :class:`Learning` never carries this stage -- it marks
-      where the ladder starts, so the stage ladder is total (ADR-103).
-    - ``LEARNING``: an extracted correction held locally by one scope. Local
-      belief, not yet reusable knowledge. Every stored learning enters the
-      ladder here (ADR-100126-9a4b): extraction is the MEMORY -> LEARNING
-      step, so no row is left parked on a rung nothing advances.
-    - ``VALIDATED``: an independent Gauntlet accepted the outcome evidence
-      later Runs recorded (#118). Still scoped, now believed. The evaluator
-      is recorded in ``Learning.validated_by``; the *independence* of the
-      evaluator is the caller's duty, which a stage value cannot prove.
-    - ``REPERTOIRE``: collective, reusable knowledge committed for injection
-      into later Runs. The only door in is through VALIDATED; promotion
-      records ``promoted_by`` and flips ``status`` to ``promoted`` so every
-      existing promoted-only reader keeps working.
-
-    Not a runtime: the ladder is fields on the one ``Learning`` record plus
-    the transition functions in :mod:`maistro.memory.learnings.lifecycle`.
-    A stage is metadata about knowledge, and it never grants permissions or
-    execution authority — the Sentinel never reads it (ADR-103).
-    """
-
-    MEMORY = "memory"
-    LEARNING = "learning"
-    VALIDATED = "validated"
-    REPERTOIRE = "repertoire"
-
-
-#: Position of each stage on the ladder. Transitions are forward-only and
-#: single-step; the lifecycle functions derive both rules from this map.
-LEARNING_STAGE_ORDER: dict[LearningStage, int] = {
-    LearningStage.MEMORY: 0,
-    LearningStage.LEARNING: 1,
-    LearningStage.VALIDATED: 2,
-    LearningStage.REPERTOIRE: 3,
 }
 
 
@@ -192,12 +188,14 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
-    # Pipeline + epistemics (ADR-100126-9a4b, EPIC M4-B; ladder per ADR-103).
-    # `stage` is the knowledge pipeline position; `status` stays the store-level
-    # row state. They move together only where they must: committing a learning
-    # to the repertoire sets status="promoted" so existing promoted-only readers
-    # keep working.
-    stage: LearningStage = LearningStage.LEARNING
+    # Knowledge-stage ladder (M4-B1 / ADR-103) with the pipeline epistemics
+    # (#117/#121, ADR-100126-8c2d). `stage` is the knowledge pipeline position;
+    # `status` stays the read surface (`promoted`-only readers keep working).
+    # They move together only where they must: committing a learning to the
+    # repertoire sets status="promoted" so those readers keep working.
+    # `validated_by`/`promoted_by` name the actor of the corresponding
+    # transition — blank means "never happened", never a fabricated default.
+    stage: LearningStage = LearningStage.MEMORY
     epistemic_type: EpistemicType = EpistemicType.EMPIRICAL
     #: 0..1 belief strength, decayed toward the epistemic floor over time.
     confidence: float = DEFAULT_LEARNING_CONFIDENCE
@@ -211,15 +209,12 @@ class Learning:
     #: Gauntlet provenance (#118): which independent validator accepted, and when.
     validated_by: str = ""
     validated_at: datetime | None = None
+    #: Promotion actor (ADR-103): who committed the validated claim for reuse.
+    promoted_by: str = ""
     #: Supersession links (#120). Both rows survive: institutional knowledge is
     # retained, so later Runs can ask what used to be believed.
     supersedes: int | None = None
     superseded_by: int | None = None
-    #: Repertoire-commit actor (ADR-103). Named by the ``plan_advance`` store
-    # path; blank means the row never took the REPERTOIRE step through it,
-    # never a fabricated default. Appended last so positional constructions
-    # of the earlier field set keep their meaning.
-    promoted_by: str = ""
 
 
 @dataclass

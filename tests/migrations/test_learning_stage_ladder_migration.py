@@ -1,20 +1,11 @@
-"""Migration 053 lands the knowledge-stage ladder's provenance, and un-lands it.
+"""Migration 052 lands the knowledge-stage ladder, and un-lands it (M4-B1/ADR-103).
 
 Numbered 048 when written; develop's #398 claimed that id, and develop's own
 #780/#774 then took 049/050, so the revision re-parented onto that chain —
 and develop's #792 eval evidence re-parented onto the same `050` as 051,
-making it the chain tip, so the ladder first landed one rung higher
-(`052_learning_stage_ladder`, `down_revision = "051"`). The merge that
-graduated the M4-B ladder (ADR-103) onto the implemented M4-B lifecycle
-(ADR-100126-9a4b) brought both branches' 052 revisions onto the same parent,
-so the ladder re-parented once more: `053_learning_stage_ladder` — the same
-renumbering every develop collision in this chain has gone through.
-
-In the merged chain `052_learning_lifecycle_columns` already owns
-`stage` (default `learning` — rows enter the ladder at the extracted-claim
-rung) and `validated_by`; this revision adds `promoted_by` and the
-append-only `learning_stage_transitions` ledger, so its downgrade un-lands
-only what it owns.
+making it the chain tip, so the ladder lands one rung higher:
+`052_learning_stage_ladder` (`down_revision = "051"`) — the same renumbering
+every develop collision in this chain has gone through.
 
 The upgrade/downgrade round trip against a real PostgreSQL — the same shape
 migration 031's landing demanded for the episodic provenance columns: a
@@ -42,13 +33,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 _STAGE_COLUMNS = ("stage", "validated_by", "promoted_by")
-
-#: What this revision alone owns: `promoted_by` and the ledger. `stage` and
-#: `validated_by` belong to 052 and survive this revision's downgrade.
-_OWNED_AFTER_DOWNGRADE = {
-    "stage": "'learning'::text",
-    "validated_by": "''::text",
-}
 
 
 def _alembic(*args: str) -> subprocess.CompletedProcess[str]:
@@ -91,34 +75,31 @@ def _ledger_table() -> str | None:
 
 
 def test_upgrade_lands_the_stage_columns_and_the_ledger() -> None:
-    result = _alembic("upgrade", "053")
+    result = _alembic("upgrade", "052")
     assert result.returncode == 0, result.stderr
 
     columns = _learning_stage_columns()
     assert set(columns) == set(_STAGE_COLUMNS)
-    # NOT NULL with honest defaults: rows enter the ladder at `learning`
-    # (extraction is the MEMORY -> LEARNING step) with no fabricated
-    # validation or promotion actor.
-    assert columns["stage"] == "'learning'::text"
+    # NOT NULL with honest defaults: a pre-ladder row is `memory` with no
+    # fabricated validation or promotion actor.
+    assert columns["stage"] == "'memory'::text"
     assert columns["validated_by"] == "''::text"
     assert columns["promoted_by"] == "''::text"
     assert _ledger_table() == "learning_stage_transitions"
 
 
-def test_downgrade_unlands_only_what_this_revision_owns() -> None:
-    _alembic("upgrade", "053")
-    result = _alembic("downgrade", "052")
+def test_downgrade_unlands_the_whole_ladder() -> None:
+    _alembic("upgrade", "052")
+    result = _alembic("downgrade", "051")
     assert result.returncode == 0, result.stderr
 
-    # `promoted_by` and the ledger go; `stage`/`validated_by` stay — 052
-    # owns them, and a downgrade must not strip a lower revision's columns.
-    assert _learning_stage_columns() == _OWNED_AFTER_DOWNGRADE
+    assert _learning_stage_columns() == {}
     assert _ledger_table() is None
 
 
 def test_re_upgrading_over_a_downgraded_schema_restores_the_ladder() -> None:
-    _alembic("downgrade", "052")
-    result = _alembic("upgrade", "053")
+    _alembic("downgrade", "051")
+    result = _alembic("upgrade", "052")
     assert result.returncode == 0, result.stderr
     assert set(_learning_stage_columns()) == set(_STAGE_COLUMNS)
     assert _ledger_table() is not None

@@ -1,4 +1,4 @@
-"""Store-level lifecycle operations (ADR-100126-9a4b, M4-B #120).
+"""Store-level lifecycle operations (ADR-100126-8c2d, M4-B #120).
 
 The rules live in lifecycle.py; these tests pin how InMemoryLearningStore
 applies them to real rows, including the scope rules the other store methods
@@ -18,6 +18,8 @@ from maistro.protocols.memory import (
     LearningStore,
 )
 from maistro.types.memory import Learning
+
+pytestmark = [pytest.mark.contract("behavioral")]
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 

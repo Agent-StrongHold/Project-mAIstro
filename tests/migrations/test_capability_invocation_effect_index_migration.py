@@ -64,18 +64,14 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # that; #398's `048_canvas_job_retry_backoff` continues it, and #780's
     # `049_design_artifact_versions` continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
-    # #780 claimed them — continues after that. #792's eval-score evidence,
-    # which had taken `049` on develop while this branch's artifact-version
-    # ledger took the same number on the same parent, re-parents onto that
-    # `050` as `051_canonical_run_eval_scores`. This branch's
-    # `048_learning_lifecycle_columns` (M4-B, ADR-100126-9a4b) hit the same
-    # 047-child collision on its first develop sync and was renumbered onto
-    # the then-head 050; the second sync moved the head to that
-    # `051_canonical_run_eval_scores`, so it re-parented again as
-    # `052_learning_lifecycle_columns`. Develop's knowledge-stage ladder
-    # (M4-B1, ADR-103) — numbered 048 when written, re-parented to 052 on its
-    # own branch — arrived in the same merge on the same parent, so it took
-    # the next id: `053_learning_stage_ladder` on the `052` column revision.
+    # #780 claimed them — continues after that; and #792's eval-score
+    # evidence, which had taken `049` on this branch while develop's
+    # artifact-version ledger took the same number on the same parent,
+    # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
+    # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
+    # chain tip, so this branch's learning-lifecycle columns (M4-B,
+    # ADR-100126-8c2d) — which had taken `051` and then `052` in earlier
+    # collisions — re-parent onto that `052_learning_stage_ladder` as `053`.
     # The single linear head is `053`.
     walked = {item.revision for item in directory.walk_revisions("base", "053")}
     assert "039_quota_usage_event_identity" in walked

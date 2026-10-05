@@ -1,12 +1,10 @@
 """Knowledge-stage ladder semantics (M4-B1 / ADR-103): rules and in-memory runs.
 
 The ladder is MEMORY -> LEARNING -> VALIDATED -> REPERTOIRE on the one
-``Learning`` record; a stored learning enters it at ``LEARNING``
-(ADR-100126-9a4b: extraction is the MEMORY -> LEARNING step, so no row sits
-parked on a rung nothing advances). These tests pin the transition rules
-themselves (forward-only, single-step, actor-attributed, status flip on
-repertoire commit) and the audit trail the in-memory store keeps, so the
-semantics the SQL twins persist are the semantics a caller actually gets.
+``Learning`` record. These tests pin the transition rules themselves
+(forward-only, single-step, actor-attributed, status flip on repertoire
+commit) and the audit trail the in-memory store keeps, so the semantics the
+SQL twins persist are the semantics a caller actually gets.
 """
 
 from __future__ import annotations
@@ -48,18 +46,15 @@ def make_learning(**overrides: object) -> Learning:
 
 
 @pytest.mark.ac("SPEC-100426-b103/AC-1")
-def test_a_fresh_learning_enters_at_the_learning_rung() -> None:
-    """LEARNING is the entry rung; MEMORY is the episodic source tier itself."""
-    assert Learning().stage is LearningStage.LEARNING
+def test_a_fresh_learning_starts_at_memory() -> None:
+    """Memory = remembered evidence/context; it is the bottom rung."""
+    assert Learning().stage is LearningStage.MEMORY
 
 
 @pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_memory_to_learning_records_the_claim() -> None:
-    """The MEMORY -> LEARNING rung is walked by extraction (ADR-100126-9a4b);
-    the rule table still has to accept exactly that one step."""
-    evidence_row = dataclasses.replace(make_learning(), stage=LearningStage.MEMORY)
     updated, transition = plan_advance(
-        evidence_row, to_stage=LearningStage.LEARNING, actor="planner"
+        make_learning(), to_stage=LearningStage.LEARNING, actor="planner"
     )
     assert updated.stage is LearningStage.LEARNING
     assert updated.validated_by == ""
@@ -107,16 +102,8 @@ def test_backward_transitions_are_rejected() -> None:
 @pytest.mark.ac("SPEC-100426-b103/AC-1")
 def test_skipping_a_rung_is_rejected() -> None:
     """VALIDATED without the LEARNING step would detach the claim from its evidence."""
-    evidence_row = dataclasses.replace(make_learning(), stage=LearningStage.MEMORY)
     with pytest.raises(InvalidStageTransition, match="single-step"):
-        plan_advance(evidence_row, to_stage=LearningStage.VALIDATED, actor="x")
-
-
-@pytest.mark.ac("SPEC-100426-b103/AC-1")
-def test_skipping_validation_from_the_entry_rung_is_rejected() -> None:
-    """A fresh learning is at LEARNING; REPERTOIRE without VALIDATED is a skip."""
-    with pytest.raises(InvalidStageTransition, match="single-step"):
-        plan_advance(make_learning(), to_stage=LearningStage.REPERTOIRE, actor="x")
+        plan_advance(make_learning(), to_stage=LearningStage.VALIDATED, actor="x")
 
 
 @pytest.mark.ac("SPEC-100426-b103/AC-1")
@@ -157,9 +144,8 @@ async def test_the_full_ladder_runs_one_rung_at_a_time(
     store: InMemoryLearningStore,
 ) -> None:
     lid = await store.store(make_learning())
-    # A stored learning enters at LEARNING (ADR-100126-9a4b); the store-path
-    # ladder runs the two actor-attributed rungs above it.
     for to_stage, actor in (
+        (LearningStage.LEARNING, "planner"),
         (LearningStage.VALIDATED, "gauntlet-7"),
         (LearningStage.REPERTOIRE, "curator"),
     ):
@@ -175,13 +161,13 @@ async def test_every_transition_is_recorded_in_order(
     store: InMemoryLearningStore,
 ) -> None:
     lid = await store.store(make_learning())
+    await store.advance_stage(lid, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG)
     await store.advance_stage(lid, to_stage=LearningStage.VALIDATED, actor="gauntlet", org_id=ORG)
-    await store.advance_stage(lid, to_stage=LearningStage.REPERTOIRE, actor="curator", org_id=ORG)
 
     history = await store.stage_history(lid, org_id=ORG)
     assert [(t.from_stage, t.to_stage, t.actor) for t in history] == [
+        (LearningStage.MEMORY, LearningStage.LEARNING, "planner"),
         (LearningStage.LEARNING, LearningStage.VALIDATED, "gauntlet"),
-        (LearningStage.VALIDATED, LearningStage.REPERTOIRE, "curator"),
     ]
     # A learning nobody advanced has an empty trail, not a fabricated one.
     lid2 = await store.store(make_learning(trigger_keys=["other"]))
@@ -198,7 +184,7 @@ async def test_an_illegal_transition_is_rejected_without_a_ledger_row(
     with pytest.raises(InvalidStageTransition):
         await store.advance_stage(lid, to_stage=LearningStage.REPERTOIRE, actor="x", org_id=ORG)
     learning = (await store.list_all(org_id=ORG))[0]
-    assert learning.stage is LearningStage.LEARNING
+    assert learning.stage is LearningStage.MEMORY
     assert await store.stage_history(lid, org_id=ORG) == []
 
 

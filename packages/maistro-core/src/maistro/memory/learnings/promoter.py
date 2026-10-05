@@ -4,7 +4,7 @@ When a learning's hit_count crosses the promotion threshold,
 it graduates to 'promoted' status and optionally triggers
 skill mutation via the SkillForge protocol.
 
-Ported from Stronghold. Since ADR-100126-9a4b (M4-B #118), a configured Gauntlet
+Ported from Stronghold. Since ADR-100126-8c2d (M4-B #118), a configured Gauntlet
 stands between the threshold and the repertoire: hit_count alone only makes a
 learning a *candidate* -- it joins the collective repertoire when the
 Gauntlet accepts the outcome evidence later Runs recorded, and is left in
@@ -22,16 +22,17 @@ from maistro.memory.learnings.lifecycle import (
     commit_to_repertoire,
 )
 from maistro.persistence.learning_scope import matches_learning_scope
-from maistro.protocols.memory import IneffectiveLearningSource
+from maistro.protocols.memory import AntiPatternSink, IneffectiveLearningSource
 from maistro.types.memory import (
     ANTI_PATTERN_CONFIDENCE_FLOOR,
+    LEARNING_STAGE_ORDER,
     EpistemicType,
     LearningStage,
 )
 
 if TYPE_CHECKING:
     from maistro.memory.learnings.approval import LearningApprovalGate
-    from maistro.memory.learnings.gauntlet import LearningGauntlet
+    from maistro.memory.learnings.gauntlet import GauntletVerdict, LearningGauntlet
     from maistro.memory.mutations import InMemorySkillMutationStore
     from maistro.protocols.memory import LearningStore
     from maistro.protocols.skills import SkillForge
@@ -82,35 +83,6 @@ class LearningPromoter:
             return await self._check_with_gate(org_id)
         return await self._check_auto(org_id)
 
-    def _gauntlet_candidates(self, all_rows: list[Learning], org_id: str) -> list[Learning]:
-        """The active rows past the promotion threshold the Gauntlet may judge.
-
-        Scope rule matches ``list_all``: a blank ``org_id`` sweeps every org;
-        otherwise only that org's rows are candidates (#120/#118).
-        """
-        return [
-            lr
-            for lr in all_rows
-            if (org_id or not lr.org_id)
-            and lr.status == "active"
-            and lr.hit_count >= self._threshold
-        ]
-
-    def _promote_through_gauntlet(self, lr: Learning, verdict_ok_reason: str) -> None:
-        """Move one Gauntlet-accepted candidate LEARNING -> VALIDATED -> REPERTOIRE."""
-        assert self._gauntlet is not None
-        advance_stage(
-            lr,
-            LearningStage.VALIDATED,
-            gauntlet_name=self._gauntlet.name,
-        )
-        commit_to_repertoire(lr)
-        logger.info(
-            "Gauntlet-validated learning #%s joined the repertoire (%s)",
-            lr.id,
-            verdict_ok_reason,
-        )
-
     async def _check_with_gauntlet(self, org_id: str = "") -> list[Learning]:
         """Gauntlet-gated promotion: threshold makes a candidate, evidence decides.
 
@@ -124,11 +96,10 @@ class LearningPromoter:
         recorded better evidence.
         """
         assert self._gauntlet is not None
-        promoted: list[Learning] = []
 
         all_rows = await self._store.list_all(org_id=org_id, limit=10_000)
-        candidates = self._gauntlet_candidates(all_rows, org_id)
-        for lr in candidates:
+        promoted: list[Learning] = []
+        for lr in self._gauntlet_candidates(all_rows, org_id):
             verdict = await self._gauntlet.evaluate(lr, evidence=evidence_of(lr))
             if not verdict.ok:
                 logger.info(
@@ -137,12 +108,49 @@ class LearningPromoter:
                     verdict.reason,
                 )
                 continue
-            self._promote_through_gauntlet(lr, verdict.reason)
+            self._admit_validated(lr, verdict)
             if lr.tool_name and self._forge:
                 await self._try_mutate_skill(lr)
             promoted.append(lr)
 
         return promoted
+
+    def _gauntlet_candidates(self, all_rows: list[Learning], org_id: str) -> list[Learning]:
+        """Rows past the hit_count threshold in scope for this sweep.
+
+        Admin-operation scoping, like ``list_all``: a blank ``org_id`` sweeps
+        every org; otherwise only that org's active rows are candidates.
+        """
+        assert self._gauntlet is not None
+        return [
+            lr
+            for lr in all_rows
+            if (org_id or not lr.org_id)
+            and lr.status == "active"
+            and lr.hit_count >= self._threshold
+        ]
+
+    def _admit_validated(self, lr: Learning, verdict: GauntletVerdict) -> None:
+        """Move a Gauntlet-validated learning into the repertoire.
+
+        ADR-103: the ladder is walked rung by rung even on the fast path — a
+        claim is asserted (LEARNING) before it is validated, and validated
+        before it is committed. Reaching VALIDATED records the Gauntlet
+        provenance; VALIDATED -> REPERTOIRE is the commit. Split from the
+        sweep so the promotion semantics stay readable apart from the
+        candidate iteration.
+        """
+        assert self._gauntlet is not None
+        current = LEARNING_STAGE_ORDER.get(lr.stage, LEARNING_STAGE_ORDER[LearningStage.LEARNING])
+        for rung in (LearningStage.LEARNING, LearningStage.VALIDATED):
+            if LEARNING_STAGE_ORDER[rung] > current:
+                advance_stage(lr, rung, gauntlet_name=self._gauntlet.name)
+        commit_to_repertoire(lr)
+        logger.info(
+            "Gauntlet-validated learning #%s joined the repertoire (%s)",
+            lr.id,
+            verdict.reason,
+        )
 
     async def capture_anti_patterns(
         self,
@@ -155,16 +163,22 @@ class LearningPromoter:
         Failure knowledge is retained, not discarded: the learning is
         reclassified ``ANTI_PATTERN`` and its confidence is lifted to the
         anti-pattern floor, because it cost real failures to learn and a later
-        Run must not re-buy them. The row stays ``active`` at stage LEARNING --
-        reclassification is not validation; joining the repertoire still
-        requires the Gauntlet like any other learning.
+        Run must not re-buy them. The row stays ``active`` at its captured
+        stage (``MEMORY`` under ADR-103: reclassification is not assertion) --
+        joining the repertoire still requires the Gauntlet like any other
+        learning.
 
         Requires a store that can name its ineffective learnings; one that
-        cannot simply yields nothing to capture.
+        cannot simply yields nothing to capture. A store that also implements
+        :class:`AntiPatternSink` has the reclassification written back: the
+        SQL twins return detached row copies, so without the write the
+        decision would evaporate with the copy and the next process would
+        re-learn the anti-pattern by re-buying the failure.
         """
         source = self._store if isinstance(self._store, IneffectiveLearningSource) else None
         if source is None:
             return []
+        sink = self._store if isinstance(self._store, AntiPatternSink) else None
         captured: list[Learning] = []
         for lr in await source.list_ineffective(min_uses):
             if not matches_learning_scope(lr, org_id=org_id):
@@ -173,6 +187,8 @@ class LearningPromoter:
                 continue
             lr.epistemic_type = EpistemicType.ANTI_PATTERN
             lr.confidence = max(lr.confidence, ANTI_PATTERN_CONFIDENCE_FLOOR)
+            if sink is not None and lr.id is not None:
+                await sink.mark_anti_pattern(lr.id, ANTI_PATTERN_CONFIDENCE_FLOOR, org_id=lr.org_id)
             captured.append(lr)
         return captured
 

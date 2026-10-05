@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any
 
 from maistro.memory.learnings.lifecycle import (
     InvalidStageTransition,
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS learnings (
     run_id TEXT,
     node_run_id TEXT,
     attempt_id TEXT,
-    stage TEXT NOT NULL DEFAULT 'learning',
+    stage TEXT NOT NULL DEFAULT 'memory',
     epistemic_type TEXT NOT NULL DEFAULT 'empirical',
     confidence REAL NOT NULL DEFAULT 0.5,
     applicability TEXT NOT NULL DEFAULT '{}',
@@ -97,18 +97,17 @@ _LEGACY_UPGRADE_COLUMNS = {
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
 
-#: The lifecycle + epistemics columns (ADR-100126-9a4b, EPIC M4-B; ladder
-#: provenance per ADR-103). Scalar state gets NOT NULL DEFAULT so the ALTER is
-#: legal in SQLite; instants and supersession links stay nullable because an
-#: old row genuinely has none, and fabricating one would lie about when
-#: knowledge was confirmed or replaced. Rows enter the ladder at `learning`
-#: (extraction is the MEMORY -> LEARNING step); blank actors are the truth
-#: about rows nothing validated or promoted. A dict literal (not a tuple +
-#: subscript): the retention inventory's AST scan resolves DDL f-strings only
-#: from `.items()` over a module-level dict, and a schema statement it cannot
-#: verify statically fails the suite.
+#: The knowledge-ladder + lifecycle/epistemics columns (ADR-103, ADR-100126-8c2d),
+#: with their in-place upgrade types. NOT NULL with defaults: every pre-ladder
+#: row lands on the bottom rung as the local empirical learning it was, with no
+#: actor recorded — nothing validated or promoted it, and fabricating one would
+#: lie about when knowledge was confirmed or replaced. Instants and supersession
+#: links stay nullable because an old row genuinely has none.
+#: A dict literal (not a tuple + subscript): the retention inventory's AST
+#: scan resolves DDL f-strings only from `.items()` over a module-level dict,
+#: and a schema statement it cannot verify statically fails the suite.
 _LIFECYCLE_UPGRADE_COLUMNS = {
-    "stage": "TEXT NOT NULL DEFAULT 'learning'",
+    "stage": "TEXT NOT NULL DEFAULT 'memory'",
     "epistemic_type": "TEXT NOT NULL DEFAULT 'empirical'",
     "confidence": "REAL NOT NULL DEFAULT 0.5",
     "applicability": "TEXT NOT NULL DEFAULT '{}'",
@@ -198,11 +197,10 @@ class SqliteLearningStore:
             for column in _PROVENANCE_COLUMNS:
                 if column not in columns:
                     await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
-            # And for the lifecycle columns (ADR-100126-9a4b; ladder provenance
-            # per ADR-103): a file created before M4-B holds rows whose pipeline
-            # state was implicit, so the ALTERs stamp the defaults that state
-            # always meant. The audit ledger starts empty and records only
-            # transitions that actually happened.
+            # And for the ladder + lifecycle columns (ADR-103, ADR-100126-8c2d): a
+            # file created before M4-B holds rows whose pipeline state was
+            # implicit, so the ALTERs stamp the defaults that state always
+            # meant — the bottom rung, no actors, local empirical belief.
             for column, column_type in _LIFECYCLE_UPGRADE_COLUMNS.items():
                 if column not in columns:
                     await self._conn.execute(
@@ -418,6 +416,48 @@ class SqliteLearningStore:
         )
         await self._conn.commit()
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        cursor = await self._conn.execute(
+            """SELECT * FROM learnings
+               WHERE success_after_use + failure_after_use >= ?
+                 AND failure_after_use > success_after_use
+               ORDER BY id DESC""",
+            (min_uses,),
+        )
+        columns = [d[0] for d in cursor.description]
+        rows = await cursor.fetchall()
+        return [_row_to_learning(dict(zip(columns, row, strict=True))) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        cursor = await self._conn.execute(
+            """UPDATE learnings
+               SET epistemic_type = 'anti_pattern',
+                   confidence = MAX(confidence, ?)
+               WHERE id = ? AND org_id = ?""",
+            (confidence_floor, learning_id, org_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
     async def check_auto_promotions(
         self,
         threshold: int = 5,
@@ -502,7 +542,7 @@ class SqliteLearningStore:
         at all — that is what makes the transition *durable* (ADR-103).
         """
         row = await self._scoped_row(learning_id, org_id=org_id)
-        current = LearningStage(row.get("stage") or "learning")
+        current = LearningStage(row.get("stage") or "memory")
         candidate = _row_to_learning(row)
         updated, transition = plan_advance(candidate, to_stage=to_stage, actor=actor, reason=reason)
         cursor = await self._conn.execute(
@@ -594,32 +634,41 @@ def _text(row: dict[str, Any], name: str) -> str:
     return str(row.get(name) or "")
 
 
-class _LifecycleRowFields(TypedDict):
-    """The lifecycle + epistemics kwargs (ADR-100126-9a4b) decoded from a row."""
+def _provenance_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": json.loads(row.get("trigger_keys") or "[]"),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name") or "",
+        "source_query": _text(row, "source_query"),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": _text(row, "team_id"),
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status") or "active",
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention") or "",
+        "run_id": _text(row, "run_id"),
+        "node_run_id": _text(row, "node_run_id"),
+        "attempt_id": _text(row, "attempt_id"),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
+    }
 
-    stage: LearningStage
-    epistemic_type: EpistemicType
-    confidence: float
-    applicability: dict[str, list[str]]
-    reinforcement_count: int
-    contradiction_count: int
-    created_at: datetime
-    last_confirmed_at: datetime | None
-    validated_by: str
-    validated_at: datetime | None
-    supersedes: int | None
-    superseded_by: int | None
-    promoted_by: str
 
-
-def _lifecycle_row_fields(row: dict[str, Any]) -> _LifecycleRowFields:
-    """The lifecycle + epistemics columns (ADR-100126-9a4b), pre-migration safe.
+def _lifecycle_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d).
 
     Defaults mirror the dataclass so a pre-M4B row reads back as the local
-    empirical learning it was, not as something the system never claimed.
+    empirical learning on the bottom rung that it was, not as something the
+    system never claimed.
     """
     return {
-        "stage": LearningStage(row.get("stage") or "learning"),
+        "stage": LearningStage(row.get("stage") or "memory"),
         "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
         "confidence": (
             float(row["confidence"])
@@ -640,29 +689,7 @@ def _lifecycle_row_fields(row: dict[str, Any]) -> _LifecycleRowFields:
 
 
 def _row_to_learning(row: dict[str, Any]) -> Learning:
-    return Learning(
-        id=row["id"],
-        category=row.get("category") or "",
-        trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
-        learning=row["learning"],
-        tool_name=row.get("tool_name") or "",
-        source_query=_text(row, "source_query"),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=_text(row, "team_id"),
-        scope=MemoryScope(row.get("scope") or "agent"),
-        hit_count=row.get("hit_count", 0),
-        status=row.get("status") or "active",
-        rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention") or "",
-        run_id=_text(row, "run_id"),
-        node_run_id=_text(row, "node_run_id"),
-        attempt_id=_text(row, "attempt_id"),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
-        **_lifecycle_row_fields(row),
-    )
+    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
 
 
 def _utc_text(moment: datetime) -> str:

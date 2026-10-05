@@ -177,6 +177,28 @@ class IneffectiveLearningSource(Protocol):
 
 
 @runtime_checkable
+class AntiPatternSink(Protocol):
+    """Durably records a caller-decided anti-pattern reclassification (#121).
+
+    The write half of :class:`IneffectiveLearningSource`. The decision stays
+    with the caller; what this adds is durability for backends whose reads
+    return detached row copies -- without it, a reclassification the promoter
+    made on a copy would evaporate with the copy and the next process would
+    re-learn the anti-pattern by re-buying the failure.
+    """
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor.
+
+        Org is an exact boundary, like every other scoped write. Returns
+        whether a row in scope was updated.
+        """
+        ...
+
+
+@runtime_checkable
 class LearningExtractor(Protocol):
     """Extracts learnings from tool call histories. Pure function, no I/O."""
 

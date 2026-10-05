@@ -6,7 +6,7 @@ import itertools
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any
 
 from maistro.memory.learnings.lifecycle import (
     InvalidStageTransition,
@@ -147,13 +147,12 @@ class PgLearningStore:
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''"
             )
-            # M4-B1 (ADR-103) / M4-B (ADR-100126-9a4b): stage columns, same
-            # belt-and-braces upgrade posture as org_id. Rows enter the ladder
-            # at `learning` (extraction is the MEMORY -> LEARNING step), with
+            # M4-B1 (ADR-103): stage columns, same belt-and-braces upgrade
+            # posture as org_id. Pre-ladder rows land on the bottom rung with
             # blank actors — the truth about rows nothing validated.
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "stage TEXT NOT NULL DEFAULT 'learning'"
+                "stage TEXT NOT NULL DEFAULT 'memory'"
             )
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
@@ -217,7 +216,7 @@ class PgLearningStore:
                 # its default. `hit_count` is usually 0 on a new learning, but
                 # a caller that supplies one — a re-import, a merge — must get
                 # it back, and `find_relevant` orders by it. The lifecycle
-                # fields (ADR-100126-9a4b) are written for the same reason: a restart
+                # fields (ADR-100126-8c2d) are written for the same reason: a restart
                 # must not demote a validated learning back to a local belief.
                 """INSERT INTO learnings
                    (category, trigger_keys, learning, tool_name, source_query,
@@ -512,6 +511,50 @@ class PgLearningStore:
                 org_id,
             )
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM learnings
+                   WHERE success_after_use + failure_after_use >= $1
+                     AND failure_after_use > success_after_use
+                   ORDER BY id DESC""",
+                min_uses,
+            )
+        return [_row_to_learning(row) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE learnings
+                   SET epistemic_type = 'anti_pattern',
+                       confidence = GREATEST(confidence, $2)
+                   WHERE id = $1 AND org_id = $3
+                   RETURNING id""",
+                learning_id,
+                confidence_floor,
+                org_id,
+            )
+            return row is not None
+
     async def check_auto_promotions(
         self,
         threshold: int = 5,
@@ -695,33 +738,46 @@ def _load_keys(raw: object) -> list[str]:
     return []
 
 
-class _LifecycleRowFields(TypedDict):
-    """The lifecycle + epistemics kwargs (ADR-100126-9a4b) decoded from a row."""
+def _provenance_fields(row: asyncpg.Record) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": _load_keys(row.get("trigger_keys")),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name", ""),
+        # Preserve both the provenance query and team scope on reads; they are
+        # part of the Learning contract, not write-only SQL columns.
+        "source_query": row.get("source_query", ""),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": row.get("team_id") or "",
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status", "active"),
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention", ""),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
+        # `or ""` because the columns are nullable and the dataclass fields are
+        # not: a row with no producer comes back as a Learning naming none,
+        # which is the same fact in the shape the caller expects (#709).
+        "run_id": row.get("run_id") or "",
+        "node_run_id": row.get("node_run_id") or "",
+        "attempt_id": row.get("attempt_id") or "",
+    }
 
-    stage: LearningStage
-    epistemic_type: EpistemicType
-    confidence: float
-    applicability: dict[str, list[str]]
-    reinforcement_count: int
-    contradiction_count: int
-    created_at: datetime
-    last_confirmed_at: datetime | None
-    validated_by: str
-    validated_at: datetime | None
-    supersedes: int | None
-    superseded_by: int | None
-    promoted_by: str
 
+def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
+    """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d).
 
-def _lifecycle_row_fields(row: asyncpg.Record) -> _LifecycleRowFields:
-    """The lifecycle + epistemics columns (ADR-100126-9a4b), pre-migration safe.
-
-    Defaults mirror the dataclass so a row written before the lifecycle
-    migration reads back as the local empirical learning it was, not as
-    something the system never claimed.
+    Defaults mirror the dataclass so a row written before migration 052 reads
+    back as the local empirical learning on the bottom rung that it was, not
+    as something the system never claimed.
     """
     return {
-        "stage": LearningStage(row.get("stage") or "learning"),
+        "stage": LearningStage(row.get("stage") or "memory"),
         "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
         "confidence": (
             float(row["confidence"])
@@ -742,34 +798,7 @@ def _lifecycle_row_fields(row: asyncpg.Record) -> _LifecycleRowFields:
 
 
 def _row_to_learning(row: asyncpg.Record) -> Learning:
-    return Learning(
-        id=row["id"],
-        category=row.get("category") or "",
-        trigger_keys=_load_keys(row.get("trigger_keys")),
-        learning=row["learning"],
-        tool_name=row.get("tool_name", ""),
-        # Preserve both the provenance query and team scope on reads; they are
-        # part of the Learning contract, not write-only SQL columns.
-        source_query=row.get("source_query", ""),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=row.get("team_id") or "",
-        scope=MemoryScope(row.get("scope") or "agent"),
-        hit_count=row.get("hit_count", 0),
-        status=row.get("status", "active"),
-        rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention", ""),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
-        # `or ""` because the columns are nullable and the dataclass fields are
-        # not: a row with no producer comes back as a Learning naming none,
-        # which is the same fact in the shape the caller expects (#709).
-        run_id=row.get("run_id") or "",
-        node_run_id=row.get("node_run_id") or "",
-        attempt_id=row.get("attempt_id") or "",
-        **_lifecycle_row_fields(row),
-    )
+    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
 
 
 def _load_applicability(raw: object) -> dict[str, list[str]]:

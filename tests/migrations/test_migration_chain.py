@@ -122,7 +122,7 @@ EXPECTED_TABLES = frozenset(
         "knowledge_nodes",
         "learnings",
         # The append-only provenance ledger for the knowledge-stage ladder
-        # (053, M4-B1/ADR-103): one row per accepted MEMORY → LEARNING →
+        # (049, M4-B1/ADR-103): one row per accepted MEMORY → LEARNING →
         # VALIDATED → REPERTOIRE transition, written in the same transaction
         # as the stage update itself.
         "learning_stage_transitions",

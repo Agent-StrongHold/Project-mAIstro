@@ -16,9 +16,7 @@ from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
 from maistro.memory.learnings.approval import LearningApprovalGate
-from maistro.memory.learnings.gauntlet import ChainedGauntlet, OutcomeEvidenceGauntlet
-from maistro.memory.learnings.lifecycle import effectiveness
-from maistro.memory.learnings.promoter import LearningPromoter
+from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
 from maistro.memory.working.protocol import WorkingMemoryStats
 from maistro.ontology.rubric import (
     PassFailScale,
@@ -29,7 +27,6 @@ from maistro.ontology.rubric import (
     RubricSemantic,
 )
 from maistro.projects.rubric_store import RubricStore
-from maistro.protocols.memory import LearningLifecycleStore
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
@@ -154,27 +151,6 @@ _VULTURE_WHITELIST = (
     HarnessTargetKind.AUTHORIZED_CODE,
     HarnessEvolutionProposal._identifier_fields_are_not_blank,
     HarnessEvolutionProposal._candidate_edges_reference_candidate_nodes,
-    # EPIC M4-B (#22): the validated collective learning surface. The Gauntlet
-    # classes are the independent validators a downstream product configures
-    # between a learning's promotion threshold and the collective repertoire
-    # (#118): LearningPromoter accepts any LearningGauntlet, so no scanned
-    # call site constructs the concrete classes -- wiring a default Gauntlet
-    # into the promoter's callers is exactly the product decision #450's
-    # initiative leaves to the consuming product. ``effectiveness`` is the
-    # measured-effect metric (#119) the Gauntlet thresholds are expressed
-    # against; LearningLifecycleStore is the runtime_checkable Protocol port
-    # the durable learning stores are held to structurally (same posture as
-    # the ledger's protocol-and-adapter-port rule) and the conformance suite
-    # asserts conformance against by name. ``capture_anti_patterns`` is the
-    # #121 promotion entry point for failure knowledge: an operator- or
-    # pipeline-scheduled call, the same external-scheduler posture as
-    # PersistedStore's username-claim transactions above. Every identity here
-    # is exercised directly by packages/maistro-core/tests/memory/learnings/.
-    OutcomeEvidenceGauntlet,
-    ChainedGauntlet,
-    effectiveness,
-    LearningPromoter.capture_anti_patterns,
-    LearningLifecycleStore,
     # Eval scores as Run evidence on the canonical spine (M7-A3, #792).
     # The store write/read seam is reached by the scoring caller inside the
     # producing execution and by the #779 family-consistency reader, both
@@ -213,6 +189,19 @@ _VULTURE_WHITELIST = (
     # and #110's review-verb refactor replaced that binding — so name it here,
     # explicitly, for the same reason as its siblings.
     LearningApprovalGate.approve,
+    # Learning lifecycle (M4-B4, #120, SPEC-282). The revisable-learning
+    # contract ships first: its in-tree consumers are its tests, and the
+    # durable ledger twins plus the orchestrator/retrieval wiring that calls
+    # these follow, as they did for the episodic store's dynamics. Same
+    # "contract ships first by design" posture as CampaignSelector and the
+    # eval-score seam above.
+    InMemoryLearningLifecycle.weaken,
+    InMemoryLearningLifecycle.record_contradiction,
+    InMemoryLearningLifecycle.resolve_conflict,
+    InMemoryLearningLifecycle.supersede,
+    InMemoryLearningLifecycle.retire,
+    InMemoryLearningLifecycle.evidence_for,
+    InMemoryLearningLifecycle.revisions_for,
     # Goal `Rubric` as a first-class ontology kind (M7-A2, #791). The issue
     # ships persistence + ontology only — its stop condition ("Do not score
     # anything in this PR") defers the consumers to later M7 work, so the

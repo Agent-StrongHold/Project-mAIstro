@@ -1,5 +1,5 @@
 ---
-id: ADR-100126-9a4b
+id: ADR-100126-8c2d
 title: Validated collective learning — Memory → Learning → Validated Learning → Repertoire
 repo: maistro-engine
 kind: adr
@@ -35,7 +35,7 @@ history:
     date: 2026-10-01
 ---
 
-# ADR-100126-9a4b: Validated collective learning
+# ADR-100126-8c2d: Validated collective learning
 
 ## Context
 
@@ -123,9 +123,14 @@ provenance names *which independent judge* accepted.
   reclassifies repeatedly-followed-into-failure learnings as `ANTI_PATTERN`
   and lifts them to the floor. Reclassification is *not* validation — joining
   the repertoire still requires the Gauntlet, and anti-patterns whose
-  avoidance still fails often fail it like any other learning.
+  avoidance still fails often fail it like any other learning. The sweep runs
+  on the turn path after a failed turn records its outcome, and the SQL twins
+  persist the decision through `mark_anti_pattern` (the
+  `AntiPatternSink` write half), because their reads return detached copies:
+  without the write, the reclassification would evaporate and the next
+  process would re-learn the anti-pattern by re-buying the failure.
 
-All twelve new fields are durable in both SQL twins; migration 048 adds the
+All twelve new fields are durable in both SQL twins; migration 052 adds the
 columns, and #1156's disposition contract enforces that a future Learning
 field cannot land in one twin only.
 
@@ -153,7 +158,7 @@ field cannot land in one twin only.
 - Validation is only as good as outcome attribution: a scope that never calls
   `mark_outcome` starves its own Gauntlet (min_uses fails), which fails closed
   toward *not* promoting — the safe direction.
-- The durable schema grows by 11 columns (migration 048). SQLite files upgrade
+- The durable schema grows by 11 columns (migration 052). SQLite files upgrade
   in place; pre-M4B rows read back as the local empirical learnings they were.
 
 ## Acceptance criteria
