@@ -1,7 +1,7 @@
 # M8-B3 research note — contextual-bandit / outcome-learned model routing
 
-Leaf: #916. Epic: #900. Offline prototype: `scripts/bench_model_routing.py`
-(companion tests: `tests/test_bench_model_routing.py`). No product code is
+Leaf: #916. Epic: #900. Offline prototype: `scripts/bench_outcome_routing.py`
+(companion tests: `tests/test_bench_outcome_routing.py`). No product code is
 changed by this note.
 
 ## Hypothesis
@@ -24,7 +24,7 @@ the prototype does not add one to production.
 
 ## Prototype
 
-`scripts/bench_model_routing.py` is a deterministic, fully offline bench (no
+`scripts/bench_outcome_routing.py` is a deterministic, fully offline bench (no
 network, no database). A synthetic world defines ground-truth
 per-(task, complexity, model) success probabilities for 5 arms across 3
 providers; every policy selects through real `Intent`/`ModelConfig`/
@@ -48,8 +48,8 @@ explore-start, otherwise greedy), `eps-greedy` (ε=0.05 perpetual exploration),
 `linucb` (disjoint, α=0.5, discounted), `thompson-linear` (linear-Gaussian
 posterior sampling per arm).
 
-Reproduce: `uv run python scripts/bench_model_routing.py --output results.json`
-(a manual-dispatch workflow, `.github/workflows/model-routing-bench.yml`,
+Reproduce: `uv run python scripts/bench_outcome_routing.py --output results.json`
+(a manual-dispatch workflow, `.github/workflows/outcome-routing-bench.yml`,
 re-runs it on demand and uploads the full results artifact).
 
 ## Record

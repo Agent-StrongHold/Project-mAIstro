@@ -17,10 +17,10 @@ changes.
 
 All additions, no removals:
 
-- `scripts/bench_model_routing.py` — the bench itself (measured root:
+- `scripts/bench_outcome_routing.py` — the bench itself (measured root:
   `scripts/` is covered by the quality.yml producer, and this file sits at
-  99% line / 98% branch under `tests/test_bench_model_routing.py`).
-- `tests/test_bench_model_routing.py` — **+31 tests** in the root `tests/`
+  99% line / 98% branch under `tests/test_bench_outcome_routing.py`).
+- `tests/test_bench_outcome_routing.py` — **+31 tests** in the root `tests/`
   suite: the static baseline provably routes through production
   `score_candidate` including its no-paygo filter path; world drift mutates
   ground truth while catalog metadata stays stale; the feedback channel
