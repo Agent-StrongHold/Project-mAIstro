@@ -393,6 +393,64 @@ def test_registry_rot_is_refused(tmp_path, monkeypatch) -> None:
     assert any("inventory rot" in failure for failure in failures)
 
 
+# --------------------------------------------------------------------------- #
+# #1860: the declared handler must be the discovered function's own name
+# --------------------------------------------------------------------------- #
+
+
+def test_registry_handler_drift_is_refused(tmp_path, monkeypatch) -> None:
+    """A nonempty-but-wrong handler name is not validated away: the entry
+    resolves by (file, method, path), so only the name comparison can catch
+    that the declaration points at a function that is not there."""
+    entry = _identity_entry(handler="different_handler")
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    failures, count = mod._check_registry(_live_identity())
+    assert count == 1
+    assert len(failures) == 1
+    assert "handler identity drift" in failures[0]
+    # Both names in the output: what the inventory declares, what is live.
+    assert "'different_handler'" in failures[0]
+    assert "'things_handler'" in failures[0]
+
+
+def test_renamed_handler_fails_until_reconciled(tmp_path, monkeypatch) -> None:
+    """The inverse rename: the live function was renamed, the inventory was
+    not. Fails naming the stale declaration and the discovered name."""
+    entry = _identity_entry()  # declares things_handler
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    renamed = {
+        ("synthetic.py", "get", "/things"): _func("def renamed_things_handler():\n    return []\n")
+    }
+    failures, _ = mod._check_registry(renamed)
+    assert len(failures) == 1
+    assert "handler identity drift" in failures[0]
+    assert "'things_handler'" in failures[0]
+    assert "'renamed_things_handler'" in failures[0]
+
+
+def test_correct_handler_identity_passes(tmp_path, monkeypatch) -> None:
+    entry = _identity_entry()  # equals the live function's name
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    failures, count = mod._check_registry(_live_identity())
+    assert failures == []
+    assert count == 1
+
+
+def test_unrelated_route_handler_cannot_satisfy_identity(tmp_path, monkeypatch) -> None:
+    """A handler that exists on a *different* route cannot satisfy this
+    entry: resolution is by (file, method, path) and the name is compared
+    against that identity's function only."""
+    entry = _identity_entry(handler="other_handler")
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    live = dict(_live_identity())
+    live[("other.py", "get", "/others")] = _func("def other_handler():\n    return []\n")
+    failures, _ = mod._check_registry(live)
+    assert len(failures) == 1
+    assert "handler identity drift" in failures[0]
+    assert "'other_handler'" in failures[0]
+    assert "'things_handler'" in failures[0]
+
+
 def test_registry_temporary_needs_issue_and_unexpired_expiry(tmp_path, monkeypatch) -> None:
     entry = _identity_entry(
         disposition="temporary", expires=(date.today() - timedelta(days=1)).isoformat()
@@ -427,6 +485,27 @@ def test_main_reports_findings_and_fails(tmp_path, monkeypatch, capsys) -> None:
     assert "canned route handler" in out
     assert "inventory rot" in out
     assert "missing inventory document" in out
+
+
+def test_main_fails_on_handler_identity_drift_alone(tmp_path, monkeypatch, capsys) -> None:
+    """#1860 end-to-end: a real-work route, a present inventory document, and
+    a registry entry whose handler name is stale. The full gate must fail on
+    the drift alone — naming both handlers — with no rot and no canned
+    finding to confuse the repair."""
+    routes = _write_routes(tmp_path, REAL_WORK)  # routes_0.py @router.get("/real")
+    entry = _identity_entry(handler="different_handler", file="routes_0.py", path="/real")
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    inventory = tmp_path / "route-contract-inventory.md"
+    inventory.write_text("# route contract inventory\n")
+    monkeypatch.setattr(mod, "INVENTORY_DOC", inventory)
+    assert mod.main() == 1
+    out = capsys.readouterr().out
+    assert "handler identity drift" in out
+    assert "'different_handler'" in out
+    assert "'real_things'" in out
+    assert "inventory rot" not in out
+    assert "canned route handler" not in out
 
 
 def test_main_passes_on_this_tree(capsys) -> None:
