@@ -77,9 +77,11 @@ def _assess(
     Args:
         record: One exact admission record class — an
             :class:`AdmissionRecordV2` (fields read through its envelope) or
-            a :class:`LegacyAdmissionRecord` (top-level fields). ``None``,
-            raw database rows, receipt-only shapes, and mutable dictionaries
-            are rejected.
+            a :class:`LegacyAdmissionRecord` (top-level fields). Exactness
+            is by identity (``type(record) is ...``), not subclassing: a
+            subclass instance is foreign input, not a stored row shape.
+            ``None``, raw database rows, receipt-only shapes, mutable
+            dictionaries, and record subclasses are all rejected.
         fingerprint: The arriving submission's lowercase ``[0-9a-f]{64}``
             payload fingerprint.
         now_us: The caller's observation instant in microseconds, signed
@@ -95,9 +97,15 @@ def _assess(
         ValueError: If ``record`` is neither exact record class, or
             ``fingerprint``/``now_us`` is malformed.
     """
-    if not isinstance(record, (AdmissionRecordV2, LegacyAdmissionRecord)):
+    # Exact record classes, not isinstance: the contract names the two
+    # stored row shapes, and a subclass (or its mutated sibling) is foreign
+    # input that must fail loudly rather than be classified. Frozen data
+    # classes are subclassable, so an isinstance gate would silently accept
+    # a ``V2Subclass`` and read it as a real row.
+    record_type = type(record)
+    if record_type not in (AdmissionRecordV2, LegacyAdmissionRecord):
         raise ValueError(
-            "record must be an AdmissionRecordV2 or LegacyAdmissionRecord, "
+            "record must be exactly an AdmissionRecordV2 or LegacyAdmissionRecord, "
             f"not {type(record).__name__}"
         )
     if not isinstance(fingerprint, str) or _FINGERPRINT_RE.fullmatch(fingerprint) is None:
@@ -111,6 +119,10 @@ def _assess(
     ):
         raise ValueError(f"now_us must be a signed 64-bit int, not {type(now_us).__name__}")
 
+    # isinstance here only so mypy narrows the union for attribute access:
+    # the exact-class gate above already proved ``record`` is one of the two
+    # exact classes, so no subclass can reach this branch and the isinstance
+    # and ``record_type is`` forms are behaviorally identical here.
     if isinstance(record, AdmissionRecordV2):
         expires_at_us = record.envelope.expires_at_us
         stored_fingerprint = record.envelope.fingerprint
@@ -132,7 +144,7 @@ def _assess(
         (lambda: expires_at_us <= now_us, AdmissionAssessment.REPLACE_EXPIRED),
         (lambda: stored_fingerprint != fingerprint, AdmissionAssessment.MISMATCH),
         (lambda: record.binding is not None, AdmissionAssessment.REPLAYED),
-        (lambda: isinstance(record, LegacyAdmissionRecord), AdmissionAssessment.LEGACY_UNRESOLVED),
+        (lambda: record_type is LegacyAdmissionRecord, AdmissionAssessment.LEGACY_UNRESOLVED),
         (lambda: record.lease_expires_at_us <= now_us, AdmissionAssessment.TAKEOVER),
     )
     for matches, outcome in decision_order:

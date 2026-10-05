@@ -10,6 +10,7 @@ new classifier to prove the separate module path activated nothing there.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
 import subprocess
@@ -605,3 +606,328 @@ def test_replay_vs_legacy_split_on_identical_facts() -> None:
             admission_generation._assess(record, fingerprint=FP, now_us=MID_US)
             == AdmissionAssessment.REPLAYED
         )
+
+
+# ---------------------------------------------------------------------------
+# #1852's named acceptance tests: the issue's required matrix as one
+# parametrized table plus each named edge case, under the issue's exact test
+# names. The sections above remain as the boundary-level detail behind them.
+# ---------------------------------------------------------------------------
+
+
+class _V2Subclass(AdmissionRecordV2):
+    """A v2 subclass: foreign input, not one of the two exact row shapes."""
+
+
+class _LegacySubclass(LegacyAdmissionRecord):
+    """Same for the legacy record: must not pass the exact-class gate."""
+
+
+def _v2_subclass(
+    *,
+    fingerprint: str = FP,
+    lease_expires_at_us: int = PENDING_LEASE_US,
+    bound: bool = False,
+) -> _V2Subclass:
+    lease = min(max(lease_expires_at_us, CREATED_AT_US), EXPIRES_AT_US)
+    return _V2Subclass(
+        envelope=_envelope(fingerprint),
+        owner_token=_OWNER_TOKEN,
+        lease_expires_at_us=lease,
+        binding=_binding() if bound else None,
+        acknowledged_at_us=None,
+    )
+
+
+def _legacy_subclass(
+    *,
+    fingerprint: str = FP,
+    lease_expires_at_us: int = PENDING_LEASE_US,
+    bound: bool = False,
+) -> _LegacySubclass:
+    return _LegacySubclass(
+        fingerprint=fingerprint,
+        request_snapshot=CanonicalJsonObject('{"kind":"request"}'),
+        created_at_us=CREATED_AT_US,
+        expires_at_us=EXPIRES_AT_US,
+        lease_expires_at_us=lease_expires_at_us,
+        binding=_binding() if bound else None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("record", "fingerprint", "now_us", "expected"),
+    [
+        # Row 1: v2, unexpired, different fingerprint, any valid state.
+        (_v2(bound=True, acknowledged=True), FP_OTHER, MID_US, AdmissionAssessment.MISMATCH),
+        (_v2(bound=True), FP_OTHER, MID_US, AdmissionAssessment.MISMATCH),
+        (_v2(bound=False), FP_OTHER, MID_US, AdmissionAssessment.MISMATCH),
+        (
+            _v2(bound=False, lease_expires_at_us=CREATED_AT_US),
+            FP_OTHER,
+            MID_US,
+            AdmissionAssessment.MISMATCH,
+        ),
+        # Row 7: legacy, unexpired, different fingerprint, bound or unbound.
+        (_legacy(bound=True), FP_OTHER, MID_US, AdmissionAssessment.MISMATCH),
+        (_legacy(bound=False), FP_OTHER, MID_US, AdmissionAssessment.MISMATCH),
+        # Row 2: v2, unexpired, same fingerprint, bound, acknowledged.
+        (_v2(bound=True, acknowledged=True), FP, MID_US, AdmissionAssessment.REPLAYED),
+        # Row 3: v2, unexpired, same fingerprint, bound, acknowledgement absent.
+        (_v2(bound=True, acknowledged=False), FP, MID_US, AdmissionAssessment.REPLAYED),
+        # Row 4: v2, unexpired, same fingerprint, unbound, lease later than now.
+        (
+            _v2(bound=False, lease_expires_at_us=PENDING_LEASE_US),
+            FP,
+            PENDING_LEASE_US - 1,
+            AdmissionAssessment.PENDING,
+        ),
+        # Row 5: v2, unexpired, same fingerprint, unbound, lease equal to now.
+        (
+            _v2(bound=False, lease_expires_at_us=PENDING_LEASE_US),
+            FP,
+            PENDING_LEASE_US,
+            AdmissionAssessment.TAKEOVER,
+        ),
+        # Row 6: v2, unexpired, same fingerprint, unbound, lease earlier than now.
+        (
+            _v2(bound=False, lease_expires_at_us=PENDING_LEASE_US),
+            FP,
+            PENDING_LEASE_US + 1,
+            AdmissionAssessment.TAKEOVER,
+        ),
+        # Row 8: legacy, unexpired, same fingerprint, bound.
+        (_legacy(bound=True), FP, MID_US, AdmissionAssessment.REPLAYED),
+        # Row 9: legacy, unexpired, same fingerprint, unbound, any lease.
+        (
+            _legacy(bound=False, lease_expires_at_us=PENDING_LEASE_US - 1),
+            FP,
+            MID_US,
+            AdmissionAssessment.LEGACY_UNRESOLVED,
+        ),
+        (
+            _legacy(bound=False, lease_expires_at_us=EXPIRES_AT_US + 60_000_000),
+            FP,
+            MID_US,
+            AdmissionAssessment.LEGACY_UNRESOLVED,
+        ),
+        # Row 10: either, expired or exactly at the deadline — same or changed
+        # payload, any valid state.
+        (
+            _v2(bound=True, acknowledged=True),
+            FP,
+            EXPIRES_AT_US,
+            AdmissionAssessment.REPLACE_EXPIRED,
+        ),
+        (_v2(bound=False), FP_OTHER, EXPIRES_AT_US, AdmissionAssessment.REPLACE_EXPIRED),
+        (_legacy(bound=True), FP, EXPIRES_AT_US, AdmissionAssessment.REPLACE_EXPIRED),
+        (_legacy(bound=False), FP_OTHER, EXPIRES_AT_US + 1, AdmissionAssessment.REPLACE_EXPIRED),
+    ],
+    ids=[
+        "r1-v2-diff-fp-bound-ack",
+        "r1-v2-diff-fp-bound",
+        "r1-v2-diff-fp-unbound-live-lease",
+        "r1-v2-diff-fp-unbound-lapsed",
+        "r7-legacy-diff-fp-bound",
+        "r7-legacy-diff-fp-unbound",
+        "r2-v2-bound-ack",
+        "r3-v2-bound-unack",
+        "r4-v2-unbound-lease-later",
+        "r5-v2-unbound-lease-equal",
+        "r6-v2-unbound-lease-earlier",
+        "r8-legacy-bound",
+        "r9-legacy-unbound-lease-inside",
+        "r9-legacy-unbound-lease-beyond",
+        "r10-v2-expired-same-fp",
+        "r10-v2-expired-diff-fp",
+        "r10-legacy-expired-same-fp",
+        "r10-legacy-expired-past-deadline",
+    ],
+)
+def test_assessment_matrix(
+    record: AdmissionRecordV2 | LegacyAdmissionRecord,
+    fingerprint: str,
+    now_us: int,
+    expected: AdmissionAssessment,
+) -> None:
+    """The issue's required matrix, one row per branch, fixed ``now_us``."""
+    assert admission_generation._assess(record, fingerprint=fingerprint, now_us=now_us) == expected
+
+
+def test_exact_replay_deadline_replaces_generation_for_same_and_changed_payload() -> None:
+    """At ``now_us == expires_at_us`` the window is over for both the stored
+    payload and a changed one: every in-window classification collapses to
+    REPLACE_EXPIRED, while one microsecond earlier the same rows still
+    classify inside the window."""
+    rows = [
+        _v2(bound=True, acknowledged=True),
+        _v2(bound=False, lease_expires_at_us=EXPIRES_AT_US),
+        _legacy(bound=True),
+        _legacy(bound=False, lease_expires_at_us=EXPIRES_AT_US + 60_000_000),
+    ]
+    for record in rows:
+        for fingerprint in (FP, FP_OTHER):
+            assert (
+                admission_generation._assess(record, fingerprint=fingerprint, now_us=EXPIRES_AT_US)
+                == AdmissionAssessment.REPLACE_EXPIRED
+            )
+            assert (
+                admission_generation._assess(
+                    record, fingerprint=fingerprint, now_us=EXPIRES_AT_US - 1
+                )
+                != AdmissionAssessment.REPLACE_EXPIRED
+            )
+
+
+def test_changed_payload_one_microsecond_before_expiry_remains_mismatch() -> None:
+    """One microsecond before the deadline a changed payload is still
+    MISMATCH — with a long-lapsed pending lease, a bound row, or a legacy
+    pending row — and is swallowed by REPLACE_EXPIRED exactly at it."""
+    records = [
+        _v2(bound=False, lease_expires_at_us=CREATED_AT_US),
+        _v2(bound=True),
+        _legacy(bound=False),
+    ]
+    for record in records:
+        assert (
+            admission_generation._assess(record, fingerprint=FP_OTHER, now_us=EXPIRES_AT_US - 1)
+            == AdmissionAssessment.MISMATCH
+        )
+        assert (
+            admission_generation._assess(record, fingerprint=FP_OTHER, now_us=EXPIRES_AT_US)
+            == AdmissionAssessment.REPLACE_EXPIRED
+        )
+
+
+def test_lease_takeover_does_not_mean_replay_window_replacement() -> None:
+    """A lapsed pending lease inside the window asks only for owner-fence
+    rotation (TAKEOVER) — never for a new generation — all the way to the
+    window's last microsecond; REPLACE_EXPIRED arrives only at the deadline."""
+    record = _v2(bound=False, lease_expires_at_us=PENDING_LEASE_US)
+    for now_us in (PENDING_LEASE_US, PENDING_LEASE_US + 1, EXPIRES_AT_US - 1):
+        assert (
+            admission_generation._assess(record, fingerprint=FP, now_us=now_us)
+            == AdmissionAssessment.TAKEOVER
+        )
+    assert (
+        admission_generation._assess(record, fingerprint=FP, now_us=EXPIRES_AT_US)
+        == AdmissionAssessment.REPLACE_EXPIRED
+    )
+    assert AdmissionAssessment.TAKEOVER != AdmissionAssessment.REPLACE_EXPIRED
+
+
+def test_bound_unacknowledged_admission_replays_after_lease_expiry() -> None:
+    """A populated binding wins with the acknowledgement absent and the
+    pending lease long lapsed: the failed-``complete`` story replays instead
+    of becoming takeover-eligible fresh work."""
+    record = _v2(bound=True, acknowledged=False, lease_expires_at_us=CREATED_AT_US)
+    assert record.binding is not None
+    assert record.acknowledged_at_us is None
+    for now_us in (MID_US, PENDING_LEASE_US, EXPIRES_AT_US - 1):
+        assert (
+            admission_generation._assess(record, fingerprint=FP, now_us=now_us)
+            == AdmissionAssessment.REPLAYED
+        )
+    # The very same row unbound would be takeover-eligible by then — the
+    # binding is what keeps it a replay.
+    unbound = _v2(bound=False, lease_expires_at_us=CREATED_AT_US)
+    assert (
+        admission_generation._assess(unbound, fingerprint=FP, now_us=MID_US)
+        == AdmissionAssessment.TAKEOVER
+    )
+
+
+def test_legacy_pending_never_takes_over_inside_window() -> None:
+    """An unbound legacy row inside its window is LEGACY_UNRESOLVED for
+    every lease state — before, at, and after its lease deadline, and with a
+    lease beyond the replay window — never TAKEOVER."""
+    cases = [
+        (PENDING_LEASE_US, PENDING_LEASE_US - 1),
+        (PENDING_LEASE_US, PENDING_LEASE_US),
+        (PENDING_LEASE_US, PENDING_LEASE_US + 1),
+        (CREATED_AT_US, MID_US),
+        (EXPIRES_AT_US + 60_000_000, MID_US),
+    ]
+    for lease_expires_at_us, now_us in cases:
+        record = _legacy(bound=False, lease_expires_at_us=lease_expires_at_us)
+        assessment = admission_generation._assess(record, fingerprint=FP, now_us=now_us)
+        assert assessment == AdmissionAssessment.LEGACY_UNRESOLVED
+        assert assessment is not AdmissionAssessment.TAKEOVER
+
+
+def test_expired_legacy_pending_is_replaceable_without_inventing_old_identity() -> None:
+    """At the deadline an unbound legacy row's unresolved identity stops
+    mattering: the answer is REPLACE_EXPIRED — a fresh generation may be
+    acquired after rechecking expiry — never a fabricated legacy replay or
+    takeover of the old row."""
+    record = _legacy(bound=False, lease_expires_at_us=PENDING_LEASE_US)
+    cases = [(EXPIRES_AT_US, FP), (EXPIRES_AT_US + 1, FP), (EXPIRES_AT_US, FP_OTHER)]
+    for now_us, fingerprint in cases:
+        assessment = admission_generation._assess(record, fingerprint=fingerprint, now_us=now_us)
+        assert assessment == AdmissionAssessment.REPLACE_EXPIRED
+        assert assessment is not AdmissionAssessment.LEGACY_UNRESOLVED
+        assert assessment is not AdmissionAssessment.TAKEOVER
+
+
+def test_assessment_leaves_record_and_all_snapshot_bytes_unchanged() -> None:
+    """The classifier reads; it never writes. The full nested field dump of
+    the record — including the three canonical snapshot byte strings and the
+    binding — compares identical before and after assessment, for both
+    record classes and across several assessments."""
+    for record in (_v2(bound=True, acknowledged=True), _legacy(bound=True)):
+        before = json.dumps(dataclasses.asdict(record), sort_keys=True, default=str)
+        if isinstance(record, AdmissionRecordV2):
+            snapshots_before = (
+                record.envelope.request_snapshot.text,
+                record.envelope.receipt_snapshot.text,
+                record.envelope.provenance_snapshot.text,
+            )
+        else:
+            snapshots_before = (record.request_snapshot.text,)
+        for fingerprint, now_us in (
+            (FP, MID_US),
+            (FP_OTHER, EXPIRES_AT_US),
+            (FP, PENDING_LEASE_US),
+        ):
+            admission_generation._assess(record, fingerprint=fingerprint, now_us=now_us)
+        after = json.dumps(dataclasses.asdict(record), sort_keys=True, default=str)
+        assert after == before
+        if isinstance(record, AdmissionRecordV2):
+            snapshots_after = (
+                record.envelope.request_snapshot.text,
+                record.envelope.receipt_snapshot.text,
+                record.envelope.provenance_snapshot.text,
+            )
+        else:
+            snapshots_after = (record.request_snapshot.text,)
+        assert snapshots_after == snapshots_before
+        assert record.binding is not None and record.binding.run_id == "run-1"
+
+
+def test_invalid_assessment_inputs_are_rejected() -> None:
+    """The exact-class gate is identity, not isinstance: a record subclass
+    is foreign input and raises ValueError like every other non-row shape —
+    as do malformed fingerprints and out-of-domain ``now_us`` values."""
+    for record in (
+        _v2_subclass(),
+        _legacy_subclass(),
+        None,
+        {},
+        object(),
+    ):
+        with pytest.raises(ValueError, match="record must be"):
+            admission_generation._assess(record, fingerprint=FP, now_us=MID_US)  # type: ignore[arg-type]
+    for fingerprint in (None, "", "A" * 64, "a" * 63, "g" * 64):
+        with pytest.raises(ValueError, match="fingerprint"):
+            admission_generation._assess(
+                _v2(),  # type: ignore[arg-type]
+                fingerprint=fingerprint,  # type: ignore[arg-type]
+                now_us=MID_US,
+            )
+    for now_us in (None, True, 1.0, "1", 2**63, -(2**63) - 1):
+        with pytest.raises(ValueError, match="now_us"):
+            admission_generation._assess(
+                _v2(),  # type: ignore[arg-type]
+                fingerprint=FP,
+                now_us=now_us,  # type: ignore[arg-type]
+            )

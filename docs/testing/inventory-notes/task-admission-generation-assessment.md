@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +105
+  packages/maistro-core/tests: +131
 ---
 # #1852 admission-generation classifier evidence
 
@@ -949,3 +949,83 @@ quality gates at its final head. Until (1), every merge-queue evaluation
 of this stack deterministically fails exact-debt-ledger at step 1, exactly
 as the leaf contract ("A candidate baseline update cannot grant itself
 permission") requires it to.
+
+## CI-repair round 13 (2026-10-05): exact-record-class input contract fixed
+## (isinstance -> exact class); the issue's nine absent named tests added;
+## fifth mutation (gate reverted to isinstance) proven caught
+
+Prior verification named two tree defects besides the structural
+provenance blocker: (a) `admission_generation.py` validated `record` with
+`isinstance`, so a frozen-dataclass subclass (`V2Subclass(AdmissionRecordV2)`)
+was accepted and classified (`takeover` from a live probe) instead of
+raising `ValueError`, violating the issue's "one of these two exact record
+classes" input contract; (b) nine of the issue's ten required test names
+were absent (only `test_existing_live_claim_flow_does_not_import_v2_classifier`
+existed). Both repaired this round; the provenance blocker is re-proven
+structurally unchanged.
+
+- **Exact-class gate**: validation now compares `type(record) is` the two
+  record classes via a membership test (no boolean operator, so `_assess`
+  stays at radon B (10) — an `and`-joined pair measured C (11) in a first
+  draft and was rejected by that measurement before commit); the
+  decision-table legacy row uses the captured `record_type is` form; the
+  envelope-extraction branch keeps `isinstance` solely for mypy union
+  narrowing, with a comment pinning its equivalence under the gate (mypy
+  cannot narrow via `type() is`, and the issue's "sole production function"
+  constraint rules out a TypeGuard helper). Rejection message now says
+  "exactly an AdmissionRecordV2 or LegacyAdmissionRecord".
+- **Named tests added** (suite 105 -> 131 collected cases; front-matter
+  delta updated to +131; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok after `--update` folded the delta into
+  this note): `test_assessment_matrix` (the issue's ten-row table as one
+  parametrization with ids r1..r10),
+  `test_exact_replay_deadline_replaces_generation_for_same_and_changed_payload`,
+  `test_changed_payload_one_microsecond_before_expiry_remains_mismatch`,
+  `test_lease_takeover_does_not_mean_replay_window_replacement`,
+  `test_bound_unacknowledged_admission_replays_after_lease_expiry`,
+  `test_legacy_pending_never_takes_over_inside_window`,
+  `test_expired_legacy_pending_is_replaceable_without_inventing_old_identity`,
+  `test_assessment_leaves_record_and_all_snapshot_bytes_unchanged` (full
+  nested `dataclasses.asdict` dump plus snapshot `.text` bytes before/after),
+  and `test_invalid_assessment_inputs_are_rejected` (subclass instances of
+  both record classes, None/dict/object, malformed fingerprints and
+  `now_us`). All ten issue-required names now exist; the earlier boundary
+  sections remain as the detail behind them, superseding round 5's
+  coverage-not-spelling note.
+- **Mutation teeth re-proven on the final source** (cp backup/restore,
+  md5 257a6e45c382349dd12f559099663fbc identical before/after; unmutated
+  131 passed): swap TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease row above
+  binding -> 14 failed; LEGACY_UNRESOLVED row deleted (legacy treated as
+  v2) -> 10 failed; MISMATCH row above expiry -> 22 failed; and the fifth,
+  exact-class gate reverted to isinstance -> exactly
+  `test_invalid_assessment_inputs_are_rejected` failed (1 failed, 130
+  passed). All four issue-named mutations plus the new gate mutation are
+  caught.
+- **Gates at this head, CI's exact invocations**: vulture
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) exit 0
+  at 1342 -> 1342, unclassified 0 — the prescribed amendment still has an
+  empty fix-list, ledger byte-identical to the base;
+  `check-reachability.py` exit 0 (172 unreachable of 1285, rows banked);
+  `check-reachability-dispositions.py` exit 0 (51 groups, 150 CONNECT);
+  `check-promotion-surface.py`, `check-shipped-surface-truth.py`,
+  `check-radon-baseline.py` (138 -> 138) all exit 0; mypy clean on the
+  classifier; ruff check + format clean (files and repo-wide).
+- **Structural blocker re-proven, unchanged in kind**:
+  `check-ratchet-provenance.py` exits 1 on exactly its two reachability
+  sub-ratchets — `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` are NEW unreachable/dispositioned
+  modules vs trusted base b672b799aba6 with no already-landed grant
+  (develop carries none). Removing the candidate rows cannot fix this (the
+  modules are genuinely in the tree and genuinely unwired; the scan is of
+  the candidate tree, not the baseline file) and would only re-break
+  `check-reachability.py` and its meta-tests — the round-7 deadlock stands,
+  owned by the separately scoped #1845 integration change (grant merge on
+  the base first, then wiring). The vulture-ledger amendment named by the
+  lane brief remains contraindicated: executed empty for the thirteenth
+  consecutive round.
+
+Acceptance battery at this head: focused classifier suite 131 passed;
+`test_root_admission_identity.py` + unchanged `test_idempotency.py` 112
+passed; import-spy test by exact node ID 1 passed; driver-equivalent checks
+(ruff check/format repo-wide, two-file pytest selection, scoped suite
+inventory) all rc=0.
