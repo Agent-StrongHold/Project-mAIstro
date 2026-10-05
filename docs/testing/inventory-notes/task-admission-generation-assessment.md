@@ -503,3 +503,80 @@ red step left at this head. The unblock sequence is unchanged since round 1
 and belongs to the separately scoped #1845 integration change: land the
 reachability authorizations on the base (grant first, change second), wire
 the reviewed consumer, then converge the unchanged gates at its final head.
+
+## CI-repair round 7 (2026-10-05): exact-debt-ledger re-bound at 014371c2e;
+## vulture fix-list proven empty again; grant precedent identified in the
+## base's own ratchet-authorizations.json
+
+Trigger: the merge-queue evaluation at 014371c2 failed `exact-debt-ledger`
+(actions run 37267687375, job 111627847522) and the lane brief again
+prescribed the vulture-ledger amendment. Re-proven at this head, executed
+not assumed:
+
+- The vulture step is not the defect and never ran in CI (it is step 3 of
+  the job, behind the failing step 1). Executed here with CI's exact
+  invocation `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`: **exit 0**, 1338 reviewed identities ->
+  1338 findings, unclassified 0, never_allowlist 0, and
+  `quality/vulture-baseline.json` remains byte-identical to origin/develop
+  (`git diff origin/develop HEAD -- quality/vulture-baseline.json` is
+  empty). The prescribed amendment has an empty fix-list; the ledger stays
+  untouched for the seventh consecutive round.
+- The actual failing step is step 1 of the job,
+  `scripts/check-ratchet-provenance.py`. Full inventory executed at this
+  head: 9 sub-ratchets, 7 OK (adr-status-language, citation-status,
+  promotion-surface, shell-execution, contract-markers, enumerations,
+  lifecycle), exactly 2 FAIL — `reachability` ("NEW unreachable module
+  absent from trusted base and not previously authorized" for both
+  admission modules) and `reachability-dispositions` ("NEW disposition
+  absent from trusted ledger and not covered by an already-landed
+  reachability authorization" for the same two) — then the aggregate
+  "FAIL: ratchet provenance inventory is incomplete" naming only those
+  two sub-gates.
+- Everything else that can be green at an unwired leaf head is green at
+  014371c2e: focused suites 178 passed (identity 73 + assessment 105);
+  full `check-suite-inventory.py` ok (14 suites, 26138 identities, zero
+  duplicate evidence); `check-shipped-surface-truth.py` and
+  `check-promotion-surface.py` exit 0; mypy clean on both new modules;
+  ruff check + format clean (driver checks 0-4 all rc=0).
+
+New structural evidence, read from the trusted base itself:
+`quality/ratchet-authorizations.json` at 534d475e carries a `reachability`
+section whose every existing entry is this exact debt shape — deliberately
+unwired library/contract modules granted first, then banked with their
+disposition in the follow-up change: the #61 events quartet
+(`maistro.events.convergence/pg_envelope/publisher/wiring`), the #458
+interop pair (`maistro.interop`, `maistro.interop.contract`),
+`@flat/hive-conductor/services.entra_entitlements` (#492),
+`maistro.security.strike_recovery` (#1172), the #1154 graph pair
+(`maistro.graph.executor`, `maistro.graph.run`), and `_vulture_whitelist`
+(#1142, whose grant text limits itself to "exactly that one
+newly-discovered, pre-existing file"). Each entry carries `owner`,
+`issue`, and `reason`. That is the concrete JSON shape the #1845
+integration change must land on the base for
+`maistro.runs.admission_identity` and `maistro.tasks.admission_generation`
+— one grant per module, referencing this leaf's banked rows and their
+CONNECT dispositions — before its own wiring change converges the gates
+at its final head.
+
+The deadlock, stated in gate terms so no future round re-litigates it:
+`check-reachability.py` fails while a currently-unreachable module is
+missing from the candidate baseline (round 3 hit this: the red test /
+Coverage-combine jobs), while `check-reachability-provenance.py` fails
+when the same rows are banked without a base-landed grant (rounds 1/3
+hit this: the red exact-debt-ledger job). `load_authorizations` reads
+only the merge base, so no commit on this branch can satisfy both while
+the modules stay unwired — which is the issue's own staging constraint
+("A candidate baseline update cannot grant itself permission"; wiring is
+the #1845 integration's scope, and
+`test_existing_live_claim_flow_does_not_import_v2_classifier` pins the
+not-wired boundary). The failure is therefore the designed, documented
+merge blocker, not a leaf defect.
+
+Round-7 housekeeping: the previous lane job (de8682026) ended
+`state: failed` on a driver-side provider timeout ("llama-cpp-gemma/
+gemma4-26b-a4b-mtp: Request timed out") after all five repo checks
+returned rc=0 — a dispatch-infrastructure failure, not a tree defect;
+no tree change answers it. This round edits this note only.
+`quality/vulture-baseline.json`, both reachability ledgers, all source
+and test files stay byte-identical to round 6's validated state.
