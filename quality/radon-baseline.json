@@ -1215,12 +1215,12 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::evaluate_candidate",
       "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 1005,
+      "line": 1131,
       "name": "evaluate_candidate",
       "classname": null,
-      "rank": "D",
-      "complexity": 21,
-      "rationale": "Regressed by #1730 (2026-10-02) from 25 to 30; the #108 proven-scenario passthrough pushed it to 32 (E), which the radon ratchet rejected in CI. The repair refactored the three cost-layered evidence blocks (fail-first TDD, mutation-probe staging, regression-judge attachment) into rank-A helpers, banking the block at its measured 21 (D). #1792 tracks whether the remaining complexity can come down further."
+      "rank": "C",
+      "complexity": 20,
+      "rationale": "Regressed by #1730 (2026-10-02) from 25 to 30; the #108 proven-scenario passthrough and the #109 evaluator-oracle preamble both run through this block. The merge of #108 (proven-scenario objective wiring) and #109 (oracle-integrity preamble before any oracle run) refactored the cost-layered evidence blocks (fail-first TDD, mutation-probe staging, regression-judge attachment, oracle-integrity resolution, refactor-baseline-quality) into named helpers, taking the merged block from the trusted base's D(21) to its measured C(20). #1792 tracks whether the remaining complexity can come down further."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::protected_inventory_gate",
@@ -1293,16 +1293,6 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._fitness_decision",
-      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 2367,
-      "name": "_fitness_decision",
-      "classname": "LocalRsiLoop",
-      "rank": "C",
-      "complexity": 19,
-      "rationale": "Regressed by #1730 (2026-10-02), not newly visible. The file dates from the 2026-08-21 initial release; this complexity does not -- #1730 wired the fail-first evidence gate through the block and took it from 16 to 19. It went unmeasured only because the radon scan still covers packages/maistro-core/src alone, so maistro-rsi was never in scope. #1684 brings it in; #1792 tracks bringing the complexity back down, together with the three blocks #1730 added outright."
-    },
-    {
       "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._genome_roster",
       "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
       "line": 1484,
@@ -1360,16 +1350,6 @@
       "classname": "LocalRsiLoop",
       "rank": "D",
       "complexity": 22,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop.export_promotions",
-      "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 2853,
-      "name": "export_promotions",
-      "classname": "LocalRsiLoop",
-      "rank": "C",
-      "complexity": 11,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {

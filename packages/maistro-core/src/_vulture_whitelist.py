@@ -7,6 +7,7 @@ usage is implicit through Pydantic or intentionally external through the public
 Invocation execution API.
 """
 
+from maistro import identity as identity_package
 from maistro.backlog.markdown_io import ParsedItem
 from maistro.backlog.model import (
     BacklogClaim,
@@ -27,6 +28,7 @@ from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
 from maistro.memory.learnings.approval import LearningApprovalGate
 from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
+from maistro.memory.working.protocol import WorkingMemoryStats
 from maistro.ontology.rubric import (
     PassFailScale,
     RubricDimension,
@@ -166,6 +168,22 @@ _VULTURE_WHITELIST = (
     # until those issues land; the contract ships first by design.
     CampaignSelector.eligible_items,
     CampaignSelector.select_next,
+    # Conductor identity extras (ADR-021): the package-level lazy loader is
+    # part of the recoverability contract of the optional `identity` extra.
+    # The loader is exercised by every `maistro.identity.ConductorSeed`-style
+    # access those consumers make; it is referenced in both import spellings
+    # (`identity_getattr` above and the package-qualified form here) so the
+    # scanner sees the symbol whichever way a consumer reaches it.
+    identity_package.__getattr__,
+    # Working-memory observability snapshot (#301, ADR-082226-5104 §5): the
+    # frozen stats surface is read by operators and the conformance suite
+    # (stats.degraded_reason is the honest "what is not serving" field); no
+    # scanned src path reads every field. The references are static scanner
+    # input (this module never executes), so instance-only dataclass fields
+    # are fine to name directly.
+    WorkingMemoryStats.index_terms,  # type: ignore[misc]
+    WorkingMemoryStats.embedded_records,  # type: ignore[misc]
+    WorkingMemoryStats.degraded_reason,  # type: ignore[misc]
     # EPIC M4-E (#25): the closed evolvable-harness-component vocabulary and
     # the proposal's Pydantic model validators. Members are the serialized
     # values an optimizer's proposal carries (the same posture as the ledger's

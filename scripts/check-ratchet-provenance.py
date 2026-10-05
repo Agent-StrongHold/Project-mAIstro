@@ -76,6 +76,20 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "the worktree copy is read only to reject stale or spent grants; permission to lower "
         "an AC-state floor is read separately from the trusted base by authorized_floors()"
     ),
+    ("check_enumerations.py", "quality/ratchet-authorizations.json"): (
+        "not a read: the string is a probe-path literal in the #109 evaluator-oracle "
+        "coverage check (check_evaluator_oracle_paths), asserting the oracle pattern "
+        "tier matches this ledger path so a candidate cannot quietly stop tracking "
+        "it; the script never opens the file, so there is no candidate-tree value "
+        "to resolve against a base"
+    ),
+    ("check_enumerations.py", "quality/vulture-baseline.json"): (
+        "not a read: the string is a probe-path literal in the #109 evaluator-oracle "
+        "coverage check (check_evaluator_oracle_paths), asserting the oracle pattern "
+        "tier matches this ledger path; the blocking vulture ratchet itself reads "
+        "the ledger through scripts/check-vulture-baseline.py with trusted-base "
+        "resolution, and this script never opens the file"
+    ),
     ("check-branch-independence.py", "quality/branch-independence.json"): (
         "the branch-independence registry is the reviewed representation specification; "
         "the checker separately compares its frozen legacy set against the trusted base"
