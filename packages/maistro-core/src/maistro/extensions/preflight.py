@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
@@ -136,6 +136,18 @@ _SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 #: One comparator of a contract/dependency range: operator and exact version.
 _COMPARATOR_RE = re.compile(r"^(>=|<=|==|!=|>|<)(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
+#: Tuple comparison per comparator operator. Keys are exactly what
+#: :data:`_COMPARATOR_RE` accepts; the parser is the only producer of ranges,
+#: so a key miss below is unreachable through the public grammar.
+_COMPARATOR_CHECKS: Mapping[str, Callable[[tuple[int, int, int], tuple[int, int, int]], bool]] = {
+    ">=": lambda actual, limit: actual >= limit,
+    "<=": lambda actual, limit: actual <= limit,
+    ">": lambda actual, limit: actual > limit,
+    "<": lambda actual, limit: actual < limit,
+    "==": lambda actual, limit: actual == limit,
+    "!=": lambda actual, limit: actual != limit,
+}
+
 
 @dataclass(frozen=True, order=True)
 class SemanticVersion:
@@ -180,22 +192,34 @@ class VersionRange:
 
     def admits(self, version: SemanticVersion) -> bool:
         """True when ``version`` satisfies every comparator."""
+        actual = version.as_tuple()
         for operator, bound in self.comparators:
-            actual = version.as_tuple()
-            limit = bound.as_tuple()
-            if operator == ">=" and not actual >= limit:
-                return False
-            if operator == "<=" and not actual <= limit:
-                return False
-            if operator == ">" and not actual > limit:
-                return False
-            if operator == "<" and not actual < limit:
-                return False
-            if operator == "==" and actual != limit:
-                return False
-            if operator == "!=" and actual == limit:
+            check = _COMPARATOR_CHECKS[operator]
+            if not check(actual, bound.as_tuple()):
                 return False
         return True
+
+    def _strongest_floor_major(self) -> int:
+        """Highest major any ``>=``/``>`` comparator demands; 0 when unbounded below.
+
+        Conjunction: each comparator narrows the range, so the effective lower
+        bound is the *strongest* (highest) floor, not the weakest —
+        ``>=1.0.0,>=2.0.0`` admits only majors >= 2.
+        """
+        floors = [bound.major for operator, bound in self.comparators if operator in (">=", ">")]
+        return max(floors) if floors else 0
+
+    def _highest_admitted_major(self) -> int | None:
+        """Highest major the strongest ``<``/``<=`` ceiling admits; None when unbounded."""
+        ceilings = [
+            (bound, operator) for operator, bound in self.comparators if operator in ("<=", "<")
+        ]
+        if not ceilings:
+            return None
+        ceiling, ceiling_operator = min(ceilings, key=lambda item: item[0].as_tuple())
+        if ceiling_operator == "<" and ceiling.minor == 0 and ceiling.patch == 0:
+            return ceiling.major - 1
+        return ceiling.major
 
     def spans_multiple_majors(self) -> bool:
         """True when the range admits versions under more than one major.
@@ -212,20 +236,11 @@ class VersionRange:
         """
         if any(operator == "==" for operator, _ in self.comparators):
             return False
-        floors = [bound.major for operator, bound in self.comparators if operator in (">=", ">")]
-        ceilings = [
-            (bound, operator) for operator, bound in self.comparators if operator in ("<=", "<")
-        ]
-        lowest = min(floors) if floors else 0
-        if not ceilings:
-            # Unbounded above: every major from `lowest` up is admitted.
+        ceiling_major = self._highest_admitted_major()
+        if ceiling_major is None:
+            # Unbounded above: every major from the floor up is admitted.
             return True
-        ceiling, ceiling_operator = min(ceilings, key=lambda item: item[0].as_tuple())
-        if ceiling_operator == "<" and ceiling.minor == 0 and ceiling.patch == 0:
-            highest = ceiling.major - 1
-        else:
-            highest = ceiling.major
-        return highest > lowest
+        return ceiling_major > self._strongest_floor_major()
 
 
 def parse_version_range(source: str) -> VersionRange:
@@ -297,6 +312,41 @@ class ParsedManifest:
     """``(id, range-source)`` pairs, in manifest order."""
 
 
+def _parse_manifest_capabilities(document: Mapping[str, object]) -> tuple[str, ...]:
+    """The manifest's ``capabilities`` list, validated name by name."""
+    raw_capabilities = document.get("capabilities", [])
+    if not isinstance(raw_capabilities, list) or not all(
+        isinstance(name, str) for name in raw_capabilities
+    ):
+        raise ManifestContractError("manifest 'capabilities' must be a list of strings")
+    return tuple(raw_capabilities)
+
+
+def _parse_manifest_dependencies(document: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
+    """The manifest's ``dependencies`` entries as ``(id, range-source)`` pairs.
+
+    The range grammar itself is checked where the edge is evaluated
+    (:func:`_check_dependencies`), so a malformed dependency range blocks with
+    the dependency named, not as a whole-manifest parse failure.
+    """
+    raw_dependencies = document.get("dependencies", [])
+    if not isinstance(raw_dependencies, list):
+        raise ManifestContractError("manifest 'dependencies' must be a list")
+    dependencies: list[tuple[str, str]] = []
+    for entry in raw_dependencies:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            raise ManifestContractError(
+                "manifest dependency entries must be objects with a string 'id'"
+            )
+        dep_range = entry.get("range")
+        if not isinstance(dep_range, str):
+            raise ManifestContractError(
+                f"manifest dependency {entry.get('id')!r} has no string 'range' field"
+            )
+        dependencies.append((entry["id"], dep_range))
+    return tuple(dependencies)
+
+
 def parse_manifest(body: str) -> ParsedManifest:
     """Parse the public contract metadata out of a manifest snapshot.
 
@@ -313,38 +363,10 @@ def parse_manifest(body: str) -> ParsedManifest:
     contract = document.get("contract")
     if not isinstance(contract, str):
         raise ManifestContractError("manifest snapshot has no string 'contract' field")
-    contract_range = parse_version_range(contract)
-
-    raw_capabilities = document.get("capabilities", [])
-    if not isinstance(raw_capabilities, list) or not all(
-        isinstance(name, str) for name in raw_capabilities
-    ):
-        raise ManifestContractError("manifest 'capabilities' must be a list of strings")
-    capabilities = tuple(raw_capabilities)
-
-    dependencies: list[tuple[str, str]] = []
-    raw_dependencies = document.get("dependencies", [])
-    if not isinstance(raw_dependencies, list):
-        raise ManifestContractError("manifest 'dependencies' must be a list")
-    for entry in raw_dependencies:
-        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
-            raise ManifestContractError(
-                "manifest dependency entries must be objects with a string 'id'"
-            )
-        dep_range = entry.get("range")
-        if not isinstance(dep_range, str):
-            raise ManifestContractError(
-                f"manifest dependency {entry.get('id')!r} has no string 'range' field"
-            )
-        # The range grammar itself is checked where the edge is evaluated
-        # (_check_dependencies), so a malformed dependency range blocks with
-        # the dependency named, not as a whole-manifest parse failure.
-        dependencies.append((entry["id"], dep_range))
-
     return ParsedManifest(
-        contract_range=contract_range,
-        capabilities=capabilities,
-        dependencies=tuple(dependencies),
+        contract_range=parse_version_range(contract),
+        capabilities=_parse_manifest_capabilities(document),
+        dependencies=_parse_manifest_dependencies(document),
     )
 
 
@@ -598,6 +620,54 @@ def _check_dependencies(
             conflicts.append(f"dependency '{dependency_id}' declares itself as its own dependency")
 
 
+def _inherit_dependency_verdict(
+    row: ExtensionPreflightRow,
+    by_name: Mapping[str, ExtensionPreflightRow],
+) -> ExtensionPreflightRow:
+    """One propagation step for one row: inherit what its dependencies carry.
+
+    A blocking dependency turns this row blocking with the exact transitive
+    conflict; a migration-required dependency (on a row not already
+    migration-required) makes it migration-required with the inheritance
+    note. The row is returned unchanged when nothing is inherited.
+    """
+    if row.status is ExtensionStatus.BLOCKING:
+        return row
+    conflicts = row.conflicts
+    notes = row.migration_notes
+    status: ExtensionStatus = row.status
+    for dependency_id, range_source in row.dependencies:
+        dependency = by_name.get(dependency_id)
+        if dependency is None or dependency.extension_name == row.extension_name:
+            continue
+        if dependency.status is ExtensionStatus.BLOCKING:
+            conflicts = (
+                *conflicts,
+                (
+                    f"dependency '{dependency_id}' is blocking on the target host "
+                    f"({'; '.join(dependency.conflicts)}) and this extension requires "
+                    f"it ('{range_source}')"
+                ),
+            )
+            status = ExtensionStatus.BLOCKING
+        elif (
+            dependency.status is ExtensionStatus.MIGRATION_REQUIRED
+            and status is not ExtensionStatus.MIGRATION_REQUIRED
+        ):
+            notes = (
+                *notes,
+                (
+                    f"dependency '{dependency_id}' requires a manifest migration on the "
+                    "target host; this extension depends on it "
+                    f"('{range_source}') and inherits the migration"
+                ),
+            )
+            status = ExtensionStatus.MIGRATION_REQUIRED
+    if (conflicts, notes, status) == (row.conflicts, row.migration_notes, row.status):
+        return row
+    return replace(row, conflicts=conflicts, migration_notes=notes, status=status)
+
+
 def _propagate_dependency_verdicts(
     rows: Sequence[ExtensionPreflightRow],
 ) -> tuple[ExtensionPreflightRow, ...]:
@@ -609,52 +679,21 @@ def _propagate_dependency_verdicts(
     merely migration-required makes its dependents migration-required as
     well. Deprecation does not propagate: a deprecated dependency still
     works, so its dependents still work.
+
+    The pass repeats until statuses stabilize, so a verdict crosses every
+    edge of a chain (A→B→C): verdicts only escalate and a row gains its
+    inherited conflict/note at most once, so the loop terminates after at
+    most one pass per dependency edge, regardless of row order.
     """
-    by_name = {row.extension_name: row for row in rows}
-    _rank = {
-        ExtensionStatus.COMPATIBLE: 0,
-        ExtensionStatus.DEPRECATION: 1,
-        ExtensionStatus.MIGRATION_REQUIRED: 2,
-        ExtensionStatus.BLOCKING: 3,
-    }
-    updated: list[ExtensionPreflightRow] = []
-    for row in rows:
-        if row.status is ExtensionStatus.BLOCKING:
-            updated.append(row)
-            continue
-        conflicts = row.conflicts
-        notes = row.migration_notes
-        status: ExtensionStatus = row.status
-        for dependency_id, range_source in row.dependencies:
-            dependency = by_name.get(dependency_id)
-            if dependency is None or dependency.extension_name == row.extension_name:
-                continue
-            if dependency.status is ExtensionStatus.BLOCKING:
-                conflicts = (
-                    *conflicts,
-                    (
-                        f"dependency '{dependency_id}' is blocking on the target host "
-                        f"({'; '.join(dependency.conflicts)}) and this extension requires "
-                        f"it ('{range_source}')"
-                    ),
-                )
-                status = ExtensionStatus.BLOCKING
-            elif _rank[dependency.status] > _rank[status]:
-                notes = (
-                    *notes,
-                    (
-                        f"dependency '{dependency_id}' requires a manifest migration on the "
-                        f"target host; this extension depends on it ('{range_source}') and "
-                        "inherits the migration"
-                    ),
-                )
-                status = ExtensionStatus.MIGRATION_REQUIRED
-        updated.append(
-            replace(row, conflicts=conflicts, migration_notes=notes, status=status)
-            if (conflicts, notes, status) != (row.conflicts, row.migration_notes, row.status)
-            else row
-        )
-    return tuple(updated)
+    current = tuple(rows)
+    while True:
+        # Rebuilt each pass from the latest verdicts; a single lookup over
+        # the original rows would stop propagation after one edge.
+        by_name = {row.extension_name: row for row in current}
+        updated = tuple(_inherit_dependency_verdict(row, by_name) for row in current)
+        if updated == current:
+            return current
+        current = updated
 
 
 def run_preflight(
@@ -689,7 +728,9 @@ def run_preflight(
         for record in lock_state
     ]
     final_rows = _propagate_dependency_verdicts(rows)
-    enabled_blockers = any(row.status is ExtensionStatus.BLOCKING and row.enabled for row in rows)
+    enabled_blockers = any(
+        row.status is ExtensionStatus.BLOCKING and row.enabled for row in final_rows
+    )
     can_proceed = not (enabled_blockers and policy is PreflightPolicy.STRICT)
     return PreflightReport(
         target_host_version=target.host_version,

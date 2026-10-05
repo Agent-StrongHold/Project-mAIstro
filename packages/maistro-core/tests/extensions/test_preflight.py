@@ -410,6 +410,26 @@ def test_transitive_migration_dependency_is_inherited() -> None:
     )
 
 
+def test_deprecated_dependency_does_not_migrate_its_dependents() -> None:
+    """Deprecation is non-propagating: a deprecated dependency still works."""
+    records = [
+        make_record(
+            name="ext-a",
+            manifest_body=manifest_json(dependencies=(("ext-b", ">=1.0.0"),)),
+        ),
+        make_record(
+            name="ext-b",
+            manifest_body=manifest_json(capabilities=("memory.read", "workspace.read")),
+        ),
+    ]
+    report = run_preflight(records, base_target())
+    dependent = report.rows[0]
+    assert report.rows[1].status is ExtensionStatus.DEPRECATION
+    assert dependent.status is ExtensionStatus.COMPATIBLE
+    assert dependent.migration_notes == ()
+    assert dependent.conflicts == ()
+
+
 def test_self_dependency_is_a_conflict() -> None:
     record = make_record(
         name="ext-a",
@@ -455,6 +475,94 @@ def test_strict_policy_proceeds_when_the_blocker_is_disabled() -> None:
     assert row.enabled is False
     assert report.blockers == ()  # …but it cannot block the upgrade
     assert report.can_proceed is True
+
+
+def test_strict_policy_gates_on_propagated_blockers() -> None:
+    """A dependency's BLOCKING verdict reaches its dependents: enabled ext-a
+    depends on disabled ext-b, which is incompatible with the target. ext-a
+    becomes blocking only during propagation, and strict mode must gate on it."""
+    records = [
+        make_record(
+            name="ext-a",
+            manifest_body=manifest_json(dependencies=(("ext-b", ">=1.0.0"),)),
+        ),
+        make_record(name="ext-b", manifest_body=manifest_json(contract=">=1.0.0,<2.0.0")),
+    ]
+    report = run_preflight(
+        records,
+        base_target(),
+        policy=PreflightPolicy.STRICT,
+        enabled=frozenset({"ext-a"}),
+    )
+    dependent = report.rows[0]
+    assert dependent.status is ExtensionStatus.BLOCKING
+    assert dependent.enabled is True
+    assert len(report.blockers) == 1
+    assert report.can_proceed is False
+
+
+def test_propagation_reaches_transitive_dependents() -> None:
+    """A blocking verdict crosses every edge of a dependency chain.
+
+    ext-a → ext-b → ext-c with ext-c incompatible on the target: one pass
+    over the original rows would stop after ext-b and report ext-a
+    compatible even though its dependency tree cannot function post-upgrade.
+    """
+    records = [
+        make_record(
+            name="ext-a",
+            manifest_body=manifest_json(dependencies=(("ext-b", ">=1.0.0"),)),
+        ),
+        make_record(
+            name="ext-b",
+            manifest_body=manifest_json(dependencies=(("ext-c", ">=1.0.0"),)),
+        ),
+        make_record(name="ext-c", manifest_body=manifest_json(contract=">=1.0.0,<2.0.0")),
+    ]
+    report = run_preflight(records, base_target(), policy=PreflightPolicy.STRICT)
+    by_name = {row.extension_name: row for row in report.rows}
+    assert by_name["ext-c"].status is ExtensionStatus.BLOCKING
+    assert by_name["ext-b"].status is ExtensionStatus.BLOCKING
+    assert by_name["ext-a"].status is ExtensionStatus.BLOCKING
+    assert "dependency 'ext-c' is blocking" in "\n".join(by_name["ext-a"].conflicts)
+
+
+def test_migration_required_propagates_transitively() -> None:
+    """A migration-required verdict also crosses multi-edge chains."""
+    records = [
+        make_record(
+            name="ext-a",
+            manifest_body=manifest_json(dependencies=(("ext-b", ">=1.0.0"),)),
+        ),
+        make_record(
+            name="ext-b",
+            manifest_body=manifest_json(dependencies=(("ext-c", ">=1.0.0"),)),
+        ),
+        make_record(name="ext-c", manifest_body=manifest_json(contract=">=1.0.0,<3.0.0")),
+    ]
+    report = run_preflight(records, base_target())
+    by_name = {row.extension_name: row for row in report.rows}
+    assert by_name["ext-c"].status is ExtensionStatus.MIGRATION_REQUIRED
+    assert by_name["ext-b"].status is ExtensionStatus.MIGRATION_REQUIRED
+    assert by_name["ext-a"].status is ExtensionStatus.MIGRATION_REQUIRED
+
+
+def test_propagation_terminates_on_a_dependency_cycle() -> None:
+    """Mutual dependencies stabilize instead of looping or double-noting."""
+    records = [
+        make_record(
+            name="ext-a",
+            manifest_body=manifest_json(dependencies=(("ext-b", ">=1.0.0"),)),
+        ),
+        make_record(
+            name="ext-b",
+            manifest_body=manifest_json(dependencies=(("ext-a", ">=1.0.0"),)),
+        ),
+    ]
+    report = run_preflight(records, base_target())
+    by_name = {row.extension_name: row for row in report.rows}
+    assert by_name["ext-a"].status is ExtensionStatus.COMPATIBLE
+    assert by_name["ext-b"].status is ExtensionStatus.COMPATIBLE
 
 
 def test_permissive_policy_reports_blockers_but_can_proceed() -> None:
@@ -635,6 +743,9 @@ def test_version_range_span_detection_matches_the_authoring_rule() -> None:
     assert parse_version_range(">=1.0.0,<2.1.0").spans_multiple_majors()
     assert parse_version_range(">=1.0.0,<=2.0.0").spans_multiple_majors()
     assert parse_version_range(">=1.0.0").spans_multiple_majors()
+    # Redundant weaker constraints must not lower the effective floor:
+    # >=1.0.0 is shadowed by >=2.0.0, so only major 2 is admitted.
+    assert not parse_version_range(">=1.0.0,>=2.0.0,<3.0.0").spans_multiple_majors()
 
 
 def test_semantic_version_parser_rejects_non_semver() -> None:

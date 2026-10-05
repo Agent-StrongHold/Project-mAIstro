@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +53
+  packages/maistro-core/tests: +58
 ---
 
 # #957 (M9-C3) — host-upgrade compatibility preflight
@@ -15,9 +15,9 @@ vocabulary with deprecation/removal notes) and classifies every installed
 extension as compatible, deprecated, migration-required, or blocking — from
 data alone, without importing or activating anything from the target release.
 
-**+53 `packages/maistro-core/tests/extensions/`** (collect-only verified on
+**+58 `packages/maistro-core/tests/extensions/`** (collect-only verified on
 this head; `test_preflight.py`, all names carry the acceptance criterion they
-pin):
+pin; +53 in the original implementation, +5 in the salvage repair round):
 
 - public-contract-metadata structural test — the preflight module's only
   `maistro.*` import is `maistro.extensions.types` (AST-checked), plus a
@@ -46,6 +46,26 @@ pin):
 - range grammar unit tests — comparator math (`admits`), span detection
   (the pin-one-major authoring rule), and malformed version/range errors
   that name the offending text.
+
+Repair round (+5): `test_propagation_reaches_transitive_dependents`,
+`test_migration_required_propagates_transitively`,
+`test_deprecated_dependency_does_not_migrate_its_dependents`,
+`test_strict_policy_gates_on_propagated_blockers`,
+`test_propagation_terminates_on_a_dependency_cycle` — the dependency-verdict
+second pass now iterates to a fixpoint, so a verdict crosses every edge of a
+chain (A→B→C) regardless of row order; termination on a dependency cycle is
+asserted structurally (the pass stops when statuses stabilize) rather than by
+wall-clock. `VersionRange` floor logic also moved to strongest-floor
+conjunction semantics (`>=1.0.0,>=2.0.0` admits only majors >= 2) and
+`run_preflight` gates the strict policy on the *propagated* rows, not the
+pre-propagation ones. Fail-before evidence, verified by running the suite
+against the pre-repair implementation: the four propagation tests and
+`test_strict_policy_gates_on_propagated_blockers` fail there (single-pass
+propagation, deprecation escalated via rank, strict gate read pre-propagation
+rows); `test_propagation_terminates_on_a_dependency_cycle` passes on both
+(it pins termination, which the old single pass had trivially) and
+`test_version_range_span_detection_matches_the_authoring_rule` fails on the
+old weakest-floor logic at the `>=1.0.0,>=2.0.0,<3.0.0` shadowing case.
 
 Fail-before evidence: muting the `STRICT` reference in `run_preflight`'s
 `can_proceed` (always True) fails `test_strict_policy_cannot_proceed_with_enabled_blocker`
