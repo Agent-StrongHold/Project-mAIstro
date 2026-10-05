@@ -77,3 +77,16 @@ bake the DSN'd count into the ledger.
   `ruff format --check .` clean.
 - Hosted CI on this merge head: not observable from this sandbox (no push,
   no GitHub mutations) — UNVERIFIED by policy.
+
+## Correction (repair round, post-merge)
+
+The vulture claim above was false at this merge head. Banking the
+`code_registry/types.py::trusted` row did **not** make
+`check-vulture-baseline.py` exit 0: the per-identity ratchet reads
+authorizations from the merge base, so candidate banking cannot self-authorize
+— the gate reproduced its failure (`1342 reviewed identities -> 1343
+findings`, exit 1) at b25f0537. The row is now gone because the repair round
+restored the dropped `_enforce_signature_policy` trust anchor (the merge had
+deleted develop's only in-tree use of the name `trusted`, unmasking the
+`CodeEntry.trusted` debt) — see `404-trust-anchor-restore.md` for the fix and
+the passing run.
