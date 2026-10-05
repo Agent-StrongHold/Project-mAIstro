@@ -31,7 +31,9 @@ admission-generation representation — numbered ``053`` when written on the
 ``052`` base, re-parented onto this chain's ``053`` tip at the previous
 develop sync — re-numbers to ``055`` on top of it. Develop's #55 effect-path
 sync then lands its ``043_invocation_quota_door`` (#1196/#718) on that
-``055`` tip, so the single linear head is the quota door.
+``055`` tip, and this sync's #1047 user-model tables — re-parented past
+develop's ``054`` and ``055`` as ``056`` in their own two collisions — revise
+the quota door, so the single linear head is the user-model revision.
 """
 
 from __future__ import annotations
@@ -170,19 +172,20 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     directory = ScriptDirectory.from_config(config)
 
-    assert directory.get_heads() == ["043_invocation_quota_door"]
-    walked = {
-        item.revision for item in directory.walk_revisions("base", "043_invocation_quota_door")
-    }
+    assert directory.get_heads() == ["056"]
+    walked = {item.revision for item in directory.walk_revisions("base", "056")}
     # The claim chain this branch folded the #1194 corrections into, and every
     # develop collision the chronicle above records, must stay on the one
     # linear path to the head. Develop's #1756 learning-applicability
     # migration (M4-B3, #119) claimed the `053` tip on develop as
     # `054_learning_applicability_epistemics`, renumbering #1892's
     # `054_task_admission_generations` — itself re-parented onto this
-    # chain's `053` tip at the previous develop sync — to `055`, and this
-    # develop #55 sync adds `043_invocation_quota_door` (#1196/#718) on
-    # that tip, so the single linear head is the quota door.
+    # chain's `053` tip at the previous develop sync — to `055`; the
+    # develop #55 effect-path sync added `043_invocation_quota_door`
+    # (#1196/#718) on that tip; and this sync's #1047 user-model tables —
+    # re-parented past develop's `054` and `055` as `056` in their own
+    # two collisions — revise the quota door, so the single linear head
+    # is the user-model revision.
     assert {
         "034_canonical_run_effect_claim",
         "034",
@@ -200,12 +203,14 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
         "054",
         "055",
         "043_invocation_quota_door",
+        "056",
     } <= walked
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —
     # the exact collision the 55be1459 resolution removed them for. Develop's
     # copies of both files stay deleted here; only this branch's test side of
-    # the sync carries their absence, so the guard keeps asserting it.
+    # the sync carries their absence, so the guard keeps asserting it even as
+    # the quota door's revision id echoes the retired `043`.
     assert "043" not in walked
     assert "045" not in walked
 

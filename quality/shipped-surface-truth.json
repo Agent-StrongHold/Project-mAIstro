@@ -2034,6 +2034,46 @@
       "effect_owner": "task queue submit -> canonical Run"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/{lineage_id}/correct",
+      "handler": "correct_fact",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "appends the owner's provenance-bearing correction revision through the one canonical user-model service",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.correct (UserModelFact revision append)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/{lineage_id}/mark-private",
+      "handler": "mark_fact_private",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "records the owner's shareability decision (reusable=false) as a new revision through the canonical service",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.mark_not_reusable (UserModelFact revision append)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "DELETE",
+      "route": "/{lineage_id}",
+      "handler": "forget_fact",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "tombstones the owner's fact through the canonical service; content purged, every held wording stays blocked",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.forget (UserModelFact tombstone)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/recall",
+      "handler": "recall_for_task",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "relevance-gated recall of the authenticated user's facts for one task; ranking input only, never an authorization",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.recall_for_task (read-only scoring)"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/webhooks.py",
       "method": "POST",
       "route": "/ci",
