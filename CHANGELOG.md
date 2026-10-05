@@ -25,6 +25,19 @@ or placeholder-only section.
 
 ### Added
 
+- **The extension SDK boundary is enforced and a reference extension ships outside the
+  core tree (#951).** `extensions/namespace-policy.json` declares the public
+  package namespace policy — the public SDK root (`maistro_ext_sdk`) versus the
+  product-private roots — and `scripts/check-extension-imports.py` enforces it
+  statically against every extension package: product-private imports, repo-relative
+  imports, `sys.path` repair, undeclared third-party dependencies, and
+  underscore-private modules under a public root all fail. The reference extension
+  (`extensions/reference-greeter/`) is a buildable out-of-tree package, and
+  `scripts/check-reference-extension.py` builds it, installs it into a fresh venv,
+  proves the product's own modules are unimportable there, and runs its tests with
+  that interpreter. Authoring guide, manifest reference, lifecycle, and capability
+  docs live under `docs/extensions/`.
+
 - **API-wide HTTP content negotiation (ADR-076) is implemented (#96).**
   `maistro-server` and hive-conductor now run the shared
   `maistro.api_versioning.VersionNegotiationMiddleware` from `maistro-core`.
@@ -92,6 +105,25 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
+  (#1362).** Serialized budget definitions, reservation identities, and usage
+  evidence are bound as text before PostgreSQL parses JSONB, preventing a
+  configured JSON encoder from double-encoding them. Immutable budget checks
+  and idempotent evidence comparisons retain their existing semantics. This
+  repairs new writes only: existing double-encoded JSONB evidence is not
+  migrated and its replay limitation remains. This does not supply missing
+  provider-enforced numeric usage bounds (#1196).
+
+- **Default Invocation quota wiring refuses unknown token and monetary bounds
+  before provider dispatch (#1362).** Character-count guesses omit byte-level
+  tokenization, full message fields, tool and response schemas, and multimodal
+  billing; absent output limits cannot be priced as zero. The gateway currently
+  has no proven complete-request bound, so default token/micro-USD budgets now
+  fail closed even for priced models with `max_tokens`. Request-count policies,
+  unconfigured quota admission, and explicitly injected adapter-backed quota
+  contexts are unchanged. Numeric-budget usability remains incomplete until an
+  adapter enforces a full physical-request bound (#1196).
 
 - **Project wisdom respects GLOBAL organization boundaries (#1247).**
   Project-only `list_by_scope` refuses organization-bound GLOBAL rows without
