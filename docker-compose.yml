@@ -253,6 +253,10 @@ services:
       - OAUTH_PUBLIC_ORIGIN=${OAUTH_PUBLIC_ORIGIN:-}
       - OAUTH_SUCCESS_PATH=${OAUTH_SUCCESS_PATH:-/}
       - HARDWARE_PRESET=${HARDWARE_PRESET:-laptop}
+      # The embedded Container's Sentinel table (ADR-072726-0d6b, #66). Fail-
+      # closed at "none"; this stack arms the reviewed dangerous-tools preset
+      # so agents can hold tool authority in dev without a second config file.
+      - MAISTRO_PERMISSION_PRESET=dangerous_tools_admin
     volumes:
       - conductor-data:/data
     depends_on:

@@ -9,10 +9,10 @@ is rendered from the compose file as `docker compose` would, then fed through
 that service's own config path.
 
 Sentinel is fail-closed on a table miss (ADR-072726-0d6b, #1165), so an empty
-table denies every tool rather than allowing it -- but "armed" means the
-deployment states some tool authority, and today none does. Every profile is
-in `KNOWN_GAPS`, asserting the empty table, so arming one fails this test
-until its entry is deleted.
+table denies every tool rather than allowing it. "Armed" means the deployment
+states some tool authority. Profiles still building an empty table belong in
+`KNOWN_GAPS`, asserting the miss, so arming one fails this test until its
+entry is deleted.
 """
 
 from __future__ import annotations
@@ -46,19 +46,9 @@ PROD = ROOT / "deploy" / "docker-compose.prod.yml"
 PROD_ENV_EXAMPLE = ROOT / "deploy" / ".env.example"
 HIVE_STANDALONE = ROOT / "packages" / "hive-conductor" / "docker-compose.yml"
 
-#: Every profile builds an empty table today. Refs #66 (Sentinel armed on every
+#: Profiles that still build an empty table. Refs #66 (Sentinel armed on every
 #: real path); the Workspace deploy (#804) inherits whichever profile it ships on.
-KNOWN_GAPS: frozenset[str] = frozenset(
-    {
-        "dev:maistro-engine",  # Refs #66
-        "dev:hive-conductor",  # Refs #66
-        "pm-poc:maistro-engine",  # Refs #66
-        "pm-poc:hive-conductor",  # Refs #66
-        "cloud-prod:maistro-server-1",  # Refs #66
-        "cloud-prod:maistro-server-2",  # Refs #66
-        "hive-standalone:hive-conductor",  # Refs #66
-    }
-)
+KNOWN_GAPS: frozenset[str] = frozenset()
 
 #: Process variables either composition root reads, cleared so the result
 #: reflects the compose file alone.

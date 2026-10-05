@@ -12,3 +12,5 @@ services:
       # - MAISTRO_LLM_BASE_URL=http://litellm:4000/v1
       # - MAISTRO_LLM_API_KEY=sk-your-key
       # - MAISTRO_MODEL=gpt-4o
+      # Sentinel tool authority for the standalone Conductor image (#66).
+      - MAISTRO_PERMISSION_PRESET=dangerous_tools_admin
