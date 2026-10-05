@@ -131,6 +131,20 @@ quality waiver was added because each is prohibited by this staged leaf's
 scope; parent integration must provide the real consumer before it can pass
 integration-head quality.
 
+## 2026-10-05 CI-repair revalidation
+
+At `9fd115b2dd07fc50990617cdcc8e45fc3e59bb7a`, focused Ruff check/format,
+module mypy, and the 76-case DTO suite passed; the core suite inventory
+matched 13,844 node IDs (`+76`). The exact Vulture scan found 1,351 findings
+and no candidate-ledger delta, but returned 1 because all nine reviewed DTO
+identities are absent from trusted base `c560d4ccad82`; the permitted candidate
+ledger amendment cannot self-authorize that debt. `check-reachability.py` and
+`check-ratchet-provenance.py` returned 1 solely for the deliberately unwired
+`maistro.runs.admission_identity`; dispositions and promotion-surface passed.
+A production import, reachability ledger/disposition, suppression, or grant
+would violate this leaf's explicit staging constraint, so parent integration
+remains required for mergeable integration-head quality.
+
 ## Verifier revalidation
 
 At verification head `3854d8ba9ffed2afb9341e310b7e0e597fa99dcf`, the focused
