@@ -769,7 +769,9 @@ def _register_export_routes(
         if not (1 <= quality <= 100):
             raise HTTPException(status_code=422, detail="quality must be between 1 and 100")
 
-        return await _export_image(store, compositor, canvas, canvas_id, fmt, quality, scope_org_id(auth))
+        return await _export_image(
+            store, compositor, canvas, canvas_id, fmt, quality, scope_org_id(auth)
+        )
 
     # ── Models ─────────────────────────────────────────────────────────
 
