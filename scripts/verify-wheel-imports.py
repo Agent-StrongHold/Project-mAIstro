@@ -70,6 +70,12 @@ CORE_PUBLIC_SURFACE = [
     # The canonical Goal store (#1572): ontology owner of the shared Goal
     # concept, shipped public surface like runs/workspaces beside it.
     "maistro.goals",
+    # Governed extension registry persistence (#939/#952, SPEC-952): publisher
+    # identity, package digests/signatures, manifest snapshots and immutable
+    # install records. Pure-library surface — `cryptography` is a declared
+    # dependency and aiosqlite is TYPE_CHECKING-only — so a bare install can
+    # import it, and the bare tier asserts that.
+    "maistro.extensions",
     "maistro.graph",
     "maistro.http",
     "maistro.memory",

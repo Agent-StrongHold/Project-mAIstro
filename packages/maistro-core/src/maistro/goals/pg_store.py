@@ -52,6 +52,7 @@ from maistro.runs.evidence_json import json_of, model_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
+    import asyncpg.pool
 
 #: The guarded UPDATE's shape, shared by all three mutations. ``$1`` is the
 #: goal id and the last parameter is always the ``expected_revision`` the
@@ -291,7 +292,11 @@ class PgGoalStore:
             raise GoalRevisionConflict(goal.goal_id, expected_revision, goal.current_revision)
 
     async def _require_won(
-        self, conn: asyncpg.Connection, goal_id: str, outcome: str, expected_revision: int
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy,
+        goal_id: str,
+        outcome: str,
+        expected_revision: int,
     ) -> None:
         """Turn a lost compare-and-set into the refusal the contract names.
 
@@ -309,7 +314,7 @@ class PgGoalStore:
         raise GoalRevisionConflict(goal_id, expected_revision, int(current or 0))
 
     async def _insert_revision(
-        self, conn: asyncpg.Connection, goal_id: str, revision: GoalRevision
+        self, conn: asyncpg.pool.PoolConnectionProxy, goal_id: str, revision: GoalRevision
     ) -> None:
         await conn.execute(
             """INSERT INTO canonical_goal_revisions (goal_id, revision, created_at, payload)
@@ -321,11 +326,16 @@ class PgGoalStore:
         )
 
     async def _insert_transition(
-        self, conn: asyncpg.Connection, record: GoalTransitionRecord
+        self, conn: asyncpg.pool.PoolConnectionProxy, record: GoalTransitionRecord
     ) -> None:
-        seq: int = await conn.fetchval(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM canonical_goal_transitions WHERE goal_id = $1",
-            record.goal_id,
+        # COALESCE keeps the aggregate non-NULL, so the `or 0` never fires —
+        # it is the store's existing spelling for "fetchval is typed | None".
+        seq = int(
+            await conn.fetchval(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM canonical_goal_transitions WHERE goal_id = $1",
+                record.goal_id,
+            )
+            or 0
         )
         await conn.execute(
             """INSERT INTO canonical_goal_transitions (goal_id, seq, at, kind, payload)
