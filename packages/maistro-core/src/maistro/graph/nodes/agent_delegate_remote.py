@@ -805,8 +805,18 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         try:
             parent, peer, context, binding = await self._admit_external_dispatch(inputs, ctx)
         except _PeerAdmissionRefused as refused:
-            # Refused before admission, so no child Run is filed and no
-            # transport was touched -- the same shape as a peer-side decline.
+            # Admission decides whether a *new* dispatch may start. A previous
+            # visit's claimed effect is not a new dispatch: its acceptance at
+            # the peer is unknown, so it is settled by the recovery paths even
+            # when today's configuration (a disabled peer, a tightened scope
+            # ceiling) would refuse to start one (issue #959 -- a possibly-
+            # accepted remote execution stays traceable and recoverable).
+            recovered = await self._recover_refused_dispatch(inputs, ctx)
+            if recovered is not None:
+                return recovered
+            # Refused before admission with nothing claimed, so no child Run
+            # is filed and no transport was touched -- the same shape as a
+            # peer-side decline.
             return DelegateRemoteOut(status="rejected", error=str(refused))
 
         key = self._delegation_key(inputs, ctx)
@@ -846,6 +856,56 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             context=context,
             key=key,
             child_id=child_id,
+        )
+
+    async def _recover_refused_dispatch(
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+    ) -> DelegateRemoteOut | None:
+        """Recover an already-claimed dispatch before a refusal stands.
+
+        A refusal by current configuration -- peer disabled or removed, a
+        tightened scope ceiling -- must not strand an effect a previous visit
+        already claimed: the durable receipt pauses the delegation, and a
+        claimed-but-receiptless child enters the reconciliation paths, which
+        settle it from the peer's idempotent receipt query without a second
+        POST. A child whose boundary was never crossed has no remote effect:
+        the refusal owns it, so the reservation is released (it must not
+        survive as canonical evidence implying remote work) and ``None`` is
+        returned for the caller's honest rejection.
+
+        The governing Binding is re-resolved on the parent's scope for the
+        Invocation settle; a binding removed since the claim surfaces as a
+        node failure rather than a silent skip, and the claimed child stays
+        in place for the operator instead of being discarded.
+        """
+        assert self._run_store is not None
+        key = self._delegation_key(inputs, ctx)
+        child = await self._existing_child(key)
+        if child is None:
+            return None
+        if await self._pause_on_existing_receipt(inputs, child, child.run_id, mode="guest_peer"):
+            return DelegateRemoteOut()
+        if not child.provenance.get("transport_attempted"):
+            # No transport was ever attempted, so nothing remote can exist:
+            # the refusal is this instance's own, and the reservation must
+            # not survive as a canonical Run implying remote work -- the same
+            # rule the governed refusals below the seam obey.
+            await self._release_unaccepted_child(child.run_id)
+            return None
+        parent = await self._preflight_child_scope(inputs, ctx)
+        assert self._effects is not None
+        assert parent is not None, "the child's reservation recorded a parent scope"
+        binding = await self._effects.bindings.resolve(
+            inputs.binding_id,
+            workspace_id=parent.workspace_id,
+            project_id=parent.project_id,
+            node_id=ctx.node_id,
+            capability=AGENT_DELEGATION_CAPABILITY,
+        )
+        return await self._recover_cross_instance(
+            inputs, ctx, binding=binding, key=key, child_id=child.run_id
         )
 
     def _require_cross_instance_wiring(self) -> None:

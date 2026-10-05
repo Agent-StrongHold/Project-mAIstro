@@ -261,6 +261,130 @@ class TestNoExternalCallWithoutCanonicalCallerAndScope:
         assert sent["delegating_agent"] == "planner"
 
 
+class TestRefusedAdmissionCannotStrandAClaimedDispatch:
+    """Admission decides whether a *new* dispatch may start. A previous
+    visit's claimed effect is settled by the recovery paths even when the
+    peer is later disabled or its ceiling tightened -- a refusal by current
+    configuration must never strand a possibly-accepted remote effect, and
+    must never be reported as a peer decline."""
+
+    async def test_a_claimed_dispatch_recovers_when_the_peer_is_later_disabled(
+        self,
+    ) -> None:
+        """The first POST's outcome was lost (claimed, no receipt); the peer
+        was then disabled. The retry enters reconciliation -- it does not
+        report a normal rejection over work that may already be running, and
+        it never re-POSTs."""
+        posts = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                posts["n"] += 1
+                raise httpx.ConnectError("connection lost after send")
+            return httpx.Response(405)
+
+        set_test_transport(httpx.MockTransport(handler))
+        store, project = await _spine()
+        ctx, _parent = await _parent_and_ctx(store, project.project_id)
+        first = await (await _governed_node(store, project.project_id, real_transport=True)).run(
+            _inputs(), ctx
+        )
+        assert first.status == "paused"
+        assert first.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
+        child = await store.get_run(first.metadata["child_run_id"])
+        assert child is not None
+        assert child.provenance["transport_attempted"] is True
+        assert not child.provenance.get("a2a_task_id")
+
+        retry = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(active=False),
+            run_store=store,
+            effect_context=await delegation_effects(
+                workspace_id="workspace-1", project_id=project.project_id
+            ),
+        )
+        second = await retry.run(_inputs(), ctx)
+
+        assert second.status == "paused"
+        assert second.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
+        assert posts["n"] == 1, "an uncertain dispatch is settled by polling, never re-POSTed"
+        still_there = await store.get_run(child.run_id)
+        assert still_there is not None, "claimed work is not discarded behind a refusal"
+
+    async def test_a_durable_receipt_pauses_the_delegation_when_the_peer_is_disabled(
+        self,
+    ) -> None:
+        """A receipt is durable acceptance: a retry whose peer went inactive
+        after the dispatch pauses on the recorded receipt so the answer can
+        still settle the child, instead of rejecting accepted work."""
+        store, project = await _spine()
+        ctx, _parent = await _parent_and_ctx(store, project.project_id)
+        first = await (await _governed_node(store, project.project_id)).run(_inputs(), ctx)
+        assert first.status == "paused"
+        child = await store.get_run(first.metadata["run_id"])
+        assert child is not None
+        assert child.provenance["a2a_task_id"] == "remote-1"
+
+        retry = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(active=False),
+            run_store=store,
+            effect_context=await delegation_effects(
+                workspace_id="workspace-1", project_id=project.project_id
+            ),
+        )
+        second = await retry.run(_inputs(), ctx)
+
+        assert second.status == "paused"
+        assert second.metadata["paused_reason"] == "awaiting_remote_delegation"
+        assert second.metadata["task_id"] == "remote-1"
+        assert second.metadata["run_id"] == child.run_id
+
+    async def test_an_unclaimed_reservation_is_released_when_admission_later_refuses(
+        self,
+    ) -> None:
+        """A reservation whose boundary was never crossed has no remote
+        effect: the refusal owns it, so the child is released and the
+        rejection stands -- a repaired retry dispatches fresh instead of
+        reconciling work that provably never started."""
+        store, project = await _spine()
+        ctx, parent = await _parent_and_ctx(store, project.project_id)
+        crash = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(),
+            run_store=store,
+            effect_context=await delegation_effects(
+                workspace_id="workspace-1", project_id=project.project_id
+            ),
+        )
+        await crash._reserve_child(
+            crash.input_schema.model_validate(_inputs()),
+            ctx,
+            parent=parent,
+            mode="guest_peer",
+            target="hub",
+        )
+        assert _children_of(store, ctx.run_id)
+
+        retry = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(active=False),
+            run_store=store,
+            effect_context=await delegation_effects(
+                workspace_id="workspace-1", project_id=project.project_id
+            ),
+        )
+        result = await retry.run(_inputs(), ctx)
+
+        assert result.status == "completed"
+        assert result.output is not None
+        assert result.output.status == "rejected"
+        assert result.output.error == "peer inactive"
+        assert _children_of(store, ctx.run_id) == [], (
+            "an unclaimed reservation must not survive a refusal as canonical "
+            "evidence implying remote work"
+        )
+        key = retry._delegation_key(retry.input_schema.model_validate(_inputs()), ctx)
+        assert await store.find_delegation_run(key) is None
+
+
 class TestDelegatedAuthorityIsAttenuated:
     """Acceptance: delegated authority cannot exceed caller/host/Workspace
     policy."""

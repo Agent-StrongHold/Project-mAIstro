@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +61
+  packages/maistro-core/tests: +64
   packages/maistro-server/tests: +1
 ---
 # 959 — external Agent delegation bound to canonical identity and evidence
@@ -88,6 +88,19 @@ boundary re-checks `validate_goal_binding`: a caller that bypasses
 `AgentDelegateRemoteNode` cannot dispatch `goal_id` without `goal_revision`,
 `subgoal_of` without a Goal, or a revision without a Goal — all three are
 refused before any bytes reach the peer, with the refusal audited.
+
+**+3 in `tests/graph/nodes/test_agent_delegate_remote_governance.py`
+(refused-admission recovery follow-up).** Admission decides whether a *new*
+dispatch may start; it is not re-judged over an effect a previous visit
+already claimed. When a peer is disabled or removed after a POST whose
+outcome was lost, the retry enters reconciliation (park on the timer-resumable
+pause, settle from the peer's idempotent receipt query, never a second POST)
+instead of returning a normal `rejected` outcome over work that may already
+be running; a durable receipt pauses the delegation so the answer can still
+settle the child even with the peer gone; and a reserved child whose
+transport boundary was never crossed is released before the rejection stands,
+so a repaired retry dispatches fresh instead of reconciling work that
+provably never started.
 
 **+20 across the existing delegation/peer files.** `test_guest_peers.py` grew the
 transport-boundary gate (context-less refused, envelope/context agent mismatch,
