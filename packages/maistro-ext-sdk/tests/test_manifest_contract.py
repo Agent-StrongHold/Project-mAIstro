@@ -12,13 +12,20 @@ that fails the test if anything imports it.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+import yaml
 
-from maistro_ext_sdk import ExtensionManifestError, manifest_from_dict, manifest_from_json
+from maistro_ext_sdk import (
+    ExtensionManifestError,
+    manifest_from_dict,
+    manifest_from_json,
+    manifest_from_yaml,
+)
 from maistro_ext_sdk.contract import EXTENSION_CONTRACT_VERSION, parse_contract_version
 from maistro_ext_sdk.manifest import AuthorityError
-from maistro_ext_sdk.validation import public_json_schema
+from maistro_ext_sdk.validation import public_json_schema, validate_extension_dir
 
 
 class TestParseBeforeImport:
@@ -45,6 +52,21 @@ class TestParseBeforeImport:
             manifest_from_json("{not json")
 
     @pytest.mark.contract("boundary")
+    def test_invalid_utf8_bytes_are_rejected_as_manifest_error(self) -> None:
+        """bytes input with invalid UTF-8 must surface as the single public
+        error type, not leak a raw UnicodeDecodeError from json.loads."""
+        with pytest.raises(ExtensionManifestError, match="not valid UTF-8"):
+            manifest_from_json(b"\xff")
+
+    @pytest.mark.contract("boundary")
+    def test_dir_validator_translates_invalid_utf8_manifest(self, tmp_path: Path) -> None:
+        """An unreadably-encoded extension.json on disk is a manifest error,
+        not a UnicodeDecodeError escaping read_text."""
+        (tmp_path / "extension.json").write_bytes(b"\xff")
+        with pytest.raises(ExtensionManifestError, match="not valid UTF-8"):
+            validate_extension_dir(tmp_path)
+
+    @pytest.mark.contract("boundary")
     def test_non_object_json_is_rejected(self) -> None:
         with pytest.raises(ExtensionManifestError, match="JSON object"):
             manifest_from_json(json.dumps(["not", "a", "manifest"]))
@@ -57,6 +79,51 @@ class TestParseBeforeImport:
         manifest_dict["entrypoint"] = {"module": "does_not_exist.anywhere", "object": "X"}
         manifest = manifest_from_dict(manifest_dict)
         assert manifest.entrypoint.module == "does_not_exist.anywhere"
+
+
+class TestDuplicateKeysRejected:
+    """A duplicated authority-bearing key is ambiguity, not configuration.
+
+    ``json.loads`` and PyYAML both silently keep the *last* occurrence of a
+    duplicated key, so a manifest with ``capabilities: []`` and
+    ``capabilities: [filesystem.write]`` would otherwise validate against
+    whichever copy came last — letting security review, schema validation,
+    signing, and this SDK each see a different authority set. Every parse
+    front door must reject the document instead, at any nesting depth.
+    """
+
+    @pytest.mark.contract("boundary")
+    def test_duplicate_top_level_json_key_is_rejected(self) -> None:
+        text = '{"id": "acme.weather", "capabilities": [], "capabilities": ["filesystem.write"]}'
+        with pytest.raises(ExtensionManifestError, match="duplicate object key 'capabilities'"):
+            manifest_from_json(text)
+
+    @pytest.mark.contract("boundary")
+    def test_duplicate_nested_json_key_is_rejected(self) -> None:
+        text = '{"id": "acme.weather", "entrypoint": {"module": "a.b", "module": "c.d"}}'
+        with pytest.raises(ExtensionManifestError, match="duplicate object key 'module'"):
+            manifest_from_json(text)
+
+    @pytest.mark.contract("boundary")
+    def test_duplicate_yaml_key_is_rejected(self) -> None:
+        text = "id: acme.weather\ncapabilities: []\ncapabilities: [filesystem.write]\n"
+        with pytest.raises(ExtensionManifestError, match="duplicate key 'capabilities'"):
+            manifest_from_yaml(text)
+
+    @pytest.mark.contract("boundary")
+    def test_duplicate_free_yaml_manifest_still_parses(self, manifest_dict: dict) -> None:
+        """The duplicate-key loader keeps SafeLoader semantics otherwise,
+        including merge keys."""
+        manifest = manifest_from_yaml(yaml.safe_dump(manifest_dict))
+        assert manifest.id == "acme.weather"
+
+    @pytest.mark.contract("boundary")
+    def test_dir_validator_rejects_duplicate_keys_on_disk(self, tmp_path: Path) -> None:
+        (tmp_path / "extension.json").write_text(
+            '{"id": "acme.weather", "capabilities": [], "capabilities": ["filesystem.write"]}'
+        )
+        with pytest.raises(ExtensionManifestError, match="duplicate object key"):
+            validate_extension_dir(tmp_path)
 
 
 class TestMalformedAndUnknownAuthority:
@@ -115,10 +182,59 @@ class TestMalformedAndUnknownAuthority:
         with pytest.raises(ExtensionManifestError, match="contract field"):
             manifest_from_dict(manifest_dict)
 
+    @pytest.mark.parametrize("entrypoint", ["dict", "json", "yaml"])
+    def test_unsupported_contract_range_rejected_by_every_entrypoint(
+        self, manifest_dict: dict, entrypoint: str
+    ) -> None:
+        """A well-formed but unsupported range must not pass as v1 anywhere."""
+        manifest_dict["contract"] = ">=2.0.0,<3.0.0"
+        if entrypoint == "dict":
+            with pytest.raises(ExtensionManifestError, match="does not include"):
+                manifest_from_dict(manifest_dict)
+        elif entrypoint == "json":
+            with pytest.raises(ExtensionManifestError, match="does not include"):
+                manifest_from_json(json.dumps(manifest_dict))
+        else:
+            with pytest.raises(ExtensionManifestError, match="does not include"):
+                manifest_from_yaml(yaml.safe_dump(manifest_dict))
+
     def test_malformed_extension_version_fails(self, manifest_dict: dict) -> None:
         manifest_dict["version"] = "1.0"
         with pytest.raises(ExtensionManifestError, match=r"version"):
             manifest_from_dict(manifest_dict)
+
+    @pytest.mark.parametrize(
+        "version",
+        [
+            "01.0.0",  # leading zero in core field
+            "1.0.0-.",  # empty prerelease identifier
+            "1.0.0-alpha..beta",  # empty prerelease identifier
+            "1.0.0-01",  # leading zero in numeric prerelease identifier
+            "1.0.0+",  # empty build metadata
+            "1.0.0+bui..ld",  # empty build-metadata identifier
+        ],
+    )
+    def test_invalid_semver_fails(self, manifest_dict: dict, version: str) -> None:
+        manifest_dict["version"] = version
+        with pytest.raises(ExtensionManifestError, match=r"version"):
+            manifest_from_dict(manifest_dict)
+
+    @pytest.mark.parametrize(
+        "version",
+        [
+            "0.0.4",
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-0.3.7",
+            "1.0.0-x.7.z.92",
+            "1.0.0-alpha+001",
+            "1.0.0+20130313144700",
+            "1.0.0-beta+exp.sha.5114f85",
+        ],
+    )
+    def test_valid_semver_accepted(self, manifest_dict: dict, version: str) -> None:
+        manifest_dict["version"] = version
+        assert manifest_from_dict(manifest_dict).version == version
 
     def test_id_not_namespaced_under_publisher_fails(self, manifest_dict: dict) -> None:
         manifest_dict["id"] = "otherinc.weather"

@@ -152,3 +152,35 @@ class TestRejectionPaths:
         (dest / "acme_weather" / "__init__.py").write_text("PLUGIN = None\n", encoding="utf-8")
         ext = validate_extension_dir(dest)
         assert ext.entrypoint_file == dest / "acme_weather" / "__init__.py"
+
+    @pytest.mark.contract("boundary")
+    def test_package_directory_shadows_same_named_module_file(
+        self, example_dir: Path, tmp_path: Path
+    ) -> None:
+        """importlib checks ``<module>/__init__.py`` before ``<module>.py``, so
+        when both exist the package wins and entrypoint_file must point at the
+        code the host would actually execute."""
+        dest = _copy_example(example_dir, tmp_path)
+        (dest / "acme_weather" / "plugin" / "__init__.py").parent.mkdir()
+        (dest / "acme_weather" / "plugin" / "__init__.py").write_text(
+            "PLUGIN = 'package'\n", encoding="utf-8"
+        )
+        ext = validate_extension_dir(dest)
+        assert ext.entrypoint_file == dest / "acme_weather" / "plugin" / "__init__.py"
+
+    @pytest.mark.contract("boundary")
+    def test_parent_module_shadows_deeper_dotted_path(
+        self, example_dir: Path, tmp_path: Path
+    ) -> None:
+        """If a parent segment resolves to a plain module (``plugin.py``
+        beats a namespace ``plugin/``), the deeper path is unimportable and
+        must not validate against a file the host could never load."""
+        dest = _copy_example(example_dir, tmp_path)
+        helper = dest / "acme_weather" / "plugin" / "helper.py"
+        helper.parent.mkdir()
+        helper.write_text("HELPER = None\n", encoding="utf-8")
+        manifest = json.loads((dest / "extension.json").read_text(encoding="utf-8"))
+        manifest["entrypoint"] = {"module": "acme_weather.plugin.helper", "object": "HELPER"}
+        (dest / "extension.json").write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(ExtensionManifestError, match=r"entrypoint module"):
+            validate_extension_dir(dest)

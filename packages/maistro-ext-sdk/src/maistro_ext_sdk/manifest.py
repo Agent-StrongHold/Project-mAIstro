@@ -140,7 +140,15 @@ _EXTENSION_ID_RE = re.compile(
     r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
 )
 _PUBLISHER_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
-_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+#: Strict SemVer 2.0.0 grammar (https://semver.org/#backus-naur-form): no
+#: leading zeros in numeric identifiers, prerelease dot-separated identifiers
+#: must be alphanumeric-or-hyphen (never empty), optional build metadata.
+_SEMVER_RE = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+)
 #: Dotted import path for the entrypoint module — lexical only, never
 #: resolved at validation time.
 _MODULE_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -428,6 +436,27 @@ def _validate_least_authority(manifest: ExtensionManifest) -> None:
         )
 
 
+def _validate_contract_field(manifest: ExtensionManifest) -> None:
+    """The contract range must be well-formed *and* cover this SDK's version.
+
+    Well-formedness alone used to be the whole check, so a manifest declaring
+    ``contract: ">=2.0.0"`` parsed cleanly through ``manifest_from_dict`` and
+    only the directory front door rejected it — one entry point said v1,
+    another said unsupported. Compatibility belongs to the shared pipeline so
+    every parse path answers the same question (see ``validate_manifest``).
+    Raises ``ValueError``; the pipeline translates to the public error type.
+    """
+    try:
+        manifest.contract_range()
+    except ValueError as exc:
+        raise ValueError(f"contract field: {exc}") from exc
+    if not manifest.targets_contract(EXTENSION_CONTRACT_VERSION):
+        raise ValueError(
+            f"contract field: range '{manifest.contract}' does not include "
+            f"the contract version this SDK publishes ({EXTENSION_CONTRACT_VERSION})"
+        )
+
+
 def validate_manifest(manifest: ExtensionManifest) -> ExtensionManifest:
     """Apply the full manifest contract to an already-shaped model.
 
@@ -453,10 +482,7 @@ def validate_manifest(manifest: ExtensionManifest) -> ExtensionManifest:
         if duplicates:
             raise ValueError(f"duplicate dependency declaration(s): {duplicates}")
 
-        try:
-            manifest.contract_range()
-        except ValueError as exc:
-            raise ValueError(f"contract field: {exc}") from exc
+        _validate_contract_field(manifest)
 
         _validate_authority_vocabulary(manifest)
         _validate_requirement_shapes(manifest)
