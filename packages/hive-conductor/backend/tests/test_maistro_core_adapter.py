@@ -150,7 +150,7 @@ async def test_start_exposes_governed_egress_over_the_container_authorities(monk
     assert egress._router is container.llm_router
     # One gateway endpoint, shared with the roster's model clients rather
     # than rebuilt -- the two doors cannot drift onto different credentials.
-    assert egress._endpoint is captured["model_endpoint"]
+    assert egress._endpoint is captured["admitted_calls"]._endpoint
 
 
 @pytest.mark.asyncio
@@ -289,7 +289,12 @@ async def test_start_registers_the_runtime_materialization_source(monkeypatch):
     source = materialization._runtime_source
     assert source is not None
     assert source.container is container
-    assert source.llm is not None
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    assert isinstance(source.llm, GovernedLLMClient)
+    assert source.llm._calls._effects is container.capability_effects
+    assert source.llm._calls._registry is container.provider_registry
+    assert source.llm._calls._router is container.llm_router
     # The real shipped PREAMBLE template, not an empty stand-in.
     assert "governed dispatch and policy controls" in source.preamble
 

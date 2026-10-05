@@ -96,6 +96,11 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Hive Agent materialization retains governed model egress (#1084).** Agents
+  created after boot use the Container-backed GovernedLLMClient rather than a
+  raw HTTP client. Agent turns adopt the existing canonical execution identity
+  without treating the conversation turn id as a Run id.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was
@@ -111,6 +116,14 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **Materialized Hive Agents retain admitted authority and gateway contracts (#1956).**
+  Boot and later Agent clients share the existing persisted Run/NodeRun/leased
+  Attempt and operator Binding resolver. A definition's Workspace only narrows
+  that authority; global definitions follow the admitted execution. Agent/delegation
+  visits use distinct stable effect keys. Unset sampling stays unset, and Hive's
+  configured API base keeps its exact path. This preserves the existing single-call
+  compatibility stream; full Agent streaming parity remains separate work.
 
 - **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
   `clarify` and the model fallback of `web_search` require a configured
