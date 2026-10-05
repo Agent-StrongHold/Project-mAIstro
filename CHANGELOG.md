@@ -104,6 +104,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Agent model calls require configured authority in their admitted scope (#1084).**
+  Boot and later-materialized Agents share one Container-backed admitted client,
+  inherit the persisted Run actor and Project, and resolve an operator-declared
+  Binding before every model effect. Missing admission, grant or scoped credential
+  refuses dispatch. Tool choice and domain TurnID handling are preserved; Agent
+  streaming uses the canonical incremental Provider lifecycle. Library compositions
+  now supply `AdmittedModelCalls` rather than a partial set of model authorities;
+  explicit standalone client injection remains available. Delegated calls are
+  distinguished by declared Agent and existing delegation depth so child prompts
+  cannot replay parent answers.
+
 - **Conductor model calls require persisted execution and configured authority (#1084).**
   Server and Hive task callers now resolve the actual Run, NodeRun, leased Attempt
   and admitted actor before resolving an operator-declared model Binding. Missing
