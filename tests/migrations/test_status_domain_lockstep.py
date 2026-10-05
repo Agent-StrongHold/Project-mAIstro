@@ -86,7 +86,7 @@ def _load_revision(stem: str):
 
 @pytest.fixture(scope="module")
 def revision_054():
-    return _load_revision("056_run_store_planner_stability")
+    return _load_revision("057_run_store_planner_stability")
 
 
 class TestMigrationDomainsMatchTheModel:
@@ -118,7 +118,7 @@ class TestMigrationDomainsMatchTheModel:
             "status IN ({})".format(", ".join(f"'{status.value}'" for status in AttemptStatus))
             == revision_054._ATTEMPT_STATUS_CHECK
         )
-        source = (VERSIONS / "056_run_store_planner_stability.py").read_text(encoding="utf-8")
+        source = (VERSIONS / "057_run_store_planner_stability.py").read_text(encoding="utf-8")
         # The constrained add rides 054's guarded helper (the adoption-safe
         # form the chain's re-application contract needs), so the spelling
         # this greps for is the helper call with the same constant the

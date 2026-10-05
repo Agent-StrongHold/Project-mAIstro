@@ -9,7 +9,7 @@ Issue #863 — make Run-store retention and queue indexes planner-stable at
 scale. The +28 are two new files under `tests/migrations/`; the change to
 `test_capability_invocation_effect_index_migration.py` moves the chain-tip
 sentinel from `051` to the merged head without moving any count (the
-revision was renumbered 052 → 053 → 054 → 056 across three develop
+revision was renumbered 052 → 053 → 054 → 056 → 057 across four develop
 collisions — develop's M4-B learning-lifecycle columns claimed `053` on
 the same `052` parent, then develop's learning-applicability migration
 claimed `054` and #1892's admission generations re-parented onto it as
@@ -25,10 +25,10 @@ names constant statuses (012 live, 013 retention, 017 archive). An
 unconstrained column plus constant predicates means a status added to the
 model — a terminal one especially — silently escapes the sweeps: no error, no
 log line, just a table that grows while every sweeper reports an empty
-backlog. Migration 056 CHECK-constrains each column to its model enum so the
+backlog. Migration 057 CHECK-constrains each column to its model enum so the
 failure is loud at write time; these tests hold the pairing shut statically:
 
-- 056's domain lists equal `RunStatus`/`AttemptStatus` in *declaration* order,
+- 057's domain lists equal `RunStatus`/`AttemptStatus` in *declaration* order,
   and the CHECK DDL strings spell exactly those values (a reordered or
   half-copied domain fails).
 - The three partial-index predicates name exactly the model's
@@ -42,7 +42,7 @@ failure is loud at write time; these tests hold the pairing shut statically:
   status-bearing table must be declared here, with an owner and a domain,
   rather than silently joining the class of columns this issue is about.
 
-Repair note (this branch): 056's constraint adds ride a guarded
+Repair note (this branch): 057's constraint adds ride a guarded
 `_add_check_constraint_if_absent` helper so re-applying the revision over its
 own schema is adoption, not `DuplicateObject` — the lockstep greps were
 updated to that spelling with the enforced property unchanged, and test
@@ -63,17 +63,19 @@ adoption-safe guarded add, lockstep-grepped call shape, exact CHECK domain
 strings — are unchanged. No test added, removed or renamed; the recorded
 suite inventory is untouched.
 
-Develop-sync note (this round): the third collision re-parented the
-revision onto develop's `055_task_admission_generations` as `056`
-(`054_learning_applicability_epistemics` and the admission generations
-claimed 054/055 while this branch was open), and
-`043_invocation_quota_door` followed the merged head. Renumbering only:
-file name, `revision`/`down_revision`, the chain-tip sentinel in
-`test_capability_invocation_effect_index_migration.py` (which now also
-asserts the quota-door head develop's side already asserted), the filename
+Develop-sync note (this round): the fourth collision — develop's quota
+door (#1196/#718) claimed `055`'s child slot as `043_invocation_quota_door`
+and #1047's user-model tables landed past it as `056_user_model_facts` —
+re-parented this revision onto that tip as `057` per the convention (the
+branch-side revision follows the incoming develop tip; the quota door keeps
+develop's own parent). Renumbering only:
+file name, `revision`/`down_revision`, `043_invocation_quota_door`'s
+`down_revision` back to develop's `055`, the chain-tip sentinel in
+`test_capability_invocation_effect_index_migration.py` (head now `057`,
+walk rooted there), the filename
 probes in `test_status_domain_lockstep.py`/`test_run_store_planner_stability.py`,
 and the migration id cited by the store comments and this note. One test
-method renamed with its subject (`test_056s_indexes_exist_and_the_redundant_one_is_gone`);
+method renamed with its subject (`test_057s_indexes_exist_and_the_redundant_one_is_gone`);
 counts and enforced properties are unmoved, and the recorded suite
 inventory still matches (`scripts/check-suite-inventory.py` ok at the
 merged head).
@@ -89,9 +91,9 @@ fairness O(every Run) per tick under any plan mode.
 
 The static five pin the shipped SQL shapes as importable objects: literal
 terminal statuses and no `ANY($` in the three sweeps; caller input still
-parameterized; the status listing's order matching 056's index expression; the
+parameterized; the status listing's order matching 057's index expression; the
 continuation listing's two literal statement shapes (an `OR ... IS NULL` arm
-can never become an index condition); and 056 declaring no partial index at
+can never become an index condition); and 057 declaring no partial index at
 all.
 
 The live fifteen apply the whole chain to an empty scratch database, seed a

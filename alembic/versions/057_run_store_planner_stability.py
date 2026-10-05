@@ -77,12 +77,15 @@ learning-lifecycle columns (ADR-100126-8c2d) then claimed `053` on that
 same parent, and the revision re-parented once more, as 054. Develop's
 own learning-applicability migration (M4-B3, #119) then claimed `054` on
 the lifecycle tip and #1892's forward admission-generation representation
-collided in turn, re-parenting onto it as `055`; this revision follows
-them, re-parenting onto that `055_task_admission_generations` as 056.
-One linear head, no duplicate revision ids.
+collided in turn, re-parenting onto it as `055`; develop's quota-door
+revision (#1196/#718) then claimed `055`'s child slot on develop and
+#1047's user-model tables landed past it as `056_user_model_facts`, so
+this revision follows them, re-parenting onto that
+`056_user_model_facts` tip as 057. One linear head, no duplicate
+revision ids.
 
-Revision ID: 056
-Revises: 055
+Revision ID: 057
+Revises: 056
 Create Date: 2026-10-04
 """
 
@@ -90,8 +93,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "056"
-down_revision = "055"
+revision = "057"
+down_revision = "056"
 branch_labels = None
 depends_on = None
 
