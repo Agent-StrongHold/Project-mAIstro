@@ -115,9 +115,14 @@ work through `AttemptExecutionService`.
 
 **7. No ambient access.** There is no module-level "current context" or
 "current container" accessor in the extension module; an extension can only
-use the context it was handed. The SDK surface is importable as
-`from maistro import extensions`, making the contract part of the package
-front door (and visible to the reachability ratchet as wired).
+use the context it was handed. The SDK's import path is `maistro.extensions`.
+Its single static anchor is the runtime package (`maistro.runtime` imports it
+with a documented reason): the contract is the runtime-facing SDK, and this
+keeps it visible to the reachability ratchet as wired while leaving the
+package root — which every `import maistro` executes — byte-identical to
+before, so no optional dependency (e.g. cryptography, required by the
+capability credential plane) can become an import-time requirement of the
+library as a whole.
 
 ## Alternatives considered
 
@@ -137,13 +142,19 @@ front door (and visible to the reachability ratchet as wired).
 
 - The public context surface is a conformance-pinned contract; adding to it is
   an explicit, reviewed act (the surface test fails otherwise).
+- The host seam treats the governed capability authorities as annotation-only
+  (TYPE_CHECKING) and duck-typed at runtime: any eager `maistro.capabilities`
+  import would drag the credential plane — and its cryptography dependency —
+  into the SDK's import chain, defeating the auth module's fail-closed
+  degradation. Host composition code imports the real types itself.
 - Extension SDK work that follows — versioned SDK package and manifest schema
   (#949), public-SDK-only import enforcement (#951) — builds on these
   interfaces; the manifest's declared capabilities map onto
   `ExtensionDescriptor`.
 - Graph/runtime wiring that hosts extension nodes as NodeRuns lands in later
-  M9 work; until then the module is reachable, tested, and exercised by the
-  reference-execution suite through the canonical Attempt path.
+  M9 work; until then the runtime package is the contract's static anchor and
+  the reference-execution suite exercises it through the canonical Attempt
+  path.
 - New public SDK methods that only external code calls are referenced in
   `packages/maistro-core/src/_vulture_whitelist.py` (the same
   "contract ships first by design" posture as CampaignSelector and the
