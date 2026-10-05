@@ -66,9 +66,18 @@ class LearningStore(Protocol):
         ...
 
     async def check_auto_promotions(
-        self, threshold: int = 5, *, org_id: str = ""
+        self,
+        threshold: int = 5,
+        *,
+        org_id: str = "",
+        min_confidence: float = 0.5,
     ) -> list[Learning]:
-        """Promote learnings that have been hit enough times."""
+        """Promote learnings that have been hit enough times *and* carry evidence.
+
+        `min_confidence` mirrors `evidence.DEFAULT_MIN_PROMOTION_CONFIDENCE` as a
+        plain default rather than an import so the protocol stays
+        dependency-free; the stores and promoter share the real constant.
+        """
         ...
 
     async def get_promoted(

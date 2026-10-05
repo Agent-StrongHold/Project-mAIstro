@@ -23,9 +23,49 @@ AST over `packages/hive-conductor/backend/routes/*.py`. A handler is canned
 when:
 
 - it is decorated with `@router.<method>(...)`, and
-- every `return` statement's value is a literal composed purely of constants,
-  and
-- the body contains no `Call` node except `HTTPException(...)`.
+- every `return` statement in the handler's own scope returns a literal
+  composed purely of constants (`[]`, `{"status": "clean"}`, a stock
+  Dockerfile) — a nested helper's returns are that helper's scope, not the
+  route's, and
+- the handler's executed scope contains no `Call` node except
+  `HTTPException(...)` and logging/metrics statements.
+
+Executed scope: a statement that only *defines* a nested function or lambda
+runs the definition — its decorators, defaults and annotations — but not its
+body, which waits for an invocation the detector does not speculate about. A
+route may define helpers it never calls, so their calls are the helper's, not
+the route's (#1858). When the helper *is* called, the call site itself is a
+`Call` in this scope and counts. That credit is deliberately lexical, not
+interprocedural: the detector does not follow into a called helper's body, so
+work performed only there is invisible to it.
+
+Logging and metrics do not make a literal acknowledgement truthful (#1857): a
+route that only logs and answers `{"status": "ok"}` still answered success for
+an operation that did nothing, so observability calls are not real-work
+evidence. What counts as observability is name-matching only — see the
+limitations below.
+
+The observability vocabulary and its limits
+-------------------------------------------
+This is syntactic evidence, not semantic verification of arbitrary calls.
+A call is treated as observability exactly when its target is rooted in a
+plain name whose lowercased form is one of `log`, `logger`, `logging`,
+`metrics`, `print` — the same vocabulary the shipped-surface gate applies
+to the same judgment (#1144, `shipped_surface_truth._LOG_LIKE_CALL_NAMES`;
+an equality test in `tests/test_check_api_route_contracts.py` fails if the
+two definitions ever diverge). The gate cannot prove that any other call is
+meaningful: a call rooted outside the vocabulary makes the handler "real
+work" and the constant return an acknowledgement rather than a payload —
+which is the valid shape (`store.flush(); return {"status": "ok"}`), but it
+is classified by name shape, not by proving the call did anything. The
+mirror risk is bounded the same way: a call rooted in a variable *named*
+`logger` that actually performs I/O would be misread as observability, and
+attribute-rooted targets (`self.log.info(...)`, anything without a plain
+name root) are deliberately never exempted. Handlers whose canned shape
+hides behind non-decorator registration forms or non-literal returns are
+separate, known detector leaves (#1144 owns the shipped-surface detector
+class); uncalled nested definitions are judged here, by executed scope
+(#1858).
 
 The inventory
 -------------
@@ -35,10 +75,13 @@ The audited routes and their dispositions live in
 resolve to a live handler (method + path matched against the decorator) whose
 name equals the entry's `handler` field, so the inventory cannot rot: removing
 a route means updating the inventory in the same change, and renaming a
-handler means reconciling its declaration. A canned handler that is *not* registered fails the gate unless
-it carries a `temporary` disposition with a tracking issue and an unexpired
+handler means reconciling its declaration. A canned handler fails the gate unless its registry entry excuses
+it with a `temporary` disposition carrying a tracking issue and an unexpired
 review date — the same escape shape `check-public-routes.py` uses, because
-"we know, it is tracked" must be writable and must expire.
+"we know, it is tracked" must be writable and must expire. The excuse is
+keyed to the entry's (file, method, path) identity and must still be valid:
+a missing issue or an expired date fails the registry check and leaves the
+canned finding standing, including for logging-only handlers.
 
 Usage
 -----
@@ -50,6 +93,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 
@@ -60,7 +104,6 @@ INVENTORY_DOC = ROOT / "docs" / "api" / "route-contract-inventory.md"
 
 DISPOSITIONS = frozenset({"implemented", "unsupported-501", "preview", "temporary"})
 REQUIRED_FIELDS = ("route", "method", "path", "file", "handler", "disposition", "contract")
-REQUIRED_TEMPORARY = ("issue", "expires")
 REQUIRED_TEMPORARY = ("issue", "expires")
 
 
@@ -77,21 +120,110 @@ def _pure_constant(node: ast.expr) -> bool:
     return False
 
 
-def _performs_real_work(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True when the body calls anything except HTTPException construction.
+#: Calls this gate accepts as observability rather than real work, when their
+#: target is rooted in one of these plain names (`log(...)`, `logger.info(...)`).
+#: A route that only logs (or reports metrics) and returns a literal still
+#: answers success for an operation that did nothing, so observability cannot
+#: justify the acknowledgement (#1857). The vocabulary is #1144's
+#: `shipped_surface_truth._LOG_LIKE_CALL_NAMES`, mirrored rather than imported
+#: because these gates are standalone scripts, not a package; an equality test
+#: in `tests/test_check_api_route_contracts.py` fails if the two diverge.
+_LOG_LIKE_CALL_NAMES = {"log", "logger", "logging", "metrics", "print"}
 
-    Walks the body statements, not the whole function node: the handler's own
-    ``@router.<method>(...)`` decorator is a Call on every decorated handler,
-    and counting it here made every handler look like it did real work — the
-    detector could never fire (found by the in-process coverage tests).
+
+def _call_root_name(call: ast.Call) -> str | None:
+    """The plain name a call's target is rooted in, mirroring #1144's
+    ``shipped_surface_truth._call_root_name``: the base of an attribute chain
+    only when that base is a name (`logger` in `logger.info(...)`); a bare
+    name names itself; anything else has no root and is never observability."""
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        base = func.value
+        return base.id if isinstance(base, ast.Name) else None
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _definition_time_expressions(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.expr]:
+    """What a ``def`` evaluates at once, before its body ever runs.
+
+    Decorators, argument defaults and annotations execute in the enclosing
+    scope the moment the def statement is reached; only the body defers to
+    call time.
     """
-    for statement in func.body:
-        for node in ast.walk(statement):
-            if isinstance(node, ast.Call):
-                func_node = node.func
-                if isinstance(func_node, ast.Name) and func_node.id == "HTTPException":
-                    continue
-                return True
+    args = node.args
+    parameters = [
+        parameter
+        for parameter in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
+        if parameter is not None
+    ]
+    eager: list[ast.expr] = [*node.decorator_list, *args.defaults]
+    eager.extend(default for default in args.kw_defaults if default is not None)
+    eager.extend(parameter.annotation for parameter in parameters if parameter.annotation)
+    if node.returns is not None:
+        eager.append(node.returns)
+    return eager
+
+
+def _walk_executed_scope(roots: list[ast.stmt]) -> Iterator[ast.AST]:
+    """Yield every node that runs when the handler's own statements run.
+
+    The lexical execution boundary the detector judges. A statement that
+    defines a nested function executes that definition — the def-time
+    expressions above — but not the nested body, which waits for an
+    invocation; a lambda's body defers the same way. Everything else runs
+    here and is yielded, including class bodies (a class statement executes
+    its body immediately) and nested functions inside them.
+    """
+    stack: list[ast.AST] = list(roots)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack.extend(_definition_time_expressions(node))
+        elif isinstance(node, ast.Lambda):
+            stack.extend(node.args.defaults)
+            stack.extend(default for default in node.args.kw_defaults if default is not None)
+        else:
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _own_scope_returns(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
+    """The handler's own ``return`` statements, not its nested helpers'."""
+    return [node for node in _walk_executed_scope(func.body) if isinstance(node, ast.Return)]
+
+
+def _performs_real_work(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the executed scope calls anything beyond HTTPException
+    construction and logging/metrics statements.
+
+    Walks the handler's executed scope (`_walk_executed_scope`), not the
+    whole function tree: the handler's own ``@router.<method>(...)``
+    decorator is a Call on every decorated handler and counting it made the
+    detector unable to fire, and a call inside a nested definition belongs
+    to that definition, which the route may never invoke (#1858) — defining
+    a writing helper is not route work. A helper the route actually calls
+    justifies the route through its call site; that credit stops there
+    (lexical, not interprocedural analysis).
+
+    Observability calls are exempt (#1857): their root name (case-insensitive)
+    is in ``_LOG_LIKE_CALL_NAMES``. Everything else — a service call, a store
+    write, a background-task scheduler — is real-work evidence however the
+    ``return`` reads; the gate does not try to prove such a call meaningful,
+    only to recognize the narrow shape that is obviously not.
+    """
+    for node in _walk_executed_scope(func.body):
+        if isinstance(node, ast.Call):
+            func_node = node.func
+            if isinstance(func_node, ast.Name) and func_node.id == "HTTPException":
+                continue
+            root = _call_root_name(node)
+            if root is not None and root.lower() in _LOG_LIKE_CALL_NAMES:
+                continue
+            return True
     return False
 
 
@@ -130,10 +262,17 @@ def _handlers() -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, 
 
 def _canned_handlers(
     handlers: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, str]],
+    exempt: frozenset[tuple[str, str, str]] = frozenset(),
 ) -> list[str]:
+    """Canned findings, skipping identities already excused by a valid
+    ``temporary`` disposition (``_temporary_exempt_identities``): the escape
+    hatch must apply to logging-only handlers too, since an observability-only
+    body is exactly the shape a temporary disposition exists to excuse."""
     findings: list[str] = []
     for filename, func, method, route_path in handlers:
-        returns = [n for n in ast.walk(func) if isinstance(n, ast.Return)]
+        if (filename, method, route_path) in exempt:
+            continue
+        returns = _own_scope_returns(func)
         if not returns:
             continue
         if not all(_pure_constant(r.value) for r in returns):
@@ -158,6 +297,26 @@ def _temporary_expired(entry: dict[str, object]) -> str | None:
     if dt is not None:
         return f"expired {dt.date().isoformat()}" if dt.date() < date.today() else None
     return "temporary disposition carries no parseable expires date"
+
+
+def _temporary_exempt_identities() -> frozenset[tuple[str, str, str]]:
+    """Registry identities whose `temporary` disposition is currently valid:
+    a tracking issue and an unexpired review date. `main()` filters these out
+    of the canned findings so the documented escape hatch holds for every
+    detected handler class (#1857). A missing registry yields nothing here;
+    `_check_registry` reports that failure on its own."""
+    if not REGISTRY.exists():
+        return frozenset()
+    registry = json.loads(REGISTRY.read_text())
+    exempt: set[tuple[str, str, str]] = set()
+    for entry in registry.get("routes", []):
+        if (
+            entry.get("disposition") == "temporary"
+            and entry.get("issue")
+            and _temporary_expired(entry) is None
+        ):
+            exempt.add((str(entry["file"]), str(entry["method"]), str(entry["path"])))
+    return frozenset(exempt)
 
 
 def _check_registry(
@@ -210,7 +369,7 @@ def main() -> int:
 
     handlers = _handlers()
     by_identity = {(f, m, p): func for f, func, m, p in handlers}
-    canned = _canned_handlers(handlers)
+    canned = _canned_handlers(handlers, _temporary_exempt_identities())
 
     registry_failures, registered_count = _check_registry(by_identity)
     failures.extend(registry_failures)

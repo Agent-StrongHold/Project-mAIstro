@@ -25,6 +25,19 @@ or placeholder-only section.
 
 ### Added
 
+- **The extension SDK boundary is enforced and a reference extension ships outside the
+  core tree (#951).** `extensions/namespace-policy.json` declares the public
+  package namespace policy — the public SDK root (`maistro_ext_sdk`) versus the
+  product-private roots — and `scripts/check-extension-imports.py` enforces it
+  statically against every extension package: product-private imports, repo-relative
+  imports, `sys.path` repair, undeclared third-party dependencies, and
+  underscore-private modules under a public root all fail. The reference extension
+  (`extensions/reference-greeter/`) is a buildable out-of-tree package, and
+  `scripts/check-reference-extension.py` builds it, installs it into a fresh venv,
+  proves the product's own modules are unimportable there, and runs its tests with
+  that interpreter. Authoring guide, manifest reference, lifecycle, and capability
+  docs live under `docs/extensions/`.
+
 - **API-wide HTTP content negotiation (ADR-076) is implemented (#96).**
   `maistro-server` and hive-conductor now run the shared
   `maistro.api_versioning.VersionNegotiationMiddleware` from `maistro-core`.
