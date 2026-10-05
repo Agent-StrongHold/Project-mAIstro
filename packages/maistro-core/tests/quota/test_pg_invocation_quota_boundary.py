@@ -1373,9 +1373,15 @@ async def test_pg_canonical_reconciliation_preserves_unknown_and_correction_orde
             (7, "provider-before"),
             (8, "canonical-reconciliation"),
         ]
-        balance = await quota.balance(budget_id)
-        assert balance.held == 0
-        assert balance.spent == (7 if disposition is ReconciliationDisposition.APPLIED else 0)
+        allocation = await pool.fetchrow(
+            "SELECT held, spent FROM invocation_quota_allocations "
+            "WHERE invocation_id=$1 AND budget_id=$2",
+            original.invocation_id,
+            budget_id,
+        )
+        assert allocation is not None
+        assert allocation["held"] == 0
+        assert allocation["spent"] == (7 if disposition is ReconciliationDisposition.APPLIED else 0)
     finally:
         await _cleanup(pool, suffix, [budget_id])
         await pool.close()
