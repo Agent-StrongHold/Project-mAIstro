@@ -42,6 +42,13 @@ from maistro.runs.store import (
     StaleExecutionFence,
     validate_child_scope,
 )
+from maistro.runs.admission_identity import (
+    AdmissionBinding,
+    AdmissionRecordV2,
+    CanonicalJsonObject,
+    LegacyAdmissionRecord,
+    RootAdmissionEnvelope,
+)
 
 __all__ = [
     "ATTEMPT_TRANSITIONS",
@@ -84,4 +91,9 @@ __all__ = [
     "transition_node_run",
     "transition_run",
     "validate_child_scope",
+    "AdmissionBinding",
+    "AdmissionRecordV2",
+    "CanonicalJsonObject",
+    "LegacyAdmissionRecord",
+    "RootAdmissionEnvelope",
 ]
