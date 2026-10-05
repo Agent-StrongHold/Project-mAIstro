@@ -604,6 +604,15 @@ class ExternalAgentRegistry:
     snapshotted with provenance, and are projected to canonical specialists
     only through the injected :class:`ProjectionPolicy`. It never invokes a
     remote agent — that is delegation (M9-D2), not discovery.
+
+    M1 product-local projection: Agent
+
+    This is not a second Agent-definition authority: the canonical Agent
+    model stays owned by ``maistro.agents``. The registry holds only
+    remote-descriptor snapshots keyed by their external agent id and renders
+    them as provisional specialists through the injected policy; every
+    projected card is clamped (no workspace root, no delegation, external
+    scope) so a remote card can never mint canonical authority.
     """
 
     def __init__(
