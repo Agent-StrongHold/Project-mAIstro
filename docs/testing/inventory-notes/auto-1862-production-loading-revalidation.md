@@ -1,9 +1,9 @@
 # Issue #1862 — production loading before generic composition-guard collection, revalidated at lane head
 
-Lane L1862 (implement + verify + repair), jobs `1a2aec658d754c9ba3f9344245ce27fa`
-and `6ecf8f7921b14dc493f2fe4b5a394413`, worktree `~/Git/wt/auto-1862`, branch
-`auto-1862`, base = head before this note = `afb8659ac4829ad8d674fdd7e92ad24e2a4dc2a9`
-(develop tip). Every piece of evidence below was executed in this lane against
+Lane L1862 (implement + verify + repair), jobs `1a2aec658d754c9ba3f9344245ce27fa`,
+`6ecf8f7921b14dc493f2fe4b5a394413` and `5f46927cb45842eea37f0befbc796d27`,
+worktree `~/Git/wt/auto-1862`, branch `auto-1862`, base = head before this
+note = `afb8659ac4829ad8d674fdd7e92ad24e2a4dc2a9` (develop tip). Every piece of evidence below was executed in this lane against
 that exact revision; nothing is inherited from prior-round claims. The
 repair round (job `6ecf8f7921b14dc493f2fe4b5a394413`) re-executed every
 section at the lane head `56343cd1969bec7ccca40913f2d0dcf85db3e761`
@@ -139,6 +139,43 @@ is outside this lane's authority. This is a hosted-infra condition requiring
 operator action (drain/re-run the Gates Ran publisher, or the admin-bypass
 merge that `branch-protection.json` grants `OrganizationAdmin`/
 `RepositoryRole:admin`), not a repairable branch finding.
+
+## Repair round 3 (job `5f46927cb45842eea37f0befbc796d27`, head `adb2a77fd`)
+
+Lane head advanced only by the note edit itself (`adb2a77fd` = `56343cd19` +
+this file; `git diff 56343cd19..adb2a77fd` touches nothing else). All
+acceptance evidence re-executed at `adb2a77fdcc9ab0a8e171d90fd38010715492f44`:
+
+- Both guard modules only, fresh interpreter: **137 passed**; `--collect-only`
+  shows exactly the eleven `creative.*` identities. Container identity sweep
+  `test_the_container_resolver_composes_every_production_kind`: **30 params**.
+- Counterfactual by hand: bare `maistro.graph.nodes` import -> **19 non-test
+  kinds, zero `creative.*`**.
+- Collection order: node-composition alone **99 passed**, container alone
+  **38 passed**, reversed order **137 passed**, broader four-file selection
+  (node-composition + container + `test_base_contract.py` +
+  `test_sync_kinds.py`) **164 passed**.
+- Universe proof **13 passed**; unreachable/test-shaped/bare-core pins
+  (4 selected) passed.
+- Negative `-k "refuses or missing or omitting or neither or bare_core or
+  fail_closed or denies"`: **36 passed**.
+- Loader-import failure: out-of-tree `sys.meta_path` shim raising on
+  `maistro_design.creative_nodes` -> **both** guard files error at collection
+  ("Interrupted: 1 error during collection"); no skip, no empty sweep.
+- Full CI `test`-job selection (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run
+  pytest packages/maistro-core/tests`): **12401 passed, 888 skipped,
+  1 xfailed, exit 0** in 285.38s — identical to round 2.
+- Gates: `ruff check .` clean; `ruff format --check .` clean (2917 files);
+  `scripts/check-suite-inventory.py` ok (14 suites, no delta — no test
+  added); `scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> 1338 reviewed
+  identities = 1338 findings, exit 0.
+- Hosted status unchanged and not branch-repairable: the required
+  `gates-ran` commit status on `56343cd19` was published `pending` while the
+  Gates Ran publisher run stayed `queued` (repo-wide publisher storm), and
+  the branch then entered the GitHub merge queue (GH006). Pushing,
+  re-running hosted workflows and queue management are outside this lane's
+  authority; the branch-side work for #1862 is complete and locally proven.
 
 ## Boundary note
 
