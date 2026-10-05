@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +67
+  packages/maistro-core/tests: +68
 ---
 # atomic-admission-b2
 
@@ -10,10 +10,10 @@ B2 of the #1845 admission-decode stack (#1893): the new
 `maistro.tasks.admission_codec` module turns forward-schema admission rows
 into exact #1851 immutable DTOs or typed fail-closed errors, and the new
 `packages/maistro-core/tests/tasks/test_admission_codec.py` pins that
-contract with 67 tests. All 67 are pure unit tests over `Mapping` rows — no
-database, no clock, no HTTP. At the original B2 leaf B1 (#1892) was not yet
-on the coordinated branch; this leaf tests the mapper rather than claiming a
-database durability proof.
+contract with 68 tests. Sixty-seven are pure unit tests over `Mapping` rows;
+one is a PostgreSQL durability test gated on the required disposable database.
+At the original B2 leaf B1 (#1892) was not yet on the coordinated branch; the
+real-pool test was added only after B1 reached this branch.
 
 ## Base provenance
 
@@ -22,17 +22,16 @@ The assigned lane head was bare develop (`680329c96`). The #1893 prerequisite
 as: merge `origin/auto-1851` (clean, additive ledger rows only — verified
 against `origin/develop` by row diff), then the codec leaf on top.
 
-## Why unit-level only
+## Database durability boundary
 
 The issue gates database round-trip tests on B1: "The forward schema leaf
 #1892 (B1) is required for database round-trip tests; pure codec work may be
-prepared earlier." The prospective
-`test_raw_and_production_pool_codecs_read_identical_text_snapshots` remains
-pinned at the value level here (snapshots are TEXT str in both pool kinds; a
-pre-decoded value is rejected, never silently accepted). The real raw-asyncpg
-vs `_register_json_codecs` two-pool contrast against the migrated schema is
-still required for durability proof; no skipped test is counted as such —
-there are no skips in this file.
+prepared earlier." B1 is now present, so
+`test_raw_and_production_pool_codecs_read_identical_text_snapshots` is the
+real raw-asyncpg versus `_register_json_codecs` pool contrast against its
+migrated TEXT schema. `test_text_snapshots_reject_predecoded_values` retains
+the complementary pure value-level boundary. Neither test treats a skipped
+PostgreSQL leg as durability proof.
 
 ## Contracts worth remembering
 
@@ -809,3 +808,23 @@ unwired modules `maistro.runs.admission_identity` and
 `maistro.tasks.admission_codec` and their dispositions. All other sub-ratchets
 passed. This is the existing two-merge campaign blocker, not a vulture-ledger
 defect; it remains unfixable by an in-branch amendment.
+
+## Round 13 (real-pool durability repair)
+
+The prior independent verifier correctly found that the prospective
+`test_raw_and_production_pool_codecs_read_identical_text_snapshots` only
+aliased an in-memory string; it did not prove the migrated SQL TEXT column or
+the two asyncpg pool configurations. It is now an async PostgreSQL test that:
+
+- requires both `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` (and
+  fails under `MAISTRO_REQUIRE_PG_LEGS=1` if either is absent);
+- uses the production-codec `pg_pool` plus an independently-created raw pool,
+  proves both point at the same server/database, writes an encoded v2 record
+  to the migrated `task_idempotency` table, reads it through both pools, and
+  decodes both mappings; and
+- cleans up its uniquely-scoped SQL row in `finally`.
+
+The local repair environment has neither required DSN and its Docker socket is
+unavailable, so the live leg is intentionally reported as unverified here
+until the disposable migrated database is supplied. The focused suite still
+runs its unit contracts; it does not claim a skipped leg as durability proof.

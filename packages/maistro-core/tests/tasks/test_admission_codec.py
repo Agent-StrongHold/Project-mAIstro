@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import uuid
 from typing import Any
 
@@ -62,7 +64,7 @@ _PROVENANCE_TEXT = json.dumps({"principal": "actor-1"}, sort_keys=True, separato
 
 def _v2_record(**overrides: Any) -> AdmissionRecordV2:
     envelope = RootAdmissionEnvelope(
-        scope_key=_SCOPE,
+        scope_key=overrides.get("scope_key", _SCOPE),
         generation_id=overrides.get("generation_id", _GENERATION),
         fingerprint=overrides.get("fingerprint", _FINGERPRINT),
         workspace_id="ws-1",
@@ -292,12 +294,10 @@ def test_invalid_and_duplicate_json_is_rejected(broken: str) -> None:
         assert broken not in str(error)
 
 
-def test_raw_and_production_pool_codecs_read_identical_text_snapshots() -> None:
-    # B1/#1892-gated at the database level; this pins the value contract the
-    # two-pool contrast will exercise: snapshots are bound and read as TEXT,
-    # so both pool kinds must hand the codec an identical str, and a value
-    # that arrives pre-decoded (what a JSON codec registered over these
-    # columns would produce) is rejected instead of silently accepted.
+def test_text_snapshots_reject_predecoded_values() -> None:
+    # This is the value-level half of the real-pool contrast below: snapshots
+    # are TEXT, so a value which a JSON codec had decoded must not be silently
+    # accepted as though it were a storage TEXT value.
     row = _v2_row()
     assert isinstance(row["request"], str)
 
@@ -312,6 +312,85 @@ def test_raw_and_production_pool_codecs_read_identical_text_snapshots() -> None:
     with pytest.raises(AdmissionRowDecodeError) as excinfo:
         _decode_full(misdecoded)
     assert excinfo.value.code is AdmissionDecodeCode.INVALID_SNAPSHOT
+
+
+@pytest.mark.asyncio
+async def test_raw_and_production_pool_codecs_read_identical_text_snapshots(
+    pg_pool: Any,
+) -> None:
+    """Read one migrated admission row through raw and production asyncpg pools.
+
+    The production fixture registers ``_register_json_codecs``; the independent
+    raw pool deliberately does not. The admission snapshots are TEXT rather
+    than JSONB, so both readers must hand the codec the same strings. The two
+    environment variables are separately required because they are the
+    migration and asyncpg contracts for this real-database proof; comparing
+    server identity makes a same-named database on another server insufficient.
+    """
+    dsn = os.getenv("MAISTRO_TEST_PG_DSN", "").strip()
+    database_url = os.getenv("MAISTRO_TEST_DATABASE_URL", "").strip()
+    if not dsn or not database_url:
+        if os.getenv("MAISTRO_REQUIRE_PG_LEGS") == "1":
+            pytest.fail(
+                "MAISTRO_REQUIRE_PG_LEGS requires MAISTRO_TEST_PG_DSN and "
+                "MAISTRO_TEST_DATABASE_URL for admission codec durability"
+            )
+        pytest.skip("set MAISTRO_TEST_PG_DSN and MAISTRO_TEST_DATABASE_URL")
+    if pg_pool is None:
+        pytest.fail("a configured admission codec durability test requires pg_pool")
+
+    import asyncpg
+
+    # Alembic commonly receives a SQLAlchemy driver URL, while asyncpg accepts
+    # a normal PostgreSQL URL. Strip only the driver selector; credentials,
+    # host, port, and database stay intact for the identity comparison below.
+    raw_dsn = re.sub(r"^postgres(?:ql)?\+[a-zA-Z0-9_]+://", "postgresql://", database_url)
+    raw_pool = await asyncpg.create_pool(raw_dsn, min_size=1, max_size=1)
+    scope_key = hashlib.sha256(f"admission-codec-{uuid.uuid4().hex}".encode()).hexdigest()
+    try:
+        async with pg_pool.acquire() as production_conn, raw_pool.acquire() as raw_conn:
+            production_identity = await production_conn.fetchrow(
+                "SELECT current_database(), inet_server_addr()::text, inet_server_port()"
+            )
+            raw_identity = await raw_conn.fetchrow(
+                "SELECT current_database(), inet_server_addr()::text, inet_server_port()"
+            )
+        assert production_identity is not None and raw_identity is not None
+        assert tuple(production_identity) == tuple(raw_identity)
+
+        encoded = encode_admission_record(_v2_record(scope_key=scope_key))
+        columns = tuple(encoded)
+        placeholders = ", ".join(f"${index}" for index in range(1, len(columns) + 1))
+        async with pg_pool.acquire() as production_conn:
+            await production_conn.execute(
+                f"INSERT INTO task_idempotency ({', '.join(columns)}) VALUES ({placeholders})",
+                *(encoded[column] for column in columns),
+            )
+            production_row = await production_conn.fetchrow(
+                f"SELECT {', '.join(columns)} FROM task_idempotency WHERE scope_key = $1",
+                scope_key,
+            )
+        async with raw_pool.acquire() as raw_conn:
+            raw_row = await raw_conn.fetchrow(
+                f"SELECT {', '.join(columns)} FROM task_idempotency WHERE scope_key = $1",
+                scope_key,
+            )
+
+        assert production_row is not None and raw_row is not None
+        production_mapping = dict(production_row)
+        raw_mapping = dict(raw_row)
+        assert production_mapping == raw_mapping == encoded
+        for row in (production_mapping, raw_mapping):
+            decoded = decode_admission_record(row, header=decode_admission_header(row))
+            assert isinstance(decoded, AdmissionRecordV2)
+            assert decoded.envelope.request_snapshot.text == _REQUEST_TEXT
+            assert encode_admission_record(decoded) == encoded
+    finally:
+        async with pg_pool.acquire() as production_conn:
+            await production_conn.execute(
+                "DELETE FROM task_idempotency WHERE scope_key = $1", scope_key
+            )
+        await raw_pool.close()
 
 
 # --- header / schema fail-closed contracts ---------------------------------
