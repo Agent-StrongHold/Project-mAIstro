@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +58
+  packages/maistro-core/tests: +61
 ---
 
 # #957 (M9-C3) — host-upgrade compatibility preflight
@@ -67,6 +67,28 @@ rows); `test_propagation_terminates_on_a_dependency_cycle` passes on both
 `test_version_range_span_detection_matches_the_authoring_rule` fails on the
 old weakest-floor logic at the `>=1.0.0,>=2.0.0,<3.0.0` shadowing case.
 
+Repair round 2 (+3): `test_cli_preflight_all_disabled_flag_proceeds_under_strict`
+and `test_cli_preflight_all_disabled_conflicts_with_enabled` pin the CLI
+`--all-disabled` flag (an explicitly empty enabled set must reach
+`run_preflight` as `frozenset()`, not `None` — otherwise an all-disabled host
+is unrepresentable and strict preflight blocks on disabled extensions), and
+`test_cli_preflight_json_passes_markup_like_metadata_through` pins the JSON
+output path against rich markup: manifest metadata and target notes are
+publisher-controlled, so `[red]…[/red]` sequences were consumed and `[/]`
+raised `MarkupError`, breaking the byte-reproducibility acceptance criterion
+exactly when metadata carried markup-like text. `console.print` for `--json`
+now runs with `markup=False, highlight=False`. Fail-before evidence: the new
+markup test fails against the pre-fix CLI with `MarkupError("closing tag
+'[/]' at position 603 has nothing to close")` (verified by temporarily
+reverting the one-line fix; reverted after the run). The round also restores
+`ruff format` conformance of the CLI module (the contradiction message
+violated the line-length formatter rule as committed).
+
+Validation on this head: `pytest packages/maistro-core/tests/extensions`
+105 passed (44 pre-existing + 61 new); `ruff check` / `ruff format --check`
+clean on the full tree; `check-suite-inventory.py --suite
+packages/maistro-core/tests` green against the updated delta above.
+
 Fail-before evidence: muting the `STRICT` reference in `run_preflight`'s
 `can_proceed` (always True) fails `test_strict_policy_cannot_proceed_with_enabled_blocker`
 and the strict CLI test; making `_propagate_dependency_verdicts` a no-op
@@ -75,9 +97,9 @@ fails the two transitive tests; dropping the
 import pass `test_preflight_module_imports_only_public_contract_metadata`.
 All mutations were reverted before commit.
 
-Validation on this head: `pytest packages/maistro-core/tests/extensions`
-97 passed (44 pre-existing + 53 new); mypy --strict six-package command
-clean; `ruff check` / `ruff format --check` clean on the full tree;
+Earlier-round validation (pre-repair-2 head): `pytest
+packages/maistro-core/tests/extensions` 97 passed (44 pre-existing + 53
+new); mypy --strict six-package command
 vulture per-identity gate with CI arguments
 (`RATCHET_BASE_REV=<base> scripts/check-vulture-baseline.py packages/*/src
 --min-confidence 60 --exclude '*/third_party/*'`) passes 1343 ↔ 1343 with no

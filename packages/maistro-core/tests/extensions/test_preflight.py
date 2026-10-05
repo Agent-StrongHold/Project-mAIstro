@@ -1017,6 +1017,50 @@ def test_cli_preflight_reproducible_json_output(tmp_path: Path) -> None:
     assert payload["rows"][0]["status"] == "blocking"
 
 
+def test_cli_preflight_json_passes_markup_like_metadata_through(tmp_path: Path) -> None:
+    """AC: the report is reproducible from installed lock state — byte-for-byte.
+
+    Manifest metadata and target notes are publisher/operator-controlled
+    strings, so they may contain sequences rich parses as console markup
+    ("[red]…[/red]") or raises on ("[/]"). With markup left on,
+    ``console.print`` consumed those bytes (or crashed), so the printed JSON
+    stopped matching the canonical report exactly when a manifest carried
+    markup-like text. The --json stream must be the canonical bytes verbatim.
+    """
+    db_path = tmp_path / "installs.db"
+    _seed_db(
+        db_path,
+        install_bundle(
+            name="ext-markup",
+            version="1.0.0",
+            manifest_body=manifest_json(capabilities=("memory.[red]read[/red]",)),
+        ),
+    )
+    argv = [
+        "preflight",
+        str(db_path),
+        "2.0.0",
+        "--contract-version",
+        "2.0.0",
+        "--deprecated-capability",
+        "memory.[red]read[/red]=use memory.[/] projections instead",
+        "--json",
+    ]
+    result = runner.invoke(app, argv)
+    assert result.exit_code == 0
+    assert "[red]" in result.output
+    payload = json.loads(result.output)
+    assert payload["rows"][0]["capabilities"] == ["memory.[red]read[/red]"]
+    assert payload["rows"][0]["status"] == "deprecated"
+    target = TargetHostContract(
+        host_version="2.0.0",
+        contract_version="2.0.0",
+        deprecated={"memory.[red]read[/red]": "use memory.[/] projections instead"},
+    )
+    report = run_preflight(_read_back(db_path), target)
+    assert result.output.strip() == report.canonical_json()
+
+
 def test_cli_preflight_warns_distinctly_from_blockers(tmp_path: Path) -> None:
     """AC: warnings and hard blockers render as separate sections."""
     db_path = tmp_path / "installs.db"

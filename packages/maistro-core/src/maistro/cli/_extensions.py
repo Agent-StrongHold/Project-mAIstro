@@ -284,9 +284,7 @@ def extensions_preflight(
     remain enabled — that exit is the gate an upgrade flow must honor.
     """
     if all_disabled and enabled:
-        console.print(
-            "[red]--all-disabled contradicts --enabled; pass one or the other.[/red]"
-        )
+        console.print("[red]--all-disabled contradicts --enabled; pass one or the other.[/red]")
         raise Exit(code=1)
     try:
         policy = PreflightPolicy.from_name(policy_name)
@@ -327,7 +325,9 @@ def extensions_preflight(
     if as_json:
         # soft_wrap: the canonical JSON is one long token; rich would break it
         # across lines and destroy byte-reproducibility for consumers.
-        console.print(report.canonical_json(), soft_wrap=True)
+        # markup/highlight disabled: metadata is user-controlled, so sequences
+        # like "[red]...[/red]" in notes must pass through byte-for-byte.
+        console.print(report.canonical_json(), soft_wrap=True, markup=False, highlight=False)
     else:
         _print_preflight(report)
     if not report.can_proceed:
