@@ -10888,3 +10888,99 @@ Goal persistence absent (in-code testimony at `rubric_store.py:18-24`),
 substitutes. The branch remains a safe, develop-current, battery-green
 waiting position. Unblocking requires landing #804/#805/#806, #53, #774,
 #776, #93/#95 upstream (Refs #777).
+
+## Re-verification at lane head 2a6afd8a6 (repair round 164)
+
+Round context: repair job `eab39a9b` re-ran the lane after round 163 (job
+`badde4c15`, verdict BLOCKED). Lane head `2a6afd8a6d9dbde17d2cb484ebaf1b44f8d
+501bb` = round 163's `end_head`; working tree clean at start. The driver
+again produced no `check-*.log` files (manifest `checks: []` — 11th
+consecutive zero-check round), so the entire battery below was executed
+directly by this round's worker.
+
+**Develop sync check:** `git fetch origin develop` — `origin/develop` is
+unchanged at `30144ad0f` == the lane's declared base, already merged clean in
+round 163 (`d0b8957be`); `git merge-base HEAD origin/develop` =
+`30144ad0f`. **No merge and no conflict resolution was needed.**
+
+**Correction to round 163's result record (found by not trusting it):** the
+#774 CreativeBrief contract and the #776 Workspace Ladybug working graph
+**are in the tree at this head** — PR #1657 (`33bcd3ce2`,
+`maistro-design/brief.py:352` `CreativeBrief` with `goal_id`/`goal_revision:
+int`/`goal_owner_agent_id`/`persona_id`/`design_system_slug` at
+`brief.py:282-296`) and PR #1661 (`82eafc13e`,
+`maistro-core/src/maistro/memory/working_graph/`) are both ancestors of the
+develop base `30144ad0f` (`git merge-base --is-ancestor` verified). The
+working graph is production-wired (`maistro/container.py` references
+`WorkspaceWorkingMemoryManager`). Round 163's "acceptance #3: no working
+graph in tree" was stale. **This does not unblock #777:** Design Studio
+itself still consumes none of these seams — `grep working_graph |
+WorkspaceWorkingMemory | working_memory` over
+`hive-conductor/backend/routes/design.py`, `services/design_service.py`,
+and all of `maistro-design/src` returns zero production references, and
+`routes/design.py` still has zero `workspace_agent`/`control_mode`/
+`delegat` matches — so #777's acceptance #3/#4 remain unproven *for #777*.
+
+**Blockers re-proven fresh on `2a6afd8a6` (nothing inherited):**
+- `grep -rlE 'GoalReconciler|delegate_goal' packages/*/src` → 0 matches,
+  exit 1 — #804/#805/#806 reconciliation APIs absent (acceptance
+  #1/#7/#8/#9/#11/#13 unprovable).
+- No `maistro/goals` module exists (`ls packages/maistro-core/src/maistro/`
+  — no `goals` entry); in-code testimony
+  `projects/rubric_store.py:20-24`: canonical Goal identity is
+  `maistro.goals`, "That module does not exist yet at this head", so
+  `GoalRevisionCatalog` is a Protocol seam awaiting #458 Goal persistence.
+  `CreativeBrief.goal_revision` remains a plain `int` scalar with no
+  canonical revision store behind it — acceptance #2/#10 unprovable.
+- `hive-conductor/backend/services/workspace_agent.py:1-5` remains the
+  #1037 per-Workspace identity service ("The one stable Workspace Agent per
+  Workspace"), not the #53/#804 persistent reconciliation agent.
+- Salvage tree `docs/research/777-design-studio-salvage/` still has zero
+  production readers (`grep -rl 777-design-studio-salvage packages/ docs/
+  scripts/ --include=*.py`, excluding the salvage tree itself → exit 1).
+- Design Studio browser E2E remains only `design-studio-keyboard.spec.ts` +
+  `design-studio-truthfulness.spec.ts`; `grep -rl 'pause|cancel|reclaim|
+  delegat'` over `tests/e2e/` matches no Design Studio spec — acceptance
+  #5/#13 unprovable.
+
+**Battery executed at `2a6afd8a6` (all by this verifier, fresh runs):**
+- `uv run ruff check .` — All checks passed (EXIT 0).
+- `uv run ruff format --check .` — 2960 files already formatted (EXIT 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **EXIT 0, gate PASS**:
+  ratchet base `30144ad0f` → candidate `2a6afd8a6`, 1338 reviewed
+  identities → 1337 findings, `unclassified: 0`, `never_allowlist: 0`.
+  Zero unbanked identities; **no ledger amendment to
+  `quality/vulture-baseline.json` was required** (no fix eliminated any
+  identity this round).
+- `check-api-route-contracts.py` EXIT 0 (279 handlers, 0 canned);
+  `check-route-permissions.py` EXIT 0 (17 declared, 23 tolerated, none
+  new); `check-reachability.py` EXIT 0 (1277 modules);
+  `check-promotion-surface.py` EXIT 0; `check-ratchet-provenance.py`
+  EXIT 0 (49 quality-JSON consumers); `check-suite-inventory.py` EXIT 0
+  (15/15); `check-backlog-consistency.py` EXIT 0 (167 items).
+- pytest `packages/maistro-design/tests packages/maistro-bootstrap/tests
+  -q` → **772 passed, 7 skipped** (24.31s); hive-conductor design/
+  workspace subset (design routes/services + workspace_agent_identity/
+  workspace_authority{,_durable}/workspace_mode/production scope) →
+  **147 passed, 5 skipped** (8.34s).
+
+**Dependency states (dispatch-context.json, captured
+2026-10-05T13:51:42Z, fresher than round 163's 13:28Z):** parent #773
+open; #804 EPIC open; #805/#806 open; #774 open (contract landed, records
+integration continues upstream); #776 open; #53 open; #93 open; PR #1660
+open **draft**, `merged_at: null`, head `17ad5f75b894` — unmerged; merging
+it is outside this lane's authority (no GitHub mutations). Native
+`blocked_by` list empty (the dependency claim lives in the issue body's
+"Depends on:" line).
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
+123–163. Upstream progress this cycle is real — #774's contract, #775's
+creative graph, and #776's working graph all landed via develop — but the
+load-bearing owner of acceptance #1/#7/#8/#9/#11/#13 (the #804/#805/#806
+persistent reconciliation + canonical #458 Goal persistence, with the #53
+front door) is still absent, and the issue's stop condition forbids
+Design-Studio-private substitutes. All 13 acceptance criteria remain
+UNPROVEN against reachable production behavior at `2a6afd8a6`. The branch
+remains a safe, develop-current, battery-green waiting position
+(Refs #777).
