@@ -869,8 +869,77 @@ nothing is taken from prior rounds' claims.
   `packages/*/src` finds no reference to either new module outside the two
   modules themselves and the scanner-input `_vulture_whitelist.py`.
 
+## CI-repair round 12 (2026-10-05): develop synced to this round's declared
+## base 658a8f78c (actual merge, not merge-tree); block reproduced on the
+## merged head; prescribed vulture amendment empty for the twelfth round
+
+Trigger: the dispatch for this round names develop base 658a8f78c1800d264759a81dc8d87dd447f0f7f2
+(capabilities effect-path #55) while the branch sat at the 30144ad0f-era merge
+4efbb5ce0. Unlike rounds 9-11, which only proved merge-tree cleanliness, this
+round actually merged `origin/develop` into `auto-1852` (merge commit
+9cebadb809513ef52de4711cd477a0ba3c61fd13, conflict-free, admission ledger rows
+untouched) and re-proved the entire battery on the merged head, so local
+evidence now equals what the next merge-queue synthetic merge will build.
+
+- The merge absorbs develop's quality-ledger moves without touching ours:
+  `quality/reachability-baseline.json` loses two `maistro.events.*` rows
+  (publisher/wiring became reachable on develop) while the two admission rows
+  survive verbatim; `quality/vulture-baseline.json` gains five develop rows
+  (jira_wait_for_subtasks, quota pg/sqlite invocation); radon,
+  direct-effect-call-sites, promotion-surface and durable-table-retention
+  update per develop's own green CI. No incoming develop commit touches
+  `packages/maistro-core/src/maistro/tasks/` or `.../runs/`.
+- exact-debt-ledger step-for-step with CI's exact arguments at the merged
+  head: step 1 `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`,
+  now resolving trusted base 658a8f78c180) exits 1 on exactly the same two of
+  its nine sub-ratchets — `reachability` and `reachability-dispositions`, each
+  naming only `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` as NEW vs the trusted base; step 2
+  `check-shipped-surface-truth.py` exits 0; step 3
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exits 0 at 1343 reviewed identities -> 1343 findings
+  (develop's +5 rows absorbed exactly by the merge). The prescribed amendment
+  is empty for the twelfth consecutive round.
+- Upstream state re-verified at the new tip: `origin/develop`'s
+  `quality/reachability-baseline.json` and `quality/ratchet-authorizations.json`
+  contain neither admission module — the base-landed grant the two-merge rule
+  waits for still does not exist, so every merge-queue evaluation of this
+  stack deterministically fails step 1 until the #1845 integration lands it.
+- Integration-head quality family all green on the merged head:
+  `check-reachability.py` rc=0 (1285 production modules, 172 unreachable,
+  rows banked); `check-reachability-dispositions.py` rc=0 (51 groups: 150
+  CONNECT, 20 LIBRARY, 2 RETIRE); `check-promotion-surface.py` rc=0;
+  `check-radon-baseline.py` rc=0 (138 -> 138 after absorbing develop's
+  ledger edits); xenon with CI's exact invocation and floor 138 blocks
+  (<= 145), 0 module-rank, 0 average — `admission_generation.py` absent from
+  xenon's output (the only "admission" hit is the long-banked canvas
+  `_reconcile_admission` block); `check-convergence-matrix.py` rc=0
+  (52 subsystems classify all 1285 modules, 172 attributed).
+- Focused acceptance battery on the merged head: C1 + C2 suites 178 passed;
+  C1 suite + unchanged live `test_idempotency.py` 112 passed;
+  `test_existing_live_claim_flow_does_not_import_v2_classifier` 1 passed by
+  exact node ID; mypy clean on both leaf modules; `ruff check .` and
+  `ruff format --check .` clean repo-wide (2975 files); suite inventory ok
+  both full (15 suites, 26763 unique identities — the merge brought develop's
+  own baseline update) and CI-scoped (`--suite packages/maistro-core/tests`);
+  reachability meta-test family 51 passed.
+- Boundary re-proven through the merge: `git diff --numstat b3662bb3 HEAD`
+  is zero-line on `tasks/idempotency.py`, `tasks/__init__.py`,
+  `runs/__init__.py`, `runs/store.py`, `runs/store_boundary.py`, and the only
+  `packages/*/src` file outside the two leaf modules mentioning either is the
+  scanner-input `_vulture_whitelist.py`.
+- Mutation teeth re-executed on the merged head with md5-verified restore
+  (96b9e665e4c4b53879b4065a90cb4445, the same identity as rounds 8-11, byte
+  identical after all four mutations; `git status` clean): swap
+  TAKEOVER/REPLACE_EXPIRED -> 39 failed; lease before binding -> 12 failed;
+  LEGACY_UNRESOLVED row deleted -> 7 failed; mismatch before expiry ->
+  17 failed. Counts for the two repeated mutations are identical to rounds
+  8-11; the round-12 firsts (lease-before-binding, mismatch-before-expiry)
+  complete the issue's four-mutation list in one round for the first time.
+
 No source, test, or ledger file changed in this round either: this commit
-edits this note only. The unblock sequence is unchanged and upstream: (1)
+edits this note only (plus the develop merge itself). The unblock sequence
+is unchanged and upstream: (1)
 the separately scoped #1845 integration change lands `reachability`
 authorizations for the two admission modules on the base (grant merge
 first — `ratchet_provenance.load_authorizations` reads only the base
