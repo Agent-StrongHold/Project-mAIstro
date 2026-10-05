@@ -83,9 +83,14 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # the lifecycle tip as `055_learning_applicability_epistemics`. #1892's
     # forward admission-generation representation — numbered `053` when
     # written on the `052` base — lands second once more and re-parents onto
-    # that applicability tip as `056`, so the single linear head is now
-    # `056`.
-    walked = {item.revision for item in directory.walk_revisions("base", "056")}
+    # that applicability tip as `056`. #1362's invocation quota door, which
+    # had re-parented onto develop's `055_task_admission_generations` while
+    # this branch carried that same revision renumbered as `056`, lands
+    # second in this sync and re-parents onto that tip, so the single linear
+    # head is again the quota-door revision.
+    walked = {
+        item.revision for item in directory.walk_revisions("base", "043_invocation_quota_door")
+    }
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -101,7 +106,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "054" in walked
     assert "055" in walked
     assert "056" in walked
-    assert directory.get_heads() == ["056"]
+    assert directory.get_heads() == ["043_invocation_quota_door"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

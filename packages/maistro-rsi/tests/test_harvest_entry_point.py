@@ -542,3 +542,113 @@ class TestTheEvolveCommandWiresTheMutatorBoundary:
             )
 
         assert llm_seen["model_calls"] == 0
+
+
+class TestTheCloneUrlPassesTheGitTransportPolicy:
+    """#404 on the cloud path: `--clone-url` is candidate source for the
+    branches — and PRs — this command opens, so the exact gate the MCP git
+    tool applies (`maistro.tools.git.server.validate_clone_source`) runs
+    before git ever spawns, and the clone argv carries the same executable
+    protocol/redirect pins. A refused URL exits 2 with the policy named and
+    leaves no work tree behind.
+    """
+
+    @staticmethod
+    def _argv_clone(export: Path, url: str) -> list[str]:
+        return ["harvest", "--export-dir", str(export), "--clone-url", url]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "git://github.com/org/repo.git",
+            "GIT://github.com/org/repo.git",  # schemes parse case-insensitively
+            "https://example.com/org/repo.git",  # authenticated but off the source allowlist
+            "git@github.com:org/repo.git",  # scp-style is not an allowlisted scheme
+        ],
+    )
+    def test_a_refused_clone_url_spawns_nothing_and_exits_two(
+        self, export: Path, capsys, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        import subprocess
+        import tempfile
+
+        def no_subprocess(*args: object, **kwargs: object) -> object:
+            raise AssertionError(f"a rejected clone URL must not reach a subprocess: {url}")
+
+        monkeypatch.setattr(subprocess, "run", no_subprocess)
+        monkeypatch.setattr(tempfile, "mkdtemp", no_subprocess)
+
+        # Exit 2 like the other refused-invocation paths, via SystemExit: the
+        # refusal happens in the clone helper, past the point where a return
+        # code would travel.
+        with pytest.raises(SystemExit) as excinfo:
+            main(self._argv_clone(export, url))
+
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "clone policy" in err
+        assert "MAISTRO_GIT_CLONE_ALLOWED_HOSTS" in err or "https://" in err
+
+    def test_the_git_protocol_is_named_in_the_refusal(
+        self, export: Path, capsys, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+        import tempfile
+
+        def no_subprocess(*args: object, **kwargs: object) -> object:
+            raise AssertionError("git:// must not reach a subprocess")
+
+        monkeypatch.setattr(subprocess, "run", no_subprocess)
+        monkeypatch.setattr(tempfile, "mkdtemp", no_subprocess)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(self._argv_clone(export, "git://github.com/org/repo.git"))
+
+        assert excinfo.value.code == 2
+        assert "unauthenticated transport" in capsys.readouterr().err
+
+    def test_an_allowed_clone_url_resolves_then_fetches_a_digest_under_pins(
+        self, export: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cloud path must not check out `clone_base` directly: it first
+        resolves that ref to a digest, then fetches only that digest under the
+        redirect/protocol pins. Stopping at fetch proves the source boundary
+        without running harvest's unrelated git operations."""
+        import subprocess
+
+        digest = "a" * 40
+        calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], *args: object, **kwargs: object) -> object:
+            captured = [str(arg) for arg in argv]
+            calls.append(captured)
+            if "ls-remote" in captured:
+                return subprocess.CompletedProcess(
+                    captured, 0, stdout=f"{digest}\trefs/heads/{CANONICAL_DEVELOPMENT_BRANCH}\n"
+                )
+            if "fetch" in captured:
+                raise subprocess.CalledProcessError(128, captured)
+            return subprocess.CompletedProcess(captured, 0, stdout="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            main(self._argv_clone(export, "https://github.com/org/repo.git"))
+
+        resolve, init, autocrlf, remote, fetch = calls
+        assert resolve[0] == "git"
+        assert resolve[resolve.index("ls-remote") + 1 : resolve.index("ls-remote") + 3] == [
+            "--exit-code",
+            "--",
+        ]
+        assert resolve[-2:] == [
+            "https://github.com/org/repo.git",
+            f"refs/heads/{CANONICAL_DEVELOPMENT_BRANCH}",
+        ]
+        for argv in (resolve, fetch):
+            pins = {argv[i + 1] for i, part in enumerate(argv) if part == "-c"}
+            assert {"protocol.git.allow=never", "http.followRedirects=false"} <= pins
+        assert init[:3] == ["git", "init", "-q"]
+        assert autocrlf[-2:] == ["core.autocrlf", "false"]
+        assert remote[-2:] == ["origin", "https://github.com/org/repo.git"]
+        assert fetch[-1] == digest

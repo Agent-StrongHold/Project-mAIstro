@@ -410,6 +410,7 @@
     {
       "table": "capability_approvals",
       "backends": [
+        "postgres",
         "sqlite"
       ],
       "owner_module": "packages/maistro-core/src/maistro/capabilities/approval_store.py",
@@ -417,7 +418,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#325",
-      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+      "notes": "Effect-identity unique key for human approvals. SQLite bootstraps the table; Alembic 043 creates the PostgreSQL twin. No DELETE; #325."
     },
     {
       "table": "capability_binding_revocations",
@@ -792,6 +793,58 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "One row per event handler invocation. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "invocation_quota_allocations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Per-budget hold/spend rows for one Invocation reservation. No DELETE; #325."
+    },
+    {
+      "table": "invocation_quota_budgets",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Registered budget ceilings for canonical Invocation admission (#1196). No DELETE; #325."
+    },
+    {
+      "table": "invocation_quota_evidence",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Versioned absolute quota observations. Revision 0 is the canonical terminal fact. No DELETE; #325."
+    },
+    {
+      "table": "invocation_quota_reservations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One reservation row per physical Invocation. Holds survive unknown outcomes. No DELETE; #325."
     },
     {
       "table": "knowledge_nodes",
