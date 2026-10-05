@@ -99,6 +99,12 @@ or placeholder-only section.
   if logical preparation observes a terminal Run before physical owner registration.
   Nonterminal or unreadable preparation failures retain their lease for recovery;
   domain adapters never write physical Attempt outcomes to repair this race.
+- Provider activation now uses real leased canonical execution and the requesting
+  operator's quota identity before registration and its one-token probe (#1085).
+  Repeated activation preserves the immutable health Binding, cancellation drains
+  terminal evidence, and registration errors cannot leak keys or poison probe
+  credential health. Existing config.write scope and strict model pins remain.
+
 
 - **Explicit no-gateway ordinary DAG dry runs remain available (#1085, #87).**
   `ALLOW_STUB_LLM=true` returns the existing clearly labelled static stub only

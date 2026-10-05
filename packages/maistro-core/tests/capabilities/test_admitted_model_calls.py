@@ -391,3 +391,27 @@ async def test_pin_preflight_reads_configured_authority_without_dispatch() -> No
     s.calls._binding_ids = ("pinned",)
     assert await s.calls.pinned_model(identity=s.identity) == "operator-pin"
     assert s.sent == []
+
+
+@pytest.mark.parametrize("refusal", ["identity", "binding", "disabled", "credential"])
+async def test_internal_setup_never_runs_before_execution_and_binding_authority(
+    refusal: str,
+) -> None:
+    s = await setup(
+        bindings=refusal != "binding",
+        disabled=refusal == "disabled",
+        key="" if refusal == "credential" else "fixture-key",
+    )
+    prepared: list[bool] = []
+
+    async def prepare() -> None:
+        prepared.append(True)
+
+    with pytest.raises((RunIntegrityError, BindingResolutionError, CredentialScopeError)):
+        await s.calls.complete(
+            request=request(),
+            effect_key="setup-check",
+            identity=("absent", "absent", "absent") if refusal == "identity" else s.identity,
+            setup=prepare,
+        )
+    assert prepared == [] and s.sent == []

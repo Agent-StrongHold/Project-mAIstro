@@ -8,7 +8,7 @@ Run, Binding, credential pool entry, policy or Invocation ledger.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -135,6 +135,7 @@ class AdmittedModelCalls:
         identity: tuple[str, str, str] | None = None,
         binding_id: str = "",
         timeout_s: float | None = None,
+        setup: Callable[[], Awaitable[None]] | None = None,
     ) -> ModelCallResult:
         binding, actor, selected = await self._authorize(identity, binding_id)
         return await self._with_timeout(timeout_s).complete(
@@ -145,6 +146,7 @@ class AdmittedModelCalls:
             actor_id=actor,
             effect_key=effect_key,
             request=request,
+            setup=setup,
         )
 
     async def stream(

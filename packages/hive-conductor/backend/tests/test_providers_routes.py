@@ -363,7 +363,6 @@ class TestKeyAndActivate:
         """A canonical Run that fails identity correlation is a 403, and no
         operation is minted."""
         import routes.providers as providers_mod
-        from services import governed_model
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _wire_governed_runtime(monkeypatch, endpoint="http://gateway")
@@ -372,10 +371,12 @@ class TestKeyAndActivate:
             del args, kwargs
             raise LookupError("canonical Run 'missing' does not exist")
 
-        monkeypatch.setattr(governed_model, "mint_operation_identity", refuse_identity)
+        from maistro.runs.service import RunExecutionService
+
+        monkeypatch.setattr(RunExecutionService, "create_run", refuse_identity)
         r = admin_client.post("/v1/providers/groq/activate")
         assert r.status_code == 403
-        assert "does not exist" in r.json()["detail"]
+        assert "authorization failed" in r.json()["detail"].lower()
 
     def test_activate_secret_missing_settles_cancelled_409(
         self, admin_client, monkeypatch: pytest.MonkeyPatch
@@ -557,3 +558,60 @@ class TestKeyAndActivate:
             assert node_runs[0].status is RunStatus.COMPLETED
 
         asyncio.run(_verify_operation())
+
+
+@pytest.mark.parametrize("role", ["admin", "elevated"])
+def test_actual_middleware_allows_activation_but_admin_chat_stays_denied(
+    role: str, admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import routes.providers as providers_mod
+
+    _runtime, run_store = _wire_governed_runtime(monkeypatch, endpoint="http://gateway.fixture")
+    monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
+    monkeypatch.setattr(providers_mod, "_record_activation", lambda name: None)
+
+    async def ok(url: str, body: dict[str, Any]) -> Any:
+        return _HttpOk()
+
+    calls = _patch_llm_http(monkeypatch, ok)
+    client = admin_client
+    if role == "elevated":
+        from datetime import UTC, datetime
+
+        import stores
+        from fastapi.testclient import TestClient
+        from main import app
+
+        from maistro.security.passwords import hash_password
+
+        uid = "activation-elevated-user"
+        stores.users[uid] = stores.users._model_class(
+            id=uid,
+            username=uid,
+            password_hash=hash_password("pw"),
+            role="user",
+            is_active=True,
+            permissions=["config.write"],
+            created_at=datetime.now(UTC),
+        )
+        client = TestClient(app)
+        assert (
+            client.post("/v1/auth/login", json={"username": uid, "password": "pw"}).status_code
+            == 200
+        )
+        assert client.post("/v1/providers/groq/activate").status_code == 403
+        elevation = client.post(
+            "/v1/auth/elevate",
+            json={
+                "password": "pw",
+                "permissions": ["config.write"],
+                "task_id": "activate-provider",
+            },
+        )
+        assert elevation.status_code == 200
+    response = client.post("/v1/providers/groq/activate")
+    assert response.status_code == 200, response.text
+    assert len(calls) == 2
+    run = _activation_run(run_store, "completed")
+    assert run.actor_principal_id == ("admin" if role == "admin" else "activation-elevated-user")
+    assert admin_client.post("/v1/chat/message", json={"message": "hi"}).status_code == 403

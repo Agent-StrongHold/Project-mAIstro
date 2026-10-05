@@ -30,6 +30,7 @@ from maistro.capabilities.credential_routing import CredentialBackedProvider
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationUsage,
+    ProviderExecutor,
     ProviderResolver,
 )
 from maistro.capabilities.model_chat_stream import StreamDelivery, stream_model_call
@@ -37,7 +38,9 @@ from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
     GatewayEndpoint,
+    LlmAuthError,
     LlmGatewayProvider,
+    LlmHttpError,
     ModelChatRequest,
     execute_model_chat,
     execute_model_chat_stream,
@@ -56,6 +59,55 @@ from maistro.quota.usage_report import reported_usage
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
+
+
+class ModelSetupError(RuntimeError):
+    """Provider-internal preparation failed with an unknown external outcome."""
+
+
+async def _prepare_model_setup(setup: Callable[[], Awaitable[None]]) -> None:
+    """Sanitize admin setup before Invocation, outside scoped probe health."""
+    failed = False
+    try:
+        await setup()
+    except Exception:
+        failed = True
+    # Raise outside the handler: the credential classifier traverses exception
+    # context even when ``from None`` suppresses traceback presentation.
+    if failed:
+        raise ModelSetupError("model gateway provider registration failed")
+
+
+def _with_model_setup(
+    executor: ProviderExecutor, setup: Callable[[], Awaitable[None]] | None
+) -> ProviderExecutor:
+    async def execute(provider: ResolvedCapabilityProvider, payload: Any) -> Any:
+        if setup is not None:
+            await _prepare_model_setup(setup)
+        return await executor(provider, payload)
+
+    return execute
+
+
+async def _complete_after_setup(
+    provider: LlmGatewayProvider, payload: Any, *, endpoint: GatewayEndpoint
+) -> Any:
+    """A probe cannot prove that earlier registration had no external effect.
+
+    Preserve only bounded status metadata for scoped credential health. Raw
+    transport text and contexts must reach neither that classifier nor the
+    canonical Invocation ledger. Connection failures remain UNKNOWN here.
+    """
+    failure: Exception
+    try:
+        return await execute_model_chat(provider, payload, endpoint=endpoint)
+    except (LlmAuthError, LlmHttpError) as exc:
+        raw_status = exc.status_code
+        status = raw_status if type(raw_status) is int and 100 <= raw_status <= 599 else 0
+        failure = LlmHttpError(f"model gateway probe failed: HTTP {status}", status_code=status)
+    except Exception:
+        failure = RuntimeError("model gateway probe failed after provider registration")
+    raise failure
 
 
 def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage | None:
@@ -418,9 +470,9 @@ class ModelChatEgress:
             base = provider.base
             if not isinstance(base, LlmGatewayProvider):
                 raise TypeError(f"credential routed a non-gateway provider: {base!r}")
-            if setup is not None:
-                await setup()
             endpoint = self._endpoint.model_copy(update={"api_key": provider.credential.api_key})
+            if setup is not None:
+                return await _complete_after_setup(base, payload, endpoint=endpoint)
             if delivery is not None:
                 delivery.start_provider()
                 try:
@@ -454,7 +506,7 @@ class ModelChatEgress:
             effect_key=effect_key,
             request=request,
             resolver=routed_resolver,
-            executor=routed_executor,
+            executor=_with_model_setup(routed_executor, setup),
             usage_from=usage_from,
             actor_id=actor_id,
         )
