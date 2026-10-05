@@ -11451,3 +11451,63 @@ every delegated/reconciliation/ownership criterion requires
 implementation vehicle PR #1660 remains an unmerged draft. The branch
 stays a develop-current (b672b799a), battery-green waiting position
 (Refs #777).
+
+## Round 173 — job e69cebb304954999a57f32591d4fa58e (develop sync + fresh battery at 536737f3a976)
+
+**Develop drift resolved.** Fresh `git fetch origin` at this job's start moved
+`origin/develop` from `b672b799aba6` to `c560d4ccad82` — exactly this job's
+declared lane base — with two new commits on top of the already-merged
+`b672b799a`: `d8ddce632` (model-egress Binding-pin refusal, #1957) and
+`c560d4cca` (cross-Workspace user model, #1951). Incoming files
+(`memory/user_model/*`, `api/user_model.py`, `durable-table-retention.json`,
+`shipped-surface-truth.json`, `quality.yml` PG-producer path) do not overlap
+any branch surface. `git merge origin/develop --no-edit` → conflict-free,
+auto-committed as `536737f3a976`; `uv sync --locked --extra dev` no-op.
+
+**Ledger integrity after merge:** `git diff --numstat origin/develop HEAD --
+quality/` → exactly `0 1` (`vulture-baseline.json` only). Multiset compare of
+`rules` vs develop: 15 rules both sides, one intentional difference — the
+standing round-166 removal of
+`agent_loop.py::unused variable 'tool_definitions'` (fixed in this branch).
+No rows lost or gained beyond that.
+
+**Battery green fresh at `536737f3a976`:** ruff check exit 0; ruff format
+exit 0 (2991 files); vulture CI-exact exit 0 (base `c560d4ccad82` →
+candidate `536737f3a976`, 1342 reviewed identities → 1341 findings,
+unclassified 0, never-allowlist 0); api-route-contracts exit 0 (279
+handlers, 15 audited, 0 canned); route-permissions exit 0 (40 declared,
+0 tolerated, none new); reachability exit 0 (1287 production modules);
+promotion-surface exit 0; ratchet-provenance exit 0 (49 consumers);
+suite-inventory exit 0 (15/15); backlog exit 0 (167 items); pytest
+`packages/maistro-design/tests packages/maistro-bootstrap/tests` →
+772 passed / 7 skipped (20.67s); pytest hive-conductor backend
+`-k "design or workspace or creative or brief"` → 389 passed / 5 skipped,
+2960 deselected (20.23s); merge-scoped pytest of the incoming non-PG
+user-model tests (`test_cross_workspace.py`, `test_retrieval.py`,
+`test_user_model_api.py`) → 30 passed (1.72s; `test_pg_store.py` is the
+CI `postgres`-job producer per `quality.yml:394`, not runnable here).
+Suite counts unchanged from baseline — inventory delta zero.
+
+**Blockers re-proven fresh at `536737f3a976`:** `grep -rEl
+'GoalReconciler|delegate_goal' packages/*/src --include='*.py'` → no files
+(exit 1); `packages/maistro-core/src/maistro/goals/` absent;
+`grep -rEn 'workspace_agent|control_mode|delegat'
+packages/hive-conductor/backend/routes/design.py
+packages/hive-conductor/backend/services/design_service.py` → no matches
+(exit 1). PR #1660 head `17ad5f75b894` re-verified an ancestor of HEAD.
+
+**Dependency states (this job's dispatch-context.json, captured
+2026-10-05T20:19:55–20:20:22Z, 61 sources, complete_for_scope true — ~87 min
+newer than the round-172 capture):** unchanged — #773/#774/#776/#804/#805/
+#806/#53/#93/#95 open; #775/#39/#458 closed; `blocked_by` API `[]` (the
+"Depends on:" body line governs); PR #1660 still open **draft**,
+`merged: false`, head unchanged at `17ad5f75b894`. The 89 issue comments end
+in campaign progress markers (through 20:17Z) — no new substantive direction.
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
+123–172. None of the 13 acceptance criteria is provable at this head;
+every delegated/reconciliation/ownership criterion requires
+#804/#805/#806, which remain open with zero code in tree, and the
+implementation vehicle PR #1660 remains an unmerged draft. The branch
+stays a develop-current (c560d4cca), battery-green waiting position
+(Refs #777).
