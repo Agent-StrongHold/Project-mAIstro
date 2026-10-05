@@ -163,7 +163,8 @@ EXPECTED_TABLES = frozenset(
         # a second Run (#1176).
         "task_idempotency",
         "tasks",
-        # The durable cross-Workspace user model (#1047, 054): one row per fact
+        # The durable cross-Workspace user model (#1047, 055, re-parented past
+        # develop's 054): one row per fact
         # revision, plus the owner-bound statement keys that keep a tombstone
         # blocking every wording its lineage ever held.
         "user_model_facts",
