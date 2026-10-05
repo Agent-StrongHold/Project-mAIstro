@@ -28,4 +28,8 @@ Design 540 passed/1 skipped, Registry plus citation check 257 passed,
 Hive Conductor 3,351 passed/6 skipped, and root checks 4,485 passed/94 skipped.
 `coverage.xml` passed `scripts/check-diff-coverage.py` against the assigned
 base `1885c8eda09f16fc220d7fbc6e9cdb45a113ee8f`: all 13 measured changed files
-met the 90% line and 80% branch thresholds. No test identities changed.
+met the 90% line and 80% branch thresholds. The existing forced-restart E2E
+also now supplies its explicit empty child API key list, so a local legacy
+`.env` key cannot stop the auth-disabled product-path proof (or unexpectedly
+require credentials) before task admission; its test identity is unchanged
+(+0).
