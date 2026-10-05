@@ -24,6 +24,7 @@ from maistro.capabilities.governed_invocation import (
     InvocationApprovalRequired,
     InvocationDenied,
 )
+from maistro.capabilities.invocation import CapabilityUnavailable
 from maistro.capabilities.model_chat import ModelCallResult, ModelChatEgress
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
@@ -348,7 +349,10 @@ async def register_and_health_check(
     instead of registering models before being told no. The billable/diagnostic
     completion crosses the canonical model egress so its outcome and usage are
     auditable, and the transient registration key never enters the Invocation
-    record.
+    record. The health model is a Binding pin: its metadata must already be
+    registered by the configured ProviderRegistry (``provider_config_path``).
+    This hook registers gateway transport names, not trusted cost metadata.
+    An unknown pin refuses before setup and must remain an actionable error.
     """
 
     async def register_then_probe() -> None:
@@ -375,6 +379,10 @@ async def register_and_health_check(
         )
     except ProviderActivationError:
         raise
+    except CapabilityUnavailable as exc:
+        raise ProviderHealthError(
+            f"provider health selection unavailable for {provider_name}: {exc}"
+        ) from exc
     except (BindingResolutionError, InvocationDenied, InvocationApprovalRequired) as exc:
         raise ProviderAuthorizationError(
             f"provider health authorization failed for {provider_name}"
