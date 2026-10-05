@@ -12,6 +12,7 @@
     "packages/maistro-canvas/tests": 250,
     "packages/maistro-turing/backend/tests": 26,
     "tests/": 1185,
+    "extensions/reference-greeter/tests": 5,
     "formal/": 417,
     "packages/hive-conductor/backend/tests": 1262,
     "packages/hive-conductor/tests/e2e": 23
