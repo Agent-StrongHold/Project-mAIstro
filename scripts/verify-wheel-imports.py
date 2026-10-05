@@ -317,6 +317,17 @@ def find_wheel(dist_dir: Path, dist: str) -> Path | None:
     return matches[-1] if matches else None
 
 
+def _wheel_dist_name(wheel: Path) -> str:
+    """PEP 503-normalized distribution name from a wheel filename.
+
+    Wheel filenames carry the distribution before the first dash, with
+    underscores in place of dashes (`maistro_core-...whl`); the normalized
+    form (`maistro-core`) is what a constraint's PEP 508 name must spell.
+    """
+    raw = wheel.name.split("-", 1)[0]
+    return re.sub(r"[-_.]+", "-", raw).lower()
+
+
 def requires_python_minor(wheel: Path) -> int | None:
     """Minimum 3.x minor version from the wheel's Requires-Python, if declared.
 
@@ -370,10 +381,39 @@ def check(pkg: Package, mode: str, dist_dir: Path, uv: str, py: str) -> tuple[bo
         if made.returncode != 0:
             return False, f"uv venv failed:\n{made.stderr.strip()}"
 
-        # --find-links resolves sibling maistro-* deps from the same dist/ dir;
-        # these packages are not published, so PyPI cannot satisfy them.
+        # Sibling maistro-* dependencies must resolve from the same dist/ dir.
+        # --find-links alone used to be enough back when these packages were
+        # unpublished, but PyPI now carries same-version (0.9.0) snapshots of
+        # the maistro-* names, and with a version tie between the local wheel
+        # and the index artifact uv's choice between the two is not stable —
+        # a run can silently import the stale published snapshot instead of
+        # the wheel under test (observed: maistro-rsi's `git_remote_tip`
+        # import resolving against a pre-#55 published maistro-core). Pin
+        # every sibling to its exact local artifact with a direct-reference
+        # constraint: same-source resolution, deterministic, and third-party
+        # dependencies still come from the index.
+        constraints = tmpdir / "sibling-constraints.txt"
+        constraints.write_text(
+            "\n".join(
+                f"{_wheel_dist_name(p)} @ {p.resolve().as_uri()}"
+                for p in sorted(dist_dir.glob("*.whl"))
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         install = _run(
-            [uv, "pip", "install", "--python", str(venv), "--find-links", str(dist_dir), spec],
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(venv),
+                "--find-links",
+                str(dist_dir),
+                "--constraints",
+                str(constraints),
+                spec,
+            ],
             cwd=tmpdir,
             env=env,
         )
