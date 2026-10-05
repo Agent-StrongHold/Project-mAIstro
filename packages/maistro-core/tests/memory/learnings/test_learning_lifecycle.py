@@ -13,6 +13,7 @@ import dataclasses
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.lifecycle import (
     InvalidStageTransition,
     plan_advance,
@@ -135,7 +136,9 @@ def test_an_unknown_stage_value_is_rejected() -> None:
 
 @pytest.fixture
 async def store() -> InMemoryLearningStore:
-    return InMemoryLearningStore()
+    # The ladder tests exercise stage semantics, not the ADR-057 fail-closed
+    # matrix (that lives in test_exposure_mode.py), so declare the mode.
+    return InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
 
 @pytest.mark.asyncio

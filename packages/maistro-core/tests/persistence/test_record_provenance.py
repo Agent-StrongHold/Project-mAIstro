@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.observability.correlation import (
     ExecutionProvenance,
     bind_execution_context,
@@ -67,13 +68,13 @@ async def learnings(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     if request.param == "memory":
         from maistro.memory.learnings.store import InMemoryLearningStore
 
-        yield InMemoryLearningStore()
+        yield InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_learnings import SqliteLearningStore
 
         conn = await _sqlite_conn()
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         try:
             yield store
@@ -84,7 +85,7 @@ async def learnings(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_learnings import PgLearningStore
 
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.ensure_schema()
     yield store
 
@@ -170,7 +171,7 @@ async def outcomes(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
         conn = await _sqlite_conn()
-        store = SqliteOutcomeStore(conn)
+        store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         try:
             yield store, conn, "sqlite"
@@ -183,7 +184,11 @@ async def outcomes(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
 
     # No `ensure_schema`: `PgOutcomeStore` has none. Its table comes from the
     # migrations, which is why the DSN must point at a migrated database.
-    yield PgOutcomeStore(pg_pool), pg_pool, "postgres"
+    yield (
+        PgOutcomeStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+        pg_pool,
+        "postgres",
+    )
 
 
 async def _stored_provenance(handle: Any, kind: str, outcome_id: int) -> tuple[Any, Any, Any]:
@@ -266,7 +271,7 @@ class TestTheOutcomeRoundTripCarriesTheProducer:
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
         from maistro.persistence.pg_outcomes import PgOutcomeStore, _row_to_outcome
 
-        store = PgOutcomeStore(pg_pool)
+        store = PgOutcomeStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         with bind_execution_context(run_id="r-read", attempt_id="a-read"):
             await store.record(
                 Outcome(
@@ -323,7 +328,7 @@ class TestAnOlderSqliteFileIsUpgradedInPlace:
         )
         await conn.commit()
 
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
 
         cursor = await conn.execute("PRAGMA table_info(learnings)")
@@ -375,7 +380,7 @@ class TestAnOlderSqliteFileIsUpgradedInPlace:
         )
         await conn.commit()
 
-        store = SqliteOutcomeStore(conn)
+        store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
 
         cursor = await conn.execute("PRAGMA table_info(outcomes)")
@@ -422,7 +427,7 @@ class TestTheWrappingStoresDelegateProvenance:
         from maistro.memory.learnings.embeddings import HybridLearningStore
         from maistro.memory.learnings.store import InMemoryLearningStore
 
-        inner = InMemoryLearningStore()
+        inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         wrapper = HybridLearningStore(inner)
         with bind_execution_context(run_id="r-wrapped"):
             await wrapper.store(_learning(trigger_keys=["wrapped"]))
@@ -434,7 +439,7 @@ class TestTheWrappingStoresDelegateProvenance:
         from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
         from maistro.memory.learnings.store import InMemoryLearningStore
 
-        inner = InMemoryLearningStore()
+        inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         wrapper = DurableHybridLearningStore(inner, _Embeddings())  # type: ignore[arg-type]
         with bind_execution_context(run_id="r-durable"):
             await wrapper.store(_learning(trigger_keys=["durable"]))
@@ -455,7 +460,7 @@ class TestTheVolatileBackendFillsItToo:
     async def test_an_in_memory_outcome_names_the_execution_that_recorded_it(self) -> None:
         from maistro.memory.outcomes import InMemoryOutcomeStore
 
-        store = InMemoryOutcomeStore()
+        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         outcome = Outcome(request_id="r", org_id="org-a")
         with bind_execution_context(run_id="run-1", node_run_id="nr-1", attempt_id="a-1"):
             await store.record(outcome)
@@ -470,7 +475,7 @@ class TestTheVolatileBackendFillsItToo:
         from maistro.memory.outcomes import InMemoryOutcomeStore
 
         outcome = Outcome(request_id="r", org_id="org-a")
-        await InMemoryOutcomeStore().record(outcome)
+        await InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED).record(outcome)
 
         assert (outcome.run_id, outcome.node_run_id, outcome.attempt_id) == ("", "", "")
 
@@ -479,7 +484,9 @@ class TestTheVolatileBackendFillsItToo:
 
         outcome = Outcome(request_id="r", org_id="org-a", run_id="named")
         with bind_execution_context(run_id="ambient"):
-            await InMemoryOutcomeStore().record(outcome)
+            await InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED).record(
+                outcome
+            )
 
         assert outcome.run_id == "named"
 
@@ -492,7 +499,7 @@ class TestDedupMovesTheProducerWithTheContent:
         Run that no longer wrote it (Codex, #709)."""
         from maistro.memory.learnings.store import InMemoryLearningStore
 
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         with bind_execution_context(run_id="run-first", attempt_id="attempt-first"):
             first_id = await store.store(
                 Learning(tool_name="deploy", trigger_keys=["a", "b"], learning="first")
@@ -511,7 +518,7 @@ class TestDedupMovesTheProducerWithTheContent:
     async def test_the_deduped_learning_is_found_under_the_run_that_wrote_it(self) -> None:
         from maistro.memory.learnings.store import InMemoryLearningStore
 
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         with bind_execution_context(run_id="run-first"):
             await store.store(
                 Learning(tool_name="deploy", trigger_keys=["a", "b"], learning="first")
