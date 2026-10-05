@@ -244,6 +244,32 @@ class InMemoryBacklogStore:
 
     # -- reads ----------------------------------------------------------
 
+    @staticmethod
+    def _matches_filter(
+        item: BacklogItem,
+        *,
+        workspace_id: str,
+        status: BacklogItemStatus | None,
+        tag: str | None,
+        parent_id: str | None,
+        roots_only: bool,
+    ) -> bool:
+        """The one list_items predicate, spelled out so each clause reads alone.
+
+        `status` compares by identity (`is`), matching the enum semantics the
+        SQLite and PostgreSQL legs implement; the sqlite/pg stores mirror this
+        helper's clauses in SQL WHERE terms.
+        """
+        if item.workspace_id != workspace_id:
+            return False
+        if status is not None and item.status is not status:
+            return False
+        if tag is not None and tag not in item.tags:
+            return False
+        if parent_id is not None and item.parent_id != parent_id:
+            return False
+        return not (roots_only and item.parent_id is not None)
+
     async def get_item(self, item_id: str) -> BacklogItem | None:
         item = self._items.get(item_id)
         return item.model_copy(deep=True) if item is not None else None
@@ -260,11 +286,14 @@ class InMemoryBacklogStore:
         found = [
             item.model_copy(deep=True)
             for item in self._items.values()
-            if item.workspace_id == workspace_id
-            and (status is None or item.status is status)
-            and (tag is None or tag in item.tags)
-            and (parent_id is None or item.parent_id == parent_id)
-            and (not roots_only or item.parent_id is None)
+            if self._matches_filter(
+                item,
+                workspace_id=workspace_id,
+                status=status,
+                tag=tag,
+                parent_id=parent_id,
+                roots_only=roots_only,
+            )
         ]
         found.sort(key=lambda item: (item.created_at, item.item_id))
         return found
