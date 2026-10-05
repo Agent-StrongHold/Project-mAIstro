@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapabilityProvider
 from maistro.capabilities.types import Unavailable
+from maistro.quota.invocation_quota import measured_usage_amounts
 
 logger = logging.getLogger("maistro.capabilities.invocation")
 
@@ -671,9 +672,7 @@ class InvocationExecutionService:
             return None
         latest = history[-1]
         if latest.status is InvocationStatus.COMPLETED:
-            await self._repair_quota(latest)
-            await self._notify_completion(latest)
-            return latest
+            return await self._repair_outcome_evidence(latest)
         if latest.status is InvocationStatus.FAILED:
             await self._repair_quota(latest)
         if latest.status in {
@@ -722,9 +721,7 @@ class InvocationExecutionService:
         )
         if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
             latest = latest_history[-1]
-            await self._repair_quota(latest)
-            await self._notify_completion(latest)
-            return latest
+            return await self._repair_outcome_evidence(latest)
         return None
 
     async def _run_provider(
@@ -844,8 +841,7 @@ class InvocationExecutionService:
                 # the recorder and the durable tracker are idempotent on
                 # Invocation identity, so a healthy ledger sees a no-op and one
                 # that missed the original terminalization is repaired.
-                await self._notify_completion(settled)
-                return settled
+                return await self._repair_outcome_evidence(settled)
             try:
                 # The reservation sits inside the admitted effect, after the
                 # dedup above: a loser of the admission race must not charge
@@ -920,9 +916,9 @@ class InvocationExecutionService:
                 raise KeyError(f"Invocation {invocation_id!r} does not exist")
             _require_scope(invocation, workspace_id=workspace_id, project_id=project_id)
             if invocation.status is InvocationStatus.COMPLETED:
-                return invocation
+                return await self._repair_outcome_evidence(invocation)
             if invocation.status is InvocationStatus.FAILED:
-                return invocation
+                return await self._repair_outcome_evidence(invocation)
             self._require_reconcilable(invocation, cutoff)
             return await self._reconcile_values_locked(
                 invocation,
@@ -986,7 +982,7 @@ class InvocationExecutionService:
             if snapshot is None:
                 raise KeyError(f"Invocation {invocation_id!r} does not exist")
             if snapshot.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
-                return snapshot
+                return await self._repair_outcome_evidence(snapshot)
             self._require_reconcilable(snapshot, cutoff)
 
         try:
@@ -1004,7 +1000,7 @@ class InvocationExecutionService:
             if current is None:
                 raise KeyError(f"Invocation {invocation_id!r} does not exist")
             if current.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
-                return current
+                return await self._repair_outcome_evidence(current)
             if current.revision != snapshot.revision:
                 raise UnsafeEffectRetry(
                     f"Invocation {invocation_id!r} changed while the provider was consulted; "
@@ -1020,7 +1016,7 @@ class InvocationExecutionService:
         """Apply an adapter report while the effect lock is held."""
 
         if invocation.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
-            return invocation
+            return await self._repair_outcome_evidence(invocation)
         return await self._reconcile_values_locked(
             invocation,
             disposition=report.disposition,
@@ -1033,6 +1029,17 @@ class InvocationExecutionService:
             result=report.result,
             usage=report.usage,
         )
+
+    async def _repair_outcome_evidence(self, invocation: Invocation) -> Invocation:
+        """Repair downstream evidence before reporting a durable outcome as complete.
+
+        Lifecycle persistence and quota/usage recording are separate commits.
+        A prior failure between them must be repairable through reconciliation
+        itself, without another provider call or another history entry.
+        """
+        await self._repair_quota(invocation)
+        await self._notify_completion(invocation)
+        return invocation
 
     async def _reconcile_values_locked(
         self,
@@ -1055,6 +1062,8 @@ class InvocationExecutionService:
         disposition = ReconciliationDisposition(disposition)
         if disposition is not ReconciliationDisposition.INDETERMINATE and evidence is None:
             raise ValueError("applied/not_applied reconciliation requires evidence")
+        if disposition is ReconciliationDisposition.APPLIED:
+            measured_usage_amounts(usage if usage is not None else invocation.usage)
         _require_scope(invocation, workspace_id=workspace_id, project_id=project_id)
         audit = InvocationReconciliation(
             disposition=disposition,
@@ -1086,13 +1095,8 @@ class InvocationExecutionService:
             current = await self._store.get(invocation.invocation_id)
             if current is None:
                 raise
-            return current
-        await self._repair_quota(settled)
-        if disposition is ReconciliationDisposition.APPLIED:
-            # APPLIED settles a physical call whose outcome had been UNKNOWN.
-            # The recorder deduplicates on Invocation identity.
-            await self._notify_completion(settled)
-        return settled
+            return await self._repair_outcome_evidence(current)
+        return await self._repair_outcome_evidence(settled)
 
     async def _terminalize(
         self,
@@ -1119,10 +1123,8 @@ class InvocationExecutionService:
             current = await self._store.get(invocation.invocation_id)
             if current is None:
                 raise
-            return current
-        await self._repair_quota(persisted)
-        await self._notify_completion(persisted)
-        return persisted
+            return await self._repair_outcome_evidence(current)
+        return await self._repair_outcome_evidence(persisted)
 
 
 def _reconciled_update(

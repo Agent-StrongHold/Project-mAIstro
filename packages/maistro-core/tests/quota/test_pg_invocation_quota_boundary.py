@@ -11,7 +11,14 @@ from uuid import uuid4
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
-from maistro.capabilities.invocation import Invocation, InvocationStatus, InvocationUsage
+from maistro.capabilities.invocation import (
+    InMemoryInvocationStore,
+    Invocation,
+    InvocationExecutionService,
+    InvocationStatus,
+    InvocationUsage,
+    ReconciliationDisposition,
+)
 from maistro.quota.invocation_quota import (
     InvocationQuotaDenied,
     QuotaBudget,
@@ -1291,4 +1298,84 @@ async def test_pg_observe_with_unresolved_terminal_status_marks_the_reservation_
         assert row["state"] == "unknown"
     finally:
         await _cleanup(pool, suffix, [])
+        await pool.close()
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    "disposition", [ReconciliationDisposition.APPLIED, ReconciliationDisposition.NOT_APPLIED]
+)
+async def test_pg_canonical_reconciliation_preserves_unknown_and_correction_order(disposition):
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(_pg_dsn(), min_size=1, max_size=2)
+    suffix = uuid4().hex
+    budget_id = f"pg-reconciliation-{suffix}"
+    binding = _binding(suffix)
+    original = _invocation(binding, invocation_id=f"pg-invocation-reconciliation-{suffix}")
+
+    async def estimate(_invocation, _binding):
+        return QuotaEstimate(principal_id="principal-pg", tokens=10)
+
+    quota = PgInvocationQuota(pool, estimate=estimate, clock=lambda: 100)
+    try:
+        await quota.ensure_schema()
+        await quota.register_budget(
+            QuotaBudget(
+                budget_id=budget_id,
+                unit="tokens",
+                limit=100,
+                period_start=0,
+                period_end=1000,
+                provider_name="provider-pg",
+                workspace_id=binding.workspace_id,
+                coverage_ref="fixture-fresh-period",
+                opening_spend=0,
+            )
+        )
+        await quota.reserve(original, binding)
+        unknown = original.model_copy(
+            update={"status": InvocationStatus.UNKNOWN, "finished_at": datetime.now(UTC)}
+        )
+        await quota.observe(unknown)
+        correction = QuotaObservation(
+            invocation_id=original.invocation_id,
+            provider_name="provider-pg",
+            evidence_id="provider-before",
+            revision=7,
+            outcome="completed",
+            tokens=9,
+        )
+        await quota.reconcile(correction)
+        store = InMemoryInvocationStore()
+        await store.create(unknown)
+        service = InvocationExecutionService(store=store, quota=quota)
+        settled = await service.reconcile(
+            original.invocation_id,
+            disposition=disposition,
+            source="operator",
+            actor="operator",
+            reason="verified provider outcome",
+            evidence={"receipt": "verified"},
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            usage=InvocationUsage(input_units=7)
+            if disposition is ReconciliationDisposition.APPLIED
+            else None,
+        )
+        await quota.observe(settled)
+        await quota.observe(unknown)
+        rows = await pool.fetch(
+            "SELECT revision,evidence_id FROM invocation_quota_evidence WHERE invocation_id=$1 ORDER BY revision",
+            original.invocation_id,
+        )
+        assert [(row["revision"], row["evidence_id"]) for row in rows] == [
+            (0, "canonical-terminal"),
+            (7, "provider-before"),
+            (8, "canonical-reconciliation"),
+        ]
+        balance = await quota.balance(budget_id)
+        assert balance.held == 0
+        assert balance.spent == (7 if disposition is ReconciliationDisposition.APPLIED else 0)
+    finally:
+        await _cleanup(pool, suffix, [budget_id])
         await pool.close()

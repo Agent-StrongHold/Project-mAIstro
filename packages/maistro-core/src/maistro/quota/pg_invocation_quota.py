@@ -6,18 +6,22 @@ import json
 import math
 import time
 from collections.abc import Callable
-from decimal import ROUND_CEILING, Decimal
+from dataclasses import replace
 from typing import Any
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.invocation import Invocation, InvocationStatus
 from maistro.quota.invocation_quota import (
+    CANONICAL_RECONCILIATION,
+    CANONICAL_TERMINAL,
     EstimateResolver,
     InvocationQuotaDenied,
     Outcome,
     QuotaBudget,
     QuotaEvidenceConflict,
     QuotaObservation,
+    canonical_evidence_id,
+    measured_usage_amounts,
     require_amount,
 )
 
@@ -165,26 +169,14 @@ class PgInvocationQuota:
             if invocation.status is InvocationStatus.COMPLETED
             else "unknown"
         )
-        tokens: int | None = None
-        micro_usd: int | None = None
-        usage = invocation.usage
-        if outcome == "completed" and usage is not None:
-            if usage.units == "tokens":
-                require_amount(usage.input_units, "input_units")
-                require_amount(usage.output_units, "output_units")
-                tokens = usage.input_units + usage.output_units
-                require_amount(tokens, "tokens")
-            if usage.cost_cents is not None:
-                cents = Decimal(str(usage.cost_cents))
-                if not cents.is_finite() or cents < 0:
-                    raise ValueError("cost must be finite and nonnegative")
-                micro_usd = int((cents * 10_000).to_integral_value(rounding=ROUND_CEILING))
-                require_amount(micro_usd, "micro_usd")
+        tokens, micro_usd = (
+            measured_usage_amounts(invocation.usage) if outcome == "completed" else (None, None)
+        )
         await self._apply(
             QuotaObservation(
                 invocation_id=invocation.invocation_id,
                 provider_name=invocation.binding.provider_name,
-                evidence_id="canonical-terminal",
+                evidence_id=canonical_evidence_id(invocation),
                 revision=0,
                 outcome=outcome,
                 tokens=tokens,
@@ -197,15 +189,18 @@ class PgInvocationQuota:
         """Apply trusted absolute provider evidence without replaying an effect."""
         if observation.revision == 0:
             raise ValueError("revision zero is reserved for canonical terminal evidence")
+        if observation.evidence_id in {CANONICAL_TERMINAL, CANONICAL_RECONCILIATION}:
+            raise ValueError("canonical evidence identities are reserved")
         await self._apply(observation, missing_ok=False)
 
     async def _apply(self, observation: QuotaObservation, *, missing_ok: bool) -> None:
-        payload = json.dumps(observation.payload(), sort_keys=True)
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock($1)", _LOCK_KEY)
             reservation = await _settling_reservation(conn, observation, missing_ok=missing_ok)
             if reservation is None:
                 return
+            observation = await _canonical_version(conn, observation, int(reservation["revision"]))
+            payload = json.dumps(observation.payload(), sort_keys=True)
             if await _record_evidence(conn, observation, payload):
                 return
             if observation.revision < int(reservation["revision"]):
@@ -493,3 +488,18 @@ def _json_value(value: Any) -> Any:
 
 
 __all__ = ["PgInvocationQuota"]
+
+
+async def _canonical_version(
+    conn: Any, observation: QuotaObservation, current_revision: int
+) -> QuotaObservation:
+    """Allocate one canonical settlement while holding the quota transaction lock."""
+    if observation.evidence_id != CANONICAL_RECONCILIATION:
+        return observation
+    prior = await conn.fetchval(
+        "SELECT revision FROM invocation_quota_evidence WHERE invocation_id=$1 AND evidence_id=$2",
+        observation.invocation_id,
+        observation.evidence_id,
+    )
+    revision = int(prior) if prior is not None else max(0, current_revision) + 1
+    return replace(observation, revision=revision)
