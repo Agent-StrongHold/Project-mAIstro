@@ -71,6 +71,7 @@ def test_promoted_knowledge_does_not_move_the_fail_closed_permission_decision() 
             )
         )
         for stage, actor in (
+            (LearningStage.LEARNING, "planner"),
             (LearningStage.VALIDATED, "gauntlet"),
             (LearningStage.REPERTOIRE, "curator"),
         ):
@@ -98,7 +99,7 @@ def test_a_repertoire_learning_is_not_an_execution_authority() -> None:
     from maistro.memory.learnings.lifecycle import StageTransition, plan_advance
 
     learning, _ = plan_advance(
-        Learning(tool_name="bash", trigger_keys=["x"], org_id=ORG, stage=LearningStage.MEMORY),
+        Learning(tool_name="bash", trigger_keys=["x"], org_id=ORG),
         to_stage=LearningStage.LEARNING,
         actor="planner",
     )
