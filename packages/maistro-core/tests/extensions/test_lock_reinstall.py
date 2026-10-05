@@ -238,7 +238,11 @@ def test_restart_on_a_fresh_host_recreates_the_same_extension_set(tmp_path: Path
 def test_tampered_artifact_fails_before_any_activation(tmp_path: Path) -> None:
     signer = Ed25519PrivateKey.generate()
     lock, artifacts = _resolve_ecosystem(signer)
-    victim_key = next(key for key in artifacts if key[0] == "lib-b")
+    # Corrupt the *last* entry the batch will verify. An earlier victim would
+    # pass vacuously — nothing is persisted or activated before the failure —
+    # and hide a partial install; the last entry is the one that can only
+    # stay atomic if the batch really is all-or-nothing.
+    victim_key = lock.entries[-1].sort_key()
     original = artifacts[victim_key]
     assert original is not None
     tampered = {
@@ -257,8 +261,9 @@ def test_tampered_artifact_fails_before_any_activation(tmp_path: Path) -> None:
                     lock, store, _RecordingFetcher(tampered), activate=spy.callback()
                 )
             assert spy.activated == []
-            # The lock cannot smuggle different bytes: verification refused
-            # before persistence, and nothing else was recorded either.
+            # The lock cannot smuggle different bytes: the batch verified the
+            # complete fetched set first, so nothing at all was recorded or
+            # activated — not even the entries that precede the victim.
             assert await _all_history(store) == []
         finally:
             await conn.close()

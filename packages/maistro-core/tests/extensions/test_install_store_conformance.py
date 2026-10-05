@@ -34,6 +34,8 @@ from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import InMemoryExtensionInstallStore
 from maistro.extensions.types import (
     ExtensionIdentityConflict,
+    InstallRecord,
+    PackageIdentity,
     PublisherKeyConflict,
     UnknownPublisher,
     identity_key,
@@ -134,6 +136,60 @@ async def test_tampered_bytes_fail_before_the_record_exists(
     with pytest.raises(Exception, match="digest"):
         await store.record_install(bundle["request"], package_bytes=PACKAGE_BYTES + b"tampered")
     assert await store.install_history("ext-tool") == []
+
+
+async def test_batch_install_records_all_and_activates_in_order(
+    store: InMemoryExtensionInstallStore | SqliteExtensionInstallStore,
+) -> None:
+    signer = Ed25519PrivateKey.generate()
+    first = install_bundle(name="ext-tool", signer=signer)
+    second = install_bundle(name="ext-lib", version="2.0.0", signer=signer)
+    await store.register_publisher(first["publisher"])  # same key: covers both bundles
+    activated: list[PackageIdentity] = []
+
+    def activate(record: InstallRecord) -> None:
+        activated.append(record.identity)
+
+    records = await store.record_installs(
+        [
+            (first["request"], first["package_bytes"]),
+            (second["request"], second["package_bytes"]),
+        ],
+        activate=activate,
+    )
+
+    assert [record.identity for record in records] == [first["identity"], second["identity"]]
+    assert activated == [first["identity"], second["identity"]]
+    assert await store.install_history("ext-tool") == [records[0]]
+    assert await store.install_history("ext-lib") == [records[1]]
+
+
+async def test_batch_install_is_all_or_nothing_on_a_late_failure(
+    store: InMemoryExtensionInstallStore | SqliteExtensionInstallStore,
+) -> None:
+    signer = Ed25519PrivateKey.generate()
+    good = install_bundle(name="ext-tool", signer=signer)
+    later = install_bundle(name="ext-lib", version="2.0.0", signer=signer)
+    await store.register_publisher(good["publisher"])
+    activated: list[PackageIdentity] = []
+
+    def activate(record: InstallRecord) -> None:
+        activated.append(record.identity)
+
+    # The *second* entry carries bytes that do not match its identity: an
+    # earlier failure would pass vacuously, with nothing persisted yet.
+    with pytest.raises(Exception, match="digest"):
+        await store.record_installs(
+            [
+                (good["request"], good["package_bytes"]),
+                (later["request"], later["package_bytes"] + b"tampered"),
+            ],
+            activate=activate,
+        )
+
+    assert activated == []
+    assert await store.install_history("ext-tool") == []
+    assert await store.install_history("ext-lib") == []
 
 
 async def test_foreign_signature_fails_before_the_record_exists(

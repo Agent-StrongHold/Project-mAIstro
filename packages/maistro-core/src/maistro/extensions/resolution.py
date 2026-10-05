@@ -591,10 +591,15 @@ class _Selection:
         return self.pinned_identity
 
 
-def _candidate_order(entry: CatalogEntry) -> tuple[str, str, str, str]:
-    """Total selection order: version, then digests, then source, descending."""
+def _candidate_order(entry: CatalogEntry) -> tuple[SemVer, str, str, str]:
+    """Total selection order: version, then digests, then source, descending.
+
+    The version key is the parsed :class:`SemVer` (tuple-ordered numerically),
+    not the raw string — lexicographic comparison would rank ``2.0.0`` above
+    ``10.0.0``.
+    """
     return (
-        entry.identity.semantic_version,
+        entry.version,
         entry.identity.package_sha256,
         entry.identity.manifest_sha256,
         entry.source,
@@ -1113,9 +1118,13 @@ async def materialize_lock(
     verification. If *any* artifact is unavailable, raise
     :class:`MissingLockArtifacts` naming every missing entry — before a
     single record is written or ``activate`` runs — so a restart either
-    recreates the exact extension set or fails explicitly. Verification
-    failures (wrong bytes, bad signature) raise from the store before
-    persistence and activation, exactly as a first-time install would.
+    recreates the exact extension set or fails explicitly. The surviving
+    fetched set is then handed to the store's atomic batch install: every
+    entry is verified — bytes, signature, identity — against the store plus
+    the batch itself before anything is persisted, so a corrupt or
+    conflicting entry anywhere raises with zero records written and zero
+    activations. Verification failure can never leave a half-installed
+    ecosystem, exactly as a first-time install would refuse.
     """
     fetched: list[tuple[LockEntry, LockArtifacts]] = []
     missing: list[LockEntry] = []
@@ -1137,25 +1146,26 @@ async def materialize_lock(
         )
     if now is None:
         now = datetime.now(UTC)
-    records: list[InstallRecord] = []
-    for entry, artifacts in fetched:
-        request = InstallRequest(
-            identity=entry.identity,
-            publisher_id=entry.publisher_id,
-            signature=entry.signature,
-            manifest_body=artifacts.manifest_body,
-            provenance=RegistryProvenance(
-                catalog_url=entry.source,
-                catalog_snapshot_sha256=entry.catalog_snapshot_sha256,
-                retrieved_at=now,
-            ),
-        )
-        records.append(
-            await store.record_install(
-                request, package_bytes=artifacts.package_bytes, activate=activate
+    return await store.record_installs(
+        [
+            (
+                InstallRequest(
+                    identity=entry.identity,
+                    publisher_id=entry.publisher_id,
+                    signature=entry.signature,
+                    manifest_body=artifacts.manifest_body,
+                    provenance=RegistryProvenance(
+                        catalog_url=entry.source,
+                        catalog_snapshot_sha256=entry.catalog_snapshot_sha256,
+                        retrieved_at=now,
+                    ),
+                ),
+                artifacts.package_bytes,
             )
-        )
-    return records
+            for entry, artifacts in fetched
+        ],
+        activate=activate,
+    )
 
 
 @dataclass(frozen=True)
