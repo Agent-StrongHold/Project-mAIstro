@@ -192,7 +192,8 @@ def dag_node_model_calls(container: Any) -> AdmittedModelCalls | None:
     """Compose ordinary model dispatch without granting credentials or Bindings.
 
     The selected Container owns execution, configuration and every authority.
-    Absence makes the ordinary node fail closed; isolated and tool model paths
+    Absence makes real model calls fail closed. Explicit zero-effect dry runs
+    have a separate no-configuration check; isolated and tool model paths
     retain their separate composition until their own migration.
     """
     if container is None:
@@ -215,6 +216,26 @@ def dag_node_model_calls(container: Any) -> AdmittedModelCalls | None:
         run_store=run_store,
         binding_ids=tuple(binding.binding_id for binding in config.model_bindings),
     )
+
+
+def dag_node_unconfigured(container: Any) -> bool:
+    """Prove absence of real model configuration before permitting dry-run mode.
+
+    Missing admission collaborators alone do not prove a no-gateway deployment.
+    A configured endpoint or any declared model grant keeps the real path
+    fail-closed. Settings owns gateway aliases; do not re-resolve them here.
+    """
+    config = getattr(container, "config", None)
+    if config is not None and (config.litellm_url or config.model_bindings):
+        return False
+    from config import get_settings
+
+    try:
+        settings = get_settings()
+        return not (settings.litellm_api_base or settings.maistro_model_bindings)
+    except Exception:
+        # Unavailable configuration is not evidence of deliberate dry-run mode.
+        return False
 
 
 async def dag_node_completion(

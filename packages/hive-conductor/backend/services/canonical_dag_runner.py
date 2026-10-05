@@ -28,8 +28,12 @@ from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, Age
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
-from services.governed_model import dag_node_model_calls, dag_node_runtime
-from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
+from services.governed_model import (
+    dag_node_model_calls,
+    dag_node_runtime,
+    dag_node_unconfigured,
+)
+from services.legacy_dag_node import LegacyConductorNode, OnResponseHook, stub_llm_allowed
 from services.node_metrics_store import record_run_completion
 from services.scan_continuations import scan_continuation
 
@@ -414,6 +418,8 @@ def _resolver(
     effect_context: Any = None,
     governed_runtime: Any = None,
     model_calls: AdmittedModelCalls | None = None,
+    no_model_configuration: bool = False,
+    dry_run_admitted: bool = False,
     progress: Any = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
@@ -431,6 +437,8 @@ def _resolver(
             effect_context=effect_context,
             governed_runtime=governed_runtime,
             model_calls=model_calls,
+            no_model_configuration=no_model_configuration,
+            dry_run_admitted=dry_run_admitted,
             progress=progress,
         )
 
@@ -454,6 +462,7 @@ def _recovery_resolver(run: Run):
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
     container = _container()
+    admitted_dry_run = run.provenance.get("ordinary_model_dry_run") is True
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -470,7 +479,11 @@ def _recovery_resolver(run: Run):
         llm_builder=None,
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
-        model_calls=dag_node_model_calls(container),
+        model_calls=None if admitted_dry_run else dag_node_model_calls(container),
+        # Recovery cannot turn a real/legacy Run into a successful dry run
+        # after its original model configuration has disappeared.
+        no_model_configuration=admitted_dry_run and dag_node_unconfigured(container),
+        dry_run_admitted=admitted_dry_run,
     )
 
 
@@ -616,11 +629,18 @@ async def execute_dag(
     raw_by_id = {str(raw["id"]): raw for raw in execution_nodes}
     task_desc = str(dag_data.get("description") or dag_data.get("name") or "")
     budget = _cycle_budget_metadata(dag_data)
+    container = _container()
+    no_model_configuration = dag_node_unconfigured(container)
+    model_calls = dag_node_model_calls(container)
+    dry_run_admitted = no_model_configuration and stub_llm_allowed()
     provenance = {
         "admission_source": "hive_legacy_dag",
         "legacy_dag_id": str(dag_data.get("id") or ""),
         "executor": "durable_graph",
         "execution_mode": execution_mode,
+        # A no-effect mode is chosen at admission, never after a model refusal
+        # or by recomputing missing configuration when a real Run recovers.
+        "ordinary_model_dry_run": dry_run_admitted,
         # Effective budgets ride the Run provenance so "why did the work
         # stop" is answerable from the Run alone (#1184).
         **budget,
@@ -637,9 +657,7 @@ async def execute_dag(
         admitted_run_id = admitted.run_id
 
     def _build_resolver() -> Any:
-        # One Container read per execution: the effect authority and the
-        # governed model runtime (#718) come from the same live composition.
-        container = _container()
+        # Use the admission-time composition, including its no-effect mode.
         return _resolver(
             raw_by_id,
             task_desc=task_desc,
@@ -654,7 +672,9 @@ async def execute_dag(
             progress=on_event,
             effect_context=(getattr(container, "capability_effects", None) if container else None),
             governed_runtime=dag_node_runtime(container),
-            model_calls=dag_node_model_calls(container),
+            model_calls=model_calls,
+            no_model_configuration=no_model_configuration,
+            dry_run_admitted=dry_run_admitted,
         )
 
     record = await run_durable_graph(

@@ -382,10 +382,20 @@ async def test_missing_admission_cannot_use_raw_builder(setup: Setup, missing: s
     assert setup.grants() == before
 
 
-async def _running_context(s: Setup, *, leased: bool = True) -> NodeContext:
-    graph = runner.graph_from_legacy_dag(_dag(), workspace_id=_WORKSPACE, project_id=s.project_id)
+async def _running_context(
+    s: Setup,
+    *,
+    leased: bool = True,
+    dag: dict[str, Any] | None = None,
+    provenance: dict[str, Any] | None = None,
+) -> NodeContext:
+    graph = runner.graph_from_legacy_dag(
+        dag or _dag(), workspace_id=_WORKSPACE, project_id=s.project_id
+    )
     runs = s.container.run_store
-    run = await runs.create_run(graph, initial_status=RunStatus.QUEUED, actor_principal_id=_ACTOR)
+    run = await runs.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=_ACTOR, provenance=provenance
+    )
     await runs.transition_run(run.run_id, RunStatus.RUNNING)
     node = await runs.create_node_run(run.run_id, node_id="model-node")
     for step in transition_path(node.status, RunStatus.RUNNING):

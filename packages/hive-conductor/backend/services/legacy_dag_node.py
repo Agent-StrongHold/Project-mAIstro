@@ -28,6 +28,7 @@ from maistro.capabilities.effect_context import (
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
+from maistro.observability.correlation import current_execution_context
 from services.tool_executor import ModelCall
 
 logger = logging.getLogger(__name__)
@@ -501,6 +502,23 @@ def _ordinary_model_binding_id(node: Mapping[str, Any]) -> str:
     return top_level or nested
 
 
+def _ordinary_stub_response(
+    *, no_model_configuration: bool, dry_run_admitted: bool, binding_id: str, ctx: NodeContext
+) -> str:
+    """Return only the explicitly opted-in, labelled, zero-effect dry-run payload."""
+    if not no_model_configuration or binding_id:
+        raise RuntimeError("DAG model node requires an admitted model runtime and context")
+    context = current_execution_context()
+    identity = (ctx.run_id, ctx.node_run_id, ctx.attempt_id)
+    live = (context.run_id, context.node_run_id, context.attempt_id)
+    if any(not part.strip() for part in identity) or identity != live:
+        raise RuntimeError("DAG dry-run node requires the live canonical execution context")
+    if not dry_run_admitted or not stub_llm_allowed():
+        raise StubLLMNotAllowedError(STUB_LLM_REFUSAL)
+    logger.warning("llm_stub_response_emitted (ALLOW_STUB_LLM opt-in is on)")
+    return json.dumps({"response": "stub: no LLM configured", "done": True, "stub": True})
+
+
 async def _run_llm_node(
     node: dict[str, Any],
     nid: str,
@@ -514,6 +532,8 @@ async def _run_llm_node(
     ctx: NodeContext | None = None,
     governed_runtime: Any | None = None,
     model_calls: AdmittedModelCalls | None = None,
+    no_model_configuration: bool = False,
+    dry_run_admitted: bool = False,
 ) -> None:
     role = node.get("role", "worker")
     if node.get("tool"):
@@ -539,19 +559,28 @@ async def _run_llm_node(
     if parent_outputs:
         user_content += "\n\nContext from previous steps:\n" + "\n---\n".join(parent_outputs[-3:])
     try:
-        if model_calls is None or ctx is None:
+        if ctx is None:
             raise RuntimeError("DAG model node requires an admitted model runtime and context")
-        from services.governed_model import dag_node_completion
+        binding_id = _ordinary_model_binding_id(node)
+        if model_calls is None:
+            response = _ordinary_stub_response(
+                no_model_configuration=no_model_configuration,
+                dry_run_admitted=dry_run_admitted,
+                binding_id=binding_id,
+                ctx=ctx,
+            )
+        else:
+            from services.governed_model import dag_node_completion
 
-        response = await dag_node_completion(
-            model_calls,
-            ctx=ctx,
-            binding_id=_ordinary_model_binding_id(node),
-            system=system,
-            user=user_content,
-            model=model,
-            timeout_s=declared_raw_node_timeout_s(node),
-        )
+            response = await dag_node_completion(
+                model_calls,
+                ctx=ctx,
+                binding_id=binding_id,
+                system=system,
+                user=user_content,
+                model=model,
+                timeout_s=declared_raw_node_timeout_s(node),
+            )
         results[nid] = {"role": role, "response": response, "success": True, "model": model}
     except Exception as exc:
         results[nid] = {"role": role, "response": str(exc), "success": False, "model": model}
@@ -714,6 +743,8 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         effect_context: CapabilityEffectContext | None = None,
         governed_runtime: Any | None = None,
         model_calls: AdmittedModelCalls | None = None,
+        no_model_configuration: bool = False,
+        dry_run_admitted: bool = False,
         progress: RunProgressHook | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
@@ -723,11 +754,13 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._on_response = on_response
         self._llm_builder = llm_builder
         self._effect_context = effect_context
-        # Ordinary model nodes require the Container's admitted-call runtime.
+        # Real ordinary model calls require the Container's admitted-call runtime.
         # Raw builders cannot bypass admission; the sandbox keeps its isolated
         # transport and usage hook until its separate migration.
         self._governed_runtime = governed_runtime
         self._model_calls = model_calls
+        self._no_model_configuration = no_model_configuration
+        self._dry_run_admitted = dry_run_admitted
         self._progress = progress
 
     async def _emit_progress(self, event: dict[str, Any]) -> None:
@@ -839,6 +872,8 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 ctx=ctx,
                 governed_runtime=self._governed_runtime,
                 model_calls=self._model_calls,
+                no_model_configuration=self._no_model_configuration,
+                dry_run_admitted=self._dry_run_admitted,
             )
             result = scratch[node_id]
 
