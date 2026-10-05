@@ -2384,6 +2384,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/invocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Discover Invocations */
+        get: operations["discover_invocations_v1_invocations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invocations/{invocation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inspect Invocation */
+        get: operations["inspect_invocation_v1_invocations__invocation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invocations/{invocation_id}/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile Invocation */
+        post: operations["reconcile_invocation_v1_invocations__invocation_id__reconcile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/mcp/discover": {
         parameters: {
             query?: never;
@@ -5805,6 +5856,50 @@ export interface components {
             /** Ttl Seconds */
             ttl_seconds?: number | null;
         };
+        /**
+         * InvocationUsage
+         * @description Usage/provenance metadata for one provider call (ADR-081226-6b46).
+         *
+         *     ``input_units``/``output_units`` are measured in ``units`` ("tokens" for
+         *     model inference). ``cost_cents`` is computed from registry metadata when
+         *     the selected model is registered and stays ``None`` when it is not -- an
+         *     unmeasured cost is absent, not zero. ``model_version`` is the concrete
+         *     version the provider reported, which may differ from the requested alias.
+         */
+        InvocationUsage: {
+            /** Cost Cents */
+            cost_cents?: number | null;
+            /**
+             * Input Units
+             * @default 0
+             */
+            input_units: number;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /**
+             * Model Version
+             * @default
+             */
+            model_version: string;
+            /**
+             * Output Units
+             * @default 0
+             */
+            output_units: number;
+            /**
+             * Provider
+             * @default
+             */
+            provider: string;
+            /**
+             * Units
+             * @default tokens
+             */
+            units: string;
+        };
         /** LoginBody */
         LoginBody: {
             /** Password */
@@ -6263,6 +6358,12 @@ export interface components {
             /** Ready */
             ready: boolean;
         };
+        /**
+         * ReconciliationDisposition
+         * @description Evidence-backed disposition for an ambiguous provider call.
+         * @enum {string}
+         */
+        ReconciliationDisposition: "applied" | "not_applied" | "indeterminate";
         /** RegisterBody */
         RegisterBody: {
             /** Confirm Password */
@@ -6295,6 +6396,29 @@ export interface components {
              *     ]
              */
             required_in: string[];
+        };
+        /** ResolutionBody */
+        ResolutionBody: {
+            /** Api Version */
+            api_version?: unknown | null;
+            disposition: components["schemas"]["ReconciliationDisposition"];
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            } | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Project Id */
+            project_id: string;
+            /** Reason */
+            reason: string;
+            /** Result */
+            result?: unknown | null;
+            /** Stale Before */
+            stale_before?: string | null;
+            usage?: components["schemas"]["InvocationUsage"] | null;
+            /** Workspace Id */
+            workspace_id: string;
         };
         /** ResolveApprovalBody */
         ResolveApprovalBody: {
@@ -11368,6 +11492,117 @@ export interface operations {
                 "application/json": {
                     [key: string]: unknown;
                 };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    discover_invocations_v1_invocations_get: {
+        parameters: {
+            query: {
+                workspace_id: string;
+                project_id: string;
+                stale_before: string;
+                limit?: number;
+                after_created_at?: string | null;
+                after_invocation_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_invocation_v1_invocations__invocation_id__get: {
+        parameters: {
+            query: {
+                workspace_id: string;
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                invocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconcile_invocation_v1_invocations__invocation_id__reconcile_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolutionBody"];
             };
         };
         responses: {

@@ -139,6 +139,23 @@ class GovernedInvocationExecutionService:
 
         return await self._invocations.discover_ambiguous(stale_before=stale_before)
 
+    async def discover_ambiguous_page(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        stale_before: datetime,
+        limit: int = 100,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[Invocation]:
+        return await self._invocations.discover_ambiguous_page(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            stale_before=stale_before,
+            limit=limit,
+            after=after,
+        )
+
     async def reconcile(
         self,
         invocation_id: str,
@@ -153,6 +170,7 @@ class GovernedInvocationExecutionService:
         result: Any | None = None,
         stale_before: datetime | None = None,
         usage: InvocationUsage | None = None,
+        expected_revision: int | None = None,
     ) -> Invocation:
         """Resolve evidence without creating a provider-dispatch bypass."""
 
@@ -168,6 +186,7 @@ class GovernedInvocationExecutionService:
             result=result,
             stale_before=stale_before,
             usage=usage,
+            expected_revision=expected_revision,
         )
         await self._append_reconciliation_event(settled)
         return settled

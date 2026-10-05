@@ -215,6 +215,36 @@ class PgInvocationStore:
             )
         ]
 
+    async def list_ambiguous_page(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        stale_before: datetime,
+        limit: int,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[Invocation]:
+        rows = await self._pool.fetch(
+            """SELECT payload FROM capability_invocations
+               WHERE payload->>'workspace_id' = $1 AND payload->>'project_id' = $2
+                 AND (status = 'unknown' OR (status IN ('created', 'running') AND
+                     CASE WHEN payload->>'started_at' IS NULL THEN to_timestamp(created_at)
+                          WHEN payload->>'started_at' ~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                          THEN (payload->>'started_at')::timestamptz
+                          ELSE (payload->>'started_at')::timestamp AT TIME ZONE 'UTC'
+                     END <= $3
+                 ))
+                 AND ($4::double precision IS NULL OR (created_at, invocation_id) > ($4, $5))
+               ORDER BY created_at ASC, invocation_id ASC LIMIT $6""",
+            workspace_id,
+            project_id,
+            stale_before,
+            after[0].timestamp() if after is not None else None,
+            after[1] if after is not None else "",
+            limit,
+        )
+        return [_row_to_invocation(row) for row in rows]
+
     async def _find_effect(self, invocation: Invocation) -> Invocation | None:
         # A logical-effect candidate searches the whole Run history: the row
         # that won admission may sit under another NodeRun (#1194). A

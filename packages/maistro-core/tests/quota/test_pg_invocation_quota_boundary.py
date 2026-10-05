@@ -1467,3 +1467,60 @@ async def test_pg_canonical_reconciliation_preserves_unknown_and_correction_orde
     finally:
         await _cleanup(pool, suffix, [budget_id])
         await pool.close()
+
+
+@requires_postgres
+async def test_pg_invocation_discovery_filters_before_decode_and_pages_native_order():
+    from datetime import timedelta
+
+    from maistro.capabilities.pg_invocation_store import PgInvocationStore
+
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(_pg_dsn(), min_size=1, max_size=1)
+    suffix = uuid4().hex
+    store = PgInvocationStore(pool)
+    bound = _binding(suffix)
+    created = datetime(2020, 1, 1, tzinfo=UTC)
+    ids = [f"pg-invocation-page-{index}-{suffix}" for index in range(4)]
+    try:
+        await store.ensure_schema()
+        await pool.execute("SET TIME ZONE 'Pacific/Honolulu'")
+        for index, ident in enumerate(ids):
+            item = _invocation(bound, invocation_id=ident, effect_key=ident).model_copy(
+                update={
+                    "status": InvocationStatus.UNKNOWN
+                    if index in {0, 3}
+                    else InvocationStatus.RUNNING,
+                    "created_at": created,
+                    "started_at": (created + timedelta(hours=2 if index == 2 else 0)).replace(
+                        tzinfo=None
+                    ),
+                    "finished_at": created if index in {0, 3} else None,
+                }
+            )
+            await store.create(item)
+        # A foreign body that cannot deserialize must never be fetched by this page.
+        await pool.execute(
+            "UPDATE capability_invocations SET payload = jsonb_set(jsonb_set(payload, '{project_id}', '\"foreign\"'), '{unexpected}', 'true') WHERE invocation_id=$1",
+            ids[3],
+        )
+        first = await store.list_ambiguous_page(
+            workspace_id=bound.workspace_id,
+            project_id=bound.project_id,
+            stale_before=created + timedelta(hours=1),
+            limit=1,
+        )
+        assert [item.invocation_id for item in first] == [ids[0]]
+        second = await store.list_ambiguous_page(
+            workspace_id=bound.workspace_id,
+            project_id=bound.project_id,
+            stale_before=created + timedelta(hours=1),
+            limit=2,
+            after=(first[0].created_at, first[0].invocation_id),
+        )
+        assert [item.invocation_id for item in second] == [ids[1]]
+    finally:
+        await pool.execute(
+            "DELETE FROM capability_invocations WHERE invocation_id = ANY($1::text[])", ids
+        )
+        await pool.close()
