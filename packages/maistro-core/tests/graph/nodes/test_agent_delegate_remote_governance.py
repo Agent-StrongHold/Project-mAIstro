@@ -21,9 +21,10 @@ import pytest
 
 from maistro.a2a.delegate import A2ADelegator
 from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager, PeerTrust
+from maistro.capabilities.approval_store import InMemoryApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingNotFound
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.governed_invocation import InvocationDenied
 from maistro.capabilities.invocation import Invocation, InvocationStatus
 from maistro.graph import Graph, Node
@@ -354,7 +355,7 @@ class TestDelegatedAuthorityIsAttenuated:
         async def deny(_binding: Any, _request: Any, _context: Any) -> PolicyVerdict:
             return PolicyVerdict(Decision.DENY, reason="delegation paused", rule="test")
 
-        effects = new_in_memory_effect_context(policy_evaluator=deny)
+        effects = new_effect_context(policy_evaluator=deny)
         await effects.bindings.put(
             Binding(
                 binding_id="binding-hub",
@@ -374,6 +375,79 @@ class TestDelegatedAuthorityIsAttenuated:
         assert result.success is False
         assert result.error_code == InvocationDenied.__name__
         assert posts["n"] == 0, "a denied authority never reaches the peer"
+
+    async def test_a_require_approval_policy_parks_on_the_human_pause(self) -> None:
+        """A manageable approval decision is a durable HITL pause -- the same
+        primitive every other governed effect pauses on -- never a
+        reconciliation park and never a dispatch."""
+        posts = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            posts["n"] += 1
+            return httpx.Response(200, json={"task_id": "remote-1"})
+
+        set_test_transport(httpx.MockTransport(handler))
+        store, project = await _spine()
+        ctx, _parent = await _parent_and_ctx(store, project.project_id)
+
+        async def require_approval(_binding: Any, _request: Any, _context: Any) -> PolicyVerdict:
+            return PolicyVerdict(
+                Decision.REQUIRE_APPROVAL, reason="delegation needs a human", rule="test"
+            )
+
+        effects = new_effect_context(
+            policy_evaluator=require_approval,
+            approval_store=InMemoryApprovalStore(),
+        )
+        await effects.bindings.put(
+            Binding(
+                binding_id="binding-hub",
+                workspace_id="workspace-1",
+                project_id=project.project_id,
+                capability=AGENT_DELEGATION_CAPABILITY,
+            )
+        )
+        node = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(),
+            run_store=store,
+            effect_context=effects,
+        )
+
+        result = await node.run(_inputs(), ctx)
+
+        assert result.status == "paused"
+        assert result.metadata["paused_reason"] == "awaiting_human_approval"
+        assert result.metadata["effect_key"]
+        assert posts["n"] == 0
+
+    async def test_an_unmanageable_approval_requirement_fails_the_node(self) -> None:
+        """No approval store wired: the instance cannot manage the decision,
+        so the node fails instead of parking work on a loop nobody answers."""
+        store, project = await _spine()
+        ctx, _parent = await _parent_and_ctx(store, project.project_id)
+
+        async def require_approval(_binding: Any, _request: Any, _context: Any) -> PolicyVerdict:
+            return PolicyVerdict(Decision.REQUIRE_APPROVAL, reason="needs a human", rule="test")
+
+        effects = new_effect_context(policy_evaluator=require_approval)
+        await effects.bindings.put(
+            Binding(
+                binding_id="binding-hub",
+                workspace_id="workspace-1",
+                project_id=project.project_id,
+                capability=AGENT_DELEGATION_CAPABILITY,
+            )
+        )
+        node = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(),
+            run_store=store,
+            effect_context=effects,
+        )
+
+        result = await node.run(_inputs(), ctx)
+
+        assert result.success is False
+        assert result.error_code == "InvocationApprovalRequired"
 
 
 class TestEveryRemoteExecutionIsTraceable:

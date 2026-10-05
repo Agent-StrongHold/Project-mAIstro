@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +45
+  packages/maistro-core/tests: +47
   packages/maistro-server/tests: +1
 ---
 # 959 — external Agent delegation bound to canonical identity and evidence
@@ -25,7 +25,11 @@ after a crash between dispatch and pause; remote Agent-generated ids staying
 receipts (a forged `run_id` in an answer settles nothing); and result provenance
 (peer endpoint, remote Agent version) surviving into the persisted Attempt
 evidence, with absent facts staying absent. An inactive peer is refused
-before admission, so a dead registration files no execution either.
+before admission, so a dead registration files no execution either. A
+manageable REQUIRE_APPROVAL decision parks the dispatch on the durable human
+approval pause (and a decision no store can manage fails the node instead),
+proving the governed seam's own pause translation is never swapped for a
+reconciliation park.
 
 **+3 in `tests/a2a/test_delegation_context.py` (new).** The `DelegationContext`
 contract itself: required canonical fields, Goal/Subgoal coherence via

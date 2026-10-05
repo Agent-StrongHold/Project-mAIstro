@@ -49,7 +49,10 @@ from maistro.a2a.guest_peers import GuestPeerManager, PeerTrust
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import CapabilityEffectContext
-from maistro.capabilities.governed_invocation import InvocationDenied
+from maistro.capabilities.governed_invocation import (
+    InvocationApprovalRequired,
+    InvocationDenied,
+)
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     Invocation,
@@ -76,6 +79,7 @@ from .base import (
     KindCategory,
     NodeContext,
     ReplaySemantics,
+    _NodePaused,
     now_utc,
     pause_until,
     replay_effect_key,
@@ -1077,6 +1081,19 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 ),
                 effect_key=key,
             )
+        except _NodePaused:
+            # A pause the governed seam itself translated -- a durable human
+            # approval decision, most likely -- is the runtime's own control
+            # flow. Let it surface; converting it into a reconciliation park
+            # would silently swap one waiting state for another.
+            raise
+        except InvocationApprovalRequired:
+            # An approval surface that cannot manage the decision (no store
+            # wired) is a composition fault of this instance: fail the node
+            # rather than parking delegated work on a recovery loop that can
+            # never answer it. A *manageable* pending approval never reaches
+            # this handler -- the HITL adapter converts it to a pause above.
+            raise
         except (CapabilityUnavailable, InvocationDenied):
             # Nothing was dispatched: the provider is missing or policy said
             # no before admission. That is a refusal this instance owns, so
