@@ -83,6 +83,11 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Hive Agent materialization retains governed model egress (#1084).** Agents
+  created after boot use the Container-backed GovernedLLMClient rather than a
+  raw HTTP client. Agent turns adopt the existing canonical execution identity
+  without treating the conversation turn id as a Run id.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was

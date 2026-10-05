@@ -289,7 +289,12 @@ async def test_start_registers_the_runtime_materialization_source(monkeypatch):
     source = materialization._runtime_source
     assert source is not None
     assert source.container is container
-    assert source.llm is not None
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    assert isinstance(source.llm, GovernedLLMClient)
+    assert source.llm._egress._effects is container.capability_effects
+    assert source.llm._egress._registry is container.provider_registry
+    assert source.llm._egress._router is container.llm_router
     # The real shipped PREAMBLE template, not an empty stand-in.
     assert "governed dispatch and policy controls" in source.preamble
 

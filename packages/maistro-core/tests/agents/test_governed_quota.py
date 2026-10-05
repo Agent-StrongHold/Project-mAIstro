@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
 
 from maistro.agents.base import Agent
 from maistro.agents.strategies.direct import DirectStrategy
@@ -68,8 +69,10 @@ def _patch_gateway(monkeypatch: Any) -> None:
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
 
 
+@pytest.mark.parametrize("turn_id", ["run-agent-1", "domain-turn-different-from-run", None])
 async def test_agent_completion_uses_canonical_invocation_quota_hook(
     monkeypatch: Any,
+    turn_id: str | None,
 ) -> None:
     _patch_gateway(monkeypatch)
     tracker = InMemoryQuotaTracker()
@@ -124,8 +127,8 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
     # #1827: the governed client reads its Run/NodeRun/Attempt identity from
     # the correlation context canonical execution binds (RunExecutionService
     # for run_id, AttemptExecutionService.execute_claimed for the other two).
-    # Bind a complete context whose run matches the turn_id Agent.handle
-    # supplies, exactly as a node execution would.
+    # A domain turn id may differ from the canonical Run. The Agent must
+    # leave canonical identity adoption to its client, not substitute that id.
     with bind_execution_context(
         run_id="run-agent-1",
         node_run_id="node-agent-1",
@@ -134,7 +137,7 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
         response = await agent.handle(
             [{"role": "user", "content": "say hello"}],
             SimpleNamespace(user_id="u1", org_id="o1", team_id="t1"),
-            turn_id="run-agent-1",
+            turn_id=turn_id,
         )
 
     assert response.content == "governed"
