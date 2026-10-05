@@ -21,6 +21,7 @@ from middleware.auth import principal_has_permission
 from models.schemas import CapabilitySetting
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
+from services.request_principal import require_principal
 from starlette.concurrency import run_in_threadpool
 
 from maistro.capabilities.authority import (
@@ -287,13 +288,12 @@ def resolve_approval(
     # HTTP callers cannot choose the audit actor. Direct provider tests may
     # omit Request, but production resolution always uses the authenticated
     # session principal that AuthMiddleware already verified.
-    user = getattr(getattr(request, "state", None), "user", None) or {}
     if request is not None:
-        actor = str(user.get("id") or user.get("username") or "")
-        if not actor:
-            raise HTTPException(status_code=401, detail="Authentication required")
+        principal = require_principal(request)
+        actor = principal.actor_id()
     else:
         actor = body.actor
+        principal = None
 
     authority: ApprovalAuthority | None = None
     if pending.action == "run_workflow":
@@ -302,7 +302,11 @@ def resolve_approval(
         # elevated approval permission, so a config editor cannot self-approve.
         authorized = bool(
             actor
-            and (user.get("role") == "admin" or principal_has_permission(user, "approvals.resolve"))
+            and principal is not None
+            and (
+                principal.is_admin
+                or principal_has_permission(principal, "approvals.resolve")
+            )
         )
         if not authorized:
             log_audit(

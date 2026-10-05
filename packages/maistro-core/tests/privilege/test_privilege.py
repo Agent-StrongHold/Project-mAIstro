@@ -535,9 +535,9 @@ class TestAdminOnlyTools:
             user_public_key="pk_user",
         )
 
-        heartbeat_identity = guard.identity_for_subsystem("heartbeat")
-        assert heartbeat_identity.role == "user"
-        assert heartbeat_identity.public_key == "pk_user"
+        heartbeat_credential = guard.identity_for_subsystem("heartbeat")
+        assert heartbeat_credential.role == "user"
+        assert heartbeat_credential.public_key == "pk_user"
 
 
 class TestAdminKeyConstantTimeCompare:

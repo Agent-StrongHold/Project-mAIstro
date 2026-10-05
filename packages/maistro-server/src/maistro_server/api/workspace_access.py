@@ -11,7 +11,7 @@ from maistro.workspaces import (
     WorkspaceMembership,
     WorkspaceStore,
 )
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro.identity import Principal
 
 _workspace_store: WorkspaceStore | None = None
 
@@ -31,7 +31,7 @@ def get_workspace_store() -> WorkspaceStore:
     return _workspace_store
 
 
-def user_id(auth: AuthenticatedPrincipal | None) -> str:
+def user_id(auth: Principal | None) -> str:
     """Return the authenticated user id, including the auth-disabled dev identity."""
     return auth.user_id if auth is not None else "dev"
 

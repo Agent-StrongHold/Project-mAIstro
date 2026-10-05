@@ -290,7 +290,7 @@ class SettingsModel(BaseModel):
     capabilities: dict[str, CapabilitySetting] = Field(default_factory=dict)
 
 
-class HiveUser(BaseModel):
+class HiveAccount(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str

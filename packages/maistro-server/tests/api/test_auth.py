@@ -87,9 +87,10 @@ class TestSecretComparison:
         settings = Settings(api_keys=["ops:test-key-123"])
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-key-123")
         result = verify_api_key(creds, settings)
-        # verify_api_key returns an AuthenticatedPrincipal (not the raw key).
+        # verify_api_key returns a Principal (not the raw key material).
         assert result is not None
-        assert result.token == "test-key-123"
+        assert result.user_id == "ops"
+        assert result.user_id != "test-key-123"
 
     def test_wrong_key_rejected(self) -> None:
         settings = Settings(api_keys=["ops:correct-key"])
@@ -201,7 +202,6 @@ class TestExplicitPrincipalContract:
         principal = resolve_token_principal("secret-material-xyz", settings)
         assert principal is not None
         assert principal.user_id == "ops"
-        assert principal.user_id != principal.token
         assert "secret-material-xyz" not in principal.user_id
 
     def test_colon_containing_secret_keeps_working(self) -> None:

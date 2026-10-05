@@ -17,7 +17,7 @@ from uuid import uuid4
 import stores
 from config import get_settings, is_valid_oauth_provider_name
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
-from models.schemas import HiveUser
+from models.schemas import HiveAccount
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from services import registration_policy, username_registry
 from services.human_auth_mode import HumanAuthModePolicy
@@ -375,8 +375,8 @@ def _human_auth_policy() -> HumanAuthModePolicy:
     return HumanAuthModePolicy(mode=get_settings().human_auth_mode)
 
 
-def _users() -> list[HiveUser]:
-    return cast(list[HiveUser], list(stores.users.values()))
+def _users() -> list[HiveAccount]:
+    return cast(list[HiveAccount], list(stores.users.values()))
 
 
 def _username_taken(username: str) -> bool:
@@ -815,7 +815,7 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
     user_id = str(uuid4())
     password_hash = hash_password(body.password)
     now_ts = datetime.now(UTC)
-    user = HiveUser(
+    user = HiveAccount(
         id=user_id,
         username=body.username,
         password_hash=password_hash,

@@ -14,7 +14,7 @@ from maistro.graph.definitions import Graph, Node
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.store import RunStore
 from maistro_server.api.auth import RequireAuth
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro.identity import Principal
 
 router = APIRouter(prefix="/a2a", tags=["a2a"])
 
@@ -85,7 +85,7 @@ async def create_a2a_task(
             )
         ],
     )
-    principal = auth if isinstance(auth, AuthenticatedPrincipal) else None
+    principal = auth if isinstance(auth, Principal) else None
     claim = await store.claim_run_by_effect(
         graph,
         effect_key=request.idempotency_key,

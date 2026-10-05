@@ -13,7 +13,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro.identity import Principal
 from maistro_server.api.projects import (
     AddProjectMembershipBody,
     add_project_membership,
@@ -23,10 +23,9 @@ from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 
 
-def _principal(user_id: str) -> AuthenticatedPrincipal:
-    return AuthenticatedPrincipal(
+def _principal(user_id: str) -> Principal:
+    return Principal(
         user_id=user_id,
-        token=f"token-{user_id}",
         roles=frozenset({"user"}),
     )
 
