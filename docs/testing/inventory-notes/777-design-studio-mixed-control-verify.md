@@ -10490,3 +10490,66 @@ Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
 production behavior; the branch remains a safe waiting position with a
 green battery on the develop-merged tree. Unblocking requires landing
 #804/#805/#806, #53, #774, #776, #93/#95 upstream (Refs #777).
+
+## Round 158 (job 50e57982) — 2026-10-05
+
+Driver ran zero checks again (manifest `checks: []`, no `check-*.log` in
+job dir — sixth consecutive zero-check round); all evidence below was
+produced by this round's worker, not assumed from round 157. Prior
+result artifact `72a52c145be64` was a provider timeout (no checks); the
+only check log in recent rounds (`53d5e08bf027/check-2.log`, ruff format
+failure on `agent_loop.py`) is stale — the file formats clean today.
+
+**No develop sync needed:** `git fetch origin` then `git rev-parse
+origin/develop` → `30677b185400…` = lane base, unchanged; HEAD stays
+`464df0861734` (= 7fccf0748 code + round-157 note commit; zero code
+delta, `git diff 7fccf0748..HEAD` is the note file only).
+
+**Fresh battery on 464df0861734 (all exit 0):**
+`ruff check .` (all checks passed); `ruff format --check .` (2931
+files); `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` (base 30677b185400 → cand 464df0861734,
+1338 reviewed identities → 1337 findings, unclassified 0,
+never_allowlist 0); `check-api-route-contracts.py` (279 handlers, 15
+audited, 0 canned); `check-route-permissions.py` (17 declared, 23
+tolerated undeclared prefixes, none new); `check-suite-inventory.py`
+(14/14); `check-backlog-consistency.py` (167 items);
+`check-reachability.py` (1266 modules); `check-promotion-surface.py`.
+`pytest packages/maistro-bootstrap/tests packages/maistro-design/tests
+-x -q` → **777 passed, 2 skipped** (44.48s); `pytest
+packages/hive-conductor/backend/tests -x -q` → **3345 passed, 6
+skipped** (143.50s).
+
+**Blockers re-proven fresh on 464df0861734 (not assumed from round
+157):**
+- `grep -rn 'GoalReconciler|delegate_goal' packages/*/src` → exit 1,
+  0 lines — the #804/#805 reconciliation API AC1 must consume does not
+  exist.
+- `packages/hive-conductor/backend/services/workspace_agent.py:1` —
+  the only Workspace Agent in tree is the #1037 per-Workspace identity
+  service ("The one stable Workspace Agent per Workspace, #1037,
+  ADR-092326-7ed7"), not a persistent reconciliation agent.
+- Core CreativeBrief remains #774 scaffolding only:
+  `ontology/rubric.py:6-15` disclaims CreativeBrief as "guidance prose
+  projected from a Goal revision… structurally rejected here";
+  `agents/brief_interview.py` is the pre-Goal interview (#1823).
+- Salvage tree `docs/research/777-design-studio-salvage/` still has
+  zero production readers: no import of the tree anywhere in
+  `packages`/`tests`; the only "salvage" matches in `packages/*/src`
+  are unrelated strings in `skills/marketplace.py` and
+  `skills/import_pipeline.py`.
+
+**Dependency states (this job's dispatch-context.json captured
+2026-10-05T10:57–10:58Z, fresher than round 157's 10:34Z capture):**
+#804/#805/#806, #53, #774, #776, #773 (parent), #779, #780, #93, #95
+all **open**; #39, #458, #775 **closed**. Native `blocked_by` API list
+empty (dependency claim is the issue body's "Depends on:" line). PR
+#1660 open draft, `draft: true`, `merged_at: null`, head `17ad5f75b894`,
+`mergeable_state: clean`, all check-runs on that head success — still
+unmerged.
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
+123–157. All 13 acceptance criteria remain UNPROVEN against reachable
+production behavior; the branch remains a safe waiting position with a
+green battery on the develop-merged tree. Unblocking requires landing
+#804/#805/#806, #53, #774, #776, #93/#95 upstream (Refs #777).
