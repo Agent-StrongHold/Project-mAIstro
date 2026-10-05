@@ -563,3 +563,95 @@ campaign-level, re-confirmed absent at `30144ad0f`) and (b) the sibling
 `auto-41` branch's stale `types.gen.ts`. Neither is reachable from this
 worktree; no code, test or `quality/` change is warranted or authorized,
 and none was made beyond this note.
+
+## CI-repair round 9 (L1893, head 7e1a1524b — develop 658a8f78c merged;
+`test:` signal re-attributed to the sibling; unblock path re-proven)
+
+The round-9 brief re-issued the `test: failure` signal, the standing
+BLOCKED block and the vulture-ledger amendment authorization. develop had
+advanced `30144ad0f` -> `658a8f78c` (#55 capabilities-as-effect-path, a
+large upstream slice: new quota/capabilities modules and tests, quality
+ledger updates, a new alembic revision re-parented onto 055). Actions, in
+order:
+
+1. **Grant check before judging.** develop `658a8f78c`'s
+   `quality/ratchet-authorizations.json` has NO admission entries (its 5
+   `admission` substring hits are unrelated pre-existing identities:
+   `recover_stranded_chat_admissions`, the a2a transport route, the
+   scheduling admitter, the canvas reconcile method); its reachability
+   baseline/dispositions carry neither `maistro.runs.admission_identity`
+   nor `maistro.tasks.admission_codec`. The two-merge blocker persists
+   upstream.
+2. **develop sync.** Merged `origin/develop` (`658a8f78c`) into `0b5d4909e`
+   — clean, no conflicts, merge `7e1a1524b`. Ledger survival audited as a
+   multiset diff against BOTH parents: reachability 170 (develop) + our 2
+   admission rows = 172, develop losing zero rows; the merge correctly took
+   develop's intentional removal of `maistro.events.publisher`/
+   `maistro.events.wiring` (now reachable upstream). Vulture 1338 (ours) +
+   develop's 5 new rows = 1343, zero rows lost in either direction.
+   Dispositions likewise. Neither new module nor either test file changed
+   in the merge (empty diff vs `0b5d4909e`).
+3. **`test:` signal re-attributed from hosted evidence** (read-only `gh`):
+   our PR #1945's `test` check is SUCCESS at its head `7035433722` — every
+   production change on this branch since that head is docs + quality
+   ledgers + develop syncs (the codec refactor `7a0669c7c` predates it). The
+   red `test`/`integration-scope`/`workflow-lint` in the snapshot belong to
+   sibling PR #1325 (branch `auto-41`, head `3c352e161448`) — that owner's
+   fix under COORDINATION_REQUIRED, unreachable from this worktree. develop
+   `658a8f78c` touches nothing under maistro-server/hive-conductor/canvas
+   or any frontend, so the #1048 gen:api step (proved byte-identical here in
+   round 8) is unaffected.
+4. **Test-job Python steps re-run at the merged head** (CI's forms):
+   focused both-files pytest -> 139 passed / 0 skipped; root
+   `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 RATCHET_BASE_REV=origin/develop
+   uv run pytest tests/ --ignore=tests/tools/registry` -> 4519 passed,
+   107 skipped (includes develop's re-parented migration-stamp assertion);
+   full `packages/maistro-core/tests` -> 12862 passed, 927 skipped,
+   1 xfailed (grew by develop's new quota/capability suites; skips are
+   PG/DSN-gated, not counted as proof); `check-suite-inventory.py --suite
+   packages/maistro-core/tests` -> ok, 13790 node IDs.
+5. **Static + quality gates at the merged head.** `ruff check .` clean,
+   `ruff format --check .` 2975 files clean, `mypy` on both changed modules
+   "Success: no issues found in 2 source files"; vulture at CI's exact
+   argv -> exit 0, 1343 reviewed -> 1343 banked (**nothing unbanked, so the
+   round's authorized `vulture-baseline.json` amendment is moot again —
+   nothing to bank, nothing eliminated**); `check-shipped-surface-truth.py`
+   exit 0; radon 138 -> 138 exit 0 (develop retired 5 baselined blocks);
+   `check-reachability.py` exit 0 (1285 production modules, 172 unreachable,
+   baseline matches the tree); `check-reachability-dispositions.py` exit 0
+   (50 groups: 150 CONNECT, 20 LIBRARY, 2 RETIRE); `check-convergence-matrix.py`
+   OK (52 subsystems, 172 attributed). The `_generated_from` "1266" string
+   is stale-informational as before (no gate parses it; round-6 finding,
+   drifts with every develop sync by construction).
+6. **exact-debt-ledger at the merged head.** `RATCHET_BASE_REV=origin/develop
+   check-ratchet-provenance.py` -> exit 1 on exactly the two reachability
+   provenance gates (NEW unreachable `maistro.runs.admission_identity` +
+   `maistro.tasks.admission_codec`, NEW dispositions; base `658a8f78c`).
+   Every other sub-ratchet OK. Notably develop's #55 slice landed ITS OWN
+   reachability grants upstream — the same landing mechanics this lane's
+   probe uses.
+7. **Unblock path re-proven at THIS head, not inherited** (detached
+   worktree `~/Git/worktrees/probe-1893-round9`, probe merge `300718b20` =
+   `7e1a1524b` + grant `3235229f5fed`, clean, +10 lines of grants only):
+   `RATCHET_BASE_REV=3235229f5fed...` -> aggregator **exit 0**, both
+   admission identities on explicit `authorized:` lines, "172 unreachable
+   module(s), no candidate-approved expansion", all 10 sub-ratchets OK;
+   `check-shipped-surface-truth.py` and CI-exact vulture (1343 = 1343) both
+   exit 0 under the same base; focused pytest at the probe head -> 66
+   passed. The grant payload and landing order remain proven end-to-end:
+   campaign lands `3235229f5fed` (or equivalent two-entry reachability
+   grant) on develop, this branch syncs it, exact-debt-ledger goes green
+   with zero further change here.
+8. **Acceptance spot re-checks at the merged head:** all 10 prospective
+   tests present by exact name; zero clock reads in either module (the two
+   `time`/`now` grep hits are docstring prose); legacy `completed_at`
+   referenced only in docstrings stating it is deliberately not read; no
+   SQL/HTTP/router tokens in the codec.
+
+Round-9 conclusion: unchanged from rounds 4-8, now at develop `658a8f78c`:
+all in-branch behavior and gates are green at the merged head; the only
+reds are (a) the develop-side reachability grant (two-merge rule,
+campaign-level, unblock path re-proven at this exact head via probe
+`300718b20`) and (b) the sibling `auto-41` branch's failing checks. No code,
+test or `quality/` change was warranted beyond the develop sync and this
+note.
