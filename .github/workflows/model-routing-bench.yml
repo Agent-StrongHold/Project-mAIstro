@@ -1,0 +1,67 @@
+name: Model-routing bench
+
+# Manual only, on purpose.
+#
+# This runs scripts/bench_model_routing.py — the #916 (RESEARCH M8-B3)
+# measurement behind docs/research/916-contextual-bandit-model-routing.md:
+# outcome-learned routing policies (contextual means with catalog-prior
+# shrinkage + forgetting, eps-greedy, LinUCB, contextual Thompson) against the
+# shipped static scorer under delayed, sparsified, nonstationary feedback,
+# plus off-policy (clipped IPS / doubly robust) evaluation. It is
+# deterministic and offline, so the results it uploads are comparable
+# run-to-run. It is not a gate and not a per-PR job: the research numbers are
+# re-measured when the router, the world model, or the policies change, not on
+# every commit.
+#
+# It is also what makes `scripts/bench_model_routing.py` a *real* entry point
+# rather than a script nobody can reach: `scripts/check-reachability.py` roots
+# tooling at the workflow steps that execute it, matching on filename. This
+# job runs it (same pattern as working-memory-bench.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "Routing decisions simulated per policy per seed"
+        required: false
+        default: "1500"
+        type: string
+      seeds:
+        description: "Number of seeds (0..N-1) to average over"
+        required: false
+        default: "5"
+        type: string
+      drift-at:
+        description: "Step at which the ground-truth model quality drifts"
+        required: false
+        default: "700"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-routing-bench
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+      - name: uv sync (dev deps)
+        run: uv sync --locked --extra dev
+      - name: Benchmark outcome-learned model routing against the static scorer
+        run: >-
+          uv run python scripts/bench_model_routing.py
+          --steps ${{ inputs.steps }}
+          --seeds ${{ inputs.seeds }}
+          --drift-at ${{ inputs.drift-at }}
+          --output model-routing-bench.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-routing-bench
+          path: model-routing-bench.json
