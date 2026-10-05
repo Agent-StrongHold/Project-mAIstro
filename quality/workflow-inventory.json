@@ -176,6 +176,13 @@
       "rationale": "On-demand #301 / ADR-082226-5104 §8 working-memory projection benchmark (per-projection RAM, hydration cost, recall and traversal latency at caller-supplied concurrency); deterministic and offline, run when the memory substrate changes — a measurement, not a gate."
     },
     {
+      "id": "model-routing-bench",
+      "file": ".github/workflows/model-routing-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #914 / epic #900 M8-B1 model-routing benchmark (shipped CostAwareRouter vs task-conditioned candidate policies over one shared corpus and one shared, policy-independent outcome table); deterministic and offline, run when the router, the model catalog, or the outcome model changes — a measurement, not a gate. Wires no candidate policy into production; the research disposition lives in docs/research/914-task-conditioned-model-routing.md."
+    },
+    {
       "id": "speculative-parallel-bench",
       "file": ".github/workflows/speculative-parallel-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",

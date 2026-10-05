@@ -23,14 +23,25 @@ AST over `packages/hive-conductor/backend/routes/*.py`. A handler is canned
 when:
 
 - it is decorated with `@router.<method>(...)`, and
-- every `return` statement's value is a literal composed purely of constants,
-  and
-- the body contains no `Call` node except `HTTPException(...)` and
-  logging/metrics statements.
+- every `return` statement in the handler's own scope returns a literal
+  composed purely of constants (`[]`, `{"status": "clean"}`, a stock
+  Dockerfile) — a nested helper's returns are that helper's scope, not the
+  route's, and
+- the handler's executed scope contains no `Call` node except
+  `HTTPException(...)` and logging/metrics statements.
+
+Executed scope: a statement that only *defines* a nested function or lambda
+runs the definition — its decorators, defaults and annotations — but not its
+body, which waits for an invocation the detector does not speculate about. A
+route may define helpers it never calls, so their calls are the helper's, not
+the route's (#1858). When the helper *is* called, the call site itself is a
+`Call` in this scope and counts. That credit is deliberately lexical, not
+interprocedural: the detector does not follow into a called helper's body, so
+work performed only there is invisible to it.
 
 Logging and metrics do not make a literal acknowledgement truthful (#1857): a
-route that only logs and answers `{"status": "ok"}` still answered success
-for an operation that did nothing, so observability calls are not real-work
+route that only logs and answers `{"status": "ok"}` still answered success for
+an operation that did nothing, so observability calls are not real-work
 evidence. What counts as observability is name-matching only — see the
 limitations below.
 
@@ -51,9 +62,10 @@ mirror risk is bounded the same way: a call rooted in a variable *named*
 `logger` that actually performs I/O would be misread as observability, and
 attribute-rooted targets (`self.log.info(...)`, anything without a plain
 name root) are deliberately never exempted. Handlers whose canned shape
-hides behind nested definitions, non-decorator registration forms, or
-non-literal returns are separate, known detector leaves (#1144 owns the
-shipped-surface detector class).
+hides behind non-decorator registration forms or non-literal returns are
+separate, known detector leaves (#1144 owns the shipped-surface detector
+class); uncalled nested definitions are judged here, by executed scope
+(#1858).
 
 The inventory
 -------------
@@ -81,6 +93,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 
@@ -91,7 +104,6 @@ INVENTORY_DOC = ROOT / "docs" / "api" / "route-contract-inventory.md"
 
 DISPOSITIONS = frozenset({"implemented", "unsupported-501", "preview", "temporary"})
 REQUIRED_FIELDS = ("route", "method", "path", "file", "handler", "disposition", "contract")
-REQUIRED_TEMPORARY = ("issue", "expires")
 REQUIRED_TEMPORARY = ("issue", "expires")
 
 
@@ -133,14 +145,69 @@ def _call_root_name(call: ast.Call) -> str | None:
     return None
 
 
-def _performs_real_work(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True when the body calls anything beyond HTTPException construction and
-    logging/metrics statements.
+def _definition_time_expressions(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.expr]:
+    """What a ``def`` evaluates at once, before its body ever runs.
 
-    Walks the body statements, not the whole function node: the handler's own
-    ``@router.<method>(...)`` decorator is a Call on every decorated handler,
-    and counting it here made every handler look like it did real work — the
-    detector could never fire (found by the in-process coverage tests).
+    Decorators, argument defaults and annotations execute in the enclosing
+    scope the moment the def statement is reached; only the body defers to
+    call time.
+    """
+    args = node.args
+    parameters = [
+        parameter
+        for parameter in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
+        if parameter is not None
+    ]
+    eager: list[ast.expr] = [*node.decorator_list, *args.defaults]
+    eager.extend(default for default in args.kw_defaults if default is not None)
+    eager.extend(parameter.annotation for parameter in parameters if parameter.annotation)
+    if node.returns is not None:
+        eager.append(node.returns)
+    return eager
+
+
+def _walk_executed_scope(roots: list[ast.stmt]) -> Iterator[ast.AST]:
+    """Yield every node that runs when the handler's own statements run.
+
+    The lexical execution boundary the detector judges. A statement that
+    defines a nested function executes that definition — the def-time
+    expressions above — but not the nested body, which waits for an
+    invocation; a lambda's body defers the same way. Everything else runs
+    here and is yielded, including class bodies (a class statement executes
+    its body immediately) and nested functions inside them.
+    """
+    stack: list[ast.AST] = list(roots)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack.extend(_definition_time_expressions(node))
+        elif isinstance(node, ast.Lambda):
+            stack.extend(node.args.defaults)
+            stack.extend(default for default in node.args.kw_defaults if default is not None)
+        else:
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _own_scope_returns(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
+    """The handler's own ``return`` statements, not its nested helpers'."""
+    return [node for node in _walk_executed_scope(func.body) if isinstance(node, ast.Return)]
+
+
+def _performs_real_work(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the executed scope calls anything beyond HTTPException
+    construction and logging/metrics statements.
+
+    Walks the handler's executed scope (`_walk_executed_scope`), not the
+    whole function tree: the handler's own ``@router.<method>(...)``
+    decorator is a Call on every decorated handler and counting it made the
+    detector unable to fire, and a call inside a nested definition belongs
+    to that definition, which the route may never invoke (#1858) — defining
+    a writing helper is not route work. A helper the route actually calls
+    justifies the route through its call site; that credit stops there
+    (lexical, not interprocedural analysis).
 
     Observability calls are exempt (#1857): their root name (case-insensitive)
     is in ``_LOG_LIKE_CALL_NAMES``. Everything else — a service call, a store
@@ -148,16 +215,15 @@ def _performs_real_work(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     ``return`` reads; the gate does not try to prove such a call meaningful,
     only to recognize the narrow shape that is obviously not.
     """
-    for statement in func.body:
-        for node in ast.walk(statement):
-            if isinstance(node, ast.Call):
-                func_node = node.func
-                if isinstance(func_node, ast.Name) and func_node.id == "HTTPException":
-                    continue
-                root = _call_root_name(node)
-                if root is not None and root.lower() in _LOG_LIKE_CALL_NAMES:
-                    continue
-                return True
+    for node in _walk_executed_scope(func.body):
+        if isinstance(node, ast.Call):
+            func_node = node.func
+            if isinstance(func_node, ast.Name) and func_node.id == "HTTPException":
+                continue
+            root = _call_root_name(node)
+            if root is not None and root.lower() in _LOG_LIKE_CALL_NAMES:
+                continue
+            return True
     return False
 
 
@@ -206,7 +272,7 @@ def _canned_handlers(
     for filename, func, method, route_path in handlers:
         if (filename, method, route_path) in exempt:
             continue
-        returns = [n for n in ast.walk(func) if isinstance(n, ast.Return)]
+        returns = _own_scope_returns(func)
         if not returns:
             continue
         if not all(_pure_constant(r.value) for r in returns):
