@@ -126,7 +126,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Request front door and DI | `maistro.container.route_request` | `none` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `none` | MIGRATE — becomes an admission receipt over a canonical Run; with a database, admission already commits the Run first and restart recovers it (#91) | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
 | A2A delegation | `maistro.a2a` exported API; no shipped caller | `none` | MIGRATE — delegation must create child Runs | — | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
-| Recurrence / schedules | `services.scheduler` background loop | `none` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231). Recurring ticks and manual `fire_now` both admit through the canonical spine (#231, #1120): a manual fire claims `(schedule_id, "manual:" + fire_id)` as a first-class occurrence instead of executing through `run_registered_dag`, which survives only as the no-Container standalone fallback (#1113). Admitted Runs execute via the #251 consumer tick, which manual fire triggers promptly; multi-node Runs still wait on durable Graph traversal — #44/#34 | #46, #62, #231, #251, #1120 |
+| Recurrence / schedules | `services.scheduler` background loop | `none` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231). Recurring ticks and manual `fire_now` both admit through the canonical spine (#231, #1120): a manual fire claims `(schedule_id, "manual:" + fire_id)` as a first-class occurrence instead of executing through `run_registered_dag`, which now also requires the canonical Run/continuation owners and refuses without a Container (#1113). Admitted Runs execute via the #251 consumer tick, which manual fire triggers promptly; multi-node Runs still wait on durable Graph traversal — #44/#34 | #46, #62, #231, #251, #1120 |
 | Repo tooling | the `.github/workflows/*.yml` step that executes the script | `few` | KEEP — the 43 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
 | Planning and wave orchestration | `maistro.orchestrator` exported API | `some` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | — | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
 | Builders pipeline | none | `all` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
@@ -179,7 +179,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - Every unreachable production module is classified. Executing CONNECT/RETIRE dispositions is M1 work under #34/#35; M0 does not pretend that the migration is complete.
 - maistro-server chat is now a real Container/Conduit product path (#222), while Hive/Conductor remains the product migration target (#53/#66).
 - PostgreSQL strike state is wired through the Gate-compatible tracker (#217); security convergence still has product-path work rather than a persistence fiction.
-- Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — leaving the in-process path only as the explicit no-Container standalone fallback (#1113).
+- Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — with registered-DAG execution refusing when the canonical Container, RunStore or Graph continuation owner is absent (#1113).
 - Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
 - The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 30 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
 
@@ -191,3 +191,29 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - `quality/execution-lifecycles.json` — classified work-state Enum and status-shaped Literal vocabularies (#36/#1136).
 - `docs/quality-gates.md` — enforcement boundaries and known limitations.
 - `docs/adr/ADR-092926-7a01-closed-loop-design-process.md` + `docs/specs/SPEC-092926-7a01-closed-loop-design-process.md` — the M7 design-loop contract (#790): the closed loop is Graphs and Runs over the one execution identity above, with the M7 kind table (Goal, Rubric, CreativeBrief, Pack, FenceDecision, EvalRecord, Canvas-as-tool, Design Studio-as-host) fenced to the #458 ontology; gates M7 A2–A7.
+
+### Hive Graph admission after standalone fallback retirement (#1113)
+
+New work through `services.dag_agents.run_registered_dag` and
+`services.canonical_dag_runner.execute_dag` requires the Container's canonical
+RunStore and Graph continuation owner before admission, configuration hooks or
+node execution. Hive no longer selects a process-local document store for new
+Graph work. Stub/degraded engine health reports `graph_execution_available=false`;
+Graph calls raise `CanonicalGraphUnavailable`. Non-executing definition translation
+and resolver construction remain usable without the bridge.
+
+This patch changes no storage-backend or migration policy. Canonical in-memory
+stores and SQLite are explicit test fixtures here. Hermetic SQLite
+second-connection/reconnect tests in
+`packages/hive-conductor/backend/tests/test_graph_execution_authority.py` cover
+checkpoint-zero recovery for both execution surfaces; this is not a claim of
+new PostgreSQL or multi-process distributed verification. The blocking fitness
+test `packages/maistro-core/tests/fitness/test_hive_graph_authority.py` requires
+unconditional canonical admission and rejects the retired fallback.
+
+Historical pre-convergence data keeps the existing
+[ADR-082826-d9f5 AC-6](../adr/ADR-082826-d9f5-durable-graph-store-as-canonical-projection.md)
+archive contract: readable/reproducible, explicitly non-resumable as
+`LegacyRunNotResumable`, with no replacement identity minted. Current canonical
+Runs keep the existing recovery/wake owners. This retirement does not introduce
+a new migration or reopen archived work.

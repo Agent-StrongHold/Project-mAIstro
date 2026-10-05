@@ -90,6 +90,12 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Hive Graph execution refuses missing canonical authority (#1113).**
+  Registered and stored DAGs now require the Container's RunStore and Graph
+  continuation owner before admission or execution. Stub/degraded mode reports
+  Graph execution unavailability instead of creating process-local Runs.
+  Definition/resolver helpers and existing read-only legacy archives remain usable.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was

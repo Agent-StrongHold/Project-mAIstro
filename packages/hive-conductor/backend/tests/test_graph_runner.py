@@ -23,6 +23,7 @@ import pathlib
 import sys
 from types import SimpleNamespace
 from typing import Any, ClassVar
+from unittest.mock import AsyncMock
 
 import pytest
 from services.dag_execution_scope import DagExecutionScope
@@ -60,9 +61,12 @@ def _set_allow_stub_llm(monkeypatch: pytest.MonkeyPatch, allowed: bool) -> None:
     test_evolution_service.py uses).
     """
     import config
+    from pydantic import SecretStr
 
     class _S:
         allow_stub_llm = allowed
+        litellm_api_base = ""
+        litellm_api_key = SecretStr("")
 
     monkeypatch.setattr(config, "get_settings", lambda: _S())
 
@@ -160,6 +164,7 @@ async def test_run_llm_node_marks_node_failed_when_llm_unconfigured(
 
 async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
+    canonical_graph_spine,
 ) -> None:
     """A DAG stream against an unconfigured LLM ends in `failed`, not `completed`.
 
@@ -186,7 +191,11 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
                 ],
                 "edges": [],
             },
-            scope=_execution_scope(),
+            scope=DagExecutionScope(
+                workspace_id="test-workspace",
+                project_id=canonical_graph_spine.project_id,
+                user_id="test-user",
+            ),
         )
     ]
 
@@ -438,6 +447,7 @@ async def test_build_llm_call_no_api_key_no_auth_header(
 
 async def test_execute_dag_builds_config_and_returns_shape(
     monkeypatch: pytest.MonkeyPatch,
+    canonical_graph_spine,
 ) -> None:
     """execute_dag runs a wave executor; stub _build_llm_call and verify shape."""
     import services.graph_runner as gr
@@ -473,7 +483,11 @@ async def test_execute_dag_builds_config_and_returns_shape(
             "edges": [{"from_node": "n1", "to_node": "n2"}],
             "entry_node": "n1",
         },
-        scope=_execution_scope(),
+        scope=DagExecutionScope(
+            workspace_id="test-workspace",
+            project_id=canonical_graph_spine.project_id,
+            user_id="test-user",
+        ),
     )
     assert out["status"] == "completed"
     assert out["cycles"] == 2  # wave 1: n1, wave 2: n2
@@ -484,6 +498,7 @@ async def test_execute_dag_builds_config_and_returns_shape(
 
 async def test_execute_dag_entry_node_fallback_to_first_node(
     monkeypatch: pytest.MonkeyPatch,
+    canonical_graph_spine,
 ) -> None:
     """Single-node DAG with no entry_node runs to completion (1 wave, 1 cycle)."""
     import services.graph_runner as gr
@@ -511,7 +526,11 @@ async def test_execute_dag_entry_node_fallback_to_first_node(
             # entry_node missing — wave executor needs no explicit entry; any
             # node with no inbound edges is a start node
         },
-        scope=_execution_scope(),
+        scope=DagExecutionScope(
+            workspace_id="test-workspace",
+            project_id=canonical_graph_spine.project_id,
+            user_id="test-user",
+        ),
     )
     assert out["status"] == "completed"
     assert out["cycles"] == 1
@@ -684,8 +703,8 @@ class _CompletedRecord:
         error = None
         # Real `Run` records always carry their admission scope; `_project`
         # mirrors both onto the execution result (#1174).
-        workspace_id = "hive-standalone-compat"
-        project_id = "hive-standalone-compat"
+        workspace_id = "test-workspace"
+        project_id = "test-project"
 
     graph_state = SimpleNamespace(cycle=1, blackboard_snapshot={"node_annotations": {}})
     node_runs = (
@@ -706,8 +725,16 @@ async def test_execute_dag_streaming_yields_full_lifecycle(
     async def _run_durable_graph(graph: Any, **kw: Any) -> Any:
         return _CompletedRecord()
 
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: object())
+    monkeypatch.setattr(
+        runner,
+        "_container",
+        lambda: SimpleNamespace(
+            run_store=SimpleNamespace(
+                create_run=AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
+            ),
+            graph_run_store=object(),
+        ),
+    )
     monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)
     monkeypatch.setattr(runner, "run_durable_graph", _run_durable_graph)
 
@@ -735,8 +762,16 @@ async def test_execute_dag_streaming_yields_failed_on_exception(
     async def _boom(graph: Any, **kw: Any) -> Any:
         raise RuntimeError("synthetic")
 
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: object())
+    monkeypatch.setattr(
+        runner,
+        "_container",
+        lambda: SimpleNamespace(
+            run_store=SimpleNamespace(
+                create_run=AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
+            ),
+            graph_run_store=object(),
+        ),
+    )
     monkeypatch.setattr(runner, "run_durable_graph", _boom)
 
     events = []
@@ -780,8 +815,16 @@ async def test_execute_dag_streaming_defers_run_until_past_started_frame(
     async def _project(result: dict[str, Any]) -> None:
         calls.append("project")
 
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: object())
+    monkeypatch.setattr(
+        runner,
+        "_container",
+        lambda: SimpleNamespace(
+            run_store=SimpleNamespace(
+                create_run=AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
+            ),
+            graph_run_store=object(),
+        ),
+    )
     monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)
     monkeypatch.setattr(runner, "run_durable_graph", _run_durable_graph)
 
@@ -865,8 +908,16 @@ def _stub_canonical_walk(
     from services import canonical_dag_runner as runner
 
     monkeypatch.setattr(gr_mod(), "_build_llm_call", llm_builder)
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: object())
+    monkeypatch.setattr(
+        runner,
+        "_container",
+        lambda: SimpleNamespace(
+            run_store=SimpleNamespace(
+                create_run=AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
+            ),
+            graph_run_store=object(),
+        ),
+    )
     monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)
     monkeypatch.setattr(runner, "run_durable_graph", walk)
 
