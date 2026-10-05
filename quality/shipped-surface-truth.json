@@ -814,6 +814,16 @@
       "effect_owner": "bootstrap installer state machine"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/invocations.py",
+      "method": "POST",
+      "route": "/{invocation_id}/reconcile",
+      "handler": "reconcile_invocation",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "accepts bounded operator evidence only after authenticated permission, canonical Workspace membership and explicit Project authority checks; revision-fenced settlement preserves Invocation history and repairs quota evidence without dispatching a provider or resuming a Run",
+      "effect_owner": "maistro.capabilities.operator_reconciliation.OperatorInvocationReconciliation -> GovernedInvocationExecutionService.reconcile -> InvocationExecutionService.reconcile (canonical Invocation store + quota evidence + causal events)"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/mcp.py",
       "method": "DELETE",
       "route": "/servers/{server_id}",
