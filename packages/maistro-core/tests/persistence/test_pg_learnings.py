@@ -155,11 +155,24 @@ async def test_ensure_schema_fences_ddl_behind_advisory_lock(
     assert conn.calls[1].args == (_SCHEMA_LOCK_KEY,)
     assert _SCHEMA_LOCK_KEY == 0x6D61_656C
 
-    # Scope and learning-stage upgrades must all remain inside the fence.
-    # Check the complete ordered body, not the pre-ADR-103 three-statement
-    # shape: startup now also upgrades the ladder columns and audit table.
+    # Scope, epistemic and learning-stage upgrades must all remain inside
+    # the fence. List the complete ordered body independently of production
+    # constants so dropping a column upgrade cannot silently weaken coverage.
     expected_ddl = [
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS epistemic_type ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS works_when ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS avoid_in ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS confidence ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS evidence_run_ids ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS evaluation_ids ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS applicability ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS reinforcement_count ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS contradiction_count ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS last_confirmed_at ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_at ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS supersedes ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS superseded_by ",
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS stage ",
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_by ",
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS promoted_by ",
