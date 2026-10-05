@@ -55,11 +55,14 @@ Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
 
 ## Final validation refresh
 
-At `a512843df1993e88aaeea83b6eb40ffa0b7122fe`, the focused suite passed 74
-cases, the suite inventory collected 13,126 node IDs, and ruff plus module
-mypy passed. The required exact Vulture command reported the nine
-reviewed-but-new identities as trusted-base debt (rc=1); `check-reachability.py`
+At validation head `cf42a342af25d437e272398851ff7835794b34cf`, the focused
+suite passed 74 cases, the suite inventory collected 13,126 node IDs, and ruff
+plus module mypy passed. The required exact Vulture command reported the nine
+reviewed-but-new identities as trusted-base debt (rc=1) against trusted base
+`35f2e0158a91`; that base does not contain this module. `check-reachability.py`
 likewise reported the deliberately unreachable `maistro.runs.admission_identity`
-(rc=1). These must remain blocked until the separately authorized parent
-integration supplies a real consumer or a prior trusted-base authorization
-lands; this inactive leaf cannot repair them without violating its scope.
+(rc=1). `check-reachability-dispositions.py` and
+`check-promotion-surface.py` passed. These two gates must remain blocked until
+the separately authorized parent integration supplies a real consumer or a
+prior trusted-base authorization lands; this inactive leaf cannot repair them
+without violating its scope.
