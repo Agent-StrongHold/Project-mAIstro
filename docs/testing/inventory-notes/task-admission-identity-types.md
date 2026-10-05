@@ -172,3 +172,22 @@ trusted-base identities, and reachability/provenance still failed only because
 this leaf deliberately has no permitted production consumer. Reachability
 Dispositions and promotion-surface passed. This is evidence of a staged DTO
 leaf, not evidence that the required integration-head quality gate is green.
+
+## Current repair evidence
+
+Focused Ruff check/format, module mypy, and the 76-case DTO suite passed; the
+core suite inventory remains exactly 13,727 node IDs (`+76`). The exact
+Vulture command produced 1,352 findings with no candidate-ledger delta, but
+exited 1 because all nine reviewed DTO field/enum identities are absent from
+trusted base `658a8f78c180`. The candidate `vulture-baseline.json` already
+contains those entries, as allowed by this CI-repair lane; the gate confirms
+that a candidate ledger cannot self-authorize them.
+
+`check-reachability.py` exits 1 only for the intentionally inactive
+`maistro.runs.admission_identity`. Production-source search finds no import or
+caller; the package initializer does not export it, and this change adds no
+reachability baseline/disposition or Vulture whitelist. Reachability
+dispositions and promotion-surface pass. `check-ratchet-provenance.py` exits 1
+only through that untrusted reachability debt. A separately authorized parent
+integration must add the real runtime consumer before the integration-head
+gates can pass; doing so here would violate this leaf's explicit scope.
