@@ -134,14 +134,20 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     # model clients and this runtime's governed egress (#718) so the two
     # doors cannot drift onto different credentials or bases.
     gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
-    model_endpoint = GatewayEndpoint(base_url=gateway_base, api_key=llm_key)
-    llm_client = GovernedLLMClient(
+    model_endpoint = GatewayEndpoint(
+        base_url=gateway_base, api_key=llm_key, base_url_is_api_base=True
+    )
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
+
+    admitted_calls = AdmittedModelCalls(
         container.capability_effects,
         registry=container.provider_registry,
         router=container.llm_router,
         endpoint=model_endpoint,
-        workspace_id=config.workspace_id,
+        run_store=container.run_store,
+        binding_ids=tuple(binding.binding_id for binding in container.config.model_bindings),
     )
+    llm_client = GovernedLLMClient(admitted_calls)
     prompt_manager = container.prompt_manager
 
     agents_dir = settings.maistro_agents_dir
@@ -166,11 +172,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
         tracer=None,
-        capability_effects=container.capability_effects,
-        provider_registry=container.provider_registry,
-        llm_router=container.llm_router,
-        model_endpoint=model_endpoint,
-        workspace_id=config.workspace_id,
+        admitted_calls=admitted_calls,
         # The tool seam, closed (#840 Slice 5): an explicit, REAL executor
         # instead of the implicit None the bridge used to pass. The factory
         # still wires it only into agents whose identity declares tools, so
@@ -209,16 +211,6 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         registry=container.provider_registry,
         router=container.llm_router,
         endpoint=model_endpoint,
-    )
-    from maistro.capabilities.admitted_model import AdmittedModelCalls
-
-    admitted_calls = AdmittedModelCalls(
-        container.capability_effects,
-        registry=container.provider_registry,
-        router=container.llm_router,
-        endpoint=model_endpoint,
-        run_store=container.run_store,
-        binding_ids=tuple(binding.binding_id for binding in container.config.model_bindings),
     )
     return EmbeddedRuntime(
         container=container,

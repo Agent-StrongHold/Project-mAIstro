@@ -117,6 +117,14 @@ or placeholder-only section.
 
 ### Security
 
+- **Materialized Hive Agents retain admitted authority and gateway contracts (#1956).**
+  Boot and later Agent clients share the existing persisted Run/NodeRun/leased
+  Attempt and operator Binding resolver. A definition's Workspace only narrows
+  that authority; global definitions follow the admitted execution. Agent/delegation
+  visits use distinct stable effect keys. Unset sampling stays unset, and Hive's
+  configured API base keeps its exact path. This preserves the existing single-call
+  compatibility stream; full Agent streaming parity remains separate work.
+
 - **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
   `clarify` and the model fallback of `web_search` require a configured
   `model.chat` Binding referenced by the DAG node's `model_binding_id`
