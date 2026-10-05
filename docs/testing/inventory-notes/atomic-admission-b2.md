@@ -730,3 +730,49 @@ green an unwired slice, and the provenance gate is designed to refuse
 self-authorization). All leaf acceptance criteria — interfaces, fail-closed
 codes, error hygiene, header/record separation, the ten prospective tests,
 inventory note, ruff/format/mypy, banking gates — are proven at this head.
+
+## Round 11 (independent verifier re-validation, exact head `2176016b9232`)
+
+Every round-10 claim re-derived independently at the final head (the
+round-10 note commit on top of `1a411d8da5e2`; code and ledgers identical,
+diff is this note file only). Locally re-executed: focused pytest both files
+139 passed / 0 skipped (codec file alone 66); `ruff check .` and
+`ruff format --check .` clean; `mypy` on both changed modules clean; CI-exact
+vulture `packages/*/src --min-confidence 60 --exclude '*/third_party/*'` ->
+exit 0, 1342 = 1342; `check-shipped-surface-truth.py`,
+`check-reachability.py` (1285 modules / 172 unreachable),
+`check-reachability-dispositions.py`, `check-convergence-matrix.py`,
+`check-radon-baseline.py` (138 -> 138), `check-test-duplicates.py`,
+`verify-monorepo-layout.sh`, `check-suite-inventory.py --suite
+packages/maistro-core/tests` -> all exit 0; baseline-pinning root tests
+`tests/test_check_reachability.py tests/test_reachability_baseline_identity.py`
+-> 38 passed. Mutation control (in-memory, no tree edit): loosening
+`_coerce_format_version` to accept `True`/`1.0` makes
+`test_unknown_format_cannot_be_reinterpreted_as_legacy` fail with
+"DID NOT RAISE" — the parametrization discriminates the regression it names.
+
+`check-ratchet-provenance.py` at this head (trusted base `b672b799aba6` ==
+`origin/develop` tip, re-fetched and unchanged; the branch is fully synced,
+the 10-surface diff is the entire delta): exit 1 on exactly the two
+reachability provenance gates (`maistro.runs.admission_identity`,
+`maistro.tasks.admission_codec` NEW unreachable / NEW dispositions), all
+other sub-ratchets OK. The round-10 grant probe was independently re-executed
+in the persistent worktree `probe-1893-round10` (`50f9f4558` =
+`1a411d8da5e2` + merge `3235229f5fed`, grant rows only):
+`RATCHET_BASE_REV=3235229f5fed...` -> aggregator exit 0, both admission
+identities on explicit `authorized:` lines, "no candidate-approved
+expansion", 49 quality-JSON consumers provenanced. Verifier-tooling footgun
+recorded: piping this aggregator through `head` makes the truncated writer
+die with `BrokenPipeError` and report exit 1 — redirect to a file before
+judging. Multiset audit re-run: vulture byte-identical to develop;
+reachability +3/-1 lines (2 module rows + the stale-informational
+`_generated_from` "1266" vs 1285 measured — no gate parses it); dispositions
++11. Hosted status at `2176016b9232` (read-only refresh during review):
+`exact-debt-ledger` FAILURE (the residual above), `test` and the remaining
+checks still QUEUED — hosted green stays UNVERIFIED pending the run;
+every locally equivalent step is green here. Acceptance re-read against
+source: all six interfaces, six codes, fail-closed paths, error hygiene
+(`__suppress_context__` + no token/snapshot bytes in messages), the ten
+prospective tests by exact name, no clock/SQL/HTTP/queue code, legacy
+`completed_at` unread — all confirmed. Handoff unchanged: land the grant on
+develop, sync, and the exact-debt-ledger job passes with zero content change.
