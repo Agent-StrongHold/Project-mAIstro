@@ -43,9 +43,9 @@ A bare claim asserts a **current, reached** owner. To say anything else, annotat
 
 Three further rules follow from the columns' meanings. A `KEEP` column whose every owner is unreachable or planned owns nothing today, so it is not `KEEP`. A module may be the current, undelegated **lifecycle** owner of at most one subsystem — two rows claiming one work-state record is the contradiction the convergence program exists to remove. And a cell that opens with a declared absence (`—`, `n/a`, `none`, `itself`) may not also name a module.
 
-**What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 156 owner cells, 53 name a module, 73 declare there is no module owner, and 30 are prose the checker cannot reach.
+**What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 159 owner cells, 52 name a module, 76 declare there is no module owner, and 31 are prose the checker cannot reach.
 
-<!-- matrix:ownership-census claims=52 declared=73 prose=31 -->
+<!-- matrix:ownership-census claims=52 declared=76 prose=31 -->
 <!-- matrix:ownership -->
 | Subsystem | Modules | Canonical concept | Lifecycle owner | Persistence owner | Authorization owner |
 |---|---|---|---|---|---|
@@ -101,6 +101,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Turing self-model | `maistro_turing`, `maistro-turing-backend` | Optional cognitive Providers | `turing.runtime` actor + chat session; no universal work-state machine | backend DB via `TuringMemoryBridge` | backend `middleware.auth` |
 | ADR/spec registry CLI | `maistro_registry` | Governance tooling | n/a | filesystem | — |
 | Bootstrap installer | `maistro_bootstrap` | Installer | n/a | filesystem | — |
+| Extension SDK (public contract) | `maistro_ext_sdk` | The versioned extension manifest contract external authors code against | n/a (pure validation — no work state) | — | — |
 
 ## Disposition and evidence
 
@@ -173,6 +174,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Turing self-model | `maistro_turing.runtime`, turing backend `main` | `none` | MIGRATE — reachable paths only; cognition remains gated | — | reachable Turing execution carries Run/Invocation correlation | #54 |
 | ADR/spec registry CLI | `maistro_registry.cli` | `none` | KEEP — lifecycle relationships are now prospectively validated | ADR-031, ADR-062026-9b30, ADR-097 | strict registry validation + #239 lifecycle-evidence cases | #30, #239 |
 | Bootstrap installer | `maistro_bootstrap` console script | `none` | KEEP | ADR-020, ADR-033 | installer smoke tests | — |
+| Extension SDK (public contract) | `maistro-ext-sdk` console script (`maistro_ext_sdk.cli`) | `none` | LIBRARY — the published out-of-tree author surface; the monorepo product has no caller in it by design, and the no-product-import rule is gated (`tests/test_import_hygiene.py`) | — | manifest parsed and rejected before any extension import; unknown authority fails explicitly; the shipped `examples/minimal-extension` validates from a copied directory (#949) | #949 |
 
 ## Current convergence boundary after M0
 
@@ -181,7 +183,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - PostgreSQL strike state is wired through the Gate-compatible tracker (#217); security convergence still has product-path work rather than a persistence fiction.
 - Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — leaving the in-process path only as the explicit no-Container standalone fallback (#1113).
 - Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
-- The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 30 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
+- The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 31 of the 159 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
 
 ## Related
 
