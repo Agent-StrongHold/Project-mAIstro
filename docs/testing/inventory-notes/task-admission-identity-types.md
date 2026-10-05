@@ -130,3 +130,18 @@ module. No production import, reachability ledger/disposition, suppression, or
 quality waiver was added because each is prohibited by this staged leaf's
 scope; parent integration must provide the real consumer before it can pass
 integration-head quality.
+
+## Verifier revalidation
+
+At verification head `3854d8ba9ffed2afb9341e310b7e0e597fa99dcf`, the focused
+DTO suite passed all 76 cases; focused Ruff check and format check passed; and
+module mypy passed. The exact Vulture command found 1,352 findings with no
+candidate-ledger bookkeeping delta, but failed against trusted base
+`658a8f78c180` because the nine reviewed declarative DTO identities are not
+authorized there. `check-reachability.py` failed solely for the deliberately
+unwired `maistro.runs.admission_identity`; reachability dispositions and
+promotion-surface passed. `check-ratchet-provenance.py` failed only because
+that new unreachable module has neither a trusted-base authorization nor a
+real runtime consumer. No prohibited import, suppression, reachability
+baseline/disposition, or quality waiver was introduced; integration must supply
+the real consumer before mergeability can be established.
