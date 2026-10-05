@@ -1101,3 +1101,57 @@ baseline + disposition rows; or land the #1845 integration consumer, wiring
 both modules and pruning the entries the moment they are reached. Until one
 of those happens the stack stays unmerged by design, with implementation and
 focused-test readiness complete.
+
+## CI-repair round 14 (2026-10-05, head 34e0559b7d6d): full battery re-derived; declared develop base 291bdd187a512 also grantless
+
+Independent re-execution at the repaired head (round 13's row-removal commit);
+no source or ledger edits this round, evidence only:
+
+- **`exact-debt-ledger` steps re-run with CI's exact argv**
+  (`.github/workflows/vulture-ratchet.yml`, `RATCHET_BASE_REV=origin/develop`):
+  step 1 `check-ratchet-provenance.py` exit 1 — every sub-ratchet OK
+  (adr-status-language, citation-status, promotion-surface,
+  reachability-dispositions, shell-execution, contract-markers 371->371,
+  enumerations, lifecycle) except reachability, which fails on exactly the
+  same four lines as round 13 (both modules NEW-unreachable-unauthorized and
+  missing-from-candidate-baseline). Steps 2 and 3 pass:
+  `check-shipped-surface-truth.py` exit 0; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` exit 0 at
+  1342 reviewed identities -> 1342 findings, unclassified 0 — **the prescribed
+  vulture amendment is empty (14th consecutive round)**; the baseline stays
+  byte-identical to base.
+- **The declared job base `origin/develop` = 291bdd187a512 is itself
+  grantless and baseline-less for both modules** — new check this round:
+  `git show origin/develop:quality/reachability-baseline.json` contains zero
+  `admission` rows; `quality/ratchet-authorizations.json` contains no grant
+  for either module identity (its five `admission` substring hits are
+  unrelated: chat-admission sweeper, a2a task admission, ScheduleRunAdmitter,
+  canvas reconcile). So merging current develop into this branch cannot turn
+  step 1 green either — the blocker is upstream in the strongest sense, not a
+  sync artifact. The branch's `quality/` diff vs `origin/develop` is exactly
+  two inherited-from-merge-history files (`direct-effect-call-sites.json`,
+  `model-egress.json`, rows merged in from develop commits this branch
+  already carries), neither in `exact-debt-ledger`'s scope; zero prohibited
+  reachability/vulture rows.
+- **Battery re-derived at this head**: focused suites 131 (assessment) + 112
+  (identity + live idempotency) passed; ruff check + format repo-wide clean;
+  mypy clean on the classifier; full `check-suite-inventory.py` exit 0 (15
+  suites, 26935 unique identities, 0 duplicated evidence);
+  `check-convergence-matrix.py` exit 0; `check-radon-baseline.py` exit 0
+  (138 -> 138); `check-reachability-dispositions.py` exit 0;
+  `check-promotion-surface.py` exit 0.
+- **Sanctioned reds, re-derived**: `check-reachability.py` exit 1 listing
+  exactly the two leaf modules as NEWLY UNREACHABLE; the two meta-tests
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`, both
+  `tests/test_reachability_baseline_identity.py` assertions) fail for that
+  same two-module delta and nothing else (assertion diffs name only
+  `maistro.runs.admission_identity` / `maistro.tasks.admission_generation`).
+- **Mutation proof re-executed independently** (backup/restore per mutation,
+  md5-verified, `git diff` clean after): swap TAKEOVER/REPLACE_EXPIRED -> 50
+  failed; lease before binding -> 14 failed; legacy pending treated as v2 ->
+  10 failed; mismatch before expiry -> 22 failed. Identical to round 13.
+- **Whitelist posture re-checked**: the branch's `_vulture_whitelist.py`
+  additions name only the #1851 contract's enum members and envelope snapshot
+  fields (classification input, never executed, ships in no wheel) — the same
+  contract-ships-first posture as the CampaignSelector/#116 entries above
+  them; no new finding identity was banked because of them (1342 -> 1342).
