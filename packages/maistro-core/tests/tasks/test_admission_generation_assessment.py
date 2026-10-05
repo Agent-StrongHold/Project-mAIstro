@@ -10,7 +10,10 @@ new classifier to prove the separate module path activated nothing there.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
+import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Iterator
@@ -27,7 +30,7 @@ from maistro.runs.admission_identity import (
     LegacyAdmissionRecord,
     RootAdmissionEnvelope,
 )
-from maistro.tasks import admission_generation, idempotency
+from maistro.tasks import admission_generation, idempotency, queue
 
 FP = "a" * 64
 FP_OTHER = "b" * 64
@@ -552,6 +555,34 @@ def test_new_variants_exist_only_on_the_new_path() -> None:
         admission_generation._assess(legacy_expired_mismatch, fingerprint=FP, now_us=EXPIRES_AT_US)
         == AdmissionAssessment.REPLACE_EXPIRED
     )
+
+
+def test_existing_live_claim_flow_does_not_import_v2_classifier() -> None:
+    """Import spy: the live claim loop and the queue must not import the
+    inactive classifier — production activation belongs to the separately
+    reviewed #1845 integration change, and this test fails if any wiring
+    sneaks in through this leaf. The probe runs a fresh interpreter (this
+    test process has already imported the classifier itself, so only a
+    subprocess can observe the live modules' own transitive imports),
+    imports the live modules exactly as production does, and reports whether
+    the classifier landed in ``sys.modules``; the in-process namespace check
+    pins the same fact against the already-imported live modules."""
+    probe = (
+        "import json, sys"
+        "; import maistro.tasks.idempotency"
+        "; import maistro.tasks.queue"
+        "; print(json.dumps('maistro.tasks.admission_generation' in sys.modules))"
+    )
+    imported = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    assert json.loads(imported.stdout.strip().splitlines()[-1]) is False
+    for live_module in (idempotency, queue):
+        assert "admission_generation" not in vars(live_module)
 
 
 def test_replay_vs_legacy_split_on_identical_facts() -> None:

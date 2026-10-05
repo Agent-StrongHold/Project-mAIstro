@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +104
+  packages/maistro-core/tests: +105
 ---
 # #1852 admission-generation classifier evidence
 
@@ -268,3 +268,65 @@ acted on the actual evidence:
   path owned by the separately scoped #1845 integration change; the stack
   stays unmerged per the leaf contract until that change lands its consumer
   and converges the unchanged gates at its final head.
+
+## CI-repair round 4 (2026-10-05): missing required import-spy test added;
+## full re-validation at aac9a08bc (base 31d891a5 merged)
+
+Round 3 left one issue-scope gap: the required named test
+`test_existing_live_claim_flow_does_not_import_v2_classifier` was covered
+only behaviorally (live four-variant answers unchanged), not by the import
+spy / dependency inspection the issue prescribes. Round 4 adds exactly that
+to `test_admission_generation_assessment.py` (no production file touched): a
+fresh-interpreter probe imports `maistro.tasks.idempotency` and
+`maistro.tasks.queue` and asserts `"maistro.tasks.admission_generation" not
+in sys.modules` (the test process has already imported the classifier, so
+only a subprocess observes the live modules' own transitive imports), plus
+an in-process check that neither live module's namespace binds the
+classifier. Suite count 104 -> 105 (front-matter delta +105);
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok at 13442
+collected node IDs.
+
+Re-validation executed at this head, all green:
+
+- `uv run pytest packages/maistro-core/tests/tasks/\
+ test_admission_generation_assessment.py -q`: 105 passed.
+- `uv run pytest packages/maistro-core/tests/runs/\
+ test_root_admission_identity.py packages/maistro-core/tests/tasks/\
+ test_idempotency.py -q`: 112 passed.
+- ruff check + `ruff format --check` on both leaf files: clean; `mypy
+  packages/maistro-core/src/maistro/tasks/admission_generation.py`:
+  no issues.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`: exit 0, 1338 reviewed identities -> 1338 findings,
+  `unclassified: 0` — the prescribed vulture-ledger amendment still has an
+  empty fix-list at this head (base 31d891a5); any row change would desync
+  the exact multiset and fail the same gate, so
+  `quality/vulture-baseline.json` stays byte-identical to the base.
+- `check-shipped-surface-truth.py` ok; `check-reachability.py` exit 0 (174
+  unreachable of 1266); `check-reachability-dispositions.py` ok (51 groups,
+  150 CONNECT); `check-promotion-surface.py` ok.
+
+Mutation proof re-run at this head (each mutation applied to the restored
+source copy, focused suite executed, file restored byte-identical — md5
+verified): swap TAKEOVER/REPLACE_EXPIRED -> 39 failed; lease before binding
+-> 12 failed; legacy pending treated as v2 (LEGACY_UNRESOLVED branch
+deleted) -> 7 failed; mismatch moved before expiry without an expiry
+exception -> 17 failed. Unmutated suite: 105 passed.
+
+Structural failures re-bound to steps at this head (unchanged in kind,
+still the documented blocker): `check-ratchet-provenance.py` exits 1 —
+`check-reachability-provenance.py`: `maistro.runs.admission_identity` and
+`maistro.tasks.admission_generation` are NEW unreachable modules vs trusted
+base 31d891a5 and `load_authorizations('reachability', base=31d891a5)`
+returns no grant (develop carries none), so the candidate-ledger rows banked
+in rounds 1/3 cannot authorize themselves (the two-merge rule);
+`check-reachability-dispositions-provenance.py` fails for the same
+candidate-authored disposition rows. `check-radon-baseline.py` exits 1 on
+exactly `admission_generation.py:62 _assess -> C (13)` vs 143 reviewed
+C-or-worse blocks — its remedy is the base-landed grant
+`<qualified-block>@13`, not a candidate-side edit. No in-leaf repair exists
+for either (grants read from the base; wiring/fake callers/baseline
+additions are forbidden by this leaf's scope); both remain owned by the
+separately scoped #1845 integration change, and the stack stays unmerged
+per the leaf contract until that change lands the reviewed consumer and
+converges the unchanged gates at its final head.
