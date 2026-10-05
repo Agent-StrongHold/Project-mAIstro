@@ -6,7 +6,7 @@ import pytest
 
 from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
-from maistro.memory.types import Learning, MemoryScope
+from maistro.memory.types import EpistemicType, Learning, MemoryScope
 
 
 def _lr(
@@ -58,6 +58,49 @@ class TestStore:
         assert len(all_lr) == 1
         assert all_lr[0].learning == "updated"
         assert all_lr[0].id == id2
+
+    async def test_store_dedup_reword_moves_the_epistemic_type_and_its_rank_bonus(
+        self,
+    ) -> None:
+        """A reworded claim carries the epistemic type of its new wording, not
+        the surviving row's (M4-B3). Keeping the old type would let the
+        reworded claim ride the old ranking bonus — here a TESTED claim
+        reworded as COUNTERFACTUAL would keep outranking a REPORTED rival on
+        the keyword tie — so the type move must be visible through retrieval
+        ordering, not just on the field."""
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+
+        tested = _lr(keys=["deploy"], evidence=True)
+        tested.epistemic_type = EpistemicType.TESTED
+        tested.learning = "snapshot before deploy"
+        tested_id = await store.store(tested)
+
+        # A different tool, so the store keeps both rows instead of deduping.
+        reported = _lr(tool="kubectl", keys=["deploy"], evidence=True)
+        reported.epistemic_type = EpistemicType.REPORTED
+        reported.learning = "staging says deploys are safe"
+        reported_id = await store.store(reported)
+
+        # Sanity: on the keyword tie the TESTED bonus ranks it first.
+        before = await store.find_relevant("deploy", org_id="org-1")
+        assert [lr.id for lr in before] == [tested_id, reported_id]
+
+        # Reword the tested claim into a counterfactual one: same axes and
+        # overlapping keys, so dedup replaces the row in place.
+        reworded = _lr(keys=["deploy"], evidence=True)
+        reworded.epistemic_type = EpistemicType.COUNTERFACTUAL
+        reworded.learning = "a deploy would have worked without the snapshot"
+        assert await store.store(reworded) == tested_id
+
+        surviving = await store.get(tested_id)
+        assert surviving is not None
+        assert surviving.learning == reworded.learning
+        assert surviving.epistemic_type == EpistemicType.COUNTERFACTUAL
+
+        # The type move is not cosmetic: the reworded claim lost the TESTED
+        # bonus, so the REPORTED rival now outranks it on the same tie.
+        after = await store.find_relevant("deploy", org_id="org-1")
+        assert [lr.id for lr in after] == [reported_id, tested_id]
 
     async def test_store_no_dedup_different_org(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
