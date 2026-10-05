@@ -62,7 +62,7 @@ from maistro_server.startup import StartupPhase, get_startup_phase, set_startup_
 
 if TYPE_CHECKING:
     from maistro.agents.base import Agent
-    from maistro.capabilities.model_chat import ModelChatEgress
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
 
 logger = structlog.get_logger()
 
@@ -305,7 +305,7 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
-async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
+async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, AdmittedModelCalls]:
     """The process's one Container and the governed egress it comes with.
 
     `Conduit.route_request` answers "No agents available." when `agents` is
@@ -335,13 +335,15 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
     want one starts from a Container that already has it.
     """
     container = await create_container(_agent_config(settings), pg_pool=pg_pool)
-    from maistro.capabilities.model_chat import ModelChatEgress
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
 
-    governed_egress = ModelChatEgress(
+    admitted_calls = AdmittedModelCalls(
         container.capability_effects,
         registry=container.provider_registry,
         router=container.llm_router,
+        run_store=container.run_store,
+        binding_ids=tuple(binding.binding_id for binding in container.config.model_bindings),
         endpoint=GatewayEndpoint(
             base_url=settings.litellm.base_url,
             api_key=settings.litellm.master_key,
@@ -357,14 +359,13 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
         "dict[str, Agent]",
         {
             CONDUCTOR_AGENT_NAME: ConductorAgent(
-                governed_egress=governed_egress,
-                workspace_id=settings.workspace_id,
+                admitted_calls=admitted_calls,
                 router=container.llm_router,
             )
         },
     )
     await logger.ainfo("container_wired", agents=sorted(container.agents))
-    return container, governed_egress
+    return container, admitted_calls
 
 
 async def _drain_queue_singleton() -> None:
@@ -440,7 +441,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # and vice versa, which is an advertised handle that silently stops
     # resolving. The pool opened above is handed over rather than left for the
     # container to open a second one against the same server.
-    container, governed_egress = await _build_container(settings, spine_pool)
+    container, admitted_calls = await _build_container(settings, spine_pool)
     app.state.container = container
     run_store = container.run_store
     if spine_pool is None:
@@ -496,9 +497,8 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # quota evidence, while per-provider rows present as complete.
         return await conductor.run_task(
             task,
-            governed_egress=governed_egress,
-            workspace_id=settings.workspace_id,
-            project_id="agent-runtime",
+            admitted_calls=admitted_calls,
+            router=container.llm_router,
         )
 
     _runner = TaskRunner(

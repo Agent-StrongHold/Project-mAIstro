@@ -204,6 +204,7 @@ class TaskAttemptExecutor:
         # carries that request's id across the boundary, so it is bound back
         # here along with the Run's scope (#1063).
         with bind_execution_context(
+            run_id=run.run_id,
             request_id=str(run.provenance.get(REQUEST_ID_KEY, "")),
             workspace_id=run.workspace_id,
             project_id=run.project_id,

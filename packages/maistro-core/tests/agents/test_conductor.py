@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -30,12 +31,19 @@ from maistro.agents.conductor import (
     run_task,
 )
 from maistro.agents.types import ConductorOutput, LLMProviderError
+from maistro.capabilities.binding_store import BindingResolutionError
+from maistro.capabilities.governed_invocation import InvocationApprovalRequired, InvocationDenied
+from maistro.capabilities.invocation import (
+    CapabilityUnavailable,
+    EffectNotApplied,
+    UnsafeEffectRetry,
+)
 from maistro.config.models import DEFAULT_TIERS, Tier
-from maistro.http import set_test_transport
+from maistro.credentials.router import CredentialScopeError
 from maistro.providers.errors import ModelNotFoundError
 from maistro.providers.types import ModelMetadata
-from maistro.quota.tracker import InMemoryQuotaTracker
-from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.quota.invocation_quota import InvocationQuotaDenied
+from maistro.runs.store import RunIntegrityError
 from maistro.tasks.models import TaskCreate
 
 
@@ -50,9 +58,45 @@ def _reset_circuit() -> None:
     llm_circuits.reset()
 
 
+def _admitted_composition(base_url: str | None = "http://gw") -> SimpleNamespace:
+    """Explicit target for pure retry/circuit tests whose completion is stubbed.
+
+    The real preflight still resolves the pin and endpoint. This fixture owns
+    no physical completion; persisted admission and HTTP remain covered by
+    test_conductor_admission.py.
+    """
+    return SimpleNamespace(
+        pinned_model=AsyncMock(return_value=""),
+        gateway_base_url=base_url,
+    )
+
+
 def _patched_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
-    transport = httpx.MockTransport(handler)
-    set_test_transport(transport)
+    # Retry/circuit/prompt unit tests stub the admitted-call seam. Physical
+    # transport and admission are exercised in test_conductor_admission.py.
+    async def completion(call: ConductorCall, prompt: str, max_tokens: int, *_: Any) -> str:
+        request = httpx.Request(
+            "POST",
+            "http://gw/chat/completions",
+            json={
+                "model": call.model,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": call.system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "response_format": {"type": "json_object"},
+            },
+        )
+        try:
+            response = handler(request)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise EffectNotApplied("fixture proved no dispatch") from exc
+        response.request = request
+        response.raise_for_status()
+        return str(response.json()["choices"][0]["message"]["content"])
+
+    monkeypatch.setattr("maistro.agents.conductor._call_gateway", completion)
 
 
 class TestConductorDryRun:
@@ -122,358 +166,90 @@ class TestBuildConductor:
 
 
 class TestCallGateway:
-    @pytest.mark.asyncio
-    async def test_raises_when_base_url_missing(self) -> None:
-        call = ConductorCall(model="m", base_url=None, api_key="k", system_prompt="sys")
-        with pytest.raises(LLMProviderError, match="no gateway base_url configured"):
+    @pytest.mark.parametrize("base_url", [None, "http://gw"])
+    async def test_missing_admitted_calls_fails_closed(self, base_url: str | None) -> None:
+        call = ConductorCall(model="m", base_url=base_url, api_key="key", system_prompt="sys")
+        with pytest.raises(LLMProviderError, match="admitted model calls are not configured"):
             await _call_gateway(call, "hi", max_tokens=100, timeout=10)
 
-    @pytest.mark.asyncio
-    async def test_governed_egress_returns_content_without_legacy_http(
-        self,
-    ) -> None:
-        captured: dict[str, Any] = {}
+    async def test_forwards_explicit_identity_and_json_request(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
 
-        class _Egress:
-            async def complete(self, **kwargs: Any) -> Any:
-                captured.update(kwargs)
-                return type("Result", (), {"body": {"choices": [{"message": {"content": "{}"}}]}})()
-
+        calls = SimpleNamespace(
+            complete=AsyncMock(
+                return_value=SimpleNamespace(body={"choices": [{"message": {"content": "{}"}}]})
+            )
+        )
         call = ConductorCall(model="m", base_url=None, api_key="", system_prompt="sys")
         result = await _call_gateway(
             call,
             "do thing",
             max_tokens=512,
             timeout=10,
-            governed_egress=_Egress(),  # type: ignore[arg-type]
+            admitted_calls=calls,  # type: ignore[arg-type]
             invocation_identity=("run", "node", "attempt"),
             invocation_number=2,
         )
-
+        kwargs = calls.complete.await_args.kwargs
         assert result == "{}"
-        assert captured["run_id"] == "run"
-        assert captured["effect_key"] == "conductor-llm-2"
+        assert kwargs["identity"] == ("run", "node", "attempt")
+        assert kwargs["timeout_s"] == 10
+        assert kwargs["effect_key"] == "conductor-llm-2"
+        assert kwargs["request"].model == "m"
+        assert kwargs["request"].max_tokens == 512
+        assert kwargs["request"].response_format == {"type": "json_object"}
+        assert kwargs["request"].messages == [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do thing"},
+        ]
 
-    @pytest.mark.asyncio
-    async def test_posts_and_returns_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured: dict[str, object] = {}
+    async def test_missing_identity_is_resolved_by_admitted_calls(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
 
-        def handler(request: httpx.Request) -> httpx.Response:
-            captured["url"] = str(request.url)
-            captured["headers"] = dict(request.headers)
-            captured["body"] = json.loads(request.read())
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"content": '{"success": true}'}}]},
+        calls = SimpleNamespace(
+            complete=AsyncMock(
+                return_value=SimpleNamespace(body={"choices": [{"message": {"content": "{}"}}]})
             )
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        result = await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-        assert result == '{"success": true}'
-        assert captured["url"] == "http://gw/chat/completions"
-        assert captured["headers"]["authorization"] == "Bearer key"  # type: ignore[index]
-        body = captured["body"]
-        assert body["model"] == "m"  # type: ignore[index]
-        assert body["max_tokens"] == 512  # type: ignore[index]
-        assert body["response_format"] == {"type": "json_object"}  # type: ignore[index]
-
-    @pytest.mark.asyncio
-    async def test_raises_on_error_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(500)
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        with pytest.raises(httpx.HTTPStatusError):
-            await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-
-    @pytest.mark.asyncio
-    async def test_on_response_hook_receives_body_and_response(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                headers={"x-ratelimit-remaining-requests": "10"},
-                json={
-                    "choices": [{"message": {"content": '{"success": true}'}}],
-                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
-                },
-            )
-
-        _patched_client(monkeypatch, handler)
-        captured: dict[str, object] = {}
-
-        def on_response(data: dict, response: httpx.Response) -> None:
-            captured["data"] = data
-            captured["headers"] = dict(response.headers)
-
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        result = await _call_gateway(
-            call, "do thing", max_tokens=512, timeout=10, on_response=on_response
         )
-        assert result == '{"success": true}'
-        assert captured["data"]["usage"] == {"prompt_tokens": 5, "completion_tokens": 7}  # type: ignore[index]
-        assert captured["headers"]["x-ratelimit-remaining-requests"] == "10"  # type: ignore[index]
-
-    @pytest.mark.asyncio
-    async def test_on_response_hook_failure_is_swallowed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
-            )
-
-        def broken_hook(data: dict, response: httpx.Response) -> None:
-            raise RuntimeError("recording hook blew up")
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        result = await _call_gateway(
-            call, "do thing", max_tokens=512, timeout=10, on_response=broken_hook
-        )
-        assert result == '{"success": true}'
-
-
-@pytest.fixture
-def fallback_usage_log(monkeypatch: pytest.MonkeyPatch) -> InMemoryUsageLog:
-    """Isolate the conductor's ungoverned-fallback recording from the
-    process-wide default usage log singleton — and from the process default
-    quota ledger, which container-creating tests elsewhere in the same
-    process register via the composition root."""
-    log = InMemoryUsageLog()
-    monkeypatch.setattr("maistro.agents.conductor.get_default_usage_log", lambda: log)
-    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: None)
-    return log
-
-
-@pytest.fixture
-def fallback_quota_tracker(monkeypatch: pytest.MonkeyPatch) -> InMemoryQuotaTracker:
-    """Register an isolated quota ledger as the conductor module's process
-    default, for tests of the fallback's ledger evidence (#718)."""
-    tracker = InMemoryQuotaTracker()
-    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: tracker)
-    return tracker
-
-
-class TestUngovernedFallbackUsageEvidence:
-    """#718: the raw-gateway fallback crosses no canonical Invocation, so it
-    must leave its own usage evidence — reported tokens when the gateway said
-    them, an explicit unreported marker when it did not. Never invisible, and
-    never a fabricated Invocation identity."""
-
-    @pytest.mark.asyncio
-    async def test_reported_usage_is_recorded_with_provenance(
-        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
-    ) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [{"message": {"content": '{"success": true}'}}],
-                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
-                },
-            )
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-
-        (event,) = fallback_usage_log.events_for("m")
-        assert event.input_tokens == 5
-        assert event.output_tokens == 7
-        assert event.provider == "m"
-        assert event.usage_reported is True
-        assert event.invocation_id is None  # identity is never invented here
-
-    @pytest.mark.asyncio
-    async def test_missing_usage_is_an_unreported_marker_not_a_zero(
-        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
-    ) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
-            )
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-
-        (event,) = fallback_usage_log.events_for("m")
-        assert event.input_tokens == 0
-        assert event.output_tokens == 0
-        assert event.usage_reported is False
-
-    @pytest.mark.asyncio
-    async def test_governed_egress_leaves_no_fallback_evidence(
-        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
-    ) -> None:
-        """The canonical path owns recording; the fallback must stay silent
-        when an egress crossed the Invocation authority."""
-
-        class _Egress:
-            async def complete(self, **kwargs: Any) -> Any:
-                return type("Result", (), {"body": {"choices": [{"message": {"content": "{}"}}]}})()
-
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         await _call_gateway(
-            call,
-            "do thing",
-            max_tokens=512,
+            build_conductor(),
+            "hi",
+            max_tokens=100,
             timeout=10,
-            governed_egress=_Egress(),  # type: ignore[arg-type]
+            admitted_calls=calls,  # type: ignore[arg-type]
         )
+        assert calls.complete.await_args.kwargs["identity"] is None
 
-        assert fallback_usage_log.events_for("m") == ()
+    async def test_legacy_response_hook_cannot_authorize_raw_http(self) -> None:
+        from unittest.mock import Mock
 
-    @pytest.mark.asyncio
-    async def test_run_task_raw_path_records_usage_evidence(
-        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
-    ) -> None:
-        """The ordinary entry point (``run_task`` without an egress) is the
-        call class the fallback evidence exists for."""
-        monkeypatch.setenv("MAISTRO_DRY_RUN", "0")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [
-                        {"message": {"content": '{"success": true, "final_answer": "ok"}'}}
-                    ],
-                    "usage": {"prompt_tokens": 3, "completion_tokens": 4},
-                },
+        hook = Mock()
+        with pytest.raises(LLMProviderError, match="admitted model calls are not configured"):
+            await _call_gateway(
+                build_conductor(base_url="http://gw"), "hi", 100, 10, on_response=hook
             )
-
-        _patched_client(monkeypatch, handler)
-        with patch(
-            "maistro.agents.conductor.resolve_model",
-            return_value=("m", "http://gw", False),
-        ):
-            task = TaskCreate(description="Implement feature")
-            result = await run_task(task)
-
-        assert result.success is True
-        (event,) = fallback_usage_log.events_for("m")
-        assert event.input_tokens == 3
-        assert event.output_tokens == 4
-        assert event.usage_reported is True
-
-    @pytest.mark.asyncio
-    async def test_registered_ledger_receives_reported_fallback_usage(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        fallback_usage_log: InMemoryUsageLog,
-        fallback_quota_tracker: InMemoryQuotaTracker,
-    ) -> None:
-        """#718: when the process registered a quota ledger (the Container
-        composition root does), the raw fallback's reported tokens reach it
-        too — the call class can no longer be absent from the ledger a
-        process actually carries."""
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [{"message": {"content": '{"success": true}'}}],
-                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
-                },
-            )
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-
-        (row,) = await fallback_quota_tracker.get_all_usage()
-        assert row["provider"] == "m"
-        assert row["input_tokens"] == 5
-        assert row["output_tokens"] == 7
-        assert row["total_tokens"] == 12
-        assert row["request_count"] == 1
-        assert "usage_complete" not in row  # reported evidence, complete
-
-    @pytest.mark.asyncio
-    async def test_registered_ledger_gets_unreported_marker_not_zero(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        fallback_usage_log: InMemoryUsageLog,
-        fallback_quota_tracker: InMemoryQuotaTracker,
-    ) -> None:
-        """A fallback call whose gateway reported no usage marks the ledger
-        incomplete — never a measured zero — so the provider's percentage
-        presents as unknown (#718)."""
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
-            )
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-
-        (row,) = await fallback_quota_tracker.get_all_usage()
-        assert row["provider"] == "m"
-        assert row["total_tokens"] == 0
-        assert row["unreported_count"] == 1
-        assert row["usage_complete"] is False
-        assert await fallback_quota_tracker.get_usage_pct("m", "monthly", 100) is None
-
-    @pytest.mark.asyncio
-    async def test_failing_ledger_does_not_take_down_the_fallback_call(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        fallback_usage_log: InMemoryUsageLog,
-    ) -> None:
-        """The ledger write is isolated: a ledger that blows up must not
-        crash a provider call that already succeeded — evidence stays on the
-        usage log and the failure is surfaced, not raised."""
-
-        class ExplodingTracker:
-            async def record_usage(self, *args: object, **kwargs: object) -> dict[str, object]:
-                raise RuntimeError("ledger unavailable")
-
-        monkeypatch.setattr(
-            "maistro.agents.conductor.get_default_quota_tracker", lambda: ExplodingTracker()
-        )
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [{"message": {"content": '{"success": true}'}}],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-                },
-            )
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        result = await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-
-        assert result == '{"success": true}'
-        (event,) = fallback_usage_log.events_for("m")
-        assert event.usage_reported is True
+        hook.assert_not_called()
 
 
 class TestIsRetryable:
-    def test_timeout_error_is_retryable(self) -> None:
-        assert _is_retryable(TimeoutError()) is True
+    def test_timeout_error_is_not_retryable(self) -> None:
+        assert _is_retryable(TimeoutError()) is False
 
-    def test_connect_error_is_retryable(self) -> None:
-        assert _is_retryable(httpx.ConnectError("boom")) is True
+    def test_raw_connect_error_requires_non_dispatch_proof(self) -> None:
+        assert _is_retryable(httpx.ConnectError("boom")) is False
 
-    def test_connect_timeout_is_retryable(self) -> None:
+    def test_raw_connect_timeout_requires_non_dispatch_proof(self) -> None:
         # ConnectTimeout is not a TimeoutError subclass in httpx 0.28.x;
         # mirror llm_gateway.py, which treats both as an unreachable gateway.
-        assert _is_retryable(httpx.ConnectTimeout("timed out")) is True
+        assert _is_retryable(httpx.ConnectTimeout("timed out")) is False
 
-    def test_retryable_status_code_is_retryable(self) -> None:
+    def test_transient_status_is_not_proof_of_no_effect(self) -> None:
         request = httpx.Request("GET", "http://x")
         response = httpx.Response(503, request=request)
         exc = httpx.HTTPStatusError("err", request=request, response=response)
-        assert _is_retryable(exc) is True
+        assert _is_retryable(exc) is False
 
     def test_non_retryable_status_code_is_not_retryable(self) -> None:
         request = httpx.Request("GET", "http://x")
@@ -485,16 +261,21 @@ class TestIsRetryable:
         try:
             json.loads("not json")
         except json.JSONDecodeError as exc:
-            assert _is_retryable(exc) is True
+            assert _is_retryable(exc, response_completed=True) is True
+            assert _is_retryable(exc) is False
 
     def test_validation_error_is_retryable(self) -> None:
         try:
             ConductorOutput.model_validate({"plan": "not-a-dict-of-plan-output"})
         except ValidationError as exc:
-            assert _is_retryable(exc) is True
+            assert _is_retryable(exc, response_completed=True) is True
+            assert _is_retryable(exc) is False
 
-    def test_key_error_is_retryable(self) -> None:
-        assert _is_retryable(KeyError("missing")) is True
+    def test_key_error_is_not_retryable(self) -> None:
+        assert _is_retryable(KeyError("missing")) is False
+
+    def test_proven_not_applied_is_retryable(self) -> None:
+        assert _is_retryable(EffectNotApplied("no dispatch")) is True
 
     def test_other_exception_is_not_retryable(self) -> None:
         assert _is_retryable(ValueError("nope")) is False
@@ -512,13 +293,57 @@ class TestParseJsonOutput:
 
 
 class TestRunWithRetry:
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            BindingResolutionError,
+            InvocationDenied,
+            InvocationApprovalRequired,
+            InvocationQuotaDenied,
+            CredentialScopeError,
+            CapabilityUnavailable,
+            UnsafeEffectRetry,
+            RunIntegrityError,
+        ],
+    )
+    async def test_admission_refusal_does_not_retry_or_penalize_provider(
+        self, monkeypatch: pytest.MonkeyPatch, refusal: type[Exception]
+    ) -> None:
+        calls = 0
+
+        async def refuse(*_args: object, **_kwargs: object) -> str:
+            nonlocal calls
+            calls += 1
+            raise refusal("admission refused")
+
+        monkeypatch.setattr("maistro.agents.conductor._call_gateway", refuse)
+        call = build_conductor(model="fixture", base_url="http://gateway.fixture")
+        circuits = DomainCircuitBank(failure_threshold=1)
+        with pytest.raises(refusal):
+            await _run_with_retry(
+                call,
+                "task",
+                DEFAULT_TIERS[Tier.STANDARD],
+                128,
+                circuits=circuits,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
+        assert calls == 1
+        assert all(row["state"] == "closed" for row in circuits.snapshot())
+
     @pytest.mark.asyncio
     async def test_raises_when_circuit_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(llm_circuits, "admit", lambda _domain: False)
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD]
         with pytest.raises(CircuitOpenError):
-            await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "prompt",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
     @pytest.mark.asyncio
     async def test_success_on_first_attempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -531,7 +356,13 @@ class TestRunWithRetry:
         _patched_client(monkeypatch, handler)
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD]
-        result = await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+        result = await _run_with_retry(
+            call,
+            "prompt",
+            tier_config,
+            max_tokens=100,
+            admitted_calls=_admitted_composition(call.base_url),
+        )
         assert result.success is True
 
     @pytest.mark.asyncio
@@ -543,7 +374,7 @@ class TestRunWithRetry:
         def handler(request: httpx.Request) -> httpx.Response:
             attempts["count"] += 1
             if attempts["count"] == 1:
-                return httpx.Response(503)
+                raise httpx.ConnectError("fixture connection failed", request=request)
             return httpx.Response(
                 200,
                 json={"choices": [{"message": {"content": '{"success": true}'}}]},
@@ -553,7 +384,13 @@ class TestRunWithRetry:
         monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
-        result = await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+        result = await _run_with_retry(
+            call,
+            "prompt",
+            tier_config,
+            max_tokens=100,
+            admitted_calls=_admitted_composition(call.base_url),
+        )
         assert result.success is True
         assert attempts["count"] == 2
 
@@ -562,14 +399,20 @@ class TestRunWithRetry:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(503)
+            raise httpx.ConnectError("fixture connection failed", request=request)
 
         _patched_client(monkeypatch, handler)
         monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 2})
         with pytest.raises(LLMProviderError, match="failed after 2 retries"):
-            await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "prompt",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
     @pytest.mark.asyncio
     async def test_raises_immediately_on_non_retryable_error(
@@ -582,19 +425,39 @@ class TestRunWithRetry:
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD]
         with pytest.raises(httpx.HTTPStatusError):
-            await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "prompt",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
     @pytest.mark.asyncio
-    async def test_timeout_error_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_timeout_error_does_not_retry_ambiguous_outcome(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts = 0
+
         async def _timeout_call_gateway(*_args: object, **_kwargs: object) -> str:
+            nonlocal attempts
+            attempts += 1
             raise TimeoutError("too slow")
 
         monkeypatch.setattr("maistro.agents.conductor._call_gateway", _timeout_call_gateway)
         monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 2})
-        with pytest.raises(LLMProviderError):
-            await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+        with pytest.raises(TimeoutError):
+            await _run_with_retry(
+                call,
+                "prompt",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
+
+        assert attempts == 1
 
 
 class TestRunScopedCircuits:
@@ -622,18 +485,29 @@ class TestRunScopedCircuits:
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
 
         flaky = self._call("flaky-model")
-        with pytest.raises(LLMProviderError):
-            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
-        with pytest.raises(LLMProviderError):
-            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+        for _ in range(llm_circuits.failure_threshold):
+            with pytest.raises(httpx.HTTPStatusError):
+                await _run_with_retry(
+                    flaky,
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(flaky.base_url),
+                )
 
-        # Two exhausted calls x 3 attempts = 6 failures: the flaky domain is open.
+        # Separate failed calls open only this provider domain.
         flaky_domain = resolve_failure_domain("flaky-model", "http://gw")
         assert llm_circuits.breaker(flaky_domain).state is CircuitState.OPEN
 
         # The healthy provider on the same gateway still admits and succeeds.
         healthy = self._call("healthy-model")
-        result = await _run_with_retry(healthy, "p", tier_config, max_tokens=100)
+        result = await _run_with_retry(
+            healthy,
+            "p",
+            tier_config,
+            max_tokens=100,
+            admitted_calls=_admitted_composition(healthy.base_url),
+        )
         assert result.success is True
         healthy_domain = resolve_failure_domain("healthy-model", "http://gw")
         assert llm_circuits.breaker(healthy_domain).state is CircuitState.CLOSED
@@ -658,14 +532,26 @@ class TestRunScopedCircuits:
 
         for model in ("model-a", "model-b"):
             with pytest.raises(LLMProviderError):
-                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+                await _run_with_retry(
+                    self._call(model),
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(self._call(model).base_url),
+                )
 
         # ConnectError/ConnectTimeout are explicit shared-dependency
         # failures: the gateway-level breaker represents them for both
         # providers.
         for model in ("model-a", "model-b"):
             with pytest.raises(CircuitOpenError):
-                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+                await _run_with_retry(
+                    self._call(model),
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(self._call(model).base_url),
+                )
         # ...while the provider-level breakers stayed closed (not their fault).
         gw_domain = resolve_failure_domain("model-a", "http://gw")
         assert llm_circuits.breaker(gw_domain).state is CircuitState.CLOSED
@@ -691,10 +577,15 @@ class TestRunScopedCircuits:
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
 
         flaky = self._call("flaky-model")
-        with pytest.raises(LLMProviderError):
-            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
-        with pytest.raises(LLMProviderError):
-            await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+        for _ in range(llm_circuits.failure_threshold):
+            with pytest.raises(httpx.HTTPStatusError):
+                await _run_with_retry(
+                    flaky,
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(flaky.base_url),
+                )
 
         class _Router:
             """Registry-declared chain: flaky-model falls back to healthy-model."""
@@ -718,7 +609,14 @@ class TestRunScopedCircuits:
                     ),
                 ]
 
-        result = await _run_with_retry(flaky, "p", tier_config, max_tokens=100, router=_Router())
+        result = await _run_with_retry(
+            flaky,
+            "p",
+            tier_config,
+            max_tokens=100,
+            router=_Router(),
+            admitted_calls=_admitted_composition(flaky.base_url),
+        )
         assert result.success is True
         assert requested[-1] == "healthy-model"
 
@@ -733,11 +631,23 @@ class TestRunScopedCircuits:
         monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
         call = self._call("flaky-model")
-        for _ in range(2):
-            with pytest.raises(LLMProviderError):
-                await _run_with_retry(call, "p", tier_config, max_tokens=100)
+        for _ in range(llm_circuits.failure_threshold):
+            with pytest.raises(httpx.HTTPStatusError):
+                await _run_with_retry(
+                    call,
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(call.base_url),
+                )
         with pytest.raises(CircuitOpenError, match="flaky-model"):
-            await _run_with_retry(call, "p", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "p",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
     @pytest.mark.asyncio
     async def test_router_unknown_model_fails_closed_naming_the_blocked_domain(
@@ -762,12 +672,23 @@ class TestRunScopedCircuits:
                 raise ModelNotFoundError(name)
 
         call = self._call("flaky-model")
-        for _ in range(2):
-            with pytest.raises(LLMProviderError):
-                await _run_with_retry(call, "p", tier_config, max_tokens=100)
+        for _ in range(llm_circuits.failure_threshold):
+            with pytest.raises(httpx.HTTPStatusError):
+                await _run_with_retry(
+                    call,
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(call.base_url),
+                )
         with pytest.raises(CircuitOpenError, match="provider=flaky-model"):
             await _run_with_retry(
-                call, "p", tier_config, max_tokens=100, router=_UnknownModelRouter()
+                call,
+                "p",
+                tier_config,
+                max_tokens=100,
+                router=_UnknownModelRouter(),
+                admitted_calls=_admitted_composition(call.base_url),
             )
 
     @pytest.mark.asyncio
@@ -785,10 +706,15 @@ class TestRunScopedCircuits:
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
 
         for model in ("flaky-model", "sibling-model"):
-            with pytest.raises(LLMProviderError):
-                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
-            with pytest.raises(LLMProviderError):
-                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+            for _ in range(llm_circuits.failure_threshold):
+                with pytest.raises(httpx.HTTPStatusError):
+                    await _run_with_retry(
+                        self._call(model),
+                        "p",
+                        tier_config,
+                        max_tokens=100,
+                        admitted_calls=_admitted_composition(self._call(model).base_url),
+                    )
 
         class _ExhaustedRouter:
             """Registry chain: flaky-model -> sibling-model, itself blocked."""
@@ -812,6 +738,7 @@ class TestRunScopedCircuits:
                 tier_config,
                 max_tokens=100,
                 router=_ExhaustedRouter(),
+                admitted_calls=_admitted_composition(self._call("flaky-model").base_url),
             )
 
     @pytest.mark.asyncio
@@ -866,7 +793,7 @@ class TestRunTaskLive:
             return_value=("m", "http://gw", False),
         ):
             task = TaskCreate(description="Implement feature")
-            result = await run_task(task)
+            result = await run_task(task, admitted_calls=_admitted_composition())
         assert result.success is True
         assert result.final_answer == "ok"
 
@@ -889,39 +816,19 @@ class TestRunTaskLive:
             return_value=("m", "http://gw", False),
         ):
             task = TaskCreate(description="Implement feature")
-            await run_task(task)
+            await run_task(task, admitted_calls=_admitted_composition())
         body = captured["body"]
         user_msg = body["messages"][1]["content"]  # type: ignore[index]
         assert "Constraints:\nNone" in user_msg
 
-    async def test_forwards_on_response_hook_to_gateway(
+    async def test_unconfigured_run_task_refuses_before_http(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MAISTRO_DRY_RUN", "0")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [{"message": {"content": '{"success": true}'}}],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 2},
-                },
-            )
-
-        _patched_client(monkeypatch, handler)
-        captured: dict[str, object] = {}
-
-        def on_response(data: dict, response: httpx.Response) -> None:
-            captured["data"] = data
-
-        with patch(
-            "maistro.agents.conductor.resolve_model",
-            return_value=("m", "http://gw", False),
+        with pytest.raises(
+            LLMProviderError, match="conductor requires admitted model-call authority"
         ):
-            task = TaskCreate(description="Implement feature")
-            result = await run_task(task, on_response=on_response)
-        assert result.success is True
-        assert captured["data"]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}  # type: ignore[index]
+            await run_task(TaskCreate(description="Implement feature"))
 
 
 class TestGovernedCompletionGuards:
@@ -953,8 +860,6 @@ class TestGovernedCompletionGuards:
                 _Egress(),  # type: ignore[arg-type]
                 ("run-1", "node-1", "attempt-1"),
                 1,
-                "ws-1",
-                "project-1",
             )
 
     async def test_no_content_is_a_provider_error(self) -> None:
@@ -976,6 +881,4 @@ class TestGovernedCompletionGuards:
                 _Egress(),  # type: ignore[arg-type]
                 ("run-1", "node-1", "attempt-1"),
                 1,
-                "ws-1",
-                "project-1",
             )
