@@ -44,6 +44,7 @@ from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
@@ -2205,6 +2206,11 @@ async def create_container(
 
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
+    # The deployment's declared memory posture (ADR-057 / SPEC-062126-6a31).
+    # Every store this container builds receives it; the stores themselves stay
+    # fail-closed when constructed without one, so a store built outside this
+    # wiring cannot mutate memory silently.
+    exposure_mode: MemoryExposureMode = config.memory.exposure_mode
     # Two different handles, deliberately not one. `db_pool` is the SQLite
     # connection the durable-event stores are written against; `pg_pool` is an
     # asyncpg pool. Collapsing them into one `Any` was how the durable-event
@@ -2239,7 +2245,7 @@ async def create_container(
             learning_store,
             outcome_store,
             session_store,
-        ) = await _wire_sqlite_backend(config.database_url)
+        ) = await _wire_sqlite_backend(config.database_url, exposure_mode=exposure_mode)
         # All four connections were opened for this container (#1161);
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
@@ -2257,14 +2263,17 @@ async def create_container(
             outcome_store,
             session_store,
         ) = await _wire_postgres_backend(
-            config.database_url, embeddings, supplied_pool=supplied_pg_pool
+            config.database_url,
+            embeddings,
+            supplied_pool=supplied_pg_pool,
+            exposure_mode=exposure_mode,
         )
         holds_pg_pool = supplied_pg_pool is None
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
-        learning_store = InMemoryLearningStore()
-        outcome_store = InMemoryOutcomeStore()
+        learning_store = InMemoryLearningStore(exposure_mode=exposure_mode)
+        outcome_store = InMemoryOutcomeStore(exposure_mode=exposure_mode)
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
 
@@ -2286,7 +2295,10 @@ async def create_container(
     prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
 
     episodic_store = await _wire_episodic_store(
-        database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
+        database_url=config.database_url,
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        exposure_mode=exposure_mode,
     )
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
@@ -2667,7 +2679,9 @@ async def create_container(
     return container
 
 
-async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any) -> EpisodicStore:
+async def _wire_episodic_store(
+    *, database_url: str, pg_pool: Any, db_pool: Any, exposure_mode: MemoryExposureMode
+) -> EpisodicStore:
     """Select the episodic store from the configured relational backend.
 
     Kept out of `create_container` for the reason `_wire_prompt_manager` states:
@@ -2689,16 +2703,16 @@ async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any)
     if pg_pool is not None and database_url.startswith(POSTGRES_SCHEMES):
         from maistro.persistence.pg_episodic import PgEpisodicStore
 
-        store = PgEpisodicStore(pg_pool)
+        store = PgEpisodicStore(pg_pool, exposure_mode=exposure_mode)
         await store.ensure_schema()
         return store
     if db_pool is not None:
         from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 
-        sqlite_store = SqliteEpisodicStore(db_pool)
+        sqlite_store = SqliteEpisodicStore(db_pool, exposure_mode=exposure_mode)
         await sqlite_store.ensure_schema()
         return sqlite_store
-    return InMemoryEpisodicStore()
+    return InMemoryEpisodicStore(exposure_mode=exposure_mode)
 
 
 async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
@@ -2977,6 +2991,7 @@ async def _wire_postgres_backend(
     embeddings: EmbeddingClient | None = None,
     *,
     supplied_pool: Any = None,
+    exposure_mode: MemoryExposureMode = MemoryExposureMode.AGENT_MANAGED,
 ) -> tuple[
     Any,
     QuotaTracker,
@@ -3039,7 +3054,7 @@ async def _wire_postgres_backend(
             await close_pool(dsn)
         raise
 
-    pg_learning_store = PgLearningStore(pool)
+    pg_learning_store = PgLearningStore(pool, exposure_mode=exposure_mode)
     # The one store with an ensure_schema: an idempotent ALTER that adds the
     # scope column its queries name. Harmless once the migration has run.
     await pg_learning_store.ensure_schema()
@@ -3055,7 +3070,7 @@ async def _wire_postgres_backend(
         if embeddings is not None
         else pg_learning_store
     )
-    outcome_store: OutcomeStore = PgOutcomeStore(pool)
+    outcome_store: OutcomeStore = PgOutcomeStore(pool, exposure_mode=exposure_mode)
     session_store: SessionStore = PgSessionStore(pool)
 
     return pool, quota_tracker, learning_store, outcome_store, session_store
@@ -3136,6 +3151,8 @@ def _require_ephemeral_is_deliberate(database_url: str) -> None:
 
 async def _wire_sqlite_backend(
     database_url: str,
+    *,
+    exposure_mode: MemoryExposureMode = MemoryExposureMode.AGENT_MANAGED,
 ) -> tuple[
     Any,
     Any,
@@ -3212,8 +3229,8 @@ async def _wire_sqlite_backend(
     history_conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
-    sqlite_learning_store = SqliteLearningStore(conn)
-    sqlite_outcome_store = SqliteOutcomeStore(conn)
+    sqlite_learning_store = SqliteLearningStore(conn, exposure_mode=exposure_mode)
+    sqlite_outcome_store = SqliteOutcomeStore(conn, exposure_mode=exposure_mode)
     sqlite_session_store = SqliteSessionStore(session_conn)
     await sqlite_quota_tracker.ensure_schema()
     await sqlite_learning_store.ensure_schema()
