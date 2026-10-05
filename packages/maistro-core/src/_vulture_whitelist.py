@@ -11,6 +11,8 @@ from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.container import Container
+from maistro.extensions.context import ExtensionCancellation, ExtensionConfigView, ExtensionContext
+from maistro.extensions.host import ExtensionHost
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
@@ -237,4 +239,19 @@ _VULTURE_WHITELIST = (
     PromotionContract.promote,
     PromotionLedger.attach_effect,
     PromotionLedger.mark_reversed,
+    # Canonical public extension contract (M9-A2, #950). The context/lifecycle
+    # SDK ships as the extension front door: its callers are external
+    # extensions and the conformance suites that pin the contract, both
+    # outside this `packages/*/src` scan — the same "contract ships first by
+    # design" posture as CampaignSelector and the learning lifecycle above.
+    # The runtime wiring that drives extensions from graph execution follows
+    # in later M9 work (#950 scope is the contract, not its graph integration).
+    ExtensionConfigView.as_dict,
+    ExtensionCancellation.from_predicate,
+    ExtensionCancellation.wait,
+    ExtensionContext.service,
+    ExtensionContext.invoke_effect,
+    ExtensionContext.report_progress,
+    ExtensionHost.activation_context,
+    ExtensionHost.invocation_context,
 )
