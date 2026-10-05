@@ -32,16 +32,27 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "run_id",
         "node_run_id",
         "attempt_id",
-        # Gauntlet validation provenance (M4-B2): durable like every other
-        # Learning field, so a restart cannot strip a promoted learning of the
-        # evidence that promoted it.
+        # Gauntlet validation provenance (M4-B2) plus the knowledge-stage
+        # ladder and pipeline epistemics (ADR-103, ADR-100126-8c2d, EPIC M4-B).
+        # A restart must not strip a promoted learning of the evidence that
+        # promoted it, demote a validated learning back to a local belief, or
+        # resurrect a superseded one, so all of it is durable like every other
+        # Learning field.
         "validated_by",
         "validated_evaluator_version",
         "validated_at",
         "validation_run_ids",
         "validation_content_hash",
-        # Knowledge-stage ladder (M4-B1 / ADR-103).
         "stage",
+        "epistemic_type",
+        "confidence",
+        "applicability",
+        "reinforcement_count",
+        "contradiction_count",
+        "created_at",
+        "last_confirmed_at",
         "promoted_by",
+        "supersedes",
+        "superseded_by",
     }
 )

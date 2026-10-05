@@ -17,14 +17,25 @@ Three promotion postures, most-governed first:
 - **Legacy**: threshold-crossing learnings auto-promote (unchanged behavior
   for existing callers).
 
+Failure knowledge is retained, not discarded: :meth:`capture_anti_patterns`
+(#121, M4-B5) turns repeatedly-followed-into-failure learnings into retained
+``ANTI_PATTERN`` rows — still promotable through the same Gauntlet.
+
 Ported from Stronghold.
 """
 
 from __future__ import annotations
 
 import logging
-import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+
+from maistro.persistence.learning_scope import matches_learning_scope
+from maistro.protocols.memory import AntiPatternSink, IneffectiveLearningSource
+from maistro.types.memory import (
+    ANTI_PATTERN_CONFIDENCE_FLOOR,
+    EpistemicType,
+)
 
 if TYPE_CHECKING:
     from maistro.memory.learnings.approval import LearningApprovalGate
@@ -170,7 +181,7 @@ class LearningPromoter:
             org_id=lr.org_id,
             validated_by=verdict.evaluator_name or verdict.gauntlet,
             evaluator_version=verdict.evaluator_version,
-            validated_at=time.time(),
+            validated_at=datetime.now(UTC),
             validation_run_ids=verdict.evaluation_run_ids,
             validation_content_hash=verdict.content_hash,
         )
@@ -186,6 +197,46 @@ class LearningPromoter:
         if updated.tool_name and self._forge:
             await self._try_mutate_skill(updated)
         return updated
+
+    async def capture_anti_patterns(
+        self,
+        org_id: str = "",
+        *,
+        min_uses: int = 3,
+    ) -> list[Learning]:
+        """Turn repeatedly-followed-into-failure learnings into anti-patterns (#121).
+
+        Failure knowledge is retained, not discarded: the learning is
+        reclassified ``ANTI_PATTERN`` and its confidence is lifted to the
+        anti-pattern floor, because it cost real failures to learn and a later
+        Run must not re-buy them. The row stays ``active`` at its captured
+        stage (``MEMORY`` under ADR-103: reclassification is not assertion) --
+        joining the repertoire still requires the Gauntlet like any other
+        learning.
+
+        Requires a store that can name its ineffective learnings; one that
+        cannot simply yields nothing to capture. A store that also implements
+        :class:`AntiPatternSink` has the reclassification written back: the
+        SQL twins return detached row copies, so without the write the
+        decision would evaporate with the copy and the next process would
+        re-learn the anti-pattern by re-buying the failure.
+        """
+        source = self._store if isinstance(self._store, IneffectiveLearningSource) else None
+        if source is None:
+            return []
+        sink = self._store if isinstance(self._store, AntiPatternSink) else None
+        captured: list[Learning] = []
+        for lr in await source.list_ineffective(min_uses):
+            if not matches_learning_scope(lr, org_id=org_id):
+                continue
+            if lr.epistemic_type is EpistemicType.ANTI_PATTERN:
+                continue
+            lr.epistemic_type = EpistemicType.ANTI_PATTERN
+            lr.confidence = max(lr.confidence, ANTI_PATTERN_CONFIDENCE_FLOOR)
+            if sink is not None and lr.id is not None:
+                await sink.mark_anti_pattern(lr.id, ANTI_PATTERN_CONFIDENCE_FLOOR, org_id=lr.org_id)
+            captured.append(lr)
+        return captured
 
     async def _check_with_gate(self, org_id: str = "") -> list[Learning]:
         """Gate-aware promotion: queue for approval + process approved."""

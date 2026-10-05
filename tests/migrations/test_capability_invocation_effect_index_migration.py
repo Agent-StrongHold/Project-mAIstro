@@ -65,14 +65,15 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # `049_design_artifact_versions` continues that, pushing #774's
     # `050_design_creative_briefs` past the 049 it had taken on this branch;
     # and #792's eval-score evidence — which had taken `049` on this branch —
-    # re-parents onto that `050` as `051_canonical_run_eval_scores`. This
-    # branch's Gauntlet provenance (#118), which the first integration had
-    # re-parented onto 050 as `051`, now collides with that renumbering and
-    # re-parents onto the merged tip. This branch's knowledge-stage ladder —
-    # numbered 048 when written — re-parented onto that chain tip as
-    # `052_learning_stage_ladder` (M4-B1, ADR-103), so the Gauntlet
-    # provenance follows it as `053`. The single linear head is `053`.
-    walked = {item.revision for item in directory.walk_revisions("base", "053")}
+    # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
+    # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
+    # chain tip; this branch's Gauntlet provenance (#118) re-parented onto it
+    # as `053`, and develop's M4-B5 (#1753, ADR-100126-8c2d) landed
+    # `053_learning_lifecycle_columns` on that same `052` parent — so the
+    # lifecycle columns keep `053` and this branch's learning-lifecycle
+    # provenance re-parents onto that tip as `054_learning_validation_
+    # provenance`. The single linear head is `054`.
+    walked = {item.revision for item in directory.walk_revisions("base", "054")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -85,7 +86,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "051" in walked
     assert "052" in walked
     assert "053" in walked
-    assert directory.get_heads() == ["053"]
+    assert "054" in walked
+    assert directory.get_heads() == ["054"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

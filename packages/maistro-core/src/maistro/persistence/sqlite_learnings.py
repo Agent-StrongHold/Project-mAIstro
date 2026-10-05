@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.learnings.lifecycle import (
@@ -19,7 +20,13 @@ from maistro.persistence.learning_contract import (
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.sqlite_schema import serialized_schema_upgrade
-from maistro.types.memory import Learning, LearningStage, MemoryScope
+from maistro.types.memory import (
+    DEFAULT_LEARNING_CONFIDENCE,
+    EpistemicType,
+    Learning,
+    LearningStage,
+    MemoryScope,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -46,12 +53,21 @@ CREATE TABLE IF NOT EXISTS learnings (
     run_id TEXT,
     node_run_id TEXT,
     attempt_id TEXT,
+    stage TEXT NOT NULL DEFAULT 'memory',
+    epistemic_type TEXT NOT NULL DEFAULT 'empirical',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    applicability TEXT NOT NULL DEFAULT '{}',
+    reinforcement_count INTEGER NOT NULL DEFAULT 0,
+    contradiction_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    last_confirmed_at TEXT,
     validated_by TEXT NOT NULL DEFAULT '',
     validated_evaluator_version TEXT NOT NULL DEFAULT '',
-    validated_at REAL NOT NULL DEFAULT 0,
+    validated_at TEXT,
     validation_run_ids TEXT NOT NULL DEFAULT '[]',
     validation_content_hash TEXT NOT NULL DEFAULT '',
-    stage TEXT NOT NULL DEFAULT 'memory',
+    supersedes INTEGER,
+    superseded_by INTEGER,
     promoted_by TEXT NOT NULL DEFAULT ''
 )
 """
@@ -85,27 +101,40 @@ _LEGACY_UPGRADE_COLUMNS = {
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
 
-#: Gauntlet validation columns (M4-B2). Unlike provenance, a pre-Gauntlet row's
-#: absence of validation is *known*: it was never validated, so the defaults
-#: are the honest values rather than a fabricated one, and these upgrade with
-#: defaults.
+#: Gauntlet validation columns (M4-B2) beyond the ladder's own. Unlike
+#: provenance, a pre-Gauntlet row's absence of validation is *known*: it was
+#: never validated, so the defaults are the honest values rather than a
+#: fabricated one, and these upgrade with defaults. `validated_by` and the
+#: validation instant `validated_at` are owned by the lifecycle upgrade set
+#: below (they are ladder columns shared with the Gauntlet's audit trail).
 _VALIDATION_COLUMNS = {
-    "validated_by": "TEXT NOT NULL DEFAULT ''",
     "validated_evaluator_version": "TEXT NOT NULL DEFAULT ''",
-    "validated_at": "REAL NOT NULL DEFAULT 0",
     "validation_run_ids": "TEXT NOT NULL DEFAULT '[]'",
     "validation_content_hash": "TEXT NOT NULL DEFAULT ''",
 }
 
-#: The knowledge-ladder columns (ADR-103), with their in-place upgrade types.
-#: NOT NULL with defaults: every pre-ladder row lands on the bottom rung with
-#: no actor recorded, which is the truth — nothing validated or promoted it.
+#: The knowledge-ladder + lifecycle/epistemics columns (ADR-103, ADR-100126-8c2d),
+#: with their in-place upgrade types. NOT NULL with defaults: every pre-ladder
+#: row lands on the bottom rung as the local empirical learning it was, with no
+#: actor recorded — nothing validated or promoted it, and fabricating one would
+#: lie about when knowledge was confirmed or replaced. Instants and supersession
+#: links stay nullable because an old row genuinely has none.
 #: A dict literal (not a tuple + subscript): the retention inventory's AST
 #: scan resolves DDL f-strings only from `.items()` over a module-level dict,
 #: and a schema statement it cannot verify statically fails the suite.
-_STAGE_COLUMN_TYPES = {
+_LIFECYCLE_UPGRADE_COLUMNS = {
     "stage": "TEXT NOT NULL DEFAULT 'memory'",
+    "epistemic_type": "TEXT NOT NULL DEFAULT 'empirical'",
+    "confidence": "REAL NOT NULL DEFAULT 0.5",
+    "applicability": "TEXT NOT NULL DEFAULT '{}'",
+    "reinforcement_count": "INTEGER NOT NULL DEFAULT 0",
+    "contradiction_count": "INTEGER NOT NULL DEFAULT 0",
+    "created_at": "TEXT",
+    "last_confirmed_at": "TEXT",
     "validated_by": "TEXT NOT NULL DEFAULT ''",
+    "validated_at": "TEXT",
+    "supersedes": "INTEGER",
+    "superseded_by": "INTEGER",
     "promoted_by": "TEXT NOT NULL DEFAULT ''",
 }
 
@@ -139,6 +168,15 @@ _SQLITE_INSERT_FIELDS = (
     "validation_run_ids",
     "validation_content_hash",
     "stage",
+    "epistemic_type",
+    "confidence",
+    "applicability",
+    "reinforcement_count",
+    "contradiction_count",
+    "created_at",
+    "last_confirmed_at",
+    "supersedes",
+    "superseded_by",
     "promoted_by",
 )
 
@@ -168,20 +206,19 @@ class SqliteLearningStore:
                     await self._conn.execute(
                         f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
                     )
-            # Re-read the column set: the validation upgrade above may just have
-            # added `validated_by`, which the ladder's upgrade types also name
-            # (the one column the Gauntlet provenance and the stage ladder
-            # share). The snapshot taken before the first upgrade would send
-            # the next one after an already-existing column and fail.
-            columns = await _learning_columns(self._conn)
-            # M4-B1 (ADR-103): the stage columns default to the bottom rung
-            # with blank actors. Pre-ladder rows keep `memory` and never gain
-            # a fabricated validation or promotion claim; the ledger starts
-            # empty and records only transitions that actually happened.
-            for column, column_type in _STAGE_COLUMN_TYPES.items():
+            # The same in-place upgrade for the ladder + lifecycle columns
+            # (ADR-103, ADR-100126-8c2d): a file created before M4-B holds rows
+            # whose pipeline state was implicit, so the ALTERs stamp the
+            # defaults that state always meant — the bottom rung, no actors,
+            # local empirical belief. `validated_by`/`validated_at` live
+            # here, shared between the ladder and the Gauntlet's audit trail
+            # (M4-B2), so the two upgrade sets above never race for the same
+            # column. The producer columns upgrade in
+            # `_upgrade_pre_709_columns` above, alongside the legacy text set.
+            for column, column_type in _LIFECYCLE_UPGRADE_COLUMNS.items():
                 if column not in columns:
                     await self._conn.execute(
-                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
+                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"  # nosec B608
                     )
             await self._conn.execute(_STAGE_HISTORY_SCHEMA)
             await self._conn.execute(
@@ -218,8 +255,13 @@ class SqliteLearningStore:
                 success_after_use, failure_after_use,
                 run_id, node_run_id, attempt_id,
                 validated_by, validated_evaluator_version, validated_at,
-                validation_run_ids, validation_content_hash, stage, promoted_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                validation_run_ids, validation_content_hash,
+                stage, epistemic_type, confidence, applicability,
+                reinforcement_count, contradiction_count,
+                created_at, last_confirmed_at,
+                supersedes, superseded_by, promoted_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -240,10 +282,21 @@ class SqliteLearningStore:
                 *provenance.as_columns(),
                 learning.validated_by,
                 learning.validated_evaluator_version,
-                learning.validated_at,
+                _utc_text(learning.validated_at) if learning.validated_at is not None else None,
                 json.dumps(list(learning.validation_run_ids)),
                 learning.validation_content_hash,
                 learning.stage,
+                learning.epistemic_type,
+                learning.confidence,
+                json.dumps(learning.applicability),
+                learning.reinforcement_count,
+                learning.contradiction_count,
+                _utc_text(learning.created_at),
+                _utc_text(learning.last_confirmed_at)
+                if learning.last_confirmed_at is not None
+                else None,
+                learning.supersedes,
+                learning.superseded_by,
                 learning.promoted_by,
             ),
         )
@@ -381,6 +434,48 @@ class SqliteLearningStore:
         )
         await self._conn.commit()
 
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings whose failures outnumber successes over enough outcomes (#121).
+
+        The read that turns losses into retained anti-pattern knowledge.
+        Read-only, and deliberately the same predicate the in-memory store
+        applies -- ``total >= min_uses`` recorded outcomes and strictly more
+        failures than successes -- so no caller can tell the backends apart
+        by getting a different answer. Converting what this names into
+        anti-patterns is the caller's decision (the read-only
+        ``IneffectiveLearningSource`` contract).
+        """
+        cursor = await self._conn.execute(
+            """SELECT * FROM learnings
+               WHERE success_after_use + failure_after_use >= ?
+                 AND failure_after_use > success_after_use
+               ORDER BY id DESC""",
+            (min_uses,),
+        )
+        columns = [d[0] for d in cursor.description]
+        rows = await cursor.fetchall()
+        return [_row_to_learning(dict(zip(columns, row, strict=True))) for row in rows]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor (#121).
+
+        The durable write half of ``list_ineffective``: the reads return
+        detached copies, so a reclassification the promoter decided on a copy
+        must be written back or it evaporates. Org is an exact boundary, like
+        ``mark_outcome`` -- a guessed id from another scope updates nothing.
+        """
+        cursor = await self._conn.execute(
+            """UPDATE learnings
+               SET epistemic_type = 'anti_pattern',
+                   confidence = MAX(confidence, ?)
+               WHERE id = ? AND org_id = ?""",
+            (confidence_floor, learning_id, org_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
     async def check_auto_promotions(
         self,
         threshold: int = 5,
@@ -416,7 +511,7 @@ class SqliteLearningStore:
         org_id: str = "",
         validated_by: str = "",
         evaluator_version: str = "",
-        validated_at: float = 0.0,
+        validated_at: datetime | None = None,
         validation_run_ids: Sequence[str] = (),
         validation_content_hash: str = "",
     ) -> Learning | None:
@@ -428,17 +523,21 @@ class SqliteLearningStore:
         an `active`, in-scope row flips — an already-promoted, already-rejected or
         out-of-scope row returns None rather than being touched, and a rejected
         candidate's row (its evidence, its anti-learning) is never modified here.
+        The ladder (ADR-103) is honoured atomically: a promoted row is written as
+        a repertoire row in the same statement, and the commit instant is the
+        validation instant (the Gauntlet's acceptance *is* the transition).
         """
         cursor = await self._conn.execute(
             """UPDATE learnings
-               SET status = 'promoted', validated_by = ?,
+               SET status = 'promoted', stage = 'repertoire',
+                   validated_by = ?,
                    validated_evaluator_version = ?, validated_at = ?,
                    validation_run_ids = ?, validation_content_hash = ?
                WHERE id = ? AND org_id = ? AND status = 'active'""",
             (
                 validated_by,
                 evaluator_version,
-                validated_at,
+                _utc_text(validated_at or datetime.now(UTC)),
                 json.dumps(list(validation_run_ids)),
                 validation_content_hash,
                 learning_id,
@@ -631,48 +730,67 @@ async def _upgrade_pre_709_columns(conn: aiosqlite.Connection, columns: set[str]
             await conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
 
 
-def _row_to_learning(row: dict[str, Any]) -> Learning:
-    return Learning(
-        id=row["id"],
-        category=row.get("category") or "",
-        trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
-        learning=row["learning"],
-        tool_name=row.get("tool_name") or "",
-        source_query=_text(row, "source_query"),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=_text(row, "team_id"),
-        scope=MemoryScope(row.get("scope") or "agent"),
-        hit_count=row.get("hit_count", 0),
-        status=row.get("status") or "active",
-        rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention") or "",
-        run_id=_text(row, "run_id"),
-        node_run_id=_text(row, "node_run_id"),
-        attempt_id=_text(row, "attempt_id"),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
-        **_validation_provenance(row),
-        stage=LearningStage(row.get("stage") or "memory"),
-        promoted_by=_text(row, "promoted_by"),
-    )
+def _provenance_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": json.loads(row.get("trigger_keys") or "[]"),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name") or "",
+        "source_query": _text(row, "source_query"),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": _text(row, "team_id"),
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status") or "active",
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention") or "",
+        "run_id": _text(row, "run_id"),
+        "node_run_id": _text(row, "node_run_id"),
+        "attempt_id": _text(row, "attempt_id"),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
+    }
 
 
-def _validation_provenance(row: dict[str, Any]) -> dict[str, Any]:
-    """Decode the Gauntlet provenance columns (M4-B2) as keyword fields.
+def _lifecycle_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d).
 
-    A pre-Gauntlet row was never validated, so the defaults are the honest
-    values: blank evaluator identity and version, timestamp 0, no evaluation
-    Runs, no frozen-content hash.
+    Defaults mirror the dataclass so a pre-M4B row reads back as the local
+    empirical learning on the bottom rung that it was, not as something the
+    system never claimed. The Gauntlet's provenance columns (M4-B2) decode
+    with the same rule: blank evaluator identity, no evaluation Runs and no
+    frozen-content hash is the honest "never validated".
     """
     return {
+        "stage": LearningStage(row.get("stage") or "memory"),
+        "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
+        "confidence": (
+            float(row["confidence"])
+            if row.get("confidence") is not None
+            else DEFAULT_LEARNING_CONFIDENCE
+        ),
+        "applicability": _load_applicability(row.get("applicability")),
+        "reinforcement_count": row.get("reinforcement_count") or 0,
+        "contradiction_count": row.get("contradiction_count") or 0,
+        "created_at": _load_moment(row.get("created_at")) or datetime.now(UTC),
+        "last_confirmed_at": _load_moment(row.get("last_confirmed_at")),
         "validated_by": _text(row, "validated_by"),
         "validated_evaluator_version": _text(row, "validated_evaluator_version"),
-        "validated_at": row.get("validated_at") or 0.0,
+        "validated_at": _load_moment(row.get("validated_at")),
         "validation_run_ids": _load_validation_run_ids(row.get("validation_run_ids")),
         "validation_content_hash": _text(row, "validation_content_hash"),
+        "supersedes": row.get("supersedes"),
+        "superseded_by": row.get("superseded_by"),
+        "promoted_by": _text(row, "promoted_by"),
     }
+
+
+def _row_to_learning(row: dict[str, Any]) -> Learning:
+    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
 
 
 def _load_validation_run_ids(raw: object) -> list[str]:
@@ -692,3 +810,36 @@ def _load_validation_run_ids(raw: object) -> list[str]:
         if isinstance(decoded, list):
             return [str(item) for item in decoded]
     return []
+
+
+def _utc_text(moment: datetime) -> str:
+    """An instant as text that sorts in instant order (see sqlite_outcomes)."""
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC).isoformat()
+    return moment.astimezone(UTC).isoformat()
+
+
+def _load_moment(raw: object) -> datetime | None:
+    """Decode an instant column; NULL or unparseable text names no instant."""
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _load_applicability(raw: object) -> dict[str, list[str]]:
+    """Decode `applicability`, tolerating NULL or malformed text like `trigger_keys`."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): [str(v) for v in values] for k, values in raw.items()}
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            return {}
+        if isinstance(decoded, dict):
+            return {str(k): [str(v) for v in values] for k, values in decoded.items()}
+    return {}

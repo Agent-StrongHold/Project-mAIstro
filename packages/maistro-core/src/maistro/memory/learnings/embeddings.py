@@ -17,6 +17,8 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from maistro.memory.learnings.store import InMemoryLearningStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.types.memory import Learning
@@ -198,7 +200,7 @@ class HybridLearningStore:
         org_id: str = "",
         validated_by: str = "",
         evaluator_version: str = "",
-        validated_at: float = 0.0,
+        validated_at: datetime | None = None,
         validation_run_ids: Sequence[str] = (),
         validation_content_hash: str = "",
     ) -> Learning | None:

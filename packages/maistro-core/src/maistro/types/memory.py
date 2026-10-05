@@ -59,6 +59,17 @@ FAST_DECAY: float = 2.0  # decay_rate multiplier on thumbs-down
 WISDOM_PROMOTE_THRESHOLD: int = 5  # reinforcement_count to promote -> WISDOM
 REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
 
+# Learning pipeline dynamics (ADR-100126-8c2d / EPIC M4-B). A validated learning cannot
+# sit below the validation floor -- the Gauntlet accepted its evidence -- and
+# failure knowledge decays slowest: an anti-pattern cost a real failure to
+# learn, and forgetting it re-buys that failure (the Learning-side mirror of
+# REGRET's structural 0.6 floor).
+DEFAULT_LEARNING_CONFIDENCE: float = 0.5
+VALIDATED_CONFIDENCE_FLOOR: float = 0.6
+ANTI_PATTERN_CONFIDENCE_FLOOR: float = 0.6
+EMPIRICAL_HALF_LIFE_DAYS: float = 30.0
+ANTI_PATTERN_HALF_LIFE_DAYS: float = 120.0
+
 
 class LearningStage(StrEnum):
     """Knowledge-stage ladder over a Learning record (M4-B1 / ADR-103).
@@ -123,6 +134,17 @@ SCOPE_RANK: dict[MemoryScope, int] = {
 }
 
 
+class EpistemicType(StrEnum):
+    """How a learning claims to know what it knows (M4-B #119)."""
+
+    #: Observed fail->succeed (or first-try success) correction from tool history.
+    EMPIRICAL = "empirical"
+    #: RCA-derived diagnosis: inferred cause, not directly observed.
+    INFERENTIAL = "inferential"
+    #: Failure knowledge: what to stop doing. Retained near-permanently (#121).
+    ANTI_PATTERN = "anti_pattern"
+
+
 @dataclass(frozen=True)
 class DecaySweep:
     """Outcome of one pass of periodic decay over an episodic store (SPEC-080126-9e42).
@@ -166,24 +188,41 @@ class Learning:
     run_id: str = ""
     node_run_id: str = ""
     attempt_id: str = ""
-    # Validation provenance (M4-B2 Gauntlet). Blank/empty until an independent
-    # Gauntlet accepts the learning for collective promotion; the exact
-    # canonical evaluation Runs, the evaluator version and the content hash of
-    # the frozen candidate that was validated are recorded together, so
-    # institutional knowledge carries its own audit trail. A row with these
-    # defaults was never validated — which, unlike producer provenance, is a
-    # *known* absence, so the columns default rather than nullable.
+    # Validation provenance (M4-B2 Gauntlet). The independent Gauntlet's
+    # audit trail: who validated (``validated_by``), with which evaluator
+    # build, when (``validated_at``, a null like every other lifecycle
+    # instant — blank means "never happened", never a fabricated default),
+    # the exact canonical evaluation Runs, and the content hash of the frozen
+    # candidate that was validated. Institutional knowledge carries its own
+    # justification (#118).
     validated_by: str = ""
     validated_evaluator_version: str = ""
-    validated_at: float = 0.0
+    validated_at: datetime | None = None
     validation_run_ids: list[str] = field(default_factory=list)
     validation_content_hash: str = ""
-    # Knowledge-stage ladder (M4-B1 / ADR-103). `stage` is semantics;
+    # Knowledge-stage ladder (M4-B1 / ADR-103) with the pipeline epistemics
+    # (#117/#121, ADR-100126-8c2d). `stage` is the knowledge pipeline position;
     # `status` stays the read surface (`promoted`-only readers keep working).
+    # They move together only where they must: committing a learning to the
+    # repertoire sets status="promoted" so those readers keep working.
     # `validated_by`/`promoted_by` name the actor of the corresponding
     # transition — blank means "never happened", never a fabricated default.
     stage: LearningStage = LearningStage.MEMORY
+    epistemic_type: EpistemicType = EpistemicType.EMPIRICAL
+    #: 0..1 belief strength, decayed toward the epistemic floor over time.
+    confidence: float = DEFAULT_LEARNING_CONFIDENCE
+    #: Where this learning applies, e.g. {"task_types": ["deploy"], "tools": ["bash"]}.
+    applicability: dict[str, list[str]] = field(default_factory=dict)
+    reinforcement_count: int = 0
+    contradiction_count: int = 0
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    #: Last reinforcement instant; the decay clock anchors here, not created_at.
+    last_confirmed_at: datetime | None = None
     promoted_by: str = ""
+    #: Supersession links (#120). Both rows survive: institutional knowledge is
+    # retained, so later Runs can ask what used to be believed.
+    supersedes: int | None = None
+    superseded_by: int | None = None
 
 
 @dataclass

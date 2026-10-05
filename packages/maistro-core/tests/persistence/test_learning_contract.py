@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
@@ -18,6 +20,8 @@ from maistro.persistence.sqlite_learnings import (
     _SQLITE_PERSISTED_FIELDS,
 )
 from maistro.types.memory import Learning
+
+pytestmark = [pytest.mark.contract("behavioral")]
 
 
 def _sqlite_columns() -> set[str]:

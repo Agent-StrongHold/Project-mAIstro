@@ -240,9 +240,13 @@ async def test_store_writes_the_stage_columns(
     await store.store(make_learning(id=None))
 
     insert = next(c for c in conn.calls if "INSERT INTO learnings" in c.query)
-    # The M4-B2 Gauntlet provenance columns and the ADR-103 ladder columns
-    # share one INSERT (and one `validated_by` column); the tail pins the
-    # whole merged write shape in dataclass order.
+    # The M4-B2 Gauntlet provenance columns, the ADR-103 ladder columns and
+    # the pipeline epistemics (#117/#121, ADR-100126-8c2d) share one INSERT
+    # (and one `validated_by` column); the tail pins the whole merged write
+    # shape in dataclass order.
     assert "validated_by, validated_evaluator_version, validated_at" in insert.query
-    assert "validation_run_ids, validation_content_hash, stage, promoted_by" in insert.query
-    assert insert.args[-7:] == ("", "", 0.0, "[]", "", LearningStage.MEMORY, "")
+    assert "validation_run_ids, validation_content_hash," in insert.query
+    assert "stage, epistemic_type, confidence, applicability," in insert.query
+    assert insert.args[19] == ""
+    assert insert.args[24] is LearningStage.MEMORY
+    assert insert.args[-1] == ""

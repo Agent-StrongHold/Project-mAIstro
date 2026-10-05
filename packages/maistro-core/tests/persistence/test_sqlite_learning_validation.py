@@ -11,6 +11,7 @@ never-validated learnings they honestly were.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 import aiosqlite
 import pytest
@@ -50,7 +51,7 @@ async def test_promote_learning_writes_provenance_that_round_trips(
         lid,
         validated_by="independent-trials",
         evaluator_version="1.4.2",
-        validated_at=1727851200.5,
+        validated_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         validation_run_ids=("run-eval-1", "run-eval-2", "run-eval-3"),
         validation_content_hash="0f1e2d3c",
     )
@@ -59,7 +60,7 @@ async def test_promote_learning_writes_provenance_that_round_trips(
     assert promoted.status == "promoted"
     assert promoted.validated_by == "independent-trials"
     assert promoted.validated_evaluator_version == "1.4.2"
-    assert promoted.validated_at == 1727851200.5
+    assert promoted.validated_at == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     assert promoted.validation_run_ids == ["run-eval-1", "run-eval-2", "run-eval-3"]
     assert promoted.validation_content_hash == "0f1e2d3c"
 
@@ -71,7 +72,7 @@ async def test_promote_learning_writes_provenance_that_round_trips(
     assert row.status == "promoted"
     assert row.validated_by == "independent-trials"
     assert row.validated_evaluator_version == "1.4.2"
-    assert row.validated_at == 1727851200.5
+    assert row.validated_at == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     assert row.validation_run_ids == ["run-eval-1", "run-eval-2", "run-eval-3"]
     assert row.validation_content_hash == "0f1e2d3c"
 
@@ -118,7 +119,7 @@ async def test_store_persists_validation_provenance_on_insert(
             status="promoted",
             validated_by="independent-trials",
             validated_evaluator_version="2.0.0",
-            validated_at=99.5,
+            validated_at=datetime(2026, 2, 1, 9, 30, 0, tzinfo=UTC),
             validation_run_ids=["run-x"],
             validation_content_hash="abc",
         )
@@ -127,7 +128,7 @@ async def test_store_persists_validation_provenance_on_insert(
     row = (await store.list_all())[0]
     assert row.validated_by == "independent-trials"
     assert row.validated_evaluator_version == "2.0.0"
-    assert row.validated_at == 99.5
+    assert row.validated_at == datetime(2026, 2, 1, 9, 30, 0, tzinfo=UTC)
     assert row.validation_run_ids == ["run-x"]
     assert row.validation_content_hash == "abc"
 
@@ -188,7 +189,7 @@ async def test_pre_gauntlet_database_upgrades_and_rows_read_as_never_validated(
     assert row.learning == "old row"
     assert row.validated_by == ""
     assert row.validated_evaluator_version == ""
-    assert row.validated_at == 0.0
+    assert row.validated_at is None
     assert row.validation_run_ids == []
     assert row.validation_content_hash == ""
 
@@ -197,7 +198,7 @@ async def test_pre_gauntlet_database_upgrades_and_rows_read_as_never_validated(
         row.id or 0,
         validated_by="independent-trials",
         evaluator_version="1.0.0",
-        validated_at=1.0,
+        validated_at=datetime(2026, 3, 1, 8, 0, 0, tzinfo=UTC),
         validation_run_ids=("run-eval-9",),
         validation_content_hash="cafe",
     )
