@@ -19,7 +19,6 @@ from maistro.memory.learnings.evidence import (
     promotion_blockers,
 )
 from maistro.memory.learnings.lifecycle import (
-    LEARNING_STAGE_ORDER,
     StageTransition,
     advance_stage,
     commit_to_repertoire,
@@ -28,7 +27,12 @@ from maistro.memory.learnings.lifecycle import (
 from maistro.memory.types import Learning, LearningStage
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_scope import matches_learning_scope
-from maistro.types.memory import CONTRADICT_DELTA, EPISTEMIC_BONUS, REINFORCE_DELTA
+from maistro.types.memory import (
+    CONTRADICT_DELTA,
+    EPISTEMIC_BONUS,
+    LEARNING_STAGE_ORDER,
+    REINFORCE_DELTA,
+)
 
 logger = logging.getLogger(__name__)
 
