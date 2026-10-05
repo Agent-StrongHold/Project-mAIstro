@@ -110,30 +110,29 @@ def _run_snapshot(run_id: str = "run-1") -> CanonicalJsonObject:
 
 
 def test_module_exports_exact_contract_and_assessment_values() -> None:
-    assert len(admission_identity.__all__) == 21
-    assert set(admission_identity.__all__) == {
-        "CanonicalJsonObject",
-        "AdmissionTicket",
-        "RootAdmissionEnvelope",
+    assert admission_identity.__all__ == [
+        "Acknowledged",
+        "AdmissionAssessment",
         "AdmissionBinding",
         "AdmissionRecordV2",
-        "LegacyAdmissionRecord",
-        "RootAdmissionResult",
-        "Claimed",
-        "Replayed",
-        "Pending",
-        "LegacyUnresolved",
-        "ClaimResult",
-        "Released",
-        "AlreadyBound",
-        "StaleOwner",
-        "Acknowledged",
+        "AdmissionTicket",
         "AlreadyAcknowledged",
+        "AlreadyBound",
         "BindingMismatch",
-        "ReleaseResult",
+        "CanonicalJsonObject",
+        "ClaimResult",
+        "Claimed",
         "CompletionResult",
-        "AdmissionAssessment",
-    }
+        "LegacyAdmissionRecord",
+        "LegacyUnresolved",
+        "Pending",
+        "ReleaseResult",
+        "Released",
+        "Replayed",
+        "RootAdmissionEnvelope",
+        "RootAdmissionResult",
+        "StaleOwner",
+    ]
     assert tuple(
         (member.name, member.value) for member in admission_identity.AdmissionAssessment
     ) == (
