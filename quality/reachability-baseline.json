@@ -108,7 +108,6 @@
     "maistro.integrations.turing",
     "maistro.memory.episodic.consolidation",
     "maistro.memory.episodic.sharing",
-    "maistro.memory.exposure",
     "maistro.memory.learnings.approval",
     "maistro.memory.learnings.promoter",
     "maistro.memory.mutations",
