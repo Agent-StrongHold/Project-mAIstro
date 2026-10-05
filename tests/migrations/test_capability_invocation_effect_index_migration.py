@@ -81,23 +81,29 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # earlier collisions — re-parented onto develop's `055` as
     # `056_canonical_goals` (adoption-tolerant upgrade: `CREATE TABLE IF NOT
     # EXISTS`, the 046/047 style, because the chain's stamp-back-and-re-upgrade
-    # walk re-runs it). This sync then brought develop's own
+    # walk re-runs it). An earlier sync brought develop's own
     # `043_invocation_quota_door` (#1196/#718) — re-parented onto whichever
     # revision is develop's head at merge time, 046, then 047, 048, 050, 051,
     # 052, 053, 054, and now `055` — onto that same `055` parent, the one this
-    # branch's Goal store had already claimed. Per this chain's standing
+    # branch's Goal store had already claimed; per this chain's standing
     # convention — the later-integrated revision re-parents onto the landed
     # tip, never the reverse — the Goal store re-parented onto the quota door,
     # so the single linear head became `056`, continuing develop's quota-door
-    # revision. The same sync now lands #1047's user-model tables, which on
+    # revision. This sync then lands #1047's user-model tables, which on
     # develop had taken the identical slot — re-parented past the admission
     # generations onto that quota door as `056_user_model_facts` — colliding
     # a fourth time, this time with the branch's landed `056_canonical_goals`
-    # itself. The convention resolves it the same way: the later-integrated
-    # revision renumbers and re-parents onto the landed tip, so the
-    # user-model tables continue the Goal store as `057_user_model_facts` and
-    # the single linear head is now `057`.
-    walked = {item.revision for item in directory.walk_revisions("base", "056")}
+    # itself; the convention resolves it the same way, so the user-model
+    # tables renumber onto the landed tip as `057_user_model_facts`. The same
+    # sync carries #863's planner-stability revision — numbered `052` when
+    # written and re-parented onto the chain tip as `053`, `054`, and `056`
+    # in earlier collisions, then onto develop's `056_user_model_facts` as
+    # `057` — colliding a fifth time with the renumbered `057_user_model_facts`
+    # it lands beside. Later-integrated renumbers onto the landed tip once
+    # more: it continues the user-model tables as
+    # `058_run_store_planner_stability`, and the single linear head is now
+    # `058`.
+    walked = {item.revision for item in directory.walk_revisions("base", "058")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -115,7 +121,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "043_invocation_quota_door" in walked
     assert "056" in walked
     assert "057" in walked
-    assert directory.get_heads() == ["057"]
+    assert "058" in walked
+    assert directory.get_heads() == ["058"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

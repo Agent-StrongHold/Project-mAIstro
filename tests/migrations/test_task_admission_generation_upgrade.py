@@ -555,8 +555,9 @@ class TestTheDowngrade:
         # partway through rolls the whole attempt back, so the stamp never
         # moves off whatever head it started from -- not a fixed literal,
         # which is only ever an artifact of whatever was the chain tip when
-        # this test was last synced (develop asserted its quota-door tip here;
-        # the branch's own integration keeps landing a new tip on top).
+        # this test was last synced (develop asserted its quota-door tip here,
+        # then its planner-stability tip; the branch's own integration keeps
+        # landing a new tip on top).
         assert _stamped_version() == head
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()

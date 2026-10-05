@@ -110,5 +110,9 @@ Update (auto-1572 develop sync, Goal-store collision): the Goal-store lane
 (#1572) had independently landed `056_canonical_goals` on the same quota door,
 so the merged tree renumbers this revision — the later-integrated one — onto
 that landed tip as `057_user_model_facts` (`down_revision = "056"`). The
-chain sentinel walks to head `057`; the head-tracking stamp assertions follow
-it. No test added or removed — delta above unchanged.
+same sync lands #863's planner-stability revision, which on develop had
+re-parented onto the user-model tip as `057` — colliding with the
+renumbered `057_user_model_facts` — so it renumbers again onto that tip
+as `058_run_store_planner_stability`. The chain sentinel walks to head
+`058`; the head-tracking stamp assertions follow it. No test added or
+removed — delta above unchanged.

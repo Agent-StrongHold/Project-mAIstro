@@ -13,7 +13,13 @@ branch has stayed open -- 046, then 047, 048, 050, 051, 052, 053, 054, now
 it, or `alembic upgrade head` refuses with multiple heads. When develop's
 tip met #1572's `056_canonical_goals` -- both parented on 055 at merge
 time -- the Goal store re-parented onto this door, so the integrated
-chain continues from here through `056_canonical_goals`.
+chain continues from here through `056_canonical_goals`. The next sync
+brought develop's own continuations of this door -- #1047's user-model
+tables (``056`` on develop) and #863's planner-stability revision
+(``057`` there) -- colliding with the branch's landed ``056``; per the
+convention the later-integrated revision renumbers onto the landed tip,
+so the chain runs on through `057_user_model_facts` and
+`058_run_store_planner_stability`.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:
