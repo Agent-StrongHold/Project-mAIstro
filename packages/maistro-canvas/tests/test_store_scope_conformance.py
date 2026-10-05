@@ -44,7 +44,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from maistro.testing.postgres import postgres_dsn
-from maistro_canvas.auth import CurrentUser
+from maistro.identity import Principal
 from maistro_canvas.canvas.asset_store import InMemoryAssetStore
 from maistro_canvas.canvas.store import PgCanvasStore
 from maistro_canvas.layers import (
@@ -917,9 +917,9 @@ class TestRoutesCarryThePrincipalScope:
         app = FastAPI()
         app.include_router(make_router(get_store=lambda: store))
 
-        def principal_for(org: str) -> Callable[[], CurrentUser]:
-            async def _principal() -> CurrentUser:
-                return CurrentUser(user_id=f"u-{org}", org_id=org)
+        def principal_for(org: str) -> Callable[[], Principal]:
+            async def _principal() -> Principal:
+                return Principal(user_id=f"u-{org}", org_id=org, roles=frozenset({"user"}))
 
             return _principal
 

@@ -30,13 +30,13 @@ from maistro.extensions.types import (
     PackageIdentity,
 )
 from maistro_server.api import catalog as catalog_api
-from maistro_server.api.auth import AuthenticatedPrincipal, verify_api_key
+from maistro.identity import Principal
+from maistro_server.api.auth import verify_api_key
 
 
-def _principal(user_id: str) -> AuthenticatedPrincipal:
-    return AuthenticatedPrincipal(
+def _principal(user_id: str) -> Principal:
+    return Principal(
         user_id=user_id,
-        token=f"token-{user_id}",
         roles=frozenset({"user"}),
     )
 

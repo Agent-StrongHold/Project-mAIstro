@@ -8,11 +8,11 @@ from fastapi import HTTPException, status
 
 from maistro.tasks.http_contract import verify_delegation_context
 from maistro.tasks.models import TaskActorKind
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro.identity import Principal
 
 
 def resolve_delegated_identity(
-    auth: AuthenticatedPrincipal | None,
+    auth: Principal | None,
     delegation: str | None,
 ) -> tuple[str, str, str | None, TaskActorKind]:
     """Resolve an effective actor from service auth and signed delegation.

@@ -38,7 +38,7 @@ from maistro.workspaces import InMemoryWorkspaceStore
 from maistro_server.api import extensions as extensions_api
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro.identity import Principal
 
 PAYLOAD = b"extension-health-payload"
 SERVICE_CLOCK = datetime(2026, 10, 5, 12, 0, 0, tzinfo=UTC)
@@ -177,10 +177,9 @@ class _Harness:
         )
 
 
-def _principal(user_id: str) -> AuthenticatedPrincipal:
-    return AuthenticatedPrincipal(
+def _principal(user_id: str) -> Principal:
+    return Principal(
         user_id=user_id,
-        token=f"token-{user_id}",
         roles=frozenset({"user"}),
     )
 
@@ -263,7 +262,7 @@ class TestAuthenticationAndScope:
         # Test settings run auth-disabled (no api_keys), which yields the dev
         # principal; pin the contract these routes sit behind by making the
         # auth dependency refuse, the way a configured deployment would.
-        def _deny() -> AuthenticatedPrincipal:
+        def _deny() -> Principal:
             from fastapi import HTTPException
             from fastapi import status as fastapi_status
 

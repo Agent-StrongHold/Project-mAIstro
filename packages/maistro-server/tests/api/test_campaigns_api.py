@@ -28,13 +28,12 @@ from maistro.workspaces.campaigns import (
 )
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro.identity import Principal
 
 
-def _principal(user_id: str) -> AuthenticatedPrincipal:
-    return AuthenticatedPrincipal(
+def _principal(user_id: str) -> Principal:
+    return Principal(
         user_id=user_id,
-        token=f"token-{user_id}",
         roles=frozenset({"user"}),
     )
 

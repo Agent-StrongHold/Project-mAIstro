@@ -28,7 +28,8 @@ from typing import Any, Protocol
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
-from maistro_canvas.auth import CurrentUser, get_current_user
+from maistro.identity import Principal
+from maistro_canvas.auth import get_current_user
 from maistro_canvas.canvas.asset_compositor import (
     PlannedRender,
     RenderPlan,
@@ -482,7 +483,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def register_definition(
         body: AssetDefinitionIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetDefinitionOut:
         try:
             defn = _definition_in_to_dataclass(body)
@@ -495,7 +496,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_definition(
         asset_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetDefinitionOut:
         defn = await store.get_definition(asset_id, org_id=auth.org_id)
         if defn is None:
@@ -512,7 +513,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def list_definitions(
         kind: str = Query(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> list[AssetDefinitionOut]:
         defs = await store.list_definitions_by_kind(kind, org_id=auth.org_id)
         return [_definition_to_out(d) for d in defs]
@@ -522,7 +523,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         asset_id: str = Path(...),
         body: AssetDefinitionIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetDefinitionOut:
         if asset_id != body.asset_id:
             raise HTTPException(409, {"detail": "asset_id in path and body do not match"})
@@ -541,7 +542,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         asset_id: str = Path(...),
         body: AssetSheetIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetSheetOut:
         if asset_id != body.asset_id:
             raise HTTPException(409, {"detail": "asset_id in path and body do not match"})
@@ -562,7 +563,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_sheet(
         asset_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetSheetOut:
         sheet = await store.get_sheet(asset_id, org_id=auth.org_id)
         if sheet is None:
@@ -583,7 +584,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         asset_id: str = Path(...),
         body: RegenerateRequest = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetSheetOut:
         try:
             sheet = await store.regenerate_sheet(
@@ -609,7 +610,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def upsert_instance(
         body: AssetInstanceIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetInstanceOut:
         try:
             instance = _instance_in_to_dataclass(body)
@@ -622,7 +623,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_instance(
         instance_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetInstanceOut:
         instance = await store.get_instance(instance_id, org_id=auth.org_id)
         if instance is None:
@@ -633,7 +634,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def remove_instance(
         instance_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> None:
         await store.remove_instance(instance_id, org_id=auth.org_id)
 
@@ -644,7 +645,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def list_instances(
         canvas_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> list[AssetInstanceOut]:
         rows = await store.list_instances(canvas_id, org_id=auth.org_id)
         return [_instance_to_out(r) for r in rows]
@@ -656,7 +657,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         profile_id: str = Path(...),
         body: ChildProfileIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> ChildProfileOut:
         if profile_id != body.profile_id:
             raise HTTPException(409, {"detail": "profile_id in path and body do not match"})
@@ -679,7 +680,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_profile(
         profile_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> ChildProfileOut:
         profile = await store.get_profile(profile_id, org_id=auth.org_id)
         if profile is None:
@@ -704,7 +705,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def create_book(
         body: BookIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> BookOut:
         # The body's ``org_id`` is a selection, never an authority (#857):
         # naming a scope other than the caller's is refused rather than
@@ -740,7 +741,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_book(
         book_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> BookOut:
         book = await store.get_book(book_id, org_id=auth.org_id)
         if book is None:
@@ -752,7 +753,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         book_id: str = Path(...),
         body: BookIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> BookOut:
         if book_id != body.book_id:
             raise HTTPException(409, {"detail": "book_id in path and body do not match"})
@@ -788,7 +789,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         canvas_id: str = Path(...),
         body: PlanRequest = Body(default_factory=PlanRequest),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> RenderPlanModel:
         try:
             instances = await store.list_instances(canvas_id, org_id=auth.org_id)

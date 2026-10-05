@@ -9,7 +9,7 @@ import pytest
 import stores
 from config import OAuthProviderSettings, Settings
 from fastapi import HTTPException, Request
-from models.schemas import HiveUser
+from models.schemas import HiveAccount
 from routes import auth
 from services.oauth_login import OAuthLoginDenied, OAuthLoginService
 
@@ -57,8 +57,8 @@ def _request(*, query: bytes = b"", cookie: str | None = None) -> Request:
     )
 
 
-def _user(user_id: str = "user-1") -> HiveUser:
-    return HiveUser(
+def _user(user_id: str = "user-1") -> HiveAccount:
+    return HiveAccount(
         id=user_id,
         username="alice",
         password_hash="unused",

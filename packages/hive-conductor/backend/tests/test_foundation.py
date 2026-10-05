@@ -282,7 +282,7 @@ def test_init_state_database_open_failure_fails_closed_without_memory_fallback(
     import logging
 
     import stores
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from services.foundation import Foundation
     from services.model_store import ModelStore
 
@@ -298,7 +298,7 @@ def test_init_state_database_open_failure_fails_closed_without_memory_fallback(
 
     monkeypatch.setattr(state_mod.State, "close", fail_close)
     monkeypatch.setattr(stores, "_persisted", None)
-    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
 
     initialize_calls: list[None] = []
     monkeypatch.setattr(stores, "initialize_stores", lambda: initialize_calls.append(None))
@@ -324,7 +324,7 @@ def test_init_state_constructor_failure_fails_closed_without_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import stores
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from services.foundation import Foundation
     from services.model_store import ModelStore
 
@@ -337,7 +337,7 @@ def test_init_state_constructor_failure_fails_closed_without_state(
     settings = _StubSettings(tmp_path)
     monkeypatch.setattr(state_mod, "State", _FailingState)
     monkeypatch.setattr(stores, "_persisted", None)
-    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
 
     initialize_calls: list[None] = []
     monkeypatch.setattr(stores, "initialize_stores", lambda: initialize_calls.append(None))

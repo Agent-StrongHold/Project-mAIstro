@@ -66,7 +66,7 @@ from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus, Run
 from maistro.runs.store import RunStore
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro.identity import Principal
 
 logger = structlog.get_logger()
 
@@ -180,7 +180,7 @@ def _extract_user_message(request: ChatCompletionRequest) -> str:
     )
 
 
-def _auth_context(auth: AuthenticatedPrincipal | None) -> AuthContext | None:
+def _auth_context(auth: Principal | None) -> AuthContext | None:
     """The identity every strike path keys on.
 
     Built rather than passed through: handing the pipeline an object that
@@ -211,7 +211,7 @@ def _unavailable(retry_after_s: int = CHAT_TURN_RETRY_AFTER_S) -> HTTPException:
 
 async def _admit_turn(
     request: ChatCompletionRequest,
-    auth: AuthenticatedPrincipal | None,
+    auth: Principal | None,
     *,
     request_id: str | None = None,
 ) -> Run:
@@ -266,7 +266,7 @@ async def _admit_turn(
 
 async def _route(
     request: ChatCompletionRequest,
-    auth: AuthenticatedPrincipal | None,
+    auth: Principal | None,
     run: Run | None,
     *,
     request_id: str | None = None,
@@ -398,7 +398,7 @@ async def _close_if_open(run: Run) -> None:
 
 async def _stream_conductor_response(
     request: ChatCompletionRequest,
-    auth: AuthenticatedPrincipal | None = None,
+    auth: Principal | None = None,
     run: Run | None = None,
     *,
     request_id: str | None = None,
@@ -430,7 +430,7 @@ async def _stream_conductor_response(
 
 async def _stream_turn(
     request: ChatCompletionRequest,
-    auth: AuthenticatedPrincipal | None = None,
+    auth: Principal | None = None,
     run: Run | None = None,
     *,
     request_id: str | None = None,
