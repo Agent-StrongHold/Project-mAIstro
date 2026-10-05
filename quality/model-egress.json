@@ -5,7 +5,6 @@
     "adapters.maistro_core",
     "maistro-canvas-frontend-server::mcp.character",
     "maistro-canvas-frontend-server::mcp.story",
-    "maistro.agents.conductor",
     "maistro.capabilities.providers.llm_gateway",
     "maistro.events.handlers",
     "maistro_bootstrap.builders.model_selector",
