@@ -119,7 +119,7 @@ class TestGitClone:
             "maistro.tools.git.server.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=_FakeProc(stdout=b"Cloned\n", returncode=0)),
         ):
-            result = await git_clone("https://example.com/r.git", "/repos/dest")
+            result = await git_clone("https://github.com/r.git", "/repos/dest")
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -128,7 +128,7 @@ class TestGitClone:
             "maistro.tools.git.server.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=_FakeProc(stdout=b"fatal", returncode=128)),
         ):
-            result = await git_clone("https://example.com/r.git", "/repos/dest")
+            result = await git_clone("https://github.com/r.git", "/repos/dest")
         assert result["error_code"] == "git_clone_failed"
 
     @pytest.mark.asyncio
@@ -137,7 +137,7 @@ class TestGitClone:
             "maistro.tools.git.server.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=_FakeProc(stdout=b"", returncode=0)),
         ):
-            result = await git_clone("https://example.com/r.git", "/repos/dest")
+            result = await git_clone("https://github.com/r.git", "/repos/dest")
         assert result["stdout"] == "Cloned"
 
     @pytest.mark.asyncio
@@ -146,7 +146,7 @@ class TestGitClone:
             "maistro.tools.git.server.asyncio.create_subprocess_exec",
             new=AsyncMock(side_effect=FileNotFoundError),
         ):
-            result = await git_clone("https://example.com/r.git", "/repos/dest")
+            result = await git_clone("https://github.com/r.git", "/repos/dest")
         assert result["error_code"] == "git_not_found"
 
     @pytest.mark.asyncio
@@ -161,7 +161,7 @@ class TestGitClone:
                 new=AsyncMock(side_effect=TimeoutError),
             ),
         ):
-            result = await git_clone("https://example.com/r.git", "/repos/dest", timeout=5)
+            result = await git_clone("https://github.com/r.git", "/repos/dest", timeout=5)
         assert result["error_code"] == "git_clone_timeout"
 
 

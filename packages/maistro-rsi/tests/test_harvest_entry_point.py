@@ -542,3 +542,97 @@ class TestTheEvolveCommandWiresTheMutatorBoundary:
             )
 
         assert llm_seen["model_calls"] == 0
+
+
+class TestTheCloneUrlPassesTheGitTransportPolicy:
+    """#404 on the cloud path: `--clone-url` is candidate source for the
+    branches — and PRs — this command opens, so the exact gate the MCP git
+    tool applies (`maistro.tools.git.server.validate_clone_source`) runs
+    before git ever spawns, and the clone argv carries the same executable
+    protocol/redirect pins. A refused URL exits 2 with the policy named and
+    leaves no work tree behind.
+    """
+
+    @staticmethod
+    def _argv_clone(export: Path, url: str) -> list[str]:
+        return ["harvest", "--export-dir", str(export), "--clone-url", url]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "git://github.com/org/repo.git",
+            "GIT://github.com/org/repo.git",  # schemes parse case-insensitively
+            "https://example.com/org/repo.git",  # authenticated but off the source allowlist
+            "git@github.com:org/repo.git",  # scp-style is not an allowlisted scheme
+        ],
+    )
+    def test_a_refused_clone_url_spawns_nothing_and_exits_two(
+        self, export: Path, capsys, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        import subprocess
+        import tempfile
+
+        def no_subprocess(*args: object, **kwargs: object) -> object:
+            raise AssertionError(f"a rejected clone URL must not reach a subprocess: {url}")
+
+        monkeypatch.setattr(subprocess, "run", no_subprocess)
+        monkeypatch.setattr(tempfile, "mkdtemp", no_subprocess)
+
+        # Exit 2 like the other refused-invocation paths, via SystemExit: the
+        # refusal happens in the clone helper, past the point where a return
+        # code would travel.
+        with pytest.raises(SystemExit) as excinfo:
+            main(self._argv_clone(export, url))
+
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "clone policy" in err
+        assert "MAISTRO_GIT_CLONE_ALLOWED_HOSTS" in err or "https://" in err
+
+    def test_the_git_protocol_is_named_in_the_refusal(
+        self, export: Path, capsys, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+        import tempfile
+
+        def no_subprocess(*args: object, **kwargs: object) -> object:
+            raise AssertionError("git:// must not reach a subprocess")
+
+        monkeypatch.setattr(subprocess, "run", no_subprocess)
+        monkeypatch.setattr(tempfile, "mkdtemp", no_subprocess)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(self._argv_clone(export, "git://github.com/org/repo.git"))
+
+        assert excinfo.value.code == 2
+        assert "unauthenticated transport" in capsys.readouterr().err
+
+    def test_an_allowed_clone_url_reaches_git_with_enforcement_pins_and_separator(
+        self, export: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The allowed transport still spawns git — and the argv proves the
+        enforcement is executable: the protocol/redirect `-c` pins ride along,
+        and the URL sits after `--` where no scheme can be re-read as flags.
+        The fake raises after recording, so the test observes exactly the
+        clone step and nothing downstream of it."""
+        import subprocess
+        import tempfile
+
+        seen: dict[str, list[str]] = {}
+
+        def fake_run(argv: list[str], *args: object, **kwargs: object) -> object:
+            seen["argv"] = list(argv)
+            raise subprocess.CalledProcessError(128, argv)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            main(self._argv_clone(export, "https://github.com/org/repo.git"))
+
+        argv = seen["argv"]
+        assert argv[0] == "git"
+        pins = {argv[i + 1] for i, part in enumerate(argv) if part == "-c"}
+        assert {"protocol.git.allow=never", "http.followRedirects=false"} <= pins
+        separator = argv.index("--")
+        assert argv[separator + 1] == "https://github.com/org/repo.git"
+        assert argv[-1].startswith(tempfile.gettempdir())  # the work tree
