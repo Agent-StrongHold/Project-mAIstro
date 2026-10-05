@@ -145,3 +145,18 @@ that new unreachable module has neither a trusted-base authorization nor a
 real runtime consumer. No prohibited import, suppression, reachability
 baseline/disposition, or quality waiver was introduced; integration must supply
 the real consumer before mergeability can be established.
+
+## Latest validation
+
+At `ebc8186443a105d6fd206eba3779a331e15096f4`, the focused DTO suite passed
+76 cases; module Ruff check/format and mypy passed; repository-wide Ruff check
+and format passed; and the core inventory exactly matched 13,727 node IDs
+(`+76`). The exact Vulture command found 1,352 findings but returned 1 because
+nine unavoidable declarative DTO identities are absent from trusted base
+`658a8f78c180`; their candidate ledger entries cannot self-authorize that
+trusted-base debt. `check-reachability.py` returned 1 solely for the inactive
+`maistro.runs.admission_identity`; dispositions and promotion-surface passed.
+`check-ratchet-provenance.py` returned 1 only through that reachability
+provenance failure. This leaf cannot add a runtime consumer, reachability
+ledger/disposition, suppression, or grant; parent integration must do so before
+mergeability.
