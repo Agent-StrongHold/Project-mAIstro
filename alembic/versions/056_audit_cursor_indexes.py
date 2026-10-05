@@ -1,10 +1,10 @@
 """Ordered exact-scope audit cursor indexes (#358).
 
-Revision ID: 055
-Revises: 054
+Revision ID: 056
+Revises: 055
 
-Re-parented after develop's 054 task-admission migration to keep one linear
-chain. The audit-index revision has not landed; the existing 054 is unchanged.
+Re-parented after develop's 055 task-admission migration to keep one linear
+chain. The audit-index revision has not landed; existing revisions are unchanged.
 
 Each equality-filter shape needs an ordered seek, including timestamp ties.
 Build at migration time, not on the first audit request. Eight indexes trade
@@ -15,8 +15,8 @@ from itertools import combinations
 
 from alembic import op
 
-revision = "055"
-down_revision = "054"
+revision = "056"
+down_revision = "055"
 branch_labels = None
 depends_on = None
 

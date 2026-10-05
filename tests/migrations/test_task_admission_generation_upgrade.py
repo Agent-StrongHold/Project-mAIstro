@@ -1,6 +1,6 @@
 """The forward admission-generation representation on task_idempotency (#1892).
 
-Revision 054 gives the claim table a durable shape for immutable admission
+Revision 055 gives the claim table a durable shape for immutable admission
 generations (format_version 2) without touching a single legacy row: every
 preexisting claim stays byte-for-byte in its original columns, keeps
 ``format_version = 1`` by default, and is admitted by the v2 CHECK exactly as
@@ -347,7 +347,7 @@ class TestTheForwardUpgrade:
 
     def test_unknown_shape_does_not_advance_revision(self, empty_database) -> None:
         """A claim table whose shape is not the shipped one refuses to be
-        stamped forward: revision 054 validates before it writes, the upgrade
+        stamped forward: revision 055 validates before it writes, the upgrade
         aborts, and the stamp stays at the last good revision with no forward
         DDL applied."""
         # A real chain history, then a corruption the shipped chain never
@@ -360,7 +360,8 @@ class TestTheForwardUpgrade:
 
         assert result.returncode != 0, "a wrong-typed claim table upgraded cleanly"
         # The upgrade run is one transaction: develop's 053 (learning-lifecycle
-        # columns on `learnings`) rolls back together with the refusing 054, so
+        # columns on `learnings`) and this branch's 054 (learning
+        # applicability, #119) roll back together with the refusing 055, so
         # the stamp stays at the last good revision, 052.
         assert _stamped_version() == "052", "the revision advanced over an unknown shape"
         # The refusal names the incompatible shape rather than dying quietly.
@@ -371,7 +372,7 @@ class TestTheForwardUpgrade:
     def test_malformed_key_or_index_does_not_advance_revision(self, empty_database) -> None:
         """The same refusal for the key and index halves of the shape: no
         primary key on scope_key (the key IS the claim), or a lost expiry
-        index (the purge scan bound), and revision 054 will not stamp."""
+        index (the purge scan bound), and revision 055 will not stamp."""
         assert _alembic("upgrade", "052").returncode == 0
 
         # Phase 1: the primary key is gone.

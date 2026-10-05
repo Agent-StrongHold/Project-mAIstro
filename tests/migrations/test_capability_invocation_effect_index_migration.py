@@ -70,10 +70,11 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
     # chain tip, and its learning-lifecycle columns (M4-B, ADR-100126-8c2d)
-    # continued that tip as `053_learning_lifecycle_columns`. #1892's forward
-    # admission-generation representation follows as `054`. Audit cursor indexes
-    # (#358), landing second, follow as `055` rather than duplicating `054`.
-    walked = {item.revision for item in directory.walk_revisions("base", "055")}
+    # continued that tip as `053_learning_lifecycle_columns`. Learning
+    # applicability (#119) follows as `054`, admission generations (#1892)
+    # as `055`, and this lane's audit cursor indexes (#358) as `056`.
+    # Preserve develop's revisions; only the unlanded audit revision moves.
+    walked = {item.revision for item in directory.walk_revisions("base", "056")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -88,8 +89,10 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "053" in walked
     assert "054" in walked
     assert "055" in walked
+    assert "056" in walked
     assert directory.get_revision("055").down_revision == "054"
-    assert directory.get_heads() == ["055"]
+    assert directory.get_revision("056").down_revision == "055"
+    assert directory.get_heads() == ["056"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
