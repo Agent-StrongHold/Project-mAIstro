@@ -249,11 +249,14 @@ async def test_store_writes_the_stage_columns(
 
     insert = next(c for c in conn.calls if "INSERT INTO learnings" in c.query)
     # The union insert writes the ladder columns beside the pipeline
-    # epistemics (#117/#121): stage directly after the provenance triple,
-    # validated_by/promoted_by naming no actor on a fresh row.
-    assert insert.args[19] is LearningStage.MEMORY
-    assert insert.args[27] == ""
-    assert insert.args[-1] == ""
+    # epistemics (M4-B3 + #117/#121): the epistemic triple sits directly
+    # after the provenance triple, and the stage/actor columns follow the
+    # lifecycle fields — validated_by/promoted_by naming no actor on a
+    # fresh row.
+    assert insert.args[19] == "empirical"
+    assert insert.args[30] is LearningStage.MEMORY
+    assert insert.args[31] == ""
+    assert insert.args[33] == ""
 
 
 @pytest.mark.asyncio
