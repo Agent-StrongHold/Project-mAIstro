@@ -108,10 +108,15 @@ async def cancel_run(
         task_id = run.provenance.get(TASK_ID_KEY)
         if isinstance(task_id, str) and task_id:
             # The Run is already CANCELLED, so the queue's redundant transition
-            # is expected to be refused. That refusal is the projection seam:
-            # update_status reads canonical truth back through its admitter and
-            # terminalizes the live receipt, including metrics and persistence.
-            await get_task_queue().update_status(task_id, TaskStatus.CANCELLED)
+            # is not refused: the admitter accepts a transition whose target
+            # state already holds, and update_status terminalizes the live
+            # receipt through its ordinary path (metrics, persistence). The
+            # wall-clock stamps that path writes are then overwritten with the
+            # canonical Run's own truth — the receipt is a projection, so it
+            # carries the Run's finish time and outcome, not the clock.
+            queue = get_task_queue()
+            await queue.update_status(task_id, TaskStatus.CANCELLED)
+            queue.settle_terminal_receipt(task_id, run=run)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,

@@ -1210,6 +1210,31 @@ class TaskQueue:
             self._persist(task)
             self._notify(task_id)
 
+    def settle_terminal_receipt(self, task_id: str, *, run: Any) -> None:
+        """Copy an already-terminal Run's truth onto this replica's receipt.
+
+        `update_status` may land on a Run that reached the target state first:
+        the admitter accepts a transition whose target state already holds
+        (`TaskRunAdmitter.record_transition`), so the ordinary path runs and its
+        effects stamp wall-clock fields. The Run owns the truth (#849) — its
+        start/finish times and outcome outrank the projection's clock, exactly
+        as the refusal reconciliation would have projected them, so a caller
+        that already holds the canonical Run copies it onto the terminal
+        receipt and the durable row is rewritten to match.
+        """
+        task = self._tasks.get(task_id)
+        if task is None or task.status not in _TERMINAL:
+            return
+        if run.started_at is not None:
+            task.started_at = run.started_at
+        if run.finished_at is not None:
+            task.completed_at = run.finished_at
+        result = _receipt_result_for_run(run, task.status)
+        if result is not None:
+            task.result = result
+        self._persist(task)
+        self._notify(task_id)
+
     async def cancel(self, task_id: str) -> bool:
         """Cancel the canonical Run before updating its task receipt.
 
