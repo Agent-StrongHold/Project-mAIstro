@@ -76,12 +76,16 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # renumbered eval-score `051` onto the same parent, re-attached after that
     # tip as `052`, and after develop's stage ladder claimed `052` on the same
     # tip, as `053`. Develop's learning-lifecycle columns (M4-B,
-    # ADR-100126-8c2d) — numbered `053` when written — then re-parented onto
-    # that tip as `054`, and #1892's forward admission-generation
-    # representation — numbered `053` when written on the `052` base —
-    # re-parents onto that tip as `055`, so the single linear head is now
-    # `055`.
-    walked = {item.revision for item in directory.walk_revisions("base", "055")}
+    # ADR-100126-8c2d) — numbered `053` when written — re-parented onto that
+    # tip as `054` in the previous sync, and the M4-B3 lane's learning
+    # applicability migration (#119) — numbered `054` on develop unaware of
+    # this branch's open `054` — lands second in this sync, re-parenting onto
+    # the lifecycle tip as `055_learning_applicability_epistemics`. #1892's
+    # forward admission-generation representation — numbered `053` when
+    # written on the `052` base — lands second once more and re-parents onto
+    # that applicability tip as `056`, so the single linear head is now
+    # `056`.
+    walked = {item.revision for item in directory.walk_revisions("base", "056")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -96,7 +100,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "053" in walked
     assert "054" in walked
     assert "055" in walked
-    assert directory.get_heads() == ["055"]
+    assert "056" in walked
+    assert directory.get_heads() == ["056"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

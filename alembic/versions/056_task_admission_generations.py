@@ -74,11 +74,13 @@ Numbered 053 when written on the develop base whose chain tip was
 source (#82) already held ``053`` on that tip, so develop's
 learning-lifecycle columns (M4-B, ADR-100126-8c2d) re-parented onto the tip
 as ``054`` per this chain's documented collision convention (see 052, 051
-and 036) — and this revision, landing after those, re-parents onto the
-``054_learning_lifecycle_columns`` tip as ``055``. No duplicate ids.
+and 036), and the M4-B3 lane (#119) then delivered its applicability
+epistemics on the same parent as ``055_learning_applicability_epistemics``
+— this revision, landing after those, re-parents onto the applicability tip
+as ``056``. No duplicate ids.
 
-Revision ID: 055
-Revises: 054
+Revision ID: 056
+Revises: 055
 Create Date: 2026-10-04
 """
 
@@ -87,8 +89,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "055"
-down_revision = "054"
+revision = "056"
+down_revision = "055"
 branch_labels = None
 depends_on = None
 
@@ -219,7 +221,7 @@ def upgrade() -> None:
         # meeting this revision without it means somebody is stamping head
         # over a database the chain never touched. Refuse, loudly.
         raise RuntimeError(
-            "task_idempotency does not exist but revision 054 assumes it; "
+            "task_idempotency does not exist but revision 056 assumes it; "
             "the migration chain cannot stamp a forward admission-generation "
             "shape over a database that never ran 038"
         )
@@ -413,5 +415,5 @@ def _add_v2_check(bind: sa.Connection) -> None:
 def _malformed_message(kind: str, malformed: list[str]) -> str:
     return (
         f"task_idempotency exists with an incompatible {kind} shape; refusing "
-        f"to stamp revision 054 over it: " + "; ".join(malformed)
+        f"to stamp revision 056 over it: " + "; ".join(malformed)
     )

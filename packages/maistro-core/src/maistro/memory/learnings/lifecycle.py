@@ -1068,7 +1068,7 @@ def reinforce(
 ) -> Learning:
     """Reinforce in place: later Runs confirmed the correction helped."""
     learning.reinforcement_count += 1
-    learning.confidence = min(1.0, learning.confidence + delta)
+    learning.confidence = min(1.0, (learning.confidence or 0.0) + delta)
     learning.last_confirmed_at = now or datetime.now(UTC)
     return learning
 
@@ -1080,7 +1080,7 @@ def contradict(learning: Learning, delta: float = CONTRADICT_DELTA) -> Learning:
     is kept so a Gauntlet can weigh contradictions against reinforcements.
     """
     learning.contradiction_count += 1
-    learning.confidence = max(confidence_floor(learning), learning.confidence - delta)
+    learning.confidence = max(confidence_floor(learning), (learning.confidence or 0.0) - delta)
     return learning
 
 
@@ -1103,7 +1103,7 @@ def decay(
         return learning
     half_life = half_life_days if half_life_days is not None else half_life_for(learning)
     floor = confidence_floor(learning)
-    learning.confidence = floor + (learning.confidence - floor) * (
+    learning.confidence = floor + ((learning.confidence or 0.0) - floor) * (
         0.5 ** (elapsed_days / half_life)
     )
     return learning
@@ -1137,7 +1137,7 @@ def advance_stage(
     if to_stage is LearningStage.VALIDATED:
         learning.validated_by = gauntlet_name
         learning.validated_at = now or datetime.now(UTC)
-        learning.confidence = max(learning.confidence, VALIDATED_CONFIDENCE_FLOOR)
+        learning.confidence = max(learning.confidence or 0.0, VALIDATED_CONFIDENCE_FLOOR)
     if to_stage is LearningStage.REPERTOIRE:
         learning.status = "promoted"
     return learning
@@ -1177,7 +1177,7 @@ def absorb(survivor: Learning, absorbed: Learning) -> Learning:
     survivor.failure_after_use += absorbed.failure_after_use
     survivor.reinforcement_count += absorbed.reinforcement_count
     survivor.contradiction_count += absorbed.contradiction_count
-    survivor.confidence = max(survivor.confidence, absorbed.confidence)
+    survivor.confidence = max(survivor.confidence or 0.0, absorbed.confidence or 0.0)
     absorbed.status = "consolidated"
     absorbed.superseded_by = survivor.id
     return survivor
