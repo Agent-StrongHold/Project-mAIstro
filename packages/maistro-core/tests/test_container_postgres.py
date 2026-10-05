@@ -43,13 +43,13 @@ async def _fresh_pool():
     globally; closing the pool without unbinding leaves autouse fixtures
     holding a closed pool on the next test.
     """
-    from maistro.capabilities.effect_context import bind_container_effect_context
+    from maistro.capabilities.effect_context import default_effect_context
     from maistro.persistence import close_pool
 
-    bind_container_effect_context(None)
+    default_effect_context.cache_clear()
     await close_pool()
     yield
-    bind_container_effect_context(None)
+    default_effect_context.cache_clear()
     await close_pool()
 
 
