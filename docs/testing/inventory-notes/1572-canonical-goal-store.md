@@ -197,3 +197,55 @@ node ID, with no edits to the round-2 tree:
   `tests/test_check_execution_lifecycles.py::
   test_the_shipped_ledger_matches_the_shipped_code` fails on the same single
   `GoalStatus` finding, and `quality/` is untouched.
+
+## Repair round 4 (2026-10-05, develop syncs to `cd561822` then `30144ad0`)
+
+Two develop syncs in one round, each colliding with this branch on the same
+chain tip the store's migration sits at:
+
+- **Second and third migration collisions (the integration-scope breaker):**
+  develop's #1892 claimed `054` off the `053` head this store had re-parented
+  onto, and the next sync claimed `055` again (#119's
+  `054_learning_applicability_epistemics` re-parented #1892 to
+  `055_task_admission_generations`). The store's migration re-parents twice in
+  step — now `056_canonical_goals` (`down_revision = "055"`), per the chain's
+  collision convention — and every textual reference in `maistro.goals`, the
+  parity/chain tests and this note moved with it. Proven on fresh empty
+  pgvector pg18 **and** pg17: `alembic upgrade head` walks 000→056, stamps
+  `056`, and leaves the three Goal tables; single linear head `056`.
+- **Develop's task-admission downgrade test hardcoded the chain tip** (`assert
+  _stamped_version() == "055"`): on any integrated tree the tip is the branch's
+  revision, so the refusal test failed for the wrong reason. It now captures
+  the head it upgraded to and asserts the stamp did not move — the same
+  assertion at the same strength, tip-independent. 14/14 pass on pg18.
+- **Pyright ratchet, branch debt paid:** the 8 findings in `goals/pg_store.py`
+  (PoolConnectionProxy vs Connection on the three connection-taking helpers,
+  and the `fetchval -> int` assignment) are fixed with the repo's established
+  shapes (`asyncpg.pool.PoolConnectionProxy` like `pg_learnings.py`; the
+  store's existing `int(x or 0)` spelling for the typed-`| None` aggregate).
+  Measured with pyright 1.1.414 on identical inputs: develop tip `30144ad0` =
+  35 errors, this branch = 27, **branch-only = 0** — the residual over
+  `PYRIGHT_BASELINE: 21` is develop's own debt under the current analyzer
+  version, not this change's. `mypy --strict` clean on all packages.
+- **Vulture ledger:** re-run with CI's exact arguments against the new base —
+  1338 = 1338, unclassified 0, exit 0. `quality/vulture-baseline.json` needed
+  no amendment; the syncs' net identity count already matched.
+- **Integration-scope required evidence, reproduced locally:** postgres
+  (pg17+pg18) as above; goals conformance **60/60 with
+  `MAISTRO_REQUIRE_PG_LEGS=1` on both majors**; schema parity 2/2 on both;
+  durable-events 382 passed, strike-ladder + elevation 46 passed (pg18 legs);
+  wheel-imports re-run with every package wheel built (`--python 3.12`) —
+  "All wheels import from a clean venv", exit 0, bare tier 61 checks including
+  `maistro.goals`; hive-conductor-e2e run from this tree via
+  `docker compose -f docker-compose.test.yml --profile test up --build
+  --exit-code-from api-tests` — api-tests exit 0 (10 passed, 13 skipped), the
+  live production composition booting with the Goal store wired. Not locally
+  reproduced: docker-build's full four-image matrix (the hive image built
+  from this tree as part of the e2e), the Playwright UI leg, and MinIO
+  object-storage (no archive/object-storage path in this branch's diff).
+- **Still red, unchanged and unfixable from a branch:** the execution-lifecycle
+  ledger. The base (`30144ad0`) classifies 19 vocabularies, carries no
+  `GoalStatus` authorization, and the gate reads `quality/
+  ratchet-authorizations.json` from that base — the sanctioned DOMAIN grant
+  must land on develop first (two-merge rule), then this branch re-merges.
+  The candidate ledger stays untouched, per rounds 1–3.
