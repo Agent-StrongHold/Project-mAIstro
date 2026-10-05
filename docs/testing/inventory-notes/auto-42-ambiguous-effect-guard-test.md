@@ -18,7 +18,9 @@ stable logical `effect_scope` makes the canonical effect contract span
 NodeRun visits; the Run fails truthfully and the persisted Invocation retains
 the first visit's `run_id`/`node_run_id`/`attempt_id`.
 
-Mutation-checked: removing the stable `effect_scope` from the invoke call
-(the pre-#1194 bug shape, where scope falls back to the fresh per-visit
-`node_run_id`) makes the test fail with three physical dispatches, so the
-guard has teeth and is not keyed on any single implementation detail.
+Mutation-checked: bypassing the durable executor's
+`bind_logical_effect_scope(...)` binding (the pre-fix bug shape, where an
+omitted scope falls back to the fresh per-visit `node_run_id`) makes the test
+fail with three physical dispatches. The node intentionally omits
+`effect_scope` from `invoke()` so the guard proves the production inheritance
+path rather than a duplicated test-only scope.
