@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
+from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S
 from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.tasks.http_contract import (
     DELEGATION_HEADER,
@@ -26,10 +27,8 @@ from maistro_server.api.schemas import PaginatedTasks, TaskCancelledResponse, Ta
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-#: Retry-After seconds advertised when the active-root-Run ceiling refuses
-#: admission. The runner drains continuously, so a one-second horizon is the
-#: honest floor; callers must still honor the header dynamically.
-TASK_CONCURRENCY_RETRY_AFTER_S = 1
+#: Use the same retry horizon as chat when canonical Run admission is refused.
+TASK_CONCURRENCY_RETRY_AFTER_S = CHAT_TURN_RETRY_AFTER_S
 
 
 def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
@@ -92,9 +91,10 @@ async def create_task(
     uid, service_principal, delegation_id, actor_kind = resolve_delegated_identity(auth, delegation)
     try:
         # The queue owns key validation and reconciliation (#1176); this layer
-        # only translates the two refusal shapes into their status codes —
-        # 422 for a key the request itself makes ambiguous, 409 for a reused
-        # key that admitted a different payload.
+        # only translates the refusal shapes into their status codes — 422 for
+        # a key the request itself makes ambiguous, 409 for a reused key that
+        # admitted a different payload, 429 for a canonical ceiling that is
+        # full (#1182).
         task = await queue.submit(
             request,
             user_id=uid,
@@ -115,19 +115,13 @@ async def create_task(
             detail=str(exc),
         ) from exc
     except RunConcurrencyExceeded as exc:
-        # Governed admission backpressure (#1182): a full per-principal or
-        # per-workspace active-root-Run ceiling is "the same request is
-        # admissible once a slot frees", not a server fault. Surfaced by the
-        # #860 soak (F9): at the profile's sustained admission rate the
-        # ceiling engages within seconds, and the raw exception escaped as an
-        # unhandled 500 + traceback, reading as an admission failure instead
-        # of the designed rejection it is.
+        # Backpressure, not an admission outage (#1182, #860 F9): the
+        # canonical Run ceiling is full. Nothing was admitted, so return
+        # neither a successful receipt nor a server fault. Keep Retry-After
+        # on the exception; the error handler builds its own Response.
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
-            # On the exception, not the Response: the error response that
-            # carries a 429 is built by the exception handler and would drop
-            # anything set on the injected Response parameter.
+            detail=f"active root Run ceiling reached for this {exc.scope}; retry shortly",
             headers={"Retry-After": str(TASK_CONCURRENCY_RETRY_AFTER_S)},
         ) from exc
     response.headers["Location"] = f"/tasks/{task.task_id}"
