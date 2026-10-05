@@ -19,15 +19,16 @@ No execution state lives here: the canonical `Goal -> Graph -> Run ->
 NodeRun -> Attempt` spine keeps its own primitives, and a Run carries its
 Goal binding as payload provenance written once at admission (#1572).
 
-Numbered 054 directly after `053_learning_lifecycle_columns`: this issue's
-first draft took 053 off develop's 052 head; develop's own
-`053_learning_lifecycle_columns` then landed on the same number (its
-docstring records the same story one collision earlier, at 052). Renumbered
-and re-parented onto develop's revision, per that precedent: one linear
-head, no duplicate revision ids.
+Numbered 055 directly after develop's `054_task_admission_generations`: this
+issue's first draft took 053 off develop's 052 head, then re-parented onto
+develop's `053_learning_lifecycle_columns` as 054; #1892's
+`054_task_admission_generations` then claimed 054 off that same 053 head
+(its docstring records the same story one collision earlier, at 053).
+Renumbered and re-parented onto develop's revision, per that precedent: one
+linear head, no duplicate revision ids.
 
-Revision ID: 054
-Revises: 053
+Revision ID: 055
+Revises: 054
 Create Date: 2026-10-03
 """
 
@@ -35,8 +36,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "054"
-down_revision = "053"
+revision = "055"
+down_revision = "054"
 branch_labels = None
 depends_on = None
 
