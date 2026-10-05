@@ -82,6 +82,7 @@ Runs suite passed 1,199 tests (247 skipped); and suite inventory remained
 its trusted base `94781cf6b708` predates the nine reviewed declarative
 identities already recorded in the candidate ledger. Reachability and ratchet
 provenance also exit 1 only for this intentionally inactive module; disposition
-and promotion-surface checks pass. This leaf does not add a baseline,
-disposition, suppression, or fake production import to evade that required
-integration-head gate.
+and promotion-surface checks pass. Beyond the CI-repair-permitted Vulture
+ledger entries, this leaf adds no reachability baseline, disposition,
+suppression, or fake production import to evade that required integration-head
+gate.
