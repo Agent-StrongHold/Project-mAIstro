@@ -58,6 +58,7 @@ from maistro.runs.store import (
     StaleExecutionFence,
     admit_in_state,
     is_purgeable,
+    matches_chat_admission_snapshot,
     outcome_embeds_attempt,
     repaired_accepted_outcome,
     require_repairable_attempt,
@@ -76,6 +77,20 @@ if TYPE_CHECKING:
     from maistro.workspaces.store import WorkspaceStore
 
 _TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
+
+
+async def _settled_begin_error(pending: asyncio.Future[Any]) -> BaseException | None:
+    """Observe a queued BEGIN even when its caller has been cancelled."""
+    while not pending.done():
+        try:
+            await asyncio.shield(pending)
+        except BaseException:
+            # A repeated caller cancellation must not cancel the DB operation
+            # whose outcome tells us whether its transaction is ours.
+            continue
+    if pending.cancelled():
+        return asyncio.CancelledError()
+    return pending.exception()
 
 
 def _placeholders(count: int) -> str:
@@ -1102,6 +1117,34 @@ class SqliteRunStore:
                 backlog_remaining=len(doomed) > limit,
             )
 
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        async with self._write_lock:
+            await self._begin_immediate()
+            committed = False
+            try:
+                current = await self._require_run(expected.run_id)
+                if not matches_chat_admission_snapshot(current, expected):
+                    return False
+                if await self._fetchone(
+                    "SELECT 1 FROM canonical_node_runs WHERE run_id = ? LIMIT 1",
+                    (expected.run_id,),
+                ):
+                    return False
+                updated = transition_run(current, RunStatus.CANCELLED, error=error)
+                await self._conn.execute(
+                    "UPDATE canonical_runs SET status = ?, payload = ? WHERE run_id = ?",
+                    (updated.status.value, json_of(updated), expected.run_id),
+                )
+                await self._conn.commit()
+                committed = True
+                return True
+            finally:
+                # Releases the cross-connection reservation on false, failure
+                # or cancellation too, without touching the connection again
+                # after a successful commit released our transaction.
+                if not committed:
+                    await self._conn.rollback()
+
     async def transition_run(
         self,
         run_id: str,
@@ -1115,33 +1158,41 @@ class SqliteRunStore:
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._write_lock:
-            run = await self._require_run(run_id)
-            check_completion_is_earned(target, await self._node_runs_of(run_id))
-            updated = transition_run(run, target, at=at, result=result, error=error)
-            settled: list[NodeRun] = []
-            if target in TERMINAL_RUN_STATUSES:
-                settled = [
-                    settle_open_node_run(node_run, target, at=at)
-                    for node_run in await self._open_node_runs(run_id)
-                ]
-            # One commit for the Run and every NodeRun it settles
-            # (ADR-082426-a47f). `_update_payload` commits per call, so the
-            # cascade writes through `_stage_payload` and commits once at the
-            # end: a half-settled Run reads as deliberate, which is worse than
-            # an unsettled one.
-            self._stage_payload(
-                "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
-            )
-            for node_run in settled:
+            # A stale parent read must not overwrite a cancellation committed
+            # by another connection. Reserve the writer before any reads.
+            await self._begin_immediate()
+            try:
+                run = await self._require_run(run_id)
+                check_completion_is_earned(target, await self._node_runs_of(run_id))
+                updated = transition_run(run, target, at=at, result=result, error=error)
+                settled: list[NodeRun] = []
+                if target in TERMINAL_RUN_STATUSES:
+                    settled = [
+                        settle_open_node_run(node_run, target, at=at)
+                        for node_run in await self._open_node_runs(run_id)
+                    ]
+                # One commit for the Run and every NodeRun it settles
+                # (ADR-082426-a47f). `_update_payload` commits per call, so the
+                # cascade writes through `_stage_payload` and commits once at the
+                # end: a half-settled Run reads as deliberate, which is worse than
+                # an unsettled one.
                 self._stage_payload(
-                    "canonical_node_runs",
-                    "node_run_id",
-                    node_run.node_run_id,
-                    node_run.status.value,
-                    json_of(node_run),
+                    "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
                 )
-            await self._flush()
-            return updated
+                for node_run in settled:
+                    self._stage_payload(
+                        "canonical_node_runs",
+                        "node_run_id",
+                        node_run.node_run_id,
+                        node_run.status.value,
+                        json_of(node_run),
+                    )
+                await self._flush()
+                return updated
+            except BaseException:
+                self._pending.clear()
+                await self._conn.rollback()
+                raise
 
     async def _open_node_runs(self, run_id: str) -> list[NodeRun]:
         """Every non-terminal NodeRun under this Run, in ordinal order."""
@@ -1155,35 +1206,42 @@ class SqliteRunStore:
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         async with self._write_lock:
-            run = await self._require_run(run_id)
-            if run.status in TERMINAL_RUN_STATUSES:
-                raise RunIntegrityError("cannot create NodeRun under a terminal Run")
-            graph = run.graph.materialize()
-            if not any(node.node_id == node_id for node in graph.nodes):
-                raise RunIntegrityError(
-                    f"node_id {node_id!r} is not present in the Run Graph snapshot",
+            # Serialize parent validation with conditional cancellation even
+            # when another process uses its own connection/store lock.
+            await self._begin_immediate()
+            try:
+                run = await self._require_run(run_id)
+                if run.status in TERMINAL_RUN_STATUSES:
+                    raise RunIntegrityError("cannot create NodeRun under a terminal Run")
+                graph = run.graph.materialize()
+                if not any(node.node_id == node_id for node in graph.nodes):
+                    raise RunIntegrityError(
+                        f"node_id {node_id!r} is not present in the Run Graph snapshot",
+                    )
+                row = await self._fetchone(
+                    "SELECT COALESCE(MAX(ordinal), 0) FROM canonical_node_runs WHERE run_id = ?",
+                    (run_id,),
                 )
-            row = await self._fetchone(
-                "SELECT COALESCE(MAX(ordinal), 0) FROM canonical_node_runs WHERE run_id = ?",
-                (run_id,),
-            )
-            ordinal = int(row[0]) + 1 if row is not None else 1
-            node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
-            await self._conn.execute(
-                """INSERT INTO canonical_node_runs
-                   (node_run_id, run_id, node_id, ordinal, status, payload)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    node_run.node_run_id,
-                    node_run.run_id,
-                    node_run.node_id,
-                    node_run.ordinal,
-                    node_run.status.value,
-                    json_of(node_run),
-                ),
-            )
-            await self._conn.commit()
-            return node_run
+                ordinal = int(row[0]) + 1 if row is not None else 1
+                node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+                await self._conn.execute(
+                    """INSERT INTO canonical_node_runs
+                       (node_run_id, run_id, node_id, ordinal, status, payload)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        node_run.node_run_id,
+                        node_run.run_id,
+                        node_run.node_id,
+                        node_run.ordinal,
+                        node_run.status.value,
+                        json_of(node_run),
+                    ),
+                )
+                await self._conn.commit()
+                return node_run
+            except BaseException:
+                await self._conn.rollback()
+                raise
 
     async def get_node_run(
         self, node_run_id: str, *, principal_id: str | None = None
@@ -1517,6 +1575,25 @@ class SqliteRunStore:
             )
         if project.workspace_id != graph.workspace_id:
             raise RunIntegrityError("Graph Project does not belong to the Graph Workspace")
+
+    async def _begin_immediate(self) -> None:
+        """Reserve a transaction without rolling back a sibling's open write.
+
+        The connection is shared with sibling stores. SQLite rejecting BEGIN
+        proves we never acquired their transaction. Cancellation can hide that
+        rejection while aiosqlite's worker still executes it, so retain and
+        inspect the actual operation before deciding whether cleanup is ours.
+        """
+        pending = asyncio.ensure_future(self._conn.execute("BEGIN IMMEDIATE"))
+        try:
+            await asyncio.shield(pending)
+        except BaseException:
+            failure = await _settled_begin_error(pending)
+            if not isinstance(failure, sqlite3.Error):
+                # Success followed by caller cancellation, or an ambiguous
+                # non-SQLite response failure, can leave our BEGIN active.
+                await self._conn.rollback()
+            raise
 
     async def _require_run(self, run_id: str) -> Run:
         run = await self.get_run(run_id)

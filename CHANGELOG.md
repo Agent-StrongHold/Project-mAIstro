@@ -77,6 +77,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Chat admission compensation is conditional on the unchanged, unstarted Run (#338).**
+  A QUEUED or RUNNING write that commits but loses its response is compensated
+  before the existing retryable refusal, without dispatching the turn. The
+  stranded-chat sweep now compares the Run snapshot and checks NodeRun absence
+  inside the store transaction; a concurrent node creation defeats cancellation.
+  SQLite node creation and Run transitions reserve their write transactions
+  before reading the parent,
+  so independent connections obey the same race rule. This does not change
+  admission liveness policy or recover historical NodeRuns with no Attempt.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was

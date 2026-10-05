@@ -88,6 +88,7 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
+    matches_chat_admission_snapshot,
     outcome_embeds_attempt,
     repaired_accepted_outcome,
     require_repairable_attempt,
@@ -1046,6 +1047,23 @@ class PgRunStore:
         oldest_raw = row["oldest"]
         oldest = datetime.fromisoformat(oldest_raw) if oldest_raw else None
         return int(row["open_runs"]), oldest
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            current = Run.model_validate(
+                await self._locked(conn, "canonical_runs", "run_id", expected.run_id)
+            )
+            if not matches_chat_admission_snapshot(current, expected):
+                return False
+            # create_node_run locks this same parent before inserting: no
+            # physical dispatch can appear between this check and the write.
+            if await conn.fetchval(
+                "SELECT 1 FROM canonical_node_runs WHERE run_id = $1 LIMIT 1", expected.run_id
+            ):
+                return False
+            updated = transition_run(current, RunStatus.CANCELLED, error=error)
+            await self._write(conn, "canonical_runs", "run_id", expected.run_id, updated)
+            return True
 
     async def transition_run(
         self,
