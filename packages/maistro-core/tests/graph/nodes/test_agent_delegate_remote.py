@@ -208,6 +208,49 @@ async def test_cross_instance_first_reach_pauses_with_task_id() -> None:
     )
 
 
+async def test_retry_after_crash_before_settlement_returns_the_recorded_rejection() -> None:
+    """A completed declined dispatch replays through settlement, not recovery.
+
+    The first visit claimed the transport, the peer declined, and the
+    Invocation landed COMPLETED with `status: "rejected"` -- then the process
+    died before the reserved child was released. The retry must return that
+    recorded rejection instead of polling for a receipt that can never exist.
+    """
+    node, fixture = await _external_spine(
+        delegate_result=DelegationResult(
+            task_id="", peer_name="hub", status="rejected", error="declined by peer"
+        )
+    )
+    inputs, ctx, store = fixture["inputs"], fixture["ctx"], fixture["store"]
+
+    # Crash window: the Invocation is durable but the child was never released.
+    original_settle = node._settle_invoked_dispatch
+
+    async def crash_before_settlement(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("simulated crash after the Invocation persisted")
+
+    node._settle_invoked_dispatch = crash_before_settlement  # type: ignore[method-assign]
+    first = await node.run(inputs, ctx)
+    assert first.success is False
+    node._settle_invoked_dispatch = original_settle  # type: ignore[method-assign]
+
+    result = await node.run(inputs, ctx)
+
+    assert result.status == "completed"
+    assert result.output is not None
+    assert result.output.status == "rejected"
+    assert result.output.error == "declined by peer"
+    # The already-consumed transport claim must not send the retry polling
+    # for a receipt, and the declined dispatch files no child Run.
+    fixture["peers"].delegate.assert_called_once()
+    children = [
+        run
+        for run in store._runs.values()  # type: ignore[attr-defined]
+        if run.parent_run_id == ctx.run_id
+    ]
+    assert children == []
+
+
 async def test_cross_instance_no_guest_peers_configured_is_a_refusal_not_a_result() -> None:
     """Same distinction on the cross-instance path (#147)."""
     node = AgentDelegateRemoteNode()  # no guest_peers injected

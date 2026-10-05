@@ -337,8 +337,11 @@ class TestDelegatedAuthorityIsAttenuated:
         assert result.success is False
         assert result.error_code == "CapabilityUnavailable"
         assert "some-other-peer" in (result.error_message or "")
-        assert _children_of(store, ctx.run_id), (
-            "the child was reserved before the provider failed; it is parked, not dispatched"
+        assert _children_of(store, ctx.run_id) == [], (
+            "a refusal this instance owns releases the reservation: the child "
+            "must not survive as a canonical Run implying remote work, and its "
+            "spent transport claim would otherwise send every retry to "
+            "reconcile a dispatch that provably never started"
         )
 
     async def test_a_policy_denial_stops_the_dispatch_before_the_transport(self) -> None:
@@ -375,6 +378,53 @@ class TestDelegatedAuthorityIsAttenuated:
         assert result.success is False
         assert result.error_code == InvocationDenied.__name__
         assert posts["n"] == 0, "a denied authority never reaches the peer"
+
+    async def test_a_repaired_retry_claims_a_fresh_transport_attempt(self) -> None:
+        """After a pre-transport refusal released the reservation, a retry
+        dispatches instead of reconciling work that never started.
+
+        The first visit fails on a binding pinned to another provider; the
+        operator repairs the binding and the same Run re-enters the node.
+        A retained child would carry its spent transport claim, forcing this
+        retry to reconcile a dispatch that provably never started (parking
+        until the delegation timeout); a released one lets the dispatch
+        proceed immediately.
+        """
+        posts = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            posts["n"] += 1
+            return httpx.Response(200, json={"task_id": "remote-1"})
+
+        set_test_transport(httpx.MockTransport(handler))
+        store, project = await _spine()
+        ctx, _parent = await _parent_and_ctx(store, project.project_id)
+
+        mispinned = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(),
+            run_store=store,
+            effect_context=await delegation_effects(
+                workspace_id="workspace-1",
+                project_id=project.project_id,
+                provider_name="some-other-peer",
+            ),
+        )
+        refused = await mispinned.run(_inputs(), ctx)
+        assert refused.success is False
+        assert refused.error_code == "CapabilityUnavailable"
+        assert _children_of(store, ctx.run_id) == []
+
+        repaired = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(),
+            run_store=store,
+            effect_context=await delegation_effects(
+                workspace_id="workspace-1", project_id=project.project_id
+            ),
+        )
+        result = await repaired.run(_inputs(), ctx)
+
+        assert result.status == "paused"
+        assert posts["n"] == 1, "the retry dispatched fresh instead of reconciling"
 
     async def test_a_require_approval_policy_parks_on_the_human_pause(self) -> None:
         """A manageable approval decision is a durable HITL pause -- the same
@@ -419,6 +469,62 @@ class TestDelegatedAuthorityIsAttenuated:
         assert result.metadata["paused_reason"] == "awaiting_human_approval"
         assert result.metadata["effect_key"]
         assert posts["n"] == 0
+
+    async def test_an_approved_delegation_dispatches_instead_of_reconciling(self) -> None:
+        """The transport boundary is claimed by the executor, not the visit.
+
+        An approval pause must leave the boundary unclaimed: the post-approval
+        resume crosses it -- a fresh POST -- rather than finding a spent claim
+        with no Invocation and parking the approved delegation on a
+        reconciliation loop until timeout.
+        """
+        posts = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            posts["n"] += 1
+            return httpx.Response(200, json={"task_id": "remote-1"})
+
+        set_test_transport(httpx.MockTransport(handler))
+        store, project = await _spine()
+        ctx, _parent = await _parent_and_ctx(store, project.project_id)
+
+        async def require_approval(_binding: Any, _request: Any, _context: Any) -> PolicyVerdict:
+            return PolicyVerdict(
+                Decision.REQUIRE_APPROVAL, reason="delegation needs a human", rule="test"
+            )
+
+        effects = new_effect_context(
+            policy_evaluator=require_approval,
+            approval_store=InMemoryApprovalStore(),
+        )
+        await effects.bindings.put(
+            Binding(
+                binding_id="binding-hub",
+                workspace_id="workspace-1",
+                project_id=project.project_id,
+                capability=AGENT_DELEGATION_CAPABILITY,
+            )
+        )
+        node = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(),
+            run_store=store,
+            effect_context=effects,
+        )
+
+        first = await node.run(_inputs(), ctx)
+        assert first.metadata["paused_reason"] == "awaiting_human_approval"
+        assert posts["n"] == 0
+        assert effects.approval_store is not None
+        await effects.approval_store.resolve(
+            str(first.metadata["approval_request_id"]), approved=True, actor="human-1"
+        )
+
+        second = await node.run(_inputs(), ctx)
+
+        assert posts["n"] == 1, "the approved delegation dispatched instead of reconciling"
+        assert second.status == "paused"
+        assert second.metadata["paused_reason"] == "awaiting_remote_delegation"
+        assert second.metadata["task_id"] == "remote-1"
 
     async def test_an_unmanageable_approval_requirement_fails_the_node(self) -> None:
         """No approval store wired: the instance cannot manage the decision,

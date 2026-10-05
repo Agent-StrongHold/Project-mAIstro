@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +47
+  packages/maistro-core/tests: +51
   packages/maistro-server/tests: +1
 ---
 # 959 — external Agent delegation bound to canonical identity and evidence
@@ -35,6 +35,29 @@ reconciliation park.
 contract itself: required canonical fields, Goal/Subgoal coherence via
 `validate_goal_binding`, payload round-tripping, and the attenuation arithmetic
 (order-preserving intersection, refusal-not-narrowing, empty ceiling fail-closed).
+
+**+2 in `tests/a2a/test_guest_peers.py` (identity/key binding follow-up).** One
+canonical effect identity now reaches the receiver two ways that cannot
+diverge: an unsupplied transport key is derived from the context's
+`delegation_key` (asserted equal on the wire header and the POST body), and a
+caller-supplied key that differs from the context is refused before any bytes
+with the refusal audited.
+
+**+2 in `tests/graph/nodes/test_agent_delegate_remote_governance.py`
+(refusal-cleanup follow-up).** A pre-transport refusal this instance owns
+(provider-pinning `CapabilityUnavailable`, policy `InvocationDenied`) releases
+the reserved child Run — it must not survive as canonical evidence implying
+remote work — and a retry after the operator repairs the binding claims a
+fresh transport attempt and dispatches, instead of reconciling a dispatch that
+provably never started (the once-only `transport_attempted` claim would
+otherwise park every retry until the delegation timeout).
+
+**+1 in `tests/graph/nodes/test_agent_delegate_remote.py` (crash-replay
+follow-up).** A dispatch Invocation that landed COMPLETED as a peer decline and
+crashed before settlement replays through settlement on the retry — the retry
+returns the recorded rejection and files no child Run — instead of polling for
+a receipt the declined dispatch can never have (the old `_completed_dispatch`
+filter dropped receipt-less COMPLETED rows, sending the retry to recovery).
 
 **+20 across the existing delegation/peer files.** `test_guest_peers.py` grew the
 transport-boundary gate (context-less refused, envelope/context agent mismatch,

@@ -18,7 +18,9 @@ from maistro.a2a.guest_peers import (
 from maistro.http import set_test_transport
 
 
-def _context(agent: str = "planner", **overrides: Any) -> DelegationContext:
+def _context(
+    agent: str = "planner", *, delegation_key: str = "effect-1", **overrides: Any
+) -> DelegationContext:
     """One canonical delegation context; tests override single fields."""
     return DelegationContext(
         caller_principal_id="actor-1",
@@ -27,7 +29,7 @@ def _context(agent: str = "planner", **overrides: Any) -> DelegationContext:
         project_id="project-1",
         run_id="run-1",
         node_run_id="node-run-1",
-        delegation_key="effect-1",
+        delegation_key=delegation_key,
         **overrides,
     )
 
@@ -119,7 +121,7 @@ async def test_delegate_claiming_scopes_beyond_the_peer_ceiling_is_refused(
         "hub",
         "planner",
         [{"role": "user", "content": "x"}],
-        idempotency_key="key-allowed",
+        idempotency_key="effect-1",  # must equal context.delegation_key
         context=_context(delegated_scopes=("web.read",)),
     )
     assert allowed.status == "submitted"
@@ -471,14 +473,64 @@ async def test_delegate_returns_the_cached_receipt_for_the_same_idempotency_key(
         "planner",
         [{"role": "user", "content": "x"}],
         idempotency_key="key-1",
-        context=_context(),
+        context=_context(delegation_key="key-1"),
     )
     second = await manager.delegate(
         "hub",
         "planner",
         [{"role": "user", "content": "x"}],
         idempotency_key="key-1",
-        context=_context(),
+        context=_context(delegation_key="key-1"),
     )
     assert posts["n"] == 1
     assert second == first
+
+
+async def test_delegate_derives_transport_key_from_context_delegation_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["idempotency"] = request.headers.get("idempotency-key")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"task_id": "remote-6"})
+
+    _patch_transport(monkeypatch, handler)
+    manager = GuestPeerManager()
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+    result = await manager.delegate(
+        "hub",
+        "planner",
+        [{"role": "user", "content": "x"}],
+        context=_context(),
+    )
+    assert result.status == "submitted"
+    assert seen["idempotency"] == seen["body"]["delegation_context"]["delegation_key"]
+    assert seen["idempotency"] == "effect-1"
+
+
+async def test_delegate_rejects_idempotency_key_diverging_from_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"task_id": "remote-7"})
+
+    _patch_transport(monkeypatch, handler)
+    audit = InMemoryAuditLogger()
+    manager = GuestPeerManager(audit=audit)
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+    refused = await manager.delegate(
+        "hub",
+        "planner",
+        [{"role": "user", "content": "x"}],
+        idempotency_key="other-key",
+        context=_context(),
+    )
+    assert refused.status == "rejected"
+    assert "idempotency_key" in (refused.error or "")
+    assert "body" not in sent, "nothing reached the peer"
+    assert "refused" in audit.entries[-1]["detail"]

@@ -267,10 +267,27 @@ class GuestPeerManager:
             return refused
         assert context is not None  # refused above when absent
 
-        if idempotency_key is not None:
-            cached = self._idempotent_receipts.get((peer_name, idempotency_key))
-            if cached is not None:
-                return cached
+        # One canonical key: the transport Idempotency-Key (what the receiver
+        # claims its Run by) must be the context's ``delegation_key`` (the
+        # persisted evidence), or recovery and provenance would name different
+        # logical effects. Derive it from the validated context; never accept
+        # a divergent caller-supplied key.
+        if idempotency_key is None:
+            idempotency_key = context.delegation_key
+        elif idempotency_key != context.delegation_key:
+            await self._audit.log_delegation(
+                peer_name, agent_id, "refused: idempotency_key != context.delegation_key"
+            )
+            return DelegationResult(
+                task_id="",
+                peer_name=peer_name,
+                status="rejected",
+                error="idempotency_key does not match context.delegation_key",
+            )
+
+        cached = self._idempotent_receipts.get((peer_name, idempotency_key))
+        if cached is not None:
+            return cached
 
         peer = self.get_peer(peer_name)
         rejection = self._admission_rejection(peer, agent_id)

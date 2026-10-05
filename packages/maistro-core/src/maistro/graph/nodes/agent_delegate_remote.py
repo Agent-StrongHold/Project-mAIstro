@@ -814,19 +814,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         # accepted effect: adopt its receipt instead of dispatching again.
         replayed = await self._completed_dispatch(binding=binding, ctx=ctx, key=key)
         if replayed is not None:
-            task_id = str((replayed.result or {}).get("task_id") or "")
-            if task_id:
-                await self._attach_receipt(child_id, task_id)
-                self._pause(inputs, task_id=task_id, mode="guest_peer", run_id=child_id)
-                return DelegateRemoteOut()  # unreachable
-
-        claimed = await self._claim_transport_attempt(child_id)
-        if not claimed:
-            # Another replica may have crossed the boundary while this one was
-            # reserving the same child. Reconcile; never POST a second time.
-            return await self._recover_cross_instance(
-                inputs, ctx, binding=binding, key=key, child_id=child_id
-            )
+            # Settle the persisted outcome exactly as the first visit would
+            # have: a receipt is adopted, a declined dispatch releases the
+            # reserved child, and a completed row without a receipt parks on
+            # reconciliation. Re-deriving any of that here would diverge from
+            # the settlement the Invocation actually records.
+            return await self._settle_invoked_dispatch(inputs, replayed, child_id=child_id)
 
         return await self._invoke_peer_dispatch(
             inputs,
@@ -1008,9 +1001,10 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         )
         if latest is None or latest.status is not InvocationStatus.COMPLETED:
             return None
-        result = latest.result if isinstance(latest.result, dict) else {}
-        if not str(result.get("task_id") or ""):
-            return None
+        # COMPLETED is terminal evidence whatever the outcome: a decline is a
+        # completed call with `status: "rejected"` and intentionally no task
+        # ID. Filtering on the receipt here would bury the recorded outcome
+        # and send the retry polling for a receipt that can never exist.
         return latest
 
     async def _invoke_peer_dispatch(
@@ -1057,6 +1051,20 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return _PeerDelegationProvider(peer)
 
         async def execute_provider(provider: ResolvedCapabilityProvider, request: Any) -> Any:
+            # The transport boundary is claimed here -- inside the governed
+            # executor, after admission and policy have passed -- not at
+            # reservation. An approval pause must not leave a child marked
+            # `transport_attempted` for a POST that never happened: the
+            # post-approval visit re-enters with the claim still free and
+            # executes, instead of reconciling a dispatch that never started.
+            claimed = await self._claim_transport_attempt(child_id)
+            if not claimed:
+                # Another replica won the boundary while this visit sat in
+                # policy or approval. The peer's idempotent receipt query,
+                # never a second POST, settles whose dispatch is canonical.
+                raise UnsafeEffectRetry(
+                    f"delegation transport for effect {key!r} was claimed by another visit"
+                )
             return await self._execute_peer_delegation(
                 provider,
                 request,
@@ -1096,9 +1104,15 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             raise
         except (CapabilityUnavailable, InvocationDenied):
             # Nothing was dispatched: the provider is missing or policy said
-            # no before admission. That is a refusal this instance owns, so
-            # the node fails loudly instead of parking work that never
-            # crossed the boundary.
+            # no before the executor ran, so the transport claim is still
+            # unspent. That is a refusal this instance owns, so the node
+            # fails loudly instead of parking work that never crossed the
+            # boundary. The reservation happened before the seam could
+            # answer, so release the child: it must not survive as a
+            # canonical Run implying remote work, and a retry re-reserves and
+            # claims fresh rather than reconciling a dispatch that provably
+            # never started.
+            await self._release_unaccepted_child(child_id)
             raise
         except UnsafeEffectRetry:
             # The ledger holds an unresolved dispatch for this exact logical
