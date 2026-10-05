@@ -485,9 +485,21 @@ async def test_configured_hive_agents_use_admitted_execution_and_usage(
     (roster / "boot-agent" / "agent.yaml").write_text(
         "name: boot-agent\nmodel: requested-alias\nreasoning:\n  strategy: direct\ntools: []\n"
     )
+    provider_config = tmp_path / "providers.yaml"
+    # A configured Binding pin needs operator-declared registry metadata (#1957).
+    provider_config.write_text(
+        "models:\n"
+        "  - name: configured-hive-model\n"
+        "    provider: fixture-provider\n"
+        "    cost_input: 0.1\n"
+        "    cost_output: 0.2\n"
+        "    latency_p50_ms: 100\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("DATABASE_URL", database_url)
     settings = Settings(
         maistro_agents_dir=str(roster),
+        provider_config_path=str(provider_config),
         maistro_router_api_key="fixture-router-key",
         maistro_llm_api_key="configured-binding-key",
         hive_default_workspace_id=workspace_id,
