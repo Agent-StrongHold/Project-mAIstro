@@ -415,3 +415,73 @@ edit cannot resolve this blocker.
 
 Progress: checked 1, done 0, skipped 0 issues, errors 0 executed checks;
 6 PostgreSQL tests skipped. Acceptance remains blocked; no new item started.
+
+## Job 7c17dc01 — fresh validation of assigned head dabd9fe28984
+
+Scope frozen to #860 in `/home/dev/Git/wt/auto-860`, starting HEAD
+`dabd9fe28984252f85f463b08b597d91b68f9342`, supplied base
+`30677b185400538df2aab0432c63c02d673f3d0e`. Initial worktree clean; no
+merge conflict and no driver `check-*.log` files supplied. Read the frozen
+issue acceptance/comments and prior result; the prior BLOCKED verdict was
+not substituted for execution. Logs from this validation are in
+`/home/dev/maistro/jobs/7c17dc01c78246de9f35d67c105d596e/check-*-worker.log`.
+
+### Actual commands and outcomes
+
+All these commands exited zero:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  1,338 findings / 1,338 reviewed identities, zero unclassified or
+  never-allowlist. Its reported baseline is `94781cf6b708`, not the supplied
+  diff base; no baseline override used. This matches the workflow invocation.
+  **No ledger change or dead-code deletion is warranted.**
+- `uv run ruff check .`: all checks passed.
+- `uv run ruff format --check .`: 2,920 files already formatted.
+- `uv run pytest packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`:
+  **61 passed in 2.89s**, no skips. These are focused regressions, not a
+  production deployment or a sustained soak.
+- `uv run python scripts/check-deployment-claims.py`: claims pass.
+- `uv run python scripts/check-execution-lifecycles.py`: 19 classified lifecycles.
+- `uv run python scripts/check-backlog-consistency.py`: 168 items pass.
+- `uv run python scripts/check-suite-inventory.py`: all 14 suites match;
+  26,020 unique test identities, no duplicate evidence.
+- `git diff --check 30677b185400538df2aab0432c63c02d673f3d0e...HEAD`:
+  no whitespace defect reproduced.
+- `uv run python` imported the current soak evaluator and asserted that
+  `evidence/m3a-round6-shakedown.json` fails both `sustain_duration` and
+  `exact_rc_artifact`. Observed duration **90.43s**, required **14,400s**;
+  the current artifact check returns `ok=false`, `host-uvicorn-preflight`.
+
+### Acceptance disposition (fresh evidence, not promotion approval)
+
+| Criterion | Result |
+|---|---|
+| Representative release profile | PARTIAL: profile reviewed; user/Workspace population, Graph/tool/model/Canvas and Goal/worker workloads remain absent (`m3a-load-profile.md:152-164`). RC applicability UNVERIFIED. |
+| Two production application replicas | UNVERIFIED. Tests exercise two middleware instances, not two deployed RC replicas. |
+| Sustained saturation, queue/reclaim/retry, memory/descriptor/process leaks | UNVERIFIED. Historical short evidence rejected by executed evaluator; no new sustained run. |
+| Admission, Goal reconciliation and no duplicate physical work | Backpressure/receipt regressions pass; physical Attempt fencing and Goal reconciliation across replicas UNVERIFIED. One occurrence admission is not physical-work proof. |
+| Rate/security/degraded behavior without replica-selection bypass | NOT MET for aggregate allowance: executed `test_replica_selection_has_an_independent_production_allowance` proves `[200, 200, 429]` independently on both instances for authenticated and pre-auth identities. Complete RC-load behavior UNVERIFIED. |
+| Required telemetry and thresholds | Sampler regressions pass; complete RC telemetry, application-loop latency and worker census UNVERIFIED. |
+| Active-work kill/restart, drain and recovery | UNVERIFIED; no deployed replica killed/restarted in this round. |
+| Long soak of exact RC artifact/configuration | NOT MET: current driver explicitly fails artifact equivalence (`run_soak.py:635-668`); historical pack fails duration too. No immutable RC designation supplied. |
+| Findings filed/reclassified at earliest invariant | Local backlog consistency passes; external filing completeness UNVERIFIED. No GitHub mutation performed. |
+| Machine/human hash-bound production evidence | Historical pack remains preserved with `git_head=b31c5fdaa63b40506335bbb288889e87bdb9ba0c`, not the assigned head. Qualifying current RC evidence UNVERIFIED. |
+
+Reachability checked: `maistro_server/main.py:593` installs the tested production
+middleware; `api/rate_limit.py:72-76` constructs its process-local limiter.
+ADR-085 (Accepted) requires principal-keyed limits; it does not prove shared
+replica state. ADR-081 is Proposed, not authority to waive acceptance.
+Accepted ADR-081226-a66b and ADR-081626-f383 preserve the canonical
+Goal → Graph → Run → NodeRun → Attempt model and durable fencing. No new
+scheduler, execution authority or authorization path is introduced to disguise
+the missing production proof.
+
+**BLOCKED**, not a CI-ledger repair. Only this existing handoff is extended;
+no code/configuration/tests/ledger/grants changed, and no inventory delta is
+needed. Next action is an explicitly designated immutable RC, a representative
+production-topology workload with physical-work correlation and full telemetry,
+and resolution of the aggregate-rate contract before the unchanged four-hour
+soak. Repeating this green vulture check cannot resolve those prerequisites.
+Progress: checked 1, done 0, skipped 0 issues; validation commands passed,
+acceptance remains blocked. Commit this checkpoint locally; no integration
+approval or issue closure.
