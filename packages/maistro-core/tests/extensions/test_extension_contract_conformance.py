@@ -289,6 +289,42 @@ def test_service_access_requires_declaration_and_grant() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Host composition drops undeclared authorities
+# ---------------------------------------------------------------------------
+
+
+def test_host_drops_undeclared_config_and_service_grants() -> None:
+    """Undeclared authorities never reach context storage at all (#950 review).
+
+    The public accessors refuse undeclared names, but that alone leaves the
+    raw values in the context's private mappings where any Python code with
+    the context can read them. The host must filter at composition.
+    """
+    host = ExtensionHost(
+        descriptor=_descriptor(),
+        config_values={"temperature": 0.7, "api_key": "host-only-secret"},
+        service_grants={"clock": "granted-clock", "registry": object()},
+    )
+    assert host._config_values == {"temperature": 0.7}
+    assert host._service_grants == {"clock": "granted-clock"}
+    context = host.invocation_context(
+        InvocationScope(
+            workspace_id="ws-1",
+            agent_id="agent-1",
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+        )
+    )
+    assert context.config["temperature"] == 0.7
+    assert "api_key" not in context.config._values
+    assert context.service("clock") == "granted-clock"
+    with pytest.raises(ServiceNotGranted, match="not declared"):
+        context.service("registry")
+    assert "registry" not in context._services
+
+
+# ---------------------------------------------------------------------------
 # Capability/effect seam
 # ---------------------------------------------------------------------------
 

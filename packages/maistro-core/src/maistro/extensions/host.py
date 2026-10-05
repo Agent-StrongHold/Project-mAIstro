@@ -207,9 +207,10 @@ class ExtensionHost:
 
     The host is constructed once per extension per scope with everything the
     extension may reach: declared configuration values, granted service
-    instances, routed effects, and the progress sink. Contexts it builds
-    enforce the descriptor first, so a misconfigured host grant that the
-    descriptor does not declare is still unreachable.
+    instances, routed effects, and the progress sink. Composition itself is
+    least-authority: grants the descriptor does not declare are dropped here,
+    before any context exists, so undeclared secrets and objects never travel
+    with the context at all — not even behind the context's private storage.
     """
 
     def __init__(
@@ -223,8 +224,19 @@ class ExtensionHost:
         events: EventStore | None = None,
     ) -> None:
         self.descriptor = descriptor
-        self._config_values = dict(config_values or {})
-        self._service_grants = dict(service_grants or {})
+        # Least-authority at composition: keep only descriptor-declared
+        # entries, so undeclared host-side values (secrets, live objects) are
+        # discarded before they could reach any context's storage.
+        self._config_values = {
+            key: value
+            for key, value in (config_values or {}).items()
+            if key in descriptor.config_keys
+        }
+        self._service_grants = {
+            key: service
+            for key, service in (service_grants or {}).items()
+            if key in descriptor.services
+        }
         self._effect_routes = dict(effect_routes or {})
         self._progress_sink = progress_sink
         # Attribution authority: when the host supplies the canonical event

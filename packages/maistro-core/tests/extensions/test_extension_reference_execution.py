@@ -278,12 +278,15 @@ async def test_reference_extension_executes_through_canonical_attempt(
     assert progress_events[0].attempt_id == terminal.attempt_id
 
     # Declared configuration reached the extension; the undeclared host value
-    # is unreachable by declaration, so it never traveled with the context.
+    # is dropped at composition, so it never travels with the context — not
+    # even in the context's private storage.
     assert extension.result["politeness"] == "warm"
     assert "api_key" not in host.descriptor.config_keys
+    assert "api_key" not in host._config_values
     with pytest.raises(Exception, match="not declared"):
         activation = host.activation_context(workspace_id=workspace_id, agent_id="agent-1")
         activation.config["api_key"]
+    assert "api_key" not in activation.config._values
     assert extension.result["clock"] == "wall-clock"
 
 
