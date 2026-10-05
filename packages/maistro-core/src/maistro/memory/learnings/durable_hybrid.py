@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from maistro.memory.exposure import Actor
 from maistro.memory.vectors import require_matching_dimension
 
 if TYPE_CHECKING:
@@ -189,14 +190,20 @@ class DurableHybridLearningStore:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
-        """Delegate: the ladder and its ledger are the wrapped store's."""
+        """Delegate: the ladder and its ledger are the wrapped store's.
+
+        The ADR-057 principal is forwarded so the wrapped store's gate
+        decides on the caller's authority, not the default.
+        """
         return await self._store.advance_stage(
             learning_id,
             to_stage=to_stage,
             actor=actor,
             reason=reason,
             org_id=org_id,
+            authority=authority,
         )
 
     async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
