@@ -10331,7 +10331,95 @@ removal); the merge brought no quality/ changes.
 **closed**. Issue #777 open. Linked PR #1660 open draft, unmerged.
 
 Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
-123–154. All 13 acceptance criteria remain UNPROVEN against reachable
+123–155. All 13 acceptance criteria remain UNPROVEN against reachable
+production behavior: no #804 reconciliation API, no canonical Goal
+ownership seam, no delegated-control loop exists, and the issue's own
+stop condition forbids building Design-Studio-private substitutes
+locally. The battery is green on the develop-merged tree; the branch
+remains a safe waiting position. Unblocking requires landing
+#804/#805/#806, #53, #774, #776, #93/#95 upstream (Refs #777).
+
+## Round 156 — 2026-10-05 (job 3f0276a328bb4bfd90e21a9b48e3bf61)
+
+Repair round; driver ran zero deterministic checks for the fourth
+consecutive round (job dir has no `check-*.log`; manifest `checks: []`).
+Starting head `65f1edec632e` (round 155's end head, also the lane-brief
+exact starting head) was clean, nothing to salvage. All checks below
+executed fresh by the round worker.
+
+**Develop sync.** `origin/develop` advanced `1885c8eda09f` →
+`30677b185400` (1 commit: #1963 WIP [EPIC M8-J] human-agent interaction /
+generative-UI / mixed-initiative research plan — docs only, zero overlap
+with #777's surface or dependencies). Verified `git diff 1885c8eda
+origin/develop -- quality/` is EMPTY: develop's commit does not touch the
+vulture ledger. `git merge origin/develop` → clean, exit 0, no conflicts;
+merged HEAD `9797aaf3cd2a`.
+
+**Ledger identity pinned down.** The branch's single pre-existing vulture
+delta (rounds 154/155's "1338→1337 reviewed removal") is exactly
+`packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py::unused
+variable 'tool_definitions'` — `git diff 1885c8eda HEAD --
+quality/vulture-baseline.json` removes precisely that row. The branch's
+`agent_loop.py` deliberately omits the `tool_definitions` field that
+develop's copy carries (the branch instead keeps the `system_prompt`
+restoration comment), so the scan cannot produce that identity and the
+row is correctly absent here; `git diff --numstat origin/develop --
+quality/` after the merge = `0 1` (only the branch's pre-existing
+removal). No amendment needed or made this round.
+
+**Battery green fresh on `9797aaf3cd2a` (merged tree):**
+
+- `uv run ruff check .` → EXIT 0 ("All checks passed!");
+  `uv run ruff format --check .` → EXIT 0 (2931 files)
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → EXIT 0, base
+  `30677b185400` → candidate `9797aaf3cd2a`: 1338 reviewed identities →
+  1337 findings, unclassified 0, never_allowlist 0
+- `uv run python scripts/check-api-route-contracts.py` → EXIT 0 (279
+  handlers scanned, 15 audited routes registered, 0 canned)
+- `uv run python scripts/check-route-permissions.py` → EXIT 0 (17
+  declared, 23 tolerated undeclared prefixes, none new)
+- `uv run python scripts/check-suite-inventory.py` → EXIT 0, 14/14
+  suites match recorded inventory (no test delta this round)
+- `uv run python scripts/check-backlog-consistency.py` → EXIT 0 (167
+  items OK)
+- `uv run python scripts/check-reachability.py` → EXIT 0 (1266
+  production modules, 172 unreachable)
+- `uv run python scripts/check-promotion-surface.py` → EXIT 0
+- `uv run pytest packages/maistro-bootstrap/tests
+  packages/maistro-design/tests -q` → **777 passed, 2 skipped**
+  (42.12s)
+- `uv run pytest packages/hive-conductor/backend/tests -q` → **3345
+  passed, 6 skipped** (146.49s)
+
+**Blockers re-proven fresh on `9797aaf3cd2a` (not trusted from round
+155):**
+
+- `grep -rli "GoalReconciler\|delegate_goal" packages/*/src` → 0 files
+  (exit 1) — the #804/#805 reconciliation API AC1 must consume does not
+  exist; develop's new commit adds no `packages/*/src` code.
+- The only reconciliation modules remain unrelated lifecycles:
+  `maistro/runs/reconciliation.py` (physical Attempt/NodeRun
+  bookkeeping) and `maistro/quota/reconciliation.py` (quota
+  verification). No canonical Goal store/owner.
+- `packages/maistro-core/src/maistro/ontology/rubric.py:6,15` —
+  CreativeBrief mentions remain #774 disclaimers only;
+  `maistro/agents/brief_interview.py` is pre-Goal interview scaffolding
+  (#1823), not the versioned CreativeBrief contract.
+- Docs-salvage tree `docs/research/777-design-studio-salvage/` still has
+  zero production readers (grep exit 1).
+
+**Dependency states (this job's dispatch-context.json captured
+2026-10-05T10:06Z, fresher than round 155's 09:37Z capture):**
+#804/#805/#806 (Goal reconciliation epic + children), #53, #774, #776,
+#773 (parent), #779, #780, #93, #95 **open**; #39, #458, #775
+**closed**. Issue #777 open; native `blocked_by` API list empty (the
+dependency claim is the issue body's "Depends on:" line). Linked PR
+#1660 open draft, unmerged (`merged_at: null`, head `17ad5f75b894`,
+`mergeable_state: clean`).
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
+123–156. All 13 acceptance criteria remain UNPROVEN against reachable
 production behavior: no #804 reconciliation API, no canonical Goal
 ownership seam, no delegated-control loop exists, and the issue's own
 stop condition forbids building Design-Studio-private substitutes
