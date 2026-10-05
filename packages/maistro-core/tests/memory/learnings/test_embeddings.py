@@ -223,9 +223,22 @@ async def test_mark_used_delegates_to_inner_store() -> None:
 async def test_check_auto_promotions_delegates_to_inner_store() -> None:
     inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     hybrid = HybridLearningStore(inner)
-    await hybrid.store(Learning(trigger_keys=["x"], learning="x", hit_count=10))
+    # Promotion requires validation evidence since M4-B3: a Run-sourced
+    # learning whose recorded outcome is a success is promotable; one without
+    # any evidence is not, however often it was hit.
+    evidential = Learning(
+        trigger_keys=["x"],
+        learning="x",
+        hit_count=10,
+        run_id="run-1",
+        confidence=1.0,
+        evaluation_ids=["eval-1"],
+    )
+    bare = Learning(trigger_keys=["y"], learning="y", hit_count=10)
+    await hybrid.store(evidential)
+    await hybrid.store(bare)
     promoted = await hybrid.check_auto_promotions(threshold=5)
-    assert len(promoted) == 1
+    assert [lr.id for lr in promoted] == [evidential.id]
 
 
 async def test_get_promoted_delegates_to_inner_store() -> None:
