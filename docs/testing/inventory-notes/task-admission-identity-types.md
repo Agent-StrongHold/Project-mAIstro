@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +73
+  packages/maistro-core/tests: +74
 ---
 
 # #1851 root-admission identity types
@@ -12,10 +12,11 @@ production caller, RunStore change, task-idempotency change, SQL, or runtime
 wiring.
 
 `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q -x`
-collected and passed 73 cases. `uv run python scripts/check-suite-inventory.py
---suite packages/maistro-core/tests` collected 12,892 node IDs. The +73 delta
-is the new focused file; it is unchanged by unrelated test additions in the
-integration branch.
+collected and passed 74 cases. `uv run python scripts/check-suite-inventory.py
+--suite packages/maistro-core/tests` collected 13,126 node IDs. The +74 delta
+is the new focused file, including the module-local export and enum-shape
+contract check; it is unchanged by unrelated test additions in the integration
+branch.
 
 ## Security-signature revalidation
 
@@ -54,11 +55,11 @@ Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
 
 ## Final validation refresh
 
-At `9daa5d5929ce0d902e9c2a6bd0b5386800cbd472`, the focused suite passed
-73 cases, the suite inventory again collected 12,892 node IDs, the exact
-module/type shape probe passed, and ruff plus module mypy passed. The required
-exact Vulture command reported the nine reviewed-but-new identities as trusted-
-base debt (rc=1); `check-reachability.py` likewise reported the deliberately
+In the worktree based at `33a84b04c08900f4a7fa7bbbffdac5922b8183ea`, the
+focused suite passed 74 cases, the suite inventory collected 13,126 node IDs,
+the exact module/type-shape probe passed, and ruff plus module mypy passed. The required exact
+Vulture command reported the nine reviewed-but-new identities as trusted-base
+debt (rc=1); `check-reachability.py` likewise reported the deliberately
 unreachable `maistro.runs.admission_identity` (rc=1), and
 `RATCHET_BASE_REV=928993dda1c958ada2e6f8e54b5e5c04bf86bf77 check-ratchet-
 provenance.py` failed only its reachability sub-gate. These must remain blocked

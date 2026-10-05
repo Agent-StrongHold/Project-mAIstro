@@ -14,6 +14,7 @@ from dataclasses import FrozenInstanceError, fields
 
 import pytest
 
+import maistro.runs.admission_identity as admission_identity
 from maistro.runs.admission_identity import (
     Acknowledged,
     AdmissionBinding,
@@ -103,6 +104,46 @@ def _legacy(**overrides: object) -> LegacyAdmissionRecord:
 
 def _run_snapshot(run_id: str = "run-1") -> CanonicalJsonObject:
     return CanonicalJsonObject(text=json.dumps({"run_id": run_id, "status": "pending"}))
+
+
+# --- module-local API ------------------------------------------------------
+
+
+def test_module_exports_exact_contract_and_assessment_values() -> None:
+    assert len(admission_identity.__all__) == 21
+    assert set(admission_identity.__all__) == {
+        "CanonicalJsonObject",
+        "AdmissionTicket",
+        "RootAdmissionEnvelope",
+        "AdmissionBinding",
+        "AdmissionRecordV2",
+        "LegacyAdmissionRecord",
+        "RootAdmissionResult",
+        "Claimed",
+        "Replayed",
+        "Pending",
+        "LegacyUnresolved",
+        "ClaimResult",
+        "Released",
+        "AlreadyBound",
+        "StaleOwner",
+        "Acknowledged",
+        "AlreadyAcknowledged",
+        "BindingMismatch",
+        "ReleaseResult",
+        "CompletionResult",
+        "AdmissionAssessment",
+    }
+    assert tuple(
+        (member.name, member.value) for member in admission_identity.AdmissionAssessment
+    ) == (
+        ("MISMATCH", "mismatch"),
+        ("REPLAYED", "replayed"),
+        ("PENDING", "pending"),
+        ("TAKEOVER", "takeover"),
+        ("REPLACE_EXPIRED", "replace_expired"),
+        ("LEGACY_UNRESOLVED", "legacy_unresolved"),
+    )
 
 
 # --- canonical JSON snapshots ---------------------------------------------
