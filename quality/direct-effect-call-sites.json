@@ -463,17 +463,6 @@
       "owner": "#59",
       "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
     },
-    "packages/maistro-core/src/maistro/agents/conductor.py::_call_gateway::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/maistro-core/src/maistro/agents/conductor.py",
-      "qualname": "_call_gateway",
-      "line": 270,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
       "qualname": "GovernedInvocationExecutionService.invoke",

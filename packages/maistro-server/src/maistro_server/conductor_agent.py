@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from maistro.agents.conductor import run_task
-from maistro.capabilities.model_chat import ModelChatEgress
+from maistro.capabilities.admitted_model import AdmittedModelCalls
 from maistro.tasks.models import TaskCreate
 from maistro.types.agent import AgentResponse
 
@@ -61,12 +61,10 @@ class ConductorAgent:
     def __init__(
         self,
         *,
-        governed_egress: ModelChatEgress | None = None,
-        workspace_id: str = "default",
+        admitted_calls: AdmittedModelCalls | None = None,
         router: LLMRouter | None = None,
     ) -> None:
-        self._governed_egress = governed_egress
-        self._workspace_id = workspace_id
+        self._admitted_calls = admitted_calls
         # The container's cost-aware router (#1203): when a provider-scoped
         # circuit is open, `run_task` falls forward through its declared
         # fallback chain instead of failing the turn. `None` (no router wired)
@@ -99,11 +97,7 @@ class ConductorAgent:
         try:
             result = await run_task(
                 task,
-                governed_egress=self._governed_egress,
-                invocation_identity=(turn_id, "conductor-node", "conductor-attempt")
-                if turn_id
-                else None,
-                workspace_id=self._workspace_id,
+                admitted_calls=self._admitted_calls,
                 router=self._router,
             )
         except Exception as exc:

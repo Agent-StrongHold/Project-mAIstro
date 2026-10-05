@@ -59,6 +59,7 @@ class EmbeddedRuntime(NamedTuple):
     llm: Any
     preamble: str
     governed_egress: Any
+    admitted_calls: Any = None
 
 
 async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
@@ -209,12 +210,23 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         router=container.llm_router,
         endpoint=model_endpoint,
     )
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
+
+    admitted_calls = AdmittedModelCalls(
+        container.capability_effects,
+        registry=container.provider_registry,
+        router=container.llm_router,
+        endpoint=model_endpoint,
+        run_store=container.run_store,
+        binding_ids=tuple(binding.binding_id for binding in container.config.model_bindings),
+    )
     return EmbeddedRuntime(
         container=container,
         agents=agents,
         llm=llm_client,
         preamble=preamble,
         governed_egress=governed_egress,
+        admitted_calls=admitted_calls,
     )
 
 
@@ -240,6 +252,7 @@ class MaistroCoreBridge:
     def __init__(self) -> None:
         self._container: Any = None
         self._governed_egress: Any = None
+        self._admitted_calls: Any = None
 
     @property
     def container(self) -> Any:
@@ -257,10 +270,16 @@ class MaistroCoreBridge:
         """
         return self._governed_egress
 
+    @property
+    def admitted_calls(self) -> Any:
+        """Configured model calls requiring persisted execution admission."""
+        return self._admitted_calls
+
     async def start(self, settings: Settings) -> None:
         runtime = await _construct_runtime(settings)
         self._container = runtime.container
         self._governed_egress = runtime.governed_egress
+        self._admitted_calls = runtime.admitted_calls
         # Mutate the dict the container wired; never rebind the attribute.
         # `create_container` initializes an empty `agents` dict and hands that
         # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves

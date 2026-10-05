@@ -19,7 +19,7 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +32,7 @@ from maistro.capabilities.invocation import (
     InvocationUsage,
     ProviderResolver,
 )
+from maistro.capabilities.model_chat_stream import StreamDelivery, stream_model_call
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
@@ -39,6 +40,7 @@ from maistro.capabilities.providers.llm_gateway import (
     LlmGatewayProvider,
     ModelChatRequest,
     execute_model_chat,
+    execute_model_chat_stream,
 )
 from maistro.capabilities.types import Unavailable
 from maistro.observability.correlation import current_execution_context
@@ -343,6 +345,62 @@ class ModelChatEgress:
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
         """
+        return await self._invoke(
+            binding=binding,
+            run_id=run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
+            effect_key=effect_key,
+            request=request,
+            setup=setup,
+            actor_id=actor_id,
+        )
+
+    def stream(
+        self,
+        *,
+        binding: Binding,
+        run_id: str,
+        node_run_id: str,
+        attempt_id: str,
+        effect_key: str,
+        request: ModelChatRequest,
+        actor_id: str = "",
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Incremental raw chunks; one marked assembled chunk on effect replay.
+
+        Callers that stop consumption early must close the returned iterator
+        (for example with ``contextlib.aclosing``) so the canonical Invocation
+        can record cancellation before its execution context goes away.
+        """
+
+        async def invoke(delivery: StreamDelivery) -> ModelCallResult:
+            return await self._invoke(
+                binding=binding,
+                run_id=run_id,
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                effect_key=effect_key,
+                request=request,
+                actor_id=actor_id,
+                delivery=delivery,
+            )
+
+        return stream_model_call(invoke)
+
+    async def _invoke(
+        self,
+        *,
+        binding: Binding,
+        run_id: str,
+        node_run_id: str,
+        attempt_id: str,
+        effect_key: str,
+        request: ModelChatRequest,
+        setup: Callable[[], Awaitable[None]] | None = None,
+        actor_id: str = "",
+        delivery: StreamDelivery | None = None,
+    ) -> ModelCallResult:
         resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
         selected: list[LlmGatewayProvider] = []
 
@@ -363,6 +421,20 @@ class ModelChatEgress:
             if setup is not None:
                 await setup()
             endpoint = self._endpoint.model_copy(update={"api_key": provider.credential.api_key})
+            if delivery is not None:
+                delivery.start_provider()
+                try:
+                    return await execute_model_chat_stream(
+                        base,
+                        payload,
+                        endpoint=endpoint,
+                        on_chunk=delivery.publish,
+                    )
+                finally:
+                    # Success, protocol/transport failure, or cancellation all
+                    # leave physical dispatch here. Never cancel the canonical
+                    # terminal write that the Invocation performs afterward.
+                    delivery.provider_finished = True
             return await execute_model_chat(base, payload, endpoint=endpoint)
 
         routing = self._effects.credential_routing()

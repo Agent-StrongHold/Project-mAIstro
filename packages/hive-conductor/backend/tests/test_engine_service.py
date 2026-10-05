@@ -276,7 +276,7 @@ async def test_start_in_demo_mode_uses_local_backend(
     assert type(svc._backend).__name__ == "LocalTaskBackend"
 
 
-async def test_demo_mode_task_backend_executes_through_the_governed_egress(
+async def test_demo_mode_task_backend_executes_through_admitted_model_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Demo task execution crosses the bridge's canonical authority (#718).
@@ -284,9 +284,8 @@ async def test_demo_mode_task_backend_executes_through_the_governed_egress(
     A bare `run_task` executor left every demo task completion off the
     Invocation/quota ledger while per-provider rows presented as complete.
     The executor the backend installs must hand `run_task` the bridge's
-    governed egress and the deployment's Workspace, exactly as the
-    maistro-server `/tasks` worker does — the authority, not a per-caller
-    recording callback.
+    admitted-call adapter and router, exactly as the maistro-server `/tasks`
+    worker does. The adapter resolves its scope from the persisted execution.
     """
     from services.engine import EngineService
 
@@ -297,12 +296,13 @@ async def test_demo_mode_task_backend_executes_through_the_governed_egress(
         hive_default_workspace_id = "ws-hive"
 
     sentinel_egress = object()
+    sentinel_router = object()
 
     class _FakeBridge:
         """Stands in for a started MaistroCoreBridge (an AgentPort)."""
 
-        container = object()
-        governed_egress = sentinel_egress
+        container = SimpleNamespace(llm_router=sentinel_router)
+        admitted_calls = sentinel_egress
 
         async def start(self, settings: Any) -> None:
             del settings
@@ -362,8 +362,8 @@ async def test_demo_mode_task_backend_executes_through_the_governed_egress(
     assert len(run_task_calls) == 1
     assert run_task_calls[0]["task"] is task
     assert run_task_calls[0]["kwargs"] == {
-        "governed_egress": sentinel_egress,
-        "workspace_id": "ws-hive",
+        "admitted_calls": sentinel_egress,
+        "router": sentinel_router,
     }
 
 

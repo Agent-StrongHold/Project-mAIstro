@@ -24,6 +24,7 @@ def _fake_container() -> SimpleNamespace:
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        run_store=object(),
         # Governed-egress seams the #718 cutover reads off the Container and
         # hands to the agent factory (create_agents wires GovernedLLMClient
         # when all four effect/model authorities are present).
@@ -40,6 +41,7 @@ def _capture_runtime_seams(monkeypatch, container: SimpleNamespace) -> dict[str,
     captured: dict[str, object] = {}
 
     async def fake_create_container(config):
+        container.config = config
         return container
 
     async def fake_create_agents(**kwargs):
@@ -68,6 +70,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        run_store=object(),
         capability_effects=object(),
         provider_registry=object(),
         llm_router=object(),
@@ -81,6 +84,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     container.agents = wired_agents
 
     async def fake_create_container(config):
+        container.config = config
         captured["config"] = config
         return container
 
@@ -232,6 +236,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        run_store=object(),
         capability_effects=object(),
         provider_registry=object(),
         llm_router=object(),
@@ -240,6 +245,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
     )
 
     async def fake_create_container(config):
+        container.config = config
         return container
 
     async def fake_create_agents(**kwargs):
@@ -301,6 +307,7 @@ async def test_start_carries_the_permission_grants_onto_the_container_config(mon
     captured: dict[str, object] = {}
 
     async def fake_create_container(config):
+        container.config = config
         captured["config"] = config
         return container
 
@@ -336,6 +343,7 @@ async def test_start_carries_the_model_bindings_onto_the_container_config(monkey
     captured: dict[str, object] = {}
 
     async def fake_create_container(config):
+        container.config = config
         captured["config"] = config
         return container
 
@@ -399,3 +407,24 @@ async def test_route_passes_the_caller_identity_through_to_the_container() -> No
     assert captured["auth"] is principal
     assert await bridge.route([{"role": "user", "content": "hi"}]) == {"content": "ok"}
     assert captured["auth"] is None
+
+
+@pytest.mark.asyncio
+async def test_start_exposes_admitted_calls_over_configured_container(monkeypatch):
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
+
+    container = _fake_container()
+    _capture_runtime_seams(monkeypatch, container)
+    bridge = MaistroCoreBridge()
+    assert bridge.admitted_calls is None
+    await bridge.start(
+        Settings(
+            maistro_agents_dir="agents",
+            maistro_model_bindings=[{"binding_id": "operator-model", "project_id": "project"}],
+        )
+    )
+    calls = bridge.admitted_calls
+    assert isinstance(calls, AdmittedModelCalls)
+    assert calls._runs is container.run_store
+    assert calls._effects is container.capability_effects
+    assert calls._binding_ids == ("operator-model",)
