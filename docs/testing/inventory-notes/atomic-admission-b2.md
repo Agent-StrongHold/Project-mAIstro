@@ -378,3 +378,67 @@ aggregator exit 0 (174 unreachable, dispositions "new debt uses prior
 reachability authorization"), vulture + shipped-surface exit 0 under the same
 base. The grant-landing unblock path is therefore re-proven at the current
 head, not inherited from round 4.
+
+## CI-repair round 6 (L1893, head 384c4f268 — revalidation after round-5 provider death)
+
+Round 5's writer died on a provider timeout after its five driver checks had
+already passed (jobs/644eaadd.../result.json: `failure_kind=provider_error`,
+all five checks returncode 0); the merge-queue "block" to resolve was that
+death, not a new gate signal. Every driver check re-executed independently at
+the unchanged head `384c4f268`:
+
+- `uv sync --locked --extra dev` ok; `ruff check .` clean; `ruff format
+  --check .` 2926 files clean; focused `pytest packages/maistro-core/tests/
+  tasks/test_admission_codec.py packages/maistro-core/tests/runs/
+  test_root_admission_identity.py -q` -> 139 passed (66 + 73, matching both
+  notes' inventory deltas); `check-suite-inventory.py --suite
+  packages/maistro-core/tests` -> ok, 13429 collected node IDs.
+- CI's exact nine-package `mypy` -> "Success: no issues found in 943 source
+  files" (a bare `packages/maistro-core/src` run reports only cross-package
+  `import-not-found` for `maistro_bootstrap`, which CI's form resolves).
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` -> 1338 -> 1338 exit 0: nothing unbanked, so the
+  round's conditional vulture-ledger amendment stays moot.
+- `check-shipped-surface-truth.py` exit 0; `check-convergence-matrix.py` OK
+  (1268 production modules, 174 unreachable attributed). The
+  `reachability-baseline.json` `_generated_from` string still reads "1266"
+  vs 1268 measured — informational only: no gate parses it (verified by
+  grep across check-reachability*.py and check-convergence-matrix.py), and
+  the count drifts with every develop sync by construction.
+- Acceptance re-read against source at this head: all six required
+  `admission_codec` interfaces present and conformant
+  (frozen/slotted `AdmissionRowHeader`, header re-derivation mismatch ->
+  `invalid_header`, fresh flat `encode_admission_record` mapping with
+  `task_id` always NULL, six-value `AdmissionDecodeCode`,
+  `AdmissionRowDecodeError` carrying only a hex64-validated `scope_key` with
+  `__suppress_context__` asserted in tests); all ten prospective tests from
+  the issue body exist by exact name; zero clock reads in either new module;
+  legacy `completed_at` never read; three-dot diff vs `origin/develop`
+  (`cd5618223...HEAD`) is exactly the ten declared B2 surfaces and touches
+  no `quality/ratchet-authorizations.json` (no self-authorization).
+- develop re-fetched before judging: still `cd5618223`; its
+  `ratchet-authorizations.json` has no admission entries and its
+  reachability baseline has no admission rows — the grant has still not
+  landed upstream, so `check-ratchet-provenance.py` exit 1 persists on
+  exactly the two reachability provenance gates (base resolves to the
+  develop merge point `30677b185`). This remains the documented two-merge
+  rule, not a repairable defect: the issue text forbids
+  baseline/grant/gate modifications to make an unwired slice green, and the
+  round's ledger-amendment exception names only the vulture ledger.
+- Probe semantics re-verified, correcting a tempting shortcut: setting
+  `RATCHET_BASE_REV=3235229f5fed...` on the bare branch head does NOT pass —
+  `resolve_baseline` merge-bases the rev with HEAD and collapses to the
+  grant's parent `94781cf6b`, where the grant is invisible (exit 1, same two
+  gates). The grant must be an ancestor of the candidate. Fresh probe-merge
+  `bf2075282` = `384c4f268` + `3235229f5fed` (detached worktree
+  `~/Git/worktrees/probe-1893-round6`, left in place as evidence): after
+  `uv sync --locked --extra dev`, `RATCHET_BASE_REV=3235229f5fed...` ->
+  aggregator exit 0 (all nine ratchets OK; reachability-dispositions "new
+  debt uses prior reachability authorization"; 49 quality-JSON consumers
+  provenanced), and the other two exact-debt-ledger steps exit 0 under the
+  same base. The grant-landing unblock path is therefore re-proven at this
+  round's head for the third consecutive head.
+
+Round-6 conclusion: unchanged from round 5 — the only remaining action is
+campaign-level (land the two-entry `reachability` grant on develop, then
+merge origin/develop here); no in-branch edit can or may change this.
