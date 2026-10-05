@@ -25,9 +25,8 @@ def _fake_container() -> SimpleNamespace:
         session_store=object(),
         quota_tracker=object(),
         run_store=object(),
-        # Governed-egress seams the #718 cutover reads off the Container and
-        # hands to the agent factory (create_agents wires GovernedLLMClient
-        # when all four effect/model authorities are present).
+        # The composition builds one admitted model helper over these
+        # canonical authorities, shared by boot and materialized Agents.
         capability_effects=object(),
         provider_registry=object(),
         llm_router=object(),
@@ -150,7 +149,9 @@ async def test_start_exposes_governed_egress_over_the_container_authorities(monk
     assert egress._router is container.llm_router
     # One gateway endpoint, shared with the roster's model clients rather
     # than rebuilt -- the two doors cannot drift onto different credentials.
-    assert egress._endpoint is captured["model_endpoint"]
+    assert egress._endpoint is captured["admitted_calls"]._endpoint
+    assert captured["llm"]._calls is captured["admitted_calls"]
+    assert bridge.admitted_calls is captured["admitted_calls"]
 
 
 @pytest.mark.asyncio
@@ -289,7 +290,13 @@ async def test_start_registers_the_runtime_materialization_source(monkeypatch):
     source = materialization._runtime_source
     assert source is not None
     assert source.container is container
-    assert source.llm is not None
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    assert isinstance(source.llm, GovernedLLMClient)
+    assert source.llm._calls is bridge.admitted_calls
+    assert source.llm._calls._egress._effects is container.capability_effects
+    assert source.llm._calls._egress._registry is container.provider_registry
+    assert source.llm._calls._egress._router is container.llm_router
     # The real shipped PREAMBLE template, not an empty stand-in.
     assert "governed dispatch and policy controls" in source.preamble
 
@@ -423,3 +430,204 @@ async def test_start_exposes_admitted_calls_over_configured_container(monkeypatc
     assert calls._runs is container.run_store
     assert calls._effects is container.capability_effects
     assert calls._binding_ids == ("operator-model",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_origin", ["boot", "materialized"])
+async def test_configured_hive_agents_use_admitted_execution_and_usage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, agent_origin: str
+) -> None:
+    """The real composition must join Agent calls to declared, persisted authority.
+
+    Provision the canonical scope in a local SQLite store before boot, just as
+    an operator must know the Project ID when declaring a Binding. Both boots,
+    the roster factory, later materialization, admission and execution are real;
+    only the final provider HTTP transport is substituted. In particular, a
+    domain TurnID must not replace the canonical RunID (#1956).
+    """
+    import json
+    from datetime import UTC, datetime
+
+    import httpx
+    import services.agent_materialization as materialization
+    import stores
+    from models.schemas import Agent as AgentDefinition
+
+    from maistro.capabilities.invocation import InvocationStatus
+    from maistro.container import create_container
+    from maistro.http import set_test_transport
+    from maistro.runs.model import AttemptStatus, RunStatus
+    from maistro.security._types import AuthContext
+    from maistro.types.config import AgentConfig
+
+    workspace_id = f"hive-{agent_origin}"
+    actor_id = "authenticated-hive-owner"
+    database_url = f"sqlite:///{tmp_path / 'canonical.db'}"
+    provisioning = await create_container(
+        AgentConfig(
+            router_api_key="fixture-router-key",
+            database_url=database_url,
+            workspace_id=workspace_id,
+        )
+    )
+    try:
+        await provisioning.workspace_store.create(
+            creator_user_id=actor_id, name="Hive admitted Agents", workspace_id=workspace_id
+        )
+        root = await provisioning.project_scope_store.root_for_workspace(workspace_id)
+    finally:
+        await provisioning.aclose()
+
+    roster = tmp_path / "agents"
+    (roster / "boot-agent").mkdir(parents=True)
+    (roster / "PREAMBLE.md").write_text("Follow governed dispatch for {{name}}.\n")
+    (roster / "boot-agent" / "SOUL.md").write_text("Answer the user's question clearly.")
+    (roster / "boot-agent" / "agent.yaml").write_text(
+        "name: boot-agent\nmodel: requested-alias\nreasoning:\n  strategy: direct\ntools: []\n"
+    )
+    provider_config = tmp_path / "providers.yaml"
+    # A configured Binding pin needs operator-declared registry metadata (#1957).
+    provider_config.write_text(
+        "models:\n"
+        "  - name: configured-hive-model\n"
+        "    provider: fixture-provider\n"
+        "    cost_input: 0.1\n"
+        "    cost_output: 0.2\n"
+        "    latency_p50_ms: 100\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    settings = Settings(
+        maistro_agents_dir=str(roster),
+        provider_config_path=str(provider_config),
+        maistro_router_api_key="fixture-router-key",
+        maistro_llm_api_key="configured-binding-key",
+        hive_default_workspace_id=workspace_id,
+        litellm_api_base="http://hive-gateway.fixture/v1",
+        maistro_model_bindings=[
+            {
+                "binding_id": "operator-declared-hive-model",
+                "project_id": root.project_id,
+                "provider_name": "configured-hive-model",
+            }
+        ],
+    )
+    sent: list[httpx.Request] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "hive-provider-version",
+                "choices": [{"message": {"role": "assistant", "content": "admitted answer"}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+            },
+        )
+
+    set_test_transport(httpx.MockTransport(transport))
+    bridge = MaistroCoreBridge()
+    materialized_id = f"admitted-fixture-{agent_origin}"
+    try:
+        await bridge.start(settings)
+        container = bridge.container
+        agent = container.agents["boot-agent"]
+        if agent_origin == "materialized":
+            definition = AgentDefinition(
+                id=materialized_id,
+                workspace_id=workspace_id,
+                name="later-agent",
+                model="requested-alias",
+                status="idle",
+                created_at=datetime.now(UTC),
+                description="Answer questions clearly.",
+                capabilities=[],
+                config={"strategy": "direct", "soul": "Answer the user's question clearly."},
+            )
+            stored = await materialization.materialize_runtime(definition)
+            assert stored.config["dispatchable"] is True
+            agent = container.agents[definition.name]
+
+        auth = AuthContext(user_id=actor_id, username="owner")
+        messages = [{"role": "user", "content": "Say hello."}]
+        run = await container._admit_chat_turn(messages, auth=auth, dispatch_pending=True)
+        domain_turn_id = "session-domain-turn-not-a-canonical-run"
+        assert run.run_id != domain_turn_id
+
+        async def dispatch() -> dict[str, Any]:
+            response = await agent.handle(messages, auth, turn_id=domain_turn_id)
+            assert response.failed is False, response.error
+            assert response.content == "admitted answer"
+            return {"choices": [{"message": {"content": response.content}}]}
+
+        result = await container._execute_chat_turn(run, messages, dispatch)
+        await container._close_chat_run(run, result=result)
+        nodes = await container.run_store.list_node_runs(run.run_id)
+        assert len(nodes) == 1
+        attempts = await container.run_store.list_attempts(nodes[0].node_run_id)
+        assert len(attempts) == 1
+        assert nodes[0].status is RunStatus.COMPLETED
+        assert attempts[0].status is AttemptStatus.COMPLETED
+        assert attempts[0].execution_lease is not None
+        invocation_rows = await container.capability_effects.invocation_store.list_effect(
+            run_id=run.run_id,
+            node_run_id=nodes[0].node_run_id,
+            binding_id="operator-declared-hive-model",
+            effect_key=f"agent-llm:{agent.identity.name}:0:1",
+        )
+        assert len(invocation_rows) == 1
+        invocation = invocation_rows[0]
+        assert invocation.status is InvocationStatus.COMPLETED
+        assert invocation.actor_id == run.actor_principal_id == actor_id
+        assert invocation.binding.workspace_id == run.workspace_id == workspace_id
+        assert invocation.binding.project_id == run.project_id == root.project_id
+        assert invocation.binding.binding_id == "operator-declared-hive-model"
+        assert invocation.run_id == run.run_id
+        assert invocation.node_run_id == nodes[0].node_run_id
+        assert invocation.attempt_id == attempts[0].attempt_id
+        assert invocation.usage is not None
+        assert invocation.usage.input_units == 7
+        assert invocation.usage.output_units == 3
+        events = container.usage_log.events_for("configured-hive-model")
+        assert len(events) == 1
+        assert events[0].invocation_id == invocation.invocation_id
+        assert events[0].usage_reported is True
+        assert (events[0].input_tokens, events[0].output_tokens) == (7, 3)
+        assert len(sent) == 1
+        assert sent[0].url == "http://hive-gateway.fixture/v1/chat/completions"
+        assert sent[0].headers["Authorization"] == "Bearer configured-binding-key"
+        assert json.loads(sent[0].content)["model"] == "configured-hive-model"
+        # The boot and post-boot factory paths retain this composition's one
+        # admitted helper instead of creating a second Binding authority.
+        assert agent._llm is container.agents["boot-agent"]._llm
+        assert agent._llm._calls is bridge.admitted_calls
+
+        # A client retained by either factory cannot retain a grant after the
+        # canonical Binding is revoked. A fresh, genuinely admitted execution
+        # still refuses without a second HTTP call or usage record.
+        await container.capability_effects.bindings.revoke("operator-declared-hive-model")
+        refused_run = await container._admit_chat_turn(messages, auth=auth, dispatch_pending=True)
+
+        async def dispatch_after_revocation() -> dict[str, Any]:
+            response = await agent.handle(messages, auth, turn_id="another-domain-turn")
+            assert response.failed is True
+            return {"choices": [{"message": {"content": response.content}}]}
+
+        await container._execute_chat_turn(refused_run, messages, dispatch_after_revocation)
+        await container._close_chat_run(refused_run, error="binding_revoked")
+        refused_nodes = await container.run_store.list_node_runs(refused_run.run_id)
+        assert len(refused_nodes) == 1
+        assert not await container.capability_effects.invocation_store.list_effect(
+            run_id=refused_run.run_id,
+            node_run_id=refused_nodes[0].node_run_id,
+            binding_id="operator-declared-hive-model",
+            effect_key=f"agent-llm:{agent.identity.name}:0:1",
+        )
+        assert len(sent) == 1
+        assert container.usage_log.events_for("configured-hive-model") == events
+    finally:
+        set_test_transport(None)
+        if bridge.container is not None:
+            await bridge.container.aclose()
+        if materialized_id in stores.agents:
+            stores.agents.pop(materialized_id)

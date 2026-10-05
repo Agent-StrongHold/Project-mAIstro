@@ -114,6 +114,10 @@ or placeholder-only section.
   transport failure. The server records the ordinary model mode on the admitted
   Run, so recovery cannot change a real run into a stub or upgrade a dry run into
   billable model work. Sandbox and model-backed tool behavior is unchanged.
+- **Hive Agent materialization retains governed model egress (#1084).** Agents
+  created after boot use the Container-backed GovernedLLMClient rather than a
+  raw HTTP client. Agent turns adopt the existing canonical execution identity
+  without treating the conversation turn id as a Run id.
 
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
@@ -141,6 +145,16 @@ or placeholder-only section.
   copying. Configured model pins and declared node timeouts reach the Provider;
   later Attempts replay completed effects and refuse UNKNOWN outcomes. The
   model-backed tool and isolated sandbox paths retain their existing composition.
+- **Agent model calls require configured authority in their admitted scope (#1084).**
+  Boot and later-materialized Agents share one Container-backed admitted client,
+  inherit the persisted Run actor and Project, and resolve an operator-declared
+  Binding before every model effect. Missing admission, grant or scoped credential
+  refuses dispatch. Tool choice and domain TurnID handling are preserved; Agent
+  streaming uses the canonical incremental Provider lifecycle. Library compositions
+  now supply `AdmittedModelCalls` rather than a partial set of model authorities;
+  explicit standalone client injection remains available. Delegated calls are
+  distinguished by declared Agent and existing delegation depth so child prompts
+  cannot replay parent answers.
 
 - **Conductor model calls require persisted execution and configured authority (#1084).**
   Server and Hive task callers now resolve the actual Run, NodeRun, leased Attempt
