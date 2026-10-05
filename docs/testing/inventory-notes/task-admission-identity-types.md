@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +74
+  packages/maistro-core/tests: +76
 ---
 
 # #1851 root-admission identity types
@@ -12,11 +12,11 @@ production caller, RunStore change, task-idempotency change, SQL, or runtime
 wiring.
 
 `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q -x`
-collected and passed 74 cases. `uv run python scripts/check-suite-inventory.py
---suite packages/maistro-core/tests` collected 13,364 node IDs. The +74 delta
-is the new focused file, including the module-local export and enum-shape
-contract check; it is unchanged by unrelated test additions in the integration
-branch.
+collected and passed 76 cases. `uv run python scripts/check-suite-inventory.py
+--suite packages/maistro-core/tests` collected 13,366 node IDs. The +76 delta
+is the focused file, including the module-local export and enum-shape contract
+check plus canonical JSON rejection of lone surrogates and excessive nesting;
+it is unchanged by unrelated test additions in the integration branch.
 
 ## Security-signature revalidation
 

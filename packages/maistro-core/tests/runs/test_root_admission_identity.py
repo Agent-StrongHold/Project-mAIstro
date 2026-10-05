@@ -212,6 +212,21 @@ def test_canonical_json_rejects_non_string_constructor_input(bad_input: object) 
         CanonicalJsonObject(text=bad_input)  # type: ignore[arg-type]
 
 
+def test_canonical_json_rejects_lone_surrogates_before_retaining_text() -> None:
+    # json.loads accepts this syntactically valid escape, but a canonical
+    # snapshot must remain UTF-8 encodable for a later storage boundary.
+    with pytest.raises(ValueError, match="CanonicalJsonObject"):
+        CanonicalJsonObject(text=r'{"x":"\ud800"}')
+
+
+def test_canonical_json_normalizes_excessive_nesting_to_value_error() -> None:
+    # CPython raises RecursionError rather than ValueError for nesting beyond
+    # its decoder limit; constructor validation has one public error type.
+    nested_object = '{"x":' * 20_000 + "0" + "}" * 20_000
+    with pytest.raises(ValueError, match="CanonicalJsonObject"):
+        CanonicalJsonObject(text=nested_object)
+
+
 # --- immutability ----------------------------------------------------------
 
 
