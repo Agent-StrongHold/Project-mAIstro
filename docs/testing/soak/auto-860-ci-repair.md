@@ -129,3 +129,82 @@ No driver `check-*.log` files were supplied in this job directory.
 Progress: checked 1 assigned issue; CI repair done 1; skipped 0 issues; acceptance
 blocked 1. Preserve the local salvage patches for provenance. No push, PR update,
 issue comment or closure is authorized or performed.
+
+## Revalidation: job 2ed496624f484eddb880f6baea75f657
+
+Frozen scope: #860 only, clean starting HEAD
+`d889b33c3bec6529e09d91188816c1d2187d3cbe`, assigned develop base
+`534d475e6360985a2c95d6c82869d07001e82cda`. This is a writer validation
+handoff, not promotion approval. The supplied job directory contained no driver
+`check-*.log` files at entry. Current worker logs are in
+`/home/dev/maistro/jobs/2ed496624f484eddb880f6baea75f657/`.
+
+### Executed validation
+
+| Command | Current outcome |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1338 findings match 1338 reviewed identities; zero unclassified or never-allowlisted findings. |
+| Same vulture command with `RATCHET_BASE_REV=534d475e6360985a2c95d6c82869d07001e82cda` | PASS; gate resolves the comparison merge base to `8a4bc239fe9a`. |
+| `uv run ruff check .` | PASS. |
+| `uv run ruff format --check .` | PASS: 2917 files already formatted. |
+| `git diff --check 534d475e6360985a2c95d6c82869d07001e82cda...HEAD` | PASS; supplied historical whitespace failures do not reproduce. |
+| `uv run pytest packages/maistro-server/tests tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q` | PASS: 555 passed, 8 skipped, 22 deprecation warnings, 43.65 seconds. |
+| `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q` | PASS: 31 passed, 6 skipped. Skipped live-PostgreSQL tests are not concurrency evidence. |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-server/tests` | PASS: 503 collected and expected, no duplicate evidence. |
+| `uv run python scripts/check-backlog-consistency.py` | PASS: 168 items. |
+| `uv run python scripts/check-adr-index.py` | PASS. |
+| `uv run python scripts/check-convergence-matrix.py` | PASS: 52 subsystems, 1264 production modules. |
+
+An additional `uv run python` assertion probe imported the current soak module
+and evaluated the historical round-6 JSON. It confirmed failures for exactly
+`sustain_duration` and `exact_rc_artifact`, 90.43 seconds against 14400 required,
+a historical commit different from the assigned head, and the current
+`preflight_artifact_check()` returning false. Its output is
+`check-acceptance-worker.json`; this is evaluator validation, **not a new soak**.
+The historical rate-limit record also predates the six-path probe: it contains
+only one direct unauthenticated replica result. Reusing its stored true boolean
+cannot prove current multi-replica enforcement.
+
+### Current acceptance disposition
+
+All ten criteria were checked against the frozen issue body, reachable code,
+existing tests and evidence; previous verification claims were not presumed true.
+
+| Criterion | Executed evidence or remaining gap |
+| --- | --- |
+| Representative RC load profile | PARTIAL: profile exists, but `m3a-load-profile.md:152-166` identifies missing users/Workspaces, Graph fan-out, successful tool/model calls, Canvas and Goal/background workers. Complete representativeness UNVERIFIED. |
+| At least two application replicas | Production topology tests pass; `deploy/docker-compose.prod.yml:24-79` declares two replicas. No current production deployment was exercised: UNVERIFIED. |
+| Sustained saturation/reclaim/retry/leaks/restart | Current evaluator rejects historical 90.43-second evidence. Long-window production behavior UNVERIFIED. |
+| Schedule/task/Run/Attempt admission, Goal reconciliation and physical-work fencing | Server tests prove local canonical ceiling refusal, cleanup, replay and retry; sampler/probe tests pass. Live cross-replica physical effects and Goal reconciliation UNVERIFIED. |
+| Rate/security/degraded behavior cannot be bypassed by replica selection | NOT MET for a shared principal allowance: executed `test_replica_selection_has_an_independent_production_allowance` for both identity classes reproduces `[200, 200, 429]` independently on both real middleware instances (`tests/test_soak_promotion_gates.py:439-488`). Full production-concurrency security/degraded behavior UNVERIFIED. |
+| Required telemetry and explicit thresholds | Sampler tests observe a real uv child and missing measurements. Application-loop latency, worker counts, full PG contention and long-window threshold evidence remain UNVERIFIED. |
+| Kill/restart with drain/fencing/recovery | No current production kill/restart run; exit/rejoin alone does not prove physical-work fencing. UNVERIFIED. |
+| Long soak of exact RC artifact/config | NOT MET: `scripts/soak/run_soak.py:635-668` rejects host preflight; historical duration fails. No immutable RC deployment/config selection supplied. |
+| Findings reclassified to earliest broken milestone | Backlog consistency passes, but that does not prove complete load-finding classification. UNVERIFIED; no GitHub mutations. |
+| Machine/human evidence bound to exact hashes | Historical JSON/docs exist but identify `b31c5fdaa63b40506335bbb288889e87bdb9ba0c`, not current code. Current RC hash-bound soak evidence UNVERIFIED. |
+
+### Reconciliation and handoff
+
+Accepted ADR-081226-a66b and ADR-081626-f383 preserve canonical lifecycle and
+fence ownership. Admission uniqueness is not physical-work uniqueness.
+ADR-085's per-principal rate contract does not justify treating per-process
+allowance as shared enforcement; `api/rate_limit.py:25-30,72-76` explicitly
+implements the former. ADR-081 is Proposed, not an acceptance waiver. No
+competing authority, policy change or gate weakening is introduced.
+
+**BLOCKED remains the acceptance verdict.** The alleged vulture/whitespace
+repair is no longer necessary on the assigned head. There are no unbanked
+identities to review or remove, so no ledger amendment is justified. Only this
+existing handoff is updated; no runtime or tests changed and no inventory delta
+is needed. Existing work is preserved.
+
+Next action requires a frozen exact RC image/configuration and an owner decision
+reconciling replica-selection rate semantics, followed by complete representative
+workloads, physical-effect/recovery probes and a fresh instrumented >=4-hour
+production soak. Running this host emulator longer or repeating CI-repair jobs
+cannot satisfy those prerequisites. Do not infer release readiness from the
+passing unit/ASGI/static checks.
+
+Progress: checked 1 issue; done 0 acceptance-complete issues; skipped 0 issues;
+validation-command errors 0; blocked 1. This locally committed handoff records
+partial progress, not completion of #860.
