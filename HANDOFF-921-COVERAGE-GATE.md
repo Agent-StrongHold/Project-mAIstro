@@ -60,3 +60,22 @@ production code touched. The merge queue re-evaluates on enqueue.
 - Benchmark: `packages/maistro-rsi/tests/test_m8c2_rerank_rewrite_benchmark_research.py`, 26 checks — driver run green; full rsi suite 994 passed at this head.
 - Disposition: **WATCH** with INCUBATE/REJECT escalation criteria in `docs/research/921-reranking-query-rewriting.md` (lines 171–190).
 - Inventory: `docs/testing/inventory-notes/921-m8c2-rerank-harness.md` (+26) and `check-suite-inventory.py --suite packages/maistro-rsi/tests` = ok (994).
+
+## Re-verification round (2026-10-05, head `609c801adb9f`, base `94781cf6b708`)
+
+Hosted evidence at this exact head: all 31 check-runs success — including
+`Coverage gate (publish-set floor + diff coverage)` and `exact-debt-ledger` —
+and `gates-ran` = success ("All required checks executed on this exact head").
+The earlier red at `2b3ab83cb1a9` is closed by the merge-queue re-evaluation;
+nothing was weakened and no ledger row changed (ledger gate green with CI's
+exact arguments). Local battery re-executed at this head:
+
+- `uv run pytest packages/maistro-rsi/tests/test_m8c2_rerank_rewrite_benchmark_research.py -q` → 26 passed.
+- `uv run pytest packages/maistro-rsi/tests -q` → 1024 passed (count grew with the develop merge; `uv run python scripts/check-suite-inventory.py` → ok, 14 suites match).
+- `uv run ruff check .` and `uv run ruff format --check .` → clean.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → 1338 reviewed identities = 1338 findings, exit 0.
+- `uv run python scripts/check-diff-coverage.py <coverage.xml> --base 94781cf6b708…` → ok, exit 0; the diff's only Python file is the rsi test, exempt by the gate's declared `/tests/` rule (and it collects no maistro coverage — it imports no maistro module).
+- Independent mutation reproduction (module copied to /tmp, tree untouched): freezing the rewriter's substitution table flips exactly `…synonym_probe…`; dropping the ×weight term flips exactly the four pins naming that mechanism (synonym probe, adversarial gaming, rollback rescue, rewrite-dominance). The tests fail when their cause is removed.
+- Canonical-seam claims re-checked against production source: `episodic/ranking.py` formula and raw-split `keyword_overlap`, `episodic/retrieval.py` `_POOL_FACTOR = 10` / `_vector_term`, `learnings/embeddings.py` `KEYWORD_WEIGHT = 1.0` / `EMBEDDING_WEIGHT = 3.0` / `MIN_COMBINED_SCORE = 0.3` — all as the research note states.
+
+`origin/develop` remains at `94781cf6b708` (the merge base): no drift, no conflict to resolve.
