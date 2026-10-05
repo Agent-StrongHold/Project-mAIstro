@@ -359,10 +359,10 @@ class TestTheForwardUpgrade:
         result = _alembic("upgrade", "head")
 
         assert result.returncode != 0, "a wrong-typed claim table upgraded cleanly"
-        # Develop's 053 (learning-lifecycle columns on `learnings`) applies
-        # cleanly before this revision runs; the claim-table revision itself
-        # refuses at 054, so the stamp lands on the last good revision, 053.
-        assert _stamped_version() == "053", "the revision advanced over an unknown shape"
+        # The upgrade run is one transaction: develop's 053 (learning-lifecycle
+        # columns on `learnings`) rolls back together with the refusing 054, so
+        # the stamp stays at the last good revision, 052.
+        assert _stamped_version() == "052", "the revision advanced over an unknown shape"
         # The refusal names the incompatible shape rather than dying quietly.
         assert "incompatible baseline shape" in result.stderr + result.stdout
         assert _v2_columns().get("generation_id") is None
@@ -379,7 +379,7 @@ class TestTheForwardUpgrade:
         result = _alembic("upgrade", "head")
         assert result.returncode != 0, "a keyless claim table upgraded cleanly"
         assert "primary key" in result.stderr + result.stdout
-        assert _stamped_version() == "053"
+        assert _stamped_version() == "052"
         assert _v2_columns().get("format_version") is None
 
         # Phase 2: the key restored but the purge index lost.
@@ -391,7 +391,7 @@ class TestTheForwardUpgrade:
         result = _alembic("upgrade", "head")
         assert result.returncode != 0, "an indexless claim table upgraded cleanly"
         assert "ix_task_idempotency_expires" in result.stderr + result.stdout
-        assert _stamped_version() == "053"
+        assert _stamped_version() == "052"
         assert _v2_columns().get("format_version") is None
 
     def test_pre_038_runtime_table_blocks_the_chain_before_this_revision(

@@ -73,8 +73,8 @@ merge reintroduced the revision-id collision — develop's
 revision both claimed `053` on `052`. Resolved per the migration's own
 documented convention (whichever revision lands second re-parents onto the
 merged tip): the branch revision re-parented onto develop's tip as
-`054_task_admission_generations`; refusal-path stamp assertions in
-`test_task_admission_generation_upgrade.py` updated to the new neighbors
-(failed admission upgrades now stamp `053`, the failed downgrade stays at
-`054`); the chain sentinel walks to head `054`. No test added or removed —
-delta above unchanged.
+`054_task_admission_generations`; the chain sentinel walks to head `054`. The
+refusal-path stamp assertions hold unchanged: the upgrade run is one
+transaction, so a refusing 054 rolls develop's 053 back with it (stamp stays
+`052`), and a refused downgrade leaves the stamp at head `054`. No test added
+or removed — delta above unchanged.
