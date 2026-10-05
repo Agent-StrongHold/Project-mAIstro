@@ -179,10 +179,6 @@ class CanonicalJsonObject:
                 ensure_ascii=False,
                 allow_nan=False,
             )
-            # JSON permits escaped lone UTF-16 surrogates syntactically, but
-            # retaining one would make the supposedly canonical snapshot fail
-            # at a future UTF-8 storage boundary.
-            canonical.encode("utf-8")
         except (RecursionError, UnicodeEncodeError, ValueError) as exc:
             raise ValueError(f"CanonicalJsonObject requires one JSON object: {exc}") from exc
         object.__setattr__(self, "text", canonical)

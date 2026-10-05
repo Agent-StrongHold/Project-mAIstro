@@ -212,11 +212,18 @@ def test_canonical_json_rejects_non_string_constructor_input(bad_input: object) 
         CanonicalJsonObject(text=bad_input)  # type: ignore[arg-type]
 
 
-def test_canonical_json_rejects_lone_surrogates_before_retaining_text() -> None:
-    # json.loads accepts this syntactically valid escape, but a canonical
-    # snapshot must remain UTF-8 encodable for a later storage boundary.
-    with pytest.raises(ValueError, match="CanonicalJsonObject"):
-        CanonicalJsonObject(text=r'{"x":"\ud800"}')
+def test_canonical_json_preserves_valid_escaped_lone_surrogates() -> None:
+    # The constructor's sole representation rule is json.dumps(...,
+    # ensure_ascii=False); storage-boundary encoding policy is outside this DTO.
+    source = r'{"x":"\ud800"}'
+    expected = json.dumps(
+        json.loads(source),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    assert CanonicalJsonObject(text=source).text == expected
 
 
 def test_canonical_json_normalizes_excessive_nesting_to_value_error() -> None:
