@@ -391,6 +391,12 @@ class Container:
     # application populated. Absence of a registered Binding stays a hard
     # refusal; wiring the context grants nothing on its own.
     capability_effects: CapabilityEffectContext = None  # type: ignore[assignment]  # wired in create_container
+    # Registered provider-adapter packages (M9-E1, #961): the catalog this
+    # container composed and published as the process default. Held so close()
+    # withdraws exactly this container's catalog (identity-checked), the way
+    # capability_effects is released; adapters add destinations to the one
+    # governed egress, never a second process-wide authority.
+    provider_adapter_catalog: Any = None
     # Shared quota usage log for any node/hook that needs one (e.g.
     # RsiQuotaPaceTriggerNode via build_node_resolver). Defaults to the
     # process-wide singleton (quota/usage_log.py) so this container and any
@@ -538,6 +544,10 @@ class Container:
         # that is already going down.
         self.closed = True
         release_default_effect_context(self.capability_effects)
+        if self.provider_adapter_catalog is not None:
+            from maistro.capabilities.provider_adapters import release_default_adapter_catalog
+
+            release_default_adapter_catalog(self.provider_adapter_catalog)
         if self.working_log is not None:
             # Release the working-memory graphs the container took (#301):
             # they are process-local caches over the durable observation log,
@@ -2495,6 +2505,25 @@ async def create_container(
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
+    # Registered provider-adapter packages (M9-E1, #961) join the same door:
+    # each configured entry registers its models into the canonical registry
+    # (so the cost-aware router selects them without a core routing edit),
+    # provisions its operator-supplied credential into the scoped pool, and
+    # loads its own model.chat Binding. The catalog publishes as the process
+    # default so every governed model egress — agents, graph nodes, server —
+    # resolves adapter models without a second wiring path; an unconfigured
+    # deployment keeps the gateway-only behavior exactly as before.
+    from maistro.capabilities.provider_adapters import (
+        ProviderAdapterCatalog,
+        bootstrap_provider_adapters,
+        configure_default_adapter_catalog,
+    )
+
+    adapter_catalog = ProviderAdapterCatalog()
+    await bootstrap_provider_adapters(
+        config, capability_effects, provider_registry, adapter_catalog
+    )
+    configure_default_adapter_catalog(adapter_catalog)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2585,6 +2614,7 @@ async def create_container(
         harness_adapters=wired_harness_adapters,
         spawn_harness_node=spawn_harness_node,
         capability_effects=capability_effects,
+        provider_adapter_catalog=adapter_catalog,
         golden_record_store=golden_record_store,
         skill_registry=skill_registry,
         policy_attachment_store=policy_attachment_store,

@@ -32,6 +32,10 @@ from maistro.capabilities.invocation import (
     InvocationUsage,
     ProviderResolver,
 )
+from maistro.capabilities.provider_adapters import (
+    AdapterGatewayProvider,
+    default_adapter_catalog,
+)
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
@@ -53,15 +57,27 @@ from maistro.quota.usage_report import reported_usage
 
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
+    from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 
 
-def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage | None:
-    """Extract usage/cost metadata from one gateway response body."""
+def _gateway_usage(
+    provider: LlmGatewayProvider | AdapterGatewayProvider, body: Any
+) -> InvocationUsage | None:
+    """Extract usage/cost metadata from one canonical response body.
+
+    An adapter's ``usage_from`` hook reports first — it knows where its
+    provider puts the numbers — and the canonical OpenAI-shape parser is the
+    fallback, so usage reaches the canonical Invocation either way.
+    """
 
     if not isinstance(body, dict):
         return None
-    reported = reported_usage(body)
+    reported: tuple[int, int] | None = None
+    if isinstance(provider, AdapterGatewayProvider):
+        reported = provider.adapter.usage_from(body)
+    if reported is None:
+        reported = reported_usage(body)
     if reported is None:
         return None
     input_units, output_units = reported
@@ -80,6 +96,58 @@ def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage |
     )
 
 
+def _adapter_health_refusal(
+    adapters: ProviderAdapterCatalog | None,
+    provider: ResolvedCapabilityProvider,
+) -> str | None:
+    """Why canonical selection refuses an adapter whose latest probe failed.
+
+    Health/capacity signals are exposed to the canonical router exactly where
+    it resolves providers: an adapter that failed its probe resolves as
+    unavailable here — the same fail-closed seam as registry availability —
+    until a later probe records recovery.
+    """
+
+    if (
+        adapters is None
+        or not isinstance(provider, AdapterGatewayProvider)
+        or adapters.is_healthy(provider.spec.adapter_id)
+    ):
+        return None
+    return (
+        f"adapter {provider.spec.adapter_id!r} failed its latest health probe; "
+        "canonical selection refuses until it recovers"
+    )
+
+
+def _undeclared_capability(
+    provider: LlmGatewayProvider | AdapterGatewayProvider,
+    request: ModelChatRequest,
+) -> str | None:
+    """Why ``request`` needs a capability the resolved provider does not declare.
+
+    Adapter capabilities fail explicitly (M9-E1): a tools or structured-output
+    request against an adapter that did not declare the feature refuses as a
+    typed unavailable resolution before any HTTP, instead of degrading silently
+    or escaping through some permissive default. Gateway models keep their
+    existing behavior.
+    """
+
+    if not isinstance(provider, AdapterGatewayProvider):
+        return None
+    missing: list[str] = []
+    if (request.tools or request.tool_choice) and not provider.capabilities.tools:
+        missing.append("tools/tool_choice")
+    if request.response_format is not None and not provider.capabilities.structured_output:
+        missing.append("response_format (structured output)")
+    if not missing:
+        return None
+    return (
+        f"model {provider.name!r} on adapter {provider.spec.adapter_id!r} does not declare "
+        f"{', '.join(missing)}; unsupported features fail explicitly"
+    )
+
+
 def resolve_model_chat_provider(
     registry: LLMProviderRegistry,
     router: LLMRouter,
@@ -87,6 +155,7 @@ def resolve_model_chat_provider(
     alias: str = "",
     task: RoutingTask | None = None,
     budget: RouterBudget | None = None,
+    adapters: ProviderAdapterCatalog | None = None,
 ) -> ProviderResolver:
     """Build the slot-specific resolver preserving ADR-079 selection policy.
 
@@ -94,34 +163,18 @@ def resolve_model_chat_provider(
     cost-aware router select"). A Binding pin outranks it and must already
     exist in the configured ProviderRegistry; gateway registration alone is
     not model metadata registration.
+
+    ``adapters`` resolves registered provider-adapter models to adapter
+    providers; every other selection resolves to the shipped gateway exactly
+    as before the adapter SDK existed. Selection policy is untouched: adapter
+    models sit in the same registry, so the cost-aware router picks them under
+    the same cost/latency/fallback rules.
     """
 
     async def resolve(binding: Binding) -> ResolvedCapabilityProvider | Unavailable:
         selection = binding.provider_name or alias
         if selection:
-            try:
-                metadata: ModelMetadata | None = await registry.get_model(selection)
-            except ModelNotFoundError:
-                if binding.provider_name:
-                    return Unavailable(
-                        slot=MODEL_CHAT_CAPABILITY,
-                        reason=(
-                            f"pinned model {selection!r} is unknown; register its metadata "
-                            "in the configured ProviderRegistry before using a Binding pin "
-                            "(provider_config_path); gateway /model/new is not sufficient"
-                        ),
-                    )
-                metadata = None
-            if metadata is not None and not registry.is_available(metadata.name):
-                source = "pinned model" if binding.provider_name else "request alias"
-                return Unavailable(
-                    slot=MODEL_CHAT_CAPABILITY,
-                    reason=(
-                        f"{source} {selection!r} is unavailable; "
-                        "an explicit selection does not fall back"
-                    ),
-                )
-            return LlmGatewayProvider(metadata, model=selection)
+            return await _resolve_named_model(registry, adapters, binding, selection)
         try:
             selected = await router.select(
                 task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
@@ -129,9 +182,55 @@ def resolve_model_chat_provider(
             )
         except NoEligibleModelError as exc:
             return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=f"no eligible model: {exc}")
+        routed = (
+            adapters.resolve_provider(selected.name, selected) if adapters is not None else None
+        )
+        if routed is not None:
+            refusal = _adapter_health_refusal(adapters, routed)
+            if refusal is not None:
+                return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
+            return routed
         return LlmGatewayProvider(selected, model=selected.name)
 
     return resolve
+
+
+async def _resolve_named_model(
+    registry: LLMProviderRegistry,
+    adapters: ProviderAdapterCatalog | None,
+    binding: Binding,
+    selection: str,
+) -> ResolvedCapabilityProvider | Unavailable:
+    """Resolve an explicitly named (pinned or aliased) model selection."""
+
+    try:
+        metadata: ModelMetadata | None = await registry.get_model(selection)
+    except ModelNotFoundError:
+        if binding.provider_name:
+            return Unavailable(
+                slot=MODEL_CHAT_CAPABILITY,
+                reason=(
+                    f"pinned model {selection!r} is unknown; register its metadata "
+                    "in the configured ProviderRegistry before using a Binding pin "
+                    "(provider_config_path); gateway /model/new is not sufficient"
+                ),
+            )
+        metadata = None
+    if metadata is not None and not registry.is_available(metadata.name):
+        source = "pinned model" if binding.provider_name else "request alias"
+        return Unavailable(
+            slot=MODEL_CHAT_CAPABILITY,
+            reason=(
+                f"{source} {selection!r} is unavailable; an explicit selection does not fall back"
+            ),
+        )
+    resolved = adapters.resolve_provider(selection, metadata) if adapters is not None else None
+    if resolved is not None:
+        refusal = _adapter_health_refusal(adapters, resolved)
+        if refusal is not None:
+            return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
+        return resolved
+    return LlmGatewayProvider(metadata, model=selection)
 
 
 class GovernedLLMClient:
@@ -307,7 +406,12 @@ class ModelCallResult(BaseModel):
 
 
 class ModelChatEgress:
-    """Cross the one governed model boundary on behalf of an effect consumer."""
+    """Cross the one governed model boundary on behalf of an effect consumer.
+
+    ``adapters`` selects registered provider-adapter models (M9-E1); ``None``
+    means the process default, and an unconfigured default leaves the egress
+    gateway-only — an adapter can add a destination, never a second boundary.
+    """
 
     def __init__(
         self,
@@ -316,11 +420,13 @@ class ModelChatEgress:
         registry: LLMProviderRegistry,
         router: LLMRouter,
         endpoint: GatewayEndpoint,
+        adapters: ProviderAdapterCatalog | None = None,
     ) -> None:
         self._effects = effects
         self._registry = registry
         self._router = router
         self._endpoint = endpoint
+        self._adapters = adapters if adapters is not None else default_adapter_catalog()
 
     async def complete(
         self,
@@ -343,12 +449,20 @@ class ModelChatEgress:
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
         """
-        resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
-        selected: list[LlmGatewayProvider] = []
+        resolver = resolve_model_chat_provider(
+            self._registry,
+            self._router,
+            alias=request.model,
+            adapters=self._adapters,
+        )
+        selected: list[LlmGatewayProvider | AdapterGatewayProvider] = []
 
         async def tracked_resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
             provider = await resolver(candidate)
-            if isinstance(provider, LlmGatewayProvider):
+            if isinstance(provider, (LlmGatewayProvider, AdapterGatewayProvider)):
+                refusal = _undeclared_capability(provider, request)
+                if refusal is not None:
+                    return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
                 selected[:] = [provider]
             return provider
 
@@ -358,7 +472,7 @@ class ModelChatEgress:
                     "model-chat physical execution requires a Binding-scoped credential"
                 )
             base = provider.base
-            if not isinstance(base, LlmGatewayProvider):
+            if not isinstance(base, (LlmGatewayProvider, AdapterGatewayProvider)):
                 raise TypeError(f"credential routed a non-gateway provider: {base!r}")
             if setup is not None:
                 await setup()

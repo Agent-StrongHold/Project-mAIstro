@@ -25,6 +25,25 @@ or placeholder-only section.
 
 ### Added
 
+- **Third-party provider adapter SDK with canonical routing and usage semantics (#961).**
+  An out-of-tree provider package implements the `ProviderAdapter` normalization
+  protocol over a declarative `ProviderAdapterSpec` and registers through
+  `maistro.capabilities.provider_adapters.register_adapter_models` — the whole
+  integration: declared models join the canonical ADR-079 registry and the
+  cost-aware router selects them under unchanged policy, with no core routing
+  edit. Adapters hold no HTTP client: the approved model-egress module
+  transports them over its one governed POST, injecting the scoped credential
+  per the adapter's declared auth style (bearer/header/query); the spec refuses
+  secret-shaped fields, so secrets resolve only through the canonical
+  credential authority. Usage, errors (401/403 → auth, 429 → rate-limited),
+  and streaming declarations map to canonical interfaces; undeclared
+  capabilities (tools, structured output) refuse explicitly before any HTTP;
+  health probes feed canonical selection instead of a second circuit breaker.
+  Registration runs a shared conformance suite that both the built-in
+  reference adapter and external adapters must pass. Operators wire adapters
+  via `AgentConfig.provider_adapters` (one `model.chat` Binding per entry;
+  configuring an adapter authorizes nothing by itself). See ADR-104.
+
 - **The extension SDK boundary is enforced and a reference extension ships outside the
   core tree (#951).** `extensions/namespace-policy.json` declares the public
   package namespace policy — the public SDK root (`maistro_ext_sdk`) versus the
