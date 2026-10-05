@@ -45,6 +45,14 @@ _BUILDERS_CACHE_DIR = Path.home() / ".maistro" / "builders_repos"
 
 
 def _is_git_url(repo: str) -> bool:
+    # `git://` is rejected before classification (#404): the protocol is
+    # unauthenticated and unencrypted, so a clone from it is candidate source
+    # an attacker could substitute on-path. The `.endswith(".git")` catch-all
+    # below would otherwise wave `git://host/repo.git` straight through, and
+    # git parses remote schemes case-insensitively (RFC 3986), so the check is
+    # case-insensitive too.
+    if repo.lower().startswith("git://"):
+        return False
     return repo.startswith(_GIT_URL_PREFIXES) or repo.endswith(".git")
 
 
@@ -284,6 +292,15 @@ class BuildersApp(App[None]):
         session_id = make_session_id(repo)
 
         try:
+            if repo.lower().startswith("git://"):
+                # Same verdict as the MCP git server (#404): name the policy,
+                # don't fall through to "Not a directory" and leave the
+                # operator guessing why a URL was treated as a path.
+                recent.update(
+                    "\n  [red]Blocked: git:// is unauthenticated transport — "
+                    "use https:// or ssh:// (#404)[/red]"
+                )
+                return
             if _is_git_url(repo):
                 recent.update(f"\n  [dim]Cloning {repo}…[/dim]")
                 work_dir = _BUILDERS_CACHE_DIR / session_id

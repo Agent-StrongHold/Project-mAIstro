@@ -25,10 +25,22 @@ mcp = FastMCP("git", instructions="Git and GitHub operations")
 GIT_CLONE_TIMEOUT = 300
 
 # Schemes legitimate callers actually use (github_create_pr/selfbranch clone
-# over https; ssh/git are kept for parity with normal git usage). Anything
+# over https; ssh is kept for parity with normal git usage). Anything
 # else — notably a bare `-`-prefixed string, which `argv` would otherwise
 # hand straight to git as a flag — is rejected before the subprocess runs.
-_ALLOWED_CLONE_SCHEMES = ("https://", "git://", "ssh://")
+#
+# `git://` is deliberately absent (#404): the git protocol is unauthenticated
+# and unencrypted — no transport integrity, no server identity — so an
+# on-path attacker can substitute repository content that the RSI cycle
+# then branches, patches, builds and tests. Only authenticated transports
+# may introduce executable candidate source. The gate is an allowlist, not
+# a blocklist, so case games (`GIT://`, `Git://`) and any future scheme fall
+# through to rejection, not acceptance; `git://` additionally gets its own
+# error code below so the policy violation is distinguishable from a typo.
+# Redirects cannot smuggle the scheme back in: git's http transport only
+# follows http(s) redirects, and this server never runs `git submodule
+# update`, so `.gitmodules` URLs (git:// or otherwise) are never fetched.
+_ALLOWED_CLONE_SCHEMES = ("https://", "ssh://")
 _BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 # In-memory dedup for PR creation, keyed by a content hash rather than a
@@ -117,7 +129,27 @@ def _parse_log_lines(output: str) -> list[dict[str, str]]:
 async def git_clone(
     url: str, dest: str, timeout: Annotated[int, Field(ge=1, le=900)] = GIT_CLONE_TIMEOUT
 ) -> dict[str, Any]:
-    """Clone a git repository (shallow, depth=1)."""
+    """Clone a git repository (shallow, depth=1).
+
+    Only authenticated transports are accepted (#404): https:// or ssh://.
+    `git://` has its own rejection — it provides neither encryption nor
+    server authentication, and anything it clones is candidate source the
+    RSI self-modification cycle may execute.
+    """
+    # Match case-insensitively for the specific git-protocol verdict: git
+    # itself parses remote schemes case-insensitively (RFC 3986 scheme
+    # grammar), so `GIT://host/repo` names the same unauthenticated
+    # transport and deserves the same explicit answer. Anything not on the
+    # allowlist — including every casing here — is still rejected below.
+    if url.lower().startswith("git://"):
+        return fail(
+            stdout=f"Blocked: unauthenticated transport: {url}",
+            error_code="blocked_unauthenticated_transport",
+            suggested_action=(
+                "Use https:// or ssh:// — the git:// protocol provides no "
+                "transport encryption or server authentication (#404)."
+            ),
+        )
     if not url.startswith(_ALLOWED_CLONE_SCHEMES):
         return fail(
             stdout=f"Blocked: url scheme is not allowed: {url}",
