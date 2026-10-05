@@ -106,7 +106,7 @@ class OutcomeEvidenceGauntlet:
             failed.append("success_rate")
         if evidence.contradictions - evidence.reinforcements > self._max_contradiction_excess:
             failed.append("contradictions")
-        if learning.confidence < self._min_confidence:
+        if learning.confidence is None or learning.confidence < self._min_confidence:
             failed.append("confidence")
         if self._require_producer and not evidence.producer_run_id:
             failed.append("producer")

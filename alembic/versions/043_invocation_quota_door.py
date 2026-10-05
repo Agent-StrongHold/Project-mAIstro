@@ -1,16 +1,16 @@
 """Quota admission tables and canonical Invocation usage evidence.
 
 Revision ID: 043_invocation_quota_door
-Revises: 054
+Revises: 055
 Create Date: 2026-09-27
 
 The effect door's budget reservations (#1196) and the at-most-once provider
 usage evidence (#718) attach to the canonical Invocation. They follow the
 current chain tip so they do not reuse revision ids 033/035/036, which
 develop already assigned. Re-parented onto each new develop head as this
-branch has stayed open -- 046, then 047, 048, 050, 051, 052, 053, now 054:
-a migration must append after the deployed head, never fork beside it, or
-`alembic upgrade head` refuses with multiple heads.
+branch has stayed open -- 046, then 047, 048, 050, 051, 052, 053, 054, now
+055: a migration must append after the deployed head, never fork beside
+it, or `alembic upgrade head` refuses with multiple heads.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:
@@ -36,7 +36,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "043_invocation_quota_door"
-down_revision = "054"
+down_revision = "055"
 branch_labels = None
 depends_on = None
 
