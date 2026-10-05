@@ -10984,3 +10984,69 @@ Design-Studio-private substitutes. All 13 acceptance criteria remain
 UNPROVEN against reachable production behavior at `2a6afd8a6`. The branch
 remains a safe, develop-current, battery-green waiting position
 (Refs #777).
+
+## Round 165 (2026-10-05, job 03cf5653) — develop sync + re-verification at merged head 53391af70a
+
+Prior round's result.json (edeefa1525) died on a provider timeout with
+`checks: []` — zero gates ran; no evidence was lost. This round re-ran
+everything worker-side.
+
+**Develop sync:** origin/develop advanced 30144ad0f → 658a8f78c
+(feat(capabilities): Capability→Provider→Binding→Invocation real effect
+path, #55). Merged cleanly into auto-777 → merge commit 53391af70a, no
+conflicts. Post-merge ledger check: every `quality/*.json` row count
+matches origin/develop except `vulture-baseline.json`, which carries the
+branch's standing one-identity-lower state (1343→1342, pre-existing since
+the round-65 CI repair, never-allowlist 0). The merge brought develop's
+new ledger rows in intact (direct-effect-call-sites +129,
+durable-table-retention +54, promotion-surface +51, radon/reachability
+updated, vulture +5).
+
+**Battery on 53391af70a (all worker-run, CI-exact args):**
+- `uv run ruff check .` EXIT 0; `uv run ruff format --check .` EXIT 0
+  (2980 files).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` EXIT 0 (base
+  658a8f78c → candidate 53391af70a, 1343→1342, never-allowlist 0).
+- `check-api-route-contracts.py` EXIT 0 (279 handlers, 0 canned);
+  `check-route-permissions.py` EXIT 0 (23 tolerated, none new);
+  `check-reachability.py` EXIT 0 (1283 production modules);
+  `check-promotion-surface.py` EXIT 0; `check-ratchet-provenance.py`
+  EXIT 0 (49 consumers); `check-backlog-consistency.py` EXIT 0 (167).
+- `check-suite-inventory.py`: bare `python3` now lacks structlog in this
+  environment (root conftest.py:17 imports it; conftest unchanged since
+  #455 — local env drift, not tree drift). Run under `uv run python`
+  so the gate's inner `python3 -m pytest` resolves to the project venv:
+  **15/15 suites, EXIT 0** (26585 unique identities, 0 duplicates).
+- pytest design+bootstrap → **772 passed, 7 skipped** (21.47s);
+  NEW-from-merge `packages/maistro-core/tests/quota +
+  test_container_capability_effects.py + test_container_quota_admission.py`
+  → **251 passed, 29 skipped** (4.00s); hive-conductor
+  `-k "design or workspace or agent"` → **500 passed, 5 skipped**
+  (18.77s).
+
+**Blockers re-proven fresh at 53391af70a (post-merge):**
+- `GoalReconciler|delegate_goal`: 0 matches in packages/*/src (grep
+  exit 1) — the #804/#805 reconciliation surface still does not exist.
+- `maistro-core/src/maistro/goals/`: module absent (canonical Goal
+  persistence unlanded).
+- hive-conductor `routes/design.py`: 0 matches for
+  workspace_agent|control_mode|delegat; maistro-design src: 0 matches —
+  Design Studio still consumes none of the Workspace Agent.
+- `hive-conductor/backend/services/workspace_agent.py:1` docstring:
+  the #1037 one-identity-per-Workspace roster service, not a
+  reconciler front door.
+
+**Dependency states (dispatch-context.json, captured
+2026-10-05T14:14:24Z):** parent #773 open; #804/#805/#806 open; #53
+open; #93/#95 open; #774 open; #776 open; #458/#39/#775 closed; PR
+#1660 open **draft**, `merged_at: null`, head `17ad5f75b894` — the
+implementation vehicle is unmerged and merging it is outside this
+lane's authority (no GitHub mutations).
+
+Verdict: **BLOCKED** (dependency-blocking), unchanged from rounds
+123–164. The #55 capability-effect work merged into develop this cycle
+strengthens the governed effect path (#12's substrate) but lands no
+Workspace Agent/reconciliation. All 13 acceptance criteria remain
+UNPROVEN at 53391af70a; the branch remains a develop-current,
+battery-green waiting position (Refs #777).
