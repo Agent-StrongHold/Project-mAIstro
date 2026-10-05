@@ -160,3 +160,15 @@ trusted-base debt. `check-reachability.py` returned 1 solely for the inactive
 provenance failure. This leaf cannot add a runtime consumer, reachability
 ledger/disposition, suppression, or grant; parent integration must do so before
 mergeability.
+
+## Independent repair validation
+
+At `46e342750e4db5bcfe1ad551448d51554ace2d43`, focused Ruff check/format,
+module mypy, the 76-case DTO suite, and the core inventory check all passed;
+the latter again recorded 13,727 node IDs (`+76`). The complete
+`packages/maistro-core/tests` suite also passed (12,799 passed, 927 skipped,
+1 xfailed). The exact Vulture command still failed only on the same nine
+trusted-base identities, and reachability/provenance still failed only because
+this leaf deliberately has no permitted production consumer. Reachability
+Dispositions and promotion-surface passed. This is evidence of a staged DTO
+leaf, not evidence that the required integration-head quality gate is green.
