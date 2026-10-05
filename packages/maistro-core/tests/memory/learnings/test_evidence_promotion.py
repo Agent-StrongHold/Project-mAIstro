@@ -14,13 +14,13 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.evidence import (
     DEFAULT_MIN_PROMOTION_CONFIDENCE,
     has_source_evidence,
     outcome_confidence,
     promotion_blockers,
 )
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.extractor import RCAExtractor
 from maistro.memory.learnings.promoter import LearningPromoter
 from maistro.memory.learnings.store import InMemoryLearningStore
