@@ -34,10 +34,16 @@ The audited routes and their dispositions live in
 `docs/api/route-contract-inventory.md`. Every registered entry must still
 resolve to a live handler (method + path matched against the decorator), so
 the inventory cannot rot: removing a route means updating the inventory in the
-same change. A canned handler that is *not* registered fails the gate unless
-it carries a `temporary` disposition with a tracking issue and an unexpired
-review date — the same escape shape `check-public-routes.py` uses, because
-"we know, it is tracked" must be writable and must expire.
+same change.
+
+Registration is tracking, not a pass (#1859): every canned handler fails this
+gate whether it is registered or not. A `temporary` disposition — a tracking
+issue and an unexpired review date, validated with the same shape
+`check-public-routes.py` uses because "we know, it is tracked" must be
+writable and must expire — records the known debt and keeps it expiring while
+the gate stays red. #389 grants no temporary waiver for a success answer that
+did nothing, so the only way to ship the route is to implement it against its
+canonical owner or refuse with an explicit unsupported status.
 
 Usage
 -----
@@ -59,7 +65,6 @@ INVENTORY_DOC = ROOT / "docs" / "api" / "route-contract-inventory.md"
 
 DISPOSITIONS = frozenset({"implemented", "unsupported-501", "preview", "temporary"})
 REQUIRED_FIELDS = ("route", "method", "path", "file", "handler", "disposition", "contract")
-REQUIRED_TEMPORARY = ("issue", "expires")
 REQUIRED_TEMPORARY = ("issue", "expires")
 
 
@@ -129,8 +134,11 @@ def _handlers() -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, 
 
 def _canned_handlers(
     handlers: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, str]],
-) -> list[str]:
-    findings: list[str] = []
+) -> list[tuple[tuple[str, str, str], str]]:
+    """Canned handlers as ((file, method, path), display). The identity is the
+    registry key, so ``main()`` can tell a tracked entry from an unregistered
+    one when it words the failure."""
+    findings: list[tuple[tuple[str, str, str], str]] = []
     for filename, func, method, route_path in handlers:
         returns = [n for n in ast.walk(func) if isinstance(n, ast.Return)]
         if not returns:
@@ -139,7 +147,12 @@ def _canned_handlers(
             continue
         if _performs_real_work(func):
             continue
-        findings.append(f"{filename}:{func.lineno} {method.upper()} {route_path} ({func.name})")
+        findings.append(
+            (
+                (filename, method, route_path),
+                f"{filename}:{func.lineno} {method.upper()} {route_path} ({func.name})",
+            )
+        )
     return findings
 
 
@@ -196,6 +209,26 @@ def _check_registry(
     return failures, count
 
 
+def _registry_routes() -> dict[tuple[str, str, str], dict[str, object]]:
+    """The inventory keyed by handler identity; empty when it cannot be read
+    (a missing or malformed registry is reported by ``_check_registry``)."""
+    try:
+        registry = json.loads(REGISTRY.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    routes = registry.get("routes") if isinstance(registry, dict) else None
+    if not isinstance(routes, list):
+        return {}
+    keyed: dict[tuple[str, str, str], dict[str, object]] = {}
+    for entry in routes:
+        if not isinstance(entry, dict):
+            continue
+        identity = (entry.get("file"), entry.get("method"), entry.get("path"))
+        if all(isinstance(part, str) for part in identity):
+            keyed[(identity[0], identity[1], identity[2])] = entry
+    return keyed
+
+
 def main() -> int:
     failures: list[str] = []
 
@@ -206,17 +239,28 @@ def main() -> int:
     registry_failures, registered_count = _check_registry(by_identity)
     failures.extend(registry_failures)
 
-    for finding in canned:
-        try:
-            registry_name = str(REGISTRY.relative_to(ROOT))
-        except ValueError:  # relocated/synthetic registry (tests, tooling)
-            registry_name = str(REGISTRY)
-        failures.append(
-            f"canned route handler: {finding} returns only constants and performs no "
-            f"operation; implement it against its canonical owner, refuse with an "
-            f"explicit unsupported status, or register a temporary disposition in "
-            f"{registry_name}"
-        )
+    try:
+        registry_name = str(REGISTRY.relative_to(ROOT))
+    except ValueError:  # relocated/synthetic registry (tests, tooling)
+        registry_name = str(REGISTRY)
+    registered = _registry_routes()
+    for identity, finding in canned:
+        entry = registered.get(identity)
+        if isinstance(entry, dict) and entry.get("disposition") == "temporary":
+            failures.append(
+                f"canned route handler: {finding} returns only constants and performs no "
+                f"operation; its temporary disposition (issue #{entry.get('issue')}, "
+                f"expires {entry.get('expires', 'unspecified')}) is tracking-only and "
+                f"does not pass this gate — implement it against its canonical owner "
+                f"or refuse with an explicit unsupported status"
+            )
+        else:
+            failures.append(
+                f"canned route handler: {finding} returns only constants and performs no "
+                f"operation; implement it against its canonical owner or refuse with an "
+                f"explicit unsupported status — a temporary disposition registered in "
+                f"{registry_name} records the debt for review but cannot pass this gate"
+            )
 
     if not INVENTORY_DOC.exists():
         failures.append(f"missing inventory document: {INVENTORY_DOC}")

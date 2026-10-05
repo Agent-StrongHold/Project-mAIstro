@@ -74,8 +74,11 @@ refuses any handler whose every `return` is a pure-constant literal and whose
 body performs no call except `HTTPException` — the shape of a canned answer.
 It also refuses inventory rot: every entry in
 `quality/api-route-contracts.json` must resolve to a live handler. A canned
-handler can only ship by registering a `temporary` disposition with a tracking
-issue and an unexpired review date.
+handler fails the gate whether it is registered or not. A `temporary`
+disposition (tracking issue + unexpired review date) records the known debt
+and keeps it expiring, but it is tracking-only and never turns the gate green:
+the only ways to ship the route are to implement it against its canonical
+owner or to refuse with an explicit unsupported status.
 
 ## Proof
 
