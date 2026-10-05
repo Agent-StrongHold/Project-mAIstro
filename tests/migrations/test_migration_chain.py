@@ -76,6 +76,7 @@ EXPECTED_TABLES = frozenset(
         # after a collision with 032_asset_instance_org_scope; #1079).
         # Bindings and Invocations are separate tables: Bindings are immutable
         # authorization records, Invocations the logical effect ledger.
+        "capability_approvals",
         # The tombstone half of the same authority (047). Separate from
         # `capability_bindings` because revoking deletes the binding row,
         # so a `revoked_at` column would be deleted along with the thing
@@ -128,6 +129,10 @@ EXPECTED_TABLES = frozenset(
         "graph_continuations",
         "graph_templates",
         "handler_invocations",
+        "invocation_quota_allocations",
+        "invocation_quota_budgets",
+        "invocation_quota_evidence",
+        "invocation_quota_reservations",
         "knowledge_nodes",
         "learnings",
         # The append-only provenance ledger for the knowledge-stage ladder

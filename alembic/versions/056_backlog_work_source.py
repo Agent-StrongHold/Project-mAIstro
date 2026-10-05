@@ -1,15 +1,17 @@
 """Durable tables for the canonical Workspace BacklogItem work-source (#82).
 
-Attaches after develop's trunk chain tip `054`
-(`054_task_admission_generations`, itself continuing `053`
+Attaches after develop's trunk chain tip, `043_invocation_quota_door`
+(#1196/#718, itself continuing `055_task_admission_generations`, which
+follows `054_learning_applicability_epistemics` and
 `053_learning_lifecycle_columns`) as `056` per the convention 046 records:
 the branch's original `048`/`049` slots were renumbered after develop landed
 its own `048` (and later `049`-`051`), then onto `054`/`055` after develop
 claimed `052` (`052_learning_stage_ladder`, ADR-103) and `053`
-(`053_learning_lifecycle_columns`), and now once more onto `056`/`057`
-after develop claimed `054` (#1892) — because a landed trunk migration never
-moves — the numbering tracks the chain, not the issue number, so the chain
-stays linear with exactly one head.
+(`053_learning_lifecycle_columns`), and now onto `056`/`057` after develop
+claimed `054` (M4-B3, #119) and `055` (#1892) and re-parented its quota door
+onto that tip — because a landed trunk migration never moves — the numbering
+tracks the chain, not the issue number, so the chain stays linear with
+exactly one head.
 
 The DDL is guarded (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
 EXISTS`), matching the SQLite twin's `ensure_schema`
@@ -30,7 +32,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "056"
-down_revision = "054"
+down_revision = "043_invocation_quota_door"
 branch_labels = None
 depends_on = None
 

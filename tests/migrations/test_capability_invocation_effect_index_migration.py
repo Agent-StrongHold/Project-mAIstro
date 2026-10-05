@@ -64,17 +64,27 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # that; #398's `048_canvas_job_retry_backoff` continues it after `047`,
     # `049_design_artifact_versions` (#780) continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
-    # #780 claimed them — continues after that; #792's eval-score evidence
-    # re-parents onto that `050` as `051_canonical_run_eval_scores`; develop
-    # then claimed `052_learning_stage_ladder` (ADR-103) and
-    # `053_learning_lifecycle_columns` on the same chain tip. The backlog
-    # work-source migration (#98) was renumbered `048` -> `052` -> `054` and
-    # the authority-cutover ledger (#102) `049` -> `053` -> `055` as each of
-    # those develop revisions landed. Develop has now claimed `054` itself
-    # (#1892's `054_task_admission_generations`, written against the `052`
-    # base and re-parented onto the `053` tip), so the backlog pair moves
-    # past it once more — attaching after that `054` as `056` and `057` —
-    # keeping the chain linear with exactly one head, `057`.
+    # #780 claimed them — continues after that; and #792's eval-score
+    # evidence, which had taken `049` on this branch while develop's
+    # artifact-version ledger took the same number on the same parent,
+    # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
+    # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
+    # chain tip as `052_learning_stage_ladder`, and develop's
+    # learning-lifecycle columns (M4-B, ADR-100126-8c2d) continued that as
+    # `053_learning_lifecycle_columns`. Develop's own learning applicability
+    # migration (M4-B3, #119) then claimed `054` on that tip as
+    # `054_learning_applicability_epistemics`, and develop's forward
+    # admission-generation representation (#1892) — originally `053`,
+    # already renumbered to `054` once before this branch last synced —
+    # collided with it and re-parents onto that tip as
+    # `055_task_admission_generations`. This branch's
+    # `043_invocation_quota_door` (#1196/#718) is re-parented onto whichever
+    # of them is develop's head at merge time -- 046, then 047, 048, 050,
+    # 051, 052, 053, 054, now 055. The backlog work-source migration (#98)
+    # was renumbered `048` -> `052` -> `054` and the authority-cutover ledger
+    # (#102) `049` -> `053` -> `055` as each of those develop revisions
+    # landed, attaching after the quota-door head as `056` and `057` — so the
+    # single linear head is `057`.
     walked = {item.revision for item in directory.walk_revisions("base", "057")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
@@ -89,6 +99,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "052" in walked
     assert "053" in walked
     assert "054" in walked
+    assert "055" in walked
     assert "056" in walked
     assert "057" in walked
     assert directory.get_heads() == ["057"]

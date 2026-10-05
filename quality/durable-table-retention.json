@@ -436,6 +436,7 @@
     {
       "table": "capability_approvals",
       "backends": [
+        "postgres",
         "sqlite"
       ],
       "owner_module": "packages/maistro-core/src/maistro/capabilities/approval_store.py",
@@ -443,7 +444,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#325",
-      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+      "notes": "Effect-identity unique key for human approvals. SQLite bootstraps the table; Alembic 043 creates the PostgreSQL twin. No DELETE; #325."
     },
     {
       "table": "capability_binding_revocations",
@@ -796,6 +797,58 @@
       "notes": "One row per event handler invocation. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
+      "table": "invocation_quota_allocations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Per-budget hold/spend rows for one Invocation reservation. No DELETE; #325."
+    },
+    {
+      "table": "invocation_quota_budgets",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Registered budget ceilings for canonical Invocation admission (#1196). No DELETE; #325."
+    },
+    {
+      "table": "invocation_quota_evidence",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Versioned absolute quota observations. Revision 0 is the canonical terminal fact. No DELETE; #325."
+    },
+    {
+      "table": "invocation_quota_reservations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_invocation_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One reservation row per physical Invocation. Holds survive unknown outcomes. No DELETE; #325."
+    },
+    {
       "table": "knowledge_nodes",
       "backends": [
         "postgres"
@@ -1069,6 +1122,30 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "Appended on every strike and read in full on every lock check; nothing deletes it. Tamper-evidence and legal hold are the importing product's (owner decision on #325)."
+    },
+    {
+      "table": "extension_installs",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/sqlite_store.py",
+      "data_class": "security_evidence",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#952",
+      "notes": "Immutable installed-version records (M9-B1): key is (extension_name, semantic_version, package_sha256) so two packages sharing a semantic version but differing in digest are distinct rows, never a silent overwrite. The store issues no UPDATE and no DELETE; each row snapshots publisher identity, signature, manifest, catalog provenance and trust evidence, which the epic requires to survive registry changes and the later disable/remove lifecycle (#953/#954)."
+    },
+    {
+      "table": "extension_publishers",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/sqlite_store.py",
+      "data_class": "security_evidence",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#952",
+      "notes": "Pinned publisher identities (M9-B1): one row per publisher, written once at first registration; re-registration under a different signing key is refused (PublisherKeyConflict), so the trust root a historical install record was verified against cannot drift. Kept forever on purpose: install records name their publisher by snapshot, and removing the publisher row would orphan the evidence the epic requires to stay queryable after disable/remove (#939)."
     },
     {
       "table": "session_turns",

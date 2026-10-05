@@ -2,9 +2,9 @@
 
 Follows `056_backlog_work_source` (its pre-renumber ids were `049`, then
 `053`, then `055`; develop's landed `049_design_artifact_versions`,
-`053_learning_lifecycle_columns` and `054_task_admission_generations`
-own those slots now), attaching after the work-source tables so the chain
-stays linear with exactly one head.
+`053_learning_lifecycle_columns`, `054_learning_applicability_epistemics`
+and `055_task_admission_generations` own those slots now), attaching after
+the work-source tables so the chain stays linear with exactly one head.
 The explicit authority cutover is a recorded, reversible decision, and the
 generated Markdown must be reproducible from the database alone — so the
 control state is durable, with the same schema discipline as the work-source
