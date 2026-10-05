@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS
 from maistro.persistence.pg_learnings import (
     _PG_INSERT_FIELDS,
@@ -95,7 +96,7 @@ def conn() -> FakeConnection:
 
 @pytest.fixture
 def store(conn: FakeConnection) -> PgLearningStore:
-    return PgLearningStore(FakePool(conn))
+    return PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
 
 def make_learning(**overrides: Any) -> Learning:
@@ -752,7 +753,7 @@ def test_applicability_decodes_from_every_shape_a_pool_can_hand_back() -> None:
 async def test_the_ineffective_read_and_the_anti_pattern_write_bind_against_a_real_server(
     pg_pool: Any,
 ) -> None:
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     org = "org-anti-real"
 
     chronic = await store.store(
@@ -852,7 +853,7 @@ def _hit_texts(hits: list[Learning]) -> list[str]:
 async def test_find_similar_scope_axes_bind_exactly_against_a_real_server(
     pg_pool: Any,
 ) -> None:
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     org = "org-embed-scope"
     vector = _e1()
     rows = [
@@ -963,7 +964,7 @@ async def test_find_similar_scope_axes_bind_exactly_against_a_real_server(
 async def test_find_similar_orders_by_cosine_distance_nearest_first(
     pg_pool: Any,
 ) -> None:
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     org = "org-embed-rank"
     far = await store.store(make_learning(learning="far", trigger_keys=["k-rank-far"], org_id=org))
     near = await store.store(
@@ -982,7 +983,7 @@ async def test_find_similar_orders_by_cosine_distance_nearest_first(
 async def test_find_similar_refuses_a_width_the_column_cannot_hold(
     pg_pool: Any,
 ) -> None:
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
     with pytest.raises(ValueError, match=f"vector\\({EMBEDDING_DIMENSIONS}\\)"):
         await store.find_similar([0.1, 0.2], org_id="org-x")
@@ -992,7 +993,7 @@ async def test_find_similar_refuses_a_width_the_column_cannot_hold(
 async def test_set_embedding_refuses_a_width_the_column_cannot_hold(
     pg_pool: Any,
 ) -> None:
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     learning_id = await store.store(make_learning())
 
     with pytest.raises(ValueError, match=f"vector\\({EMBEDDING_DIMENSIONS}\\)"):
@@ -1003,7 +1004,7 @@ async def test_set_embedding_refuses_a_width_the_column_cannot_hold(
 async def test_text_of_reads_the_text_that_actually_persisted(pg_pool: Any) -> None:
     """`store` deduplicates, so a caller embedding after a write must read the
     surviving row — provenance for the vector, per `DurableHybridLearningStore`."""
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     learning_id = await store.store(make_learning(learning="surviving text"))
 
     assert await store.text_of(learning_id) == "surviving text"

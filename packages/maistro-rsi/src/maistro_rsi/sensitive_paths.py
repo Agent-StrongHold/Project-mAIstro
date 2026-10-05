@@ -91,11 +91,20 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # (Codex, #513).
     "maistro/__init__.py",
     "maistro/config/__init__.py",
+    "maistro/memory/__init__.py",
     "maistro/observability/__init__.py",
     "maistro/quota/__init__.py",
     "maistro/tools/__init__.py",
     "maistro/types/__init__.py",
     "maistro_bootstrap/__init__.py",
+    # The memory write-authority decision (ADR-057, #390): `exposure.py` holds
+    # the one gate (`require_write_authority`) every memory mutation must pass,
+    # so a candidate that edits it can rewrite who may write durable memory --
+    # the same reasoning that protects capabilities/authority.py. The package
+    # initializer joined the promotion-path closure for the same ADR: the
+    # exposure-mode enum is re-exported through `maistro.memory` and imported
+    # by `maistro.types.config`, which every settings import executes.
+    "maistro/memory/exposure.py",
     # The shared client is where the outbound guard is *installed*:
     # `_guard_built_transports` wraps the real transports with
     # `maistro.security.outbound.guarded`. The policy living under
