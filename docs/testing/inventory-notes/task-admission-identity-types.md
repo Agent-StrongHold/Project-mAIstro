@@ -55,8 +55,9 @@ Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
 
 ## Final validation refresh
 
-At validation head `eebb6ef11c23d91baa55308089f794d0240da5d4`, the focused
-suite passed 74 cases and module mypy passed. The required exact Vulture command
+At repair head `4c55cd58fa40f6a5b79e6252e2e273b789721ca8`, the focused suite
+passed 74 cases, module mypy passed, and the core suite inventory remained
+13,364 node IDs (+74 for this file). The required exact Vulture command
 reported the nine reviewed-but-new declarative identities as trusted-base debt
 (rc=1) against trusted base `8a4bc239fe9a`; that base does not contain this
 module. `check-reachability.py` likewise reported the deliberately unreachable
