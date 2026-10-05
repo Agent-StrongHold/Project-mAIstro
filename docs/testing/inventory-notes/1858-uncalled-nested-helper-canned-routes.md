@@ -92,3 +92,29 @@ handler's classification changes either way (gate still OK, 0 canned).
 
 Net test delta for this round: +5 (4 fail-first, 1 control); 51 pass in the
 suite after the repair, 46 before it.
+
+## Repair round 2: independent re-verification (no code change)
+
+Re-ran the fail-first proof against the actual merge base rather than the
+earlier snapshot, using the final test file against the old scripts:
+
+- vs develop `94781cf6b` (pre-#1858 whole-tree walk): 9 failed, 42 passed —
+  every core #1858 case plus both PEP 563 cases (the mode detector and the
+  annotation escape do not exist there, so the tests error-fail);
+- vs pre-repair head `235f2d3c6`: exactly the 4 repair-round fail-first tests
+  fail (2 postponed-annotation, 2 lambda-decorator); the evaluated-annotation
+  control passes;
+- at this head: 51/51 pass, and the gate reports OK (279 handlers, 15 audited
+  routes, 0 canned) with output identical to base and pre-repair, so shipped
+  classifications are unchanged.
+
+CI-exact gates re-run locally at `424029fe9`: route-contract gate (ci.yml
+"No canned no-op route handlers ship"), `check-vulture-baseline.py packages/*/
+src --min-confidence 60 --exclude '*/third_party/*'` (1338 reviewed = 1338
+findings), `check-suite-inventory.py` (14/14 suites match),
+`check-ratchet-provenance.py`, `check-shipped-surface-truth.py`,
+`check-test-duplicates.py`, `check-merge-markers.py`,
+`verify-monorepo-layout.sh`, ruff check + format, and the ci.yml one-process
+job `pytest tests/ packages/hive-conductor/backend/tests
+packages/maistro-design/tests -q --timeout=60` (8351 passed, 97 skipped).
+Test count is unchanged by this note: `inventory-delta` above still holds.
