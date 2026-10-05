@@ -181,6 +181,13 @@
       "disposition": "MANUAL_DIAGNOSTIC",
       "triggers": ["workflow_dispatch"],
       "rationale": "On-demand #914 / epic #900 M8-B1 model-routing benchmark (shipped CostAwareRouter vs task-conditioned candidate policies over one shared corpus and one shared, policy-independent outcome table); deterministic and offline, run when the router, the model catalog, or the outcome model changes — a measurement, not a gate. Wires no candidate policy into production; the research disposition lives in docs/research/914-task-conditioned-model-routing.md."
+    },
+    {
+      "id": "speculative-parallel-bench",
+      "file": ".github/workflows/speculative-parallel-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #917 / epic #900 M8-B4 speculative-parallel model-call benchmark (serial-fallback vs single-strong vs parallel-early-stop vs parallel-verifier over the governed model seam); deterministic and offline, run when the candidate-policy assumptions change — a measurement, not a gate."
     }
   ],
   "retained_branches": [
