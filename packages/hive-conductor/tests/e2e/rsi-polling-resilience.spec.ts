@@ -150,18 +150,20 @@ async function setOnline(online: boolean): Promise<void> {
 }
 
 /** Flip a pause condition atomically with the loop's next /rsi/status
- * settle — IN the page, not via a Node round trip. The previous shape
- * (await the first count, then a Node-side evaluate dispatching the event)
- * raced the loop's next cadence timer: under runner load the evaluate can
- * land after the timer fires, so that poll runs with the condition not yet
- * in force and the "no poll while paused" assertion fails — exactly the red
- * hive-conductor-e2e-ui run this spec had at 24fe1c11 (expected baseline 1,
- * received 2). Here the flip runs in the same microtask chain as the status
- * fetch's settlement, strictly BEFORE the loop's finally arms the next
- * timer, so the assertion window below always contains a full pinned
- * cadence (3.75s) with the condition already in force. Hooks keyed to other
- * /v1/rsi/ endpoints (the dashboard tick fires four requests in parallel)
- * stay armed until the status settle they are synchronized to. */
+ * settle — IN the page, not via a Node round trip. Resolves AT the boundary:
+ * the settling tick is already counted, and the loop's finally arms its next
+ * cadence timer (3.75s, pinned jitter) at this same instant — so snapshot
+ * `counts.status` only AFTER this resolves, and the "no poll while paused"
+ * window below always contains that timer's fire with the condition already
+ * in force. The previous shapes both raced that timer:
+ *  - a Node-side evaluate dispatched the event after a round trip that
+ *    runner load can delay past the timer's fire (the red
+ *    hive-conductor-e2e-ui run at 24fe1c11: expected baseline 1, got 2);
+ *  - snapshotting the baseline before the flip (the first attempt at this
+ *    fix) counted the boundary tick itself against a stale baseline.
+ * Hooks keyed to other /v1/rsi/ endpoints (the dashboard tick fires four
+ * requests in parallel) stay armed until the status settle they are
+ * synchronized to. */
 async function pauseAtNextStatusSettle(kind: "offline" | "hidden"): Promise<void> {
   await page.evaluate((kind) => {
     const w = window as unknown as { __rsiSettleHooks: Array<(url: string) => void> };
@@ -590,10 +592,11 @@ test("a success resets the cadence to base and the failure ladder to fresh", asy
 
 test("the loop pauses while the tab is hidden and re-kicks on visibilitychange", async () => {
   await mount();
-  await expect.poll(() => counts.status).toBeGreaterThanOrEqual(1);
-  const baseline = counts.status;
-
+  // Flip at a settle boundary, THEN snapshot: the boundary tick is already
+  // in the count, and the timer armed at that boundary must find the loop
+  // paused when it fires 3.75s later.
   await pauseAtNextStatusSettle("hidden");
+  const baseline = counts.status;
   await page.waitForTimeout(5_000); // longer than the exact 3.75s cadence
   expect(counts.status, "no poll fires while the tab is hidden").toBe(baseline);
 
@@ -604,10 +607,9 @@ test("the loop pauses while the tab is hidden and re-kicks on visibilitychange",
 
 test("the loop pauses while the browser is offline and re-kicks on going back online", async () => {
   await mount();
-  await expect.poll(() => counts.status).toBeGreaterThanOrEqual(1);
-  const baseline = counts.status;
-
+  // Same boundary discipline as the hidden test above.
   await pauseAtNextStatusSettle("offline");
+  const baseline = counts.status;
   await page.waitForTimeout(5_000); // longer than the exact 3.75s cadence
   expect(counts.status, "no poll fires while offline").toBe(baseline);
 
