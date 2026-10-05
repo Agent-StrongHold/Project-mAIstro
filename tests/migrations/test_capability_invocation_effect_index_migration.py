@@ -69,11 +69,11 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # artifact-version ledger took the same number on the same parent,
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
-    # chain tip, so this branch's learning-lifecycle columns (M4-B,
-    # ADR-100126-8c2d) — which had taken `051` and then `052` in earlier
-    # collisions — re-parent onto that `052_learning_stage_ladder` as `053`.
-    # Audit cursor indexes (#358) follow as 054, avoiding another 053 collision.
-    walked = {item.revision for item in directory.walk_revisions("base", "054")}
+    # chain tip, and its learning-lifecycle columns (M4-B, ADR-100126-8c2d)
+    # continued that tip as `053_learning_lifecycle_columns`. #1892's forward
+    # admission-generation representation follows as `054`. Audit cursor indexes
+    # (#358), landing second, follow as `055` rather than duplicating `054`.
+    walked = {item.revision for item in directory.walk_revisions("base", "055")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -87,7 +87,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "052" in walked
     assert "053" in walked
     assert "054" in walked
-    assert directory.get_heads() == ["054"]
+    assert "055" in walked
+    assert directory.get_revision("055").down_revision == "054"
+    assert directory.get_heads() == ["055"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

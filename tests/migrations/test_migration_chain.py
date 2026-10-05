@@ -247,7 +247,7 @@ def empty_database():
 class TestAuditCursorIndexes:
     def test_indexes_upgrade_and_reverse_without_losing_audit_rows(self, empty_database) -> None:
         """The shipping chain installs every seek and rolls back only its indexes."""
-        assert _alembic("upgrade", "053").returncode == 0
+        assert _alembic("upgrade", "054").returncode == 0
         _execute("INSERT INTO audit_log (boundary, user_id) VALUES ('login', 'alice')")
 
         result = _alembic("upgrade", "head")
@@ -264,7 +264,7 @@ class TestAuditCursorIndexes:
         assert all("org_id" in definition for definition in indexes.values())
         assert all('"timestamp" DESC, id DESC' in definition for definition in indexes.values())
 
-        result = _alembic("downgrade", "053")
+        result = _alembic("downgrade", "054")
         assert result.returncode == 0, result.stderr
         assert not _query(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
@@ -272,6 +272,13 @@ class TestAuditCursorIndexes:
             ("ix_audit_page_%",),
         )
         assert _query("SELECT boundary, user_id FROM audit_log") == [("login", "alice")]
+        # Rolling back audit indexes must not undo develop's preceding revision.
+        assert _query("SELECT version_num FROM alembic_version") == [("054",)]
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'task_idempotency' "
+            "AND column_name = 'generation_id'"
+        ) == [("generation_id",)]
         # The preceding learning-lifecycle migration must still be present.
         assert _query(
             "SELECT column_name FROM information_schema.columns "
