@@ -205,3 +205,20 @@ dispositions and promotion-surface pass. `check-ratchet-provenance.py` exits 1
 only through that untrusted reachability debt. A separately authorized parent
 integration must add the real runtime consumer before the integration-head
 gates can pass; doing so here would violate this leaf's explicit scope.
+
+## 2026-10-05 final validation
+
+At `7f66ab706fbb95158faa6979385c34853a0ad6f6`, focused Ruff check/format,
+module mypy, and the 76-case DTO suite passed. The core inventory check matched
+13,844 node IDs, preserving this suite's `+76` delta. A production-source
+search found no import of `admission_identity`, as required for this inactive
+leaf.
+
+The exact Vulture gate found 1,351 findings and reports the same nine reviewed
+DTO identities as new relative to trusted base `c560d4ccad82`; candidate ledger
+entries cannot self-authorize them, so it exits 1. `check-reachability.py` and
+`check-ratchet-provenance.py` likewise exit 1 solely for the deliberately
+unwired `maistro.runs.admission_identity`; reachability dispositions and
+promotion-surface pass. No prohibited production import, suppression,
+reachability baseline/disposition, or authorization grant was added. Parent
+integration remains required before these integration-head gates can pass.
