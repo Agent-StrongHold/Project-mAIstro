@@ -29,8 +29,9 @@ learning-lifecycle columns, M4-B) each claimed the tip in turn. Develop's
 as ``054_learning_applicability_epistemics``, and #1892's forward
 admission-generation representation — numbered ``053`` when written on the
 ``052`` base, re-parented onto this chain's ``053`` tip at the previous
-develop sync — re-numbers to ``055`` on top of it. The single linear head
-is ``055``.
+develop sync — re-numbers to ``055`` on top of it. Develop's #55 effect-path
+sync then lands its ``043_invocation_quota_door`` (#1196/#718) on that
+``055`` tip, so the single linear head is the quota door.
 """
 
 from __future__ import annotations
@@ -169,16 +170,20 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     directory = ScriptDirectory.from_config(config)
 
-    assert directory.get_heads() == ["055"]
-    walked = {item.revision for item in directory.walk_revisions("base", "055")}
+    assert directory.get_heads() == ["043_invocation_quota_door"]
+    walked = {
+        item.revision
+        for item in directory.walk_revisions("base", "043_invocation_quota_door")
+    }
     # The claim chain this branch folded the #1194 corrections into, and every
     # develop collision the chronicle above records, must stay on the one
     # linear path to the head. Develop's #1756 learning-applicability
     # migration (M4-B3, #119) claimed the `053` tip on develop as
     # `054_learning_applicability_epistemics`, renumbering #1892's
     # `054_task_admission_generations` — itself re-parented onto this
-    # chain's `053` tip at the previous develop sync — to `055`, so the
-    # single linear head is now `055`.
+    # chain's `053` tip at the previous develop sync — to `055`, and this
+    # develop #55 sync adds `043_invocation_quota_door` (#1196/#718) on
+    # that tip, so the single linear head is the quota door.
     assert {
         "034_canonical_run_effect_claim",
         "034",
@@ -195,6 +200,7 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
         "053",
         "054",
         "055",
+        "043_invocation_quota_door",
     } <= walked
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —

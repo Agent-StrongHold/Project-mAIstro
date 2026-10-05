@@ -119,7 +119,14 @@ class GovernedInvocationExecutionService:
         effect_key: str,
         effect_scope: str | None = None,
     ) -> Invocation | None:
-        """Expose canonical effect history without bypassing governed execution."""
+        """Expose canonical effect history without bypassing governed execution.
+
+        A non-``None`` ``effect_scope`` widens the read across NodeRuns, exactly
+        as it does on the service beneath. A caller that dispatched under an
+        EFFECT_KEY contract has to be able to ask the same question it was
+        admitted under, or the lookup silently misses its own completed
+        effect.
+        """
 
         return await self._invocations.latest_effect(
             binding=binding,
@@ -215,6 +222,7 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        actor_id: str = "",
     ) -> Invocation:
         context = InvocationPolicyContext(
             run_id=run_id,
@@ -276,6 +284,7 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                actor_id=actor_id,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
+from maistro.capabilities.invocation import Invocation, InvocationStatus
 from maistro.capabilities.slots.harness_runner import HarnessRunner
 from maistro.capabilities.types import Unavailable
 from maistro.graph.harness import (
@@ -158,7 +159,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         }
         self._effects = effect_context or default_effect_context()
 
-    def logical_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
+    def replay_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
         return replay_effect_key(
             ctx,
             "agent.spawn_harness.dispatch",
@@ -180,6 +181,84 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             error=resumed.get("error"),
             metadata=dict(resumed.get("metadata") or {}),
         )
+
+    async def _legacy_dispatch(
+        self, binding: Binding, inputs: SpawnHarnessIn, ctx: NodeContext
+    ) -> Invocation | None:
+        """A completed dispatch recorded under this node's previous effect key.
+
+        #1319 changed the key from ``agent.spawn_harness.dispatch:<harness
+        type>`` to one that also carries the Run, the graph node and a digest
+        of the request. That is the right identity, but it is a *different*
+        identity, and the change is not free during a rollout: a deployment
+        that upgrades after the adapter dispatched but before the node
+        persisted its pause would compute the new key, find no Invocation
+        under it, and dispatch the same external harness task a second time.
+        The harness has already started work that nothing is tracking.
+
+        So the old key is read first, and only on this Run. Returning its
+        recorded result is a replay, not a second effect: the dispatch handle
+        it carries is the one the harness actually issued.
+
+        Reads are scoped to the Run, so this cannot resurrect an effect from
+        some other Run that happened to use the same harness type -- which the
+        old key, carrying nothing but the type, could not distinguish.
+        """
+
+        read_history = getattr(self._effects.invocations, "latest_effect", None)
+        if read_history is None:
+            # A composition that cannot read effect history cannot answer the
+            # rollout question either. That is not a reason to refuse the
+            # dispatch -- it is the pre-#1319 behaviour, unchanged.
+            return None
+        legacy_key = f"agent.spawn_harness.dispatch:{inputs.harness_type}"
+        legacy = await read_history(
+            binding=binding,
+            run_id=ctx.run_id,
+            node_run_id=ctx.node_run_id,
+            effect_key=legacy_key,
+            effect_scope=legacy_key,
+        )
+        if not isinstance(legacy, Invocation) or legacy.status is not InvocationStatus.COMPLETED:
+            return None
+        return legacy
+
+    async def _dispatch(
+        self,
+        binding: Binding,
+        inputs: SpawnHarnessIn,
+        ctx: NodeContext,
+        *,
+        request_payload: dict[str, Any],
+        resolver: Any,
+        executor: Any,
+    ) -> Invocation:
+        """The dispatch, replayed from either effect key or newly made."""
+
+        replayed = await self._legacy_dispatch(binding, inputs, ctx)
+        if replayed is not None:
+            return replayed
+        # Include the logical request in the key: a changed task is explicit
+        # new work, while a retry with a new NodeRun keeps the same identity.
+        # The scope carries that identity into admission: the graph may retry
+        # this logical node with a new NodeRun, and the stable Run/node/input
+        # scope -- not the physical visit -- is what deduplicates the dispatch.
+        effect_key = self.replay_effect_key(inputs, ctx)
+        invocation = await invoke_capability_effect(
+            lambda: self._effects.invocations.invoke(
+                binding=binding,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                effect_key=effect_key,
+                effect_scope=effect_key,
+                request=request_payload,
+                resolver=resolver,
+                executor=executor,
+            ),
+            effect_key=effect_key,
+        )
+        return invocation
 
     async def _with_fresh_harness_evidence(
         self, inputs: SpawnHarnessIn, ctx: NodeContext, resumed: Any
@@ -285,22 +364,19 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 **_detail_payload(handle),
             }
 
-        # The graph may retry this logical node with a new NodeRun. Scope the
-        # effect by the stable Run/node/input identity, not that physical visit.
-        effect_key = self.logical_effect_key(inputs, ctx)
-        invocation = await invoke_capability_effect(
-            lambda: self._effects.invocations.invoke(
-                binding=binding,
-                run_id=ctx.run_id,
-                node_run_id=ctx.node_run_id,
-                attempt_id=ctx.attempt_id,
-                effect_key=effect_key,
-                effect_scope=effect_key,
-                request=request_payload,
-                resolver=resolve_provider,
-                executor=execute_provider,
-            ),
-            effect_key=effect_key,
+        # The graph may retry this logical node with a new NodeRun. The
+        # dispatch itself replays from either effect key -- the
+        # request-specific one inside ``_dispatch``, or the pre-#1319 one a
+        # mid-rollout deployment recorded -- so the physical visit never
+        # defines the identity.
+        effect_key = self.replay_effect_key(inputs, ctx)
+        invocation = await self._dispatch(
+            binding,
+            inputs,
+            ctx,
+            request_payload=request_payload,
+            resolver=resolve_provider,
+            executor=execute_provider,
         )
         result = invocation.result
         if not isinstance(result, dict):

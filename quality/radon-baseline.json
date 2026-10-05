@@ -253,16 +253,6 @@
       "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
     },
     {
-      "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService.invoke",
-      "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
-      "line": 544,
-      "name": "invoke",
-      "classname": "InvocationExecutionService",
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Landed with #1310's rework that makes ambiguous Invocation outcomes recoverable instead of permanently blocking; the recovered/failed-outcome branching concentrates in this execute path. Post-merge ledger reconciliation records trunk reality under SPEC-264 - the ratchet is set at 13. Lowered 13 -> 12 by #1321's governed-effect seam; the ledger follows an improvement down, because a floor left above the measurement is room to regress back into for free. Lowered 12 -> 11 by #42's effect-claim repair: provider resolution was extracted into _resolve_provider (5c0d0e79e), so the ledger follows the measurement down again. Raised 11 -> 12 by f31945d0e's logical-effect-scope fallback (context-local scope binding so graph retries keep one effect identity): banked at the exact measured value, which is also the value develop's trusted ledger already carries — no new debt vs. the trusted base."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::_norm_docker",
       "path": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py",
       "line": 87,
@@ -413,54 +403,14 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
-      "line": 61,
-      "name": "JiraPollNode",
-      "classname": null,
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode._execute",
       "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
-      "line": 76,
+      "line": 74,
       "name": "_execute",
       "classname": "JiraPollNode",
       "rank": "C",
-      "complexity": 15,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::_fetch_subtask_statuses",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py",
-      "line": 158,
-      "name": "_fetch_subtask_statuses",
-      "classname": null,
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-      "line": 85,
-      "name": "LlmSummarizeNode",
-      "classname": null,
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Dropped 19 -> 12 by the #56 governed-egress migration: the node's HTTP/protocol branching moved into the approved llm_gateway Provider, leaving Binding resolution and request/result mapping. The remaining C is class-aggregate; further reduction tracked under SPEC-264."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-      "line": 131,
-      "name": "_execute",
-      "classname": "LlmSummarizeNode",
-      "rank": "C",
-      "complexity": 18,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+      "complexity": 14,
+      "rationale": "15 -> 14: endpoint and credential resolution moved onto the Binding, so the node no longer branches on flavor/auth shape (#1195)."
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py::TransformFilterByTypeNode",
