@@ -10,7 +10,7 @@ Subcommands:
     maistro fixtures         Seed the M7-A13 book/game pack fixtures
     maistro security         Rotate the credential master key, revoke sessions
     maistro archive          Read durable graph runs from before the convergence
-    maistro extensions       Inspect durable extension install records
+    maistro extensions       Inspect install records; preflight contract compat
     maistro sandbox          Report the isolation this host can provide
 
 Config via env: MAISTRO_API_URL (default http://127.0.0.1:8101),

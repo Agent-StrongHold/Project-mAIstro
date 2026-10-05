@@ -10,8 +10,21 @@ Invocation execution API.
 from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
-from maistro.cli._extensions import extensions_history, extensions_show
+from maistro.cli._extensions import extensions_compat, extensions_history, extensions_show
 from maistro.container import Container
+from maistro.extensions.compat import (
+    FEATURE_DEPRECATED,
+    FEATURE_REMOVED,
+    CompatError,
+    ContractRange,
+    ContractVersion,
+    FeatureStatus,
+    IncompatibleContract,
+    ensure_compatible,
+    parse_contract_range,
+    parse_contract_version,
+    parse_feature_status,
+)
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
@@ -272,4 +285,28 @@ _VULTURE_WHITELIST = (
     SqliteExtensionInstallStore.get_install,
     extensions_history,
     extensions_show,
+    extensions_compat,
+    # Extension contract compatibility policy (M9-C1, #955). The negotiation
+    # core (`negotiate`, `parse_compat_metadata`, `HostContractMetadata`,
+    # `CompatibilityReport.to_dict`) is referenced by the `maistro extensions
+    # compat` preflight command, so only the fail-fast form and the
+    # low-level parse/version surfaces lack an in-tree caller: they are the
+    # API an activating host (#953/#954) and the ext-sdk host binding
+    # (#956/#957 preflight/migration reporting) call.
+    ensure_compatible,
+    parse_contract_range,
+    parse_contract_version,
+    ContractRange.parse,
+    ContractVersion.__str__,
+    # The closed feature-lifecycle vocabulary: the `supported` singleton is
+    # exercised by HOST_FEATURES; the deprecated/removed states have no live
+    # row by design (nothing is deprecated today — the first real
+    # deprecation adds a table row, not new code) and are reached by tests
+    # plus future policy edits. The parser is the only string→status path.
+    FEATURE_DEPRECATED,
+    FEATURE_REMOVED,
+    parse_feature_status,
+    FeatureStatus.__str__,
+    CompatError,
+    IncompatibleContract,
 )

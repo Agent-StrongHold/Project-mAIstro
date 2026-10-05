@@ -4,8 +4,40 @@ Install records with publisher identity, package digest/signature metadata,
 manifest snapshots, catalog provenance and durable trust evidence. The
 inspect→authorize→install flow (#953) and the pin/upgrade/rollback lifecycle
 (#954) build on these records; nothing here executes extension code.
+
+The M9-C1 policy layer (#955, ``maistro.extensions.compat``) decides whether
+an extension's declared contract, features, and deprecation posture are
+compatible with this host — from metadata alone, before any code import.
 """
 
+from maistro.extensions.compat import (
+    CONTRACT_VERSION,
+    FEATURE_DEPRECATED,
+    FEATURE_REMOVED,
+    FEATURE_STATUSES,
+    FEATURE_SUPPORTED,
+    HOST_FEATURES,
+    SUPPORTED_CONTRACT_MAJORS,
+    CompatError,
+    CompatibilityReport,
+    CompatMetadataError,
+    ContractRange,
+    ContractVersion,
+    Degradation,
+    DeprecationNotice,
+    ExtensionCompatMetadata,
+    FeatureStatus,
+    FeatureSupport,
+    HostContractMetadata,
+    IncompatibleContract,
+    Verdict,
+    ensure_compatible,
+    negotiate,
+    parse_compat_metadata,
+    parse_contract_range,
+    parse_contract_version,
+    parse_feature_status,
+)
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     TRUST_POLICY,
@@ -35,13 +67,32 @@ from maistro.extensions.types import (
 )
 
 __all__ = [
+    "CONTRACT_VERSION",
     "DIGEST_ALGORITHM",
+    "FEATURE_DEPRECATED",
+    "FEATURE_REMOVED",
+    "FEATURE_STATUSES",
+    "FEATURE_SUPPORTED",
+    "HOST_FEATURES",
+    "SUPPORTED_CONTRACT_MAJORS",
     "TRUST_POLICY",
     "ActivationCallback",
+    "CompatError",
+    "CompatMetadataError",
+    "CompatibilityReport",
+    "ContractRange",
+    "ContractVersion",
+    "Degradation",
+    "DeprecationNotice",
+    "ExtensionCompatMetadata",
     "ExtensionIdentityConflict",
     "ExtensionInstallStore",
     "ExtensionRegistryError",
+    "FeatureStatus",
+    "FeatureSupport",
+    "HostContractMetadata",
     "InMemoryExtensionInstallStore",
+    "IncompatibleContract",
     "InstallRecord",
     "InstallRequest",
     "ManifestSnapshot",
@@ -54,8 +105,15 @@ __all__ = [
     "SqliteExtensionInstallStore",
     "TrustEvidence",
     "UnknownPublisher",
+    "Verdict",
     "canonical_install_payload",
+    "ensure_compatible",
     "identity_key",
     "manifest_snapshot",
+    "negotiate",
+    "parse_compat_metadata",
+    "parse_contract_range",
+    "parse_contract_version",
+    "parse_feature_status",
     "sha256_hex",
 ]
