@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -55,6 +56,19 @@ def _dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _reset_circuit() -> None:
     llm_circuits.reset()
+
+
+def _admitted_composition(base_url: str | None = "http://gw") -> SimpleNamespace:
+    """Explicit target for pure retry/circuit tests whose completion is stubbed.
+
+    The real preflight still resolves the pin and endpoint. This fixture owns
+    no physical completion; persisted admission and HTTP remain covered by
+    test_conductor_admission.py.
+    """
+    return SimpleNamespace(
+        pinned_model=AsyncMock(return_value=""),
+        gateway_base_url=base_url,
+    )
 
 
 def _patched_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -312,6 +326,7 @@ class TestRunWithRetry:
                 DEFAULT_TIERS[Tier.STANDARD],
                 128,
                 circuits=circuits,
+                admitted_calls=_admitted_composition(call.base_url),
             )
         assert calls == 1
         assert all(row["state"] == "closed" for row in circuits.snapshot())
@@ -322,7 +337,13 @@ class TestRunWithRetry:
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD]
         with pytest.raises(CircuitOpenError):
-            await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "prompt",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
     @pytest.mark.asyncio
     async def test_success_on_first_attempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -335,7 +356,13 @@ class TestRunWithRetry:
         _patched_client(monkeypatch, handler)
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD]
-        result = await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+        result = await _run_with_retry(
+            call,
+            "prompt",
+            tier_config,
+            max_tokens=100,
+            admitted_calls=_admitted_composition(call.base_url),
+        )
         assert result.success is True
 
     @pytest.mark.asyncio
@@ -357,7 +384,13 @@ class TestRunWithRetry:
         monkeypatch.setattr("maistro.agents.conductor.asyncio.sleep", lambda _delay: _noop())
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 3})
-        result = await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+        result = await _run_with_retry(
+            call,
+            "prompt",
+            tier_config,
+            max_tokens=100,
+            admitted_calls=_admitted_composition(call.base_url),
+        )
         assert result.success is True
         assert attempts["count"] == 2
 
@@ -373,7 +406,13 @@ class TestRunWithRetry:
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 2})
         with pytest.raises(LLMProviderError, match="failed after 2 retries"):
-            await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "prompt",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
     @pytest.mark.asyncio
     async def test_raises_immediately_on_non_retryable_error(
@@ -386,7 +425,13 @@ class TestRunWithRetry:
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD]
         with pytest.raises(httpx.HTTPStatusError):
-            await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "prompt",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
     @pytest.mark.asyncio
     async def test_timeout_error_does_not_retry_ambiguous_outcome(
@@ -404,7 +449,13 @@ class TestRunWithRetry:
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         tier_config = DEFAULT_TIERS[Tier.STANDARD].model_copy(update={"max_llm_retries": 2})
         with pytest.raises(TimeoutError):
-            await _run_with_retry(call, "prompt", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "prompt",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
         assert attempts == 1
 
@@ -436,7 +487,13 @@ class TestRunScopedCircuits:
         flaky = self._call("flaky-model")
         for _ in range(llm_circuits.failure_threshold):
             with pytest.raises(httpx.HTTPStatusError):
-                await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+                await _run_with_retry(
+                    flaky,
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(flaky.base_url),
+                )
 
         # Separate failed calls open only this provider domain.
         flaky_domain = resolve_failure_domain("flaky-model", "http://gw")
@@ -444,7 +501,13 @@ class TestRunScopedCircuits:
 
         # The healthy provider on the same gateway still admits and succeeds.
         healthy = self._call("healthy-model")
-        result = await _run_with_retry(healthy, "p", tier_config, max_tokens=100)
+        result = await _run_with_retry(
+            healthy,
+            "p",
+            tier_config,
+            max_tokens=100,
+            admitted_calls=_admitted_composition(healthy.base_url),
+        )
         assert result.success is True
         healthy_domain = resolve_failure_domain("healthy-model", "http://gw")
         assert llm_circuits.breaker(healthy_domain).state is CircuitState.CLOSED
@@ -469,14 +532,26 @@ class TestRunScopedCircuits:
 
         for model in ("model-a", "model-b"):
             with pytest.raises(LLMProviderError):
-                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+                await _run_with_retry(
+                    self._call(model),
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(self._call(model).base_url),
+                )
 
         # ConnectError/ConnectTimeout are explicit shared-dependency
         # failures: the gateway-level breaker represents them for both
         # providers.
         for model in ("model-a", "model-b"):
             with pytest.raises(CircuitOpenError):
-                await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+                await _run_with_retry(
+                    self._call(model),
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(self._call(model).base_url),
+                )
         # ...while the provider-level breakers stayed closed (not their fault).
         gw_domain = resolve_failure_domain("model-a", "http://gw")
         assert llm_circuits.breaker(gw_domain).state is CircuitState.CLOSED
@@ -504,7 +579,13 @@ class TestRunScopedCircuits:
         flaky = self._call("flaky-model")
         for _ in range(llm_circuits.failure_threshold):
             with pytest.raises(httpx.HTTPStatusError):
-                await _run_with_retry(flaky, "p", tier_config, max_tokens=100)
+                await _run_with_retry(
+                    flaky,
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(flaky.base_url),
+                )
 
         class _Router:
             """Registry-declared chain: flaky-model falls back to healthy-model."""
@@ -528,7 +609,14 @@ class TestRunScopedCircuits:
                     ),
                 ]
 
-        result = await _run_with_retry(flaky, "p", tier_config, max_tokens=100, router=_Router())
+        result = await _run_with_retry(
+            flaky,
+            "p",
+            tier_config,
+            max_tokens=100,
+            router=_Router(),
+            admitted_calls=_admitted_composition(flaky.base_url),
+        )
         assert result.success is True
         assert requested[-1] == "healthy-model"
 
@@ -545,9 +633,21 @@ class TestRunScopedCircuits:
         call = self._call("flaky-model")
         for _ in range(llm_circuits.failure_threshold):
             with pytest.raises(httpx.HTTPStatusError):
-                await _run_with_retry(call, "p", tier_config, max_tokens=100)
+                await _run_with_retry(
+                    call,
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(call.base_url),
+                )
         with pytest.raises(CircuitOpenError, match="flaky-model"):
-            await _run_with_retry(call, "p", tier_config, max_tokens=100)
+            await _run_with_retry(
+                call,
+                "p",
+                tier_config,
+                max_tokens=100,
+                admitted_calls=_admitted_composition(call.base_url),
+            )
 
     @pytest.mark.asyncio
     async def test_router_unknown_model_fails_closed_naming_the_blocked_domain(
@@ -574,10 +674,21 @@ class TestRunScopedCircuits:
         call = self._call("flaky-model")
         for _ in range(llm_circuits.failure_threshold):
             with pytest.raises(httpx.HTTPStatusError):
-                await _run_with_retry(call, "p", tier_config, max_tokens=100)
+                await _run_with_retry(
+                    call,
+                    "p",
+                    tier_config,
+                    max_tokens=100,
+                    admitted_calls=_admitted_composition(call.base_url),
+                )
         with pytest.raises(CircuitOpenError, match="provider=flaky-model"):
             await _run_with_retry(
-                call, "p", tier_config, max_tokens=100, router=_UnknownModelRouter()
+                call,
+                "p",
+                tier_config,
+                max_tokens=100,
+                router=_UnknownModelRouter(),
+                admitted_calls=_admitted_composition(call.base_url),
             )
 
     @pytest.mark.asyncio
@@ -597,7 +708,13 @@ class TestRunScopedCircuits:
         for model in ("flaky-model", "sibling-model"):
             for _ in range(llm_circuits.failure_threshold):
                 with pytest.raises(httpx.HTTPStatusError):
-                    await _run_with_retry(self._call(model), "p", tier_config, max_tokens=100)
+                    await _run_with_retry(
+                        self._call(model),
+                        "p",
+                        tier_config,
+                        max_tokens=100,
+                        admitted_calls=_admitted_composition(self._call(model).base_url),
+                    )
 
         class _ExhaustedRouter:
             """Registry chain: flaky-model -> sibling-model, itself blocked."""
@@ -621,6 +738,7 @@ class TestRunScopedCircuits:
                 tier_config,
                 max_tokens=100,
                 router=_ExhaustedRouter(),
+                admitted_calls=_admitted_composition(self._call("flaky-model").base_url),
             )
 
     @pytest.mark.asyncio
@@ -675,7 +793,7 @@ class TestRunTaskLive:
             return_value=("m", "http://gw", False),
         ):
             task = TaskCreate(description="Implement feature")
-            result = await run_task(task)
+            result = await run_task(task, admitted_calls=_admitted_composition())
         assert result.success is True
         assert result.final_answer == "ok"
 
@@ -698,7 +816,7 @@ class TestRunTaskLive:
             return_value=("m", "http://gw", False),
         ):
             task = TaskCreate(description="Implement feature")
-            await run_task(task)
+            await run_task(task, admitted_calls=_admitted_composition())
         body = captured["body"]
         user_msg = body["messages"][1]["content"]  # type: ignore[index]
         assert "Constraints:\nNone" in user_msg
@@ -707,7 +825,9 @@ class TestRunTaskLive:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MAISTRO_DRY_RUN", "0")
-        with pytest.raises(LLMProviderError, match="admitted model calls are not configured"):
+        with pytest.raises(
+            LLMProviderError, match="conductor requires admitted model-call authority"
+        ):
             await run_task(TaskCreate(description="Implement feature"))
 
 
