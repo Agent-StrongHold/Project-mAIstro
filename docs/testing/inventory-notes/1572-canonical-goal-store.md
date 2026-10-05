@@ -249,3 +249,68 @@ chain tip the store's migration sits at:
   ratchet-authorizations.json` from that base — the sanctioned DOMAIN grant
   must land on develop first (two-merge rule), then this branch re-merges.
   The candidate ledger stays untouched, per rounds 1–3.
+
+## Round 5 — develop sync (658a8f78c + b672b799a), migration collision 4, wheel-imports fix
+
+- **Develop sync completed in two merges.** The prior attempt died mid-merge
+  (GH API rate limit) leaving an in-flight merge of `658a8f78c` with two
+  conflicted migration tests; resolved and committed, then `b672b799a`
+  merged cleanly on top. No test counts changed (`check-suite-inventory.py
+  --suite packages/maistro-core/tests` ok, 13,786 identities).
+- **Fourth migration collision resolved in develop's favor.** Develop's
+  `043_invocation_quota_door` (#1196/#718) landed on `055` — the same
+  parent this store had claimed as `056`. Per the chain's standing
+  convention (later-integrated revision re-parents onto the landed tip),
+  `056_canonical_goals` now continues the quota door
+  (`down_revision = "043_invocation_quota_door"`); the single linear head
+  stays `056` (`ScriptDirectory.get_heads() == ["056"]`). The conflicted
+  test comment blocks record the merged history; the task-admission
+  downgrade guard keeps afdad68be's tip-independent stamp assertion.
+- **Live-PG18 (native 18.6) verification of the integrated chain:** all 47
+  tests in `test_capability_invocation_effect_index_migration.py`,
+  `test_task_admission_generation_upgrade.py`, `test_single_migration_head.py`,
+  `test_migration_chain.py`, `test_memory_entries_embedding_type.py`
+  passed (27 had been skip-only in every earlier round); a fresh database
+  walks `054 -> 055 -> 043_invocation_quota_door -> 056` cleanly.
+- **Goals suite on the merged tree:** 60/60 with `MAISTRO_REQUIRE_PG_LEGS=1`
+  against the migrated PG18 database (0 skips); quota + workspaces parity
+  242 passed; durable-events 387 passed (pg18 legs); strike-ladder
+  conformance 40 passed.
+- **wheel-imports producer failure root-caused and fixed.** PyPI now hosts
+  same-version (0.9.0) `maistro-*` snapshots; with the version tie between
+  the local wheel and the stale published artifact, uv's index-vs-
+  find-links choice flipped between runs (base tree passed, candidate tree
+  failed in the same environment minutes apart; the losing venv installed
+  an 11,681-byte `maistro/tools/git/server.py` lacking `git_remote_tip`).
+  `scripts/verify-wheel-imports.py` now writes a direct-reference
+  constraint per built wheel so sibling `maistro-*` deps resolve from
+  `dist/` deterministically; third-party deps still come from the index.
+  Candidate `dist/` passes 3/3 consecutive full runs; the same run against
+  a base-built `dist/` still refuses the new `maistro.goals` bare-surface
+  entry, which is the gate working as designed.
+- **Deterministic aggregator steps:** merge-group scope resolution (all 7
+  legs in scope, 9 required checks), `node --test tests/ci/
+  integration-scope.test.cjs` 12/12, `check-required-checks.py` ok.
+  Ratchet battery green: vulture ledger 1342 = 1342 (unclassified 0), radon,
+  xenon 138 ≤ 145, reachability, wiring-reads, agent-store-writes, contract
+  markers, convergence matrix, reachability dispositions, route-permissions,
+  durable-table inventory (98 tables), promotion surface, M1 convergence
+  freeze (`--base b672b799a`), backlog consistency, release consistency,
+  doc links, interrogate (all 12 floors), `mypy --strict` (818 files),
+  ruff check + format, acceptance-state ratchet + mandate + chain mandate
+  against `b672b799a` (every declared criterion proven).
+- **Pyright:** 27 errors vs `PYRIGHT_BASELINE: 21` — unchanged from round 4's
+  analysis: base measures 35 under the current analyzer, this branch is −8
+  with 0 new findings; the residual 6 are develop's own debt in files this
+  change never touches. The round-3 `goals/pg_store.py` findings no longer
+  reproduce (0 pyright diagnostics in `maistro/goals/`).
+- **Still red, still structural:** the execution-lifecycle ledger against
+  the new base (`b672b799a`, 19 classified, no `GoalStatus` authorization;
+  `tests/test_check_execution_lifecycles.py::
+  test_the_shipped_ledger_matches_the_shipped_code` mirrors the gate). The
+  DOMAIN grant must land on develop first (two-merge rule); the candidate
+  ledger stays untouched, per rounds 1–4.
+- **Not re-runnable this round:** docker-build matrix, Playwright UI leg,
+  MinIO object-storage, and the hive e2e compose bring-up (Docker Desktop
+  engine down in this environment); none of this round's diffs touch those
+  paths, and round 4 recorded them green from this branch's content.
