@@ -106,6 +106,34 @@ or placeholder-only section.
 
 ### Security
 
+- **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
+  Pinned models must have metadata in the configured ProviderRegistry before
+  use; registered-but-unavailable pins continue to refuse without fallback.
+  Unregistered request aliases retain gateway passthrough with absent cost
+  metadata. Hive activation now reports the registration prerequisite clearly:
+  supply trusted model metadata through `provider_config_path` before activating
+  a pinned health model; LiteLLM `/model/new` registration alone is insufficient.
+  Unavailable request-alias diagnostics no longer describe aliases as pins.
+
+- **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
+  (#1362).** Serialized budget definitions, reservation identities, and usage
+  evidence are bound as text before PostgreSQL parses JSONB, preventing a
+  configured JSON encoder from double-encoding them. Immutable budget checks
+  and idempotent evidence comparisons retain their existing semantics. This
+  repairs new writes only: existing double-encoded JSONB evidence is not
+  migrated and its replay limitation remains. This does not supply missing
+  provider-enforced numeric usage bounds (#1196).
+
+- **Default Invocation quota wiring refuses unknown token and monetary bounds
+  before provider dispatch (#1362).** Character-count guesses omit byte-level
+  tokenization, full message fields, tool and response schemas, and multimodal
+  billing; absent output limits cannot be priced as zero. The gateway currently
+  has no proven complete-request bound, so default token/micro-USD budgets now
+  fail closed even for priced models with `max_tokens`. Request-count policies,
+  unconfigured quota admission, and explicitly injected adapter-backed quota
+  contexts are unchanged. Numeric-budget usability remains incomplete until an
+  adapter enforces a full physical-request bound (#1196).
+
 - **Project wisdom respects GLOBAL organization boundaries (#1247).**
   Project-only `list_by_scope` refuses organization-bound GLOBAL rows without
   caller organization context. Layer 3
