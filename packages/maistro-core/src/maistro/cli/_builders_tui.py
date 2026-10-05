@@ -13,7 +13,7 @@ Flow:
 from __future__ import annotations
 
 # mypy: disable-error-code="misc,untyped-decorator,unused-ignore"
-import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -39,10 +39,13 @@ from maistro.cli._builders_sessions import (
     make_session_id,
     record_session,
 )
-from maistro.tools.git.server import ClonePolicyError, validate_clone_source
+from maistro.tools.git.server import ClonePolicyError, git_clone, validate_clone_source
 
 _GIT_URL_PREFIXES = ("http://", "https://", "git@", "ssh://")
-_BUILDERS_CACHE_DIR = Path.home() / ".maistro" / "builders_repos"
+# Candidate source must pass through `git_clone`, whose workspace containment
+# and digest verification are the one #404 clone authority. Keep the UI cache
+# under that approved root instead of maintaining a second raw-git path.
+_BUILDERS_CACHE_DIR = Path(tempfile.gettempdir()) / "maistro-workspace" / "builders_repos"
 
 
 def _is_git_url(repo: str) -> bool:
@@ -325,30 +328,15 @@ class BuildersApp(App[None]):
                 recent.update(f"\n  [dim]Cloning {repo}…[/dim]")
                 work_dir = _BUILDERS_CACHE_DIR / session_id
                 work_dir.parent.mkdir(parents=True, exist_ok=True)
-                # Same executable enforcement as the MCP tool's clone argv:
-                # git itself refuses the git:// transport (even via a
-                # redirect or .gitmodules entry) and refuses to follow
-                # redirects, and the URL sits after `--` where no scheme can
-                # be re-read as flags.
-                result = subprocess.run(
-                    [
-                        "git",
-                        "-c",
-                        "protocol.git.allow=never",
-                        "-c",
-                        "http.followRedirects=false",
-                        "clone",
-                        "--depth=1",
-                        "--",
-                        repo,
-                        str(work_dir),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if result.returncode != 0:
-                    recent.update(f"\n  [red]Clone failed: {result.stderr.strip()[:300]}[/red]")
+                # `git_clone` resolves an omitted digest to the vetted
+                # remote's HEAD then proves the checkout matches it. Reusing
+                # it here prevents this UI from becoming an unpinned raw-git
+                # source path beside the MCP and RSI surfaces.
+                result = await git_clone(repo, str(work_dir), timeout=120)
+                if not result["success"]:
+                    recent.update(
+                        f"\n  [red]Clone failed: {str(result.get('stdout', ''))[:300]}[/red]"
+                    )
                     return
             else:
                 work_dir = Path(repo).expanduser().resolve()

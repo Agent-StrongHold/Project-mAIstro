@@ -44,9 +44,11 @@ GIT_CLONE_TIMEOUT = 300
 # * Hosts: an https/ssh URL must also name a host on the explicit source
 #   allowlist (`_ALLOWED_CLONE_HOSTS`; deployments override with
 #   `MAISTRO_GIT_CLONE_ALLOWED_HOSTS`, comma-separated). The *repository*
-#   half of the source policy is the commit digest pin (`git_clone(commit=...)`):
-#   whatever is checked out is proven to be the requested object, so a moved
-#   ref or a hostile mirror cannot substitute content.
+#   half of the source policy is always a commit digest pin: a caller-supplied
+#   `git_clone(commit=...)` digest is used as-is, while an omitted pin is
+#   resolved from the vetted remote before clone. Whatever is checked out is
+#   then proven to be that requested object, so a moved ref or hostile mirror
+#   cannot substitute content.
 # * Local paths are "verified local sources" only when they pass the same
 #   workspace-root validation the destination already undergoes.
 #
@@ -317,8 +319,10 @@ async def git_clone(
     Pass `commit` (full 40- or 64-hex digest) to pin the checkout: the digest —
     not a ref name — is fetched directly and `rev-parse HEAD` must equal it
     after every fetch, so a ref that moves mid-clone (TOCTOU) cannot change
-    what the caller receives. The checkout is exactly the requested digest or
-    the call fails.
+    what the caller receives. When omitted, the policy first resolves the
+    vetted remote's HEAD to a full digest, then applies the same pinned
+    checkout; no successful clone is unpinned. The checkout is exactly the
+    requested or resolved digest or the call fails.
 
     Signature policy (#404): when the deployment sets
     `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS` (comma-separated OpenPGP key
@@ -350,6 +354,11 @@ async def git_clone(
         dest = _validate_git_workspace(dest)
     except ValueError:
         return _blocked_workspace_result(dest)
+    if commit is None:
+        resolved = await git_remote_tip(url, timeout=timeout)
+        if not resolved["success"]:
+            return resolved
+        commit = str(resolved["commit"])
     return await _clone_and_maybe_pin(url, dest, commit, timeout)
 
 

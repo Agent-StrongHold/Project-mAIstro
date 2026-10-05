@@ -302,54 +302,30 @@ class TestTheAllowedTransportClonesUnderTheSamePolicy:
     ride in the argv and the URL sits after `--`, where no scheme can be
     re-read as flags."""
 
-    def test_allowed_https_source_reaches_git_with_pins_and_separator(
+    def test_allowed_https_source_uses_the_digest_pinning_clone_authority(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import asyncio
-        import subprocess
-        from dataclasses import dataclass
+        from unittest.mock import AsyncMock
 
         tui = _import_builders_tui(monkeypatch)
         monkeypatch.delenv("MAISTRO_GIT_CLONE_ALLOWED_HOSTS", raising=False)
         label = _FakeRecent()
         app = object.__new__(tui.BuildersApp)
         app.query_one = lambda *args: label  # type: ignore[method-assign]
-        seen: list[list[str]] = []
-
-        @dataclass
-        class _Completed:
-            returncode: int
-            stderr: str = ""
-            stdout: str = ""
-
-        def capture_run(argv: list[str], **kwargs: object) -> _Completed:
-            seen.append([str(a) for a in argv])
-            return _Completed(returncode=0)
-
-        monkeypatch.setattr(subprocess, "run", capture_run)
+        clone = AsyncMock(return_value={"success": True, "pinned_commit": "a" * 40})
+        monkeypatch.setattr(tui, "git_clone", clone)
 
         def no_record(*args: object, **kwargs: object) -> None:
-            raise AssertionError("test ends at the subprocess boundary")
+            raise AssertionError("test ends after the shared clone authority")
 
         monkeypatch.setattr(tui, "record_session", no_record)
-
-        async def no_screen(*args: object, **kwargs: object) -> None:
-            raise AssertionError("test ends at the subprocess boundary")
-
-        monkeypatch.setattr(tui.BuildersApp, "_open_coding_screen", no_screen)
 
         asyncio.run(app._open_repo("https://github.com/example/repo.git"))
 
         assert label.messages and "Blocked" not in label.messages[0]
-        assert len(seen) == 1
-        argv = seen[0]
-        assert argv[0] == "git"
-        assert argv[1:5] == [
-            "-c",
-            "protocol.git.allow=never",
-            "-c",
-            "http.followRedirects=false",
-        ]
-        assert argv[5] == "clone"
-        assert argv[-3:] == ["--", "https://github.com/example/repo.git", argv[-1]]
-        assert argv[-1].startswith(str(tui._BUILDERS_CACHE_DIR))
+        clone.assert_awaited_once()
+        url, dest = clone.await_args.args[:2]
+        assert url == "https://github.com/example/repo.git"
+        assert clone.await_args.kwargs == {"timeout": 120}
+        assert dest.startswith(str(tui._BUILDERS_CACHE_DIR))

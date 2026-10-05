@@ -607,32 +607,48 @@ class TestTheCloneUrlPassesTheGitTransportPolicy:
         assert excinfo.value.code == 2
         assert "unauthenticated transport" in capsys.readouterr().err
 
-    def test_an_allowed_clone_url_reaches_git_with_enforcement_pins_and_separator(
+    def test_an_allowed_clone_url_resolves_then_fetches_a_digest_under_pins(
         self, export: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The allowed transport still spawns git — and the argv proves the
-        enforcement is executable: the protocol/redirect `-c` pins ride along,
-        and the URL sits after `--` where no scheme can be re-read as flags.
-        The fake raises after recording, so the test observes exactly the
-        clone step and nothing downstream of it."""
+        """The cloud path must not check out `clone_base` directly: it first
+        resolves that ref to a digest, then fetches only that digest under the
+        redirect/protocol pins. Stopping at fetch proves the source boundary
+        without running harvest's unrelated git operations."""
         import subprocess
-        import tempfile
 
-        seen: dict[str, list[str]] = {}
+        digest = "a" * 40
+        calls: list[list[str]] = []
 
         def fake_run(argv: list[str], *args: object, **kwargs: object) -> object:
-            seen["argv"] = list(argv)
-            raise subprocess.CalledProcessError(128, argv)
+            captured = [str(arg) for arg in argv]
+            calls.append(captured)
+            if "ls-remote" in captured:
+                return subprocess.CompletedProcess(
+                    captured, 0, stdout=f"{digest}\trefs/heads/{CANONICAL_DEVELOPMENT_BRANCH}\n"
+                )
+            if "fetch" in captured:
+                raise subprocess.CalledProcessError(128, captured)
+            return subprocess.CompletedProcess(captured, 0, stdout="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(subprocess.CalledProcessError):
             main(self._argv_clone(export, "https://github.com/org/repo.git"))
 
-        argv = seen["argv"]
-        assert argv[0] == "git"
-        pins = {argv[i + 1] for i, part in enumerate(argv) if part == "-c"}
-        assert {"protocol.git.allow=never", "http.followRedirects=false"} <= pins
-        separator = argv.index("--")
-        assert argv[separator + 1] == "https://github.com/org/repo.git"
-        assert argv[-1].startswith(tempfile.gettempdir())  # the work tree
+        resolve, init, autocrlf, remote, fetch = calls
+        assert resolve[0] == "git"
+        assert resolve[resolve.index("ls-remote") + 1 : resolve.index("ls-remote") + 3] == [
+            "--exit-code",
+            "--",
+        ]
+        assert resolve[-2:] == [
+            "https://github.com/org/repo.git",
+            f"refs/heads/{CANONICAL_DEVELOPMENT_BRANCH}",
+        ]
+        for argv in (resolve, fetch):
+            pins = {argv[i + 1] for i, part in enumerate(argv) if part == "-c"}
+            assert {"protocol.git.allow=never", "http.followRedirects=false"} <= pins
+        assert init[:3] == ["git", "init", "-q"]
+        assert autocrlf[-2:] == ["core.autocrlf", "false"]
+        assert remote[-2:] == ["origin", "https://github.com/org/repo.git"]
+        assert fetch[-1] == digest

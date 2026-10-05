@@ -84,15 +84,16 @@ class TestGitHelper:
 
     @pytest.mark.asyncio
     async def test_timeout(self) -> None:
+        async def timeout(awaitable, timeout):
+            awaitable.close()
+            raise TimeoutError
+
         with (
             patch(
                 "maistro.tools.git.server.asyncio.create_subprocess_exec",
                 new=AsyncMock(return_value=_FakeProc()),
             ),
-            patch(
-                "maistro.tools.git.server.asyncio.wait_for",
-                new=AsyncMock(side_effect=TimeoutError),
-            ),
+            patch("maistro.tools.git.server.asyncio.wait_for", new=timeout),
         ):
             result = await _git("/repos/ws", "status", timeout=5)
         assert result["error_code"] == "git_timeout"
@@ -113,56 +114,79 @@ class TestParseLogLines:
 
 
 class TestGitClone:
+    _PIN = "a" * 40
+
     @pytest.mark.asyncio
-    async def test_success(self) -> None:
-        with patch(
-            "maistro.tools.git.server.asyncio.create_subprocess_exec",
-            new=AsyncMock(return_value=_FakeProc(stdout=b"Cloned\n", returncode=0)),
+    async def test_success_resolves_an_omitted_pin_before_cloning(self) -> None:
+        with (
+            patch(
+                "maistro.tools.git.server.git_remote_tip",
+                new=AsyncMock(return_value={"success": True, "commit": self._PIN}),
+            ) as resolve,
+            patch(
+                "maistro.tools.git.server._clone_and_maybe_pin",
+                new=AsyncMock(return_value={"success": True}),
+            ) as clone,
         ):
             result = await git_clone("https://github.com/r.git", "/repos/dest")
         assert result["success"] is True
+        resolve.assert_awaited_once_with("https://github.com/r.git", timeout=300)
+        clone.assert_awaited_once_with("https://github.com/r.git", "/repos/dest", self._PIN, 300)
 
     @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        with patch(
-            "maistro.tools.git.server.asyncio.create_subprocess_exec",
-            new=AsyncMock(return_value=_FakeProc(stdout=b"fatal", returncode=128)),
+    async def test_failure_returns_the_pinned_clone_failure(self) -> None:
+        with (
+            patch(
+                "maistro.tools.git.server.git_remote_tip",
+                new=AsyncMock(return_value={"success": True, "commit": self._PIN}),
+            ),
+            patch(
+                "maistro.tools.git.server._clone_and_maybe_pin",
+                new=AsyncMock(return_value={"success": False, "error_code": "git_clone_failed"}),
+            ),
         ):
             result = await git_clone("https://github.com/r.git", "/repos/dest")
         assert result["error_code"] == "git_clone_failed"
 
     @pytest.mark.asyncio
-    async def test_empty_stdout_success_defaults_message(self) -> None:
-        with patch(
-            "maistro.tools.git.server.asyncio.create_subprocess_exec",
-            new=AsyncMock(return_value=_FakeProc(stdout=b"", returncode=0)),
+    async def test_explicit_pin_skips_resolution(self) -> None:
+        with (
+            patch("maistro.tools.git.server.git_remote_tip", new=AsyncMock()) as resolve,
+            patch(
+                "maistro.tools.git.server._clone_and_maybe_pin",
+                new=AsyncMock(return_value={"success": True, "pinned_commit": self._PIN}),
+            ) as clone,
         ):
-            result = await git_clone("https://github.com/r.git", "/repos/dest")
-        assert result["stdout"] == "Cloned"
+            result = await git_clone("https://github.com/r.git", "/repos/dest", commit=self._PIN)
+        assert result["pinned_commit"] == self._PIN
+        resolve.assert_not_awaited()
+        clone.assert_awaited_once_with("https://github.com/r.git", "/repos/dest", self._PIN, 300)
 
     @pytest.mark.asyncio
-    async def test_not_found(self) -> None:
-        with patch(
-            "maistro.tools.git.server.asyncio.create_subprocess_exec",
-            new=AsyncMock(side_effect=FileNotFoundError),
+    async def test_not_found_while_resolving_fails_closed_before_clone(self) -> None:
+        with (
+            patch(
+                "maistro.tools.git.server.git_remote_tip",
+                new=AsyncMock(return_value={"success": False, "error_code": "git_not_found"}),
+            ),
+            patch("maistro.tools.git.server._clone_and_maybe_pin", new=AsyncMock()) as clone,
         ):
             result = await git_clone("https://github.com/r.git", "/repos/dest")
         assert result["error_code"] == "git_not_found"
+        clone.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_timeout(self) -> None:
+    async def test_timeout_while_resolving_fails_closed_before_clone(self) -> None:
         with (
             patch(
-                "maistro.tools.git.server.asyncio.create_subprocess_exec",
-                new=AsyncMock(return_value=_FakeProc()),
+                "maistro.tools.git.server.git_remote_tip",
+                new=AsyncMock(return_value={"success": False, "error_code": "git_timeout"}),
             ),
-            patch(
-                "maistro.tools.git.server.asyncio.wait_for",
-                new=AsyncMock(side_effect=TimeoutError),
-            ),
+            patch("maistro.tools.git.server._clone_and_maybe_pin", new=AsyncMock()) as clone,
         ):
             result = await git_clone("https://github.com/r.git", "/repos/dest", timeout=5)
-        assert result["error_code"] == "git_clone_timeout"
+        assert result["error_code"] == "git_timeout"
+        clone.assert_not_awaited()
 
 
 class TestGitBranch:

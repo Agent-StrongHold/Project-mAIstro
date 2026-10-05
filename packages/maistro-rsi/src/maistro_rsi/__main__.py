@@ -722,35 +722,49 @@ def _validate_harvest_clone_url(clone_url: str) -> None:
 
 
 def _run_harvest_clone(clone_url: str, clone_base: str, repo: str) -> None:
-    """Clone the harvest source into `repo` at `clone_base` (single branch).
+    """Materialize the harvest base from a resolved digest, never a ref.
 
-    The argv carries the same executable enforcement pins as the MCP git tool
-    (`protocol.git.allow=never`, `http.followRedirects=false`): a redirect
-    response or a `.gitmodules` entry in the cloned repo cannot re-introduce
-    an unauthenticated transport into what this command turns into PRs. The
-    URL sits after `--`, where no scheme can be re-read as flags.
+    The cloud harvest turns this checkout into agent-authored PRs, so it must
+    not have a second unpinned source path. Resolve the approved base ref
+    first under the same transport pins as the shared git tool, then fetch
+    that immutable digest into a fresh repository and create the expected
+    local branch from the verified object. No checkout follows a mutable
+    remote ref.
     """
     import subprocess
 
-    subprocess.run(
+    pins = ["-c", "protocol.git.allow=never", "-c", "http.followRedirects=false"]
+    resolved = subprocess.run(
         [
             "git",
-            "-c",
-            "core.autocrlf=false",
-            "-c",
-            "protocol.git.allow=never",
-            "-c",
-            "http.followRedirects=false",
-            "clone",
-            "--single-branch",
-            "--branch",
-            clone_base,
+            *pins,
+            "ls-remote",
+            "--exit-code",
             "--",
             clone_url,
-            repo,
+            f"refs/heads/{clone_base}",
         ],
-        check=True,
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    digest = resolved.stdout.split()[0] if resolved.returncode == 0 and resolved.stdout else ""
+    from maistro.tools.git.server import _COMMIT_DIGEST_RE
+
+    if not _COMMIT_DIGEST_RE.match(digest):
+        raise RuntimeError(
+            f"could not resolve harvest base {clone_base!r} to a full commit digest; "
+            "refusing unpinned candidate source"
+        )
+    subprocess.run(["git", "init", "-q", repo], check=True)
+    # Preserve the old clone command's LF work-tree behavior before the first
+    # checkout; a host-global autocrlf setting must not rewrite harvested
+    # patch context.
+    subprocess.run(["git", "-C", repo, "config", "core.autocrlf", "false"], check=True)
+    subprocess.run(["git", "-C", repo, "remote", "add", "origin", clone_url], check=True)
+    subprocess.run(["git", *pins, "-C", repo, "fetch", "--depth=1", "origin", digest], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "--detach", "FETCH_HEAD"], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "-B", clone_base, digest], check=True)
 
 
 def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup + am/skip/PR loop
