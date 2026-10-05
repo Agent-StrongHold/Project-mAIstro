@@ -580,3 +580,74 @@ returned rc=0 — a dispatch-infrastructure failure, not a tree defect;
 no tree change answers it. This round edits this note only.
 `quality/vulture-baseline.json`, both reachability ledgers, all source
 and test files stay byte-identical to round 6's validated state.
+
+## CI-repair round 8 (2026-10-05): exact-debt-ledger reproduced at 52a321e926ce;
+## vulture prescription executed with an empty fix-list; two-merge rule read in
+## the gate's own source
+
+Trigger: the previous lane job (1bdc9ac4) again died on the driver-side
+provider timeout ("llama-cpp-gemma/gemma4-26b-a4b-mtp: Request timed out")
+after all five repo checks returned rc=0 — dispatch-infrastructure failure,
+not a tree defect; no tree change answers it. This round re-proved the
+CI failure and the prescribed repair at the new head 52a321e926ce (merge
+base with origin/develop still 94781cf6b708, the same trusted base CI's
+`RATCHET_BASE_REV=origin/develop` resolves to), executed here, not assumed:
+
+- Step-for-step reproduction of the exact-debt-ledger job
+  (.github/workflows/vulture-ratchet.yml): step 1
+  `check-ratchet-provenance.py` fails with exactly two of its nine
+  sub-ratchets — `reachability` and `reachability-dispositions`, each naming
+  only `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` as NEW vs the trusted base "absent
+  ... and not previously authorized"; step 2
+  `check-shipped-surface-truth.py` exits 0; step 3
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exits 0 at 1338 reviewed identities ->
+  1338 findings, unclassified 0, never_allowlist 0. The lane brief's
+  prescription ("amend quality/vulture-baseline.json") therefore has an
+  empty fix-list for the eighth consecutive round:
+  `git diff origin/develop HEAD -- quality/vulture-baseline.json` is empty
+  and the ledger is left untouched. Nothing is genuinely dead to retire:
+  the two new modules bank zero vulture findings.
+- The failure layer is provenance only, re-run directly at this head:
+  `check-reachability.py` rc=0 (174/1267 unreachable, rows banked in the
+  candidate baseline), `check-reachability-dispositions.py` rc=0 (51
+  groups cover all 174), `check-promotion-surface.py` rc=0.
+  `check-ratchet-provenance.py` then fails the aggregate inventory on
+  exactly those two sub-gates.
+- The two-merge consequence is now cited from the gate's own source, not
+  only from repo docs: `scripts/ratchet_provenance.py:478-498`
+  (`load_authorizations`) reads the authorizations file **from the base
+  revision** and states that "a new grant does not take effect in the
+  change that introduces it ... Authorizing a floor-raise is now two
+  merges". A reachability grant committed on this branch cannot authorize
+  this branch's own banked rows, and this leaf's scope forbids grants
+  anyway; landing `reachability` grants for the two admission modules on
+  the base remains the #1845 integration change's first merge.
+- Acceptance re-execution at 52a321e926ce: focused classifier suite 105
+  passed; `test_root_admission_identity.py` + unchanged
+  `test_idempotency.py` 112 passed; ruff check/format clean on both new
+  files; mypy clean on the new module; full `check-suite-inventory.py` ok
+  (14 suites, 26143 identities — +5 vs round 7 from merged develop commit
+  94781cf6b, whose inventory the merge already banked).
+- Mutation proof re-executed at this head (each mutation applied to a
+  backup-restored copy of the module, suite re-run, file restored
+  byte-identical — `git diff --stat` empty afterwards): swap
+  TAKEOVER/REPLACE_EXPIRED in the expiry row -> 36 failed; swap the same
+  pair in the lease row -> 4 failed; move the lease row above binding ->
+  12 failed; delete the LEGACY_UNRESOLVED row (legacy treated as v2) ->
+  7 failed; move MISMATCH before expiry -> 17 failed. All four issue-named
+  mutations make focused tests fail; the in-order table in
+  `admission_generation.py` is the only thing keeping them green.
+- #1841 boundary revalidated at this head:
+  `runs/store_boundary.py:56` still exposes
+  `require_admitted_actor(str | None) -> str` (last touched by #1841's own
+  053f93969b4d), and scoped reads still take optional-`str` semantics via
+  `principal_id` keyword arguments (`runs/scoped_reads.py:52,55`); C1's
+  compatibility assumptions hold unchanged.
+
+No source, test, or ledger file changed in this round: this commit edits
+this note only. The unblock sequence is unchanged and belongs to the
+separately scoped #1845 integration change: land the reachability
+authorizations on the base (grant first, change second), wire the reviewed
+consumer, then converge the unchanged gates at its final head.
