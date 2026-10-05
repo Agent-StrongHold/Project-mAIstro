@@ -441,3 +441,29 @@ def test_main_missing_registry_still_names_the_canned_handler(
     out = capsys.readouterr().out
     assert "missing registry" in out
     assert "canned route handler" in out
+
+
+def test_registry_routes_tolerates_malformed_registry(tmp_path, monkeypatch) -> None:
+    """The advice lookup never crashes on a registry `_check_registry` will
+    report anyway: non-list routes, non-object entries and entries whose
+    identity parts are not strings all yield an empty or partial keying."""
+    import json
+
+    bad = tmp_path / "registry.json"
+    monkeypatch.setattr(mod, "REGISTRY", bad)
+
+    bad.write_text(json.dumps({"routes": {"not": "a list"}}))
+    assert mod._registry_routes() == {}
+
+    bad.write_text(
+        json.dumps(
+            {
+                "routes": [
+                    "junk",  # not an object
+                    {"file": 1, "method": "get", "path": "/p"},  # non-string identity
+                    {"file": "f.py", "method": "get", "path": "/p"},  # keys fine
+                ]
+            }
+        )
+    )
+    assert list(mod._registry_routes()) == [("f.py", "get", "/p")]

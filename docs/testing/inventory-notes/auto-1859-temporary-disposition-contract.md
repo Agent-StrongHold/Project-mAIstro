@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +8
+  tests/: +9
 ---
 
 # auto-1859 — the API gate's temporary-disposition contract (#1859)
@@ -45,7 +45,7 @@ offered a pass that the code never granted.
 - `quality/api-route-contracts.json`: `_comment` line only; all 15 route
   entries byte-identical.
 
-## Root-suite delta (+8, all in `tests/test_check_api_route_contracts.py`)
+## Root-suite delta (+9, all in `tests/test_check_api_route_contracts.py`)
 
 Full-gate `main()`-level proofs, with relative-to-`date.today()` dates so the
 future/expired cases are deterministic on any run day:
@@ -66,6 +66,9 @@ future/expired cases are deterministic on any run day:
   — asserts the old "or register a temporary disposition" phrasing is gone.
 - `test_main_missing_registry_still_names_the_canned_handler` — an unreadable
   registry must not hide the canned handler behind it.
+- `test_registry_routes_tolerates_malformed_registry` — the advice lookup's
+  defensive branches: non-list `routes`, non-object entries, non-string
+  identity parts.
 
 One existing test updated in place for the `_canned_handlers` return-shape
 change (no count change). Both contract-pinning tests were executed against
