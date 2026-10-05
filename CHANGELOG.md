@@ -25,6 +25,19 @@ or placeholder-only section.
 
 ### Added
 
+- **The extension SDK boundary is enforced and a reference extension ships outside the
+  core tree (#951).** `extensions/namespace-policy.json` declares the public
+  package namespace policy — the public SDK root (`maistro_ext_sdk`) versus the
+  product-private roots — and `scripts/check-extension-imports.py` enforces it
+  statically against every extension package: product-private imports, repo-relative
+  imports, `sys.path` repair, undeclared third-party dependencies, and
+  underscore-private modules under a public root all fail. The reference extension
+  (`extensions/reference-greeter/`) is a buildable out-of-tree package, and
+  `scripts/check-reference-extension.py` builds it, installs it into a fresh venv,
+  proves the product's own modules are unimportable there, and runs its tests with
+  that interpreter. Authoring guide, manifest reference, lifecycle, and capability
+  docs live under `docs/extensions/`.
+
 - **API-wide HTTP content negotiation (ADR-076) is implemented (#96).**
   `maistro-server` and hive-conductor now run the shared
   `maistro.api_versioning.VersionNegotiationMiddleware` from `maistro-core`.
@@ -93,6 +106,34 @@ or placeholder-only section.
 
 ### Security
 
+- **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
+  Pinned models must have metadata in the configured ProviderRegistry before
+  use; registered-but-unavailable pins continue to refuse without fallback.
+  Unregistered request aliases retain gateway passthrough with absent cost
+  metadata. Hive activation now reports the registration prerequisite clearly:
+  supply trusted model metadata through `provider_config_path` before activating
+  a pinned health model; LiteLLM `/model/new` registration alone is insufficient.
+  Unavailable request-alias diagnostics no longer describe aliases as pins.
+
+- **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
+  (#1362).** Serialized budget definitions, reservation identities, and usage
+  evidence are bound as text before PostgreSQL parses JSONB, preventing a
+  configured JSON encoder from double-encoding them. Immutable budget checks
+  and idempotent evidence comparisons retain their existing semantics. This
+  repairs new writes only: existing double-encoded JSONB evidence is not
+  migrated and its replay limitation remains. This does not supply missing
+  provider-enforced numeric usage bounds (#1196).
+
+- **Default Invocation quota wiring refuses unknown token and monetary bounds
+  before provider dispatch (#1362).** Character-count guesses omit byte-level
+  tokenization, full message fields, tool and response schemas, and multimodal
+  billing; absent output limits cannot be priced as zero. The gateway currently
+  has no proven complete-request bound, so default token/micro-USD budgets now
+  fail closed even for priced models with `max_tokens`. Request-count policies,
+  unconfigured quota admission, and explicitly injected adapter-backed quota
+  contexts are unchanged. Numeric-budget usability remains incomplete until an
+  adapter enforces a full physical-request bound (#1196).
+
 - **Project wisdom respects GLOBAL organization boundaries (#1247).**
   Project-only `list_by_scope` refuses organization-bound GLOBAL rows without
   caller organization context. Layer 3
@@ -118,6 +159,29 @@ or placeholder-only section.
   SLSA provenance in mode=max and release.yml refuses a release whose
   provenance attestation does not name every pinned base digest.
 
+- **Memory write authority (ADR-057) is enforced at every memory store
+  boundary (#390, partial).** Every production memory store — learnings
+  (in-memory, SQLite, PostgreSQL and the hybrid-search wrapper's inner store),
+  episodic, outcomes and skill mutations — now calls the exposure-mode gate as
+  the first statement of each mutating method. A store constructed without a
+  declared `MemoryExposureMode` refuses to mutate at all
+  (`MemoryUndeclaredModeError`, fail-closed; SPEC-062126-6a31's no-implicit-
+  default rule), an agent-actor write or promotion under `system_managed`
+  raises `MemoryWriteDenied` before any state changes (denied writes leave no
+  partial durable state), and a system actor writes under every mode. The
+  decision reads only the declared mode, the actor and the per-block tag —
+  never model or persona content. The container declares the deployment's
+  posture from the new `AgentConfig.memory.exposure_mode` setting
+  (`agent_managed` default — the engine's existing behavior, now explicit;
+  set `system_managed` for curated-context deployments). The M4-B lifecycle
+  mutations added by the develop sync — `supersede`, `consolidate` and the
+  store-level `advance_stage` on all three learning-store backends — are
+  gated by the same decision as first statements, behind an explicit ADR-057
+  principal kept distinct from the ADR-103 attribution string, so a denied
+  supersede retires nothing and stores nothing. Not yet wired, and
+  disclosed in KNOWN-GAPS until then: per-call read gating, `hybrid` per-block
+  tags (agent writes fail closed under `hybrid`), `memory.write.denied` event
+  emission, and a product-reachable E2E proving a denied write.
 - **Active root Runs are capped per principal and per Workspace (#1182,
   partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
   refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for

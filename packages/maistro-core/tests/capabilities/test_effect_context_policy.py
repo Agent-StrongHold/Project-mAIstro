@@ -18,7 +18,15 @@ from typing import Any
 import pytest
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    _clear_default_effect_context,
+    binding_scope_policy,
+    configure_default_effect_context,
+    default_effect_context,
+    new_effect_context,
+    release_default_effect_context,
+)
 from maistro.capabilities.governed_invocation import InvocationApprovalRequired
 
 
@@ -91,3 +99,74 @@ async def test_legacy_read_effect_resolves_through_binding_scope() -> None:
     )
 
     assert invocation.result == {"committed": {"value": 2}}
+
+
+class TestNestedContainersHandTheDefaultBack:
+    """Containers nest, so the process default has to be a stack.
+
+    A test or an embedder can build a second Container inside the lifetime of
+    the first. With one slot, closing the inner one left the process with no
+    published context at all, so every later registry-constructed node -- the
+    bare `RunConsumer` fallback among them -- got a fresh empty context and
+    failed Binding resolution while a perfectly usable Container was still
+    open (Codex, #1362).
+    """
+
+    @staticmethod
+    def _published() -> CapabilityEffectContext:
+        return new_effect_context(policy_evaluator=binding_scope_policy)
+
+    def setup_method(self) -> None:
+        _clear_default_effect_context()
+
+    def teardown_method(self) -> None:
+        _clear_default_effect_context()
+
+    def test_closing_the_inner_container_restores_the_outer(self) -> None:
+        outer, inner = self._published(), self._published()
+        configure_default_effect_context(outer)
+        configure_default_effect_context(inner)
+        assert default_effect_context() is inner
+
+        release_default_effect_context(inner)
+
+        assert default_effect_context() is outer
+
+    def test_closing_out_of_order_leaves_the_rest_in_place(self) -> None:
+        """An embedder may close the outer Container first."""
+
+        outer, inner = self._published(), self._published()
+        configure_default_effect_context(outer)
+        configure_default_effect_context(inner)
+
+        release_default_effect_context(outer)
+
+        assert default_effect_context() is inner
+
+    def test_the_last_release_falls_back_rather_than_returning_none(self) -> None:
+        only = self._published()
+        configure_default_effect_context(only)
+
+        release_default_effect_context(only)
+
+        fallback = default_effect_context()
+        assert fallback is not only
+        # Still one shared instance, so nodes do not each get a private ledger.
+        assert default_effect_context() is fallback
+
+    def test_republishing_does_not_leave_a_stale_duplicate(self) -> None:
+        """Re-publishing moves a context to the top, it does not record it twice.
+
+        Otherwise one release would withdraw only the newer entry and the
+        older duplicate would keep answering as the default.
+        """
+
+        outer, inner = self._published(), self._published()
+        configure_default_effect_context(outer)
+        configure_default_effect_context(inner)
+        configure_default_effect_context(outer)
+        assert default_effect_context() is outer
+
+        release_default_effect_context(outer)
+
+        assert default_effect_context() is inner

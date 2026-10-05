@@ -71,6 +71,16 @@ dev = [
     "types-regex>=2024.5.15",
     "questionary>=2.0",
     "aiosqlite>=0.20",
+    # The reference extension (#951), installed editable so its own suite
+    # collects and runs from this environment (`uv run pytest
+    # extensions/reference-greeter/tests`). Workspace membership wires the
+    # checkout; this line is what puts it in the root env. The boundary the
+    # M9-A3 gates enforce is untouched: extension -> product imports stay
+    # forbidden (scripts/check-extension-imports.py), and the
+    # clean-environment proof is still the isolation fixture's
+    # (scripts/check-reference-extension.py), which builds the wheel into a
+    # venv holding none of this repository.
+    "reference-greeter",
     # A real in-process S3 server for the archive conformance suite
     # (ADR-082226-f436). Not a boto3 patch: the tests go over HTTP, because
     # #122 found six PostgreSQL defects that client-level mocking could not see.
@@ -364,7 +374,13 @@ ignore_missing_imports = true
 # together against ONE dependency set instead of leaving each package (and,
 # before F1, the conductor's requirements.txt) to resolve independently.
 [tool.uv.workspace]
-members = ["packages/*"]
+# packages/* is the product; extensions/* are third-party-shaped packages that
+# must never import it (#951). The reference extension joins the workspace only
+# so ONE lockfile resolves it alongside the product — membership is build
+# wiring, not a license to import product internals (the namespace policy and
+# its gates still apply, and the isolation fixture still proves the extension
+# builds and tests with nothing but its own wheel).
+members = ["packages/*", "extensions/reference-greeter"]
 
 # Workspace-root sources are inherited by every member, so a member depending on
 # e.g. maistro-core gets the local checkout rather than an index lookup for a
@@ -388,3 +404,8 @@ maistro-turing = { workspace = true }
 # Listed so any member (or a developer) that depends on it resolves to this
 # checkout. It is not published to PyPI — see packages/hive-conductor/pyproject.toml.
 hive-conductor = { workspace = true }
+# The reference extension (#951): a workspace member outside packages/, named
+# here because uv requires a source entry for every member a root dependency
+# names. Not a product package — the extension namespace policy
+# (extensions/namespace-policy.json) governs what it may import.
+reference-greeter = { workspace = true }

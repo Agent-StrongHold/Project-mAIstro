@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
-from maistro.memory.types import Learning, MemoryScope
+from maistro.memory.types import EpistemicType, Learning, MemoryScope
 
 
 def _lr(
@@ -13,7 +16,11 @@ def _lr(
     agent: str | None = "agent-1",
     status: str = "active",
     learning: str = "do X not Y",
+    *,
+    evidence: bool = False,
 ) -> Learning:
+    """A learning; `evidence=True` adds the validation evidence M4-B3 promotion
+    requires (source Run id + measured confidence from a recorded outcome)."""
     return Learning(
         tool_name=tool,
         trigger_keys=keys or ["foo", "bar"],
@@ -22,24 +29,27 @@ def _lr(
         agent_id=agent,
         scope=MemoryScope.AGENT,
         status=status,
+        run_id="run-1" if evidence else "",
+        confidence=1.0 if evidence else None,
+        evaluation_ids=["eval-1"] if evidence else [],
     )
 
 
 class TestStore:
     async def test_store_returns_id(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr = _lr()
         id_ = await store.store(lr)
         assert id_ > 0
 
     async def test_get_returns_none_for_an_unknown_id(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr())
         assert await store.get(id_) is not None
         assert await store.get(id_ + 999) is None
 
     async def test_store_dedup_same_org_same_tool_overlapping_keys(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr1 = _lr(keys=["foo", "bar"])
         lr2 = _lr(keys=["foo", "bar", "baz"], learning="updated")
         await store.store(lr1)
@@ -49,8 +59,51 @@ class TestStore:
         assert all_lr[0].learning == "updated"
         assert all_lr[0].id == id2
 
+    async def test_store_dedup_reword_moves_the_epistemic_type_and_its_rank_bonus(
+        self,
+    ) -> None:
+        """A reworded claim carries the epistemic type of its new wording, not
+        the surviving row's (M4-B3). Keeping the old type would let the
+        reworded claim ride the old ranking bonus — here a TESTED claim
+        reworded as COUNTERFACTUAL would keep outranking a REPORTED rival on
+        the keyword tie — so the type move must be visible through retrieval
+        ordering, not just on the field."""
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+
+        tested = _lr(keys=["deploy"], evidence=True)
+        tested.epistemic_type = EpistemicType.TESTED
+        tested.learning = "snapshot before deploy"
+        tested_id = await store.store(tested)
+
+        # A different tool, so the store keeps both rows instead of deduping.
+        reported = _lr(tool="kubectl", keys=["deploy"], evidence=True)
+        reported.epistemic_type = EpistemicType.REPORTED
+        reported.learning = "staging says deploys are safe"
+        reported_id = await store.store(reported)
+
+        # Sanity: on the keyword tie the TESTED bonus ranks it first.
+        before = await store.find_relevant("deploy", org_id="org-1")
+        assert [lr.id for lr in before] == [tested_id, reported_id]
+
+        # Reword the tested claim into a counterfactual one: same axes and
+        # overlapping keys, so dedup replaces the row in place.
+        reworded = _lr(keys=["deploy"], evidence=True)
+        reworded.epistemic_type = EpistemicType.COUNTERFACTUAL
+        reworded.learning = "a deploy would have worked without the snapshot"
+        assert await store.store(reworded) == tested_id
+
+        surviving = await store.get(tested_id)
+        assert surviving is not None
+        assert surviving.learning == reworded.learning
+        assert surviving.epistemic_type == EpistemicType.COUNTERFACTUAL
+
+        # The type move is not cosmetic: the reworded claim lost the TESTED
+        # bonus, so the REPORTED rival now outranks it on the same tie.
+        after = await store.find_relevant("deploy", org_id="org-1")
+        assert [lr.id for lr in after] == [reported_id, tested_id]
+
     async def test_store_no_dedup_different_org(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr1 = _lr(org="org-A", keys=["foo", "bar"])
         lr2 = _lr(org="org-B", keys=["foo", "bar"])
         await store.store(lr1)
@@ -59,7 +112,9 @@ class TestStore:
         assert len(all_lr) == 2
 
     async def test_store_eviction_at_cap(self) -> None:
-        store = InMemoryLearningStore(max_learnings=3)
+        store = InMemoryLearningStore(
+            max_learnings=3, exposure_mode=MemoryExposureMode.AGENT_MANAGED
+        )
         for i in range(4):
             lr = _lr(keys=[f"key{i}"])
             lr.tool_name = f"tool{i}"
@@ -70,19 +125,19 @@ class TestStore:
 
 class TestFindRelevant:
     async def test_finds_by_trigger_key(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["python", "import"]))
         results = await store.find_relevant("fix the python import error", org_id="org-1")
         assert len(results) == 1
 
     async def test_no_match_returns_empty(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["docker", "build"]))
         results = await store.find_relevant("python import error", org_id="org-1")
         assert results == []
 
     async def test_org_isolation(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["python"], org="org-A"))
         await store.store(_lr(keys=["python"], org="org-B"))
         results = await store.find_relevant("python error", org_id="org-A")
@@ -90,7 +145,7 @@ class TestFindRelevant:
         assert results[0].org_id == "org-A"
 
     async def test_skips_inactive(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["python"], status="promoted"))
         # find_relevant only returns "active" status
         results = await store.find_relevant("python error", org_id="org-1")
@@ -99,14 +154,14 @@ class TestFindRelevant:
 
 class TestMarkUsed:
     async def test_increments_hit_count(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_used([id_])
         all_lr = await store.list_all()
         assert all_lr[0].hit_count == 1
 
     async def test_mark_multiple(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id1 = await store.store(_lr(keys=["a"], tool="t1"))
         id2 = await store.store(_lr(keys=["b"], tool="t2"))
         await store.mark_used([id1, id2])
@@ -116,7 +171,7 @@ class TestMarkUsed:
 
 class TestMarkOutcome:
     async def test_success_increments_success_after_use(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=True, org_id="org-1")
         all_lr = await store.list_all()
@@ -124,7 +179,7 @@ class TestMarkOutcome:
         assert all_lr[0].failure_after_use == 0
 
     async def test_failure_increments_failure_after_use(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=False, org_id="org-1")
         all_lr = await store.list_all()
@@ -132,7 +187,7 @@ class TestMarkOutcome:
         assert all_lr[0].success_after_use == 0
 
     async def test_org_isolation(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_a = await store.store(_lr(keys=["a"], org="org-A"))
         await store.mark_outcome([id_a], success=True, org_id="org-B")
         all_lr = await store.list_all(org_id="__system__")
@@ -140,7 +195,7 @@ class TestMarkOutcome:
         assert target.success_after_use == 0
 
     async def test_empty_ids_noop(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         learning_id = await store.store(_lr(keys=["key"], org="org-1"))
         await store.mark_outcome([], success=True, org_id="org-1")
 
@@ -151,7 +206,7 @@ class TestMarkOutcome:
 
 class TestListIneffective:
     async def test_returns_learnings_with_more_failures_than_successes(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=False, org_id="org-1")
         await store.mark_outcome([id_], success=False, org_id="org-1")
@@ -161,14 +216,14 @@ class TestListIneffective:
         assert results[0].id == id_
 
     async def test_excludes_below_min_uses(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=False, org_id="org-1")
         results = await store.list_ineffective(min_uses=3)
         assert results == []
 
     async def test_excludes_when_successes_tie_or_exceed(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
         await store.mark_outcome([id_], success=True, org_id="org-1")
         await store.mark_outcome([id_], success=False, org_id="org-1")
@@ -177,19 +232,34 @@ class TestListIneffective:
 
 
 class TestPromotion:
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_auto_promotion_at_threshold(self) -> None:
-        store = InMemoryLearningStore()
-        id_ = await store.store(_lr(keys=["key"]))
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        id_ = await store.store(_lr(keys=["key"], evidence=True))
         for _ in range(5):
             await store.mark_used([id_])
         promoted = await store.check_auto_promotions(threshold=5, org_id="org-1")
         assert len(promoted) == 1
         assert promoted[0].status == "promoted"
 
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
+    @pytest.mark.contract("behavioral")
+    async def test_promotion_blocked_without_evidence(self) -> None:
+        """M4-B3: hits alone no longer promote — evidence is required too."""
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        id_ = await store.store(_lr(keys=["key"]))
+        for _ in range(5):
+            await store.mark_used([id_])
+        promoted = await store.check_auto_promotions(threshold=5, org_id="org-1")
+        assert promoted == []
+        stored = (await store.list_all(org_id="org-1"))[0]
+        assert stored.status == "active"
+
+    @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_get_promoted_returns_only_promoted(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["active"]))
-        id2 = await store.store(_lr(keys=["will-promote"], tool="t2"))
+        id2 = await store.store(_lr(keys=["will-promote"], tool="t2", evidence=True))
         for _ in range(5):
             await store.mark_used([id2])
         await store.check_auto_promotions(threshold=5, org_id="org-1")

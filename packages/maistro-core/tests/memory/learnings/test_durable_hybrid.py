@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import Actor
 from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
 from maistro.memory.learnings.lifecycle import StageTransition
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS
@@ -68,9 +69,15 @@ class _Store:
         self._record("mark_outcome", learning_ids, success, org_id=org_id)
 
     async def check_auto_promotions(
-        self, threshold: int = 5, *, org_id: str = ""
+        self,
+        threshold: int = 5,
+        *,
+        org_id: str = "",
+        min_confidence: float = 0.5,
     ) -> list[Learning]:
-        self._record("check_auto_promotions", threshold, org_id=org_id)
+        self._record(
+            "check_auto_promotions", threshold, org_id=org_id, min_confidence=min_confidence
+        )
         return [_learning(11)]
 
     async def get_promoted(
@@ -114,6 +121,7 @@ class _Store:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         self._record(
             "advance_stage",
@@ -122,6 +130,7 @@ class _Store:
             actor=actor,
             reason=reason,
             org_id=org_id,
+            authority=authority,
         )
         return _learning(14)
 
@@ -178,9 +187,11 @@ async def test_mark_outcome_forwards_the_org_it_was_scoped_to(wrapped) -> None:
 async def test_check_auto_promotions_forwards_and_returns(wrapped) -> None:
     hybrid, store = wrapped
 
-    promoted = await hybrid.check_auto_promotions(3, org_id="org-1")
+    promoted = await hybrid.check_auto_promotions(3, org_id="org-1", min_confidence=0.9)
 
-    assert store.calls == [("check_auto_promotions", (3,), {"org_id": "org-1"})]
+    assert store.calls == [
+        ("check_auto_promotions", (3,), {"org_id": "org-1", "min_confidence": 0.9})
+    ]
     assert [item.id for item in promoted] == [11]
 
 
@@ -233,9 +244,10 @@ async def test_mark_anti_pattern_forwards_id_floor_and_org(wrapped) -> None:
 
 
 async def test_advance_stage_forwards_the_whole_ladder_call(wrapped) -> None:
-    """The ladder call is keyword-only downstream; dropping one of the five
-    arguments here would silently move the wrong rung or lose the actor the
-    audit ledger exists to record."""
+    """The ladder call is keyword-only downstream; dropping one of the six
+    arguments here would silently move the wrong rung, lose the actor the
+    audit ledger exists to record, or flatten the ADR-057 principal to the
+    default instead of the caller's authority (#390)."""
     hybrid, store = wrapped
 
     advanced = await hybrid.advance_stage(
@@ -244,6 +256,7 @@ async def test_advance_stage_forwards_the_whole_ladder_call(wrapped) -> None:
         actor="gauntlet-7",
         reason="passed",
         org_id="org-1",
+        authority=Actor.SYSTEM,
     )
 
     assert store.calls == [
@@ -255,6 +268,7 @@ async def test_advance_stage_forwards_the_whole_ladder_call(wrapped) -> None:
                 "actor": "gauntlet-7",
                 "reason": "passed",
                 "org_id": "org-1",
+                "authority": Actor.SYSTEM,
             },
         )
     ]

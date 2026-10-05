@@ -369,6 +369,13 @@ jobs:
       # its suite joins this producer by that same rule: elsewhere its
       # PostgreSQL legs skip and the store scores as untested code.
       #
+      # `memory/user_model` joins for that same reason (#1047):
+      # PostgresUserModelStore is PG-only, needs the migrated chain's
+      # user-model tables (056 after two develop-collision re-parents; 054
+      # when written), and without a producer here the diff gate scores the
+      # new store as untested code while its conformance cases pass in the
+      # `postgres` job.
+      #
       # The claim-driven `task_idempotency` purge (#325) is one file, not the
       # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
       # race, are the only ones under `tasks` that need a server.
@@ -386,7 +393,19 @@ jobs:
             packages/maistro-core/tests/workspaces \
             packages/maistro-core/tests/scheduling \
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
-            packages/maistro-core/tests/security/test_elevation_durable.py -v --tb=short
+            packages/maistro-core/tests/security/test_elevation_durable.py \
+            packages/maistro-core/tests/memory/user_model \
+            packages/maistro-core/tests/quota -v --tb=short
+          # `tests/quota` is here for the same reason the canvas lane below is:
+          # test_pg_invocation_quota_boundary.py gates all three of its tests on
+          # MAISTRO_TEST_PG_DSN and skips without it, so in `coverage (no
+          # services)` PgInvocationQuota contributes nothing. Without a producer
+          # here the diff gate scored 176 changed lines in pg_invocation_quota.py
+          # at 23% -- untested code by the measurement, covered by tests that
+          # pass against a real server. The rest of tests/quota is fast and
+          # service-free; it runs twice rather than splitting one directory
+          # across two jobs by filename, which is the kind of split that goes
+          # stale the next time a file is added (#1196/#718).
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in

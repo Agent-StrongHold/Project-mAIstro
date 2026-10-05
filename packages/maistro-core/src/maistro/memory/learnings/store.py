@@ -9,12 +9,19 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.learnings import lifecycle
+from maistro.memory.learnings.evidence import (
+    DEFAULT_MIN_PROMOTION_CONFIDENCE,
+    merge_applicability,
+    outcome_confidence,
+    promotion_blockers,
+)
 from maistro.memory.learnings.lifecycle import StageTransition, plan_advance
 from maistro.memory.types import Learning, LearningStage
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_scope import matches_learning_scope
-from maistro.types.memory import CONTRADICT_DELTA, REINFORCE_DELTA
+from maistro.types.memory import CONTRADICT_DELTA, EPISTEMIC_BONUS, REINFORCE_DELTA
 
 logger = logging.getLogger(__name__)
 
@@ -45,19 +52,30 @@ MAX_LEARNINGS = 10_000
 
 
 class InMemoryLearningStore:
-    """In-memory learning store with dedup, FIFO cap, and org-scoped queries."""
+    """In-memory learning store with dedup, FIFO cap, and org-scoped queries.
 
-    def __init__(self, max_learnings: int = MAX_LEARNINGS) -> None:
+    Write authority (ADR-057): constructed without an ``exposure_mode`` the store
+    refuses every write and promotion with ``MemoryUndeclaredModeError``; with
+    ``SYSTEM_MANAGED``, agent-actor writes and promotions raise
+    ``MemoryWriteDenied`` before any state changes.
+    """
+
+    def __init__(
+        self,
+        max_learnings: int = MAX_LEARNINGS,
+        exposure_mode: MemoryExposureMode | None = None,
+    ) -> None:
         self._learnings: list[Learning] = []
         self._next_id = 1
         self._max = max_learnings
+        self._exposure_mode = exposure_mode
         # Append-only ladder audit trail (ADR-103). In-memory is the dev/test
         # backend, so the ledger lives here for the same reason provenance
         # does: a backend that skipped it would let every behavioural test
         # pass while only the durable ones did the work.
         self._stage_history: list[StageTransition] = []
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         The in-memory store fills provenance too. It is the default backend in
@@ -68,7 +86,13 @@ class InMemoryLearningStore:
         Assigned onto the object rather than kept beside it: this store keeps
         the caller's `Learning` and hands the same instance back, so a
         provenance held anywhere else would not survive the read (#709).
+
+        The write-authority gate is the first statement (ADR-057): a denied
+        agent write raises before provenance is filled or the dedup probe runs,
+        so a refusal leaves no partial state and cannot be steered by the
+        learning's content.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
@@ -89,14 +113,33 @@ class InMemoryLearningStore:
             )
             existing.learning = learning.learning
             existing.trigger_keys = learning.trigger_keys
+            # The epistemic type moves with the text it qualifies. Keeping the
+            # old row's type would let the reworded claim ride the stronger
+            # ranking bonus and skip the counterfactual evaluation its new
+            # type owes before promotion (M4-B3).
+            existing.epistemic_type = learning.epistemic_type
             # The producer moves with the content it produced. Dedup
             # replaces what the row says, so leaving the old ids in place
             # would attribute the surviving text to the Run that no longer
             # wrote it, and `produced_by` would return nothing for the Run
             # that did (Codex, #709).
+            # The outgoing producer is not lost with the move: it taught a
+            # version of this claim, so it joins `evidence_run_ids` and stays
+            # answerable from `produced_by` of the evidence, not just of the
+            # text (M4-B3: provenance survives consolidation/rewording).
+            if existing.run_id and existing.run_id != learning.run_id:
+                learning.evidence_run_ids = list(
+                    dict.fromkeys([*learning.evidence_run_ids, existing.run_id])
+                )
             existing.run_id = learning.run_id
             existing.node_run_id = learning.node_run_id
             existing.attempt_id = learning.attempt_id
+            # What the row *rests on* does not move: applicability and evidence
+            # union across the consolidation, so a reworded claim stays
+            # accountable to every Run that taught any of its versions and
+            # keeps every context any version named (M4-B3). The old producer
+            # survives in `evidence_run_ids` even though `run_id` moved.
+            merge_applicability(existing, learning)
             return existing.id or 0
 
         if len(self._learnings) >= self._max:
@@ -158,8 +201,13 @@ class InMemoryLearningStore:
             ):
                 continue
 
-            score = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
+            score: float = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
             if score > 0:
+                # Epistemic type is a tie-break, not a second gate (M4-B3):
+                # every bonus is < 1.0, so it reorders keyword ties — a tested
+                # claim ahead of a counterfactual one — without ever letting a
+                # less relevant learning outrank a more relevant one.
+                score += EPISTEMIC_BONUS.get(learning.epistemic_type, 0.0)
                 scored.append((score, learning))
 
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -190,7 +238,14 @@ class InMemoryLearningStore:
     async def mark_outcome(
         self, learning_ids: list[int], success: bool, *, org_id: str = ""
     ) -> None:
-        """Increment success_after_use or failure_after_use per injected learning."""
+        """Increment success_after_use or failure_after_use per injected learning.
+
+        Recomputes `confidence` from the outcome counters (`evidence.`
+        `outcome_confidence` is the normative rule the SQL twins restate in
+        their UPDATE): a recorded outcome is a measurement, and a measurement
+        replaces whatever prior an imported claim arrived with. Promotion reads
+        that field, so this is where hits become evidence (M4-B3).
+        """
         if not learning_ids:
             return
         id_set = set(learning_ids)
@@ -203,18 +258,37 @@ class InMemoryLearningStore:
                 learning.success_after_use += 1
             else:
                 learning.failure_after_use += 1
+            learning.confidence = outcome_confidence(
+                learning.success_after_use, learning.failure_after_use
+            )
 
     async def check_auto_promotions(
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
-        """Promote learnings that hit threshold, scoped by org."""
+        """Promote learnings that hit threshold *and* carry validation evidence.
+
+        Hit_count alone stopped being enough in M4-B3: a learning promoted on
+        retrieval frequency is a claim promoted on popularity. `promotion_blockers`
+        is the one verdict — source Run/evaluation IDs plus measured confidence
+        — and a learning failing it stays `active` however often it is hit.
+
+        A promotion is also the ADR-057 ``promote`` authority, not a write: under
+        ``SYSTEM_MANAGED`` it is admin-only, so an agent-actor call is denied
+        before any status flips (SPEC-062126-6a31, open question 5).
+        """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         promoted: list[Learning] = []
         for learning in self._learnings:
             if learning.status != "active" or learning.hit_count < threshold:
                 continue
             if not matches_learning_scope(learning, org_id=org_id):
+                continue
+            if promotion_blockers(learning, min_confidence=min_confidence):
                 continue
             learning.status = "promoted"
             promoted.append(learning)
@@ -310,6 +384,7 @@ class InMemoryLearningStore:
         replacement: Learning,
         *,
         org_id: str = "",
+        actor: Actor = Actor.AGENT,
     ) -> int:
         """Retire ``old_id`` in favour of ``replacement``, keeping both rows (#120).
 
@@ -318,12 +393,19 @@ class InMemoryLearningStore:
         the replacement into the very row it replaces. Raises ``KeyError``
         when the old id is not in scope: a silent no-op would leave both rows
         active and the lineage unrecorded.
+
+        ADR-057: superseding restructures the claim set, so the caller needs
+        write authority. The gate is the first statement — a denied call
+        retires nothing and stores nothing, leaving no partial state — and
+        the same actor is carried into the inner ``store`` call so one
+        principal decides the whole operation.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         old = await self.get(old_id, org_id=org_id)
         if old is None:
             raise KeyError(old_id)
         old.status = "superseded"
-        new_id = await self.store(replacement)
+        new_id = await self.store(replacement, actor=actor)
         survivor = await self.get(new_id)
         if survivor is None:  # pragma: no cover - store() just returned this id
             raise RuntimeError(f"store returned id {new_id} that cannot be read back")
@@ -347,8 +429,10 @@ class InMemoryLearningStore:
             if lr.status in lifecycle.TERMINAL_ROW_STATUSES:
                 continue
             before = lr.confidence
+            if before is None:
+                continue  # unmeasured: no confidence to decay (and decay would need one)
             lifecycle.decay(lr, now=moment, half_life_days=half_life_days)
-            if lr.confidence < before:
+            if lr.confidence is not None and lr.confidence < before:
                 decayed += 1
         return decayed
 
@@ -357,6 +441,7 @@ class InMemoryLearningStore:
         *,
         org_id: str = "",
         tool_name: str | None = None,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
         """Merge near-duplicate active learnings, folding their evidence (#120).
 
@@ -364,7 +449,12 @@ class InMemoryLearningStore:
         every org. Duplicates share the tool and scope axes and overlap at
         least half of their trigger keys (the same rule ``store`` dedup uses);
         the earliest row survives and absorbs the rest. Returns the survivors.
+
+        ADR-057: consolidation retires rows, so it is a write — under
+        ``SYSTEM_MANAGED`` an agent-actor call is denied before any row is
+        absorbed, and an undeclared mode fails closed.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         pool = [
             lr
             for lr in self._learnings
@@ -400,6 +490,7 @@ class InMemoryLearningStore:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         """Move a learning one rung up the knowledge ladder (ADR-103).
 
@@ -408,7 +499,19 @@ class InMemoryLearningStore:
         preserved exactly as with `store`) and appends the transition to the
         in-memory ledger. A scoped caller (`org_id`) can only advance a row
         it could have read — the same write rule `mark_outcome` enforces.
+
+        ADR-057: a stage move is a write (the merged ADR-103 tests say so
+        themselves), so the caller needs write authority. `actor` is the
+        ADR-103 attribution string recorded in the ledger; `authority` is the
+        ADR-057 principal the gate decides on, defaulting to the agent —
+        under ``SYSTEM_MANAGED`` an agent-authority call is denied before the
+        row is read or the ledger touched, and an undeclared mode fails
+        closed. The two names stay distinct on purpose: who is credited for
+        the move is not who is authorized to make it.
         """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
         learning = await self._get_for_scope(learning_id, org_id=org_id)
         updated, transition = plan_advance(learning, to_stage=to_stage, actor=actor, reason=reason)
         learning.stage = updated.stage
