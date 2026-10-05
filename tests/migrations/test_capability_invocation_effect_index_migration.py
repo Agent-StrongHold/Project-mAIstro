@@ -69,11 +69,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # artifact-version ledger took the same number on the same parent,
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
-    # chain tip, and its learning-lifecycle columns (M4-B, ADR-100126-8c2d)
-    # continued that tip as `053_learning_lifecycle_columns`. Learning
-    # applicability (#119) follows as `054`, admission generations (#1892)
-    # as `055`, and this lane's audit cursor indexes (#358) as `056`.
-    # Preserve develop's revisions; only the unlanded audit revision moves.
+    # chain tip, followed by learning lifecycle (053), applicability (054),
+    # and admission generations (055). Develop's quota door follows 055;
+    # only this lane's unlanded audit indexes (056) move onto that new tip.
     walked = {item.revision for item in directory.walk_revisions("base", "056")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
@@ -89,9 +87,11 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "053" in walked
     assert "054" in walked
     assert "055" in walked
+    assert "043_invocation_quota_door" in walked
     assert "056" in walked
     assert directory.get_revision("055").down_revision == "054"
-    assert directory.get_revision("056").down_revision == "055"
+    assert directory.get_revision("043_invocation_quota_door").down_revision == "055"
+    assert directory.get_revision("056").down_revision == "043_invocation_quota_door"
     assert directory.get_heads() == ["056"]
 
 

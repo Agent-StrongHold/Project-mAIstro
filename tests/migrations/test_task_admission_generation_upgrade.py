@@ -548,6 +548,8 @@ class TestTheDowngrade:
 
         assert result.returncode != 0, "the downgrade discarded live v2 identity"
         assert "format_version" in result.stderr + result.stdout
+        # The multi-revision downgrade is transactional: even revisions
+        # preceding the refusal roll back, preserving the original head.
         assert _stamped_version() == version_before
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()

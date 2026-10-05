@@ -151,6 +151,27 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # this one is where a candidate would weaken the check and authorize its
     # own effects without touching a protected module (Codex, #1758).
     "maistro/capabilities/binding_store.py",
+    # effect_context.py composes the authority itself: which Binding store,
+    # which policy evaluator, which Invocation service and which quota door a
+    # deployment ends up with. A candidate editing it does not weaken one
+    # check, it chooses a different gate. credential_routing.py is the other
+    # half -- it decides which credential a Binding's effect actually uses.
+    "maistro/capabilities/effect_context.py",
+    "maistro/capabilities/credential_routing.py",
+    # The credential pool, store, router and the providers that fill them.
+    # A directory pattern rather than five file patterns, for the reason this
+    # file already gives for `maistro_rsi/`: a pattern cannot fall behind a
+    # new file, and enumerating them one at a time is how omissions get in.
+    # Routing an effect onto a more privileged credential is self-grant by
+    # another name, so this is containment, not configuration.
+    "maistro/credentials/",
+    # The sole image-effect boundary. `_require_image_binding` re-reads the
+    # registered Binding record, refuses a caller-built or altered one, and
+    # checks the capability and disabled state before any HTTP; the egress
+    # then installs credential routing around the Invocation. `model_chat.py`
+    # has no equivalent function, so this is not "one capability like the
+    # others" -- it is where an image effect is authorized (Codex, #1763).
+    "maistro/capabilities/image_generation.py",
     "maistro/capabilities/invocation.py",
     "maistro/capabilities/invocation_store.py",
     "maistro/capabilities/pg_invocation_store.py",

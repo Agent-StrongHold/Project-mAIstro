@@ -67,6 +67,7 @@ EXPECTED_TABLES = frozenset(
         # after a collision with 032_asset_instance_org_scope; #1079).
         # Bindings and Invocations are separate tables: Bindings are immutable
         # authorization records, Invocations the logical effect ledger.
+        "capability_approvals",
         # The tombstone half of the same authority (047). Separate from
         # `capability_bindings` because revoking deletes the binding row,
         # so a `revoked_at` column would be deleted along with the thing
@@ -119,6 +120,10 @@ EXPECTED_TABLES = frozenset(
         "graph_continuations",
         "graph_templates",
         "handler_invocations",
+        "invocation_quota_allocations",
+        "invocation_quota_budgets",
+        "invocation_quota_evidence",
+        "invocation_quota_reservations",
         "knowledge_nodes",
         "learnings",
         # The append-only provenance ledger for the knowledge-stage ladder
@@ -247,7 +252,7 @@ def empty_database():
 class TestAuditCursorIndexes:
     def test_indexes_upgrade_and_reverse_without_losing_audit_rows(self, empty_database) -> None:
         """The shipping chain installs every seek and rolls back only its indexes."""
-        assert _alembic("upgrade", "055").returncode == 0
+        assert _alembic("upgrade", "043_invocation_quota_door").returncode == 0
         _execute("INSERT INTO audit_log (boundary, user_id) VALUES ('login', 'alice')")
 
         result = _alembic("upgrade", "head")
@@ -264,7 +269,7 @@ class TestAuditCursorIndexes:
         assert all("org_id" in definition for definition in indexes.values())
         assert all('"timestamp" DESC, id DESC' in definition for definition in indexes.values())
 
-        result = _alembic("downgrade", "055")
+        result = _alembic("downgrade", "043_invocation_quota_door")
         assert result.returncode == 0, result.stderr
         assert not _query(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
@@ -273,7 +278,13 @@ class TestAuditCursorIndexes:
         )
         assert _query("SELECT boundary, user_id FROM audit_log") == [("login", "alice")]
         # Rolling back audit indexes must not undo develop's preceding revision.
-        assert _query("SELECT version_num FROM alembic_version") == [("055",)]
+        assert _query("SELECT version_num FROM alembic_version") == [("043_invocation_quota_door",)]
+        assert {
+            "invocation_quota_allocations",
+            "invocation_quota_budgets",
+            "invocation_quota_evidence",
+            "invocation_quota_reservations",
+        } <= _tables()
         assert _query(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name = 'task_idempotency' "
