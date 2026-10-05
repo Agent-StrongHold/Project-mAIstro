@@ -38,7 +38,12 @@ pytestmark = [
 
 
 def _factory() -> async_sessionmaker:
-    engine = create_async_engine(postgres_dsn())
+    # Same scheme rewrite as every sibling conformance suite (e.g.
+    # tests/persistence/conftest.py): the DSN names a server, the async
+    # engine needs the asyncpg driver, not SQLAlchemy's sync default.
+    engine = create_async_engine(
+        postgres_dsn().replace("postgresql://", "postgresql+asyncpg://", 1)
+    )
     return async_sessionmaker(engine, expire_on_commit=False)
 
 

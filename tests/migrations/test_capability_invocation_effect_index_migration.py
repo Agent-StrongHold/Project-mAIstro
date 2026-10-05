@@ -72,8 +72,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # chain tip, so this branch's learning-lifecycle columns (M4-B,
     # ADR-100126-8c2d) — which had taken `051` and then `052` in earlier
     # collisions — re-parent onto that `052_learning_stage_ladder` as `053`.
-    # The single linear head is `053`.
-    walked = {item.revision for item in directory.walk_revisions("base", "053")}
+    # #1047's `054_user_model_facts` continues the chain after that `053`.
+    # The single linear head is `054`.
+    walked = {item.revision for item in directory.walk_revisions("base", "054")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -86,7 +87,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "051" in walked
     assert "052" in walked
     assert "053" in walked
-    assert directory.get_heads() == ["053"]
+    assert "054" in walked
+    assert directory.get_heads() == ["054"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
