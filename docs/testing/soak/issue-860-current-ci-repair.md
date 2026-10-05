@@ -325,3 +325,93 @@ Only this report changed. No new tests, no inventory delta, no source/runtime-co
 Next owner must designate immutable RC images and configuration, establish the applicable representative workload, resolve the replica aggregate-limit mismatch without a parallel authorization path, provide a production-topology runner with physical Attempt correlation and full application telemetry, then execute at least four hours on that unchanged artifact/configuration. Runtime/config changes invalidate the run.
 
 Progress: checked 1 assigned issue; done 0 (acceptance blocked); skipped 0 issues; errors 0 executed checks; 5 PostgreSQL tests skipped. Local commit records this checkpoint; the issue remains unresolved.
+
+## Independent checkpoint — job 407d760f58e345679d8123a765426289
+
+Frozen scope: issue #860 only, assigned worktree `/home/dev/Git/wt/auto-860`,
+starting HEAD `c0367dfb065ab01561e337018f3fd069ab708124`, supplied develop base
+`94781cf6b708a385f33a9aafcbe9f83a481b6858`. Starting tree was clean; an empty
+salvage patch and scope snapshot were saved in the job directory. No driver
+`check-*.log` files were supplied at initial inspection. The logs below were
+produced by this worker, not inherited verification claims.
+
+### Executed checks
+
+All commands below exited 0 on the assigned head:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  **1,338 findings / 1,338 reviewed identities**, zero unclassified and zero
+  never-allowlist. The gate reports its own baseline `8a4bc239fe9a`; no override
+  was supplied. There is no unbanked identity to repair or authorize. No ledger
+  amendment or speculative dead-code deletion is justified.
+- `uv run ruff check .`: all checks passed.
+- `uv run ruff format --check .`: 2,917 files already formatted.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`:
+  **92 passed, 6 skipped in 3.56s**. All skips require `MAISTRO_TEST_PG_DSN`;
+  live PostgreSQL behavior is not proven by this run.
+- `uv run python scripts/check-deployment-claims.py`: deployment claims pass.
+- `uv run python scripts/check-execution-lifecycles.py`: 19 discovered and
+  classified lifecycles.
+- `uv run python scripts/check-backlog-consistency.py`: 168 items pass.
+- `git diff --check 94781cf6b708a385f33a9aafcbe9f83a481b6858...HEAD`:
+  no whitespace errors. The previously reported blank-at-EOF defect does not
+  reproduce against the assigned base/head.
+
+A separate `uv run python` import of the current soak evaluator rejected
+`evidence/m3a-round6-shakedown.json` for `sustain_duration` and
+`exact_rc_artifact`: 90.43 seconds recorded, 14,400 required. Its historical
+passing flags were not independently re-proven. The current artifact check
+returns `ok=false`, topology `host-uvicorn-preflight`. No new soak ran.
+
+Fresh outputs reside under
+`/home/dev/maistro/jobs/407d760f58e345679d8123a765426289/` in
+`check-{vulture,ruff,format,pytest,deployment,lifecycles,backlog,diff,evidence}-worker.log`.
+
+### Reachability and acceptance
+
+Production `packages/maistro-server/src/maistro_server/main.py:593` installs
+`RateLimitMiddleware`; its constructor at `api/rate_limit.py:72` creates a
+process-local limiter. The executed tests at
+`tests/test_soak_promotion_gates.py:439-488` use that production middleware and
+prove both authenticated and pre-auth identities receive `[200, 200, 429]`
+from each replica independently. They are ASGI counterexamples, not a deployed
+multi-replica soak. Local enforcement passing does not satisfy replica-selection
+non-bypass.
+
+Accepted ADR-081226-a66b and ADR-081626-f383 preserve the canonical
+Goal → Graph → Run → NodeRun → Attempt authority and durable physical fencing;
+admission deduplication cannot stand in for physical-work recovery.
+ADR-085 principal identity does not establish shared replica state.
+ADR-083026-a91e forbids treating missing measurements as zeros. No criterion
+is waived and no competing execution or authorization path is introduced.
+
+| Issue acceptance criterion | Evidence / disposition in this checkpoint |
+|---|---|
+| Representative release-candidate profile | PARTIAL: `m3a-load-profile.md:152-164` explicitly lacks concurrent users/Workspaces, Graph fan-out, successful tool/model, Design/Canvas and Goal/background workloads. RC applicability UNVERIFIED. |
+| At least two application replicas | ASGI limiter instances exercised; actual supported production RC deployment UNVERIFIED. |
+| Sustained saturation, queue growth, reclaim, retry, leaks and restart | UNVERIFIED: no sustained run; current evaluator rejects the historical 90.43-second pack. |
+| Exactly-once admission, Goal reconciliation and fenced physical work | Local admission backpressure tests pass; cross-replica physical execution and Goal behavior UNVERIFIED. Schedule probe limitations remain documented at `m3a-load-profile.md:197-200`. |
+| Security/degraded behavior and replica-selection non-bypass | NOT MET for aggregate principal allowance: executed production middleware counterexample above. Complete security/degraded behavior under RC load UNVERIFIED. |
+| Required telemetry and explicit pass/fail thresholds | Process-group sampler tests pass; application-loop latency, worker census and complete RC telemetry/threshold evaluation UNVERIFIED. |
+| Active-work replica kill/restart, drain and fenced recovery | UNVERIFIED: no replica killed/restarted in this checkpoint; process rejoin alone would not prove physical fencing. |
+| Long-running exact RC artifact/configuration soak | NOT MET: current driver rejects exact-RC equivalence at `scripts/soak/run_soak.py:635-668`; no immutable RC image/configuration designated in this assignment, no four-hour production run. |
+| Findings filed/reclassified to earliest invariant | Local backlog consistency passes; completeness of filing/reclassification UNVERIFIED. No GitHub mutations permitted or performed. |
+| Machine/human evidence tied to exact image/package/commit/config hashes | Historical evidence preserved and rejected by current evaluator; qualifying current RC evidence UNVERIFIED. |
+
+### Disposition and next action
+
+**BLOCKED.** The specified CI failure and whitespace finding do not reproduce.
+The previous blocker is an unmet release-evidence contract, not a merge conflict
+or scanner finding. No code, runtime configuration, tests, inventory, ledger or
+grant changed; only this existing report was extended. There is no new test
+inventory delta. This checkpoint is committed locally, not integration approval.
+
+Next: designate the immutable RC artifact/configuration and representative
+workload, resolve the aggregate-rate contract mismatch through the existing
+security authority, then provide a production-topology runner with physical
+Attempt correlation and complete application telemetry and execute at least
+four hours on the unchanged artifact. Another short host-process run or ledger
+edit cannot resolve this blocker.
+
+Progress: checked 1, done 0, skipped 0 issues, errors 0 executed checks;
+6 PostgreSQL tests skipped. Acceptance remains blocked; no new item started.
