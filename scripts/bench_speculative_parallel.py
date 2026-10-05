@@ -72,7 +72,14 @@ from maistro.providers.types import ModelMetadata
 
 WORKSPACE_ID = "bench-speculative"
 PROJECT_ID = "bench"
-ENDPOINT = GatewayEndpoint(base_url="http://simulated-gateway")
+# The URL is a routing label, not a destination: `_SimulatedGateway.transport`
+# replaces the wire with an ``httpx.MockTransport``, so no socket is ever opened
+# and TLS is meaningless for a host that does not exist. DevSkim DS137138
+# pattern-matches the scheme prefix and cannot see the stub, hence the dated
+# same-line suppression (the engine requires the phrase on the finding line).
+ENDPOINT = GatewayEndpoint(
+    base_url="http://simulated-gateway"  # DevSkim: ignore DS137138 until 2027-12-31
+)
 #: One task in every ``OUTAGE_PERIOD`` loses one provider for the whole task:
 #: every call to that provider fails together (correlated failure).
 OUTAGE_PERIOD = 7
