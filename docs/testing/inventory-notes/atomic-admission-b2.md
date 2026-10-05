@@ -676,3 +676,57 @@ upstream). The grant probe was refreshed at this exact final head
 shipped-surface and vulture exit 0 under the same base. Develop still
 carries no admission grant at `159fbafe9`; the campaign landing action is
 unchanged.
+
+## Round 10 (repair, exact head `1a411d8da5e2`)
+
+Driver checks at this head: sync/ruff/format green, focused pytest
+139 passed (66 codec + 73 identity), suite inventory ok. Independently
+re-run this round: `uv run pytest
+packages/maistro-core/tests/tasks/test_admission_codec.py -q` -> 66 passed;
+both changed files -> 139 passed; `ruff check .` and
+`ruff format --check .` clean; `uv run mypy` on both changed modules -> no
+issues.
+
+CI-exact exact-debt-ledger steps at this head vs trusted base
+`b672b799aba6` (`origin/develop`):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` -> exit 0, 1342 reviewed identities = 1342 findings,
+  `unclassified: 0`. Nothing unbanked, so the lane brief's conditional
+  ledger amendment is vacuous — no vulture row added, removed or edited
+  (file byte-identical to develop, verified by row comparison).
+- `check-shipped-surface-truth.py` -> exit 0.
+- `check-ratchet-provenance.py` -> exit 1, exactly the two-merge finding:
+  reachability 170 -> 172 and dispositions 170 -> 172, with
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_codec` NEW
+  and "not covered by an already-landed reachability authorization". This is
+  structural, not a banking defect: `ratchet_provenance.load_authorizations`
+  reads grants from `merge-base(base, HEAD)`, and the grant (`3235229f5fed`)
+  is not an ancestor of any worker branch until it lands on develop.
+
+Grant-landing probe independently executed THIS round (previously
+claimed-only): worktree `probe-1893-round10` at `50f9f4558` =
+`1a411d8da5e2` + merge `3235229f5fed` (clean, grant rows only),
+`uv sync --locked --extra dev`, then `RATCHET_BASE_REV=3235229f5fed...`:
+aggregator exit 0 — all 10 sub-ratchets OK, reachability "172 -> 172, no
+candidate-approved expansion", dispositions "172 -> 172, new debt uses
+prior reachability authorization" — plus shipped-surface exit 0 and CI-exact
+vulture exit 0 under the same base. The unblock path is therefore proven at
+the exact final head: once develop carries the grant and this branch
+syncs it, the exact-debt-ledger job passes unchanged content.
+
+Multiset audit vs `origin/develop` (`git diff --numstat origin/develop --
+quality/`): `vulture-baseline.json` untouched (0 rows changed);
+`reachability-baseline.json` +2/-1 (the two module rows and the
+informational `_generated_from` count, which remains stale-informational at
+1266 vs 1285 measured — gates do not read it); `reachability-dispositions.json`
++11 (`runs-root-admission-contracts`, 2 modules, CONNECT). No ledger row
+was lost in any merge.
+
+Residual: the merge-queue `exact-debt-ledger` job stays red until the
+campaign lands the grant on develop and this branch syncs it; no in-branch
+action can or may substitute (issue text forbids gate modifications to
+green an unwired slice, and the provenance gate is designed to refuse
+self-authorization). All leaf acceptance criteria — interfaces, fail-closed
+codes, error hygiene, header/record separation, the ten prospective tests,
+inventory note, ruff/format/mypy, banking gates — are proven at this head.
