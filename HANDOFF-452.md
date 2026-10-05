@@ -61,6 +61,25 @@ but issue state (#452 checkboxes, #399/#400/#401/#407/#402–#406/#409–#411/
 #1191/#1205–#1207 still open on GitHub) needs a mutation-capable driver —
 this lane is prohibited from GitHub mutations.
 
+## Re-validation round (job `20b9b4763c8445dba557f42ce789e390`, head `fb679d893`)
+
+The prior round closed NEEDS-DEEP-REVIEW with no tree-side repair left; this
+round re-ran the full battery at the unchanged head and probed the policy at
+runtime. All green, no code changes required:
+
+- `uv run ruff check .` / `uv run ruff format --check .` — clean (2917 files)
+- `uv run pytest packages/maistro-core/tests/tools/git packages/maistro-core/tests/cli/test_builders.py -q` — 149 passed
+- `uv run pytest packages/maistro-rsi/tests -q` — 1010 passed (incl. `test_harvest_entry_point.py` 32: refusal exits 2 before any subprocess; allowed path spawns git with both `-c` pins and `--` separator)
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` — exit 0 (1338 base → 1337 candidate, zero unbanked identities; CI-repair clause satisfied with no amendment)
+- `uv run python scripts/check-suite-inventory.py` — ok, 14 suites
+- Runtime probes of `validate_clone_source`: `git://`, `GIT://`, `git%3a//`, off-allowlist host, `github.com@evil.com` userinfo trick, and `ext::sh -c id` all refused with distinct error codes; `MAISTRO_GIT_CLONE_ALLOWED_HOSTS` override admits `example.com` while `github.com` stays refused under it
+- Spot-checks of the child table: `scripts/install-maestro.sh` absent (#401), no `stream1-diagnostic*` anywhere (#400), `MAISTRO_ACCESS_TOKEN` only in removal-documenting comments (#402)
+
+Remaining residual is unchanged and **not tree-repairable**: 16 of 19 child
+issues plus #452's own checkboxes and #415 are still open on GitHub despite
+the in-tree fixes; #863 is in flight on lane `auto-863`. Closing them needs a
+mutation-capable driver — this lane is prohibited from GitHub mutations.
+
 ## Validation battery at head `30d16275d`
 
 - `uv run ruff check .` — clean; `uv run ruff format --check .` — 2917 files clean
