@@ -186,7 +186,8 @@ async def test_progress_after_a_store_less_dispatch_still_re_parks() -> None:
     ctx.metadata["hitl_answers"] = {"delegate-1": {"status": "working", "task_id": "abc-123"}}
     result = await node.run({"from_agent": "planner", "task": "x"}, ctx)
     assert result.status == "paused"
-    assert result.metadata[PROGRESS_HISTORY_KEY][0]["normalized"] == "working"
+    assert result.metadata[PROGRESS_HISTORY_KEY][0]["normalized"] == "progress"
+    assert result.metadata[PROGRESS_HISTORY_KEY][0]["raw_state"] == "working"
 
 
 # --------------------------------------------------------------------------

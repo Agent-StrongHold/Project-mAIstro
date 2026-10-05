@@ -29,8 +29,8 @@ from maistro.a2a.guest_peers import GuestPeerManager, PeerTrust
 from maistro.a2a.normalize import (
     PROGRESS_HISTORY_KEY,
     CanonicalDelegationTruth,
-    RemoteLifecycleState,
     RemoteRetryDecision,
+    RemoteState,
     decide_retry,
     decide_settlement,
     normalize_remote_state,
@@ -242,23 +242,23 @@ async def _child_node_run(store: InMemoryRunStore, child_id: str) -> Any:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("submitted", RemoteLifecycleState.SUBMITTED),
-        ("working", RemoteLifecycleState.WORKING),
-        ("input-required", RemoteLifecycleState.AWAITING_INPUT),
-        ("completed", RemoteLifecycleState.COMPLETED),
-        ("failed", RemoteLifecycleState.FAILED),
-        ("canceled", RemoteLifecycleState.CANCELLED),
-        ("rejected", RemoteLifecycleState.REJECTED),
-        # The peer saying "unknown" about its own task normalizes to UNKNOWN:
+        ("submitted", RemoteState(progress=True)),
+        ("working", RemoteState(progress=True)),
+        ("input-required", RemoteState(progress=True)),
+        ("completed", RemoteState(outcome="completed")),
+        ("failed", RemoteState(outcome="failed")),
+        ("canceled", RemoteState(outcome="failed", cancelled=True)),
+        ("rejected", RemoteState(outcome="rejected")),
+        # The peer saying "unknown" about its own task normalizes to unknown:
         # the protocol's own admission of not-knowing is ambiguity, and the
         # mapping refuses to launder it into an outcome.
-        ("unknown", RemoteLifecycleState.UNKNOWN),
+        ("unknown", RemoteState()),
     ],
 )
 def test_every_state_the_external_implementation_emits_is_mapped(
-    raw: str, expected: RemoteLifecycleState
+    raw: str, expected: RemoteState
 ) -> None:
-    assert normalize_remote_state(raw) is expected
+    assert normalize_remote_state(raw) == expected
 
 
 def test_the_external_vocabulary_is_the_mapped_vocabulary() -> None:
@@ -268,7 +268,7 @@ def test_the_external_vocabulary_is_the_mapped_vocabulary() -> None:
     unmapped = [
         raw
         for raw in sorted(_ExternalStyleA2AAgent.VOCABULARY)
-        if normalize_remote_state(raw) is RemoteLifecycleState.UNKNOWN and raw != "unknown"
+        if normalize_remote_state(raw).is_unknown and raw != "unknown"
     ]
     assert unmapped == []
 

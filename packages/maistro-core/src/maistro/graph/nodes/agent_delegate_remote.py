@@ -33,7 +33,6 @@ from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
 from maistro.a2a.normalize import (
     PROGRESS_HISTORY_KEY,
     CanonicalDelegationTruth,
-    RemoteLifecycleState,
     SettlementDecision,
     decide_cancellation,
     decide_settlement,
@@ -317,6 +316,113 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return True
         return await self._run_store.claim_delegation_transport_attempt(run_id)
 
+    async def _child_run(self, run_id: str) -> Run | None:
+        """The child Run a delegation answers for, or None when unreadable."""
+        if self._run_store is None or not run_id:
+            return None
+        return await self._run_store.get_run(run_id)
+
+    @staticmethod
+    def _canonical_truth(child: Run | None) -> CanonicalDelegationTruth:
+        """The canonical facts a remote answer is judged against."""
+        return CanonicalDelegationTruth(
+            status=str(child.status.value) if child is not None else "",
+            terminal=child is not None and child.status in TERMINAL_RUN_STATUSES,
+        )
+
+    @staticmethod
+    def _resume_pause_identity(resumed: dict[str, Any]) -> tuple[str, Mapping[str, Any]]:
+        """The child Run identity and pause metadata a resumed answer carries.
+
+        The Run id comes from `resumed["_pause"]`, which the store stamps from
+        the pause *this node* wrote, never from the submitted answer. The
+        responder is the party being waited on; letting it name the execution
+        identity it is answering for would let any caller redirect the outcome
+        onto someone else's Run. The submitted `run_id`, if there is one, is
+        ignored rather than compared -- there is nothing to gain from a
+        mismatch except a second way to be wrong.
+        """
+        pause = resumed.get("_pause")
+        pause_metadata: Mapping[str, Any] = {}
+        run_id = ""
+        if isinstance(pause, Mapping):
+            # Durable answer submission stamps the complete server-authored
+            # pause entry, whose node metadata carries the child identity.
+            # Keep accepting the flat shape used by older callers/tests, but
+            # never source the identity from the answer's top-level fields.
+            stamped = pause.get("metadata")
+            if isinstance(stamped, Mapping):
+                pause_metadata = stamped
+            run_id = str(pause_metadata.get("run_id") or "")
+            if not run_id:
+                run_id = str(pause.get("run_id") or "")
+        return run_id, pause_metadata
+
+    async def _late_answer_failure(
+        self,
+        decision: SettlementDecision,
+        child: Run | None,
+        *,
+        task_id: str,
+        run_id: str,
+    ) -> DelegateRemoteOut:
+        """The parent-facing failure for an answer that arrived too late.
+
+        The child Run is already terminal: the remote answer arrived too late
+        (or answers work that was cancelled locally). Nothing is written -- a
+        terminal Run has no outgoing transitions -- and the parent is told the
+        delegation failed *with the canonical truth named*, never the remote's
+        self-reported outcome. Letting a remote `completed` ride through here
+        would advance the parent onto work the canonical record holds cancelled
+        or finished.
+        """
+        error = decision.reason
+        if (
+            child is not None
+            and child.status is RunStatus.CANCELLED
+            and decision.normalized.outcome == "completed"
+        ):
+            # The #960 truth composition: the child was cancelled locally,
+            # and the remote -- which never acknowledged the cancellation
+            # -- now reports completion. Quote the cancellation projection
+            # so the parent's evidence records both halves: the remote
+            # observation, and why it is not authority.
+            projection = decide_cancellation(remote_acknowledged=False)
+            assert projection.canonical_status == RunStatus.CANCELLED.value
+            error = f"{decision.reason}; {projection.reason}"
+        return DelegateRemoteOut(status="failed", task_id=task_id, run_id=run_id, error=error)
+
+    async def _settled_output(
+        self,
+        resumed: dict[str, Any],
+        decision: SettlementDecision,
+        *,
+        raw_status: str,
+        task_id: str,
+        run_id: str,
+    ) -> DelegateRemoteOut:
+        """Build the settled answer from a decision that applies, and record it.
+
+        An answer that said what it meant keeps its own error; a status the
+        normalizer renamed or refused (remote cancellation, an unmapped
+        value) carries the reason it was renamed, so the settlement record
+        says what actually happened.
+        """
+        assert decision.outcome_status is not None
+        renamed = decision.outcome_status != raw_status.strip().lower()
+        out = DelegateRemoteOut(
+            status=cast(DelegationStatus, decision.outcome_status),
+            task_id=task_id,
+            run_id=run_id,
+            result=resumed.get("result"),
+            error=resumed.get("error") or (decision.reason if renamed else None),
+            timed_out=(
+                bool(resumed.get("timed_out", False)) or decision.normalized.outcome == "timed_out"
+            ),
+        )
+        await self._record_child_outcome(run_id, out)
+        return out
+
     async def _resume(self, inputs: DelegateRemoteIn, resumed: dict[str, Any]) -> DelegateRemoteOut:
         """Settle the child Run, then report what the delegate answered.
 
@@ -335,32 +441,11 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         delegation instead of terminating it; only a recognized terminal
         state, or a malformed one failing loudly, writes canonical truth.
         """
-        pause = resumed.get("_pause")
-        run_id = ""
-        pause_metadata: Mapping[str, Any] = {}
-        if isinstance(pause, Mapping):
-            # Durable answer submission stamps the complete server-authored
-            # pause entry, whose node metadata carries the child identity.
-            # Keep accepting the flat shape used by older callers/tests, but
-            # never source the identity from the answer's top-level fields.
-            stamped = pause.get("metadata")
-            if isinstance(stamped, Mapping):
-                pause_metadata = stamped
-            run_id = str(pause_metadata.get("run_id") or "")
-            if not run_id:
-                run_id = str(pause.get("run_id") or "")
+        run_id, pause_metadata = self._resume_pause_identity(resumed)
         raw_status = str(resumed.get("status", "completed"))
         task_id = str(resumed.get("task_id") or "")
-        child = None
-        if self._run_store is not None and run_id:
-            child = await self._run_store.get_run(run_id)
-        decision = decide_settlement(
-            raw_status,
-            CanonicalDelegationTruth(
-                status=str(child.status.value) if child is not None else "",
-                terminal=child is not None and child.status in TERMINAL_RUN_STATUSES,
-            ),
-        )
+        child = await self._child_run(run_id)
+        decision = decide_settlement(raw_status, self._canonical_truth(child))
         if not decision.applies:
             if decision.progress:
                 return await self._pause_on_progress(
@@ -371,52 +456,10 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                     run_id=run_id,
                     pause_metadata=pause_metadata,
                 )
-            # The child Run is already terminal: the remote answer arrived too
-            # late (or answers work that was cancelled locally). Nothing is
-            # written -- a terminal Run has no outgoing transitions -- and the
-            # parent is told the delegation failed *with the canonical truth
-            # named*, never the remote's self-reported outcome. Letting a
-            # remote `completed` ride through here would advance the parent
-            # onto work the canonical record holds cancelled or finished.
-            error = decision.reason
-            if (
-                child is not None
-                and child.status is RunStatus.CANCELLED
-                and decision.normalized is RemoteLifecycleState.COMPLETED
-            ):
-                # The #960 truth composition: the child was cancelled locally,
-                # and the remote -- which never acknowledged the cancellation
-                # -- now reports completion. Quote the cancellation projection
-                # so the parent's evidence records both halves: the remote
-                # observation, and why it is not authority.
-                projection = decide_cancellation(remote_acknowledged=False)
-                assert projection.canonical_status == RunStatus.CANCELLED.value
-                error = f"{decision.reason}; {projection.reason}"
-            return DelegateRemoteOut(
-                status="failed",
-                task_id=task_id,
-                run_id=run_id,
-                error=error,
-            )
-        assert decision.outcome_status is not None
-        renamed = decision.outcome_status != raw_status.strip().lower()
-        out = DelegateRemoteOut(
-            status=cast(DelegationStatus, decision.outcome_status),
-            task_id=task_id,
-            run_id=run_id,
-            result=resumed.get("result"),
-            # An answer that said what it meant keeps its own error; a status
-            # the normalizer renamed or refused (remote cancellation, an
-            # unmapped value) carries the reason it was renamed, so the
-            # settlement record says what actually happened.
-            error=resumed.get("error") or (decision.reason if renamed else None),
-            timed_out=(
-                bool(resumed.get("timed_out", False))
-                or decision.normalized is RemoteLifecycleState.TIMED_OUT
-            ),
+            return await self._late_answer_failure(decision, child, task_id=task_id, run_id=run_id)
+        return await self._settled_output(
+            resumed, decision, raw_status=raw_status, task_id=task_id, run_id=run_id
         )
-        await self._record_child_outcome(run_id, out)
-        return out
 
     async def _pause_on_progress(
         self,
@@ -456,7 +499,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if now >= deadline:
             message = (
                 "delegation did not reach a terminal answer before its timeout; last remote "
-                f"state {decision.normalized.value!r}"
+                f"state {raw_status.strip().lower()!r}"
             )
             out = DelegateRemoteOut(
                 status="timed_out",

@@ -17,8 +17,8 @@ import pytest
 
 from maistro.a2a.normalize import (
     PROGRESS_HISTORY_LIMIT,
-    RemoteLifecycleState,
     RemoteRetryDecision,
+    RemoteState,
     decide_cancellation,
     decide_retry,
     decide_settlement,
@@ -35,7 +35,7 @@ _TERMINAL = Truth(status="cancelled", terminal=True)
 
 
 # --------------------------------------------------------------------------
-# normalize_remote_state — the closed projection vocabulary
+# normalize_remote_state — the projection onto the delegation's own ladder
 # --------------------------------------------------------------------------
 
 
@@ -43,30 +43,30 @@ _TERMINAL = Truth(status="cancelled", terminal=True)
     ("raw", "expected"),
     [
         # The A2A task states themselves.
-        ("submitted", RemoteLifecycleState.SUBMITTED),
-        ("working", RemoteLifecycleState.WORKING),
-        ("input-required", RemoteLifecycleState.AWAITING_INPUT),
-        ("completed", RemoteLifecycleState.COMPLETED),
-        ("failed", RemoteLifecycleState.FAILED),
-        ("canceled", RemoteLifecycleState.CANCELLED),
-        ("rejected", RemoteLifecycleState.REJECTED),
-        ("unknown", RemoteLifecycleState.UNKNOWN),
+        ("submitted", RemoteState(progress=True)),
+        ("working", RemoteState(progress=True)),
+        ("input-required", RemoteState(progress=True)),
+        ("completed", RemoteState(outcome="completed")),
+        ("failed", RemoteState(outcome="failed")),
+        ("canceled", RemoteState(outcome="failed", cancelled=True)),
+        ("rejected", RemoteState(outcome="rejected")),
+        ("unknown", RemoteState()),
         # Common protocol synonyms.
-        ("Completed", RemoteLifecycleState.COMPLETED),
-        ("  completed  ", RemoteLifecycleState.COMPLETED),
-        ("succeeded", RemoteLifecycleState.COMPLETED),
-        ("in-progress", RemoteLifecycleState.WORKING),
-        ("input_required", RemoteLifecycleState.AWAITING_INPUT),
-        ("timed-out", RemoteLifecycleState.TIMED_OUT),
-        ("cancelled", RemoteLifecycleState.CANCELLED),
-        ("aborted", RemoteLifecycleState.CANCELLED),
-        ("declined", RemoteLifecycleState.REJECTED),
+        ("Completed", RemoteState(outcome="completed")),
+        ("  completed  ", RemoteState(outcome="completed")),
+        ("succeeded", RemoteState(outcome="completed")),
+        ("in-progress", RemoteState(progress=True)),
+        ("input_required", RemoteState(progress=True)),
+        ("timed-out", RemoteState(outcome="timed_out")),
+        ("cancelled", RemoteState(outcome="failed", cancelled=True)),
+        ("aborted", RemoteState(outcome="failed", cancelled=True)),
+        ("declined", RemoteState(outcome="rejected")),
     ],
 )
 def test_protocol_states_normalize_onto_the_closed_vocabulary(
-    raw: str, expected: RemoteLifecycleState
+    raw: str, expected: RemoteState
 ) -> None:
-    assert normalize_remote_state(raw) is expected
+    assert normalize_remote_state(raw) == expected
 
 
 @pytest.mark.parametrize(
@@ -84,17 +84,21 @@ def test_protocol_states_normalize_onto_the_closed_vocabulary(
     ],
 )
 def test_unmapped_values_are_unknown_never_completed(raw: str) -> None:
-    assert normalize_remote_state(raw) is RemoteLifecycleState.UNKNOWN
+    projection = normalize_remote_state(raw)
+    assert projection.is_unknown
+    assert projection.outcome is None
 
 
 def test_the_vocabulary_is_projection_not_authority() -> None:
     """Protocol-specific states are observable (raw string retained by the
-    caller) while every one of them normalizes onto the same closed set — no
-    state smuggles a canonical authority of its own."""
+    caller) while every one of them projects onto the delegation's own
+    classified outcome ladder plus orthogonal facts — no state smuggles a
+    canonical authority of its own."""
     for raw in ("working", "WORKING", "In-Progress"):
         normalized = normalize_remote_state(raw)
-        assert isinstance(normalized, RemoteLifecycleState)
-        assert normalized.value in {member.value for member in RemoteLifecycleState}
+        assert isinstance(normalized, RemoteState)
+        assert normalized.describe() == "progress"
+        assert normalized.outcome is None
 
 
 # --------------------------------------------------------------------------
@@ -103,15 +107,13 @@ def test_the_vocabulary_is_projection_not_authority() -> None:
 
 
 def test_only_terminal_states_settle() -> None:
-    assert settle_outcome(RemoteLifecycleState.COMPLETED) == "completed"
-    assert settle_outcome(RemoteLifecycleState.FAILED) == "failed"
-    assert settle_outcome(RemoteLifecycleState.CANCELLED) == "failed"
-    assert settle_outcome(RemoteLifecycleState.REJECTED) == "rejected"
-    assert settle_outcome(RemoteLifecycleState.TIMED_OUT) == "timed_out"
-    assert settle_outcome(RemoteLifecycleState.SUBMITTED) is None
-    assert settle_outcome(RemoteLifecycleState.WORKING) is None
-    assert settle_outcome(RemoteLifecycleState.AWAITING_INPUT) is None
-    assert settle_outcome(RemoteLifecycleState.UNKNOWN) is None
+    assert settle_outcome(RemoteState(outcome="completed")) == "completed"
+    assert settle_outcome(RemoteState(outcome="failed")) == "failed"
+    assert settle_outcome(RemoteState(outcome="failed", cancelled=True)) == "failed"
+    assert settle_outcome(RemoteState(outcome="rejected")) == "rejected"
+    assert settle_outcome(RemoteState(outcome="timed_out")) == "timed_out"
+    assert settle_outcome(RemoteState(progress=True)) is None
+    assert settle_outcome(RemoteState()) is None
 
 
 def test_remote_completed_settles_an_open_child() -> None:
@@ -275,7 +277,8 @@ def test_first_progress_record_has_sequence_one_and_is_not_a_duplicate() -> None
     )
     assert observation.sequence == 1
     assert observation.duplicate is False
-    assert observation.normalized is RemoteLifecycleState.WORKING
+    assert observation.normalized.describe() == "progress"
+    assert observation.raw_state == "working"
     assert len(history) == 1
     assert history[0]["raw_state"] == "working"
 

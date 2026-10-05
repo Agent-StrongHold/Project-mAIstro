@@ -9,8 +9,9 @@ by the canonical settle path** (`maistro.runs`), never by a remote peer. A
 remote protocol state is an *observation*. This module decides, from the raw
 state string a peer reported and the canonical child Run's current facts:
 
-- what the observation *means* (:func:`normalize_remote_state` — a closed
-  projection vocabulary, with unknown values never guessed into completion);
+- what the observation *means* (:func:`normalize_remote_state` — decomposed
+  onto the delegation's own classified outcome ladder plus two orthogonal
+  facts, with unknown values never guessed into completion);
 - whether it may *settle* the delegation (:func:`decide_settlement` — a
   terminal answer for an already-terminal child is refused, so a remote
   ``completed`` can never override canonical Run terminal truth);
@@ -37,16 +38,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from maistro.graph.nodes.agent_delegate_remote import DelegationStatus
 
 __all__ = [
     "PROGRESS_HISTORY_KEY",
     "PROGRESS_HISTORY_LIMIT",
     "CancellationProjection",
     "CanonicalDelegationTruth",
-    "RemoteLifecycleState",
     "RemoteProgressObservation",
     "RemoteRetryDecision",
+    "RemoteState",
     "RetryDecision",
     "SettlementDecision",
     "decide_cancellation",
@@ -58,152 +62,157 @@ __all__ = [
 ]
 
 
-class RemoteLifecycleState(StrEnum):
-    """The closed projection vocabulary for a remote task's lifecycle.
+@dataclass(frozen=True)
+class RemoteState:
+    """The projection of one raw remote protocol state, decomposed.
 
-    Eight-plus-one states, not one-per-protocol: every external state an
-    Agent protocol can report normalizes onto one of these, and everything
-    else — including an unrecognized string — is :attr:`UNKNOWN`. A2A's
-    `rejected` task state is its own member because it settles the child Run
-    differently from a mid-flight cancellation (declined work never ran).
-    Protocol-specific states stay observable through the raw string that
-    mapped here; they are projections of a remote lifecycle, never canonical
-    authorities.
+    Deliberately *not* a second state ladder: a remote observation is judged
+    onto the delegation's own outcome vocabulary — the ``DelegationStatus``
+    Literal of ``agent.delegate_remote``, already classified in
+    ``quality/execution-lifecycles.json`` — plus two orthogonal facts:
+
+    ``outcome``
+        the recognized terminal outcome (``completed``, ``failed``,
+        ``rejected``, ``timed_out``), or ``None`` when the raw state is not
+        one. A remote cancellation projects onto ``failed`` (the work did
+        not complete) with :attr:`cancelled` naming the difference;
+    ``progress``
+        the raw state is a recognized in-flight report (submitted, working,
+        awaiting input) — the delegation stays open;
+    ``cancelled``
+        the remote work was cancelled or revoked: a different fact from a
+        failure (declined-by-peer and cancelled-elsewhere own their retry
+        decisions and their reasons).
+
+    An unmapped raw value is unknown by construction: ``outcome`` is
+    ``None`` and ``progress`` is ``False`` — never proximity-matched into a
+    completion, because guessing a remote "almost completed" into a
+    completion is exactly the false-completion failure this module exists to
+    prevent. Protocol-specific states stay observable through the raw string
+    that mapped here; they are projections of a remote lifecycle, never
+    canonical authorities.
     """
 
-    SUBMITTED = "submitted"
-    WORKING = "working"
-    AWAITING_INPUT = "awaiting_input"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    REJECTED = "rejected"
-    TIMED_OUT = "timed_out"
-    UNKNOWN = "unknown"
+    outcome: DelegationStatus | None = None
+    progress: bool = False
+    cancelled: bool = False
 
     @property
     def settles(self) -> bool:
-        """Whether this state is a terminal outcome the child Run may take."""
-        return self in _TERMINAL_STATES
+        """Whether this observation is a terminal outcome the child Run may take."""
+        return self.outcome is not None
 
     @property
     def is_progress(self) -> bool:
-        """Whether this state reports in-flight progress, not an outcome."""
-        return self in _PROGRESS_STATES
+        """Whether this observation reports in-flight progress, not an outcome."""
+        return self.progress
+
+    @property
+    def is_unknown(self) -> bool:
+        """Whether the raw state was not recognized at all."""
+        return self.outcome is None and not self.progress
+
+    def describe(self) -> str:
+        """A stable word for this projection, for reasons and durable metadata."""
+        if self.cancelled:
+            return "cancelled"
+        if self.outcome is not None:
+            return self.outcome
+        return "progress" if self.progress else "unknown"
+
+
+#: The shared projection values the protocol table maps onto.
+_PROGRESS = RemoteState(progress=True)
+_UNKNOWN = RemoteState()
 
 
 #: The A2A task states (`submitted`, `working`, `input-required`, `completed`,
 #: `failed`, `canceled`, `unknown`) plus the near-universal synonyms other
 #: agent protocols use. Lowercase; :func:`normalize_remote_state` normalizes
-#: before lookup. A state absent from this table is `UNKNOWN` by construction:
+#: before lookup. A state absent from this table is unknown by construction:
 #: an unmapped value is never proximity-matched, because guessing a remote
 #: "almost completed" into a completion is exactly the false-completion
 #: failure this module exists to prevent.
-_PROTOCOL_STATES: dict[str, RemoteLifecycleState] = {
+_PROTOCOL_STATES: dict[str, RemoteState] = {
     # accepted / not yet running
-    "submitted": RemoteLifecycleState.SUBMITTED,
-    "queued": RemoteLifecycleState.SUBMITTED,
-    "accepted": RemoteLifecycleState.SUBMITTED,
-    "scheduled": RemoteLifecycleState.SUBMITTED,
-    "pending": RemoteLifecycleState.SUBMITTED,
+    "submitted": _PROGRESS,
+    "queued": _PROGRESS,
+    "accepted": _PROGRESS,
+    "scheduled": _PROGRESS,
+    "pending": _PROGRESS,
     # in flight
-    "working": RemoteLifecycleState.WORKING,
-    "running": RemoteLifecycleState.WORKING,
-    "in_progress": RemoteLifecycleState.WORKING,
-    "in-progress": RemoteLifecycleState.WORKING,
-    "progress": RemoteLifecycleState.WORKING,
-    "started": RemoteLifecycleState.WORKING,
+    "working": _PROGRESS,
+    "running": _PROGRESS,
+    "in_progress": _PROGRESS,
+    "in-progress": _PROGRESS,
+    "progress": _PROGRESS,
+    "started": _PROGRESS,
     # the peer needs something before it can continue
-    "input-required": RemoteLifecycleState.AWAITING_INPUT,
-    "input_required": RemoteLifecycleState.AWAITING_INPUT,
-    "awaiting-input": RemoteLifecycleState.AWAITING_INPUT,
-    "awaiting_input": RemoteLifecycleState.AWAITING_INPUT,
-    "waiting-for-input": RemoteLifecycleState.AWAITING_INPUT,
-    "waiting_for_input": RemoteLifecycleState.AWAITING_INPUT,
+    "input-required": _PROGRESS,
+    "input_required": _PROGRESS,
+    "awaiting-input": _PROGRESS,
+    "awaiting_input": _PROGRESS,
+    "waiting-for-input": _PROGRESS,
+    "waiting_for_input": _PROGRESS,
     # terminal success
-    "completed": RemoteLifecycleState.COMPLETED,
-    "complete": RemoteLifecycleState.COMPLETED,
-    "success": RemoteLifecycleState.COMPLETED,
-    "succeeded": RemoteLifecycleState.COMPLETED,
-    "finished": RemoteLifecycleState.COMPLETED,
-    "done": RemoteLifecycleState.COMPLETED,
+    "completed": RemoteState(outcome="completed"),
+    "complete": RemoteState(outcome="completed"),
+    "success": RemoteState(outcome="completed"),
+    "succeeded": RemoteState(outcome="completed"),
+    "finished": RemoteState(outcome="completed"),
+    "done": RemoteState(outcome="completed"),
     # terminal failure
-    "failed": RemoteLifecycleState.FAILED,
-    "failure": RemoteLifecycleState.FAILED,
-    "error": RemoteLifecycleState.FAILED,
-    "errored": RemoteLifecycleState.FAILED,
-    # cancelled elsewhere
-    "canceled": RemoteLifecycleState.CANCELLED,
-    "cancelled": RemoteLifecycleState.CANCELLED,
-    "aborted": RemoteLifecycleState.CANCELLED,
-    "revoked": RemoteLifecycleState.CANCELLED,
+    "failed": RemoteState(outcome="failed"),
+    "failure": RemoteState(outcome="failed"),
+    "error": RemoteState(outcome="failed"),
+    "errored": RemoteState(outcome="failed"),
+    # cancelled elsewhere: settles failed (the work did not complete), but
+    # keeps its own fact so the reason and the retry decision can say so
+    "canceled": RemoteState(outcome="failed", cancelled=True),
+    "cancelled": RemoteState(outcome="failed", cancelled=True),
+    "aborted": RemoteState(outcome="failed", cancelled=True),
+    "revoked": RemoteState(outcome="failed", cancelled=True),
     # the peer declined the work (A2A `rejected`): declined work never ran
-    "rejected": RemoteLifecycleState.REJECTED,
-    "declined": RemoteLifecycleState.REJECTED,
-    "refused": RemoteLifecycleState.REJECTED,
+    "rejected": RemoteState(outcome="rejected"),
+    "declined": RemoteState(outcome="rejected"),
+    "refused": RemoteState(outcome="rejected"),
     # the peer gave up on its own deadline
-    "timed_out": RemoteLifecycleState.TIMED_OUT,
-    "timed-out": RemoteLifecycleState.TIMED_OUT,
-    "timeout": RemoteLifecycleState.TIMED_OUT,
-    "expired": RemoteLifecycleState.TIMED_OUT,
+    "timed_out": RemoteState(outcome="timed_out"),
+    "timed-out": RemoteState(outcome="timed_out"),
+    "timeout": RemoteState(outcome="timed_out"),
+    "expired": RemoteState(outcome="timed_out"),
     # the protocol itself says it cannot say
-    "unknown": RemoteLifecycleState.UNKNOWN,
-    "indeterminate": RemoteLifecycleState.UNKNOWN,
-    "unspecified": RemoteLifecycleState.UNKNOWN,
+    "unknown": _UNKNOWN,
+    "indeterminate": _UNKNOWN,
+    "unspecified": _UNKNOWN,
 }
 
-_TERMINAL_STATES = frozenset(
-    {
-        RemoteLifecycleState.COMPLETED,
-        RemoteLifecycleState.FAILED,
-        RemoteLifecycleState.CANCELLED,
-        RemoteLifecycleState.REJECTED,
-        RemoteLifecycleState.TIMED_OUT,
-    }
-)
 
-_PROGRESS_STATES = frozenset(
-    {
-        RemoteLifecycleState.SUBMITTED,
-        RemoteLifecycleState.WORKING,
-        RemoteLifecycleState.AWAITING_INPUT,
-    }
-)
-
-
-def normalize_remote_state(raw: str) -> RemoteLifecycleState:
-    """Map one raw protocol state string onto the projection vocabulary.
+def normalize_remote_state(raw: str) -> RemoteState:
+    """Map one raw protocol state string onto its canonical projection.
 
     Whitespace and case are normalized (peers report ``"Completed"``,
-    ``" input-required "``); anything outside the table is
-    :attr:`RemoteLifecycleState.UNKNOWN` — ambiguous by definition, never
+    ``" input-required "``); anything outside the table is unknown
+    (``RemoteState().is_unknown``) — ambiguous by definition, never
     interpreted as a completion.
     """
-    return _PROTOCOL_STATES.get(raw.strip().lower().replace(" ", "-"), RemoteLifecycleState.UNKNOWN)
+    return _PROTOCOL_STATES.get(raw.strip().lower().replace(" ", "-"), _UNKNOWN)
 
 
-def settle_outcome(state: RemoteLifecycleState) -> str | None:
-    """The delegation outcome a normalized state settles the child Run with.
+def settle_outcome(state: RemoteState) -> str | None:
+    """The delegation outcome a normalized projection settles the child Run with.
 
     Returns the shared settlement-contract value used by
     ``agent.delegate_remote``'s output schema (``completed``, ``failed``,
-    ``rejected``, ``timed_out``), or ``None`` when the state must not settle
-    anything. A remote-reported cancellation settles *failed*, not completed:
-    the delegated work did not produce a result, and the reason carried
-    alongside says it was cancelled. A peer-reported rejection settles
-    ``rejected``, which the canonical settle path records as a cancelled
-    child — work the peer declined never ran, which is a different fact from
-    work that started and went wrong.
+    ``rejected``, ``timed_out``), or ``None`` when the observation must not
+    settle anything. A remote-reported cancellation settles *failed*, not
+    completed: the delegated work did not produce a result, and the reason
+    carried alongside says it was cancelled. A peer-reported rejection
+    settles ``rejected``, which the canonical settle path records as a
+    cancelled child — work the peer declined never ran, which is a different
+    fact from work that started and went wrong.
     """
-    if state is RemoteLifecycleState.COMPLETED:
-        return "completed"
-    if state is RemoteLifecycleState.TIMED_OUT:
-        return "timed_out"
-    if state is RemoteLifecycleState.REJECTED:
-        return "rejected"
-    if state in (RemoteLifecycleState.FAILED, RemoteLifecycleState.CANCELLED):
-        return "failed"
-    return None
+    return state.outcome
 
 
 @dataclass(frozen=True)
@@ -231,7 +240,7 @@ class SettlementDecision:
     say why in terms a parent Run's evidence can quote.
     """
 
-    normalized: RemoteLifecycleState
+    normalized: RemoteState
     outcome_status: str | None
     applies: bool
     reason: str
@@ -270,13 +279,13 @@ def decide_settlement(raw_state: str, canonical: CanonicalDelegationTruth) -> Se
         )
     outcome = settle_outcome(normalized)
     if outcome is not None:
-        if normalized is RemoteLifecycleState.CANCELLED:
+        if normalized.cancelled:
             reason = (
                 f"remote reports the delegated work was cancelled ({raw_state.strip().lower()!r}); "
                 "settling failed — the work did not complete"
             )
         else:
-            reason = f"remote reports the delegated work {normalized.value}"
+            reason = f"remote reports the delegated work {normalized.describe()}"
         return SettlementDecision(
             normalized=normalized, outcome_status=outcome, applies=True, reason=reason
         )
@@ -287,10 +296,11 @@ def decide_settlement(raw_state: str, canonical: CanonicalDelegationTruth) -> Se
             applies=False,
             progress=True,
             reason=(
-                f"remote reports progress ({normalized.value!r}), not a terminal outcome; "
-                "the delegation stays open"
+                f"remote reports progress ({raw_state.strip().lower()!r}), not a terminal "
+                "outcome; the delegation stays open"
             ),
         )
+    assert normalized.is_unknown, f"unrecognized projection: {normalized!r}"
     return SettlementDecision(
         normalized=normalized,
         outcome_status="failed",
@@ -349,11 +359,11 @@ def decide_retry(raw_state: str, *, boundary_crossed: bool) -> RetryDecision:
     """
     normalized = normalize_remote_state(raw_state)
     if normalized.settles:
-        if normalized in (RemoteLifecycleState.FAILED, RemoteLifecycleState.TIMED_OUT):
+        if normalized.outcome in ("failed", "timed_out") and not normalized.cancelled:
             return RetryDecision(
                 decision=RemoteRetryDecision.EFFECT_KEY_GOVERNED,
                 reason=(
-                    f"remote state '{normalized.value}' is an explicit post-acceptance "
+                    f"remote state '{normalized.describe()}' is an explicit post-acceptance "
                     "outcome; any further work must be admitted through the canonical "
                     "effect-key reservation, never as a fresh transport submission"
                 ),
@@ -361,7 +371,7 @@ def decide_retry(raw_state: str, *, boundary_crossed: bool) -> RetryDecision:
         return RetryDecision(
             decision=RemoteRetryDecision.FORBIDDEN,
             reason=(
-                f"remote state '{normalized.value}' owns the retry decision "
+                f"remote state '{normalized.describe()}' owns the retry decision "
                 "(the work completed, was cancelled, or was declined); re-dispatching it "
                 "would duplicate or resurrect work that already reached a terminal outcome"
             ),
@@ -375,7 +385,7 @@ def decide_retry(raw_state: str, *, boundary_crossed: bool) -> RetryDecision:
         return RetryDecision(
             decision=RemoteRetryDecision.RECONCILE_ONLY,
             reason=(
-                f"remote state '{normalized.value}' reports work in flight ({boundary}); "
+                f"remote state '{normalized.describe()}' reports work in flight ({boundary}); "
                 "poll the existing reservation's receipt instead of submitting again"
             ),
         )
@@ -450,7 +460,7 @@ class RemoteProgressObservation:
     """
 
     raw_state: str
-    normalized: RemoteLifecycleState
+    normalized: RemoteState
     receipt: str
     detail: str
     observed_at: datetime
@@ -461,7 +471,7 @@ class RemoteProgressObservation:
         """The durable form stored in pause metadata (and only there)."""
         return {
             "raw_state": self.raw_state,
-            "normalized": self.normalized.value,
+            "normalized": self.normalized.describe(),
             "receipt": self.receipt,
             "detail": self.detail,
             "observed_at": self.observed_at.isoformat(),

@@ -36,10 +36,6 @@
       "rationale": "Delegation's own queued/assigned/running/completed/failed ladder, driven by a worker pool. #47 makes delegation create child Runs with durable parent correlation.",
       "converged_by": "#47"
     },
-    "maistro.a2a.normalize::RemoteLifecycleState": {
-      "classification": "PROJECTION",
-      "rationale": "M9-D3 (#960): the closed vocabulary remote Agent protocol states normalize onto. Observable by design, never an execution authority: decide_settlement consults canonical child Run truth before anything settles, so a remote state can only project, not command, the spine."
-    },
     "maistro.builders.contracts::RunStatus": {
       "classification": "CONVERGE",
       "rationale": "Builders' own RunStatus, consumed by builders.runtime and by the graph_executor that drives its own traversal. #49 moves Builders onto canonical Graph/Run.",

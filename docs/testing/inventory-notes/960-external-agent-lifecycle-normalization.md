@@ -5,7 +5,7 @@ inventory-delta:
 # 960-external-agent-lifecycle-normalization
 
 Remote Agent lifecycle normalization (M9-D3, epic #941) lands as
-`packages/maistro-core/src/maistro/maistro.a2a.normalize` — exported through
+`packages/maistro-core/src/maistro/a2a/normalize.py` — exported through
 `maistro.a2a` — and rewires the `agent.delegate_remote` resume path so a
 remote protocol status never settles a child Run on its own word.
 
@@ -13,12 +13,14 @@ remote protocol status never settles a child Run on its own word.
 parametrized matrix) per rule, each naming the #960 acceptance criterion it
 pins:
 
-- *closed projection vocabulary* (9-case + 6-case matrices + 1): the A2A task
-  states and their common synonyms normalize onto the eight-plus-one member
-  set (`REJECTED` is its own member because declined work never ran, unlike a
-  mid-flight cancellation); unmapped values — including near-misses like
-  `completed-with-errors` — are `UNKNOWN`, never proximity-matched into a
-  completion.
+- *closed projection* (17-case + 6-case matrices + 1): the A2A task states
+  and their common synonyms project onto `RemoteState` — the delegation's
+  own classified outcome ladder (`DelegationStatus`: completed, failed,
+  rejected, timed_out) plus two orthogonal facts (`progress`, `cancelled`),
+  never a second state ladder of our own (`REJECTED` keeps its own outcome
+  because declined work never ran, unlike a mid-flight cancellation);
+  unmapped values — including near-misses like `completed-with-errors` —
+  are unknown, never proximity-matched into a completion.
 - *settlement decisions* (10): only recognized terminal states settle; a
   remote `completed` for an already-terminal child is refused with the
   canonical status named (the core "remote `completed` cannot override
@@ -66,16 +68,43 @@ a `timed-out` synonym setting the `timed_out` flag; and a late duplicate
 answer for a completed child refused with the original result intact.
 
 Fail-before evidence: muting `decide_settlement`'s canonical-terminal branch
-makes `test_remote_completed_cannot_override_canonical_terminal_truth` and the
-node-level late-answer refusal fail (the remote outcome would ride through);
-reverting the progress re-park makes every progress test settle the child
-falsely instead of parking. Both mutations were reverted before commit.
+makes `test_remote_completed_cannot_override_canonical_terminal_truth` and
+`test_a_late_answer_for_a_completed_child_is_refused_not_settled` fail (the
+remote outcome would ride through); reverting the progress re-park makes every
+progress test settle the child falsely instead of parking. Both mutations were
+applied and reverted on this head (2026-10-06); the canonical-terminal
+mutation was re-run after the RemoteState repair and failed exactly those two
+tests before being reverted again.
 
-Validation on this head: `pytest packages/maistro-core/tests` 12907 passed /
-940 skipped (665 in `tests/a2a` + `tests/graph/nodes`); the CI-exact mypy
-invocation over all six package src trees is clean; `ruff check`/`format
---check` clean tree-wide; `check-reachability.py` unchanged (1288 modules /
-170 unreachable); the CI-exact vulture scan produces zero new identities
-(a pre-existing stale ledger row for
-`capabilities/invocation.py::observed_at` fails identically on the pristine
-base c560d4cca and is left for the ledger lane).
+Validation on this head (895657fb + the normalization repair below):
+`pytest packages/maistro-core/tests` 12909 passed / 938 skipped / 1 xfailed
+(a2a + graph/nodes slices: 269 passed); the CI-exact `mypy --strict
+packages/maistro-core/src` is clean (after `uv sync --locked --all-extras`,
+matching CI's install); `ruff check`/`format --check` clean tree-wide;
+`check-reachability.py` unchanged (1288 modules / 170 unreachable);
+`check-suite-inventory.py` ok (15 suites match the recorded inventory).
+
+Per-identity gates over the files this change touches, run with CI's exact
+arguments:
+
+- `uv run python scripts/check-execution-lifecycles.py` — OK: 19 work-state
+  vocabularies, all classified. The draft's original `RemoteLifecycleState`
+  StrEnum was a NEW work-state vocabulary with no already-landed grant at the
+  merge base (the two-merge rule bars the candidate from authorizing its own
+  addition), so the projection was rewritten to decompose onto the
+  already-classified `agent_delegate_remote::DelegationStatus` ladder plus
+  orthogonal `progress`/`cancelled` facts; the candidate
+  `quality/execution-lifecycles.json` row for the removed identity was pruned
+  with it.
+- `uv run python scripts/check-radon-baseline.py` — OK: 138 C-or-worse
+  blocks, 0 new/regressed/stale. `_resume` was refactored from D(21) into
+  `_resume_pause_identity` / `_child_run` + `_canonical_truth` /
+  `_late_answer_failure` / `_settled_output`, each below the baseline
+  threshold, so no complexity grant is needed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — OK: 1341 findings, all
+  banked, 0 new. The one stale ledger row
+  (`capabilities/invocation.py::unused variable 'observed_at'`) is debt this
+  branch's own code eliminated (the scan-wide name is now used by
+  `normalize.py`'s progress observation), so the row was pruned from
+  `quality/vulture-baseline.json`; the scan introduces no new identities.
