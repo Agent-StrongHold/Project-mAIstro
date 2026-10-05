@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +55
+  packages/maistro-core/tests: +56
 ---
 # Conditional chat admission compensation (#338)
 
@@ -24,9 +24,10 @@ Partial salvage of #1367 on develop `31d891a561dffd6db1312ea4a85c4835c8048440`.
 
 ## Tests
 
-The existing container suite gains five nodes: QUEUED/RUNNING post-commit
+The existing container suite gains six nodes: QUEUED/RUNNING post-commit
 response failure, each with Exception/CancelledError, and the final
-read-to-cancel NodeRun race. Two RUNNING cases and the race failed against the
+read-to-cancel NodeRun race, plus no retention sweep when compensation loses
+that race. Two RUNNING cases and the race failed against the
 unchanged baseline; the QUEUED cases were existing-behavior controls.
 
 The conformance suite gains 50 nodes: three admission states, idempotent
@@ -61,7 +62,7 @@ activation stays with #232/#1621.
 
 ## Execution evidence
 
-Focused container and new conformance suite: 85 passed, 12 skipped (no local
+Focused container and new conformance suite: 86 passed, 12 skipped (no local
 PostgreSQL server or MAISTRO_TEST_PG_DSN). Existing server chat gate suite:
 37 passed; complete server suite: 493 passed, 9 skipped. Exact repository
 package-set mypy: 797 source files clean. Independent review reproduced the
@@ -75,3 +76,12 @@ to use its configured proxy. No repository dependency or lockfile was changed.
 These are source/fault-injection and SQLite transaction/reopen tests, not
 process-kill or PostgreSQL execution evidence. Full-suite, independent review
 and exact-head CI results are recorded in the PR when available.
+
+### CI coverage follow-up
+
+The first PR check measured Container's changed branch arcs at 75%, below the
+unchanged 80% floor: the compare-and-cancel loser path had no direct
+in-request test. Added a real NodeRun-wins interleaving that proves failed
+compensation does not invoke retention housekeeping. No production code or
+gate setting changed. The published first head's PostgreSQL coverage job
+executed all 50 conformance cases successfully, including all 12 PG legs.

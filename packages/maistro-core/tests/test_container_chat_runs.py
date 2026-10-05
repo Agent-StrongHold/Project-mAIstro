@@ -561,6 +561,41 @@ async def test_node_creation_winning_the_final_recovery_race_is_not_cancelled() 
     assert node.status is RunStatus.CREATED
 
 
+async def test_lost_admission_compensation_race_does_not_sweep_live_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected compare-and-cancel must not trigger retention housekeeping."""
+    container = await _container()
+    run = await _stranded_running_chat_run(container)
+    node_id = run.graph.materialize().nodes[0].node_id
+    sweeps: list[bool] = []
+
+    async def _sweep():
+        sweeps.append(True)
+
+    monkeypatch.setattr(container, "_sweep_chat_runs", _sweep)
+
+    class _NodeWins:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def cancel_unstarted_chat_run(self, expected, *, error):
+            await self._inner.create_node_run(expected.run_id, node_id=node_id)
+            return await self._inner.cancel_unstarted_chat_run(expected, error=error)
+
+    container.run_store = _NodeWins(container.run_store)  # type: ignore[assignment]
+    await container._cancel_incomplete_admission(run, admission_failed=True)
+
+    assert sweeps == []
+    current = await container.run_store.get_run(run.run_id)
+    assert current is not None and current.status is RunStatus.RUNNING
+    (node,) = await container.run_store.list_node_runs(run.run_id)
+    assert node.status is RunStatus.CREATED
+
+
 @pytest.mark.ac("ADR-082826-08f0/AC-6")
 async def test_repeated_compensation_is_idempotent_and_respects_settled_runs() -> None:
     """Compensating twice, or after the Run settled, changes nothing."""
