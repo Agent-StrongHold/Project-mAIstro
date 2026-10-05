@@ -124,7 +124,6 @@
         "packages/maistro-core/src/maistro/agents/work_items.py::unused variable 'suggestion_reason'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'BINDING'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'CREDENTIAL'",
-        "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'POLICY'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'SUSPENDED'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'denied_permissions'",
         "packages/maistro-core/src/maistro/auth/resources.py::unused variable 'effective_permissions'",

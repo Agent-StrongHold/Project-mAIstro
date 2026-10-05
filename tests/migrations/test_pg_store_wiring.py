@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.types.config import AgentConfig
 from maistro.types.errors import ConfigError
 from maistro.types.memory import Learning, Outcome
@@ -485,7 +486,7 @@ class TestTheDurableStoreMatchesTheInMemoryOne:
     async def test_the_experience_narrative_is_byte_identical(self, container) -> None:
         from maistro.memory.outcomes import InMemoryOutcomeStore
 
-        reference = InMemoryOutcomeStore()
+        reference = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         rows = [
             Outcome(
                 request_id="f1",
