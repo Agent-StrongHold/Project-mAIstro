@@ -17,8 +17,8 @@ columns`): they are the transition's actor and instant, shared with the
 Gauntlet's audit trail, so this revision adds only what is exclusively the
 Gauntlet's — the evaluator build, the evaluation Runs, the frozen content.
 
-Revision ID: 054
-Revises: 053
+Revision ID: 057
+Revises: 056
 Create Date: 2026-10-01
 
 Renumbered four times during develop integrations. First 048 -> 051: while
@@ -33,11 +33,16 @@ same 050, after #780's `049_design_artifact_versions` claimed 049 and pushed
 "050" — two heads again. This revision followed the merged chain tip 051.
 Then 052 -> 053: the M4-B1 integration (ADR-103 knowledge-stage ladder) took
 "052" on the same parent 051; this revision re-parented onto that ladder tip,
-keeping exactly one linear head 053. Now 053 -> 054: develop's M4-B5
+keeping exactly one linear head 053. Then 053 -> 054: develop's M4-B5
 (#1753, ADR-100126-8c2d) landed `053_learning_lifecycle_columns` on the same
-052 parent, so this revision re-parents onto that lifecycle tip as `054`,
-keeping exactly one linear head. A string-suffixed id like
-`054_learning_validation_provenance` remains rejected: it exceeds alembic's
+052 parent, so this revision re-parented onto that lifecycle tip. Now
+054 -> 057 in one step: develop went on to claim `054`
+(`054_learning_applicability_epistemics`, M4-B3), `055`
+(`055_task_admission_generations`), `043_invocation_quota_door` on 055, and
+`056` (`056_user_model_facts`) on the quota door, so this revision re-parents
+onto develop's tip `056` as `057_learning_validation_provenance`, keeping
+exactly one linear head. A string-suffixed id like
+`057_learning_validation_provenance` remains rejected: it exceeds alembic's
 32-character `alembic_version.version_num` limit (see
 041_quota_invocation_evidence).
 """
@@ -46,8 +51,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "054"
-down_revision = "053"
+revision = "057"
+down_revision = "056"
 branch_labels = None
 depends_on = None
 

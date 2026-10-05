@@ -6,16 +6,23 @@ import itertools
 import json
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
+from maistro.memory.learnings.evidence import (
+    DEFAULT_MIN_PROMOTION_CONFIDENCE,
+    merge_applicability,
+    promotion_blockers,
+)
 from maistro.memory.learnings.lifecycle import (
     InvalidStageTransition,
     StageTransition,
     plan_advance,
 )
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
-from maistro.observability.correlation import observed_provenance
+from maistro.observability.correlation import ExecutionProvenance, observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
@@ -23,6 +30,7 @@ from maistro.persistence.learning_contract import (
 from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.types.memory import (
     DEFAULT_LEARNING_CONFIDENCE,
+    EPISTEMIC_BONUS,
     EpistemicType,
     Learning,
     LearningStage,
@@ -64,26 +72,52 @@ _PG_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
-    # Gauntlet validation provenance (M4-B2): the audit trail a promoted
-    # learning carries for why it was promoted.
-    "validated_by",
-    "validated_evaluator_version",
-    "validated_at",
-    "validation_run_ids",
-    "validation_content_hash",
-    # Knowledge-stage ladder + pipeline epistemics (ADR-103,
-    # ADR-100126-8c2d).
-    "stage",
     "epistemic_type",
+    "works_when",
+    "avoid_in",
     "confidence",
+    "evidence_run_ids",
+    "evaluation_ids",
     "applicability",
     "reinforcement_count",
     "contradiction_count",
     "created_at",
     "last_confirmed_at",
+    "stage",
+    "validated_by",
+    "validated_at",
+    # The Gauntlet's audit trail beyond the ladder's own columns (M4-B2).
+    "validated_evaluator_version",
+    "validation_run_ids",
+    "validation_content_hash",
+    "promoted_by",
     "supersedes",
     "superseded_by",
-    "promoted_by",
+)
+
+#: The belt-and-braces upgrade adds these in `ensure_schema`, mirroring what
+#: the applicability/lifecycle migrations declare. `confidence` stays nullable
+#: on disk — an unmeasured row is stored as NULL — while the decode maps a
+#: pre-lifecycle NULL to the dataclass default, so a legacy row reads back as
+#: the local empirical learning at default confidence it implicitly was
+#: (never as measured, and promotion still blocks it at the floor).
+_EPISTEMIC_COLUMNS = (
+    ("epistemic_type", "TEXT NOT NULL DEFAULT 'empirical'"),
+    ("works_when", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("avoid_in", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("confidence", "DOUBLE PRECISION"),
+    ("evidence_run_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("evaluation_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("applicability", "JSONB NOT NULL DEFAULT '{}'::jsonb"),
+    ("reinforcement_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("contradiction_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_confirmed_at", "TIMESTAMPTZ"),
+    ("validated_at", "TIMESTAMPTZ"),
+    ("validated_evaluator_version", "TEXT NOT NULL DEFAULT ''"),
+    ("validation_run_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("validation_content_hash", "TEXT NOT NULL DEFAULT ''"),
+    ("supersedes", "BIGINT"),
+    ("superseded_by", "BIGINT"),
 )
 
 
@@ -130,10 +164,18 @@ def similarity_query(
 
 
 class PgLearningStore:
-    """PostgreSQL-backed learning store."""
+    """PostgreSQL-backed learning store.
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    Write authority (ADR-057): constructed without an ``exposure_mode`` the
+    store refuses every write and promotion with ``MemoryUndeclaredModeError``;
+    with ``SYSTEM_MANAGED``, agent-actor writes and promotions raise
+    ``MemoryWriteDenied``. The gate is the first statement of each mutating
+    method, so a refusal executes no SQL and leaves no partial state.
+    """
+
+    def __init__(self, pool: asyncpg.Pool, exposure_mode: MemoryExposureMode | None = None) -> None:
         self._pool = pool
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Add the `org_id` column and its index if they are missing.
@@ -149,13 +191,16 @@ class PgLearningStore:
         before `org_id` existed: idempotent, cheap, and safe to run at startup.
         Failing loudly on a missing scope column is the right direction for a
         filter whose absence is a cross-scope read — but the migration is what
-        should be relied on, not this. The Gauntlet provenance columns (M4-B2,
-        migration 048) ride along on the same idempotent pattern.
+        should be relied on, not this.
         """
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''"
             )
+            for column, column_type in _EPISTEMIC_COLUMNS:
+                await conn.execute(
+                    f"ALTER TABLE learnings ADD COLUMN IF NOT EXISTS {column} {column_type}"
+                )
             # M4-B1 (ADR-103): stage columns, same belt-and-braces upgrade
             # posture as org_id. Pre-ladder rows land on the bottom rung with
             # blank actors — the truth about rows nothing validated.
@@ -192,55 +237,6 @@ class PgLearningStore:
                 "CREATE INDEX IF NOT EXISTS idx_learning_stage_transitions_learning "
                 "ON learning_stage_transitions (learning_id, id)"
             )
-            # Lifecycle + epistemics columns (ADR-100126-8c2d, migration 053)
-            # and the Gauntlet's validation provenance (M4-B2, migration 054),
-            # applied here too for the same reason the ladder columns above
-            # are: startup may run against a database migrated before these
-            # existed, and the twin's INSERT writes them all. `validated_at`
-            # is the ladder's nullable instant (a row with none was never
-            # validated), shared with the Gauntlet's audit trail.
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "epistemic_type TEXT NOT NULL DEFAULT 'empirical'"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "confidence DOUBLE PRECISION NOT NULL DEFAULT 0.5"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "applicability JSONB NOT NULL DEFAULT '{}'::jsonb"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "reinforcement_count INTEGER NOT NULL DEFAULT 0"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "contradiction_count INTEGER NOT NULL DEFAULT 0"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS last_confirmed_at TIMESTAMPTZ"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_at TIMESTAMPTZ"
-            )
-            await conn.execute("ALTER TABLE learnings ADD COLUMN IF NOT EXISTS supersedes BIGINT")
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS superseded_by BIGINT"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "validated_evaluator_version TEXT NOT NULL DEFAULT ''"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "validation_run_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
-            )
-            await conn.execute(
-                "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS "
-                "validation_content_hash TEXT NOT NULL DEFAULT ''"
-            )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope "
                 "ON learnings (org_id, agent_id, status)"
@@ -250,20 +246,27 @@ class PgLearningStore:
                 "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
 
-    async def store(self, learning: Learning) -> int:
+    async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:
         """Store a learning, naming the execution that produced it.
 
         Resolved before the dedup read, not after: the deduplicating branch
         returns early, and a provenance read that only happens on the insert
-        path would be a second place for the rule to live (#709).
+        path would be a second place for the rule to live (#709). The resolved
+        record (not just the insert) carries it: a learning that relies on the
+        ambient `bind_execution_context` for its ids must still contribute the
+        current Run to the surviving row's evidence when it dedupes.
+
+        The write-authority gate precedes even the provenance read (ADR-057): a
+        denied agent write executes no SQL.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=learning.run_id,
             node_run_id=learning.node_run_id,
             attempt_id=learning.attempt_id,
         )
         async with self._pool.acquire() as conn:
-            dedup_id = await self._bump_dedup_hit(conn, learning)
+            dedup_id = await self._bump_dedup_hit(conn, learning, provenance)
             if dedup_id is not None:
                 return dedup_id
 
@@ -282,16 +285,18 @@ class PgLearningStore:
                     rca_category, rca_prevention,
                     success_after_use, failure_after_use,
                     run_id, node_run_id, attempt_id,
-                    validated_by, validated_evaluator_version, validated_at,
-                    validation_run_ids, validation_content_hash,
-                    stage, epistemic_type, confidence, applicability,
-                    reinforcement_count, contradiction_count,
+                    epistemic_type, works_when, avoid_in, confidence,
+                    evidence_run_ids, evaluation_ids,
+                    applicability, reinforcement_count, contradiction_count,
                     created_at, last_confirmed_at,
-                    supersedes, superseded_by, promoted_by)
+                    stage, validated_by, validated_at,
+                    validated_evaluator_version, validation_run_ids,
+                    validation_content_hash, promoted_by,
+                    supersedes, superseded_by)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                            $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
                            $23, $24, $25, $26, $27, $28, $29, $30, $31, $32,
-                           $33, $34, $35)
+                           $33, $34, $35, $36, $37, $38, $39)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -312,22 +317,26 @@ class PgLearningStore:
                 # `as_columns` owns the "blank means absent" rule for every
                 # store that writes it (#709).
                 *provenance.as_columns(),
-                learning.validated_by,
-                learning.validated_evaluator_version,
-                learning.validated_at,
-                _dump_keys(learning.validation_run_ids),
-                learning.validation_content_hash,
-                learning.stage,
                 learning.epistemic_type,
+                _dump_keys(learning.works_when),
+                _dump_keys(learning.avoid_in),
                 learning.confidence,
+                _dump_keys(learning.evidence_run_ids),
+                _dump_keys(learning.evaluation_ids),
                 json.dumps(learning.applicability),
                 learning.reinforcement_count,
                 learning.contradiction_count,
                 learning.created_at,
                 learning.last_confirmed_at,
+                learning.stage,
+                learning.validated_by,
+                learning.validated_at,
+                learning.validated_evaluator_version,
+                _dump_keys(learning.validation_run_ids),
+                learning.validation_content_hash,
+                learning.promoted_by,
                 learning.supersedes,
                 learning.superseded_by,
-                learning.promoted_by,
             )
             return int(row["id"]) if row else 0
 
@@ -335,6 +344,7 @@ class PgLearningStore:
         self,
         conn: asyncpg.pool.PoolConnectionProxy,
         learning: Learning,
+        provenance: ExecutionProvenance,
     ) -> int | None:
         """Return the id of the same-scope active row this learning dedupes into.
 
@@ -346,7 +356,8 @@ class PgLearningStore:
         probe-then-insert.
         """
         existing = await conn.fetch(
-            """SELECT id, trigger_keys FROM learnings
+            """SELECT id, trigger_keys, works_when, avoid_in, confidence,
+                      evidence_run_ids, evaluation_ids FROM learnings
                WHERE tool_name = $1 AND org_id = $2
                  AND team_id = $3 AND user_id IS NOT DISTINCT FROM $4
                  AND agent_id = $5 AND status = 'active'""",
@@ -362,6 +373,40 @@ class PgLearningStore:
             if new_keys and existing_keys:
                 overlap = len(new_keys & existing_keys) / len(new_keys)
                 if overlap >= 0.5:
+                    # Dedup consolidates: the reworded claim replaces the text,
+                    # never the evidence or applicability beneath it (M4-B3).
+                    # `merge_applicability` stays the one rule; a throwaway
+                    # Learning carries the row's current values through it.
+                    prior = Learning(
+                        works_when=_load_keys(row["works_when"]),
+                        avoid_in=_load_keys(row["avoid_in"]),
+                        confidence=row["confidence"],
+                        evidence_run_ids=_load_keys(row["evidence_run_ids"]),
+                        evaluation_ids=_load_keys(row["evaluation_ids"]),
+                    )
+                    # The merge folds `incoming.run_id` into the evidence list,
+                    # so it must see the ids `store` resolved, not the blank
+                    # fields of a learning that leaned on the ambient context
+                    # — otherwise a deduplicated write silently drops the
+                    # very execution the consolidation should retain.
+                    incoming = replace(
+                        learning,
+                        run_id=provenance.run_id,
+                        node_run_id=provenance.node_run_id,
+                        attempt_id=provenance.attempt_id,
+                    )
+                    merge_applicability(prior, incoming)
+                    await conn.execute(
+                        """UPDATE learnings SET works_when = $1, avoid_in = $2,
+                           confidence = $3, evidence_run_ids = $4,
+                           evaluation_ids = $5 WHERE id = $6""",
+                        _dump_keys(prior.works_when),
+                        _dump_keys(prior.avoid_in),
+                        prior.confidence,
+                        _dump_keys(prior.evidence_run_ids),
+                        _dump_keys(prior.evaluation_ids),
+                        row["id"],
+                    )
                     await conn.execute(
                         "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
                         row["id"],
@@ -518,9 +563,12 @@ class PgLearningStore:
             # was injected into the agent's system prompt. The annotation said
             # list[str] and the value was a str, which is why it type-checked.
             keys = _load_keys(row["trigger_keys"])
-            score = sum(1 for k in keys if k.lower() in text_lower)
+            score: float = sum(1 for k in keys if k.lower() in text_lower)
             if score > 0:
-                scored.append((float(score), _row_to_learning(row)))
+                # Same tie-break as the in-memory twin: the epistemic bonus
+                # reorders keyword ties, never overrides relevance (M4-B3).
+                score += EPISTEMIC_BONUS.get(_row_to_learning(row).epistemic_type, 0.0)
+                scored.append((score, _row_to_learning(row)))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [lr for _, lr in scored[:max_results]]
@@ -558,7 +606,13 @@ class PgLearningStore:
     async def mark_outcome(
         self, learning_ids: list[int], success: bool, *, org_id: str = ""
     ) -> None:
-        """Increment success/failure counters per id."""
+        """Increment success/failure counters per id, and re-measure confidence.
+
+        The confidence expression is the SQL restatement of
+        `evidence.outcome_confidence` — once an outcome exists, confidence IS
+        the success ratio; a surviving NULL is a row never measured, which is
+        exactly the fact promotion treats as a blocker (M4-B3).
+        """
         if not learning_ids:
             return
         async with self._pool.acquire() as conn:
@@ -567,10 +621,16 @@ class PgLearningStore:
             # unscoped update accepted a guessed id from any scope.
             column = "success_after_use" if success else "failure_after_use"
             await conn.execute(
-                f"UPDATE learnings SET {column} = {column} + 1 "  # nosec B608
+                f"UPDATE learnings SET {column} = {column} + 1, "  # nosec B608
+                # SET expressions see the pre-update row in PostgreSQL, so the
+                # ratio is written in terms of (old value + this outcome)
+                # explicitly rather than assuming the increment landed first.
+                "confidence = (success_after_use + $3::int)::float / "
+                "(success_after_use + failure_after_use + 1) "
                 "WHERE id = ANY($1::int[]) AND org_id = $2",
                 learning_ids,
                 org_id,
+                1 if success else 0,
             )
 
     async def list_ineffective(self, min_uses: int) -> list[Learning]:
@@ -621,18 +681,36 @@ class PgLearningStore:
         self,
         threshold: int = 5,
         org_id: str = "",
+        *,
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
+        actor: Actor = Actor.AGENT,
     ) -> list[Learning]:
-        """Promote learnings with hit_count >= threshold."""
+        """Promote learnings at threshold that also carry validation evidence.
+
+        The evidence verdict is the shared `promotion_blockers`, not a second
+        SQL predicate — one rule for all three backends. A learning missing
+        source Run/evaluation ids or measured confidence stays `active`
+        however often it is hit (M4-B3).
+
+        A promotion is also the ADR-057 ``promote`` authority: under
+        ``SYSTEM_MANAGED`` it is admin-only, so an agent-actor call is denied
+        before the UPDATE runs (SPEC-062126-6a31, open question 5).
+        """
+        require_write_authority(self._exposure_mode, "promote", actor, subject=type(self).__name__)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """UPDATE learnings SET status = 'promoted'
-                   WHERE status = 'active' AND hit_count >= $1
-                     AND org_id = $2
-                   RETURNING *""",
+                "SELECT * FROM learnings "
+                "WHERE status = 'active' AND hit_count >= $1 AND org_id = $2",
                 threshold,
                 org_id,
             )
-            return [_row_to_learning(r) for r in rows]
+            candidates = [_row_to_learning(r) for r in rows]
+            promoted = [
+                lr for lr in candidates if not promotion_blockers(lr, min_confidence=min_confidence)
+            ]
+            if not promoted:
+                return []
+            return await self._claim_promoted(conn, promoted)
 
     async def promote_learning(
         self,
@@ -644,21 +722,34 @@ class PgLearningStore:
         validated_at: datetime | None = None,
         validation_run_ids: Sequence[str] = (),
         validation_content_hash: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning | None:
         """Flip one active learning to promoted, writing its validation provenance.
 
-        The per-candidate promotion seam the Gauntlet path needs: `check_auto_promotions`
-        promotes every threshold-crossing row in scope, but an independent validator
-        decides per candidate, so the store must be able to promote exactly one. Only
-        an `active`, in-scope row flips — an already-promoted, already-rejected or
-        out-of-scope row returns None rather than being touched, and a rejected
-        candidate's row (its evidence, its anti-learning) is never modified here.
-        Scoped like `mark_outcome`: an unscoped caller must not promote another
-        org's id. The ladder (ADR-103) is honoured atomically: a promoted row is
-        written as a repertoire row in the same statement, and the commit
-        instant is the validation instant (the Gauntlet's acceptance *is* the
+        The per-candidate promotion seam the Gauntlet path needs (M4-B2):
+        `check_auto_promotions` promotes every threshold-crossing row that
+        passes the shared evidence verdict, but an independent validator
+        decides per candidate after running its own trials, so the store must
+        be able to promote exactly one, writing the verdict's provenance: the
+        exact evaluation Runs, the evaluator version, and the frozen-content
+        hash. Only an `active`, in-scope row flips — an already-promoted,
+        already-rejected or out-of-scope row returns None rather than being
+        touched, and a rejected candidate's row (its evidence, its
+        anti-learning) is never modified here. Scoped like `mark_outcome`:
+        an unscoped caller must not promote another org's id.
+
+        The ladder (ADR-103) is honoured atomically: a promoted row is written
+        as a repertoire row in the same statement, and the commit instant is
+        the validation instant (the Gauntlet's acceptance *is* the
         transition).
+
+        ADR-057: this is the ``promote`` authority, like
+        `check_auto_promotions` — an agent-authority call under
+        ``SYSTEM_MANAGED`` is denied before the UPDATE runs.
         """
+        require_write_authority(
+            self._exposure_mode, "promote", authority, subject=type(self).__name__
+        )
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """UPDATE learnings
@@ -677,6 +768,32 @@ class PgLearningStore:
                 org_id,
             )
         return _row_to_learning(row) if row else None
+
+    async def _claim_promoted(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy,
+        promoted: list[Learning],
+    ) -> list[Learning]:
+        """Flip the promoted rows durably and report the ones this caller won.
+
+        Atomic claim: flip only rows still `active` and take RETURNING as the
+        truth for what this caller promoted. Two workers racing here can both
+        select the same candidate before either UPDATE; an unconditional WHERE
+        let both succeed, so both callers reported a fresh promotion and the
+        skill mutation ran twice.
+        """
+        ids = [lr.id for lr in promoted if lr.id is not None]
+        claimed = await conn.fetch(
+            "UPDATE learnings SET status = 'promoted' "
+            "WHERE id = ANY($1::int[]) AND status = 'active' RETURNING id",
+            ids,
+        )
+        claimed_ids = {r["id"] for r in claimed}
+        # The candidates were mapped before the UPDATE; the returned objects
+        # must report the state the rows now hold.
+        for lr in promoted:
+            lr.status = "promoted"
+        return [lr for lr in promoted if lr.id in claimed_ids]
 
     async def get_promoted(
         self,
@@ -722,6 +839,7 @@ class PgLearningStore:
         actor: str,
         reason: str = "",
         org_id: str = "",
+        authority: Actor = Actor.AGENT,
     ) -> Learning:
         """Move a learning one rung up the ladder, durably and auditably.
 
@@ -731,7 +849,15 @@ class PgLearningStore:
         between them can produce neither a moved row without a record nor a
         record without a moved row — that is what makes the transition
         durable (ADR-103).
+
+        ADR-057: the gate is the first statement, before the transaction —
+        a denied or undeclared call opens no transaction and writes no row.
+        `authority` is the ADR-057 principal (default agent), distinct from
+        the ADR-103 attribution string in `actor`.
         """
+        require_write_authority(
+            self._exposure_mode, "write", authority, subject=type(self).__name__
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT * FROM learnings WHERE id = $1 AND org_id = $2",
@@ -876,14 +1002,11 @@ def _provenance_fields(row: asyncpg.Record) -> dict[str, Any]:
 
 
 def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
-    """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d).
+    """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d, M4-B3).
 
-    Defaults mirror the dataclass so a row written before migration 052 reads
-    back as the local empirical learning on the bottom rung that it was, not
-    as something the system never claimed. The Gauntlet provenance columns
-    (M4-B2) decode with the same rule: `validated_by` shared with the ladder,
-    the evaluator version, the exact evaluation Runs, and the frozen-content
-    hash — blank/None/empty reads back as "never validated".
+    Defaults mirror the dataclass so a row written before the applicability
+    and lifecycle migrations reads back as the local empirical learning on
+    the bottom rung that it was, not as something the system never claimed.
     """
     return {
         "stage": LearningStage(row.get("stage") or "memory"),
@@ -893,19 +1016,25 @@ def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
             if row.get("confidence") is not None
             else DEFAULT_LEARNING_CONFIDENCE
         ),
+        "works_when": _load_keys(row.get("works_when")),
+        "avoid_in": _load_keys(row.get("avoid_in")),
+        "evidence_run_ids": _load_keys(row.get("evidence_run_ids")),
+        "evaluation_ids": _load_keys(row.get("evaluation_ids")),
         "applicability": _load_applicability(row.get("applicability")),
         "reinforcement_count": row.get("reinforcement_count") or 0,
         "contradiction_count": row.get("contradiction_count") or 0,
         "created_at": row.get("created_at") or datetime.now(UTC),
         "last_confirmed_at": row.get("last_confirmed_at"),
         "validated_by": row.get("validated_by") or "",
-        "validated_evaluator_version": row.get("validated_evaluator_version") or "",
         "validated_at": row.get("validated_at"),
+        # The Gauntlet's provenance (M4-B2): blank/None/empty is the honest
+        # "never validated".
+        "validated_evaluator_version": row.get("validated_evaluator_version") or "",
         "validation_run_ids": _load_keys(row.get("validation_run_ids")),
         "validation_content_hash": row.get("validation_content_hash") or "",
+        "promoted_by": row.get("promoted_by") or "",
         "supersedes": row.get("supersedes"),
         "superseded_by": row.get("superseded_by"),
-        "promoted_by": row.get("promoted_by") or "",
     }
 
 

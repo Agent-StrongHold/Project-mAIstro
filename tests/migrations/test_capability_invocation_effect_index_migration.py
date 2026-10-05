@@ -62,18 +62,36 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # `046_durable_elevation_grants` (#72) continues the chain after this
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
     # that; #398's `048_canvas_job_retry_backoff` continues it, and #780's
-    # `049_design_artifact_versions` continues that, pushing #774's
-    # `050_design_creative_briefs` past the 049 it had taken on this branch;
-    # and #792's eval-score evidence — which had taken `049` on this branch —
+    # `049_design_artifact_versions` continues that; #774's
+    # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
+    # #780 claimed them — continues after that; and #792's eval-score
+    # evidence, which had taken `049` on this branch while develop's
+    # artifact-version ledger took the same number on the same parent,
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
-    # chain tip; this branch's Gauntlet provenance (#118) re-parented onto it
-    # as `053`, and develop's M4-B5 (#1753, ADR-100126-8c2d) landed
-    # `053_learning_lifecycle_columns` on that same `052` parent — so the
-    # lifecycle columns keep `053` and this branch's learning-lifecycle
-    # provenance re-parents onto that tip as `054_learning_validation_
-    # provenance`. The single linear head is `054`.
-    walked = {item.revision for item in directory.walk_revisions("base", "054")}
+    # chain tip as `052_learning_stage_ladder`, and its learning-lifecycle
+    # columns (M4-B, ADR-100126-8c2d) continued that tip as
+    # `053_learning_lifecycle_columns`. This branch's learning applicability
+    # migration (M4-B3, #119) — after four collision renumberings — re-parents
+    # onto that `053` as `054_learning_applicability_epistemics`. Develop's
+    # forward admission-generation representation (#1892) — numbered `053`
+    # when written, re-parented to `054` on develop unaware of this branch's
+    # open `054` — landed second again in an earlier sync and re-parented
+    # onto the applicability tip as `055_task_admission_generations`. #1047's
+    # user-model tables — numbered `054` when written on the same `053`
+    # base, re-parented onto develop's first `054` as `055` — collided a
+    # second time there and re-parented onto that `055` as
+    # `056_user_model_facts`. Develop's quota-door revision (#1196/#718)
+    # then claimed `055`'s child slot on develop as
+    # `043_invocation_quota_door` — a third collision — so per the
+    # convention (the branch-side revision re-parents onto the incoming
+    # develop tip) `056` now revises the quota door. This branch's Gauntlet
+    # provenance (#118, M4-B2) — `053` through five collision renumberings,
+    # most recently past develop's `053_learning_lifecycle_columns` —
+    # re-parents onto that quota-door tip `056` as
+    # `057_learning_validation_provenance`, and the single linear head is
+    # `057`.
+    walked = {item.revision for item in directory.walk_revisions("base", "057")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -87,7 +105,11 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "052" in walked
     assert "053" in walked
     assert "054" in walked
-    assert directory.get_heads() == ["054"]
+    assert "055" in walked
+    assert "056" in walked
+    assert "043_invocation_quota_door" in walked
+    assert "057" in walked
+    assert directory.get_heads() == ["057"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

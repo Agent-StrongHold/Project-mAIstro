@@ -67,9 +67,18 @@ class LearningStore(Protocol):
         ...
 
     async def check_auto_promotions(
-        self, threshold: int = 5, *, org_id: str = ""
+        self,
+        threshold: int = 5,
+        *,
+        org_id: str = "",
+        min_confidence: float = 0.5,
     ) -> list[Learning]:
-        """Promote learnings that have been hit enough times."""
+        """Promote learnings that have been hit enough times *and* carry evidence.
+
+        `min_confidence` mirrors `evidence.DEFAULT_MIN_PROMOTION_CONFIDENCE` as a
+        plain default rather than an import so the protocol stays
+        dependency-free; the stores and promoter share the real constant.
+        """
         ...
 
     async def promote_learning(
@@ -123,6 +132,10 @@ class LearningStore(Protocol):
         Forward-only, single-step, actor-attributed; the transition is
         persisted together with its audit row. Raises the shared transition
         error on an illegal move instead of half-applying it.
+
+        ADR-057: implementations gate the move as a write at the store
+        boundary — `actor` credits the move in the ledger, the ADR-057
+        principal (default agent) decides whether it may happen at all.
         """
         ...
 
@@ -162,6 +175,9 @@ class LearningLifecycleStore(LearningStore, Protocol):
 
         Raises ``KeyError`` when the old id is not in scope: a silent no-op
         would leave both rows active and the lineage unrecorded.
+
+        ADR-057: implementations gate superseding as a write at the store
+        boundary — a denied call retires nothing and stores nothing.
         """
         ...
 
@@ -180,7 +196,11 @@ class LearningLifecycleStore(LearningStore, Protocol):
         org_id: str = "",
         tool_name: str | None = None,
     ) -> list[Learning]:
-        """Merge near-duplicate active rows, folding their evidence; returns survivors."""
+        """Merge near-duplicate active rows, folding their evidence; returns survivors.
+
+        ADR-057: implementations gate consolidation as a write at the store
+        boundary — consolidation retires rows.
+        """
         ...
 
 

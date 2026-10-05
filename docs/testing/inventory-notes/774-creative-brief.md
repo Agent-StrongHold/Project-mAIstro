@@ -389,7 +389,41 @@ Round 7's world — met develop's own `051_canonical_run_eval_scores` sitting
 on the same parent. Per the one-linear-head convention the develop chain
 stands and the ladder re-parents onto that `051` chain tip as
 **`052_learning_stage_ladder`** (`down_revision = "051"`). The effect-index
-chain test now walks to `052` and asserts `get_heads() == ["052"]`, and the
+chain test walked to `052` and asserted `get_heads() == ["052"]`, and the
 ladder's own live-pgvector round trip upgrades/downgrades `051`↔`052`.
 Round 7's head-`051` statement is superseded on this branch. No test node
 IDs moved; the inventory deltas are unchanged.
+
+Update (auto-119 develop sync, M4-B3 merge): #119's applicability migration
+had also taken `052` on parent `051`, the same collision; it re-parents onto
+the ladder as **`054_learning_applicability_epistemics`**. The chain test then
+walked to `054` and asserted `get_heads() == ["054"]`; every assertion this
+round added still holds with `052` an interior revision.
+
+Update (auto-119 develop sync, admission-generation collision): develop's
+#1892 admission-generation revision — `054` on develop, unaware of this
+branch's open `054` — met `054_learning_applicability_epistemics` on parent
+`053`. Landing second for the second time, it re-parents onto the
+applicability tip as **`055_task_admission_generations`**
+(`down_revision = "054"`). The chain test now walks to `055` and asserts
+`get_heads() == ["055"]`; `054` is an interior revision on its ancestor
+path.
+
+Update (auto-1047 develop sync, user-model collision): develop claimed `054`
+a second time (`054_learning_applicability_epistemics`, #119) and renumbered
+its admission-generation revision to `055_task_admission_generations`, so
+#1047's user-model tables — already re-parented once to
+`055_user_model_facts` — collide again and re-parent onto that tip as
+**`056_user_model_facts`** (`down_revision = "055"`). The chain test now
+walks to `056` and asserts `get_heads() == ["056"]`; `054` and `055` are
+interior revisions on its ancestor path.
+
+Update (auto-1047 develop sync, quota-door collision): develop's
+#1196/#718 quota door took the child slot under `055` on develop as
+**`043_invocation_quota_door`**, colliding with this branch's `056` on the
+same parent. Per the convention the branch-side revision re-parents onto
+the incoming develop tip: `056_user_model_facts` now revises the quota door
+and the single linear head remains `056`. The chain test walks to `056`
+(traversing the quota door, now itself asserted on the walked path) and
+still asserts `get_heads() == ["056"]`; the refused-downgrade stamp
+assertion continues to track the head, so it stays at `056`.

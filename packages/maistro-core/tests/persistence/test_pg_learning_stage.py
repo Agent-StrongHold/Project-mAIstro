@@ -12,6 +12,12 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import (
+    Actor,
+    MemoryExposureMode,
+    MemoryUndeclaredModeError,
+    MemoryWriteDenied,
+)
 from maistro.memory.learnings.lifecycle import InvalidStageTransition
 from maistro.persistence.pg_learnings import PgLearningStore
 from maistro.types.memory import Learning, LearningStage
@@ -124,7 +130,9 @@ def conn() -> TransactionedFakeConnection:
 
 @pytest.fixture
 def store(conn: TransactionedFakeConnection) -> PgLearningStore:
-    return PgLearningStore(FakePool(conn))  # type: ignore[arg-type]
+    # Stage semantics are under test here, not the ADR-057 fail-closed matrix,
+    # so declare the exposure mode the gate requires for mutations.
+    return PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.AGENT_MANAGED)  # type: ignore[arg-type]
 
 
 def make_learning(**overrides: Any) -> Learning:
@@ -240,13 +248,53 @@ async def test_store_writes_the_stage_columns(
     await store.store(make_learning(id=None))
 
     insert = next(c for c in conn.calls if "INSERT INTO learnings" in c.query)
-    # The M4-B2 Gauntlet provenance columns, the ADR-103 ladder columns and
-    # the pipeline epistemics (#117/#121, ADR-100126-8c2d) share one INSERT
-    # (and one `validated_by` column); the tail pins the whole merged write
-    # shape in dataclass order.
-    assert "validated_by, validated_evaluator_version, validated_at" in insert.query
-    assert "validation_run_ids, validation_content_hash," in insert.query
-    assert "stage, epistemic_type, confidence, applicability," in insert.query
-    assert insert.args[19] == ""
-    assert insert.args[24] is LearningStage.MEMORY
-    assert insert.args[-1] == ""
+    # The union insert writes the ladder columns beside the pipeline
+    # epistemics (M4-B3 + #117/#121) and the Gauntlet provenance (M4-B2):
+    # the epistemic triple sits directly after the provenance triple, the
+    # stage/actor columns follow the lifecycle fields, and the Gauntlet's
+    # audit trail sits between `validated_at` and `promoted_by` — all naming
+    # no actor and no evidence on a fresh row.
+    assert insert.args[19] == "empirical"
+    assert insert.args[30] is LearningStage.MEMORY
+    assert insert.args[31] == ""
+    assert insert.args[33] == ""  # validated_evaluator_version
+    assert insert.args[34] == "[]"  # validation_run_ids
+    assert insert.args[35] == ""  # validation_content_hash
+    assert insert.args[36] == ""  # promoted_by
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
+async def test_the_authority_gate_precedes_every_stage_query() -> None:
+    """ADR-057 on the pg twin: a denied or undeclared call issues no SQL (#390).
+
+    Both failure modes must raise before the pool is even touched — no
+    transaction, no SELECT, no guarded UPDATE, no ledger INSERT.
+    """
+    undeclared = PgLearningStore(FakePool(TransactionedFakeConnection()))  # type: ignore[arg-type]
+    with pytest.raises(MemoryUndeclaredModeError):
+        await undeclared.advance_stage(
+            7, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG
+        )
+
+    conn = TransactionedFakeConnection()
+    denied = PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)  # type: ignore[arg-type]
+    with pytest.raises(MemoryWriteDenied):
+        await denied.advance_stage(7, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG)
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
+async def test_a_system_authority_stage_move_reaches_the_transaction(
+    conn: TransactionedFakeConnection,
+) -> None:
+    """The principal, not the attribution string, decides the gate."""
+    store = PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)  # type: ignore[arg-type]
+    conn.queue_fetchrow(row_for(make_learning(id=7)))
+    conn.queue_execute("UPDATE 1")
+    learning = await store.advance_stage(
+        7, to_stage=LearningStage.LEARNING, actor="curator", org_id=ORG, authority=Actor.SYSTEM
+    )
+    assert learning.stage is LearningStage.LEARNING
+    assert any("UPDATE learnings" in c.query for c in conn.calls)

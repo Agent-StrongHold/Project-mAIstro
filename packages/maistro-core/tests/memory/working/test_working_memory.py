@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 from maistro.memory.working.dreaming import collect_candidates
 from maistro.memory.working.extraction import GovernedEntityExtractor
@@ -217,7 +218,7 @@ class TestSnapshotReconciliation:
     async def test_snapshot_reconciliation_drops_records_missing_from_durable(self) -> None:
         from maistro.memory.episodic.store import InMemoryEpisodicStore
 
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("postgres needs pgvector", memory_id="m1"))
         manager = WorkingMemoryManager(workspace_id="ws-a", episodic_store=store)
         # A record that was hydrated earlier but has since left the durable
@@ -576,7 +577,7 @@ class TestWorkspaceIsolation:
 
         return WorkingMemoryManager(
             workspace_id="ws-a",
-            episodic_store=InMemoryEpisodicStore(),
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
             **kwargs,
         )
 
@@ -585,7 +586,7 @@ class TestEvictionAndRebuild:
     async def test_hydrate_retrieve_evict_rehydrate(self) -> None:
         from maistro.memory.episodic.store import InMemoryEpisodicStore
 
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         durable_before = await store.list_by_scope(limit=100)
         manager = WorkingMemoryManager(workspace_id="ws-a", episodic_store=store)
         await store.store(_mem("postgres needs pgvector", memory_id="m1"))
@@ -628,7 +629,7 @@ class TestEvictionAndRebuild:
 
         manager = WorkingMemoryManager(
             workspace_id="ws-a",
-            episodic_store=InMemoryEpisodicStore(),
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
             idle_ttl_seconds=100.0,
             clock=FakeClock,
         )
@@ -655,7 +656,7 @@ class TestEvictionAndRebuild:
 
         manager = WorkingMemoryManager(
             workspace_id="ws-a",
-            episodic_store=InMemoryEpisodicStore(),
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
             idle_ttl_seconds=100.0,
             clock=FakeClock,
         )
@@ -692,7 +693,10 @@ class TestFailureObservability:
         import maistro.memory.working.manager as manager_module
         from maistro.memory.episodic.store import InMemoryEpisodicStore
 
-        manager = WorkingMemoryManager(workspace_id="ws-a", episodic_store=InMemoryEpisodicStore())
+        manager = WorkingMemoryManager(
+            workspace_id="ws-a",
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+        )
 
         def explode(**_kwargs: Any) -> WorkspaceWorkingMemoryProjection:
             raise RuntimeError("ladybug cannot open database")
@@ -709,7 +713,7 @@ class TestFailureObservability:
         import maistro.memory.working.manager as manager_module
         from maistro.memory.episodic.store import InMemoryEpisodicStore
 
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("postgres needs pgvector", memory_id="m1"))
         manager = WorkingMemoryManager(workspace_id="ws-a", episodic_store=store)
 
@@ -742,7 +746,7 @@ class TestDreamingCandidates:
         lesson = _mem("PostgreSQL needs pgvector for similarity", memory_id="les-1")
         await projection.hydrate([hypothesis, lesson])
 
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         durable_snapshot = replace(lesson)
 
         candidates = await collect_candidates(projection)

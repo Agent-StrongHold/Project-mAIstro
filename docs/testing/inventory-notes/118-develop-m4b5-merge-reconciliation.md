@@ -3,7 +3,8 @@ inventory-delta:
   packages/maistro-core/tests: 0
 ---
 
-# M4-B5 develop integration (merge of 35f2e0158 into auto-118) — test reconciliation
+# M4-B5 + M4-B3 develop integrations (merges of 35f2e0158 and origin/develop
+into auto-118) — test reconciliation
 
 This merge resolves the collision between this branch's independent-trials
 Gauntlet (M4-B2, #118) and develop's M4-B5 umbrella (#1753, ADR-100126-8c2d),
@@ -30,10 +31,18 @@ Reconciliations that touched tests:
   epistemics columns, 35 bound parameters in dataclass order.
 - `test_sqlite_learning_validation.py` — `validated_at` asserts move from
   epoch floats to the ladder's `datetime | None` shape (a null names no
-  instant; the column is owned by `053_learning_lifecycle_columns`).
+  instant; the column is owned by `053_learning_lifecycle_columns`); the
+  fixture constructs the store with an ADR-057 exposure mode.
 - `tests/migrations/test_capability_invocation_effect_index_migration.py` —
-  the chain walk pins one linear head again: `054_learning_validation_
-  provenance` re-parents onto develop's `053_learning_lifecycle_columns`.
+  the chain walk pins one linear head again: `057_learning_validation_
+  provenance` re-parents onto develop's tip (`056_user_model_facts`, past
+  `053_learning_lifecycle_columns`, `054_learning_applicability_epistemics`,
+  `055_task_admission_generations` and `043_invocation_quota_door`).
+- The full-develop sync additionally adopts ADR-057 (write authority): every
+  store construction in the Gauntlet suites now declares
+  `exposure_mode=MemoryExposureMode.AGENT_MANAGED`, and the legacy-path tests
+  carry the source Run and measured confidence the M4-B3 evidence contract
+  requires, so they keep isolating exactly the ceremony the legacy path skips.
 
 Semantics unified by the merge (code, pinned by the above tests):
 `Learning.validated_at` is the ladder's nullable instant everywhere (ADR

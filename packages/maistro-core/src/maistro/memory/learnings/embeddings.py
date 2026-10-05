@@ -16,6 +16,8 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from maistro.memory.learnings.evidence import DEFAULT_MIN_PROMOTION_CONFIDENCE
+
 if TYPE_CHECKING:
     from datetime import datetime
 
@@ -190,8 +192,13 @@ class HybridLearningStore:
         """Delegate: provenance is the wrapped store's to answer (#709)."""
         return await self._store.produced_by(run_id, org_id=org_id)
 
-    async def check_auto_promotions(self, threshold: int = 5) -> list[Learning]:
-        return await self._store.check_auto_promotions(threshold)
+    async def check_auto_promotions(
+        self,
+        threshold: int = 5,
+        *,
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
+    ) -> list[Learning]:
+        return await self._store.check_auto_promotions(threshold, min_confidence=min_confidence)
 
     async def promote_learning(
         self,

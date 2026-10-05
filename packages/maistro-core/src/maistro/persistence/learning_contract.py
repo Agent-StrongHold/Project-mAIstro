@@ -32,25 +32,32 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "run_id",
         "node_run_id",
         "attempt_id",
-        # Gauntlet validation provenance (M4-B2) plus the knowledge-stage
-        # ladder and pipeline epistemics (ADR-103, ADR-100126-8c2d, EPIC M4-B).
-        # A restart must not strip a promoted learning of the evidence that
-        # promoted it, demote a validated learning back to a local belief, or
-        # resurrect a superseded one, so all of it is durable like every other
-        # Learning field.
-        "validated_by",
-        "validated_evaluator_version",
-        "validated_at",
-        "validation_run_ids",
-        "validation_content_hash",
-        "stage",
+        # Epistemic qualification (M4-B3 / ADR-100126-b3c7): applicability,
+        # evidence strength and provenance are durable like every other field.
         "epistemic_type",
+        "works_when",
+        "avoid_in",
         "confidence",
+        "evidence_run_ids",
+        "evaluation_ids",
+        # Knowledge-stage ladder + pipeline epistemics (ADR-103, ADR-100126-8c2d,
+        # EPIC M4-B). A restart must not demote a validated learning back to a
+        # local belief or resurrect a superseded one, so the lifecycle state is
+        # durable like every other field. (`epistemic_type` and `confidence`
+        # are already listed above — one record, one field each.)
+        "stage",
         "applicability",
         "reinforcement_count",
         "contradiction_count",
         "created_at",
         "last_confirmed_at",
+        "validated_by",
+        "validated_at",
+        # The Gauntlet's audit trail beyond the ladder's own columns (M4-B2):
+        # the evaluator build, the exact evaluation Runs, the frozen content.
+        "validated_evaluator_version",
+        "validation_run_ids",
+        "validation_content_hash",
         "promoted_by",
         "supersedes",
         "superseded_by",
