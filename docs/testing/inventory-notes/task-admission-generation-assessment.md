@@ -735,3 +735,74 @@ gates at its final head. Until (1), every merge-queue evaluation of this
 stack deterministically fails exact-debt-ledger at step 1, exactly as the
 leaf contract ("A candidate baseline update cannot grant itself permission")
 requires it to.
+
+## CI-repair round 10 (2026-10-05): independent re-execution at 1c59b17a42c0;
+## develop advanced 9 commits past round 9 and stayed grantless; prescribed
+## vulture amendment executed empty for the tenth consecutive round
+
+Trigger: lane job 747e02f98 ended `state: failed`/BLOCKED — its result
+record shows a driver-side provider timeout ("llama-cpp-gemma/
+gemma4-26b-a4b-mtp: Request timed out") AFTER all five repo checks returned
+rc=0 (sync, ruff check, ruff format --check, focused pytest 178 passed,
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok at
+13468) — a dispatch-infrastructure failure, not a tree defect. This round
+is a fresh attempt's independent re-execution of the whole acceptance
+battery at the same head 1c59b17a42c0; nothing is taken from prior rounds'
+claims. Everything below was executed at this head, not assumed.
+
+- exact-debt-ledger step-for-step, CI's exact arguments: step 1
+  `check-ratchet-provenance.py` exits 1 on exactly `reachability` ("NEW
+  unreachable module absent from trusted base and not previously
+  authorized") and `reachability-dispositions` ("NEW disposition absent
+  from trusted ledger and not covered by an already-landed reachability
+  authorization"), each naming only `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` vs trusted base b3662bb3719a (the
+  merge base with origin/develop); step 2 `check-shipped-surface-truth.py`
+  exits 0; step 3 `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exits 0 at 1338
+  reviewed identities -> 1338 findings, unclassified 0. The prescribed
+  vulture-ledger amendment has an empty fix-list for the tenth consecutive
+  round; `git diff origin/develop HEAD -- quality/vulture-baseline.json
+  quality/ratchet-authorizations.json` is empty and both ledgers stay
+  byte-identical to develop.
+- NEW: develop advanced and the state survived it. origin/develop moved 9
+  commits past round 9's reference tip to cd5618223 (research/epic WIP
+  merges, #1756, #1989, #1965…); `git diff 30677b185..origin/develop --
+  quality/` touches only contract-markers-baseline.json (−1) and
+  workflow-inventory.json (+7) — no reachability/vulture/authorization
+  ledger row — and origin/develop still banks zero rows for either module
+  (baseline rows 0, disposition rows 0, module files 0, authorization
+  entries mentioning admission: none). `git merge-tree --write-tree HEAD
+  origin/develop` exits 0 at the current tip, so the next merge-queue
+  candidate synthesizes cleanly and the red job remains purely the
+  provenance rule; no develop-sync conflict component exists.
+- Acceptance battery re-executed at this head: focused classifier suite
+  105 passed; `test_root_admission_identity.py` + unchanged
+  `test_idempotency.py` 112 passed; the prescribed import-spy test passes
+  by exact node ID
+  (`::test_existing_live_claim_flow_does_not_import_v2_classifier`, 1
+  passed); mypy clean on the classifier; ruff check + format clean on both
+  leaf files; full `check-suite-inventory.py` ok (14 suites, 26171
+  identities, zero duplicate evidence).
+- Mutation teeth re-executed in the assigned tree (backup via cp, restore
+  via cp, md5 96b9e665e4c4b53879b4065a90cb4445 verified identical before
+  and after; no git restore/clean used): swap TAKEOVER/REPLACE_EXPIRED ->
+  39 failed; lease row above binding row -> 12 failed; LEGACY_UNRESOLVED
+  row deleted (legacy pending treated as v2) -> 7 failed; MISMATCH row
+  above expiry row -> 17 failed; unmutated 105 passed. Same counts as
+  rounds 8/9.
+- Boundary re-verified: `git diff b3662bb3719a HEAD --` on
+  `tasks/idempotency.py`, `tasks/__init__.py`, `runs/__init__.py`, and the
+  queue is empty; grep over `packages/*/src` finds no reference to either
+  new module outside the two modules themselves and the scanner-input
+  `_vulture_whitelist.py` (no production caller, no re-export).
+
+No source, test, or ledger file changed in this round: this commit edits
+this note only. The unblock sequence is unchanged, upstream, and now
+proven stable across two develop advances and one sibling-leaf landing:
+the separately scoped #1845 integration change lands the `reachability`
+authorizations on the base first (grant merge, then wiring merge), wires
+the reviewed consumer, and converges the unchanged full quality gates at
+its final head. Until then every merge-queue evaluation of this stack
+deterministically fails exact-debt-ledger at step 1, which is the leaf
+contract's own staging constraint working as designed.
