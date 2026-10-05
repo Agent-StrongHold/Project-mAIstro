@@ -330,3 +330,81 @@ additions are forbidden by this leaf's scope); both remain owned by the
 separately scoped #1845 integration change, and the stack stays unmerged
 per the leaf contract until that change lands the reviewed consumer and
 converges the unchanged gates at its final head.
+
+## CI-repair round 5 (2026-10-05): Task-queue matrix row repaired; all four
+## 0c5ff2c899ad CI failures re-bound to steps with job logs
+
+The merge-queue run at 0c5ff2c899ad failed four jobs; each was re-bound to
+its exact failing step from the Actions job logs (read-only), and one
+genuine candidate-side defect was found and repaired:
+
+- **Repair (the only candidate-side defect this round):** `test` (job
+  111586617369) failed on exactly one test —
+  `tests/test_check_convergence_matrix.py::
+  test_the_shipped_matrix_matches_the_shipped_code`, output
+  "Task queue and runner: Unreachable says `none`, code says `few` (1 of 16
+  modules, 6.2%)". Round 1 fixed the *Run lifecycle* row drift caused by
+  `maistro.runs.admission_identity` but missed the second drifted row:
+  `maistro.tasks.admission_generation` makes the *Task queue and runner*
+  subsystem 1/16 unreachable while its `matrix:disposition` row still said
+  `none`. Reproduced locally byte-identical (`check-convergence-matrix.py`
+  exit 1, same sentence; `--census` shows `Task queue and runner 1 / 16
+  6.2% few`). Repaired the way the gate itself prescribes — the row now
+  says `few` and names the baselined-unreachable contract leaf, mirroring
+  round 1's Run-row wording; a planning-surface doc update, not a waiver.
+  After the fix the gate exits 0 and its full meta-test family passes
+  (60/60).
+- **Coverage gate** (job 111588631369): failed in its root-suite producer
+  leg (`coverage run --source=scripts -m pytest tests/`) on that same
+  single convergence-matrix test ("1 failed, 4417 passed") — same root
+  cause, no coverage defect. Retired by the same one-line repair. The
+  per-file diff-coverage leg was additionally re-proven locally with CI's
+  invocation against the current base 8a4bc239f (`check-diff-coverage.py
+  coverage.xml --base 8a4bc239`): exit 0, both production files at/above
+  90% lines / 80% branches, test files exempt by declaration,
+  `_vulture_whitelist.py` outside every producer's measured tree.
+- **exact-debt-ledger** (job 111586617406): fails at "Require enforced
+  ratchet provenance policy" (`check-ratchet-provenance.py`); reproduced
+  locally line-identical at this head vs trusted base 31d891a5 — NEW
+  disposition + NEW unreachable for `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation`, no already-landed grant
+  (`load_authorizations` reads the base; develop carries none). The two
+  candidate-side ledger rows banked in rounds 1/3 correctly cannot
+  authorize themselves. The vulture step never runs (skipped after
+  provenance fails); it is exact anyway: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` exits 0,
+  1338 -> 1338, unclassified 0, `quality/vulture-baseline.json`
+  byte-identical to the base. Structural two-merge blocker, unchanged.
+- **Quality gate** (job 111586617744): fails at the "radon CC ratchet"
+  step; reproduced locally — exactly one new C-or-worse block vs the
+  trusted baseline, `admission_generation.py:62 _assess -> C (13)`, remedy
+  "Land a grant keyed as '<qualified-block>@<new-complexity>' first". The
+  leaf scope pins the validations and decision order inside the sole
+  production function, so CC >= 12 is irreducible without ducking the
+  counter (out of scope, round-2 analysis unchanged). Structural two-merge
+  blocker, unchanged.
+
+Full re-validation at this head after the repair (all executed): leaf
+suites 105/105 + 112/112; ruff check + `ruff format --check` clean; mypy
+on the classifier clean; `check-suite-inventory.py --suite
+packages/maistro-core/tests` ok (13442 node IDs); `check-reachability.py`
+exit 0 (174 of 1266); `check-reachability-dispositions.py` exit 0 (51
+groups, 150 CONNECT); `check-promotion-surface.py` ok;
+`check-shipped-surface-truth.py` ok; convergence gate ok (52 subsystems,
+174 unreachable attributed); matrix/reachability meta-tests 60+345+53
+passed. Mutation teeth re-proven on the restored source (md5-verified
+byte-identical restores): TAKEOVER/REPLACE_EXPIRED swap -> 39 failed;
+LEGACY_UNRESOLVED branch deleted -> 7 failed; lease-before-binding -> 12
+failed; unmutated -> 105 passed.
+
+Naming note against the issue's prospective-test list: the required matrix
+and edge coverage is delivered by the suite's parametrized tests (every
+matrix row at boundary and ±1 µs), not by the issue's provisional names —
+only `test_existing_live_claim_flow_does_not_import_v2_classifier` (the
+one round 4 flagged) carries its exact prescribed name. Coverage, not
+spelling, is the acceptance substance; this note records the mapping
+explicitly.
+
+Net: after this round's one-line matrix repair, every remaining red step
+at any plausible head traces only to the two-merge provenance/radon
+blockers owned by the separately scoped #1845 integration change.
