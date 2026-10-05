@@ -39,6 +39,7 @@ from maistro.extensions import (
     ExtensionLifecycleError,
     GovernedEffectRoute,
     InvocationScope,
+    ScopeMismatch,
 )
 from maistro.graph import Graph, Node
 from maistro.policy.types import Decision, PolicyVerdict
@@ -329,6 +330,42 @@ async def test_governed_route_refuses_dispatch_outside_an_attempt(
     assert "outside an Attempt" in str(exc_info.value.__cause__)
     with pytest.raises(EffectNotDeclared, match="outside an Attempt"):
         await route.dispatch(scope=activation.scope, request={})
+
+
+async def test_governed_route_refuses_cross_workspace_dispatch(
+    host_with_route: Any,
+) -> None:
+    """A scope from another workspace can never spend this route's binding.
+
+    The governed service derives the Invocation and its policy events from the
+    binding while provenance follows the scope, so a mismatched pair would
+    spend one workspace's authorization and split the audit trail across
+    tenants. The route must refuse before invoking.
+    """
+    host, events, invocations = host_with_route
+    route: EffectRoute = host._effect_routes["echo"]
+    foreign_scope = InvocationScope(
+        workspace_id="other-workspace",
+        agent_id="agent-1",
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+    )
+    with pytest.raises(ScopeMismatch, match="other-workspace"):
+        await route.dispatch(scope=foreign_scope, request={"value": 1})
+    # Nothing crossed the seam: no Invocation settled and no effect event
+    # landed on either workspace's stream.
+    binding = host._effect_routes["echo"]._binding
+    assert (
+        await invocations.list_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id=binding.binding_id,
+            effect_key="echo",
+        )
+        == []
+    )
+    assert await events.list_stream("workspace:other-workspace") == []
 
 
 async def test_cancellation_through_attempt_fence_reaches_the_extension(

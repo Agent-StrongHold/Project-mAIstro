@@ -27,7 +27,7 @@ from maistro.extensions.context import (
     ExtensionContext,
     UngrantedProgressReporter,
 )
-from maistro.extensions.errors import EffectNotDeclared
+from maistro.extensions.errors import EffectNotDeclared, ScopeMismatch
 from maistro.extensions.identity import ExtensionDescriptor, InvocationScope
 from maistro.extensions.lifecycle import (
     run_activation,
@@ -97,6 +97,17 @@ class GovernedEffectRoute:
             raise EffectNotDeclared(
                 f"effect {self._effect_key!r} cannot dispatch outside an Attempt: "
                 "governed Invocations require canonical run/node-run/attempt correlation"
+            )
+        if scope.workspace_id != self._binding.workspace_id:
+            # A route resolved for one workspace must never spend another
+            # workspace's binding: the governed service derives the Invocation
+            # and its policy events from the binding, while provenance follows
+            # the scope, so a mismatched pair would split authority and audit
+            # trail across tenants.
+            raise ScopeMismatch(
+                f"effect {self._effect_key!r} cannot dispatch: invocation scope "
+                f"workspace {scope.workspace_id!r} does not match binding "
+                f"workspace {self._binding.workspace_id!r}"
             )
         invocation = await self._invocations.invoke(
             binding=self._binding,
