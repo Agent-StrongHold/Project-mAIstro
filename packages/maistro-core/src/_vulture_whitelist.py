@@ -10,7 +10,13 @@ Invocation execution API.
 from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.cli._extensions import extensions_history, extensions_show
 from maistro.container import Container
+from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
+from maistro.extensions.store import (
+    ExtensionInstallStore,
+    InMemoryExtensionInstallStore,
+)
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
@@ -237,4 +243,33 @@ _VULTURE_WHITELIST = (
     PromotionContract.promote,
     PromotionLedger.attach_effect,
     PromotionLedger.mark_reversed,
+    # Governed extension registry persistence (M9-B1, #952). The write side of
+    # the contract ships first by design: the inspect→authorize→install flow
+    # that calls `register_publisher`/`record_install` is #953 and the
+    # pin/upgrade/rollback lifecycle is #954, so until those land the write
+    # methods' in-tree consumers are the conformance suite
+    # (packages/maistro-core/tests/extensions/). `ensure_schema` is the
+    # initialization step a store consumer runs on open, reached dynamically
+    # from wiring and the conformance fixture rather than a scanned call site.
+    # The `maistro extensions` read commands are invoked through typer
+    # dispatch, the same surface the ledger's maistro-cli-command-surface rule
+    # classifies.
+    ExtensionInstallStore.register_publisher,
+    ExtensionInstallStore.record_install,
+    InMemoryExtensionInstallStore.register_publisher,
+    InMemoryExtensionInstallStore.record_install,
+    SqliteExtensionInstallStore.register_publisher,
+    SqliteExtensionInstallStore.record_install,
+    SqliteExtensionInstallStore.ensure_schema,
+    # The exact-identity read seam of the same contract: the #953 install
+    # flow and the pin/upgrade/rollback lifecycle (#954) look records up by
+    # full identity, while the CLI read commands filter history by name and
+    # version; until those consumers land, the method's callers are the
+    # conformance suite. Same contract-ships-first posture as the write
+    # methods above.
+    ExtensionInstallStore.get_install,
+    InMemoryExtensionInstallStore.get_install,
+    SqliteExtensionInstallStore.get_install,
+    extensions_history,
+    extensions_show,
 )
