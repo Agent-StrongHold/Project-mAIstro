@@ -1,11 +1,51 @@
-"""Governed extension registry persistence (M9-B1, issue #939/#952).
+"""Governed extension registry persistence (M9-B1, issue #939/#952) and
+deterministic dependency resolution (M9-C2, #956).
 
 Install records with publisher identity, package digest/signature metadata,
 manifest snapshots, catalog provenance and durable trust evidence. The
 inspect→authorize→install flow (#953) and the pin/upgrade/rollback lifecycle
 (#954) build on these records; nothing here executes extension code.
+
+M9-C2 adds the resolution layer over those records: strict semantic-version
+ranges (``semver``), a deterministic resolver producing a reproducible
+:class:`LockState` (``resolution``), and lock-driven reinstall through the
+install store (:func:`materialize_lock`).
 """
 
+from maistro.extensions.resolution import (
+    LOCK_FORMAT,
+    ROOT_REQUEST_ORIGIN,
+    SELECTION_POLICY,
+    CatalogEntry,
+    ConstraintRecord,
+    DependencyCycle,
+    ExtensionCatalog,
+    ExtensionDependency,
+    LockArtifacts,
+    LockDiff,
+    LockEntry,
+    LockFormatError,
+    LockKind,
+    LockState,
+    MissingLockArtifacts,
+    RejectedCandidate,
+    ResolutionConflict,
+    ResolutionError,
+    RootRequest,
+    SelectionExplanation,
+    SkippedOptional,
+    UnresolvableDependency,
+    diff_locks,
+    materialize_lock,
+    resolve_lock,
+)
+from maistro.extensions.semver import (
+    InvalidSemanticVersion,
+    InvalidVersionRange,
+    SemVer,
+    VersionRange,
+    parse_range,
+)
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     TRUST_POLICY,
@@ -36,26 +76,57 @@ from maistro.extensions.types import (
 
 __all__ = [
     "DIGEST_ALGORITHM",
+    "LOCK_FORMAT",
+    "ROOT_REQUEST_ORIGIN",
+    "SELECTION_POLICY",
+    "SELECTION_POLICY",
     "TRUST_POLICY",
     "ActivationCallback",
+    "CatalogEntry",
+    "ConstraintRecord",
+    "DependencyCycle",
+    "ExtensionCatalog",
+    "ExtensionDependency",
     "ExtensionIdentityConflict",
     "ExtensionInstallStore",
     "ExtensionRegistryError",
     "InMemoryExtensionInstallStore",
     "InstallRecord",
     "InstallRequest",
+    "InvalidSemanticVersion",
+    "InvalidVersionRange",
+    "LockArtifacts",
+    "LockDiff",
+    "LockEntry",
+    "LockFormatError",
+    "LockKind",
+    "LockState",
     "ManifestSnapshot",
+    "MissingLockArtifacts",
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "RegistryProvenance",
+    "RejectedCandidate",
+    "ResolutionConflict",
+    "ResolutionError",
+    "RootRequest",
+    "SelectionExplanation",
+    "SemVer",
+    "SkippedOptional",
     "SqliteExtensionInstallStore",
     "TrustEvidence",
     "UnknownPublisher",
+    "UnresolvableDependency",
+    "VersionRange",
     "canonical_install_payload",
+    "diff_locks",
     "identity_key",
     "manifest_snapshot",
+    "materialize_lock",
+    "parse_range",
+    "resolve_lock",
     "sha256_hex",
 ]

@@ -10,8 +10,14 @@ Invocation execution API.
 from maistro import identity as identity_package
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
-from maistro.cli._extensions import extensions_history, extensions_show
+from maistro.cli._extensions import (
+    extensions_explain,
+    extensions_history,
+    extensions_lock,
+    extensions_show,
+)
 from maistro.container import Container
+from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
@@ -272,4 +278,14 @@ _VULTURE_WHITELIST = (
     SqliteExtensionInstallStore.get_install,
     extensions_history,
     extensions_show,
+    # Deterministic extension dependency resolution (M9-C2, #956). The two
+    # `maistro extensions` lock commands are typer-dispatched like the read
+    # commands above. `identity_keys` is the restart-equality seam the #953
+    # install flow asserts against (lock identity set == installed record
+    # set); until that flow lands its callers are the resolution suites in
+    # packages/maistro-core/tests/extensions/ — the same
+    # contract-ships-first posture as the store seams above.
+    extensions_lock,
+    extensions_explain,
+    LockState.identity_keys,
 )
