@@ -6,8 +6,8 @@ cost-aware router, so router/fallback/model-selection policy is preserved
 inside the governed boundary instead of being replaced by it:
 
 - a Binding that pins ``provider_name`` selects exactly that model, and an
-  unavailable pin refuses rather than falling back (fallback cannot widen
-  authorization, ADR-081226-6b46);
+  unknown or unavailable pin refuses rather than falling back (fallback
+  cannot widen authorization, ADR-081226-6b46);
 - an unpinned request naming a model keeps the explicit alias (today's
   gateway behavior);
 - an unpinned request with no alias is selected by ``CostAwareRouter``,
@@ -91,7 +91,9 @@ def resolve_model_chat_provider(
     """Build the slot-specific resolver preserving ADR-079 selection policy.
 
     ``alias`` is the model the request itself names (empty means "let the
-    cost-aware router select"). A Binding pin outranks it.
+    cost-aware router select"). A Binding pin outranks it and must already
+    exist in the configured ProviderRegistry; gateway registration alone is
+    not model metadata registration.
     """
 
     async def resolve(binding: Binding) -> ResolvedCapabilityProvider | Unavailable:
@@ -100,13 +102,23 @@ def resolve_model_chat_provider(
             try:
                 metadata: ModelMetadata | None = await registry.get_model(selection)
             except ModelNotFoundError:
+                if binding.provider_name:
+                    return Unavailable(
+                        slot=MODEL_CHAT_CAPABILITY,
+                        reason=(
+                            f"pinned model {selection!r} is unknown; register its metadata "
+                            "in the configured ProviderRegistry before using a Binding pin "
+                            "(provider_config_path); gateway /model/new is not sufficient"
+                        ),
+                    )
                 metadata = None
             if metadata is not None and not registry.is_available(metadata.name):
+                source = "pinned model" if binding.provider_name else "request alias"
                 return Unavailable(
                     slot=MODEL_CHAT_CAPABILITY,
                     reason=(
-                        f"selected model {selection!r} is unavailable and a pinned "
-                        "selection does not fall back"
+                        f"{source} {selection!r} is unavailable; "
+                        "an explicit selection does not fall back"
                     ),
                 )
             return LlmGatewayProvider(metadata, model=selection)

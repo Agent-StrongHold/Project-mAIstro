@@ -549,14 +549,16 @@ class TestTheDowngrade:
         assert "format_version" in result.stderr + result.stdout
         # A multi-revision `alembic downgrade` is one transaction: the refusal
         # partway through rolls the whole attempt back, so the stamp never
-        # moves off whatever head it started from -- not a fixed literal,
-        # which is only ever an artifact of whatever was the chain tip when
-        # this test was last synced. #1362's quota-door revision re-parented
-        # onto develop's `055_task_admission_generations`, and the develop
-        # sync that brought that revision here renumbered it `056` ahead of
-        # this branch's backlog and learning revisions, so the door
-        # re-parents onto `056` and is the head still.
-        assert _stamped_version() == "043_invocation_quota_door"
+        # moves off whatever head it started from. The assertion tracks the
+        # head, not a fixed literal — every develop collision re-parents the
+        # chain tip, and the invariant under test is that the refused
+        # downgrade leaves the stamp AT HEAD. #1362's quota door
+        # (#1196/#718) re-parented onto this branch's `056` admission
+        # revision in this sync, and #1047's user-model tables — which on
+        # develop had re-parented past the door as `056` — collide with that
+        # renumbered admission revision and land second as `057`, so that is
+        # the head now.
+        assert _stamped_version() == "057"
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 

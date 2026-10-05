@@ -1258,6 +1258,30 @@
       "deletion_path": null,
       "issue": "#101",
       "notes": "Append-only BacklogItem history: INSERT is the only write and there is no delete path by design, so rows accumulate for the life of the deployment. The PostgreSQL history slice decides retention."
+    },
+    {
+      "table": "user_model_facts",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/user_model/pg_store.py",
+      "data_class": "memory",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#1047",
+      "notes": "One row per UserModelFact revision (ADR-092526-4391: facts never decay; only an explicit revision or tombstone changes them). Tombstoning a lineage deletes its content revisions and keeps a single tombstone revision recording who deleted the fact and why, so deletion is itself the retention decision; live rows persist until the owner deletes them."
+    },
+    {
+      "table": "user_model_statement_keys",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/user_model/pg_store.py",
+      "data_class": "memory",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#1047",
+      "notes": "Owner-bound statement key to lineage id. Kept forever on purpose: after a tombstone purges the lineage's content revisions, these rows are what still block re-promotion of every wording the lineage ever held, including one replayed from a stale Ladybug working graph. Identifiers only, never statement content."
     }
   ]
 }
