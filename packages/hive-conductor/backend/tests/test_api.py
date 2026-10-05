@@ -228,12 +228,20 @@ def test_admin_blocked_from_chat() -> None:
 
 
 def test_user_can_chat() -> None:
+    """The ordinary-user role may reach the canonically admitted chat service."""
     c = _login()
-    r = c.post(
-        "/v1/chat/complete",
-        json={"messages": [{"role": "user", "content": "ping"}]},
+    mock_llm = MagicMock()
+    mock_llm.complete = AsyncMock(
+        return_value={"choices": [{"message": {"role": "assistant", "content": "pong"}}]}
     )
+    with patch("services.chat_completion.build_llm_port", return_value=mock_llm):
+        r = c.post(
+            "/v1/chat/complete",
+            json={"messages": [{"role": "user", "content": "ping"}]},
+        )
     assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "pong"
+    mock_llm.complete.assert_awaited_once()
 
 
 def test_list_missions() -> None:

@@ -64,7 +64,7 @@ def _item_fields(item: Any) -> dict[str, str]:
 
 
 def _output_fields(output: list[Any]) -> dict[str, str]:
-    fields = dict.fromkeys(_FIELDS, "")
+    fields: dict[str, str] = dict.fromkeys(_FIELDS, "")
     for item in output:
         for key, value in _item_fields(item).items():
             fields[key] += value
@@ -137,7 +137,7 @@ class ResponsesStream:
 
     def __init__(self) -> None:
         self.result: dict[str, Any] | None = None
-        self._seen = dict.fromkeys(_FIELDS, "")
+        self._seen: dict[str, str] = dict.fromkeys(_FIELDS, "")
         self._emitted = {"content": "", "reasoning_content": ""}
 
     def add(self, event: dict[str, Any]) -> dict[str, Any] | None:
