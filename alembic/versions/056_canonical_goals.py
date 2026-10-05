@@ -25,12 +25,17 @@ develop's `053_learning_lifecycle_columns` as 054; #1892's admission
 generations then claimed 054 off that same 053 head, this store re-parented
 onto it as 055, and the next develop sync claimed 055 again — #119's
 `054_learning_applicability_epistemics` took 054 and re-parented #1892 onto
-the new tip as `055_task_admission_generations`. Renumbered and re-parented
-onto develop's revision once more, per that precedent: one linear head, no
+the new tip as `055_task_admission_generations`. That sync then brought
+develop's `043_invocation_quota_door` (#1196/#718) — itself re-parented onto
+whichever revision is develop's head at merge time — onto that same `055`
+parent, the one this store had already claimed as the tip. Per the chain's
+standing precedent the later-integrated revision re-parents onto the landed
+tip, never the reverse, so this store continues develop's quota-door
+revision. Renumbered and re-parented once more: one linear head, no
 duplicate revision ids.
 
 Revision ID: 056
-Revises: 055
+Revises: 043_invocation_quota_door
 Create Date: 2026-10-03
 """
 
@@ -39,7 +44,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "056"
-down_revision = "055"
+down_revision = "043_invocation_quota_door"
 branch_labels = None
 depends_on = None
 

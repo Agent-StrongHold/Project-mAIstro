@@ -78,11 +78,18 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # sync and continues the applicability tip as
     # `055_task_admission_generations`. This branch's canonical Goal store
     # (#1572) — which had itself taken `053`, then `054`, then `055` in the
-    # earlier collisions — re-parents onto develop's `055` as
-    # `056_canonical_goals`. Its upgrade is adoption-tolerant (`CREATE TABLE
-    # IF NOT EXISTS`, the 046/047 style) because the chain's
-    # stamp-back-and-re-upgrade walk re-runs it. The single linear head is
-    # now `056`.
+    # earlier collisions — re-parented onto develop's `055` as
+    # `056_canonical_goals` (adoption-tolerant upgrade: `CREATE TABLE IF NOT
+    # EXISTS`, the 046/047 style, because the chain's stamp-back-and-re-upgrade
+    # walk re-runs it). This sync then brought develop's own
+    # `043_invocation_quota_door` (#1196/#718) — re-parented onto whichever
+    # revision is develop's head at merge time, 046, then 047, 048, 050, 051,
+    # 052, 053, 054, and now `055` — onto that same `055` parent, the one this
+    # branch's Goal store had already claimed. Per this chain's standing
+    # convention — the later-integrated revision re-parents onto the landed
+    # tip, never the reverse — the Goal store re-parents onto the quota door,
+    # so the single linear head is again `056`, now continuing develop's
+    # quota-door revision.
     walked = {item.revision for item in directory.walk_revisions("base", "056")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
@@ -98,6 +105,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "053" in walked
     assert "054" in walked
     assert "055" in walked
+    assert "043_invocation_quota_door" in walked
     assert "056" in walked
     assert directory.get_heads() == ["056"]
 
