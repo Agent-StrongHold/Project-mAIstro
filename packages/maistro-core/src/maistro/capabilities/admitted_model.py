@@ -164,8 +164,11 @@ class AdmittedModelCalls:
         identity: tuple[str, str, str] | None = None,
         binding_id: str = "",
         timeout_s: float | None = None,
+        required_workspace_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        binding, actor, selected = await self._authorize(identity, binding_id)
+        binding, actor, selected = await self._authorize(
+            identity, binding_id, required_workspace_id=required_workspace_id
+        )
         async with aclosing(
             self._with_timeout(timeout_s).stream(
                 binding=binding,

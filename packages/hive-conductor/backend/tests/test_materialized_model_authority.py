@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from adapters.maistro_core import _construct_runtime
 from config import Settings
@@ -15,6 +16,7 @@ from services.agent_materialization import RuntimeSource, _build_runtime_agent
 from tests._admitted_model_fixture import setup
 
 from maistro.capabilities.binding_store import BindingResolutionError
+from maistro.capabilities.invocation import InvocationStatus
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_GATEWAY_CREDENTIAL_PROVIDER,
@@ -132,19 +134,55 @@ async def materialized(
     return s, agent
 
 
-async def complete(s, agent, **kwargs):
-    with bind_execution_context(
-        run_id=s.identity[0], node_run_id=s.identity[1], attempt_id=s.identity[2]
-    ):
-        return await agent._llm.complete([{"role": "user", "content": "hello"}], "gpt-5", **kwargs)
+@pytest.fixture(params=["complete", "stream"])
+def model_call(request):
+    async def call(s, agent, **kwargs):
+        with bind_execution_context(
+            run_id=s.identity[0], node_run_id=s.identity[1], attempt_id=s.identity[2]
+        ):
+            if request.param == "complete":
+                return await agent._llm.complete(
+                    [{"role": "user", "content": "hello"}], "gpt-5", **kwargs
+                )
+
+            def transport(http_request):
+                s.sent.append(http_request)
+                chunks = [
+                    {"choices": [{"index": 0, "delta": {"content": "answer"}}]},
+                    {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                    {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+                ]
+                body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+                return httpx.Response(200, content=(body + "data: [DONE]\n\n").encode())
+
+            set_test_transport(httpx.MockTransport(transport))
+            return [
+                chunk
+                async for chunk in agent._llm.stream(
+                    [{"role": "user", "content": "hello"}], "gpt-5", **kwargs
+                )
+            ]
+
+    return call
+
+
+async def assert_no_model_effect(s, earlier_usage):
+    assert s.sent == []
+    assert not await s.effects.invocation_store.list_effect(
+        run_id=s.identity[0],
+        node_run_id=s.identity[1],
+        binding_id="declared",
+        effect_key="agent-llm-1",
+    )
+    assert s.effects.usage_log.events_for("gpt-5") == earlier_usage
 
 
 @pytest.mark.parametrize("workspace", ["workspace", None])
 async def test_materialized_agent_uses_persisted_scope_actor_and_operator_binding(
-    monkeypatch, tmp_path, workspace
+    monkeypatch, tmp_path, workspace, model_call
 ):
     s, agent = await materialized(monkeypatch, tmp_path, workspace=workspace)
-    await complete(s, agent)
+    await model_call(s, agent)
     rows = await s.effects.invocation_store.list_effect(
         run_id=s.identity[0],
         node_run_id=s.identity[1],
@@ -161,43 +199,58 @@ async def test_materialized_agent_uses_persisted_scope_actor_and_operator_bindin
     assert (row.run_id, row.node_run_id, row.attempt_id) == s.identity
     assert row.binding.credential_refs == (DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,)
     assert s.sent[0].headers["Authorization"] == "Bearer fixture-key"
+    assert row.status is InvocationStatus.COMPLETED
     assert row.usage.input_units == 7
+    assert row.usage.output_units == 3
+    events = [
+        event
+        for event in s.effects.usage_log.events_for("gpt-5")
+        if event.invocation_id == row.invocation_id
+    ]
+    assert len(events) == 1
 
 
-async def test_definition_workspace_is_a_restriction_not_authority(monkeypatch, tmp_path):
+async def test_definition_workspace_is_a_restriction_not_authority(
+    monkeypatch, tmp_path, model_call
+):
     s, agent = await materialized(monkeypatch, tmp_path, workspace="foreign")
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(RunIntegrityError, match="workspace"):
-        await complete(s, agent)
-    assert s.sent == []
+        await model_call(s, agent)
+    await assert_no_model_effect(s, earlier_usage)
 
 
 @pytest.mark.parametrize(
     "options,revoked", [({"bindings": False}, False), ({"disabled": True}, False), ({}, True)]
 )
 async def test_materialized_agent_refuses_missing_disabled_or_revoked_binding(
-    monkeypatch, tmp_path, options, revoked
+    monkeypatch, tmp_path, options, revoked, model_call
 ):
     s, agent = await materialized(monkeypatch, tmp_path, **options)
     if revoked:
         await s.effects.bindings.revoke("declared")
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(BindingResolutionError):
-        await complete(s, agent)
-    assert s.sent == []
+        await model_call(s, agent)
+    await assert_no_model_effect(s, earlier_usage)
 
 
-async def test_materialized_agent_requires_real_live_attempt_lease(monkeypatch, tmp_path):
+async def test_materialized_agent_requires_real_live_attempt_lease(
+    monkeypatch, tmp_path, model_call
+):
     s, agent = await materialized(monkeypatch, tmp_path, leased=False)
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(RunIntegrityError, match="lease"):
-        await complete(s, agent)
-    assert s.sent == []
+        await model_call(s, agent)
+    await assert_no_model_effect(s, earlier_usage)
 
 
 @pytest.mark.parametrize("temperature", [None, 0.0, 0.3])
 async def test_materialized_sampling_preserves_omission_and_explicit_values(
-    monkeypatch, tmp_path, temperature
+    monkeypatch, tmp_path, temperature, model_call
 ):
     s, agent = await materialized(monkeypatch, tmp_path)
-    await complete(s, agent, **({} if temperature is None else {"temperature": temperature}))
+    await model_call(s, agent, **({} if temperature is None else {"temperature": temperature}))
     payload = json.loads(s.sent[0].content)
     if temperature is None:
         assert "temperature" not in payload
@@ -214,9 +267,11 @@ async def test_materialized_sampling_preserves_omission_and_explicit_values(
         "https://gateway.fixture",
     ],
 )
-async def test_materialized_client_preserves_configured_api_base(monkeypatch, tmp_path, base):
+async def test_materialized_client_preserves_configured_api_base(
+    monkeypatch, tmp_path, base, model_call
+):
     s, agent = await materialized(monkeypatch, tmp_path, api_base=base)
-    await complete(s, agent)
+    await model_call(s, agent)
     assert str(s.sent[0].url) == base.rstrip("/") + "/chat/completions"
 
 
@@ -259,19 +314,26 @@ async def test_tail_delegation_revisit_is_distinct_and_same_visit_replays(monkey
 
 
 @pytest.mark.parametrize("workspace", ["", " "])
-async def test_only_none_definition_scope_is_unrestricted(monkeypatch, tmp_path, workspace):
+async def test_only_none_definition_scope_is_unrestricted(
+    monkeypatch, tmp_path, workspace, model_call
+):
     s, agent = await materialized(monkeypatch, tmp_path, workspace=workspace)
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(RunIntegrityError, match="workspace"):
-        await complete(s, agent)
-    assert s.sent == []
+        await model_call(s, agent)
+    await assert_no_model_effect(s, earlier_usage)
 
 
-async def test_materialized_client_rechecks_revocation_before_replay(monkeypatch, tmp_path):
+async def test_materialized_client_rechecks_revocation_before_replay(
+    monkeypatch, tmp_path, model_call
+):
     s, agent = await materialized(monkeypatch, tmp_path)
-    await complete(s, agent)
+    await model_call(s, agent)
     assert len(s.sent) == 1
     await s.effects.bindings.revoke("declared")
     agent._llm.clear_turn()
+    earlier_usage = s.effects.usage_log.events_for("gpt-5")
     with pytest.raises(BindingResolutionError):
-        await complete(s, agent)
+        await model_call(s, agent)
     assert len(s.sent) == 1
+    assert s.effects.usage_log.events_for("gpt-5") == earlier_usage

@@ -123,7 +123,14 @@ or placeholder-only section.
   that authority; global definitions follow the admitted execution. Agent/delegation
   visits use distinct stable effect keys. Unset sampling stays unset, and Hive's
   configured API base keeps its exact path. This preserves the existing single-call
-  compatibility stream; full Agent streaming parity remains separate work.
+  compatibility stream in that prerequisite.
+
+- **Agent streams use the admitted incremental model lifecycle (#1981).**
+  Streaming retains persisted execution, operator Binding and materialized
+  Workspace restrictions, with per-call revocation and stable Agent/delegation
+  effect keys. Incremental tools, usage, replay and cancellation use the existing
+  canonical Provider lifecycle; omitted sampling and exact Hive API bases remain
+  unchanged.
 
 - **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
   `clarify` and the model fallback of `web_search` require a configured

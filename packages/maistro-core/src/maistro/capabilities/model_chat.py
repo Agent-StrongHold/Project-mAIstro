@@ -19,7 +19,8 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import aclosing
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
@@ -140,8 +141,9 @@ class GovernedLLMClient:
     """LLMClient adapter that sends every completion through ModelChatEgress.
 
     Agent strategies keep their existing LLMClient shape, while the actual
-    provider call resolves persisted execution and operator-declared Binding authority
-    through the shared AdmittedModelCalls adapter. ``set_turn``
+    provider call uses the configured AdmittedModelCalls to join persisted
+    execution, actor and operator Binding authority. No scope or Binding is
+    synthesized by this client. ``set_turn``
     is a small runtime context seam used by Agent.handle; it does not dispatch
     or own a second ledger.
 
@@ -236,7 +238,7 @@ class GovernedLLMClient:
         self._turn.set(None)
         self._sequence.set(0)
 
-    async def complete(
+    def _prepare_call(
         self,
         messages: list[dict[str, Any]],
         model: str,
@@ -247,7 +249,7 @@ class GovernedLLMClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[ModelChatRequest, tuple[str, str, str], str]:
         del stream, metadata
         from maistro.runs.store import RunIntegrityError
 
@@ -271,7 +273,6 @@ class GovernedLLMClient:
                 f"turn {turn}; call set_turn to start the new turn explicitly"
             )
         self._sequence.set(self._sequence.get() + 1)
-        run_id, node_run_id, attempt_id = turn
         request = ModelChatRequest(
             model=model,
             messages=[dict(message) for message in messages],
@@ -286,10 +287,34 @@ class GovernedLLMClient:
             if scope is not None
             else f"agent-llm-{self._sequence.get()}"
         )
+        return request, turn, effect_key
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request, identity, effect_key = self._prepare_call(
+            messages,
+            model,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=stream,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            metadata=metadata,
+        )
         result = await self._calls.complete(
-            identity=(run_id, node_run_id, attempt_id),
-            effect_key=effect_key,
             request=request,
+            identity=identity,
+            effect_key=effect_key,
             required_workspace_id=self._workspace_id,
         )
         return result.body
@@ -299,10 +324,23 @@ class GovernedLLMClient:
         messages: list[dict[str, Any]],
         model: str,
         **kwargs: Any,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Compatibility stream; canonical egress remains one non-stream call."""
-        body = await self.complete(messages, model, **kwargs)
-        yield body
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Yield admitted incremental chunks and close the canonical stream.
+
+        Consumers that stop early must close this iterator (for example with
+        ``contextlib.aclosing``) before leaving their execution context.
+        """
+        request, identity, effect_key = self._prepare_call(messages, model, **kwargs)
+        async with aclosing(
+            self._calls.stream(
+                request=request,
+                identity=identity,
+                effect_key=effect_key,
+                required_workspace_id=self._workspace_id,
+            )
+        ) as chunks:
+            async for chunk in chunks:
+                yield chunk
 
 
 class ModelCallResult(BaseModel):
