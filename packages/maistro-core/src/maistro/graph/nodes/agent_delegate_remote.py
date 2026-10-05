@@ -33,7 +33,7 @@ only path that already defines one) rather than a new one.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
 
 from pydantic import BaseModel, Field
@@ -635,6 +635,15 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if receipt:
             self._pause(inputs, task_id=receipt, mode="guest_peer", run_id=child_id)
             return DelegateRemoteOut()
+        # The staleness vouch is taken before the query: this visit is here
+        # only because `invoke` refused the row, so no live dispatch exists in
+        # this process (the service's process-local guard still enforces that
+        # independently), and the receipt the peer returns is its own immutable
+        # acceptance record for the delegation key -- definitive evidence, not
+        # a stale guess. Without a cutoff, a worker that crashed after the peer
+        # accepted (row RUNNING, dispatch_active=True) would raise
+        # UnsafeEffectRetry here forever and the receipt would never attach.
+        recovered_at = now_utc()
         reconciled = await self._guest_peers.reconcile(inputs.peer_name or "", key)
         if reconciled.status == "submitted" and reconciled.task_id:
             # The peer's idempotent receipt query answered: settle the
@@ -647,6 +656,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 key,
                 task_id=reconciled.task_id,
                 peer_url=reconciled.peer_url,
+                stale_before=recovered_at,
             )
             await self._attach_receipt(child_id, reconciled.task_id)
             self._pause(inputs, task_id=reconciled.task_id, mode="guest_peer", run_id=child_id)
@@ -665,6 +675,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         *,
         task_id: str,
         peer_url: str = "",
+        stale_before: datetime | None = None,
     ) -> None:
         """File recovery evidence on the dispatch Invocation, through the seam.
 
@@ -673,6 +684,11 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         from another process's private ledger is simply absent here; the
         receipt attach remains the canonical recovery either way, so an
         unavailable or absent row is not a failure of the recovery.
+
+        `stale_before` is the caller's vouch that the original dispatcher is
+        gone (or its outcome provably captured by the receipt query): without
+        it, reconciliation of a crashed RUNNING row with dispatch_active=True
+        is refused as unsafe and the receipt can never settle.
         """
         if self._effects is None:
             return
@@ -702,6 +718,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 "task_id": task_id,
                 "peer_url": peer_url,
             },
+            stale_before=stale_before,
         )
 
     @staticmethod

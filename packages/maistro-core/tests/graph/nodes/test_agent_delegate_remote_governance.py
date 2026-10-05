@@ -488,9 +488,7 @@ class TestDelegatedAuthorityIsAttenuated:
         store, project = await _spine()
         ctx, _parent = await _parent_and_ctx(store, project.project_id)
 
-        async def require_approval(
-            _binding: Any, _request: Any, context: Any
-        ) -> PolicyVerdict:
+        async def require_approval(_binding: Any, _request: Any, context: Any) -> PolicyVerdict:
             # The real engine's shape: a human approval satisfies the
             # REQUIRE_APPROVAL rule, so the approved re-run is ALLOW.
             if getattr(context, "approved", False):
@@ -761,6 +759,90 @@ class TestRemoteEffectsFollowInvocationRules:
         assert second.status == "paused"
         assert second.metadata["task_id"] == "remote-7"
         assert posts["n"] == 1, "the completed Invocation is the replay"
+
+    async def test_a_crashed_running_dispatch_settles_from_the_peer_receipt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A worker death after the peer accepted leaves the durable row
+        RUNNING with dispatch_active=True. Recovery settles that row from the
+        peer's receipt (with the staleness cutoff the evidence vouches for)
+        instead of raising UnsafeEffectRetry on every recovery visit."""
+        from maistro.graph.nodes import agent_delegate_remote as delegate_module
+
+        calls = {"post": 0, "get": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                calls["post"] += 1
+                return httpx.Response(200, json={"task_id": "remote-13"})
+            if request.method == "GET":
+                calls["get"] += 1
+                return httpx.Response(200, json={"task_id": "remote-13"})
+            return httpx.Response(405)
+
+        set_test_transport(httpx.MockTransport(handler))
+        store, project = await _spine()
+        ctx, parent = await _parent_and_ctx(store, project.project_id)
+        # One durable ledger across visits: the second visit is the new worker
+        # recovering the row the crashed process left behind.
+        effects = await delegation_effects(
+            workspace_id="workspace-1", project_id=project.project_id
+        )
+        node = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(supports_idempotency=True),
+            run_store=store,
+            effect_context=effects,
+        )
+        real_execute = delegate_module.AgentDelegateRemoteNode._execute_peer_delegation
+
+        async def die_after_peer_accept(
+            self: AgentDelegateRemoteNode, provider: Any, request: Any, **kwargs: Any
+        ) -> Any:
+            # The real POST crosses the boundary and the peer accepts; the
+            # worker then dies before the Invocation terminalizes.
+            await real_execute(self, provider, request, **kwargs)
+            raise KeyboardInterrupt("injected worker death after the peer accepted")
+
+        monkeypatch.setattr(
+            delegate_module.AgentDelegateRemoteNode,
+            "_execute_peer_delegation",
+            die_after_peer_accept,
+        )
+        with pytest.raises(KeyboardInterrupt):
+            await node.run(_inputs(), ctx)
+        monkeypatch.undo()
+
+        history = await _dispatch_invocations(
+            node,
+            parent.run_id,
+            (await store.get_run(_children_of(store, parent.run_id)[0].run_id)).provenance[
+                "delegation_key"
+            ],  # type: ignore[union-attr]
+        )
+        assert [row.status for row in history] == [InvocationStatus.RUNNING]
+        assert history[0].dispatch_active is True
+
+        # A fresh peer manager: the new worker holds no in-process receipt
+        # memo, so recovery must query the peer for the idempotent receipt.
+        recovered_node = AgentDelegateRemoteNode(
+            guest_peers=guest_peers_with_hub(supports_idempotency=True),
+            run_store=store,
+            effect_context=effects,
+        )
+        recovered = await recovered_node.run(_inputs(), ctx)
+        assert recovered.status == "paused"
+        assert recovered.metadata["paused_reason"] == "awaiting_remote_delegation"
+        assert recovered.metadata["task_id"] == "remote-13"
+        assert calls == {"post": 1, "get": 1}, "the receipt query, never a re-POST"
+
+        child = await store.get_run(recovered.metadata["run_id"])
+        assert child is not None
+        assert child.provenance["a2a_task_id"] == "remote-13"
+        history = await _dispatch_invocations(
+            node, parent.run_id, child.provenance["delegation_key"]
+        )
+        assert [row.status for row in history] == [InvocationStatus.COMPLETED]
+        assert history[0].result["task_id"] == "remote-13"
 
     async def test_a_retry_under_a_fresh_node_run_keeps_one_effect_identity(
         self,
