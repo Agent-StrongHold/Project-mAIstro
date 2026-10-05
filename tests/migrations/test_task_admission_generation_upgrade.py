@@ -546,7 +546,11 @@ class TestTheDowngrade:
 
         assert result.returncode != 0, "the downgrade discarded live v2 identity"
         assert "format_version" in result.stderr + result.stdout
-        assert _stamped_version() == "054"
+        # Head, not a fixed number: this branch (or any later one) re-parents
+        # onto the chain tip on every develop collision, and the invariant under
+        # test is that the refused downgrade leaves the stamp AT HEAD — #1047's
+        # user-model tables (055) merely continue past the refusing 054.
+        assert _stamped_version() == "055"
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 
