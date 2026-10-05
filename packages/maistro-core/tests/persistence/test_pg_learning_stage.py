@@ -12,6 +12,12 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import (
+    Actor,
+    MemoryExposureMode,
+    MemoryUndeclaredModeError,
+    MemoryWriteDenied,
+)
 from maistro.memory.learnings.lifecycle import InvalidStageTransition
 from maistro.persistence.pg_learnings import PgLearningStore
 from maistro.types.memory import Learning, LearningStage
@@ -124,7 +130,9 @@ def conn() -> TransactionedFakeConnection:
 
 @pytest.fixture
 def store(conn: TransactionedFakeConnection) -> PgLearningStore:
-    return PgLearningStore(FakePool(conn))  # type: ignore[arg-type]
+    # Stage semantics are under test here, not the ADR-057 fail-closed matrix,
+    # so declare the exposure mode the gate requires for mutations.
+    return PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.AGENT_MANAGED)  # type: ignore[arg-type]
 
 
 def make_learning(**overrides: Any) -> Learning:
@@ -246,3 +254,40 @@ async def test_store_writes_the_stage_columns(
     assert insert.args[19] is LearningStage.MEMORY
     assert insert.args[27] == ""
     assert insert.args[-1] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
+async def test_the_authority_gate_precedes_every_stage_query() -> None:
+    """ADR-057 on the pg twin: a denied or undeclared call issues no SQL (#390).
+
+    Both failure modes must raise before the pool is even touched — no
+    transaction, no SELECT, no guarded UPDATE, no ledger INSERT.
+    """
+    undeclared = PgLearningStore(FakePool(TransactionedFakeConnection()))  # type: ignore[arg-type]
+    with pytest.raises(MemoryUndeclaredModeError):
+        await undeclared.advance_stage(
+            7, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG
+        )
+
+    conn = TransactionedFakeConnection()
+    denied = PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)  # type: ignore[arg-type]
+    with pytest.raises(MemoryWriteDenied):
+        await denied.advance_stage(7, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG)
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
+async def test_a_system_authority_stage_move_reaches_the_transaction(
+    conn: TransactionedFakeConnection,
+) -> None:
+    """The principal, not the attribution string, decides the gate."""
+    store = PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)  # type: ignore[arg-type]
+    conn.queue_fetchrow(row_for(make_learning(id=7)))
+    conn.queue_execute("UPDATE 1")
+    learning = await store.advance_stage(
+        7, to_stage=LearningStage.LEARNING, actor="curator", org_id=ORG, authority=Actor.SYSTEM
+    )
+    assert learning.stage is LearningStage.LEARNING
+    assert any("UPDATE learnings" in c.query for c in conn.calls)

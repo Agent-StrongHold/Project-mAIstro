@@ -30,13 +30,14 @@ Frozen **reference** trees that specs ported from (hyperagent bundle, gateway sn
 | SPEC-091226-1341 | [Gates Ran path-scoped execution evidence](SPEC-091226-1341-gates-ran-path-scope-evaluator.md) |
 | SPEC-092626-1831 | [Workspace work campaigns (Proposed)](SPEC-092626-1831-workspace-work-campaigns.md) |
 | SPEC-093026-7a90 | [Closed-loop design process contract (Proposed)](SPEC-093026-7a90-closed-loop-design-process-contract.md) |
+| SPEC-100126-a9c4 | [Canonical promotion contract — M4-A9 (AC Defined)](SPEC-100126-a9c4-canonical-promotion-contract.md) |
 | SPEC-100126-c041 | [Workspace cutover Phase 0 contract (Proposed)](SPEC-100126-c041-workspace-cutover-phase-0-contract.md) |
 
 <!-- ac-defined-start -->
 
 ## AC Defined specs (implementation backlog)
 
-**55 specs** with acceptance criteria defined but not yet fully implemented.
+**56 specs** with acceptance criteria defined but not yet fully implemented.
 Regenerate: `uv run python scripts/generate-spec-ac-defined-index.py`.
 
 | ID | Title | File |
@@ -87,6 +88,7 @@ Regenerate: `uv run python scripts/generate-spec-ac-defined-index.py`.
 | SPEC-091726-7c2a | "A requirements interview precedes every Goal and CreativeBrief commit" | [SPEC-091726-7c2a-brief-interview-before-goal-commit.md](SPEC-091726-7c2a-brief-interview-before-goal-commit.md) |
 | SPEC-092826-a774 | CreativeBrief is a versioned Design Studio projection of one canonical Goal revision | [SPEC-092826-a774-creative-brief-contract.md](SPEC-092826-a774-creative-brief-contract.md) |
 | SPEC-092826-a780 | "Versioned human+AI artifact state, locks, guidance, and branch control" | [SPEC-092826-a780-versioned-creative-artifact-state.md](SPEC-092826-a780-versioned-creative-artifact-state.md) |
+| SPEC-100126-a9c4 | Canonical promotion contract (M4-A9) | [SPEC-100126-a9c4-canonical-promotion-contract.md](SPEC-100126-a9c4-canonical-promotion-contract.md) |
 | SPEC-100126-b779 | "Cross-artifact consistency evaluation and targeted refinement" | [SPEC-100126-b779-cross-artifact-consistency-evaluation.md](SPEC-100126-b779-cross-artifact-consistency-evaluation.md) |
 | SPEC-175 | Task progress webhook (conductor-router compatibility) | [SPEC-175-task-progress-webhook.md](SPEC-175-task-progress-webhook.md) |
 | SPEC-176 | Hive Conductor monorepo package | [SPEC-176-hive-conductor-package.md](SPEC-176-hive-conductor-package.md) |
