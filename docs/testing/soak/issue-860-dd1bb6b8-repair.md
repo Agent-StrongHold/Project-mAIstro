@@ -110,4 +110,3 @@ Checkpoint summary: checked 1 assigned issue; done 0 acceptance completions;
 skipped 0 assigned issues; errors 0 validation failures. Missing guessed paths
 above were explicitly skipped, not treated as passing evidence. Local commit
 contains this bounded validation/handoff, not an implementation-completion claim.
-
