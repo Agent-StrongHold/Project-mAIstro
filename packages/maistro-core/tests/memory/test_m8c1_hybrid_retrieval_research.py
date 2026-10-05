@@ -34,11 +34,14 @@ What the fixtures are and are not:
 
 Strategy shape (what "bounded hybrid" means here): vector candidates →
 *query-anchored* one-hop traversal of typed dependency edges → fusion.
-Anchoring expands only through entities the query itself names, so expansion
-is bounded by the query's own entity surface, and per-query expansion work is
-bounded by the admission budget regardless of graph size. With the budget at
-zero (and demotion off) the hybrid is exactly its vector baseline — the
-degeneration the tests pin, so "hybrid" can never quietly be something else.
+Anchoring expands only through entities the query itself names, and per-query
+expansion ADMISSIONS are bounded by the expansion budget — but the traversal
+SCAN is not: enumerating an anchor's dependency targets and their membership
+entries costs work that grows with the graph, so the latency accounting
+charges admissions AND inspections and no test certifies latency by the
+budget alone. With the budget at zero (and demotion off) the hybrid is
+exactly its vector baseline — the degeneration the tests pin, so "hybrid"
+can never quietly be something else.
 
 Trust boundary (the epic contract, enforced by construction):
 
@@ -165,8 +168,27 @@ def _validate_history(history: WorkspaceHistory) -> None:
     ids = history.record_ids
     if len(ids) != len(history.records):
         raise ValueError("duplicate memory ids in corpus")
+    _validate_query_ids(history.queries)
     _validate_query_ground_truth(history, ids)
     _validate_relations(history, ids)
+
+
+def _validate_query_ids(queries: tuple[Query, ...]) -> None:
+    """Query ids must be unique before any embedding is cached by id.
+
+    A retriever caches per-query vectors keyed by ``query_id``; a duplicate
+    id would silently overwrite the first query's vector with the second's
+    and then score both queries against that last vector — plausible-looking
+    recall numbers from a malformed query set, with nothing raising.
+    """
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for query in queries:
+        if query.query_id in seen and query.query_id not in duplicates:
+            duplicates.append(query.query_id)
+        seen.add(query.query_id)
+    if duplicates:
+        raise ValueError(f"duplicate query ids: {sorted(duplicates)}")
 
 
 def _validate_query_ground_truth(history: WorkspaceHistory, ids: frozenset[str]) -> None:
@@ -186,10 +208,24 @@ def _validate_query_ground_truth(history: WorkspaceHistory, ids: frozenset[str])
 
 
 def _validate_relations(history: WorkspaceHistory, ids: frozenset[str]) -> None:
-    """Edges must connect distinct, existing nodes; supersession must be real."""
+    """Edges must connect distinct, existing nodes; supersession must be real.
+
+    A dependency endpoint no record mentions is rejected, not silently kept:
+    it has no membership node, so traversal could never reach it, yet it
+    would still be counted as ground truth by ``graph_construction_error`` —
+    corrupting both the recall and the construction-error measurements it
+    feeds.
+    """
+    entities = {e for r in history.records for e in r.entities}
     for dep in history.dependencies:
         if dep.src == dep.dst:
             raise ValueError(f"self-dependency {dep.src}")
+        unknown = {dep.src, dep.dst} - entities
+        if unknown:
+            raise ValueError(
+                f"dependency {dep.src}->{dep.dst} names entities no record mentions: "
+                f"{sorted(unknown)}"
+            )
     for sup in history.supersessions:
         if sup.current not in ids or sup.stale not in ids:
             raise ValueError(f"supersession {sup.current}->{sup.stale} names unknown records")
@@ -388,10 +424,16 @@ def extract_graph(
             if rng.random() < rates.mention_drop:
                 continue
             memberships[entity].add(record.memory_id)
-        if rates.mention_spur > 0.0 and entities and rng.random() < rates.mention_spur:
-            stray = rng.choice(entities)
-            if stray not in record.entities:
-                memberships[stray].add(record.memory_id)
+        if rates.mention_spur > 0.0:
+            #: Pick from entities the record does NOT already mention, after
+            #: the fire-draw: a pick from all entities could land on a true
+            # mention, inject nothing, and leave even mention_spur = 1.0 with
+            # no error on records that mention everything — the realized rate
+            # would then vary with mention breadth instead of matching the
+            # requested one.
+            outside = [e for e in entities if e not in record.entities]
+            if outside and rng.random() < rates.mention_spur:
+                memberships[rng.choice(outside)].add(record.memory_id)
 
     dependencies: set[tuple[str, str]] = set()
     spurious: set[tuple[str, str]] = set()
@@ -464,10 +506,22 @@ class Hit:
     memory_id: str
     score: float
     provenance: tuple[ProvenanceStep, ...] = ()
+    #: How the hit entered the result — decided at admission time and kept
+    #: independent of the chain's contents. A hit admitted by expansion stays
+    #: ``expanded`` even if its chain is later found defective, so a dropped
+    #: chain is measured as the defect it is instead of being reclassified as
+    #: a direct hit that needs no chain (which would let provenance
+    #: completeness report a perfect 1.0 across exactly the bug it exists to
+    #: catch).
+    origin: str = "direct"
+
+    def __post_init__(self) -> None:
+        if self.origin not in ("direct", "expanded"):
+            raise ValueError(f"unknown hit origin {self.origin!r}")
 
     @property
     def is_expanded(self) -> bool:
-        return bool(self.provenance)
+        return self.origin == "expanded"
 
 
 @dataclass(frozen=True)
@@ -486,6 +540,15 @@ class RetrievalResult:
     hits: tuple[Hit, ...]
     work_units: int
     strategy: str
+    #: Expansion accounting, reported separately so a latency claim cannot be
+    #: certified by the budget alone. ``expansion_admissions`` (new candidates
+    #: fused in) is capped by the expansion budget. ``expansion_inspected`` —
+    #: dependency targets and membership entries the traversal enumerated,
+    #: whether or not anything was admitted — is NOT: it grows with the
+    #: graph's edge/membership surface however tight the budget is, and both
+    #: are charged to ``work_units``.
+    expansion_admissions: int = 0
+    expansion_inspected: int = 0
 
     @property
     def ids(self) -> tuple[str, ...]:
@@ -542,6 +605,21 @@ class WorkspaceRetriever:
         self._record_by_id: dict[str, MemoryRecord] = {r.memory_id: r for r in history.records}
         self._vectors: dict[str, tuple[float, ...]] = {}
         self._query_vectors: dict[str, tuple[float, ...]] = {}
+        #: Reverse membership view of the *extracted* graph: record id → the
+        #: entities the graph says it mentions. Anchoring reads this, never
+        #: the ground-truth ``record.entities`` — a mention the extractor
+        #: dropped must break anchoring exactly as it would on the real seam,
+        #: otherwise the harness leaks fixture truth into retrieval and
+        #: understates the cost of mention-extraction failures.
+        self._extracted_mentions: dict[str, frozenset[str]] = {}
+        if graph is not None:
+            mentions: dict[str, set[str]] = {}
+            for entity, members in graph.memberships.items():
+                for member in members:
+                    mentions.setdefault(member, set()).add(entity)
+            self._extracted_mentions = {
+                rid: frozenset(entities) for rid, entities in mentions.items()
+            }
         work = 0
         for record in history.records:
             self._vectors[record.memory_id] = embedder.embed(record.text)
@@ -590,25 +668,36 @@ class WorkspaceRetriever:
     # -- strategies ---------------------------------------------------------
 
     def vector_only(self, query: Query, k: int) -> RetrievalResult:
-        """Recency-blind cosine top-k.
+        """Cosine top-k with the durable similarity seam's exact semantics.
 
-        Semantics deliberately match the durable similarity seam
-        (``PgLearningStore.find_similar``: scope-filter, order by cosine
-        distance, limit) — the "current/vector-only" baseline the issue names.
+        ``PgLearningStore.find_similar`` scope-filters, orders by cosine
+        distance (``<=>``) and applies ``LIMIT`` — with *no*
+        positive-similarity predicate — so records with zero (or negative)
+        cosine inside the window are returned too. The baseline keeps them:
+        dropping zero-similarity rows would flatter vector-only recall by
+        declaring structurally-reachable evidence unreachable, and break
+        baseline equivalence with the real seam this strategy stands in for.
         """
         if k <= 0:
             raise ValueError("k must be >= 1")
         scored = self._vector_ranking(query)
-        hits = tuple(
-            Hit(memory_id=rid, score=round(score, 12)) for rid, score in scored[:k] if score > 0.0
-        )
+        hits = tuple(Hit(memory_id=rid, score=round(score, 12)) for rid, score in scored[:k])
         return RetrievalResult(hits=hits, work_units=self._vector_work(), strategy="vector_only")
 
     def vector_recency(self, query: Query, k: int) -> RetrievalResult:
         """Cosine  x  ADR-091 weight  x  linear recency decay, top-k.
 
-        The current working-memory projection's ranking policy (weight  x
-        recency over retrieved candidates).
+        A HYPOTHETICAL control, deliberately labeled as one: the shipped
+        indexed vector seam scores ``max(cosine, 0) x weight`` with no
+        recency term, and its composed recall adds lexical and vector terms
+        instead (``maistro/memory/working/indexed.py`` — ``recall_vector`` /
+        ``recall``). This strategy asks what a recency column would buy on
+        the stale-fact axis; its numbers are not the current policy's, and
+        must not be quoted as such.
+
+        Zero-similarity rows score exactly 0.0 under any multiplier and are
+        cut, matching the projection seam's own ``score > 0`` output filter
+        (unlike ``vector_only``, whose durable-seam semantics return them).
         """
         if k <= 0:
             raise ValueError("k must be >= 1")
@@ -639,8 +728,9 @@ class WorkspaceRetriever:
            the expansion budget is spent; every admitted record inherits a
            provenance chain naming the source candidate, entity, relation;
         4. fuse: ``score = beta  x  (admitting candidate's vector score)``;
-        5. optionally demote a returned hit that another returned hit
-           supersedes (x gamma), then re-sort once;
+        5. optionally demote a fused candidate that another fused candidate
+           supersedes (x gamma) over the FULL candidate set, then re-sort
+           once — before any window cut, so the repair holds at small k;
         6. return top-k.
 
         With ``expansion_budget = 0`` (and gamma = 1) this is exactly
@@ -656,109 +746,140 @@ class WorkspaceRetriever:
         #: the pool bound is a floor of k — ``candidate_pool`` bounds extra
         #: exploration beyond what the caller asked for, never the request
         #: itself (otherwise the budget-0 degeneration to vector_only is
-        #: not exact: hybrid would return fewer than k hits).
+        #: not exact: hybrid would return fewer than k hits). The pool keeps
+        #: zero-similarity rows for the same reason the baseline does: the
+        #: degeneration must be exact, row for row.
         pool_size = max(cfg.candidate_pool, k)
-        pool = [(rid, s) for rid, s in scored[:pool_size] if s > 0.0]
+        pool = scored[:pool_size]
         pool_ids = {rid for rid, _ in pool}
+        pool_scores = dict(pool)
         work = self._vector_work()
 
-        expansion_best, admissions = self._expand_candidates(query, pool, pool_ids)
-        work += admissions
+        expansion_best, admissions, inspected = self._expand_candidates(
+            query, pool, pool_ids, pool_scores
+        )
+        work += admissions + inspected
 
         fused_scores: dict[str, float] = {}
         provenance: dict[str, tuple[ProvenanceStep, ...]] = {}
+        origins: dict[str, str] = {}
         for rid, score in pool:
             fused_scores[rid] = score
             provenance[rid] = ()
+            origins[rid] = "direct"
         for member, (fused, step) in expansion_best.items():
             fused_scores[member] = fused_scores.get(member, 0.0) + fused
             provenance[member] = (*provenance.get(member, ()), step)
+            origins[member] = "expanded"
 
+        #: Demotion sees the FULL fused candidate set, not the truncated
+        #: window: a superseding record one slot outside top-k must still
+        #: demote the stale hit inside it, or the repair silently fails at
+        #: exactly the small windows a stale-lead question asks with.
         ranked = sorted(fused_scores.items(), key=lambda pair: (-pair[1], pair[0]))
-        hits = [
-            Hit(memory_id=rid, score=round(score, 12), provenance=provenance[rid])
+        ranked = self._demote_superseded(ranked)
+        hits = tuple(
+            Hit(
+                memory_id=rid,
+                score=round(score, 12),
+                provenance=provenance[rid],
+                origin=origins[rid],
+            )
             for rid, score in ranked[:k]
-            if score > 0.0
-        ]
-        hits = self._demote_superseded(hits, k)
-
-        return RetrievalResult(hits=tuple(hits), work_units=work, strategy="hybrid")
+        )
+        return RetrievalResult(
+            hits=hits,
+            work_units=work,
+            strategy="hybrid",
+            expansion_admissions=admissions,
+            expansion_inspected=inspected,
+        )
 
     def _expand_candidates(
         self,
         query: Query,
         pool: list[tuple[str, float]],
         pool_ids: set[str],
-    ) -> tuple[dict[str, tuple[float, ProvenanceStep]], int]:
+        pool_scores: dict[str, float],
+    ) -> tuple[dict[str, tuple[float, ProvenanceStep]], int, int]:
         """Bounded query-anchored one-hop expansion over dependency edges.
 
-        Returns the best (score, provenance step) per admitted member and
-        the admission count — expansion work is exactly its admissions, so
-        it is bounded by the budget however large the graph is.
+        Returns the best (score, provenance step) per admitted member, the
+        admission count, and the traversal inspection count. Admissions are
+        capped by the expansion budget; inspections are NOT — enumerating an
+        anchor's dependency targets and their membership entries is real
+        work the latency accounting must charge whether or not anything new
+        is admitted, so reported latency cannot be certified by the budget
+        alone while the scan itself scales with the graph. (The scan cannot
+        stop at budget exhaustion anyway: enumerating a target's membership
+        is what makes the scan a scan.)
 
         Anchoring: only entities the query text itself names are traversed,
-        and only the impact direction (who depends on the anchor). The
-        "what breaks if X changes" question is answered by X's dependents'
-        evidence; following what X itself depends on pulls blast-radius
-        noise that competes with (and on the seeded corpus crowds out) the
-        impact evidence.
+        and — through the extracted reverse-membership view — only
+        candidates the *graph* still says mention them. A mention the
+        extractor dropped breaks the anchor the way it would on the real
+        seam; ground truth is never consulted here. Only the impact
+        direction (who depends on the anchor) is followed. The "what breaks
+        if X changes" question is answered by X's dependents' evidence;
+        following what X itself depends on pulls blast-radius noise that
+        competes with (and on the seeded corpus crowds out) the impact
+        evidence.
+
+        Admission rule: any record the traversal reaches is admitted unless
+        it is already a POSITIVE-similarity pool member — those stand on
+        their own vector evidence. A zero-similarity pool member CAN be
+        rescued: the graph's fused term replaces its carried 0.0, which is
+        exactly the mechanism's point (the seam returned the record; the
+        graph supplies the reason it matters).
         """
         assert self._graph is not None  # callers check; narrows for mypy
         cfg = self._config
         query_text = query.text.lower()
         anchors = {entity for entity in self._graph.memberships if entity in query_text}
         expansion_best: dict[str, tuple[float, ProvenanceStep]] = {}
+        inspected = 0
         budget = cfg.expansion_budget
-        for rid, score in pool:
-            if budget <= 0:
-                break
-            record = self._record_by_id[rid]
-            for anchor in sorted(record.entities & anchors):
-                if budget <= 0:
-                    break
+        for rid, source_score in pool:
+            for anchor in sorted(self._extracted_mentions.get(rid, frozenset()) & anchors):
                 for target in sorted(self._graph.dependents(anchor)):
-                    if budget <= 0:
-                        break
+                    inspected += 1
                     for member in sorted(self._graph.records_for(target)):
+                        inspected += 1
+                        if member in expansion_best:
+                            continue
+                        if member in pool_ids and pool_scores[member] > 0.0:
+                            continue
                         if budget <= 0:
-                            break
-                        if member in pool_ids or member in expansion_best:
                             continue
                         budget -= 1
                         step = ProvenanceStep(
                             from_memory=rid, via_entity=target, relation="dependency"
                         )
-                        expansion_best[member] = (cfg.expansion_weight * score, step)
-        return expansion_best, cfg.expansion_budget - budget
+                        expansion_best[member] = (cfg.expansion_weight * source_score, step)
+        return expansion_best, cfg.expansion_budget - budget, inspected
 
-    def _demote_superseded(self, hits: list[Hit], k: int) -> list[Hit]:
-        """Demote a returned hit that another returned hit supersedes (x gamma).
+    def _demote_superseded(self, ranked: list[tuple[str, float]]) -> list[tuple[str, float]]:
+        """Demote a fused candidate that another fused candidate supersedes.
 
-        A returned hit whose superseding record is also returned loses gamma
+        Applied to the full ranking BEFORE any top-k cut, so a stale hit is
+        demoted whenever its replacement is a candidate at all — not only
+        when the replacement also survives the cut (the old
+        inside-the-window rule made the repair vanish exactly at the small k
+        where stale leads hurt most). The superseded candidate loses gamma
         of its score; the ranking re-sorts once. Inert at gamma = 1.
         """
         gamma = self._config.supersession_gamma
         if gamma >= 1.0 or self._graph is None:
-            return hits
-        returned_ids = {h.memory_id for h in hits}
-        demoted = False
-        adjusted: list[Hit] = []
-        for hit in hits:
-            superseding = self._graph.supersedes.get(hit.memory_id)
-            if superseding is not None and superseding in returned_ids:
-                adjusted.append(
-                    Hit(
-                        memory_id=hit.memory_id,
-                        score=round(hit.score * gamma, 12),
-                        provenance=hit.provenance,
-                    )
-                )
-                demoted = True
+            return ranked
+        candidate_ids = {rid for rid, _ in ranked}
+        adjusted: list[tuple[str, float]] = []
+        for rid, score in ranked:
+            superseding = self._graph.supersedes.get(rid)
+            if superseding is not None and superseding in candidate_ids:
+                adjusted.append((rid, score * gamma))
             else:
-                adjusted.append(hit)
-        if demoted:
-            return sorted(adjusted, key=lambda h: (-h.score, h.memory_id))[:k]
-        return hits
+                adjusted.append((rid, score))
+        return sorted(adjusted, key=lambda pair: (-pair[1], pair[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -778,8 +899,11 @@ def score_result(result: RetrievalResult, query: Query, k: int) -> dict[str, flo
       sufficient, condition — reported as such.
     - ``provenance_completeness`` — share of returned hits whose chain is
       intact: expanded hits must cite a real source and non-empty entity
-      (direct vector hits need no chain). Catches truncation/dedup bugs
-      that orphan evidence from its justification.
+      (direct vector hits need no chain). Expansion is decided by the hit's
+      admission-time origin, not by chain presence, so a hit whose chain was
+      lost is measured as the defect it is instead of being reclassified as
+      direct. Catches truncation/dedup bugs that orphan evidence from its
+      justification.
     - ``provenance_self_containment`` — share of *expanded* hits whose
       citing source is also inside the returned window. Below 1.0 means
       fusion admitted records whose justification fell outside the cut —
@@ -861,6 +985,8 @@ def evaluate_strategy(
         result = retriever.run(strategy_name, query, k)
         metrics = score_result(result, query, k)
         metrics["work_units"] = float(result.work_units)
+        metrics["expansion_admissions"] = float(result.expansion_admissions)
+        metrics["expansion_inspected"] = float(result.expansion_inspected)
         per_query.append(metrics)
         works.append(result.work_units)
 
@@ -880,7 +1006,11 @@ def storage_cost(history: WorkspaceHistory, graph: ExtractedGraph, dim: int) -> 
     entries — the added complexity whose justification the hypothesis is
     about, priced in the same units. Bytes are stated per-unit bounds (one
     float per vector component; one 8-byte reference per membership edge,
-    three per dependency edge, 16 per entity node), not allocator truth.
+    three per dependency edge, 16 per entity node, 16 per supersession
+    entry — a stale/current id pair), not allocator truth. Supersession
+    entries are part of the projection's index surface — the harness
+    reports their count separately AND prices them, so a temporal corpus
+    does not get its graph cost subsidized to zero.
     """
     memberships = sum(len(ids) for ids in graph.memberships.values())
     entities = len(graph.memberships)
@@ -892,7 +1022,12 @@ def storage_cost(history: WorkspaceHistory, graph: ExtractedGraph, dim: int) -> 
         "membership_edges": float(memberships),
         "dependency_edges": float(len(graph.dependencies)),
         "supersession_entries": float(len(graph.supersedes)),
-        "graph_bytes": float(memberships * 8 + 3 * 8 * len(graph.dependencies) + entities * 16),
+        "graph_bytes": float(
+            memberships * 8
+            + 3 * 8 * len(graph.dependencies)
+            + 16 * len(graph.supersedes)
+            + entities * 16
+        ),
     }
 
 
@@ -1074,13 +1209,20 @@ def seeded_history(seed: int, *, chain_length: int = 6, days: int = 60) -> Works
       current one); E0 has only its design fact;
     - *direct* query "Ei" counts exactly Ei's own records — any record
       naming another entity shares no token with the query;
-    - *relational* query "what breaks if E(i-1) changes" counts every record
-      mentioning E(i-1)'s dependent Ei — the consumer decision, its design,
-      its temporal pair, and the next-hop decision that mentions only Ei and
-      E(i+1). The next-hop record shares no token with the query (asserted
-      textually below), so vector-only retrieval cannot rank it; one
-      query-anchored hop from any Ei-mentioning candidate reaches it iff the
-      E(i)→E(i-1) edge survived extraction;
+    - *relational* query "what breaks if E(i) changes" counts the
+      CONSUMPTION STATEMENTS along the impact chain — E(i)'s dependent's
+      consumer decision ("E(i+1) consumes E(i) ..."), plus the next hop's
+      ("E(i+2) consumes E(i+1) ...") when it exists. Relevance is labeled
+      from the record template's ROLE (its fixed id suffix), never from the
+      entity-membership predicate the hybrid strategy expands through —
+      otherwise the headline comparison could not lose: hybrid would
+      "recall" whatever it expanded into by definition. The dependent's
+      design fact and temporal pair are deliberately NOT relevant: they name
+      E(i+1) but answer nothing about what breaks. The next-hop statement
+      shares no token with the query (asserted textually below), so
+      vector-only retrieval cannot rank it; one query-anchored hop from any
+      E(i)-mentioning candidate reaches it iff the E(i+1)→E(i) edge survived
+      extraction;
     - *temporal* queries ask after "Ei provisioning", where the stale and
       current facts score identically (same token counts) — the lead is
       decided by tie-break alone, i.e. by recency/supersession machinery.
@@ -1167,8 +1309,9 @@ def _seeded_queries(
 ) -> list[Query]:
     """Direct, relational, and temporal queries over the finished corpus.
 
-    Queries come after every record exists — the relational ground truth
-    counts the dependent's records, which the record pass creates last.
+    Relational relevance is labeled from record ROLE (the fixed
+    ``<entity>-consumes`` template ids along the impact chain), independent
+    of the membership predicate any strategy expands through.
     """
     queries: list[Query] = []
     for index, entity in enumerate(entities):
@@ -1191,15 +1334,19 @@ def _seeded_queries(
             )
         )
         if index + 1 < chain_length:
-            dependent_records = frozenset(
-                r.memory_id for r in records if entities[index + 1] in r.entities
-            )
+            # Impact-chain consumption statements: the dependent's own
+            # consumer decision, plus the next hop's when the chain
+            # continues. Role-labeled, not membership-labeled — see the
+            # seeded_history docstring.
+            relevant = {f"{entities[index + 1]}-consumes"}
+            if index + 2 < chain_length:
+                relevant.add(f"{entities[index + 2]}-consumes")
             queries.append(
                 Query(
                     query_id=f"relational-{entity}",
                     text=f"what breaks if {entity} changes",
                     family="relational",
-                    relevant=dependent_records,
+                    relevant=frozenset(relevant),
                 )
             )
         queries.append(
@@ -1224,26 +1371,6 @@ def _assert_relational_invisibility(
     entity E(i) — else vector-only could rank it and the "graph finds what
     similarity cannot" claim would be false.
     """
-    for query in history.queries:
-        if query.family != "relational":
-            continue
-        subject = query.query_id.removeprefix("relational-")
-        index = entities.index(subject)
-        if index + 2 >= chain_length:
-            continue
-        next_hop = next(
-            r for r in history.records if r.memory_id == f"{entities[index + 2]}-consumes"
-        )
-        if subject in HashEmbedder.tokens(next_hop.text):
-            raise ValueError(
-                f"fixture construction broken: {next_hop.memory_id} mentions {subject}"
-            )
-    _validate_history(history)
-    #: The property the whole comparison rides on, checked textually: the
-    #: *next-hop* record of a relational query (E(i+2)'s consumer decision,
-    #: which mentions only E(i+2) and E(i+1)) must not mention the queried
-    #: entity E(i) — else vector-only could rank it and the "graph finds
-    #: what similarity cannot" claim would be false.
     for query in history.queries:
         if query.family != "relational":
             continue
@@ -1349,6 +1476,50 @@ class TestEvidenceOnlyContract:
         with pytest.raises(ValueError, match="not in corpus"):
             WorkspaceRetriever(broken, TableEmbedder(_HAND_TABLE))
 
+    def test_duplicate_query_ids_rejected(self) -> None:
+        """Two queries sharing an id would poison the per-id vector cache.
+
+        The retriever caches query embeddings keyed by ``query_id``; a
+        duplicate silently overwrites the first query's vector and both are
+        then scored against the last one's — plausible recall numbers from a
+        broken query set, nothing raising. Rejected at validation instead.
+        """
+        history = hand_checked_history()
+        duplicated = (
+            *history.queries,
+            Query("q_direct", "a different text, same id", "direct", frozenset({"m4"})),
+        )
+        broken = WorkspaceHistory(
+            workspace_id="ws-dup-query",
+            records=history.records,
+            dependencies=history.dependencies,
+            supersessions=history.supersessions,
+            queries=duplicated,
+            now_day=10,
+        )
+        with pytest.raises(ValueError, match="duplicate query ids"):
+            WorkspaceRetriever(broken, TableEmbedder(_HAND_TABLE))
+
+    def test_unknown_dependency_endpoint_rejected(self) -> None:
+        """A dependency naming an entity no record mentions is refused.
+
+        Such an edge has no membership node, so traversal could never use
+        it, but ``graph_construction_error`` would still count it as ground
+        truth — silently corrupting both the recall and construction-error
+        numbers. Accepted-typo ground truth is fake evidence.
+        """
+        history = hand_checked_history()
+        broken = WorkspaceHistory(
+            workspace_id="ws-ghost-dep",
+            records=history.records,
+            dependencies=(*history.dependencies, Dependency("auth", "nosuchent", 4)),
+            supersessions=history.supersessions,
+            queries=history.queries,
+            now_day=10,
+        )
+        with pytest.raises(ValueError, match="entities no record mentions"):
+            WorkspaceRetriever(broken, TableEmbedder(_HAND_TABLE))
+
     def test_unknown_strategy_rejected(self) -> None:
         history = hand_checked_history()
         retriever = WorkspaceRetriever(history, TableEmbedder(_HAND_TABLE))
@@ -1405,10 +1576,12 @@ class TestHandCheckedArithmetic:
     def test_vector_only_cannot_rank_multihop_evidence(self) -> None:
         """q_relational, query = A: m3 = BR has dot 0 with the query.
 
-        m3 can never be a vector hit — structurally, at any k. Top-4 is
-        m1(1.0) then the 1/√2 band m2, m5, m6: relevant = {m2, m3} catches
-        only m2, so recall is exactly 1/2 and sufficiency 0 — the gap the
-        graph hop exists to close.
+        m3 can never be a *positive* vector hit — structurally, at any k.
+        Top-4 is m1(1.0) then the 1/√2 band m2, m5, m6: relevant = {m2, m3}
+        catches only m2, so recall is exactly 1/2 and sufficiency 0 — the
+        gap the graph hop exists to close. (m3 IS returned by the baseline
+        at deeper ranks, as ``find_similar``'s LIMIT returns it — with score
+        0.0 and no chance of outranking a positive hit.)
         """
         retriever = self._retriever()
         query = retriever.history.queries[1]
@@ -1419,6 +1592,30 @@ class TestHandCheckedArithmetic:
         metrics = score_result(result, query, 4)
         assert metrics["recall"] == pytest.approx(0.5)
         assert metrics["sufficiency"] == 0.0
+
+    def test_vector_only_keeps_zero_similarity_rows_like_the_seam(self) -> None:
+        """The baseline returns orthogonal rows inside the window, as the seam does.
+
+        ``find_similar`` orders by cosine distance and LIMITs — no
+        positive-similarity predicate — so at k=6 the hand fixture returns
+        the four positive hits AND the two orthogonal records (m3, m4) with
+        score 0.0. This is not cosmetic: q_relational's ground truth names
+        m3, so the seam-parity window recalls it (1.0) where a
+        positive-only window declares structurally-reachable evidence
+        unreachable (0.5 at k=4). Dropping zero rows flatters the baseline's
+        measured loss and breaks equivalence with the seam this strategy
+        stands in for.
+        """
+        retriever = self._retriever()
+        query = retriever.history.queries[1]
+        assert retriever.vector_only(query, 4).ids == ("m1", "m2", "m5", "m6")
+        result = retriever.vector_only(query, 6)
+        assert result.ids == ("m1", "m2", "m5", "m6", "m3", "m4")
+        assert [hit.score for hit in result.hits[-2:]] == [0.0, 0.0]
+        # The zero-similarity row IS relevant ground truth inside the window:
+        # the seam-parity baseline recalls it, at 0.0 score.
+        assert score_result(result, query, 6)["recall"] == pytest.approx(1.0)
+        assert score_result(result, query, 4)["recall"] == pytest.approx(0.5)
 
     def test_hybrid_reaches_multihop_evidence_within_default_budget(self) -> None:
         """Anchored hop from m1 over billing admits m3; fusion ranks it first.
@@ -1510,10 +1707,12 @@ class TestHandCheckedArithmetic:
     def test_recency_weighting_fixes_the_single_stale_pair(self) -> None:
         """Cosine  x  weight  x  recency: m6 (day 10) outranks m5 (day 2).
 
-        The honest control for the demotion test: the *current*
-        working-memory policy already repairs this case, because recency is
-        exactly what separates the pair. Equal weights (0.5) cancel, so
-        s(m5) = (1/√2)·(1/(1+8/30)) ≈ 0.558·(1/√2) < s(m6) = 1/√2.
+        The honest control for the demotion test — and a HYPOTHETICAL one:
+        the shipped indexed vector seam scores max(cosine, 0) x weight with
+        no recency term (``memory/working/indexed.py``), so this strategy is
+        what a recency column WOULD buy, not what the current policy does.
+        Recency is exactly what separates the pair. Equal weights (0.5)
+        cancel, so s(m5) = (1/√2)·(1/(1+8/30)) ≈ 0.558·(1/√2) < s(m6) = 1/√2.
         """
         retriever = self._retriever()
         query = retriever.history.queries[2]
@@ -1526,20 +1725,27 @@ class TestHandCheckedArithmetic:
         """The graph edge repairs the lead where the score is recency-blind.
 
         Budget 0 isolates the mechanism (no expansion noise). gamma = 0.25:
-        m5's 1/√2 becomes (1/√2)·0.25 once m6 is also returned (m6
-        supersedes m5), so m6 leads on fused score alone. The mechanism is
-        available to seams that have no recency column in their score at
-        all — the durable similarity path orders purely by cosine distance.
+        m5's 1/√2 becomes (1/√2)·0.25 because m6 is a fused candidate, so
+        m6 leads on fused score alone — and the demotion runs over the FULL
+        candidate set BEFORE the top-k cut, so the repair holds at k=1 too:
+        the old inside-the-window rule left m5 leading whenever its
+        replacement sat one slot outside the cut, i.e. exactly at the small
+        windows stale-lead questions ask with. The mechanism is available to
+        seams that have no recency column in their score at all — the
+        durable similarity path orders purely by cosine distance.
         """
         retriever = self._retriever(
             config=StrategyConfig(supersession_gamma=0.25, expansion_budget=0)
         )
         query = retriever.history.queries[2]
+        assert retriever.hybrid(query, 1).ids == ("m6",)
         result = retriever.hybrid(query, 2)
         assert result.ids[0] == "m6"
         assert result.hits[0].score == pytest.approx(1 / math.sqrt(2))
         assert result.hits[1].score == pytest.approx(0.25 / math.sqrt(2))
         metrics = score_result(result, query, 1)
+        assert metrics["stale_hit_rate"] == 0.0
+        metrics = score_result(result, query, 2)
         assert metrics["stale_hit_rate"] == 0.0
 
     def test_hybrid_anchoring_costs_the_direct_family(self) -> None:
@@ -1641,8 +1847,10 @@ class TestHandCheckedArithmetic:
         """Fixture storage: 6 vectors  x  5 floats; the graph adds its surcharge.
 
         Memberships: m1:1 + m2:2 + m3:2 + m4:0 + m5:1 + m6:1 = 7; graph
-        bytes = memberships*8 + deps*24 + entities*16 with the stated
-        per-unit bounds — priced, not guessed.
+        bytes = memberships*8 + deps*24 + supersessions*16 + entities*16
+        with the stated per-unit bounds — priced, not guessed, and the
+        temporal corpus's supersession entry is IN the surcharge, not a
+        free ride next to it.
         """
         history = hand_checked_history()
         graph = extract_graph(history, ExtractionErrorRates(), seed=0)
@@ -1656,26 +1864,111 @@ class TestHandCheckedArithmetic:
         assert cost["membership_edges"] == 7.0
         assert cost["dependency_edges"] == 2.0
         assert cost["supersession_entries"] == 1.0
-        assert cost["graph_bytes"] == 7 * 8 + 2 * 24 + 3 * 16
+        assert cost["graph_bytes"] == 7 * 8 + 2 * 24 + 1 * 16 + 3 * 16
         #: The added complexity is real and, on this corpus, bounded by the
         #: vector cost it augments — the hypothesis must buy more than this.
         assert cost["graph_bytes"] < cost["vector_bytes"]
 
-    def test_work_units_are_bounded_by_budget(self) -> None:
-        """Per-query hybrid work ≤ vector work + expansion budget.
+    def test_expansion_work_is_charged_exactly(self) -> None:
+        """Hybrid work = vector work + admissions + inspections, exactly.
 
-        Expansion work counts only admissions, so the bound holds by
-        construction — the test pins the accounting against drift (an edit
-        that starts charging unbounded work per query fails here).
+        Admissions are budget-capped; inspections (edges and membership
+        entries enumerated, admitted or not) are not — the accounting
+        charges both, so a latency claim cannot be certified by the budget
+        alone.
         """
         history = hand_checked_history()
         graph = extract_graph(history, ExtractionErrorRates(), seed=0)
         config = StrategyConfig(expansion_budget=2)
         retriever = WorkspaceRetriever(history, TableEmbedder(_HAND_TABLE), graph, config)
-        for query in history.queries:
-            vector_work = retriever.vector_only(query, 3).work_units
-            hybrid_work = retriever.hybrid(query, 3).work_units
-            assert hybrid_work <= vector_work + config.expansion_budget
+        query = history.queries[1]
+        result = retriever.hybrid(query, 3)
+        vector_work = retriever.vector_only(query, 3).work_units
+        assert result.expansion_admissions <= config.expansion_budget
+        assert result.work_units == (
+            vector_work + result.expansion_admissions + result.expansion_inspected
+        )
+        assert result.expansion_inspected > 0
+
+    def test_latency_is_not_certified_by_the_budget(self) -> None:
+        """A bigger membership surface costs real work even under one budget.
+
+        The regression the admissions-only accounting hid: enlarging the
+        traversed membership set (here: billing's membership grown to 40
+        entries) leaves admissions capped at the budget while the scan
+        enumerates every entry. The reported p95/work must move with that
+        graph-size-dependent work — otherwise "latency bound = vector +
+        budget" is true by construction and measures nothing.
+        """
+        history = hand_checked_history()
+        graph = extract_graph(history, ExtractionErrorRates(), seed=0)
+        config = StrategyConfig(expansion_budget=2)
+        grown_members = frozenset({f"index-only-{i}" for i in range(40)}) | {"m2", "m3"}
+        grown = dataclasses.replace(
+            graph,
+            memberships={**graph.memberships, "billing": grown_members},
+        )
+        plain = WorkspaceRetriever(history, TableEmbedder(_HAND_TABLE), graph, config)
+        grown_retriever = WorkspaceRetriever(history, TableEmbedder(_HAND_TABLE), grown, config)
+        query = history.queries[1]
+        base = plain.hybrid(query, 3)
+        measured = grown_retriever.hybrid(query, 3)
+        # Admissions hit the same cap; the enumeration is what grew.
+        assert measured.expansion_admissions == config.expansion_budget
+        assert measured.expansion_inspected >= 40 + base.expansion_inspected
+        vector_work = plain.vector_only(query, 3).work_units
+        assert measured.work_units > vector_work + config.expansion_budget
+        assert measured.work_units == (
+            vector_work + measured.expansion_admissions + measured.expansion_inspected
+        )
+
+    def test_anchoring_uses_extracted_mentions_not_ground_truth(self) -> None:
+        """A dropped mention breaks its record's anchor, as on the real seam.
+
+        The extractor lost m1's ``auth`` mention: m1 must no longer anchor
+        the expansion even though ground truth still says it mentions auth.
+        m2 (whose extracted mentions survive) anchors instead, so m3 is
+        admitted through the *worse* candidate — fused 1.25 x (1/√2) — and
+        the provenance chain names m2. Reading ground-truth entities here
+        would leak fixture truth into retrieval and understate
+        mention-extraction failures.
+        """
+        history = hand_checked_history()
+        graph = extract_graph(history, ExtractionErrorRates(), seed=0)
+        dropped = dataclasses.replace(
+            graph,
+            memberships={**graph.memberships, "auth": frozenset({"m2", "m5", "m6"})},
+        )
+        retriever = WorkspaceRetriever(history, TableEmbedder(_HAND_TABLE), dropped)
+        query = history.queries[1]
+        result = retriever.hybrid(query, 3)
+        assert "m3" in result.ids  # the hop still exists — through m2 only
+        by_id = {hit.memory_id: hit for hit in result.hits}
+        step = by_id["m3"].provenance[0]
+        assert step.from_memory == "m2"
+        assert step.from_memory != "m1", "anchoring read ground truth, not the extracted graph"
+        assert by_id["m3"].score == pytest.approx(1.25 / math.sqrt(2))
+
+    def test_expanded_origin_is_measured_independent_of_chain_integrity(self) -> None:
+        """A chain-less expanded hit is a defect, not a reclassified direct hit.
+
+        Expansion origin is fixed at admission; a hit whose provenance was
+        lost (truncation/dedup bug) stays ``expanded`` with an empty chain,
+        so completeness reports the defect instead of awarding the hit a
+        free pass as a chain-free direct result.
+        """
+        query = hand_checked_history().queries[1]
+        orphaned = RetrievalResult(
+            hits=(
+                Hit(memory_id="m1", score=1.0, origin="direct"),
+                Hit(memory_id="m3", score=1.25, provenance=(), origin="expanded"),
+            ),
+            work_units=1,
+            strategy="hybrid",
+        )
+        metrics = score_result(orphaned, query, 2)
+        assert metrics["expanded_hits"] == 1.0
+        assert metrics["provenance_completeness"] == pytest.approx(0.5)
 
     def test_evaluation_summary_is_stable_and_shaped(self) -> None:
         """The benchmark output: fixed metric keys, deterministic values."""
@@ -1692,6 +1985,8 @@ class TestHandCheckedArithmetic:
             "stale_hit_rate",
             "expanded_hits",
             "work_units",
+            "expansion_admissions",
+            "expansion_inspected",
             "p95_work_units",
             "queries",
         }
@@ -1716,7 +2011,7 @@ class TestSeededCorpus:
         """Same seed, same corpus; the chain template fixes the counts.
 
         6 entities → E0 design + 5 x (design, consumes, stale, current) = 21
-        records; 5 direct + 5 relational + 5 temporal = 15 queries.
+        records; 5 direct + 4 relational + 5 temporal = 14 queries.
         """
         first = seeded_history(11)
         second = seeded_history(11)
@@ -1733,12 +2028,19 @@ class TestSeededCorpus:
         other = seeded_history(12)
         assert other.workspace_id != first.workspace_id
 
-    def test_relational_ground_truth_is_the_dependents_evidence(self) -> None:
-        """Relational GT = every record mentioning the dependent entity.
+    def test_relational_ground_truth_is_role_labeled(self) -> None:
+        """Relational GT = the impact chain's consumption statements, by role.
 
-        "What breaks if E(i-1) changes" is answered by everything known
-        about E(i): its consumer decision, its design, its temporal pair,
-        and the next-hop decision (which mentions only E(i) and E(i+1)).
+        "What breaks if E(i) changes" is answered by E(i+1)'s consumer
+        decision ("E(i+1) consumes E(i) ...") plus the next hop's ("E(i+2)
+        consumes E(i+1) ...") when the chain continues. The labels come
+        from the record template's fixed role ids — NOT from the
+        entity-membership predicate the hybrid strategy expands through —
+        and the dependent's design/temporal records, which membership alone
+        would sweep in, are excluded: they name E(i+1) but answer nothing
+        about what breaks. Without this independence, hybrid recall would
+        equal its own expansion set by definition and the headline number
+        would be a self-consistency check.
         """
         history = seeded_history(11)
         entities = _SEED_ENTITIES[:6]
@@ -1747,39 +2049,53 @@ class TestSeededCorpus:
                 continue
             subject = query.query_id.removeprefix("relational-")
             index = entities.index(subject)
-            expected = frozenset(
+            expected = {f"{entities[index + 1]}-consumes"}
+            if index + 2 < len(entities):
+                expected.add(f"{entities[index + 2]}-consumes")
+            assert query.relevant == frozenset(expected)
+            # Strictly narrower than the dependent's membership set: design
+            # and temporal facts of E(i+1) are not impact evidence.
+            membership = frozenset(
                 r.memory_id for r in history.records if entities[index + 1] in r.entities
             )
-            assert query.relevant == expected
-            #: ...and the next-hop record (E(i+2)'s consumer decision) is
-            #: invisible to the query — the property vector-only loses on.
+            assert query.relevant < membership
+            irrelevant = membership - query.relevant
+            assert all(rid.endswith(("-design", "-v1-stale", "-v2-current")) for rid in irrelevant)
+            #: ...and the next-hop record is invisible to the query — the
+            #: property vector-only loses on.
             if index + 2 < len(entities):
                 next_hop = next(
                     r for r in history.records if r.memory_id == f"{entities[index + 2]}-consumes"
                 )
                 assert subject not in next_hop.text
+                assert subject not in HashEmbedder.tokens(next_hop.text)
 
     def test_vector_only_misses_relational_recall_hybrid_catches(self) -> None:
         """The seeded thesis check: hybrid relational recall > vector-only.
 
-        Guaranteed, not hoped: the next-hop records share no token with the
-        query (asserted textually at build), the hashed embedder is exact
+        The next-hop consumption statement shares no token with the query
+        (asserted textually at build), the hashed embedder is exact
         per-token, and the clean graph holds the needed edge — so the one
         anchored hop is the only route to that evidence. Family means over
-        the 4 relational queries at k=8, budget 6: hybrid returns the whole
-        dependents' evidence set (recall 1.0, sufficiency 1.0) while
-        vector-only catches only the consumer decision (recall ≈ 0.2125:
-        three queries expose 1/5 of the set, one exposes 1/4).
+        the 4 relational queries at k=8, budget 6: vector-only catches only
+        each chain's direct consumer decision (the one record sharing the
+        queried entity's token) — recall 0.625, sufficiency 0.25 — while
+        hybrid returns the whole impact chain (recall 1.0, sufficiency 1.0).
+        The gap is real, not definitional: relevance is role-labeled, so a
+        broken edge or a dropped mention now *can* lose the second-order
+        record, which the stale-edge sweep below measures.
         """
         history, _graph, retriever = self._built(11)
         relational = tuple(q for q in history.queries if q.family == "relational")
         assert len(relational) == 4
         vector_summary = evaluate_strategy(retriever, "vector_only", 8, relational)
         hybrid_summary = evaluate_strategy(retriever, "hybrid", 8, relational)
-        assert vector_summary["recall"] == pytest.approx((3 * (1 / 5) + 1 / 4) / 4)
-        assert vector_summary["sufficiency"] == 0.0
+        # Three queries catch 1 of 2 chain statements; the chain-end query
+        # (no second hop exists) catches its only statement.
+        assert vector_summary["recall"] == pytest.approx((3 * (1 / 2) + 1 / 1) / 4)
+        assert vector_summary["sufficiency"] == pytest.approx(1 / 4)
         assert hybrid_summary["recall"] == pytest.approx(1.0)
-        assert hybrid_summary["sufficiency"] == 1.0
+        assert hybrid_summary["sufficiency"] == pytest.approx(1.0)
         assert hybrid_summary["expanded_hits"] > 0.0
 
     def test_hybrid_anchoring_costs_the_direct_family_at_scale(self) -> None:
@@ -1799,12 +2115,22 @@ class TestSeededCorpus:
         assert vector_summary["recall"] == pytest.approx(1.0)
         assert hybrid_summary["recall"] < vector_summary["recall"]
 
-    def test_work_units_bounded_per_query_on_seeded_corpus(self) -> None:
-        """p95 hybrid work ≤ p95 vector work + budget, over all 14 queries."""
+    def test_work_units_charge_traversal_per_query_on_seeded_corpus(self) -> None:
+        """Admissions stay budget-capped per query; inspections are charged.
+
+        The budget caps what fusion ADMITS, never what traversal ENUMERATES:
+        per-query admissions ≤ budget, and hybrid work is exactly vector
+        work + admissions + inspections — the breakdown that keeps the
+        latency column honest about graph-size-dependent scanning.
+        """
         retriever = self._built(11, config=StrategyConfig(expansion_budget=3))[2]
-        vector_summary = evaluate_strategy(retriever, "vector_only", 5)
-        hybrid_summary = evaluate_strategy(retriever, "hybrid", 5)
-        assert hybrid_summary["p95_work_units"] <= vector_summary["p95_work_units"] + 3
+        for query in retriever.history.queries:
+            result = retriever.hybrid(query, 5)
+            vector_work = retriever.vector_only(query, 5).work_units
+            assert result.expansion_admissions <= 3
+            assert result.work_units == (
+                vector_work + result.expansion_admissions + result.expansion_inspected
+            )
 
     def test_extraction_error_tracks_injected_rates(self) -> None:
         """Measured construction error equals the injected rates (closed loop)."""
@@ -1813,6 +2139,30 @@ class TestSeededCorpus:
         assert graph_construction_error(history, clean)["edge_miss_rate"] == 0.0
         blinded = extract_graph(history, ExtractionErrorRates(edge_miss=1.0), seed=5)
         assert graph_construction_error(history, blinded)["edge_miss_rate"] == 1.0
+
+    def test_spurious_mention_rate_is_guaranteed(self) -> None:
+        """mention_spur = 1.0 injects one outside mention per record, always.
+
+        The stray pick comes from entities the record does NOT already
+        mention, so the fire can no longer land on a true mention and inject
+        nothing — otherwise the realized rate would vary with mention
+        breadth and the sensitivity sweep would not be sweeping the named
+        rate. (A record mentioning every entity in the vocabulary has no
+        outside entity; the corpus here has none of those.)
+        """
+        history = seeded_history(11)
+        spurious = extract_graph(history, ExtractionErrorRates(mention_spur=1.0), seed=5)
+        injected = 0
+        for record in history.records:
+            stray = {
+                entity
+                for entity in spurious.memberships
+                if record.memory_id in spurious.memberships[entity]
+                and entity not in record.entities
+            }
+            assert len(stray) == 1, f"{record.memory_id}: expected exactly 1 stray mention"
+            injected += 1
+        assert injected == len(history.records)
 
     def test_extraction_blindness_removes_the_hybrid_gain(self) -> None:
         """100% edge miss on the seeded corpus: hybrid ≡ vector-only.
@@ -1831,12 +2181,16 @@ class TestSeededCorpus:
     def test_stale_edges_degrade_hybrid_relational_recall(self) -> None:
         """Incorrect-edge sweep: the relational gain dies as spurs rise.
 
-        At spur 0 the gain is maximal (recall 1.0 at k=8); at spur 1.0 every
+        At spur 0 the gain is maximal (recall 1.0 at k=8). At spur 1.0 every
         true edge is rerouted off its original destination (the error model
-        never reroutes onto the destination it replaced), so anchors keep at
-        most accidental neighbors and hybrid collapses toward its vector
-        baseline. The middle rate is not asserted monotone: each rate re-rolls
-        the reroutes independently, so no rate's edge set contains another's.
+        never reroutes onto the destination it replaced) — but a reroute can
+        still land ON an anchor from a further hop, so the collapse is not
+        the exact no-edges floor (that floor is pinned by the 100% miss
+        test): what must hold is that the gain is gone — recall strictly
+        below clean and unable to exceed the vector baseline by more than
+        the accidental-rescue residue one reroute can buy. The middle rate
+        is not asserted monotone: each rate re-rolls the reroutes
+        independently, so no rate's edge set contains another's.
         """
         history = seeded_history(11)
         relational = tuple(q for q in history.queries if q.family == "relational")
@@ -1846,9 +2200,16 @@ class TestSeededCorpus:
             retriever = WorkspaceRetriever(history, HashEmbedder(dim=256), graph)
             summary = evaluate_strategy(retriever, "hybrid", 8, relational)
             recalls.append(summary["recall"])
+        baseline = evaluate_strategy(
+            WorkspaceRetriever(history, HashEmbedder(dim=256)), "vector_only", 8, relational
+        )
         assert recalls[0] == pytest.approx(1.0)
-        assert recalls[2] <= 0.45
-        assert recalls[1] < 1.0
+        assert recalls[1] < recalls[0]
+        # Fully stale edges lose the graph gain: at most the baseline plus
+        # one accidental rescue (one query's second-order statement reached
+        # by a rerouted edge landing back on its anchor).
+        assert recalls[2] < recalls[0]
+        assert recalls[2] <= baseline["recall"] + 0.25
 
     def test_stale_fact_leads_repaired_by_demotion_on_seeded_corpus(self) -> None:
         """Temporal family: recency-blind vector leads with stale facts;

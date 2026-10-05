@@ -50,24 +50,36 @@ What it adds is the reproducible measurement machinery the benchmark procedure n
 separated research artifact:
 `packages/maistro-core/tests/memory/test_m8c1_hybrid_retrieval_research.py` (test suite only;
 it imports no maistro module — AST-pinned by its own contract test, M8 guardrails 1-2).
-Validated on deterministic hand-checked fixtures (38 checks; six mutation probes — inert
-fusion weight, age-blind recency, unbounded budget, dropped provenance chains, no-op
-supersession, unanchored expansion — each caught by the suite), it implements:
+Validated on deterministic hand-checked fixtures (45 checks; ten regression probes against
+the pre-review harness — zero-similarity baseline rows, demotion before the top-k cut,
+admission-time expansion origin, extracted-mention anchoring, graph-size-dependent latency,
+duplicate query ids, ghost dependency endpoints, guaranteed spurious-mention rate, priced
+supersession entries, role-labeled relational ground truth — each exhibited by the old code
+and each rejected by the repaired suite), it implements:
 
 - a synthetic Workspace-history corpus with ground truth by construction: entities in a
   dependency chain, projects, consumer decisions, temporal fact pairs with supersession, and
   cross-document relations — every record set the issue's experiment description names;
-- three strategies: recency-blind cosine top-k (the `find_similar` semantics — the
-  "current/vector-only" baseline), cosine x weight x recency (the current working-memory
-  policy), and a **bounded, query-anchored hybrid**: vector candidates, one-hop traversal of
-  typed dependency edges through entities the query itself names, fusion with a stated beta,
-  optional supersession demotion (gamma) — with a hard per-query expansion budget;
+  relational relevance is labeled from each record's template ROLE (the impact chain's
+  consumption statements), never from the entity-membership predicate the hybrid strategy
+  expands through, so the headline comparison can lose;
+- three strategies: recency-blind cosine top-k (the `find_similar` semantics, INCLUDING its
+  zero-similarity rows — the SQL has no positive-similarity predicate), a cosine x weight x
+  recency **hypothetical control** (the shipped indexed seam scores `max(cosine, 0) x weight`
+  with no recency term; its numbers are not the current policy's), and a **bounded,
+  query-anchored hybrid**: vector candidates, one-hop traversal of typed dependency edges
+  through entities the query itself names (anchored via the EXTRACTED graph's mentions, not
+  ground truth), fusion with a stated beta, optional supersession demotion (gamma) applied
+  over the full candidate set BEFORE the top-k cut — with a hard per-query expansion budget;
 - the issue's full measure list: recall/precision, evidence sufficiency (the deterministic
   stand-in for answer/task quality: a generator cannot answer from context lacking the
-  evidence), provenance completeness **and** self-containment, work-unit latency accounting
-  with nearest-rank p95, storage/index cost in stated per-unit bounds, graph-construction
-  error (edge miss/spur rates against ground truth), and sensitivity to stale facts and
-  incorrect edges via injected-rate sweeps.
+  evidence), provenance completeness **and** self-containment (expansion origin fixed at
+  admission, so a lost chain is measured as a defect, not reclassified as a direct hit),
+  work-unit latency accounting that charges admissions AND traversal inspections (edges and
+  membership entries enumerated — budget-capped admissions alone cannot certify latency)
+  with nearest-rank p95, storage/index cost in stated per-unit bounds including supersession
+  entries, graph-construction error (edge miss/spur rates against ground truth), and
+  sensitivity to stale facts and incorrect edges via injected-rate sweeps.
 
 What the fixtures demonstrate (synthetic corpora, **not** evidence about real embeddings or
 real Workspaces):
@@ -75,9 +87,12 @@ real Workspaces):
 - **The mechanism is real.** Relational evidence whose text shares no token with the query is
   structurally invisible to vector-only retrieval (cosine contributions are exactly 0) and
   reachable by one bounded hop over a dependency edge. On the seeded corpus (relational family,
-  k=8): hybrid recall 1.000 / sufficiency 1.000 vs vector-only recall 0.2125 / sufficiency
-  0.000. In the hand fixture the multi-hop evidence ranks first overall (fused 1.25 vs the
-  best vector hit's 1.0) at the same k where vector-only's sufficiency was 0.
+  k=8): hybrid recall 1.000 / sufficiency 1.000 vs vector-only recall 0.625 / sufficiency
+  0.250. The gap is not definitional: relevance is role-labeled (the impact chain's
+  consumption statements), so a broken edge or a dropped mention can lose the second-order
+  record — which the error sweeps below measure. In the hand fixture the multi-hop evidence
+  ranks first overall (fused 1.25 vs the best vector hit's 1.0) at the same k where
+  vector-only's sufficiency was 0.
 - **The cost is real too.** The same anchoring that finds impact evidence pollutes simple
   factual queries: on the seeded direct family, hybrid recall falls 1.000 to 0.850 and
   sufficiency 1.000 to 0.400 at k=8 — fused dependents' records displace the queried entity's
@@ -86,26 +101,39 @@ real Workspaces):
   this benchmark exists to inform.
 - **Recency-blind similarity answers with superseded facts.** With content-identical stale and
   current facts, vector-only leads with the stale one (id tiebreak) in 100% of seeded temporal
-  queries. The current weight-x-recency policy repairs a single pair; supersession demotion
-  (a graph mechanism, gamma = 0.25) repairs it without any recency signal — the relevant
-  repair for seams whose score has no recency column at all.
+  queries. A weight-x-recency control (hypothetical, see above) repairs a single pair;
+  supersession demotion (a graph mechanism, gamma = 0.25) repairs it without any recency
+  signal — and, applied over the full candidate set before the top-k cut, it also repairs the
+  k=1 window where an inside-the-window rule silently fails. The relevant repair is for seams
+  whose score has no recency column at all.
 - **Construction error is the failure surface.** At 100% edge miss, hybrid degenerates *exactly*
   to vector-only (the structural downside floor: a wrong graph costs the difference, never the
   baseline). One false "plants depends on auth" edge, pointing at a populated entity, both
   loses the true hop and leads the context with a watering-plants distractor. Rerouting all
-  true edges (spur rate 1.0) collapses relational recall from 1.000 to <= 0.45.
+  true edges (spur rate 1.0) drops seeded relational recall from 1.000 to 0.500 — BELOW the
+  vector-only baseline (0.625): a wrong graph is worse than no graph, because admitted noise
+  displaces weakly-ranked relevant rows from the window. This is the number a real experiment
+  must beat, not a rounding artifact.
 - **Fusion can orphan its own justifications.** Provenance chains stay intact (completeness
   1.0), but at k=1 the returned evidence cites a witness outside the returned window
   (self-containment 0.0): fusion promotes admitted records above their admitting candidate. A
   real implementation must reserve a slot for the witness or re-attribute the chain.
 - **The surcharge is priced and small at fixture scale.** On the 21-record seeded corpus:
-  vectors 43,008 bytes vs graph 424 bytes (entity nodes + membership/dependency/supersession
-  edges, stated per-unit bounds); hybrid p95 work 30 vs vector-only 26 units (budget 6).
+  vectors 43,008 bytes vs graph 504 bytes (entity nodes + membership/dependency/supersession
+  entries at stated per-unit bounds — supersession entries are part of the index surface and
+  are priced, not reported beside it).
+- **The latency column now tells the truth about traversal.** On the seeded corpus at k=5
+  (budget 6): vector-only p95 26 units vs hybrid p95 60 — the hybrid's mean 53.9 units carry
+  24.6 membership/edge inspections against only 3.2 budget-capped admissions. An
+  admissions-only accounting would have reported ~29 and certified the budget while the scan
+  scaled with the graph; the repaired accounting charges both, so the bound cannot be true by
+  construction.
 
-Executed probe record (head 31d891a561, 2026-10-05):
-`uv run pytest packages/maistro-core/tests/memory/test_m8c1_hybrid_retrieval_research.py -q`
--> 38 passed; `uv run ruff check` and `uv run ruff format --check` clean on the module; the
-six mutation probes above each produce failures when applied to the harness.
+Executed probe record (repair round for PR #1972 review findings, branch `auto-920`,
+2026-10-05): `uv run pytest
+packages/maistro-core/tests/memory/test_m8c1_hybrid_retrieval_research.py -q` -> 45 passed;
+`uv run ruff check` and `uv run ruff format --check` clean on the module; ten regression
+probes (listed above) each fail against the pre-repair harness and pass against this one.
 
 ## Benchmark procedure (what a real experiment must do)
 
@@ -152,6 +180,8 @@ where it remains subject to scope predicates as authorization boundaries.
   holding the result.
 - Move to **REJECT** if real runs show the direct-family degradation dominating the relational
   gain under honest accounting, or if real extraction error (miss/spur rates measured against
-  a hand-audited sample) erases the gain the clean-graph fixtures show.
+  a hand-audited sample) erases the gain the clean-graph fixtures show — the fixtures already
+  bound the failure shape: at full edge spur, hybrid recall fell BELOW its vector baseline
+  (0.500 vs 0.625) because misroutes displace weakly-ranked relevant rows.
 
 No adoption is authorized by this note.
