@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +44
+  packages/maistro-core/tests: +45
+  packages/maistro-server/tests: +1
 ---
 # 959 — external Agent delegation bound to canonical identity and evidence
 
@@ -9,7 +10,7 @@ capability effect, and the tests follow the two halves of that change.
 
 ## What moved
 
-**+21 in `tests/graph/nodes/test_agent_delegate_remote_governance.py` (new).**
+**+22 in `tests/graph/nodes/test_agent_delegate_remote_governance.py` (new).**
 One test class per acceptance criterion: no external call without a canonical
 caller and Workspace scope (six refusal paths plus the positive half — the
 admitted request carries the caller and scope to the peer); delegated authority
@@ -23,7 +24,8 @@ poll settling the row through the reconciliation seam, and the COMPLETED replay
 after a crash between dispatch and pause; remote Agent-generated ids staying
 receipts (a forged `run_id` in an answer settles nothing); and result provenance
 (peer endpoint, remote Agent version) surviving into the persisted Attempt
-evidence, with absent facts staying absent.
+evidence, with absent facts staying absent. An inactive peer is refused
+before admission, so a dead registration files no execution either.
 
 **+3 in `tests/a2a/test_delegation_context.py` (new).** The `DelegationContext`
 contract itself: required canonical fields, Goal/Subgoal coherence via
@@ -41,6 +43,11 @@ gained the governed wiring they now require (run store, `agent_delegation`
 Binding, effect context, attempt-scoped context) — same behaviors asserted,
 now through the admitted path, plus the reconciliation-park outcome a governed
 transport failure produces.
+
+**+1 in `packages/maistro-server/tests/api/test_a2a_api.py`.** The inbound
+admission files a well-formed delegation context as provenance evidence while
+the admitted Run stays in the receiving Workspace's own scope, and an
+unparseable binding is a 422 protocol violation rather than silently admissible.
 
 ## Shared fixture
 
