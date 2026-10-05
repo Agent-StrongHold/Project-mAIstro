@@ -93,6 +93,15 @@ or placeholder-only section.
 
 ### Security
 
+- **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
+  Pinned models must have metadata in the configured ProviderRegistry before
+  use; registered-but-unavailable pins continue to refuse without fallback.
+  Unregistered request aliases retain gateway passthrough with absent cost
+  metadata. Hive activation now reports the registration prerequisite clearly:
+  supply trusted model metadata through `provider_config_path` before activating
+  a pinned health model; LiteLLM `/model/new` registration alone is insufficient.
+  Unavailable request-alias diagnostics no longer describe aliases as pins.
+
 - **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
   (#1362).** Serialized budget definitions, reservation identities, and usage
   evidence are bound as text before PostgreSQL parses JSONB, preventing a
