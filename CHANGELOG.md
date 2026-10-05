@@ -96,6 +96,12 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Pre-launch Attempts settle when a terminal Run fence wins admission (#1085).**
+  The canonical execution service cancels its already-persisted leased Attempt
+  if logical preparation observes a terminal Run before physical owner registration.
+  Nonterminal or unreadable preparation failures retain their lease for recovery;
+  domain adapters never write physical Attempt outcomes to repair this race.
+
 - **Explicit no-gateway ordinary DAG dry runs remain available (#1085, #87).**
   `ALLOW_STUB_LLM=true` returns the existing clearly labelled static stub only
   when no real model endpoint or model grant is configured and no Binding is
