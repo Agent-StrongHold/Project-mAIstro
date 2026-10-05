@@ -43,6 +43,7 @@ not turn a committed admission into fresh work.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 from maistro.runs.admission_identity import (
     AdmissionAssessment,
@@ -117,17 +118,24 @@ def _assess(
         expires_at_us = record.expires_at_us
         stored_fingerprint = record.fingerprint
 
-    # Expiry is inclusive and wins over everything: exactly at the stored
-    # deadline the replay window is over and the key is free, whatever the
-    # payload, binding, lease, or legacy ambiguity says.
-    if expires_at_us <= now_us:
-        return AdmissionAssessment.REPLACE_EXPIRED
-    if stored_fingerprint != fingerprint:
-        return AdmissionAssessment.MISMATCH
-    if record.binding is not None:
-        return AdmissionAssessment.REPLAYED
-    if isinstance(record, LegacyAdmissionRecord):
-        return AdmissionAssessment.LEGACY_UNRESOLVED
-    if record.lease_expires_at_us <= now_us:
-        return AdmissionAssessment.TAKEOVER
+    # The fixed decision order as data: rows evaluated top to bottom, first
+    # match wins, so the issue's branch order is the tuple's row order and
+    # each row's predicate is the one comparison the branch performs. Every
+    # predicate is deferred (a zero-argument callable read at match time),
+    # which keeps short-circuiting exact: the v2-only lease comparison in the
+    # last row is never evaluated for a legacy row, because the row above it
+    # matches first and returns. Nothing past this table reads a record.
+    decision_order: tuple[tuple[Callable[[], bool], AdmissionAssessment], ...] = (
+        # Expiry is inclusive and wins over everything: exactly at the stored
+        # deadline the replay window is over and the key is free, whatever the
+        # payload, binding, lease, or legacy ambiguity says.
+        (lambda: expires_at_us <= now_us, AdmissionAssessment.REPLACE_EXPIRED),
+        (lambda: stored_fingerprint != fingerprint, AdmissionAssessment.MISMATCH),
+        (lambda: record.binding is not None, AdmissionAssessment.REPLAYED),
+        (lambda: isinstance(record, LegacyAdmissionRecord), AdmissionAssessment.LEGACY_UNRESOLVED),
+        (lambda: record.lease_expires_at_us <= now_us, AdmissionAssessment.TAKEOVER),
+    )
+    for matches, outcome in decision_order:
+        if matches():
+            return outcome
     return AdmissionAssessment.PENDING

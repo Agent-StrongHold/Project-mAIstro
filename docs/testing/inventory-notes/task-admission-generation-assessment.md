@@ -62,6 +62,11 @@ exact final head, including these tests and this note (banking the radon
 identity via its own pre-landed grant, and pruning the reachability entry the
 moment the consumer wires the module).
 
+(Round 6 supersedes the radon sentence above: the radon identity no longer
+exists — `_assess` is rank B — and the grant path it described was never
+sufficient anyway, because the Quality gate's xenon step carries a separate
+module-rank failure no JSON grant can retire. See the round-6 section.)
+
 ## CI-repair round at 927a3adf8 (2026-10-04)
 
 The merge-queue run at this head failed four jobs. Root-caused locally with
@@ -408,3 +413,93 @@ explicitly.
 Net: after this round's one-line matrix repair, every remaining red step
 at any plausible head traces only to the two-merge provenance/radon
 blockers owned by the separately scoped #1845 integration change.
+
+## CI-repair round 6 (2026-10-05): radon AND xenon retired in-leaf by the
+## decision-table refactor; develop base synced to 534d475e
+
+Trigger: the merge-queue evaluation at 9d45343f failed exactly two jobs —
+`exact-debt-ledger` (again at `check-ratchet-provenance.py`) and the Quality
+gate (again at the radon CC ratchet step). Re-bound from the Actions API
+(read-only, jobs 111608902075 / 111608902442): in both jobs the vulture step
+never ran (skipped behind the failing provenance / radon steps), and the
+prescribed vulture-ledger amendment still has an empty fix-list (executed at
+this head: rc=0, 1338 -> 1338, unclassified 0), so
+`quality/vulture-baseline.json` stays byte-identical to the base.
+
+New evidence that reopens the radon question:
+
+- Xenon was never reached by the Quality job at any prior head (radon fails
+  first). Executed at this head with CI's exact xenon invocation, the
+  classifier module carried a MODULE-rank C (its only block is `_assess`)
+  while `XENON_MODULE_LEDGER` in `quality.yml` is empty — so even the
+  previously assumed remedy, a base-landed radon grant `_assess@13`, would
+  have left the job red at xenon, and banking that row means editing the
+  workflow YAML, not a JSON ledger. The grant path was therefore never
+  sufficient; refactoring is the only in-leaf convergence path.
+- The round-2 "irreducible CC >= 12" claim holds for the plain if-chain (five
+  decision branches = five points; boolean-operator laundering via
+  `all((...))` remains out of scope). But the issue's fixed decision order is
+  equally expressible as data: an ordered first-match predicate table — one
+  `(predicate, verdict)` row per decision-order bullet, predicates deferred
+  as zero-argument callables — costs `for` + `if` = 2 points where five `if`s
+  cost 5, with exact short-circuit semantics preserved (the v2-only lease
+  comparison is never evaluated for a legacy row because the row above it
+  matches first and returns) and the module's sole production function kept.
+  `_assess` lands at exactly B (10).
+
+Repair: the decision chain of `_assess` restructured into that ordered
+predicate table; validations, envelope extraction, API, docstrings, and every
+return value behaviorally identical.
+
+Re-validation at 9c07d5665 (merge of origin/develop 534d475e + the refactor),
+all executed with CI's exact invocations:
+
+- Focused: `test_admission_generation_assessment.py` 105 passed;
+  `test_root_admission_identity.py` + `test_idempotency.py` 112 passed;
+  driver selection (identity + assessment) 178 passed.
+- Mutation teeth on a restored source copy (md5 96b9e665 verified identical
+  before/after): bidirectional TAKEOVER/REPLACE_EXPIRED swap -> 39 failed;
+  lease before binding -> 12 failed; LEGACY_UNRESOLVED row deleted (legacy
+  pending treated as v2) -> 7 failed; mismatch before expiry without an
+  expiry exception -> 17 failed; unmutated 105 passed. Same counts as
+  round 5.
+- Quality family: `check-radon-baseline.py` exit 0 (143 -> 143, no
+  new/regressed/improved/stale); xenon 143 blocks (<= 145), 0 module-rank,
+  0 average — `admission_generation.py` left the C population entirely;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 at 1338 -> 1338, unclassified 0;
+  `check-reachability.py` exit 0 (174 of 1267);
+  `check-reachability-dispositions.py` exit 0 (51 groups, 150 CONNECT);
+  `check-promotion-surface.py`, `check-shipped-surface-truth.py`,
+  `check-convergence-matrix.py` (52 subsystems, 174 attributed), doc-links,
+  enumerations, workspace-retirement, route-permissions,
+  principal-identity, frontend-typed-client, backlog-consistency,
+  bump-version --check, release-consistency: all exit 0; interrogate 56.9%
+  (>= 46 floor); `mypy --strict` clean on the classifier (the 5
+  dev-only-sync `maistro_bootstrap` import-not-found errors are
+  environmental and predate this stack); ruff check + format clean.
+- Meta-tests: reachability/dispositions/convergence families 111 passed;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (suite
+  count unchanged at 105 — this round touched production code only).
+- Base sync: origin/develop advanced five commits past the last evaluation
+  base (faf93b2f -> 534d475e: research docs, hive-conductor chat_runs
+  admission backpressure, speculative-call bench) without touching any
+  `quality/*.json` row, any maistro-core tasks/runs module, or any gate
+  script; merged clean (9c07d5665) and `git diff --numstat origin/develop
+  HEAD -- quality/` confirms only this stack's own rows (+3/-1
+  reachability-baseline, +20 dispositions). All gates above re-run against
+  the new trusted base 534d475e.
+
+Still red, structurally, and now exactly one defect family:
+`check-ratchet-provenance.py` exits 1 on exactly the two documented
+findings — `maistro.runs.admission_identity` and
+`maistro.tasks.admission_generation` are NEW unreachable/dispositioned
+modules vs the trusted base (now 534d475e) with no already-landed
+reachability authorization (`load_authorizations` reads the base; develop
+carries none), so the candidate rows banked in rounds 1/3 cannot authorize
+themselves. With radon and xenon now green, `exact-debt-ledger`'s sole
+remaining defect is that provenance step, and the Quality gate has no known
+red step left at this head. The unblock sequence is unchanged since round 1
+and belongs to the separately scoped #1845 integration change: land the
+reachability authorizations on the base (grant first, change second), wire
+the reviewed consumer, then converge the unchanged gates at its final head.
