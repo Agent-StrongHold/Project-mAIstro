@@ -341,3 +341,51 @@ across the merge, and `quality/` is byte-identical to the 77017baf1 round.
   test surface moved (`2ebefd794..HEAD` touches only
   `docs/` and the synced-in `scripts/check-api-route-contracts.py` with its
   test file, both re-run locally here).
+
+## Independent verification round (head 7b68d0e7ed4b, develop sync to b3662bb3719a)
+
+Re-executed fresh at the assigned verification head (prior claims not carried
+forward). Merge shape: HEAD's second parent is exactly the declared develop
+base `b3662bb3719a`; the policy surface is byte-identical to the
+fully-concluded-green head `2ebefd794` (`git diff --name-only 2ebefd794..HEAD
+-- packages/maistro-core/src/maistro/tools/git/ packages/maistro-core/tests/
+tools/git/ packages/maistro-rsi/tests/` is empty). The sync brings in
+develop's M8-B1 routing benchmark (script, 28-node test file, workflow) —
+re-run locally here. `git diff --numstat b3662bb..HEAD -- quality/` shows only
+the additive `quality/ac-state-notes/auto-404.json` (+17/−0); no multiset rows
+lost across the merge.
+
+- Local gate battery with CI's exact argv at this head: `ruff check .` clean;
+  `ruff format --check .` 2919 files formatted; `check-merge-markers.py` ok;
+  `verify-monorepo-layout.sh` exit 0; mypy over the nine CI-listed src trees →
+  "Success: no issues found in 941 source files"; 120 passed in
+  `packages/maistro-core/tests/tools/git`; the full `packages/maistro-core`
+  suite → 12438 passed, 888 skipped, 1 xfailed; targeted set
+  (`test_server_security.py` + RSI `test_cli.py`/`test_selfbranch.py`) → 77
+  passed; synced-in `tests/test_bench_model_routing.py` → 28 passed;
+  `check-suite-inventory.py` → all 14 suites match (26030 identities);
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1338 = 1338); `check-radon-baseline.py` exit 0
+  (143 = 143); `check-reachability.py` exit 0; `check-security-inventory.py`
+  exit 0; `check-api-route-contracts.py` exit 0 (279 handlers, 15 audited
+  routes, 0 canned). No closure keywords in `2ebefd794..HEAD` commit subjects
+  or bodies (develop's own PR references are `(#NNNN)` merges, not issue
+  closures); PR #1729 body remains "Refs #404" only.
+- Independent live-daemon mechanism probes (git 2.53.0, fresh superproject
+  each time — a residue `.git/modules/<name>` from an earlier control run
+  makes a later `submodule update` materialize the worktree offline, so every
+  probe below starts from a clean worktree): (a) unpinned control against a
+  running `git daemon` serving the declared submodule URL → full clone, attack
+  surface confirmed; (b) the `_TRANSPORT_PIN` keys as `-c` flags on the outer
+  `git submodule update --init` → nested clone refused client-side
+  (`fatal: transport 'git' not allowed`), 0 daemon connections —
+  GIT_CONFIG_PARAMETERS propagation into the submodule's internal clone
+  confirmed as the rewritten comments state; (c) the same keys persisted only
+  in the superproject's local config, no `-c` flags → the nested clone
+  proceeds over `git://` and lands content — the persisted-config layer alone
+  cannot protect a server-issued submodule update, so the per-command
+  re-application layer is load-bearing, exactly as the comment block claims.
+- Hosted CI on this exact head is not observable or triggerable from this
+  sandbox (no push), so it stays UNVERIFIED; the required gates were re-proven
+  locally with CI's argv above, and the hosted run last fully concluded green
+  on PR head 2ebefd794f8d whose policy/test surface is byte-identical here.
