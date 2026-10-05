@@ -3,7 +3,11 @@
 Numbered ``054`` when written on the ``053`` base; develop's admission-generation
 representation (#1892) claimed the same number on the same parent while this
 branch was open, so per the chain's collision convention this revision
-re-parents onto that ``054_task_admission_generations`` as ``055``.
+re-parented onto that revision as ``055``. Develop then claimed ``054`` again
+for its learning applicability/epistemics migration (#119) and renumbered the
+admission-generation representation to ``055``, colliding a second time, so
+this revision re-parents onto that ``055_task_admission_generations`` as
+``056``.
 
 The durable user model is a separate ``UserModelFact`` record type kept in
 PostgreSQL as the system of record (ADR-082226-5104 §§1, 5, 6); Ladybug may
@@ -24,8 +28,8 @@ All timestamps are ``TIMESTAMP WITH TIME ZONE``: fact validity windows are
 compared against aware UTC instants (SPEC-241 temporal semantics), and a
 naive local time on either side would silently shift them.
 
-Revision ID: 055
-Revises: 054
+Revision ID: 056
+Revises: 055
 Create Date: 2026-10-04
 """
 
@@ -33,8 +37,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "055"
-down_revision = "054"
+revision = "056"
+down_revision = "055"
 branch_labels = None
 depends_on = None
 
