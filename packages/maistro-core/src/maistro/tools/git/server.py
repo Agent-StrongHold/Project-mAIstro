@@ -86,6 +86,10 @@ GIT_CLONE_TIMEOUT = 300
 # tomorrow, or a workspace whose .git/config was not written by this clone
 # path, must not silently lose the enforcement.
 _ENFORCEMENT_CONFIG = ("protocol.git.allow=never", "http.followRedirects=false")
+# The same pins pre-expanded into argv fragments for the direct subprocess
+# spawns below (clone, ls-remote); `_git(config=...)` expands the pairs
+# itself for in-workspace commands.
+_ENFORCEMENT_ARGV = tuple(part for pair in _ENFORCEMENT_CONFIG for part in ("-c", pair))
 _ALLOWED_CLONE_SCHEMES = ("https://", "ssh://")
 _DEFAULT_ALLOWED_CLONE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "ssh.github.com")
 _ALLOWED_CLONE_HOSTS: tuple[str, ...] = _DEFAULT_ALLOWED_CLONE_HOSTS
@@ -359,7 +363,7 @@ async def _clone_and_maybe_pin(
         # redirects, whatever a URL or .gitmodules entry asks for.
         proc = await asyncio.create_subprocess_exec(
             "git",
-            *[part for pair in _ENFORCEMENT_CONFIG for part in ("-c", pair)],
+            *_ENFORCEMENT_ARGV,
             "clone",
             "--depth=1",
             "--",
@@ -421,51 +425,60 @@ async def _enforce_signature_policy(
     status = await _git(dest, "log", "-1", "--pretty=format:%G?", timeout=timeout)
     verdict = status["stdout"].strip() if status["success"] else ""
     if verdict == "N" or not verdict:
-        return fail(
-            stdout=(result.get("stdout", "") or "")
-            + f"\ncommit signature policy: HEAD is not signed ({verdict or 'unreadable'})",
-            error_code="commit_signature_missing",
-            suggested_action=(
-                f"{_TRUSTED_SIGNERS_ENV} requires signed candidate sources; the "
-                "cloned HEAD carries no valid OpenPGP signature. Do not use this "
-                "workspace."
-            ),
+        return _signature_policy_failure(
+            result,
+            "commit_signature_missing",
+            f"HEAD is not signed ({verdict or 'unreadable'})",
+            f"{_TRUSTED_SIGNERS_ENV} requires signed candidate sources; the "
+            "cloned HEAD carries no valid OpenPGP signature. Do not use this "
+            "workspace.",
         )
     if verdict not in _GOOD_SIGNATURE_STATUSES:
-        return fail(
-            stdout=(result.get("stdout", "") or "")
-            + f"\ncommit signature policy: HEAD signature is not good ({verdict})",
-            error_code="commit_signature_invalid",
-            suggested_action=(
-                f"{_TRUSTED_SIGNERS_ENV} is set, so the cloned HEAD must carry a "
-                f"good signature; git reports {verdict!r}. The source or the local "
-                "keyring is wrong — do not use this workspace."
-            ),
+        return _signature_policy_failure(
+            result,
+            "commit_signature_invalid",
+            f"HEAD signature is not good ({verdict})",
+            f"{_TRUSTED_SIGNERS_ENV} is set, so the cloned HEAD must carry a "
+            f"good signature; git reports {verdict!r}. The source or the local "
+            "keyring is wrong — do not use this workspace.",
         )
     fprs = await _git(dest, "log", "-1", "--pretty=format:%GF%n%GP", timeout=timeout)
-    landed = (
-        {
-            line.strip().replace(" ", "").lower()
-            for line in fprs["stdout"].splitlines()
-            if line.strip()
-        }
-        if fprs["success"]
-        else set()
-    )
+    landed = _landed_signer_fprs(fprs)
     if not landed & trusted:
-        return fail(
-            stdout=(result.get("stdout", "") or "")
-            + f"\ncommit signature policy: signer {sorted(landed) or 'unknown'} "
-            "is not on the trusted-signer allowlist",
-            error_code="commit_signature_untrusted",
-            suggested_action=(
-                f"The signature is good but the key is not one of the fingerprints "
-                f"in {_TRUSTED_SIGNERS_ENV}. Do not use this workspace."
-            ),
+        return _signature_policy_failure(
+            result,
+            "commit_signature_untrusted",
+            f"signer {sorted(landed) or 'unknown'} is not on the trusted-signer allowlist",
+            f"The signature is good but the key is not one of the fingerprints "
+            f"in {_TRUSTED_SIGNERS_ENV}. Do not use this workspace.",
         )
     augmented = dict(result)
     augmented["signature_verified"] = True
     return augmented
+
+
+def _landed_signer_fprs(fprs: dict[str, Any]) -> set[str]:
+    """Normalized (space-stripped, lowercased) signer fingerprints reported
+    by `git log %GF%n%GP`; empty when the read itself failed."""
+    if not fprs["success"]:
+        return set()
+    return {
+        line.strip().replace(" ", "").lower()
+        for line in fprs["stdout"].splitlines()
+        if line.strip()
+    }
+
+
+def _signature_policy_failure(
+    result: dict[str, Any], error_code: str, detail: str, suggested_action: str
+) -> dict[str, Any]:
+    """Fail a finished clone whose HEAD violated the signature trust anchor,
+    keeping the clone's own stdout (and the verdict) in the audit trail."""
+    return fail(
+        stdout=(result.get("stdout", "") or "") + f"\ncommit signature policy: {detail}",
+        error_code=error_code,
+        suggested_action=suggested_action,
+    )
 
 
 async def _verify_pinned_checkout(
@@ -558,11 +571,10 @@ async def git_remote_tip(url: str, timeout: int = 60) -> dict[str, Any]:
             error_code=exc.error_code,
             suggested_action=exc.suggested_action,
         )
-    config_argv = [part for pair in _ENFORCEMENT_CONFIG for part in ("-c", pair)]
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
-            *config_argv,
+            *_ENFORCEMENT_ARGV,
             "ls-remote",
             "--",
             url,

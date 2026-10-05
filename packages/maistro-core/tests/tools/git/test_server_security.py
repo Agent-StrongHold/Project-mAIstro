@@ -436,6 +436,10 @@ def _origin_with_git_submodule(tmp_path: Path) -> Path:
     origin = tmp_path / "origin"
     origin.mkdir()
     assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
+    # Repo-local identity: identity-less CI runners refuse to commit
+    # (exit 128), and this fixture must not lean on ambient global config.
+    assert _git("-C", str(origin), "config", "user.email", "t@t").returncode == 0
+    assert _git("-C", str(origin), "config", "user.name", "t").returncode == 0
     (origin / ".gitmodules").write_text(
         '[submodule "evil"]\n\tpath = evil\n\turl = git://127.0.0.1:9418/evil.git\n',
         encoding="utf-8",

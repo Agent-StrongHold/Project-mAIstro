@@ -15,6 +15,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import structlog
 
@@ -123,6 +124,26 @@ def new_attempt(
     )
 
 
+async def _resolve_source_pin(attempt: SelfBranchAttempt) -> tuple[str | None, str | None]:
+    """Resolve the attempt's source pin (#404 AC3): an explicit digest is
+    used as-is; otherwise the remote's HEAD is resolved to a digest first
+    (via `git_remote_tip`, itself policy-gated and pin-enforced), so the
+    clone is always fetch-by-digest with a verified checkout — never
+    "whatever the ref points at when the fetch happens".
+
+    Returns ``(pin, failure)``; exactly one is None. A resolution failure
+    must fail the attempt before any clone: no pin, no candidate source.
+    Operators with their own provenance supply an explicit digest instead
+    of whatever the remote's tip is when the cycle runs.
+    """
+    if attempt.commit is not None:
+        return attempt.commit, None
+    resolved = await git_remote_tip(attempt.repo_url)
+    if not resolved.get("success") or not resolved.get("commit"):
+        return None, f"source pin unresolved: {resolved}"
+    return str(resolved["commit"]), None
+
+
 async def run_self_branch_attempt(
     sandbox: MicroVmSandbox,
     workspace: str,
@@ -149,23 +170,19 @@ async def run_self_branch_attempt(
     change. Probes that need test artifacts should run those commands
     themselves; the probe sees the workspace state, not the later test run.
     """
-    # Resolve the pin (#404 AC3): an explicit digest is used as-is; otherwise
-    # the remote's HEAD is resolved to a digest first, so the clone below is
-    # always fetch-by-digest with a verified checkout — never "whatever the
-    # ref points at when the fetch happens". A resolution failure fails the
-    # attempt before any clone: no pin, no candidate source.
-    pin = attempt.commit
-    if pin is None:
-        resolved = await git_remote_tip(attempt.repo_url)
-        if not resolved.get("success") or not resolved.get("commit"):
-            return SelfBranchResult(
-                attempt=attempt,
-                test_exit_code=1,
-                test_output="",
-                diff="",
-                error=f"source pin unresolved: {resolved}",
-            )
-        pin = str(resolved["commit"])
+    # Resolve the pin (#404 AC3): explicit digest as-is, else the remote's
+    # HEAD resolved to a digest first — the clone below is always
+    # fetch-by-digest against a verified object, never "whatever the ref
+    # points at when the fetch happens".
+    pin, pin_failure = await _resolve_source_pin(attempt)
+    if pin_failure is not None:
+        return SelfBranchResult(
+            attempt=attempt,
+            test_exit_code=1,
+            test_output="",
+            diff="",
+            error=pin_failure,
+        )
     clone = await git_clone(attempt.repo_url, workspace, commit=pin)
     if not clone.get("ok", True) or clone.get("exit_code", 0) != 0:
         return SelfBranchResult(
@@ -218,7 +235,7 @@ async def run_self_branch_attempt(
             body=attempt.pr_body or _default_pr_body(attempt, output),
             base=attempt.base_branch,
         )
-        pr_url = pr.get("url") or pr.get("pr_url")
+        pr_url = _pr_url_of(pr)
 
     await logger.ainfo(
         "rsi_self_branch_attempt_complete",
@@ -245,6 +262,11 @@ def _repo_slug(repo_url: str) -> str:
     """Extract `owner/repo` from a git URL for the GitHub CLI."""
     cleaned = repo_url.removesuffix(".git")
     return "/".join(cleaned.split("/")[-2:])
+
+
+def _pr_url_of(pr: dict[str, Any]) -> str | None:
+    """The created PR's URL, tolerating either key the result carries."""
+    return pr.get("url") or pr.get("pr_url")
 
 
 def _default_pr_body(attempt: SelfBranchAttempt, test_output: str) -> str:

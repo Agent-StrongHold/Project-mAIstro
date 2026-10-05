@@ -1,3 +1,58 @@
+# Handoff — issue #452 (M6 deferred-cleanup initiative), lane L452, job 8758e06e8c144e88913591bc9afecf99
+
+Head at close: this round's repair commit on `0337df64e4` (merge of develop
+`30677b185`). Worktree clean after commit. No `quality/*.json` edits this
+round — both CI failures were repaired in code, not by ledger.
+
+## This round's delta — the two CI failures closed (verification round d48c389db)
+
+1. **Radon CC ratchet (Quality gate job) — repaired by refactor, not grant.**
+   The prior head added three unbaselined C blocks in
+   `maistro-core/src/maistro/tools/git/server.py`
+   (`_clone_and_maybe_pin` C(11), `_enforce_signature_policy` C(15),
+   `git_remote_tip` C(11)) and regressed
+   `maistro_rsi/selfbranch.py::run_self_branch_attempt` to C(16)
+   (baseline 13). Grants read from the merge base and can never authorize
+   the change that introduces them, so the repair is structural:
+   `_ENFORCEMENT_ARGV` (module-level pre-expansion of the `-c` pins)
+   replaces the per-spawn comprehensions in `_clone_and_maybe_pin` and
+   `git_remote_tip`; `_enforce_signature_policy` delegates its three
+   failure shapes to `_signature_policy_failure` / `_landed_signer_fprs`;
+   `run_self_branch_attempt` delegates pin resolution to
+   `_resolve_source_pin` and PR-URL extraction to `_pr_url_of`, landing at
+   exactly its baseline C(13) (no regression, no improvement — no radon
+   ledger interaction). `check-radon-baseline.py` exit 0: 143 = 143, zero
+   new/regressed/improved/stale. Behavior unchanged (error strings and
+   argv byte-identical); full core suite green.
+2. **`coverage (no services)` / `test` CI failures — the submodule fixture
+   leaned on ambient git identity.**
+   `_origin_with_git_submodule` ran `git commit -qm` with no committer
+   identity; identity-less CI runners exit 128 at fixture setup. It now
+   sets repo-local `user.email`/`user.name` (the file's own convention,
+   e.g. its lines 551-552). Proven: bare `git commit` under
+   `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null` exits 128
+   (reproduced), and the fixed test plus the whole
+   `test_server_security.py` (62), `test_selfbranch.py` +
+   `test_harvest_entry_point.py` (54) pass under that same identity-less
+   env. Every other real-git site in the lane's tests already sets
+   repo-local identity (audited).
+
+Validation at this head: `ruff check .` / `ruff format --check .` clean
+(2922 files); `pytest packages/maistro-core/tests -q` 12476 passed; `pytest
+packages/maistro-rsi/tests -q` 1043 passed; `pytest
+packages/maistro-core/tests/cli/test_builders.py -q` 22 passed; `mypy
+--strict packages/maistro-core/src` clean; canonical mypy battery clean;
+`check-radon-baseline.py` exit 0 (143=143); xenon (CI args) blocks 143 ≤ 145,
+average 0, module ledger empty; `check-vulture-baseline.py` (CI args) exit 0
+(1338→1337, base-authorized, no amendment); `check-suite-inventory.py` ok
+(14 suites; no test additions this round, so no inventory-note delta);
+`check-test-duplicates.py`, `check-reachability.py`,
+`check-promotion-surface.py`, `check_direct_effects.py` all exit 0.
+
+---
+
+# Prior rounds (context)
+
 # Handoff — issue #452 (M6 deferred-cleanup initiative), lane L452, job e325340c796d497285789c0a1a8e3f3c
 
 Head at close: this round's commit on `a285a95ad` (the prior merge of develop
