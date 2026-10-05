@@ -794,7 +794,7 @@ async def test_chat_workflow_route_refuses_an_unauthenticated_principal(
         return {}
 
     monkeypatch.setattr(chat, "_execute_workflow_with_approval", run)
-    anonymous = SimpleNamespace(state=SimpleNamespace(user=None))
+    anonymous = SimpleNamespace(state=SimpleNamespace(principal=None))
     with pytest.raises(HTTPException) as exc:
         await chat.run_workflow(chat.RunWorkflowBody(dag_id="dag-1"), anonymous)
     assert exc.value.status_code == 401
@@ -871,7 +871,11 @@ async def test_chat_workflow_route_waits_on_shared_inbox_then_executes(
         resolved = cap_routes.resolve_approval(
             pending[0].request_id,
             cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
-            SimpleNamespace(state=SimpleNamespace(user={"id": "admin-1", "role": "admin"})),
+            SimpleNamespace(
+                state=SimpleNamespace(
+                    principal=Principal.from_legacy_dict({"id": "admin-1", "role": "admin"})
+                )
+            ),
         )
         assert resolved["resolved"] is True
         result = await asyncio.wait_for(task, timeout=1.0)
@@ -911,12 +915,14 @@ def test_workflow_approval_route_rejects_config_editor_as_approver(
             cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
             SimpleNamespace(
                 state=SimpleNamespace(
-                    user={
-                        "id": "editor-1",
-                        "role": "user",
-                        "permissions": ["config.write"],
-                        "elevated_permissions": ["config.write"],
-                    }
+                    principal=Principal.from_legacy_dict(
+                        {
+                            "id": "editor-1",
+                            "role": "user",
+                            "permissions": ["config.write"],
+                            "elevated_permissions": ["config.write"],
+                        }
+                    )
                 )
             ),
         )
