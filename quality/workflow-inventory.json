@@ -174,6 +174,13 @@
       "disposition": "MANUAL_DIAGNOSTIC",
       "triggers": ["workflow_dispatch"],
       "rationale": "On-demand #301 / ADR-082226-5104 §8 working-memory projection benchmark (per-projection RAM, hydration cost, recall and traversal latency at caller-supplied concurrency); deterministic and offline, run when the memory substrate changes — a measurement, not a gate."
+    },
+    {
+      "id": "speculative-parallel-bench",
+      "file": ".github/workflows/speculative-parallel-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #917 / epic #900 M8-B4 speculative-parallel model-call benchmark (serial-fallback vs single-strong vs parallel-early-stop vs parallel-verifier over the governed model seam); deterministic and offline, run when the candidate-policy assumptions change — a measurement, not a gate."
     }
   ],
   "retained_branches": [
