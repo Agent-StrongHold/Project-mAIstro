@@ -187,6 +187,7 @@ async def test_clarify_records_model_and_tool_on_the_same_real_attempt(
     assert invocation.usage.cost_cents == 2.0
     assert invocation.usage.model == _MODEL
     assert outer[0].usage is None
+    assert calls[0]["endpoint"].base_url == "https://gateway.test"
     assert calls[0]["endpoint"].api_key == "binding-scoped-test-key"
     assert calls[0]["endpoint"].timeout_s == 15.0
     payload = calls[0]["payload"]

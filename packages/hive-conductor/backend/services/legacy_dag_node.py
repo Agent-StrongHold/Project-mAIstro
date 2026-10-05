@@ -18,6 +18,7 @@ from typing import Any, ClassVar
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from maistro.capabilities.admitted_model import AdmittedModelCalls
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.effect_context import (
@@ -490,6 +491,16 @@ def _build_dependency_graph(
     return node_map, inbound
 
 
+def _ordinary_model_binding_id(node: Mapping[str, Any]) -> str:
+    """Validate both provided selectors before precedence or empty fallback."""
+    config = node.get("config")
+    nested = config.get("model_binding_id", "") if isinstance(config, dict) else ""
+    top_level = node.get("model_binding_id", "")
+    if not isinstance(top_level, str) or not isinstance(nested, str):
+        raise TypeError("DAG model node model_binding_id must be a string when provided")
+    return top_level or nested
+
+
 async def _run_llm_node(
     node: dict[str, Any],
     nid: str,
@@ -502,6 +513,7 @@ async def _run_llm_node(
     effect_context: CapabilityEffectContext | None = None,
     ctx: NodeContext | None = None,
     governed_runtime: Any | None = None,
+    model_calls: AdmittedModelCalls | None = None,
 ) -> None:
     role = node.get("role", "worker")
     if node.get("tool"):
@@ -527,41 +539,19 @@ async def _run_llm_node(
     if parent_outputs:
         user_content += "\n\nContext from previous steps:\n" + "\n---\n".join(parent_outputs[-3:])
     try:
-        if governed_runtime is not None and ctx is not None and ctx.attempt_id:
-            # Canonical cutover (#718): the physical model call crosses the
-            # governed Binding -> Invocation egress, so its usage evidence is
-            # recorded once by the Invocation authority's terminalization
-            # recorder. This node supplies no callback of its own; the raw
-            # builder below is the compatibility fallback for callers with no
-            # canonical effect authority (standalone tests, direct calls).
-            from services.governed_model import dag_node_completion
+        if model_calls is None or ctx is None:
+            raise RuntimeError("DAG model node requires an admitted model runtime and context")
+        from services.governed_model import dag_node_completion
 
-            response = await dag_node_completion(
-                governed_runtime,
-                run_id=ctx.run_id,
-                node_run_id=ctx.node_run_id,
-                attempt_id=ctx.attempt_id,
-                node_id=nid,
-                workspace_id=ctx.workspace_id or "default",
-                project_id=ctx.project_id or "agent-runtime",
-                system=system,
-                user=user_content,
-                model=model,
-            )
-        else:
-            builder = llm_builder or _build_llm_call
-            response = await builder(on_response)(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_content},
-                ],
-                model=model,
-                # The node's declared (resolved) timeout reaches the transport
-                # as data. The durable walker enforces the same resolved value
-                # as the Attempt's canonical deadline; a node-level transport
-                # timeout can only agree with it or lose the race (#1184).
-                timeout=declared_raw_node_timeout_s(node),
-            )
+        response = await dag_node_completion(
+            model_calls,
+            ctx=ctx,
+            binding_id=_ordinary_model_binding_id(node),
+            system=system,
+            user=user_content,
+            model=model,
+            timeout_s=declared_raw_node_timeout_s(node),
+        )
         results[nid] = {"role": role, "response": response, "success": True, "model": model}
     except Exception as exc:
         results[nid] = {"role": role, "response": str(exc), "success": False, "model": model}
@@ -723,6 +713,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
         effect_context: CapabilityEffectContext | None = None,
         governed_runtime: Any | None = None,
+        model_calls: AdmittedModelCalls | None = None,
         progress: RunProgressHook | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
@@ -732,10 +723,11 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._on_response = on_response
         self._llm_builder = llm_builder
         self._effect_context = effect_context
-        # GovernedModelRuntime composed from the live Container; when present
-        # the node's model call crosses the canonical Invocation egress (#718)
-        # and ``_llm_builder``/``_on_response`` stay compatibility fallbacks.
+        # Ordinary model nodes require the Container's admitted-call runtime.
+        # Raw builders cannot bypass admission; the sandbox keeps its isolated
+        # transport and usage hook until its separate migration.
         self._governed_runtime = governed_runtime
+        self._model_calls = model_calls
         self._progress = progress
 
     async def _emit_progress(self, event: dict[str, Any]) -> None:
@@ -846,6 +838,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 effect_context=self._effect_context,
                 ctx=ctx,
                 governed_runtime=self._governed_runtime,
+                model_calls=self._model_calls,
             )
             result = scratch[node_id]
 

@@ -14,6 +14,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from maistro.capabilities.admitted_model import AdmittedModelCalls
 from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
@@ -27,7 +28,7 @@ from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, Age
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
-from services.governed_model import dag_node_runtime
+from services.governed_model import dag_node_model_calls, dag_node_runtime
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
 from services.scan_continuations import scan_continuation
@@ -412,6 +413,7 @@ def _resolver(
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
     effect_context: Any = None,
     governed_runtime: Any = None,
+    model_calls: AdmittedModelCalls | None = None,
     progress: Any = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
@@ -428,6 +430,7 @@ def _resolver(
             llm_builder=llm_builder,
             effect_context=effect_context,
             governed_runtime=governed_runtime,
+            model_calls=model_calls,
             progress=progress,
         )
 
@@ -467,6 +470,7 @@ def _recovery_resolver(run: Run):
         llm_builder=None,
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
+        model_calls=dag_node_model_calls(container),
     )
 
 
@@ -650,6 +654,7 @@ async def execute_dag(
             progress=on_event,
             effect_context=(getattr(container, "capability_effects", None) if container else None),
             governed_runtime=dag_node_runtime(container),
+            model_calls=dag_node_model_calls(container),
         )
 
     record = await run_durable_graph(

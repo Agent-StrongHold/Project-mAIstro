@@ -1,6 +1,6 @@
 """WS/HTTP parity for the shipped DAG Run controls (#766).
 
-Only the model boundary is replaced (``graph_runner._build_llm_call``). Workspace
+Only the model boundary is replaced by an explicit TEST admitted-call seam. Workspace
 membership is created through the canonical authority, execution runs through
 ``canonical_dag_runner``, and the Recent Runs projection is read back from the
 process ``DagRunStore``.
@@ -16,21 +16,20 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from .dag_model_test_seam import install_test_admitted_model
+
 POLICY_VIOLATION = 1008
 _SECRET = "postgres://svc:hunter2@db.internal/prod"
 
 
-def _fake_llm_builder(*, fail_prompt: str | None = None):
-    def build(_on_response: Any = None):
-        async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
-            system = str(messages[0]["content"])
-            if fail_prompt and fail_prompt in system:
-                raise RuntimeError("intentional node failure")
-            return f"ok:{system}"
+def _fake_model_call(*, fail_prompt: str | None = None):
+    async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
+        system = str(messages[0]["content"])
+        if fail_prompt and fail_prompt in system:
+            raise RuntimeError("intentional node failure")
+        return f"ok:{system}"
 
-        return call
-
-    return build
+    return call
 
 
 def _stored_dag(dag_id: str, *, prompt: str = "hello") -> dict[str, Any]:
@@ -53,10 +52,9 @@ def _stored_dag(dag_id: str, *, prompt: str = "hello") -> dict[str, Any]:
 
 @pytest.fixture
 def stored_dag(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    import services.graph_runner as graph_runner
     import stores
 
-    monkeypatch.setattr(graph_runner, "_build_llm_call", _fake_llm_builder(fail_prompt="fail-me"))
+    install_test_admitted_model(monkeypatch, _fake_model_call(fail_prompt="fail-me"))
     dag_id = "parity-dag"
     stores.dags[dag_id] = _stored_dag(dag_id)
     yield dag_id

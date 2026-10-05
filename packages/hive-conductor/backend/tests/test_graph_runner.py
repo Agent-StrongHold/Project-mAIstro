@@ -29,6 +29,8 @@ from services.dag_execution_scope import DagExecutionScope
 
 from maistro.graph.durable_runs import RunStatus
 
+from .dag_model_test_seam import install_test_admitted_model
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -140,14 +142,9 @@ def test_llm_gateway_configured_tracks_either_env_var(
     assert llm_gateway_configured() is True
 
 
-async def test_run_llm_node_marks_node_failed_when_llm_unconfigured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_run_llm_node_requires_an_admitted_runtime_and_context() -> None:
     """The refusal reaches the DAG as a failed node, not a fake answer."""
     from services import graph_runner as gr
-
-    _unconfigure_llm(monkeypatch)
-    _set_allow_stub_llm(monkeypatch, False)
 
     results: dict[str, dict[str, Any]] = {}
     await gr._run_llm_node(
@@ -155,22 +152,22 @@ async def test_run_llm_node_marks_node_failed_when_llm_unconfigured(
     )
 
     assert results["n1"]["success"] is False
-    assert "LITELLM_API_BASE" in results["n1"]["response"]
+    assert "admitted model runtime and context" in results["n1"]["response"]
 
 
-async def test_execute_dag_streaming_fails_when_llm_unconfigured(
+async def test_execute_dag_streaming_fails_without_an_admitted_model_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A DAG stream against an unconfigured LLM ends in `failed`, not `completed`.
+    """A DAG stream without model authority ends in `failed`, not `completed`.
 
     The node is `safe`-tier so the LLM refusal is the failure that surfaces;
     a default-tier node is routed through the isolation floor instead, and
     that refusal is the sandbox contract's to assert, not this one's.
     """
+    from services import canonical_dag_runner as runner
     from services import graph_runner as gr
 
-    _unconfigure_llm(monkeypatch)
-    _set_allow_stub_llm(monkeypatch, False)
+    monkeypatch.setattr(runner, "_container", lambda: None)
 
     events = [
         ev
@@ -193,7 +190,7 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     statuses = [ev["status"] for ev in events]
     assert "completed" not in statuses
     assert statuses[-1] == "failed"
-    assert "ALLOW_STUB_LLM" in events[-1]["error"]
+    assert "admitted model runtime and context" in events[-1]["error"]
 
 
 async def test_build_llm_call_real_httpx_posts_and_extracts(
@@ -439,10 +436,10 @@ async def test_build_llm_call_no_api_key_no_auth_header(
 async def test_execute_dag_builds_config_and_returns_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """execute_dag runs a wave executor; stub _build_llm_call and verify shape."""
+    """Verify traversal with an explicit TEST admitted-call substitution."""
     import services.graph_runner as gr
 
-    # Stub _build_llm_call to return a coroutine that returns a response string.
+    # Replace admitted calls only in this orchestration test.
     # n1 → n2 (two waves), so cycles == 2.
     calls: list[list[dict]] = []
 
@@ -450,7 +447,7 @@ async def test_execute_dag_builds_config_and_returns_shape(
         calls.append(messages)
         return "stub response"
 
-    monkeypatch.setattr(gr, "_build_llm_call", lambda *a, **kw: _stub_llm)
+    install_test_admitted_model(monkeypatch, _stub_llm)
 
     out = await gr.execute_dag(
         {
@@ -494,7 +491,7 @@ async def test_execute_dag_entry_node_fallback_to_first_node(
         calls.append(messages)
         return "ok"
 
-    monkeypatch.setattr(gr, "_build_llm_call", lambda *a, **kw: _stub_llm)
+    install_test_admitted_model(monkeypatch, _stub_llm)
 
     out = await gr.execute_dag(
         {
@@ -864,7 +861,7 @@ def _stub_canonical_walk(
     """Point `execute_dag` at a stubbed durable walk with a stubbed spine."""
     from services import canonical_dag_runner as runner
 
-    monkeypatch.setattr(gr_mod(), "_build_llm_call", llm_builder)
+    install_test_admitted_model(monkeypatch, llm_builder())
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setattr(runner, "get_run_store", lambda: object())
     monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)

@@ -99,6 +99,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Ordinary asynchronous Hive DAG model nodes require admitted execution (#1085).**
+  Calls resolve configured model Bindings through the Container's RunStore,
+  preserving persisted actor/scope/lease identity and canonical usage recording.
+  Node `model_binding_id` selects a declared grant (top-level, then `config`);
+  an omitted ID requires exactly one matching configured Binding. Both provided
+  selectors must be strings; malformed values refuse before fallback. Missing runtime,
+  grants or scoped credentials fail closed without raw fallback or credential
+  copying. Configured model pins and declared node timeouts reach the Provider;
+  later Attempts replay completed effects and refuse UNKNOWN outcomes. The
+  model-backed tool and isolated sandbox paths retain their existing composition.
+
 - **Conductor model calls require persisted execution and configured authority (#1084).**
   Server and Hive task callers now resolve the actual Run, NodeRun, leased Attempt
   and admitted actor before resolving an operator-declared model Binding. Missing
@@ -114,8 +125,8 @@ or placeholder-only section.
   actor/execution correlation, quota and usage use the existing canonical
   effect authority. Missing authority and malformed model answers fail the
   node instead of dispatching with ambient credentials or inventing answers.
-  The generic tool Invocation remains in place. Ordinary legacy model and
-  sandbox callers and Agent tool composition remain separate convergence work.
+  The generic tool Invocation remains in place. Isolated sandbox callers and
+  Agent tool composition remain separate convergence work.
 
 - **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
   Pinned models must have metadata in the configured ProviderRegistry before
