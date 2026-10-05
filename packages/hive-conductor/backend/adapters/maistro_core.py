@@ -134,7 +134,9 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     # model clients and this runtime's governed egress (#718) so the two
     # doors cannot drift onto different credentials or bases.
     gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
-    model_endpoint = GatewayEndpoint(base_url=gateway_base, api_key=llm_key)
+    model_endpoint = GatewayEndpoint(
+        base_url=gateway_base, api_key=llm_key, base_url_is_api_base=True
+    )
     from maistro.capabilities.admitted_model import AdmittedModelCalls
 
     admitted_calls = AdmittedModelCalls(

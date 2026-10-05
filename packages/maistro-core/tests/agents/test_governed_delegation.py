@@ -24,18 +24,27 @@ from maistro.types.agent import AgentIdentity, ReasoningResult
 
 
 class _ModelThenDelegate:
-    def __init__(self, handoffs: dict[str, tuple[str, str]]) -> None:
+    def __init__(self, handoffs: dict[str, tuple[str, str]], *, stream: bool = False) -> None:
+        self.stream = stream
         self.handoffs = handoffs
         self.answers: list[tuple[str, str]] = []
 
     async def reason(
         self, messages: list[dict[str, Any]], model: str, llm: Any, **kwargs: Any
     ) -> ReasoningResult:
-        body = await llm.complete(messages, model)
+        if self.stream:
+            chunks = [chunk async for chunk in llm.stream(messages, model)]
+            answer = "".join(
+                choice["delta"].get("content", "")
+                for chunk in chunks
+                for choice in chunk.get("choices", [])
+            )
+        else:
+            body = await llm.complete(messages, model)
+            answer = body["choices"][0]["message"]["content"]
         prompt = next(
             str(message["content"]) for message in reversed(messages) if message["role"] == "user"
         )
-        answer = body["choices"][0]["message"]["content"]
         self.answers.append((prompt, answer))
         target, delegated_prompt = self.handoffs.get(prompt, ("", ""))
         return ReasoningResult(
@@ -60,14 +69,15 @@ def _agent(name: str, strategy: Any, llm: Any, roster: dict[str, Agent]) -> Agen
     return agent
 
 
+@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("chain", [("parent", "child"), ("same", "same"), ("a", "b", "a")])
 async def test_model_before_delegation_has_distinct_effects_and_replays(
-    chain: tuple[str, ...],
+    chain: tuple[str, ...], stream: bool
 ) -> None:
     s = await setup()
     llm = GovernedLLMClient(s.calls)
     prompts = [f"request at step {depth}" for depth in range(len(chain))]
-    strategies = {name: _ModelThenDelegate({}) for name in chain}
+    strategies = {name: _ModelThenDelegate({}, stream=stream) for name in chain}
     for depth, name in enumerate(chain[:-1]):
         strategies[name].handoffs[prompts[depth]] = (chain[depth + 1], prompts[depth + 1])
     roster: dict[str, Agent] = {}
@@ -83,6 +93,14 @@ async def test_model_before_delegation_has_distinct_effects_and_replays(
             if message["role"] == "user"
         )
         sent.append(prompt)
+        if payload.get("stream"):
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": f"answer to {prompt}"}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+            ]
+            body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            return httpx.Response(200, content=(body + "data: [DONE]\n\n").encode())
         return httpx.Response(
             200,
             json={

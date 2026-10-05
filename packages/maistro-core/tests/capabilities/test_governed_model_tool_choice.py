@@ -150,7 +150,6 @@ async def test_conversation_payload_still_omits_tools_and_absent_choice(
         {
             "model": "fast-model",
             "messages": messages,
-            "temperature": 0.7,
             "stream": False,
         }
     ]

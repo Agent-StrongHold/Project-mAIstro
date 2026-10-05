@@ -191,3 +191,39 @@ async def test_agent_client_replay_rechecks_binding_revocation() -> None:
             await llm.complete([], "request-alias")
     assert len(s.sent) == 1
     assert len(await rows(s)) == 1
+
+
+async def test_agent_stream_replay_rechecks_binding_revocation() -> None:
+    s = await setup()
+    llm = client(s)
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        s.sent.append(request)
+        return httpx.Response(
+            200,
+            stream=_Bytes(
+                [
+                    _frame(_chunk("answer")),
+                    _frame(_chunk(finish="stop")),
+                    _frame({"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}}),
+                    b"data: [DONE]\n\n",
+                ]
+            ),
+        )
+
+    set_test_transport(httpx.MockTransport(transport))
+    with context(s):
+        chunks = [chunk async for chunk in llm.stream([], "request-alias")]
+        assert chunks[0]["choices"][0]["delta"]["content"] == "answer"
+        llm.set_turn()
+        replay = [chunk async for chunk in llm.stream([], "request-alias")]
+        assert len(replay) == 1 and replay[0]["_maistro_replayed"] is True
+        assert replay[0]["choices"][0]["delta"]["content"] == "answer"
+        assert len(s.sent) == 1
+        await s.effects.bindings.revoke("declared")
+        llm.set_turn()
+        with pytest.raises(BindingResolutionError):
+            await anext(llm.stream([], "request-alias"))
+    assert len(s.sent) == 1
+    assert len(await rows(s)) == 1
+    assert len(s.effects.usage_log.events_for("request-alias")) == 1

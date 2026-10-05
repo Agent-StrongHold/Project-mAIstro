@@ -15,8 +15,8 @@ The proof joins the completed Invocation to the admitted actor, Workspace,
 Project, Run, NodeRun and leased Attempt, verifies the configured Binding's
 model pin and scoped credential, and checks exactly one Invocation-attributed
 usage event. A domain TurnID distinct from the canonical RunID preserves the
-#1956 execution-identity regression coverage. The materialized Agent also
-shares the boot Agent's client and the bridge's one `AdmittedModelCalls` helper.
+#1956 execution-identity regression coverage. The materialized Agent retains its own definition-Workspace-restricted client
+while sharing the bridge's one `AdmittedModelCalls` helper with the boot Agent.
 Each case then revokes that Binding and executes the same Agent under a fresh
 canonical admission, requiring refusal with no new Invocation, HTTP call or
 usage event. Existing adapter wiring assertions are updated without changing
@@ -29,7 +29,7 @@ Project instead of the operator-declared canonical Root Project.
 Focused command (from the worktree root):
 
 ```sh
-REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 .venv/bin/python -m pytest \
+REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 .venv/bin/python -m pytest --noconftest \
   packages/hive-conductor/backend/tests/test_maistro_core_adapter.py -q
 ```
 

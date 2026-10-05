@@ -1,9 +1,14 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +9
+  packages/maistro-core/tests: +5
 ---
 
 # Agent delegation effects within one canonical Attempt (#1084)
+
+Repaired #1956 already owns the effect-scope implementation and four focused
+effect-scope cases. This residual note counts only the five real Agent.handle
+chain/compatibility cases; incremental variants are counted separately in the
+#1981 streaming note.
 
 Stable configured Bindings exposed a previously masked collision: a custom
 strategy can call the model and then return `delegate_to`; the next Agent
@@ -44,7 +49,7 @@ arbitrary reentrant execution API.
   substituted with MockTransport.
 - One built-in multi-hop delegation case and one original-client-hook case
   preserve existing behavior.
-- Four focused effect-scope cases cover ordinary reset, explicit clear,
+- Four prerequisite effect-scope cases (already counted by #1956) cover ordinary reset, explicit clear,
   failure-atomic rejected setup, and concurrent task isolation; the original
   #1827 tuple/identity and #1829 tool-choice suites remain applicable.
 - Configured Hive boot/materialization assertions now name their Agent-qualified

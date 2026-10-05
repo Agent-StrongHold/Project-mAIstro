@@ -595,6 +595,7 @@ async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
     wiring rule included -- not a second one that drifts.
     """
     from maistro.agents.factory import _render_preamble, instantiate_agent
+    from maistro.capabilities.model_chat import GovernedLLMClient
     from maistro.types.agent import AgentIdentity
 
     config = defn.config if isinstance(defn.config, dict) else {}
@@ -621,10 +622,15 @@ async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
         full_soul,
         label="production",
     )
+    llm = source.llm
+    if isinstance(llm, GovernedLLMClient):
+        # The definition restricts the persisted Run's Workspace. Reuse the
+        # same admission owner so it cannot supply a Project, actor or grant.
+        llm = GovernedLLMClient(llm._calls, workspace_id=defn.workspace_id)
     return instantiate_agent(
         identity,
         agent_resolver=container.agents.get,
-        llm=source.llm,
+        llm=llm,
         context_builder=container.context_builder,
         prompt_manager=container.prompt_manager,
         warden=container.warden,

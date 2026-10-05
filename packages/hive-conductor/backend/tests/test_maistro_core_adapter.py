@@ -25,8 +25,9 @@ def _fake_container() -> SimpleNamespace:
         session_store=object(),
         quota_tracker=object(),
         run_store=object(),
-        # The composition builds one admitted model helper over these
-        # canonical authorities, shared by boot and materialized Agents.
+        # Governed-egress seams the #718 cutover reads off the Container and
+        # hands to the agent factory (create_agents wires GovernedLLMClient
+        # when all four effect/model authorities are present).
         capability_effects=object(),
         provider_registry=object(),
         llm_router=object(),
@@ -294,9 +295,9 @@ async def test_start_registers_the_runtime_materialization_source(monkeypatch):
 
     assert isinstance(source.llm, GovernedLLMClient)
     assert source.llm._calls is bridge.admitted_calls
-    assert source.llm._calls._egress._effects is container.capability_effects
-    assert source.llm._calls._egress._registry is container.provider_registry
-    assert source.llm._calls._egress._router is container.llm_router
+    assert source.llm._calls._effects is container.capability_effects
+    assert source.llm._calls._registry is container.provider_registry
+    assert source.llm._calls._router is container.llm_router
     # The real shipped PREAMBLE template, not an empty stand-in.
     assert "governed dispatch and policy controls" in source.preamble
 
@@ -599,7 +600,11 @@ async def test_configured_hive_agents_use_admitted_execution_and_usage(
         assert json.loads(sent[0].content)["model"] == "configured-hive-model"
         # The boot and post-boot factory paths retain this composition's one
         # admitted helper instead of creating a second Binding authority.
-        assert agent._llm is container.agents["boot-agent"]._llm
+        if agent_origin == "materialized":
+            assert agent._llm is not container.agents["boot-agent"]._llm
+            assert agent._llm._workspace_id == workspace_id
+        else:
+            assert agent._llm is container.agents["boot-agent"]._llm
         assert agent._llm._calls is bridge.admitted_calls
 
         # A client retained by either factory cannot retain a grant after the

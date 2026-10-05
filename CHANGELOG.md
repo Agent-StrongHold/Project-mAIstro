@@ -117,17 +117,30 @@ or placeholder-only section.
 
 ### Security
 
-- **Agent model calls require configured authority in their admitted scope (#1084).**
-  Boot and later-materialized Agents share one Container-backed admitted client,
-  inherit the persisted Run actor and Project, and resolve an operator-declared
-  Binding before every model effect. Missing admission, grant or scoped credential
-  refuses dispatch. Tool choice and domain TurnID handling are preserved; Agent
-  streaming uses the canonical incremental Provider lifecycle. Library compositions
-  now supply `AdmittedModelCalls` rather than a partial set of model authorities;
-  explicit standalone client injection remains available. Delegated calls are
-  distinguished by declared Agent and existing delegation depth so child prompts
-  cannot replay parent answers.
+- **Materialized Hive Agents retain admitted authority and gateway contracts (#1956).**
+  Boot and later Agent clients share the existing persisted Run/NodeRun/leased
+  Attempt and operator Binding resolver. A definition's Workspace only narrows
+  that authority; global definitions follow the admitted execution. Agent/delegation
+  visits use distinct stable effect keys. Unset sampling stays unset, and Hive's
+  configured API base keeps its exact path. This preserves the existing single-call
+  compatibility stream in that prerequisite.
 
+- **Agent streams use the admitted incremental model lifecycle (#1981).**
+  Streaming retains persisted execution, operator Binding and materialized
+  Workspace restrictions, with per-call revocation and stable Agent/delegation
+  effect keys. Incremental tools, usage, replay and cancellation use the existing
+  canonical Provider lifecycle; omitted sampling and exact Hive API bases remain
+  unchanged.
+
+- **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
+  `clarify` and the model fallback of `web_search` require a configured
+  `model.chat` Binding referenced by the DAG node's `model_binding_id`
+  (top-level or under `config`). Provider selection, scoped credentials,
+  actor/execution correlation, quota and usage use the existing canonical
+  effect authority. Missing authority and malformed model answers fail the
+  node instead of dispatching with ambient credentials or inventing answers.
+  The generic tool Invocation remains in place. Ordinary legacy model and
+  sandbox callers and Agent tool composition remain separate convergence work.
 - **Conductor model calls require persisted execution and configured authority (#1084).**
   Server and Hive task callers now resolve the actual Run, NodeRun, leased Attempt
   and admitted actor before resolving an operator-declared model Binding. Missing
@@ -135,6 +148,16 @@ or placeholder-only section.
   generated conductor identities are removed. Circuit admission uses the configured
   Binding pin and actual gateway, with no fallback around a pin. Automatic retries
   require proved non-dispatch; UNKNOWN outcomes are not redispatched under new keys.
+
+- **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
+  Pinned models must have metadata in the configured ProviderRegistry before
+  use; registered-but-unavailable pins continue to refuse without fallback.
+  Unregistered request aliases retain gateway passthrough with absent cost
+  metadata. Hive activation now reports the registration prerequisite clearly:
+  supply trusted model metadata through `provider_config_path` before activating
+  a pinned health model; LiteLLM `/model/new` registration alone is insufficient.
+  Unavailable request-alias diagnostics no longer describe aliases as pins.
+
 
 - **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
   (#1362).** Serialized budget definitions, reservation identities, and usage

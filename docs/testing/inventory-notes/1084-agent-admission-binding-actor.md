@@ -1,11 +1,15 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +20
+  packages/maistro-core/tests: +18
 ---
 
 # Agent calls consume configured admission (#1084)
 
-`GovernedLLMClient` now consumes the configured `AdmittedModelCalls` rather than
+After composition onto repaired #1956, the two factory cases and admitted
+client wiring are owned and counted by that prerequisite. This residual note
+counts only the eighteen original Agent adapter cases retained by #1981.
+
+`GovernedLLMClient` consumes the configured `AdmittedModelCalls` rather than
 constructing a Binding from constructor Workspace/Project strings. Complete and
 incremental stream calls resolve the persisted Run/NodeRun/Attempt, actor and
 operator Binding through the existing owners. The factory reuses a matching
@@ -28,7 +32,7 @@ merely using the factory.
   credentials, revocation before replay, streaming incrementality, deterministic
   close and stale/missing streaming execution context. Only final HTTP is
   replaced by MockTransport in these admission tests.
-- Two additional factory cases prove shared client identity and refusal of a
+- Two prerequisite factory cases (already counted by #1956) prove shared client identity and refusal of a
   conflicting helper. Existing factory composition cases now name the admitted
   helper instead of the removed partial-authority argument set.
 - Before implementation, four focused regressions failed against the dependency

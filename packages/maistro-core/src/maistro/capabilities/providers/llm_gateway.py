@@ -48,7 +48,8 @@ class GatewayEndpoint(BaseModel):
     """Where the one approved model Provider sends traffic; secrets stay here.
 
     ``base_url`` is the gateway root (a ``/v1`` suffix is appended when absent,
-    matching the shipped LiteLLM gateway convention). The API key never enters
+    matching the shipped LiteLLM gateway convention). Callers holding a complete
+    API base set ``base_url_is_api_base=True`` to retain its exact path. The API key never enters
     a Binding, Invocation request, or persisted result. Governed production
     model egress replaces ``api_key`` with the scoped credential selected from
     the resolved Binding before it crosses the physical executor seam.
@@ -59,11 +60,14 @@ class GatewayEndpoint(BaseModel):
     base_url: str
     api_key: str = ""
     timeout_s: float = 120.0
+    # Explicit API bases already include the operator's complete routing path.
+    # Root callers retain the shipped LiteLLM /v1 convention by default.
+    base_url_is_api_base: bool = False
 
     @property
     def _base(self) -> str:
         base = self.base_url.rstrip("/")
-        return base if base.endswith("/v1") else base + "/v1"
+        return base if self.base_url_is_api_base or base.endswith("/v1") else base + "/v1"
 
     def authorization_header(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -144,7 +148,8 @@ class ModelChatRequest(BaseModel):
 
     model: str = ""
     messages: list[dict[str, object]] = Field(default_factory=list)
-    temperature: float = 0.7
+    # None preserves callers which intentionally leave sampling to the Provider.
+    temperature: float | None = 0.7
     max_tokens: int | None = None
     tools: list[dict[str, object]] | None = None
     tool_choice: str | None = None
@@ -157,9 +162,10 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
     payload: dict[str, object] = {
         "model": provider.name,
         "messages": [dict(message) for message in request.messages],
-        "temperature": request.temperature,
         "stream": False,
     }
+    if request.temperature is not None:
+        payload["temperature"] = request.temperature
     if request.max_tokens is not None:
         payload["max_tokens"] = request.max_tokens
     if request.tools:
