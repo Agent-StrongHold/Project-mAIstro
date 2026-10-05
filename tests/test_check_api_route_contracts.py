@@ -253,6 +253,64 @@ def test_gate_rejects_logging_only_handler_without_disposition(
     assert "POST /reload" in out
 
 
+def test_registered_valid_temporary_disposition_excuses_logging_only_handler(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#1857 review: the temporary escape hatch must reach the logging-only
+    handler class. A registry entry with a tracking issue and a future expiry
+    suppresses the canned finding for that identity and the gate passes."""
+    routes = _write_routes(tmp_path, LOGGING_ONLY)
+    entry = _identity_entry(
+        route="/reload",
+        method="post",
+        path="/reload",
+        file="routes_0.py",
+        handler="reload_settings",
+        disposition="temporary",
+        issue="#1857",
+        expires=(date.today() + timedelta(days=30)).isoformat(),
+        contract="Acknowledges reload requests until the real reload lands.",
+    )
+    inventory_doc = tmp_path / "inventory.md"
+    inventory_doc.write_text("# inventory\n")
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    monkeypatch.setattr(mod, "INVENTORY_DOC", inventory_doc)
+    assert mod.main() == 0
+    out = capsys.readouterr().out
+    assert "reload_settings" not in out
+    assert "0 canned" in out
+
+
+def test_expired_temporary_disposition_does_not_excuse_logging_only_handler(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The excuse must expire: a stale review date leaves the identity
+    unexempt, so both the registry check and the canned finding fire."""
+    routes = _write_routes(tmp_path, LOGGING_ONLY)
+    entry = _identity_entry(
+        route="/reload",
+        method="post",
+        path="/reload",
+        file="routes_0.py",
+        handler="reload_settings",
+        disposition="temporary",
+        issue="#1857",
+        expires=(date.today() - timedelta(days=1)).isoformat(),
+        contract="Acknowledges reload requests until the real reload lands.",
+    )
+    inventory_doc = tmp_path / "inventory.md"
+    inventory_doc.write_text("# inventory\n")
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    monkeypatch.setattr(mod, "INVENTORY_DOC", inventory_doc)
+    assert mod.main() == 1
+    out = capsys.readouterr().out
+    assert "canned route handler" in out
+    assert "reload_settings" in out
+    assert "expired" in out
+
+
 # --------------------------------------------------------------------------- #
 # _temporary_expired: the escape hatch must expire
 # --------------------------------------------------------------------------- #

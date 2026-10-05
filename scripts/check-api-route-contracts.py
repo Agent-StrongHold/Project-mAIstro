@@ -63,10 +63,13 @@ The audited routes and their dispositions live in
 resolve to a live handler (method + path matched against the decorator) whose
 name equals the entry's `handler` field, so the inventory cannot rot: removing
 a route means updating the inventory in the same change, and renaming a
-handler means reconciling its declaration. A canned handler that is *not* registered fails the gate unless
-it carries a `temporary` disposition with a tracking issue and an unexpired
+handler means reconciling its declaration. A canned handler fails the gate unless its registry entry excuses
+it with a `temporary` disposition carrying a tracking issue and an unexpired
 review date — the same escape shape `check-public-routes.py` uses, because
-"we know, it is tracked" must be writable and must expire.
+"we know, it is tracked" must be writable and must expire. The excuse is
+keyed to the entry's (file, method, path) identity and must still be valid:
+a missing issue or an expired date fails the registry check and leaves the
+canned finding standing, including for logging-only handlers.
 
 Usage
 -----
@@ -193,9 +196,16 @@ def _handlers() -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, 
 
 def _canned_handlers(
     handlers: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, str, str]],
+    exempt: frozenset[tuple[str, str, str]] = frozenset(),
 ) -> list[str]:
+    """Canned findings, skipping identities already excused by a valid
+    ``temporary`` disposition (``_temporary_exempt_identities``): the escape
+    hatch must apply to logging-only handlers too, since an observability-only
+    body is exactly the shape a temporary disposition exists to excuse."""
     findings: list[str] = []
     for filename, func, method, route_path in handlers:
+        if (filename, method, route_path) in exempt:
+            continue
         returns = [n for n in ast.walk(func) if isinstance(n, ast.Return)]
         if not returns:
             continue
@@ -221,6 +231,26 @@ def _temporary_expired(entry: dict[str, object]) -> str | None:
     if dt is not None:
         return f"expired {dt.date().isoformat()}" if dt.date() < date.today() else None
     return "temporary disposition carries no parseable expires date"
+
+
+def _temporary_exempt_identities() -> frozenset[tuple[str, str, str]]:
+    """Registry identities whose `temporary` disposition is currently valid:
+    a tracking issue and an unexpired review date. `main()` filters these out
+    of the canned findings so the documented escape hatch holds for every
+    detected handler class (#1857). A missing registry yields nothing here;
+    `_check_registry` reports that failure on its own."""
+    if not REGISTRY.exists():
+        return frozenset()
+    registry = json.loads(REGISTRY.read_text())
+    exempt: set[tuple[str, str, str]] = set()
+    for entry in registry.get("routes", []):
+        if (
+            entry.get("disposition") == "temporary"
+            and entry.get("issue")
+            and _temporary_expired(entry) is None
+        ):
+            exempt.add((str(entry["file"]), str(entry["method"]), str(entry["path"])))
+    return frozenset(exempt)
 
 
 def _check_registry(
@@ -273,7 +303,7 @@ def main() -> int:
 
     handlers = _handlers()
     by_identity = {(f, m, p): func for f, func, m, p in handlers}
-    canned = _canned_handlers(handlers)
+    canned = _canned_handlers(handlers, _temporary_exempt_identities())
 
     registry_failures, registered_count = _check_registry(by_identity)
     failures.extend(registry_failures)
