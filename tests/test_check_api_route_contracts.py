@@ -81,6 +81,80 @@ def test_any_other_call_is_real_work() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Nested definitions: only executed scope can justify the handler (#1858)
+# --------------------------------------------------------------------------- #
+
+
+def test_call_inside_uncalled_nested_definition_is_not_real_work() -> None:
+    source = "def h():\n    def unused():\n        store.write()\n    return {'status': 'ok'}\n"
+    assert mod._performs_real_work(_func(source)) is False
+
+
+def test_call_inside_uncalled_nested_async_definition_is_not_real_work() -> None:
+    source = (
+        "def h():\n    async def unused():\n        store.write()\n    return {'status': 'ok'}\n"
+    )
+    assert mod._performs_real_work(_func(source)) is False
+
+
+def test_lambda_definition_time_defaults_execute_but_body_does_not() -> None:
+    deferred = "def h():\n    cb = lambda: store.write()\n    return {'status': 'ok'}\n"
+    eager_default = "def h():\n    cb = lambda k=store.write(): k\n    return {'status': 'ok'}\n"
+    kwonly_without_default = (
+        "def h():\n    cb = lambda *, bare: bare\n    return {'status': 'ok'}\n"
+    )
+    assert mod._performs_real_work(_func(deferred)) is False
+    assert mod._performs_real_work(_func(eager_default)) is True
+    assert mod._performs_real_work(_func(kwonly_without_default)) is False
+
+
+def test_called_nested_helper_counts_through_its_call_site() -> None:
+    """A helper the route invokes justifies the route at the call site.
+
+    Deliberate static-analysis limit: the detector is lexical, so it credits
+    the call site without following into the helper's body.
+    """
+    source = (
+        "def h():\n"
+        "    def flush():\n"
+        "        store.write()\n"
+        "    flush()\n"
+        "    return {'status': 'ok'}\n"
+    )
+    assert mod._performs_real_work(_func(source)) is True
+
+
+def test_nested_definition_time_expressions_still_execute() -> None:
+    """Decorators, defaults and annotations of a nested def run immediately.
+
+    Only the nested body defers to call time, so a route whose nested def
+    evaluates a real call while being defined still performs work.
+    """
+    source = (
+        "def h():\n"
+        "    @deco(seed())\n"
+        "    def inner(a=store.write(), *, bare, flag=track(), label: label_of() = 'x') -> probe():\n"
+        "        pass\n"
+        "    return {'status': 'ok'}\n"
+    )
+    assert mod._performs_real_work(_func(source)) is True
+
+
+def test_nested_class_body_executes_but_its_methods_do_not() -> None:
+    """A class statement runs its body at once; its methods wait for calls."""
+    eager = "def h():\n    class C:\n        store.write()\n    return {'status': 'ok'}\n"
+    deferred = (
+        "def h():\n"
+        "    class C:\n"
+        "        def m(self):\n"
+        "            store.write()\n"
+        "    return {'status': 'ok'}\n"
+    )
+    assert mod._performs_real_work(_func(eager)) is True
+    assert mod._performs_real_work(_func(deferred)) is False
+
+
+# --------------------------------------------------------------------------- #
 # _router_decorator: (method, path) extraction
 # --------------------------------------------------------------------------- #
 
@@ -131,6 +205,14 @@ def streams():
     yield 1
 """
 
+UNCALLED_NESTED_HELPER = """
+@router.post("/flush")
+async def flush_cache():
+    def unused():
+        store.write()
+    return {"status": "ok"}
+"""
+
 
 def _write_routes(tmp_path: Path, *bodies: str) -> Path:
     for index, body in enumerate(bodies):
@@ -138,6 +220,70 @@ def _write_routes(tmp_path: Path, *bodies: str) -> Path:
             "from fastapi import APIRouter, HTTPException\nrouter = APIRouter()\n" + body
         )
     return tmp_path
+
+
+def test_uncalled_nested_helper_route_is_reported_canned(tmp_path, monkeypatch) -> None:
+    """#1858: defining a writing helper without calling it is not route work."""
+    routes = _write_routes(tmp_path, UNCALLED_NESTED_HELPER)
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    findings = mod._canned_handlers(mod._handlers())
+    assert len(findings) == 1
+    assert "flush_cache" in findings[0]
+    assert "POST /flush" in findings[0]
+
+
+def test_nested_return_does_not_rescue_a_constant_handler(tmp_path, monkeypatch) -> None:
+    """Return analysis respects function scope (#1858).
+
+    A nested helper returning a computed value must not keep the enclosing
+    handler — whose own returns are all constants — out of the findings.
+    """
+    body = """
+@router.post("/flush")
+def flush_cache():
+    def status():
+        return build_status()
+    return {"status": "ok"}
+"""
+    routes = _write_routes(tmp_path, body)
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    findings = mod._canned_handlers(mod._handlers())
+    assert len(findings) == 1
+    assert "flush_cache" in findings[0]
+
+
+def test_nested_return_does_not_condemn_a_computing_handler(tmp_path, monkeypatch) -> None:
+    """The other scope direction: a nested constant return changes nothing."""
+    body = """
+@router.get("/items")
+def items():
+    def describe():
+        return "constant"
+    return {"items": fetch_items()}
+"""
+    routes = _write_routes(tmp_path, body)
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    assert mod._canned_handlers(mod._handlers()) == []
+
+
+def test_full_gate_rejects_uncalled_helper_route_without_disposition(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The required fail-before case, end to end: the gate refuses the route."""
+    import json
+
+    routes = _write_routes(tmp_path, UNCALLED_NESTED_HELPER)
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"routes": []}))  # no accepted disposition
+    doc = tmp_path / "inventory.md"
+    doc.write_text("# inventory\n")
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    monkeypatch.setattr(mod, "REGISTRY", registry)
+    monkeypatch.setattr(mod, "INVENTORY_DOC", doc)
+    assert mod.main() == 1
+    out = capsys.readouterr().out
+    assert "canned route handler" in out
+    assert "flush_cache" in out
 
 
 def test_canned_handlers_flags_only_constant_noop_handlers(tmp_path, monkeypatch) -> None:
@@ -247,6 +393,64 @@ def test_registry_rot_is_refused(tmp_path, monkeypatch) -> None:
     assert any("inventory rot" in failure for failure in failures)
 
 
+# --------------------------------------------------------------------------- #
+# #1860: the declared handler must be the discovered function's own name
+# --------------------------------------------------------------------------- #
+
+
+def test_registry_handler_drift_is_refused(tmp_path, monkeypatch) -> None:
+    """A nonempty-but-wrong handler name is not validated away: the entry
+    resolves by (file, method, path), so only the name comparison can catch
+    that the declaration points at a function that is not there."""
+    entry = _identity_entry(handler="different_handler")
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    failures, count = mod._check_registry(_live_identity())
+    assert count == 1
+    assert len(failures) == 1
+    assert "handler identity drift" in failures[0]
+    # Both names in the output: what the inventory declares, what is live.
+    assert "'different_handler'" in failures[0]
+    assert "'things_handler'" in failures[0]
+
+
+def test_renamed_handler_fails_until_reconciled(tmp_path, monkeypatch) -> None:
+    """The inverse rename: the live function was renamed, the inventory was
+    not. Fails naming the stale declaration and the discovered name."""
+    entry = _identity_entry()  # declares things_handler
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    renamed = {
+        ("synthetic.py", "get", "/things"): _func("def renamed_things_handler():\n    return []\n")
+    }
+    failures, _ = mod._check_registry(renamed)
+    assert len(failures) == 1
+    assert "handler identity drift" in failures[0]
+    assert "'things_handler'" in failures[0]
+    assert "'renamed_things_handler'" in failures[0]
+
+
+def test_correct_handler_identity_passes(tmp_path, monkeypatch) -> None:
+    entry = _identity_entry()  # equals the live function's name
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    failures, count = mod._check_registry(_live_identity())
+    assert failures == []
+    assert count == 1
+
+
+def test_unrelated_route_handler_cannot_satisfy_identity(tmp_path, monkeypatch) -> None:
+    """A handler that exists on a *different* route cannot satisfy this
+    entry: resolution is by (file, method, path) and the name is compared
+    against that identity's function only."""
+    entry = _identity_entry(handler="other_handler")
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    live = dict(_live_identity())
+    live[("other.py", "get", "/others")] = _func("def other_handler():\n    return []\n")
+    failures, _ = mod._check_registry(live)
+    assert len(failures) == 1
+    assert "handler identity drift" in failures[0]
+    assert "'other_handler'" in failures[0]
+    assert "'things_handler'" in failures[0]
+
+
 def test_registry_temporary_needs_issue_and_unexpired_expiry(tmp_path, monkeypatch) -> None:
     entry = _identity_entry(
         disposition="temporary", expires=(date.today() - timedelta(days=1)).isoformat()
@@ -281,6 +485,27 @@ def test_main_reports_findings_and_fails(tmp_path, monkeypatch, capsys) -> None:
     assert "canned route handler" in out
     assert "inventory rot" in out
     assert "missing inventory document" in out
+
+
+def test_main_fails_on_handler_identity_drift_alone(tmp_path, monkeypatch, capsys) -> None:
+    """#1860 end-to-end: a real-work route, a present inventory document, and
+    a registry entry whose handler name is stale. The full gate must fail on
+    the drift alone — naming both handlers — with no rot and no canned
+    finding to confuse the repair."""
+    routes = _write_routes(tmp_path, REAL_WORK)  # routes_0.py @router.get("/real")
+    entry = _identity_entry(handler="different_handler", file="routes_0.py", path="/real")
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    inventory = tmp_path / "route-contract-inventory.md"
+    inventory.write_text("# route contract inventory\n")
+    monkeypatch.setattr(mod, "INVENTORY_DOC", inventory)
+    assert mod.main() == 1
+    out = capsys.readouterr().out
+    assert "handler identity drift" in out
+    assert "'different_handler'" in out
+    assert "'real_things'" in out
+    assert "inventory rot" not in out
+    assert "canned route handler" not in out
 
 
 def test_main_passes_on_this_tree(capsys) -> None:

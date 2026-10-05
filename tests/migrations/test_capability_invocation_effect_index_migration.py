@@ -70,11 +70,14 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
     # chain tip as `052_learning_stage_ladder`, and develop's
-    # learning-lifecycle columns (M4-B, ADR-100126-8c2d) continue that as
-    # `053`. This branch's `043_invocation_quota_door` (#1196/#718) is
-    # re-parented onto whichever of them is develop's head at merge time --
-    # 046, then 047, 048, 050, 051, 052, now 053 -- so the single linear head
-    # is that quota-door revision.
+    # learning-lifecycle columns (M4-B, ADR-100126-8c2d) continued that as
+    # `053_learning_lifecycle_columns`. #1892's forward admission-generation
+    # representation — numbered `053` when written on the `052` base —
+    # re-parents onto that tip as `054` per the chain's collision convention.
+    # This branch's `043_invocation_quota_door` (#1196/#718) is re-parented
+    # onto whichever of them is develop's head at merge time -- 046, then
+    # 047, 048, 050, 051, 052, 053, now 054 -- so the single linear head is
+    # that quota-door revision.
     walked = {
         item.revision for item in directory.walk_revisions("base", "043_invocation_quota_door")
     }
@@ -90,6 +93,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "051" in walked
     assert "052" in walked
     assert "053" in walked
+    assert "054" in walked
     assert directory.get_heads() == ["043_invocation_quota_door"]
 
 
