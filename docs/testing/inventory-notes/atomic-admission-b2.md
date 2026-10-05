@@ -442,3 +442,59 @@ the unchanged head `384c4f268`:
 Round-6 conclusion: unchanged from round 5 — the only remaining action is
 campaign-level (land the two-entry `reachability` grant on develop, then
 merge origin/develop here); no in-branch edit can or may change this.
+
+## CI-repair round 7 (L1893, head e86ce9b19 — develop advanced, unblock path re-proven at the newest develop)
+
+This round's lane brief re-issued the BLOCKED block and the merge-queue
+"test: failure" signal; the only upstream change since round 6 is develop
+itself. develop was re-fetched before judging: `origin/develop` advanced
+`30677b185` -> `30144ad0f` (10 commits, including upstream B1-adjacent work —
+`alembic/versions/055_task_admission_generations.py`) — and the grant is
+STILL not upstream: develop's `quality/ratchet-authorizations.json` is
+byte-identical to this branch's (no admission entries) and its
+`reachability-baseline.json`/`reachability-dispositions.json` carry neither
+admission module. The two-merge blocker therefore persists upstream; nothing
+in-branch changed and none may.
+
+Deterministic state at `e86ce9b19` re-executed independently (driver logs in
+jobs/f628a257.../check-*.log concur): `uv sync --locked --extra dev` ok,
+`ruff check .` clean, `ruff format --check .` 2926 files clean, focused
+pytest (both files) 139 passed / 0 skipped, `check-suite-inventory.py --suite
+packages/maistro-core/tests` ok (13429 node IDs), `mypy` on both changed
+modules "Success: no issues found in 2 source files". Acceptance re-read
+against source: all six required interfaces conformant, all ten prospective
+tests present by exact name; 27 `AdmissionRowDecodeError` raisers — every
+parsing-context raiser suppresses its chain (`from None`), the 4 direct
+raises (`AdmissionRowHeader.__post_init__`, error `__init__`) have no active
+chain to suppress; zero clock reads, zero SQL/HTTP/queue mutation; three-dot
+diff vs the develop merge point `30677b185...HEAD` is exactly the ten
+declared B2 surfaces.
+
+New this round — the unblock path proven against the NEWEST develop, not
+inherited: detached worktree `~/Git/worktrees/probe-1893-round7`, merge
+`origin/develop` `30144ad0f` (clean, no conflicts; HEAD already carried
+develop's four quality-file edits, verified by diffing the merge tree
+against both parents — zero ledger-row loss in either direction), then merge
+grant `3235229f5fed` (as if landed on develop), `uv sync --locked --extra
+dev`, `RATCHET_BASE_REV=3235229f5fed...`:
+
+- `check-ratchet-provenance.py` exit 0 — both admission identities
+  explicitly "authorized" lines, 174 unreachable of 1279 modules, 49
+  quality-JSON consumers provenanced, all nine ratchets OK;
+- `check-shipped-surface-truth.py` exit 0;
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI's exact argv) exit 0, 1338 = 1338;
+- focused pytest at the probe head: 139 passed; ruff clean — the B2 code is
+  green on top of the new develop code (no production importer of either
+  module arrived upstream; the alembic 055 DDL does not import them).
+
+Worktree left in place as evidence (`26ff3378c` = develop + grant + head).
+No `quality/` file was touched in the assigned worktree: the round's
+conditional vulture-ledger amendment stays moot (nothing unbanked), and the
+reachability grant may only arrive from develop (two-merge rule).
+
+Round-7 conclusion: unchanged from rounds 4-6, now re-proven against
+develop `30144ad0f` — the only remaining action is campaign-level (land the
+two-entry `reachability` grant on develop, then merge origin/develop here);
+no in-branch edit can or may change this. All five driver checks and all
+other verified CI steps are green at the assigned head.
