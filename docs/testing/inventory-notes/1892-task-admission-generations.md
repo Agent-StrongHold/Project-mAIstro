@@ -67,8 +67,10 @@ CI's coverage-postgres step 2 suites 5077 passed, 8 skipped; canvas leg 516
 passed, 3 skipped; `scripts/check-durable-table-inventory.py` ok (89 durable
 tables); vulture ledger 1340/1340 with CI's exact arguments.
 
-Repair at this lane (develop sync to `35f2e0158` + `origin/develop`): the
-merge reintroduced the revision-id collision — develop's
+Repair at this lane (develop sync): agreed integration base
+`origin/develop` = `8a4bc239fe9af429be9faa087916f965e9fb20f7`, merged via
+`35f2e0158` (feece6c63) then `88be7e33c`; the merge reintroduced the
+revision-id collision — develop's
 `053_learning_lifecycle_columns` and this branch's admission-generation
 revision both claimed `053` on `052`. Resolved per the migration's own
 documented convention (whichever revision lands second re-parents onto the
