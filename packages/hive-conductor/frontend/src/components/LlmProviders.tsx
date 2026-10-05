@@ -1,35 +1,16 @@
 import { useEffect, useState } from "react";
-import { fallbackMessage } from "../lib/api";
+import type { LlmProvidersResponse } from "../api/entities";
+import { apiGet, apiPost, apiPut } from "../lib/api";
 import { SecretField } from "./shared";
 
-interface ProviderRow {
-  name: string;
-  label: string;
-  models: string[];
-  test_model: string;
-  has_key: boolean;
-  activated: boolean;
-}
-
-interface ProvidersResponse {
-  vault_available: boolean;
-  providers: ProviderRow[];
-}
-
-// LLM provider keys are deployment-wide vault material (SPEC-072726-3439
-// Phase 4): stored via PUT /v1/providers/{name}/key (age vault, never .env),
-// activated via POST /v1/providers/{name}/activate — which registers the
-// models with LiteLLM and runs a one-token test completion, the install
-// journey's "first model call". Both calls need admin (config.write).
 export function LlmProviders() {
-  const [data, setData] = useState<ProvidersResponse | null>(null);
+  const [data, setData] = useState<LlmProvidersResponse | null>(null);
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   const load = () =>
-    fetch("/v1/providers", { credentials: "same-origin" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+    apiGet<LlmProvidersResponse>("/v1/providers")
       .then(setData)
       .catch(() => setData(null));
 
@@ -43,19 +24,13 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
-      const r = await fetch(`/v1/providers/${name}/key`, {
-        method: "PUT",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: keys[name] || "" }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || fallbackMessage(r.status));
+      await apiPut(`/v1/providers/${name}/key`, { api_key: keys[name] || "" });
       setKeys((k) => ({ ...k, [name]: "" }));
       setNotice({ kind: "ok", text: `${name}: key stored in the encrypted vault.` });
       await load();
-    } catch (e: any) {
-      setNotice({ kind: "err", text: `${name}: ${e.message || e}` });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      setNotice({ kind: "err", text: `${name}: ${message}` });
     } finally {
       setBusy(null);
     }
@@ -65,17 +40,13 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
-      const r = await fetch(`/v1/providers/${name}/activate`, {
-        method: "POST",
-        credentials: "same-origin",
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || fallbackMessage(r.status));
+      const body = await apiPost<{ first_model_call?: { model?: string } }>(`/v1/providers/${name}/activate`);
       const model = body.first_model_call?.model ?? "";
       setNotice({ kind: "ok", text: `${name}: activated — first model call succeeded on ${model}.` });
       await load();
-    } catch (e: any) {
-      setNotice({ kind: "err", text: `${name}: ${e.message || e}` });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      setNotice({ kind: "err", text: `${name}: ${message}` });
     } finally {
       setBusy(null);
     }
@@ -110,11 +81,6 @@ export function LlmProviders() {
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {data.providers.map((p) => (
           <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            {/* The placeholder used to be this field's only name, and it read
-                "API key" or "key stored — replace?" depending on the server's
-                answer: the field's *name* changed under the user, and vanished
-                entirely once they typed. The name is now the provider, fixed;
-                whether a key is stored is a description (#375). */}
             <SecretField
               label={`${p.label} API key`}
               value={keys[p.name] || ""}
