@@ -172,3 +172,101 @@ async def test_get_all_usage_ordered_by_provider_then_cycle_key(
     await tracker.record_usage("anthropic", "monthly", 2, 2)
     rows = await tracker.get_all_usage()
     assert [r["provider"] for r in rows] == ["anthropic", "openai"]
+
+
+@pytest.mark.asyncio
+async def test_evidence_and_its_aggregate_commit_together(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """A crash between the two must not lose the projection permanently.
+
+    The evidence row is the idempotency key: a retry's `ON CONFLICT DO
+    NOTHING` reports nothing inserted and therefore skips the projection. So
+    committing the evidence *before* projecting left a window in which an
+    interruption understated `quota_usage` forever, with no later call able to
+    repair it — the retry sees the conflict and does nothing (Codex, #1362).
+
+    Interrupting the projection must therefore roll the evidence back too,
+    leaving the invocation genuinely unrecorded and the retry able to redo
+    both.
+    """
+
+    original = tracker._project_usage_locked
+
+    async def fail_once(*args: object, **kwargs: object) -> None:
+        tracker._project_usage_locked = original  # type: ignore[method-assign]
+        raise RuntimeError("process died between the evidence row and its aggregate")
+
+    tracker._project_usage_locked = fail_once  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="process died"):
+        await tracker.record_invocation("inv-1", "openai", "monthly", 100, 50, True)
+
+    # Nothing was committed: no evidence, no aggregate.
+    assert (await tracker.get_all_usage()) == []
+
+    # And the retry records both, because the evidence row is not there to
+    # suppress it.
+    result = await tracker.record_invocation("inv-1", "openai", "monthly", 100, 50, True)
+
+    assert result["total_tokens"] == 150
+    assert result["request_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_record_unreported_counts_the_call_without_inventing_tokens(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """A provider that answered but reported no usage still costs a request.
+
+    The counter exists so an operator can tell "this cycle used 150 tokens"
+    from "this cycle used 150 tokens *that we know of*". Inventing an estimate
+    here would make the aggregate agree with itself and disagree with the bill,
+    so the tokens stay at zero and `usage_complete` carries the doubt instead.
+    """
+    result = await tracker.record_unreported("openai", "monthly")
+
+    assert result == {
+        "provider": "openai",
+        "cycle_key": cycle_key("monthly"),
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_count": 1,
+        "unreported_count": 1,
+        "usage_complete": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_record_unreported_accumulates_beside_reported_usage(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """Reported and unreported calls share one row; only the counters differ."""
+    await tracker.record_usage("openai", "monthly", 100, 50)
+    await tracker.record_unreported("openai", "monthly")
+    result = await tracker.record_unreported("openai", "monthly")
+
+    # Three requests, two of them unaccounted, and the 150 reported tokens
+    # neither grown nor lost by the two that reported nothing.
+    assert result["request_count"] == 3
+    assert result["unreported_count"] == 2
+    assert result["total_tokens"] == 150
+    assert result["usage_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_record_unreported_is_committed_not_merely_buffered(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """The projection is durable when the call returns, not at some later flush.
+
+    Read back through a rollback: anything still sitting in an open transaction
+    would disappear, so surviving one is what distinguishes a committed write
+    from a buffered one.
+    """
+    await tracker.record_unreported("anthropic", "monthly")
+    await tracker._conn.rollback()
+
+    after = await tracker._fetch_usage("anthropic", cycle_key("monthly"))
+    assert after["request_count"] == 1
+    assert after["unreported_count"] == 1
