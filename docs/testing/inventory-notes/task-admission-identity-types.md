@@ -13,7 +13,7 @@ wiring.
 
 `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q -x`
 collected and passed 74 cases. `uv run python scripts/check-suite-inventory.py
---suite packages/maistro-core/tests` collected 13,126 node IDs. The +74 delta
+--suite packages/maistro-core/tests` collected 13,364 node IDs. The +74 delta
 is the new focused file, including the module-local export and enum-shape
 contract check; it is unchanged by unrelated test additions in the integration
 branch.
@@ -55,11 +55,11 @@ Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
 
 ## Final validation refresh
 
-At validation head `cf42a342af25d437e272398851ff7835794b34cf`, the focused
-suite passed 74 cases, the suite inventory collected 13,126 node IDs, and ruff
+At validation head `d0bc91b41bb7a35d14623a2c844f8c0db921384e`, the focused
+suite passed 74 cases, the suite inventory collected 13,364 node IDs, and ruff
 plus module mypy passed. The required exact Vulture command reported the nine
 reviewed-but-new identities as trusted-base debt (rc=1) against trusted base
-`35f2e0158a91`; that base does not contain this module. `check-reachability.py`
+`8a4bc239fe9a`; that base does not contain this module. `check-reachability.py`
 likewise reported the deliberately unreachable `maistro.runs.admission_identity`
 (rc=1). `check-reachability-dispositions.py` and
 `check-promotion-surface.py` passed. These two gates must remain blocked until
