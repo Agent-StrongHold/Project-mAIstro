@@ -118,3 +118,36 @@ findings), `check-suite-inventory.py` (14/14 suites match),
 job `pytest tests/ packages/hive-conductor/backend/tests
 packages/maistro-design/tests -q --timeout=60` (8351 passed, 97 skipped).
 Test count is unchanged by this note: `inventory-delta` above still holds.
+
+## Repair round 3: develop sync for the merge queue (no code change)
+
+The branch stalled in the GitHub merge queue (GH006) because develop had
+advanced past the branch's last merge base with the squash of PR #1975
+itself (`9a5eb7ba6`). Merging `origin/develop` into the branch conflicted
+on exactly the three #1858 surfaces; resolution keeps the branch version,
+which is a verified superset — the squash's file blobs are byte-identical
+to PR #1975 head `235f2d3c6` (checked via blob ids), an ancestor of the
+branch, whose extra delta is only 424029fe9 + 0f2af6741.
+
+Re-proven at the merged head `6627a1795`, including a fresh fail-before
+run of the issue's synthetic fixture (uncalled nested `store.write()`
+helper, constant return) against a pre-squash develop detector extracted
+from `b3662bb37` into a mirrored minimal tree: old detector reports
+`0 canned`, exit 0 (the escape); this head's detector reports the route
+canned, exit 1 (rejected by the full gate with no disposition).
+
+Gates re-run at `6627a1795`: 51/51 in-process detector tests; backend
+contract suite 15/15; shipped-tree gate OK (279 handlers, 15 audited
+routes, 0 canned); `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` (1338 reviewed = 1338
+findings, base `9a5eb7ba6` = candidate); `check-ratchet-provenance.py`
+and `check-shipped-surface-truth.py` (all ratchets evaluate
+base `9a5eb7ba6` -> candidate `6627a1795`, no expansion);
+`check-suite-inventory.py` 14/14; `check-merge-markers.py`,
+`check-cross-package-imports.py`, `check-backlog-consistency.py`,
+`verify-monorepo-layout.sh`, ruff check + format, and the ci.yml
+one-process job `pytest tests/ packages/hive-conductor/backend/tests
+packages/maistro-design/tests -q --timeout=60` (8379 passed, 111
+skipped — the merge adds develop's new tests) plus mypy over the CI's
+nine `packages/*/src` trees (941 files, no issues). No test added or
+removed: `inventory-delta` above still holds.
