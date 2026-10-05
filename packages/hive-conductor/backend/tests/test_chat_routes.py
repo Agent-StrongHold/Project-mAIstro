@@ -255,7 +255,11 @@ def test_stream_preserves_caller_provided_system_message(authed_client: Any, mon
     assert req.messages[0]["content"] == "caller context"
 
 
-def test_stream_swallows_llm_exception_as_done_event(authed_client: Any, monkeypatch) -> None:
+def test_stream_reports_failed_execution_in_compatible_done_event(
+    authed_client: Any, monkeypatch
+) -> None:
+    import json
+
     class FailingLLM:
         async def complete(self, req):
             raise RuntimeError("boom")
@@ -269,4 +273,13 @@ def test_stream_swallows_llm_exception_as_done_event(authed_client: Any, monkeyp
     ) as r:
         assert r.status_code == 200
         body = "".join(r.iter_text())
-    assert "Error: RuntimeError" in body
+    (failure,) = [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert failure["type"] == "done"
+    assert failure["status"] == "failed"
+    assert failure["error"]["code"] == "chat_execution_failed"
+    assert failure["content"] == "Error: governed chat execution failed"
+    assert "boom" not in body

@@ -214,12 +214,76 @@ async def test_stream_preserves_deltas_usage_and_replays_without_dispatch() -> N
     assert message["content"] == "Hi!"
     assert message["reasoning_content"] == "think"
     assert message["tool_calls"][0]["function"] == {"name": "look", "arguments": '{"a":1}'}
-    assert replay[0]["choices"][0]["delta"] == message
+    assert replay[0]["choices"][0]["delta"] == {
+        **message,
+        "tool_calls": [{**message["tool_calls"][0], "index": 0}],
+    }
     events = effects.usage_log.events_for("model")
     assert len(events) == 1
     assert events[0].invocation_id == stored.invocation_id
     assert (events[0].input_tokens, events[0].output_tokens) == (8, 3)
     assert events[0].usage_reported is True
+
+
+async def test_multi_tool_replay_restores_indices_without_changing_persisted_result() -> None:
+    effects, egress, arguments = _fixture()
+    chunks = [
+        _chunk(
+            tool_calls=[
+                {
+                    "index": 1,
+                    "id": "vision",
+                    "type": "function",
+                    "function": {"name": "analyze_dashboard", "arguments": '{"id":"'},
+                },
+                {
+                    "index": 0,
+                    "id": "profile",
+                    "type": "function",
+                    "function": {"name": "profile_get", "arguments": "{}"},
+                },
+            ]
+        ),
+        _chunk(tool_calls=[{"index": 1, "function": {"arguments": 'board"}'}}]),
+        _chunk(finish="tool_calls"),
+    ]
+    requests = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, stream=_Bytes([*map(_frame, chunks), b"data: [DONE]\n\n"]))
+
+    with override_transport(httpx.MockTransport(handle)):
+        _ = [chunk async for chunk in egress.stream(**arguments)]
+        original = (await _rows(effects))[0].model_dump()
+        replay = [chunk async for chunk in egress.stream(**arguments)]
+
+    fragments = replay[0]["choices"][0]["delta"]["tool_calls"]
+    assert [(tool["index"], tool["id"]) for tool in fragments] == [(0, "profile"), (1, "vision")]
+    assembled = ChatStreamAccumulator()
+    assembled.add(replay[0])
+    assert assembled.finish() == {
+        key: value for key, value in original["result"].items() if key != "_maistro_ingress"
+    }
+    assert (
+        replay[0]["_maistro_ingress"]
+        == original["result"]["_maistro_ingress"]
+        == "chat_completions"
+    )
+    assert len(requests) == 1
+    assert (await _rows(effects))[0].model_dump() == original
+
+    # Replay data belongs to the consumer; even nested edits cannot rewrite
+    # the canonical result or affect the next replay's tool/effect positions.
+    fragments[1]["function"]["arguments"] = "consumer mutation"
+    with override_transport(httpx.MockTransport(handle)):
+        again = [chunk async for chunk in egress.stream(**arguments)]
+    assert (
+        again[0]["choices"][0]["delta"]["tool_calls"][1]["function"]["arguments"]
+        == '{"id":"board"}'
+    )
+    assert (await _rows(effects))[0].model_dump() == original
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize(
