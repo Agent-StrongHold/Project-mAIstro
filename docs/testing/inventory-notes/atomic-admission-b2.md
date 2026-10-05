@@ -276,3 +276,56 @@ dispositions; new debt uses prior reachability authorization". The grant
 payload and landing order are therefore proven, not guessed: the campaign
 lands the two grants on the integration base first, this branch syncs it,
 and the exact-debt-ledger goes green without any further change here.
+
+## CI-repair round 4 (L1893, head 190ee154b — probe independently executed)
+
+The round-3 probe experiment was recorded as claimed-not-independently-
+executed by the verifier (job `ad3b492fdf104195b3202f8750dc1921`). This
+round executed it for real against the final head, with persistent
+artifacts instead of scratch worktrees:
+
+- Probe state: worktree `~/Git/worktrees/probe-1893-grant`, branch
+  `probe/grant-1893-merged-head`, merge `0521ce4fd252` = `190ee154b` +
+  grant commit `3235229f5fed` (whose parent is exactly develop tip
+  `94781cf6b`, so it is a fast-forwardable develop landing). Merge was
+  clean: only `quality/ratchet-authorizations.json` (+10 lines).
+- `RATCHET_BASE_REV=3235229f5fedd7f9ba876650b4baad0ef22d9993 uv run python
+  scripts/check-ratchet-provenance.py` -> **exit 0**: both
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_codec`
+  print `authorized: ... #1893 -- @BlakeMatthews-dev: ...`, reachability
+  reports "174 unreachable module(s), no candidate-approved expansion" and
+  dispositions "174 unreachable module(s) have dispositions; new debt uses
+  prior reachability authorization". `check-shipped-surface-truth.py` and
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (1338 -> 1338) also exit 0 under the same base — the
+  complete exact-debt-ledger job is green in the post-landing state.
+- At this head without the grant (base `94781cf6b`),
+  `check-ratchet-provenance.py` still fails on exactly the two reachability
+  provenance gates (NEW unreachable modules + NEW dispositions, both
+  unauthorized from trusted base); every other sub-ratchet is OK. Vulture
+  again exits 0 with no unbanked identity, so the mandated vulture-ledger
+  amendment remains moot.
+- `test`-job suites locally in CI's form: root
+  `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/ --ignore=
+tests/tools/registry` -> 4375 passed, 90 skipped; full changed package
+  `packages/maistro-core/tests` -> 12540 passed, 888 skipped, 1 xfailed;
+  untouched packages (server/canvas/turing/bootstrap) collect cleanly
+  (502/519/210/238) so the core edits broke no import surface. Local
+  footgun recorded for future rounds: running ratchet gates locally writes
+  gitignored `quality/ac-state.json`, which then fails
+  `tests/test_branch_independence_repository.py` ("unclassified quality
+  state") until moved aside — a local artifact, not a repo defect; hosted
+  `test` never sees it because each job is a fresh runner.
+- Behavioral acceptance spot-checks re-executed against the production
+  codec at this head: receipt-only and one-sided task/run rows ->
+  `partial_legacy_binding` with the receipt id absent from the message;
+  `format_version=7` -> `unsupported_format`; no raw snapshot bytes in any
+  decode error message; header/row scalar mismatch -> `invalid_header`;
+  an unvalidated scope hash keeps `scope_key=None`.
+
+Residual: the exact-debt-ledger red at this head is the documented two-merge
+rule, not a defect repairable inside this worktree. The campaign action that
+makes it green is fully specified and now execution-proven: land the grant
+commit (fast-forward `3235229f5fed` or an equivalent two-entry
+`reachability` grant) on develop, then merge origin/develop here — the probe
+merge `0521ce4fd252` is that exact state and passes every gate.
