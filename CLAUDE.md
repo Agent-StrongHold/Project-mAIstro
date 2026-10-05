@@ -75,6 +75,7 @@ Every subsystem is importable. Consumers add `maistro-core` to their requirement
 | **Conduit** | `maistro.conduit` | Request pipeline: classify → route → agent.handle |
 | **Auth** | `maistro.auth` | B2B service keys with scoped permissions |
 | **Events** | `maistro.events` | Bus, handlers, recipes, triggers |
+| **Extensions** | `maistro.extensions` | Governed extension registry persistence: publisher identity, package digest/signature metadata, manifest snapshots, immutable install records (#952); executes no extension code |
 | **Quota** | `maistro.quota` | Token usage tracking per provider per billing cycle |
 | **Sessions** | `maistro.sessions` | Conversation history with TTL pruning |
 | **Intents** | `maistro.agents.intents` | task_type → agent_name routing table |
