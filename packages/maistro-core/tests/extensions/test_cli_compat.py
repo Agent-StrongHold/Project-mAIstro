@@ -10,11 +10,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from maistro.cli import _extensions as cli_extensions
 from maistro.cli._extensions import app
+from maistro.extensions.compat import (
+    FEATURE_DEPRECATED,
+    ContractVersion,
+    FeatureSupport,
+    HostContractMetadata,
+    parse_contract_version,
+)
 
 runner = CliRunner()
+
+# Listed in ADR-100526-9c55's `tests:` as behavioral evidence: these pin how
+# the policy's negotiation surfaces through the host preflight command
+# (verdicts, exit codes, machine-readable output).
+pytestmark = pytest.mark.contract("behavioral")
 
 COMPATIBLE_METADATA = {
     "contract": ">=1.0.0,<2.0.0",
@@ -81,6 +95,64 @@ def test_compat_preflight_names_malformed_metadata(tmp_path: Path) -> None:
     result = runner.invoke(app, ["compat", str(bad_range)])
     assert result.exit_code == 1
     assert "unsupported contract specifier" in result.output
+
+
+def test_compat_preflight_renders_deprecation_notices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deprecated host feature renders its status, removal target, migration.
+
+    The shipped host table has nothing deprecated yet, so the notice table and
+    its `--json` projection are unreachable through real host metadata today.
+    This drives the command against a host whose metadata carries one
+    deprecation — the rendering the first real deprecation must produce, both
+    in the human table and in the machine-readable report (ADR-100526-9c55:
+    deprecations are machine-readable with a documented removal target).
+    """
+    host = HostContractMetadata(
+        contract_version=parse_contract_version("1.4.0"),
+        supported_majors=(1,),
+        features=(
+            FeatureSupport(
+                name="streaming",
+                status=FEATURE_DEPRECATED,
+                since=ContractVersion(1, 0, 0),
+                removal_target=ContractVersion(2, 0, 0),
+                migration="move to the batch surface before contract 2",
+            ),
+        ),
+    )
+
+    class _DeprecatedFeatureHost:
+        current = staticmethod(lambda: host)
+
+    monkeypatch.setattr(cli_extensions, "HostContractMetadata", _DeprecatedFeatureHost)
+    metadata = write_metadata(
+        tmp_path,
+        {"contract": ">=1.0.0,<2.0.0", "required_features": ["streaming"]},
+    )
+
+    # A deprecated feature still negotiates as available — with a notice, not
+    # a refusal and not a silent pass.
+    table = runner.invoke(app, ["compat", str(metadata)])
+    assert table.exit_code == 0
+    assert "compatible" in table.output
+    assert "deprecated" in table.output
+    assert "2.0.0" in table.output  # the documented removal target
+    assert "move to the batch surface" in table.output
+
+    result = runner.invoke(app, ["compat", str(metadata), "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["deprecations"] == [
+        {
+            "feature": "streaming",
+            "status": "deprecated",
+            "removal_target": "2.0.0",
+            "migration": "move to the batch surface before contract 2",
+        }
+    ]
+    assert payload["supported_features"] == ["streaming"]
 
 
 def test_compat_preflight_rejects_unreadable_input(tmp_path: Path) -> None:

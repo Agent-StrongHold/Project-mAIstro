@@ -234,24 +234,7 @@ class ContractRange:
         ]
         detail = ", ".join(f"{op}{bound}" for op, bound in failing)
         majors = ", ".join(str(major) for major in supported_majors)
-        floors = [bound for op, bound in failing if op in (">=", ">")]
-        caps = [bound for op, bound in failing if op in ("<", "<=")]
-        if floors and all(bound.major > version.major for bound in floors):
-            boundary = (
-                "the range requires a newer contract major than this host "
-                "implements — a breaking boundary no host patch can bridge"
-            )
-        elif floors:
-            boundary = (
-                "the manifest requires a same-major contract floor this host does not implement"
-            )
-        elif caps:
-            boundary = (
-                "the manifest's range ended before this host's contract version — "
-                "the extension predates the contract this host implements"
-            )
-        else:
-            boundary = "the manifest pins an exact contract version this host does not implement"
+        boundary = _missed_boundary(failing, version)
         return (
             f"extension requires contract range {self.text}, which excludes this "
             f"host's contract version {version} (supported contract majors: "
@@ -271,6 +254,27 @@ def _spec_satisfied(op: str, bound: ContractVersion, version: ContractVersion) -
     if op == "<=":
         return version <= bound
     raise CompatError(f"unknown range operator {op!r}")  # pragma: no cover - grammar-closed
+
+
+def _missed_boundary(
+    failing: Sequence[tuple[str, ContractVersion]], version: ContractVersion
+) -> str:
+    """Which policy boundary the failing specifiers put this host behind."""
+    floors = [bound for op, bound in failing if op in (">=", ">")]
+    caps = [bound for op, bound in failing if op in ("<", "<=")]
+    if floors and all(bound.major > version.major for bound in floors):
+        return (
+            "the range requires a newer contract major than this host "
+            "implements — a breaking boundary no host patch can bridge"
+        )
+    if floors:
+        return "the manifest requires a same-major contract floor this host does not implement"
+    if caps:
+        return (
+            "the manifest's range ended before this host's contract version — "
+            "the extension predates the contract this host implements"
+        )
+    return "the manifest pins an exact contract version this host does not implement"
 
 
 def parse_contract_range(text: str) -> ContractRange:
@@ -723,49 +727,19 @@ def negotiate(
             ),
         )
 
-    reasons: list[str] = []
-    degradations: list[Degradation] = []
-    deprecations: list[DeprecationNotice] = []
-    supported: list[str] = []
+    req_reasons, req_degraded, req_noticed, req_granted = _walk_features(
+        host, extension.required_features, required=True
+    )
+    # Optional features never produce refusal reasons (an unavailable
+    # optional feature degrades instead), so that column is ignored here.
+    _opt_reasons, opt_degraded, opt_noticed, opt_granted = _walk_features(
+        host, extension.optional_features, required=False
+    )
 
-    for name in extension.required_features:
-        outcome, reason = _check_feature(host, name)
-        if outcome is _FeatureOutcome.PROVIDED:
-            supported.append(name)
-        elif outcome is _FeatureOutcome.UNAVAILABLE:
-            assert reason is not None
-            reasons.append(_required_failure(name, reason))
-        else:
-            assert reason is not None
-            deprecations.append(
-                DeprecationNotice(
-                    feature=name,
-                    status=FEATURE_DEPRECATED,
-                    removal_target=reason.removal_target,
-                    migration=reason.migration,
-                )
-            )
-            supported.append(name)
-
-    for name in extension.optional_features:
-        outcome, reason = _check_feature(host, name)
-        if outcome is _FeatureOutcome.PROVIDED:
-            supported.append(name)
-        elif outcome is _FeatureOutcome.UNAVAILABLE:
-            assert reason is not None
-            degradations.append(Degradation(feature=name, reason=reason.message))
-        else:
-            assert reason is not None
-            deprecations.append(
-                DeprecationNotice(
-                    feature=name,
-                    status=FEATURE_DEPRECATED,
-                    removal_target=reason.removal_target,
-                    migration=reason.migration,
-                )
-            )
-            supported.append(name)
-
+    reasons = tuple(req_reasons)
+    degradations = tuple(req_degraded + opt_degraded)
+    deprecations = tuple(req_noticed + opt_noticed)
+    supported = tuple(req_granted + opt_granted)
     verdict = (
         Verdict.INCOMPATIBLE
         if reasons
@@ -775,10 +749,10 @@ def negotiate(
     )
     return CompatibilityReport(
         verdict=verdict,
-        reasons=tuple(reasons),
-        degradations=tuple(degradations),
-        deprecations=tuple(deprecations),
-        supported_features=tuple(supported),
+        reasons=reasons,
+        degradations=degradations,
+        deprecations=deprecations,
+        supported_features=supported,
     )
 
 
@@ -806,6 +780,50 @@ class _FeatureOutcome(StrEnum):
     PROVIDED = "provided"
     UNAVAILABLE = "unavailable"
     PROVIDED_WITH_NOTICE = "provided-with-notice"
+
+
+#: One walk's accumulated outcome, in report-field order.
+_FeatureWalk = tuple[list[str], list[Degradation], list[DeprecationNotice], list[str]]
+
+
+def _walk_features(
+    host: HostContractMetadata, names: Sequence[str], *, required: bool
+) -> _FeatureWalk:
+    """Check ``names`` against host metadata, accumulating in report order.
+
+    Required and optional declarations differ only in what an unavailable
+    feature means — a refusal reason for the former, a recorded degradation
+    for the latter — so one walker carries both and the flag picks the
+    outcome. Deprecated features still negotiate as available, with their
+    notice recorded either way.
+    """
+    reasons: list[str] = []
+    degradations: list[Degradation] = []
+    deprecations: list[DeprecationNotice] = []
+    supported: list[str] = []
+
+    for name in names:
+        outcome, reason = _check_feature(host, name)
+        if outcome is _FeatureOutcome.PROVIDED:
+            supported.append(name)
+        elif outcome is _FeatureOutcome.UNAVAILABLE:
+            assert reason is not None
+            if required:
+                reasons.append(_required_failure(name, reason))
+            else:
+                degradations.append(Degradation(feature=name, reason=reason.message))
+        else:
+            assert reason is not None
+            deprecations.append(
+                DeprecationNotice(
+                    feature=name,
+                    status=FEATURE_DEPRECATED,
+                    removal_target=reason.removal_target,
+                    migration=reason.migration,
+                )
+            )
+            supported.append(name)
+    return reasons, degradations, deprecations, supported
 
 
 @dataclass(frozen=True)

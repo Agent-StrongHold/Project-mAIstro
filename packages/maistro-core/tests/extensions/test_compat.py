@@ -52,6 +52,12 @@ from maistro.extensions.compat import (
     parse_feature_status,
 )
 
+# ADR-100526-9c55 declares this module the behavioral-contract evidence for
+# the extension compatibility policy (ADR-032's cross-check): every test here
+# pins behavior the contract vocabulary promises, so the whole module carries
+# the kind's marker.
+pytestmark = pytest.mark.contract("behavioral")
+
 
 def make_host(
     *,

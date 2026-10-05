@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +72
+  packages/maistro-core/tests: +73
 ---
 
 # #955 (M9-C1) — extension contract versioning, feature negotiation, deprecation policy
@@ -14,7 +14,7 @@ and actionable unsupported-version failure reasons. Host read surface: the
 `maistro extensions compat` preflight command (`--json` for the
 machine-readable report; exit 1 on incompatible).
 
-**+72 `packages/maistro-core/tests/extensions/`** (collect-only verified on
+**+73 `packages/maistro-core/tests/extensions/`** (collect-only verified on
 this head):
 
 - `test_compat.py` (67) — each test names the acceptance criterion it pins:
@@ -30,9 +30,14 @@ this head):
   never contains module paths; closed machine-readable vocabularies (including the strict
   `parse_feature_status` string→status path) and JSON-safe report projection;
   fail-fast `ensure_compatible`.
-- `test_cli_compat.py` (5) — the preflight command: compatible/degraded exit
+- `test_cli_compat.py` (6) — the preflight command: compatible/degraded exit
   0, incompatible exits 1 with reasons, `--json` parses, malformed metadata
-  names the offending key, unreadable/invalid JSON exits non-zero.
+  names the offending key, unreadable/invalid JSON exits non-zero, and a
+  host with a deprecated feature renders the machine-readable deprecation
+  notice (status, documented removal target, migration) in both the table
+  and the `--json` report — the shipped host table has nothing deprecated
+  yet, so the test drives the command against such host metadata directly
+  (fail-first: dropping the notice rendering fails it; reverted).
 
 Fail-before evidence (each mutation reverted before commit): muting the
 contract-range gate in `negotiate` fails the major/window tests (2);
@@ -46,3 +51,21 @@ clean (806 files); `ruff check` / `ruff format --check` clean on the touched
 trees; `check-adr-index.py`, `check-adr-status-language.py`,
 `tools/lint_lifecycle.py`, and `maistro_registry.cli lint . --strict` (433
 files) all pass with the new ADR-100526-9c55.
+
+CI-repair round (same change, same note): the first merge-queue evaluation
+red three gates. (1) exact-debt-ledger: `check-ratchet-provenance.py` — the
+contract-markers ratchet flagged ADR-100526-9c55 as a new
+`declared-kind-unproven [behavioral]` gap. Fixed by proving the declaration,
+not banking it: both ADR-listed test modules now carry module-level
+`pytestmark = pytest.mark.contract("behavioral")`, shrinking the ledger
+372 → 371. (2) Coverage gate: `cli/_extensions.py` at 78.6% of changed
+branch arcs (need 80%) — the deprecation-notice table arcs were unreachable
+through shipped host metadata. Fixed by the `test_cli_compat.py` test above
+(+1, hence the delta), fail-first proven. (3) Quality gate:
+`check-contract-markers.py` flagged the same unproven ADR gap as (1), and
+`check-radon-baseline.py` flagged two new C blocks in `compat.py`
+(`negotiate`, `explain`, both complexity 14). Fixed by refactor with
+identical behavior: boundary language extracted to `_missed_boundary`, the
+twin feature loops unified into `_walk_features(required=...)` — radon back
+to 138↔138, xenon CI-exact 138 ≤ 145, all 117 extension tests pass, mypy
+--strict clean on the touched modules.
