@@ -776,3 +776,35 @@ source: all six interfaces, six codes, fail-closed paths, error hygiene
 prospective tests by exact name, no clock/SQL/HTTP/queue code, legacy
 `completed_at` unread — all confirmed. Handoff unchanged: land the grant on
 develop, sync, and the exact-debt-ledger job passes with zero content change.
+
+## Round 12 (CI-repair validation, exact head `a24eca85fc18`)
+
+The current lane brief again requested the CI-exact vulture check before any
+ledger amendment. Independently executed:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> exit 0: 1342 reviewed
+  identities, 1342 findings, `unclassified: 0`, and `never_allowlist: 0`.
+
+There is therefore no unbanked or eliminated vulture identity to amend in
+`quality/vulture-baseline.json`; changing that ledger would be fabricated
+rather than a repair.
+
+At this same head, `uv run pytest packages/maistro-core/tests/tasks/
+test_admission_codec.py packages/maistro-core/tests/runs/
+test_root_admission_identity.py -q -x` -> 139 passed; `uv run ruff check .`,
+`uv run ruff format --check .`, and `uv run mypy
+packages/maistro-core/src/maistro/tasks/admission_codec.py
+packages/maistro-core/src/maistro/runs/admission_identity.py` were clean.
+`check-suite-inventory.py --suite packages/maistro-core/tests` matched 13865
+node IDs; reachability, reachability dispositions, convergence, and
+shipped-surface checks all passed (1285 production modules, 172 unreachable
+with dispositions).
+
+`RATCHET_BASE_REV=origin/develop uv run python
+scripts/check-ratchet-provenance.py` still exits 1 solely because the trusted
+base `b672b799aba6` lacks already-landed authorization for the two intentionally
+unwired modules `maistro.runs.admission_identity` and
+`maistro.tasks.admission_codec` and their dispositions. All other sub-ratchets
+passed. This is the existing two-merge campaign blocker, not a vulture-ledger
+defect; it remains unfixable by an in-branch amendment.
