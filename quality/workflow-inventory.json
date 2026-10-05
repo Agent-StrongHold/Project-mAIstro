@@ -183,6 +183,13 @@
       "rationale": "On-demand #914 / epic #900 M8-B1 model-routing benchmark (shipped CostAwareRouter vs task-conditioned candidate policies over one shared corpus and one shared, policy-independent outcome table); deterministic and offline, run when the router, the model catalog, or the outcome model changes — a measurement, not a gate. Wires no candidate policy into production; the research disposition lives in docs/research/914-task-conditioned-model-routing.md."
     },
     {
+      "id": "outcome-routing-bench",
+      "file": ".github/workflows/outcome-routing-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #916 (RESEARCH M8-B3) outcome-learned routing benchmark (scripts/bench_outcome_routing.py: contextual-bandit policies — shrunk contextual means, eps-greedy, LinUCB, contextual Thompson — vs the shipped static scorer under delayed, sparsified, nonstationary feedback, plus clipped-IPS/doubly-robust off-policy evaluation); deterministic and offline, re-measured when the router, the world model, or the policies change — a measurement, not a gate. Wires no learner into production; the research disposition lives in docs/research/916-contextual-bandit-model-routing.md."
+    },
+    {
       "id": "speculative-parallel-bench",
       "file": ".github/workflows/speculative-parallel-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
