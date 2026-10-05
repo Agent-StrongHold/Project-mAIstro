@@ -16,10 +16,12 @@ opt-in without adding or removing cases).
 - `git://` is hard-rejected before any allowlist logic — it stays rejected
   even if `_ALLOWED_CLONE_SCHEMES` is widened by a caller or test.
 - Sources must be `https://` or `ssh://` for a host allowed by
-  `MAISTRO_GIT_CLONE_HOSTS` (unset = any host over an authenticated
-  transport); URLs are parsed, not prefix-matched, so case variance
-  (`GIT://`), percent-encoded schemes, and scheme lookalikes resolve to the
-  same decision as their canonical spelling.
+  `MAISTRO_GIT_CLONE_HOSTS` (deployment override, comma-separated; without
+  it the merged default allowlist applies: github.com, gitlab.com,
+  bitbucket.org, ssh.github.com — remote sources are always host-restricted,
+  never "any https host goes"); URLs are parsed, not prefix-matched, so case
+  variance (`GIT://`), percent-encoded schemes, and scheme lookalikes
+  resolve to the same decision as their canonical spelling.
 - `file://` is a *verified local source*: clonable only when explicitly
   opted into AND the resolved path sits under `_ALLOWED_LOCAL_SOURCE_ROOTS`
   (empty by default — production refuses local sources outright).
@@ -36,11 +38,16 @@ opt-in without adding or removing cases).
   the destination repo's local config post-clone, where in-repo
   fetch/pull/push read them. A hostile `.gitmodules` is additionally caught
   by the post-clone URL scan below.
-- `commit=<full digest>` pins the checkout: the tool fetches the digest
-  itself, detaches to it, and re-verifies HEAD, so a branch ref moving
-  between resolution and fetch (TOCTOU) cannot change what gets built;
-  `require_signed` demands `git verify-commit` accept the pin. The resolved
-  HEAD digest is returned as `head_commit` on every success.
+- Every successful clone is digest-pinned: `commit=<full digest>` names the
+  object; an omitted pin is resolved from the vetted remote first
+  (`git_remote_tip` → `git ls-remote` under the same source policy and
+  transport pins, refusing any resolution that is not itself a full
+  digest). The pinned digest is fetched by itself, checked out, and
+  re-verified against HEAD, so a branch ref moving between resolution and
+  fetch (TOCTOU) cannot change what gets built; `require_signed` demands
+  `git verify-commit` accept the pin. The proven digest is returned as
+  `head_commit` and `pinned_commit` on every success — no successful clone
+  is unpinned.
 - Submodule URLs in the fetched `.gitmodules` are validated against the same
   policy; a malformed `.gitmodules` is rejected outright.
 - The transport whitelist is enforced beyond the clone call: persisted into
@@ -389,3 +396,61 @@ lost across the merge.
   sandbox (no push), so it stays UNVERIFIED; the required gates were re-proven
   locally with CI's argv above, and the hosted run last fully concluded green
   on PR head 2ebefd794f8d whose policy/test surface is byte-identical here.
+
+## Develop-sync merge round (merge of origin/develop b672b799aba6 into auto-404)
+
+`origin/develop` moved two commits (159fbafe9 M6 WIP, b672b799a route-permission
+debt burn); 159fbafe9 carried a second, parallel #404 implementation that
+conflicted with this branch's in `server.py`, `test_server_security.py`, RSI
+`test_cli.py`/`test_selfbranch.py`. Resolved in place, keeping this branch's
+enforcement core (the three-layer transport pin, verified-local-root gate,
+TOCTOU fetch/detach/re-verify, `require_signed`, submodule URL scan — the
+surface three verification rounds validated) and adopting develop's public
+surface on top of it, so develop's surviving consumers (RSI harvest gate,
+builders TUI, `selfbranch`) keep one shared verdict:
+
+- `validate_clone_source(url)` / `ClonePolicyError(message, error_code,
+  suggested_action)` now wrap the branch's `_validate_clone_url` — one
+  policy, both APIs; the git:// verdict keeps the branch's
+  `blocked_url_scheme` code (develop's distinct `blocked_unauthenticated_transport`
+  code was not retained).
+- `_COMMIT_DIGEST_RE` is the canonical digest regex (develop's consumer
+  name; the branch's `_COMMIT_PIN_RE` renamed).
+- `git_remote_tip` is adopted as a tool: policy-gated, pin-carrying
+  `ls-remote` HEAD resolution feeding `git_clone(commit=...)`.
+- `git_clone` adopts develop's resolve-then-pin flow: an omitted pin is
+  resolved via `git_remote_tip` first, so no successful clone is unpinned;
+  the result reports `pinned_commit` in addition to `head_commit`.
+- Host policy is now always on: `MAISTRO_GIT_CLONE_HOSTS` (this branch's
+  env var name, kept) overrides; without it develop's default forges
+  (github.com, gitlab.com, bitbucket.org, ssh.github.com) are the
+  allowlist. One test carried a formerly-benign `example.com` URL and now
+  uses github.com (its purpose, the dest gate, is unchanged).
+- Discarded from develop's side: its narrower two-pin enforcement argv
+  (`_ENFORCEMENT_CONFIG`), its `_verify_pinned_checkout`/
+  `_enforce_signature_policy` internals (superseded by the branch's
+  `_verify_cloned_source`/`_verify_commit_signature`), and its parallel
+  `test_server_security.py` suite (its API does not exist in the merged
+  tree; this branch's suite covers the same invariants it tested).
+
+Re-executed fresh at this merge head (prior claims not carried forward):
+`uv run ruff check .` clean; `ruff format --check .` clean after formatting
+`server.py`; vulture exact-debt ledger `check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'` exit 0
+(after banking the one new develop-side identity,
+`code_registry/types.py::unused variable 'trusted'`, a declarative
+dataclass field); `check-radon-baseline.py` 138=138; `check-reachability.py`
+exit 0; `check-security-inventory.py` exit 0; 120 passed in
+`packages/maistro-core/tests/tools/git`; 123 passed across the RSI
+clone-policy surface (`test_cli.py`, `test_selfbranch.py`,
+`test_harvest_clone_source.py`, `test_harvest_entry_point.py`,
+`test_runner.py`) and `tests/cli/test_builders.py` — including develop's
+live real-git pinning tests running against the merged implementation.
+Real-git probes: hermetic `file://` clone + ls-remote under the pinned
+argv pass; `git://` still refused (parametrized, 10 spellings). Suite
+inventory: see `404-develop-sync-merge.md` for the node-ID ledger
+reconciliation this merge records.
+
+Hosted CI on this merge head is not observable from this sandbox (no push,
+no GitHub mutation) — UNVERIFIED by policy; the required gates were proven
+locally with CI's argv as above.

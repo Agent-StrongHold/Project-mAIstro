@@ -67,7 +67,9 @@ async def test_git_clone_rejects_disallowed_dest_before_git(
 
     monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
 
-    result = await git_clone("https://example.com/repo.git", dest)
+    # github.com: on the default host allowlist, so the URL passes the
+    # source policy and the test exercises the dest gate it exists for.
+    result = await git_clone("https://github.com/repo.git", dest)
 
     assert result["success"] is False
     assert result["error_code"] == "blocked_workspace"
@@ -121,6 +123,13 @@ def _pin_steps() -> list[tuple[tuple[str, ...], bytes, int]]:
     return [(("config", key), b"", 0) for key, _ in _TRANSPORT_PIN]
 
 
+def _resolve_step() -> tuple[tuple[str, ...], bytes, int]:
+    """Tip resolution: an un-pinned clone first resolves the vetted remote's
+    HEAD via `git ls-remote` (the same transport pins ride along); the
+    returned digest becomes the pin the clone is verified against."""
+    return (("ls-remote",), f"{_DIGEST}\tHEAD\n".encode(), 0)
+
+
 def _success_steps() -> list[tuple[tuple[str, ...], bytes, int]]:
     """Minimal happy-path script: clone succeeds, the destination config is
     pinned to the transport whitelist, and HEAD resolves to a digest. No
@@ -140,7 +149,7 @@ async def _run_scripted_clone(
     **kwargs: object,
 ) -> tuple[dict[str, object], _ScriptedGit]:
     monkeypatch.delenv("MAISTRO_GIT_CLONE_HOSTS", raising=False)
-    scripted = _ScriptedGit(steps)
+    scripted = _ScriptedGit([_resolve_step(), *steps])
     monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", scripted)
     result = await git_clone(url, "/repos/dest", **kwargs)  # type: ignore[arg-type]
     return result, scripted
@@ -394,7 +403,7 @@ async def _run_clone_in_workspace(
     # roots inside the sandbox workspace module (same shape the RSI hermetic
     # tests use).
     monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (dest,))
-    scripted = _ScriptedGit(steps)
+    scripted = _ScriptedGit([_resolve_step(), *steps])
     monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", scripted)
     result = await git_clone("https://github.com/org/repo.git", str(dest))
     return result, scripted

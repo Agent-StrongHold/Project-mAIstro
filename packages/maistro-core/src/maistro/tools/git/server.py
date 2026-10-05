@@ -47,6 +47,13 @@ GIT_CLONE_TIMEOUT = 300
 _FORBIDDEN_CLONE_SCHEMES = ("git://",)
 _ALLOWED_CLONE_SCHEMES = ("https://", "ssh://")
 
+# Host policy (always on): an https/ssh source must name one of these hosts.
+# Merged from the two #404 implementations — the deployments-wide override is
+# MAISTRO_GIT_CLONE_HOSTS (comma-separated); without it the well-known code
+# forges are the only candidate sources, so an arbitrary https host is not
+# silently clonable.
+_DEFAULT_ALLOWED_CLONE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "ssh.github.com")
+
 # "Verified local sources": `file://` is clonable only when the scheme tuple
 # above is explicitly widened AND the resolved source path sits under one of
 # these roots. Empty by default — production refuses local sources outright;
@@ -55,12 +62,13 @@ _ALLOWED_LOCAL_SOURCE_ROOTS: tuple[str, ...] = ()
 
 
 def _clone_host_allowlist() -> frozenset[str]:
-    """Explicit host/repository policy, read per call so tests and deploys can
-    set it via MAISTRO_GIT_CLONE_HOSTS (comma-separated hostnames). Empty = no
-    host restriction beyond the transport policy; strict deployments pin the
-    hosts a candidate source may come from."""
+    """Host policy for remote sources, read per call so tests and deploys can
+    set it via MAISTRO_GIT_CLONE_HOSTS (comma-separated hostnames). Without
+    the override the default forges above are the allowlist — remote sources
+    are always host-restricted, never "any https host goes"."""
     raw = os.environ.get("MAISTRO_GIT_CLONE_HOSTS", "")
-    return frozenset(host.strip().lower() for host in raw.split(",") if host.strip())
+    override = frozenset(host.strip().lower() for host in raw.split(",") if host.strip())
+    return override or frozenset(_DEFAULT_ALLOWED_CLONE_HOSTS)
 
 
 # (key, value) transport whitelist applied at three layers:
@@ -95,16 +103,31 @@ _CLONE_CONFIG_HARDENING = tuple(
 
 # Commit pins must be full SHA-1 or SHA-256 digests — branch names and
 # abbreviated SHAs can be re-pointed and are not an identity.
-_COMMIT_PIN_RE = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
+_COMMIT_DIGEST_RE = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
 _BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
+# Remediation hint carried by every URL-policy rejection that does not name a
+# more specific one (develop-side #404 API: the message and this hint travel
+# with the exception, so non-MCP surfaces — the RSI harvest gate, the builders
+# TUI — render the same verdict the MCP tool returns).
+_CLONE_POLICY_ACTION = (
+    "Use an https:// or ssh:// URL for a host allowed by the configured "
+    "clone policy (MAISTRO_GIT_CLONE_HOSTS); git:// and local paths are "
+    "not accepted as candidate sources."
+)
 
-class _ClonePolicyError(ValueError):
-    """A clone source violated URL policy; carries its machine-readable code."""
 
-    def __init__(self, message: str, error_code: str) -> None:
+class ClonePolicyError(ValueError):
+    """A clone source violated URL policy; carries its machine-readable code
+    and the remediation hint surfaced to callers."""
+
+    def __init__(
+        self, message: str, error_code: str, suggested_action: str = _CLONE_POLICY_ACTION
+    ) -> None:
         super().__init__(message)
+        self.message = message
         self.error_code = error_code
+        self.suggested_action = suggested_action
 
 
 def _check_clone_scheme_allowed(scheme: str, url: str) -> None:
@@ -114,22 +137,22 @@ def _check_clone_scheme_allowed(scheme: str, url: str) -> None:
     that widens _ALLOWED_CLONE_SCHEMES can never smuggle git:// back in.
     """
     if f"{scheme}://" in _FORBIDDEN_CLONE_SCHEMES:
-        raise _ClonePolicyError(
+        raise ClonePolicyError(
             f"Blocked: unauthenticated clone transport is not allowed: {url}",
             "blocked_url_scheme",
         )
     if f"{scheme}://" not in tuple(s.lower() for s in _ALLOWED_CLONE_SCHEMES):
-        raise _ClonePolicyError(f"Blocked: url scheme is not allowed: {url}", "blocked_url_scheme")
+        raise ClonePolicyError(f"Blocked: url scheme is not allowed: {url}", "blocked_url_scheme")
 
 
 def _validate_remote_clone_host(parts: SplitResult, url: str) -> tuple[str, str]:
     """Gate remote (non-file) sources behind the explicit host policy."""
     host = (parts.hostname or "").lower()
     if not host:
-        raise _ClonePolicyError(f"Blocked: url has no host: {url}", "blocked_url_scheme")
+        raise ClonePolicyError(f"Blocked: url has no host: {url}", "blocked_url_scheme")
     allowlist = _clone_host_allowlist()
-    if allowlist and host not in allowlist:
-        raise _ClonePolicyError(
+    if host not in allowlist:
+        raise ClonePolicyError(
             f"Blocked: clone host is not in policy: {host}", "blocked_clone_host"
         )
     scheme = parts.scheme.lower()
@@ -139,17 +162,15 @@ def _validate_remote_clone_host(parts: SplitResult, url: str) -> tuple[str, str]
 def _validate_clone_url(url: str) -> tuple[str, str]:
     """Validate a clone *source* URL against the transport/host policy.
 
-    Returns the normalized (scheme, hostname); raises :class:`_ClonePolicyError`
+    Returns the normalized (scheme, hostname); raises :class:`ClonePolicyError`
     otherwise. The same function validates submodule URLs, so redirects are
     refused at the transport level and every nested source is held to the
     identical rules.
     """
     if not url:
-        raise _ClonePolicyError("Blocked: empty clone url", "blocked_url_scheme")
+        raise ClonePolicyError("Blocked: empty clone url", "blocked_url_scheme")
     if url.startswith("-"):
-        raise _ClonePolicyError(
-            f"Blocked: url must not start with '-': {url}", "blocked_url_scheme"
-        )
+        raise ClonePolicyError(f"Blocked: url must not start with '-': {url}", "blocked_url_scheme")
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
     _check_clone_scheme_allowed(scheme, url)
@@ -158,32 +179,39 @@ def _validate_clone_url(url: str) -> tuple[str, str]:
     return _validate_remote_clone_host(parts, url)
 
 
+def validate_clone_source(url: str) -> None:
+    """Raise :class:`ClonePolicyError` unless `url` is a clonable source.
+
+    The one #404 verdict, shared verbatim by every surface that clones: the
+    MCP `git_clone` tool, the RSI harvest cloud path (`maistro_rsi.__main__`)
+    and the builders TUI. There is no second policy to drift — a URL refused
+    here is refused everywhere, before any subprocess runs.
+    """
+    _validate_clone_url(url)
+
+
 def _validate_local_clone_source(parts: SplitResult, url: str) -> tuple[str, str]:
     """Gate `file://` sources: they are only clonable when explicitly opted
     into via _ALLOWED_CLONE_SCHEMES AND the resolved path sits under a verified
     local root (empty by default — production refuses local sources)."""
     if "file://" not in tuple(s.lower() for s in _ALLOWED_CLONE_SCHEMES):
-        raise _ClonePolicyError(f"Blocked: url scheme is not allowed: {url}", "blocked_url_scheme")
+        raise ClonePolicyError(f"Blocked: url scheme is not allowed: {url}", "blocked_url_scheme")
     source = Path(url2pathname(parts.path)).resolve()
     for root in _ALLOWED_LOCAL_SOURCE_ROOTS:
         root_resolved = Path(root).resolve()
         if source == root_resolved or root_resolved in source.parents:
             return "file", "localhost"
-    raise _ClonePolicyError(
+    raise ClonePolicyError(
         f"Blocked: local clone source is not under a verified root: {url}",
         "blocked_local_source",
     )
 
 
-def _blocked_clone_source_result(exc: _ClonePolicyError) -> dict[str, Any]:
+def _blocked_clone_source_result(exc: ClonePolicyError) -> dict[str, Any]:
     return fail(
-        stdout=str(exc),
+        stdout=exc.message,
         error_code=exc.error_code,
-        suggested_action=(
-            "Use an https:// or ssh:// URL for a host allowed by the configured "
-            "clone policy (MAISTRO_GIT_CLONE_HOSTS); git:// and local paths are "
-            "not accepted as candidate sources."
-        ),
+        suggested_action=exc.suggested_action,
     )
 
 
@@ -345,15 +373,13 @@ async def _pin_destination_transport(dest: str) -> dict[str, Any] | None:
     return None
 
 
-async def _verify_cloned_source(
-    dest: str, *, pin: str | None, require_signed: bool
-) -> dict[str, Any]:
+async def _verify_cloned_source(dest: str, *, pin: str | None) -> dict[str, Any]:
     """Post-clone identity checks on the fetched tree.
 
     Persists the transport whitelist into the destination config, resolves
-    HEAD, enforces an optional commit-digest pin (fetching the digest
+    HEAD, enforces the commit-digest pin (fetching the digest
     itself and detaching when the default branch moved — the TOCTOU guard),
-    an optional signature policy, and validates every .gitmodules submodule
+    and validates every .gitmodules submodule
     URL against the same source policy as the top-level clone. Returns
     ``{"ok": True, "head_commit": <digest>}`` or a structured failure.
     """
@@ -378,11 +404,6 @@ async def _verify_cloned_source(
         resolved, pin_failure = await _resolve_pinned_head(dest, pin)
         if pin_failure is not None:
             return pin_failure
-
-    if require_signed and pin is not None:
-        signature_failure = await _verify_commit_signature(dest, pin)
-        if signature_failure is not None:
-            return signature_failure
 
     submodule_failure = await _validate_submodule_urls(dest)
     if submodule_failure is not None:
@@ -435,9 +456,9 @@ async def _validate_submodule_urls(dest: str) -> dict[str, Any] | None:
             continue
         try:
             _validate_clone_url(url)
-        except _ClonePolicyError as exc:
+        except ClonePolicyError as exc:
             return fail(
-                stdout=str(exc),
+                stdout=exc.message,
                 error_code="blocked_submodule_url",
                 recoverable=False,
                 suggested_action=(
@@ -447,6 +468,78 @@ async def _validate_submodule_urls(dest: str) -> dict[str, Any] | None:
                 ),
             )
     return None
+
+
+@mcp.tool()
+async def git_remote_tip(
+    url: str, timeout: Annotated[int, Field(ge=1, le=900)] = 60
+) -> dict[str, Any]:
+    """Resolve a policy-vetted remote's HEAD to a full commit digest (#404).
+
+    The one network read a caller needs to turn "clone whatever the tip is
+    right now" into a verified digest pin: the returned digest feeds
+    `git_clone(commit=...)`, whose fetch-by-digest and post-fetch `rev-parse`
+    verdict then prove the checkout IS that object. `ls-remote` is itself a
+    network transport, so it gates through the same source policy first — a
+    refused URL spawns no subprocess — and carries the same transport pins as
+    every other subprocess this module spawns. A resolution that is not a
+    full digest is refused: the point of the resolution is an immutable pin,
+    not a repointable name.
+    """
+    try:
+        _validate_clone_url(url)
+    except ClonePolicyError as exc:
+        return _blocked_clone_source_result(exc)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            *_CLONE_CONFIG_HARDENING,
+            "ls-remote",
+            "--",
+            url,
+            "HEAD",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        output = stdout.decode("utf-8", errors="replace") if stdout else ""
+    except FileNotFoundError:
+        return fail(
+            stdout="git binary not found",
+            error_code="git_not_found",
+            suggested_action="Ensure git is installed in the execution environment.",
+        )
+    except TimeoutError:
+        return fail(
+            stdout=f"git ls-remote timed out after {timeout}s",
+            exit_code=124,
+            error_code="git_timeout",
+            recoverable=True,
+            suggested_action="Retry with a longer timeout, or check network conditions.",
+        )
+    if proc.returncode != 0:
+        return fail(
+            stdout=output,
+            exit_code=proc.returncode or 1,
+            error_code="remote_tip_unresolved",
+            recoverable=True,
+            suggested_action=(
+                "Could not read the remote's HEAD digest; verify the source is "
+                "reachable and pass the digest to clone explicitly instead."
+            ),
+        )
+    digest = output.split()[0] if output.split() else ""
+    if not _COMMIT_DIGEST_RE.match(digest):
+        return fail(
+            stdout=output,
+            error_code="remote_tip_unresolved",
+            suggested_action=(
+                "The remote's HEAD did not resolve to a full 40/64-hex digest; "
+                "resolve it manually (git ls-remote) and pass the digest to "
+                "clone explicitly instead."
+            ),
+        )
+    return ok(stdout=output, commit=digest.lower())
 
 
 @mcp.tool()
@@ -460,18 +553,21 @@ async def git_clone(
     """Clone a git repository (shallow, depth=1) under the source policy.
 
     Candidate sources must arrive over an authenticated transport (https:// or
-    ssh://) for a host allowed by MAISTRO_GIT_CLONE_HOSTS; `git://` —
-    unauthenticated and unencrypted — is always rejected, as are local paths
-    unless a verified local root is configured. Redirects are refused and the
-    git protocol whitelist is pinned, so neither a redirect, a protocol
-    downgrade, nor a declared submodule can escape the same policy.
+    ssh://) for a host allowed by MAISTRO_GIT_CLONE_HOSTS (default: the
+    well-known forges); `git://` — unauthenticated and unencrypted — is
+    always rejected, as are local paths unless a verified local root is
+    configured. Redirects are refused and the git protocol whitelist is
+    pinned, so neither a redirect, a protocol downgrade, nor a declared
+    submodule can escape the same policy.
 
-    Pass `commit` (a full 40- or 64-hex digest) to pin the checkout: the tool
-    fetches that digest itself, detaches to it, and re-verifies HEAD, so a
-    branch ref moving between resolution and fetch (TOCTOU) cannot change what
-    gets built. `require_signed` additionally demands `git verify-commit`
-    accept the pinned commit (ignored without `commit`). On success the
-    resolved HEAD digest is returned as `head_commit` for the audit trail.
+    Every successful clone is digest-pinned (#404): pass `commit` (a full 40-
+    or 64-hex digest) to name the object yourself, or omit it and the tool
+    resolves the vetted remote's HEAD via `git_remote_tip` first. The pinned
+    digest is fetched by itself, checked out, and re-verified against HEAD,
+    so a branch ref moving between resolution and fetch (TOCTOU) cannot
+    change what gets built; the result reports the proven digest as
+    `head_commit` and `pinned_commit` for the audit trail. `require_signed`
+    additionally demands `git verify-commit` accept the pinned commit.
 
     The transport whitelist is not scoped to this call: it is persisted into
     the clone's local config, and every git command this server later runs in
@@ -481,7 +577,7 @@ async def git_clone(
     """
     try:
         _validate_clone_url(url)
-    except _ClonePolicyError as exc:
+    except ClonePolicyError as exc:
         return _blocked_clone_source_result(exc)
     try:
         dest = _validate_git_workspace(dest)
@@ -491,7 +587,33 @@ async def git_clone(
     pin, pin_failure = _parse_commit_pin(commit)
     if pin_failure is not None:
         return pin_failure
+    if pin is None:
+        # No caller-supplied identity: resolve the vetted remote's HEAD to a
+        # digest first, so the checkout is always proven to be a named object
+        # — no successful clone is unpinned.
+        resolved = await git_remote_tip(url, timeout=timeout)
+        if not resolved["success"]:
+            return resolved
+        pin = str(resolved["commit"])
 
+    result = await _clone_and_maybe_pin(url, dest, pin, timeout)
+    if require_signed and result.get("success"):
+        signature_failure = await _verify_commit_signature(dest, pin)
+        if signature_failure is not None:
+            return signature_failure
+    return result
+
+
+async def _clone_and_maybe_pin(
+    url: str, dest: str, commit: str | None, timeout: int
+) -> dict[str, Any]:
+    """Run the hardened clone subprocess and prove the landed identity.
+
+    `commit` is a full digest by the time this runs — the caller's pin or
+    `git_remote_tip`'s resolution — and the clone is rejected unless the
+    checked out HEAD is exactly that object. On success the result carries
+    the proven digest as both `head_commit` and `pinned_commit`.
+    """
     try:
         output, code = await _run_git_clone(url, dest, timeout)
     except FileNotFoundError:
@@ -516,17 +638,22 @@ async def git_clone(
             recoverable=True,
             suggested_action="Verify the URL is reachable and dest doesn't already exist, then retry.",
         )
-    verified = await _verify_cloned_source(dest, pin=pin, require_signed=require_signed)
+    verified = await _verify_cloned_source(dest, pin=commit)
     if not verified.get("ok"):
         return verified
-    return ok(stdout=output, exit_code=code, head_commit=verified["head_commit"])
+    return ok(
+        stdout=output,
+        exit_code=code,
+        head_commit=verified["head_commit"],
+        pinned_commit=commit,
+    )
 
 
 def _parse_commit_pin(commit: str | None) -> tuple[str | None, dict[str, Any] | None]:
     """Normalize an optional commit pin; only full digests are identities."""
     if commit is None:
         return None, None
-    if not _COMMIT_PIN_RE.match(commit):
+    if not _COMMIT_DIGEST_RE.match(commit):
         return None, fail(
             stdout=f"Blocked: commit pin must be a full 40- or 64-hex digest: {commit}",
             error_code="invalid_commit_pin",
