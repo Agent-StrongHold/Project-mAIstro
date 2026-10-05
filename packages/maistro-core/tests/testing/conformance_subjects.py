@@ -45,6 +45,7 @@ from maistro.conformance.contract import (
     SubjectFamily,
 )
 from maistro.conformance.subject import EffectRequest
+from maistro.credentials.router import CredentialScopeError
 
 _REPORTED_USAGE = InvocationUsage(
     units="tokens", input_units=7, output_units=3, model="conformance-model"
@@ -186,12 +187,153 @@ class AllRefusingSubject(BaseConformanceSubject):
         return Unavailable(slot=binding.capability, reason="reference refusal leg")
 
 
+# Single-property violators for the check bodies' own verdict branches. Each one
+# pins one specific refusal/leak/fetch shape the shared body must classify
+# differently from its neighbours, so a check that starts accepting the wrong
+# shape fails by name instead of by coverage count.
+
+
+class StrippingSecretSubject(BaseConformanceSubject):
+    """Strips plaintext from prepared config without raising (acceptable shape)."""
+
+    def prepare_config(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
+        prepared = dict(config)
+        prepared.pop("api_key", None)
+        return prepared
+
+
+class WrongRefusalTypeSubject(BaseConformanceSubject):
+    """Crashes with a non-refusal error type instead of a normalized refusal."""
+
+    def prepare_config(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
+        del config
+        raise KeyError("conformance probe: non-refusal crash")
+
+
+class ScopeDenyingSubject(BaseConformanceSubject):
+    """Refuses even its own authorized binding with the canonical scope error."""
+
+    async def resolve_provider(self, binding: Binding) -> Any:
+        raise CredentialScopeError("conformance probe: subject-side scope denial")
+
+
+class QuietRefusalSubject(BaseConformanceSubject):
+    """Refuses undeclared egress with its own error before any connection."""
+
+    async def _fetch(self, provider: Any, url: str) -> None:
+        del provider
+        raise ValueError(f"origin not declared by policy: {url}")
+
+
+class CrashingFetchSubject(BaseConformanceSubject):
+    """Fails the egress effect with a non-refusal error before connecting."""
+
+    async def _fetch(self, provider: Any, url: str) -> None:
+        del provider
+        raise RuntimeError("conformance probe: ambiguous transport failure")
+
+
+class NoFetchSubject(BaseConformanceSubject):
+    """Completes without fetching: a declared leg must then see zero hits."""
+
+    async def _fetch(self, provider: Any, url: str) -> None:
+        del provider, url
+
+
+class DoubleFetchSubject(BaseConformanceSubject):
+    """Fetches the probe URL twice: one declared request, two server hits."""
+
+    async def _fetch(self, provider: Any, url: str) -> None:
+        await super()._fetch(provider, url)
+        await super()._fetch(provider, url)
+
+
+class OffsiteFetchSubject(BaseConformanceSubject):
+    """Fetches a second, undeclared origin even on the declared leg."""
+
+    async def _fetch(self, provider: Any, url: str) -> None:
+        del provider
+        from maistro.http import shared_client
+
+        offsite = url.rsplit(":", 1)[0].rsplit(":", 1)[0] + ":1/conformance-offsite"
+        async with shared_client() as client:
+            response = await client.get(offsite)
+            response.raise_for_status()
+
+
+class RawThenGuardedSubject(BaseConformanceSubject):
+    """Raw-socket fetch first (wire moves), then the guarded seam refuses."""
+
+    async def _fetch(self, provider: Any, url: str) -> None:
+        del provider
+        async with httpx.AsyncClient() as client:
+            await client.get(url)
+        from maistro.http import shared_client
+
+        async with shared_client() as client:
+            response = await client.get(url)
+            response.raise_for_status()
+
+
+class ExceptingOnCancelSubject(BaseConformanceSubject):
+    """Surfaces a fresh RuntimeError on cancellation instead of propagating it."""
+
+    async def execute(self, provider: Any, request: EffectRequest) -> Any:
+        if request.hang_seconds > 0:
+            try:
+                await asyncio.sleep(request.hang_seconds)
+            except asyncio.CancelledError:
+                raise RuntimeError("conformance probe: cancellation swallowed") from None
+        return await super().execute(provider, request)
+
+
+class DriftedUsageSubject(BaseConformanceSubject):
+    """Reports usage units that differ from what its effect actually produced."""
+
+    def usage_from(self, result: Any) -> InvocationUsage | None:
+        usage = super().usage_from(result)
+        if usage is None:
+            return None
+        return InvocationUsage(units=usage.units, input_units=8, output_units=3, model=usage.model)
+
+
+class IncompleteEffectSubject(BaseConformanceSubject):
+    """The reported-usage effect itself fails, so nothing ever completes."""
+
+    async def execute(self, provider: Any, request: EffectRequest) -> Any:
+        if request.payload.get("report_usage", True):
+            raise RuntimeError("conformance probe: effect never completed")
+        return await super().execute(provider, request)
+
+
+class UsageOnUnreportedSubject(BaseConformanceSubject):
+    """Reports usage even for the effect that carried none."""
+
+    def usage_from(self, result: Any) -> InvocationUsage | None:
+        if isinstance(result, dict) and result.get("ok") is True:
+            return _REPORTED_USAGE
+        return super().usage_from(result)
+
+
 __all__ = [
     "AllRefusingSubject",
     "BaseConformanceSubject",
+    "CrashingFetchSubject",
+    "DoubleFetchSubject",
+    "DriftedUsageSubject",
+    "ExceptingOnCancelSubject",
+    "IncompleteEffectSubject",
+    "NoFetchSubject",
+    "OffsiteFetchSubject",
     "PlaintextSecretSubject",
+    "QuietRefusalSubject",
     "RawSocketEgressSubject",
+    "RawThenGuardedSubject",
     "ReferenceProvider",
+    "ScopeDenyingSubject",
+    "StrippingSecretSubject",
     "UnavailableBackendSubject",
     "UncancellableSubject",
+    "UsageOnUnreportedSubject",
+    "WrongRefusalTypeSubject",
 ]

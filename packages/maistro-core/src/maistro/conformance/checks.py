@@ -253,8 +253,15 @@ def _completed_egress_verdict(
 ) -> CheckResult:
     """The attempt returned normally: declared legs connect, undeclared fail."""
     if allow_origin:
-        if hits_after == hits_before:
+        delta = hits_after - hits_before
+        if delta < 1:
             return _fail(check_id, "declared origin allowed but no request reached the server")
+        if delta > 1:
+            return _fail(
+                check_id,
+                f"one declared request produced {delta} server hits "
+                f"(hits {hits_before} -> {hits_after})",
+            )
         return _pass(check_id, "declared origin reached through the guarded seam", hits=hits_after)
     return _fail(
         check_id,

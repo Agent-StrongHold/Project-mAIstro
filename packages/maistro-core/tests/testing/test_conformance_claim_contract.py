@@ -216,3 +216,89 @@ def test_cli_lists_subjects_and_runs_empty_registry() -> None:
     ran = runner.invoke(app, ["run"])
     assert ran.exit_code == 1
     assert "conformance failed" in ran.output
+
+
+def test_cli_run_prints_reports_and_confirms_conformance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful run renders every report and the conform count."""
+    from maistro.cli import _conformance as cli_module
+
+    async def _one_report(group: str) -> list[ConformanceReport]:
+        del group
+        return [
+            await ConformanceRunner(require_real_backends=False).run(
+                BaseConformanceSubject(name="cli-subject")
+            )
+        ]
+
+    monkeypatch.setattr(cli_module, "run_registered_subjects", _one_report)
+    result = CliRunner().invoke(cli_module.app, ["run"])
+
+    assert result.exit_code == 0, result.output
+    assert "cli-subject" in result.output
+    assert "1 subject(s) conform" in result.output
+
+
+def test_cli_subjects_listing_covers_partial_and_full_families(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The listing prints each subject and names families with no subject."""
+    import maistro.conformance.runner as runner_module
+    from maistro.cli import _conformance as cli_module
+
+    def _subjects(families: list[SubjectFamily]) -> list[BaseConformanceSubject]:
+        return [
+            BaseConformanceSubject(name=f"s-{family.value}", family=family) for family in families
+        ]
+
+    monkeypatch.setattr(
+        runner_module, "discover_subjects", lambda group: _subjects([SubjectFamily.PROVIDER])
+    )
+    partial = CliRunner().invoke(cli_module.app, ["subjects"])
+    assert partial.exit_code == 0
+    assert "s-provider" in partial.output
+    assert "families with no registered subject" in partial.output
+
+    monkeypatch.setattr(
+        runner_module,
+        "discover_subjects",
+        lambda group: _subjects(list(SubjectFamily)),
+    )
+    full = CliRunner().invoke(cli_module.app, ["subjects"])
+    assert full.exit_code == 0
+    assert "all 3 supported families have a registered subject" in full.output
+
+
+def test_cli_drift_guard_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A declared command missing from the app fails at the guard, loudly."""
+    import maistro.cli._conformance as cli_module
+
+    def _ghost() -> None:
+        """A callback that was declared but never registered."""
+
+    monkeypatch.setattr(cli_module, "REGISTERED_COMMANDS", (cli_module.conformance_run, _ghost))
+    with pytest.raises(RuntimeError, match="_ghost"):
+        cli_module._require_commands_registered()
+
+
+def test_report_result_finds_later_entries_and_missing_ones() -> None:
+    """result() scans past non-matching entries and returns None when absent."""
+    report = ConformanceReport(
+        descriptor=SubjectDescriptor(
+            name="scanner", family=SubjectFamily.TOOL, declared_contract_version="1.0.0"
+        ),
+        backend=MEMORY_BACKEND,
+        results=[
+            CheckResult(
+                check_id=CheckId.SCOPE_PROPAGATION, status=CheckStatus.PASS, detail="first"
+            ),
+            CheckResult(
+                check_id=CheckId.USAGE_AND_PROVENANCE, status=CheckStatus.PASS, detail="second"
+            ),
+        ],
+    )
+
+    found = report.result(CheckId.USAGE_AND_PROVENANCE)
+    assert found is not None and found.detail == "second"
+    assert report.result(CheckId.BYPASS_REFUSED) is None

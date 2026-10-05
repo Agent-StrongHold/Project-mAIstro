@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Coroutine
 from importlib import metadata
+from typing import Any
 
 from maistro.conformance.checks import (
     check_bypass_refused,
@@ -114,6 +116,26 @@ def _restore_policy(saved: OutboundPolicy) -> None:
     configure_outbound_policy(*sorted(saved.origins))
 
 
+async def _guarded(check_id: CheckId, probe: Coroutine[Any, Any, CheckResult]) -> CheckResult:
+    """Await one check probe, demoting a crash to a FAIL result.
+
+    A nonconforming subject may raise from ``resolve_provider``, ``execute``,
+    or any other hook a probe calls. That defect belongs to the subject under
+    test, so it is recorded as a failed check and the suite goes on; the run
+    still produces a report covering the remaining checks. Cancellation and
+    other ``BaseException`` s propagate: they mean the run itself is stopping,
+    not that the probe failed.
+    """
+    try:
+        return await probe
+    except Exception as exc:
+        return CheckResult(
+            check_id=check_id,
+            status=CheckStatus.FAIL,
+            detail=f"probe crashed: {type(exc).__name__}: {exc}",
+        )
+
+
 class ConformanceRunner:
     """Run the shared suite against one subject, producing one report."""
 
@@ -148,13 +170,36 @@ class ConformanceRunner:
         backend = subject.backend
         real_backend_executed = False
         try:
-            results.append(await check_secrets_plaintext_refused(subject))
-            results.append(await check_credential_ref_resolution(subject))
-            results.append(await check_scope_propagation(subject))
-            results.append(await check_error_normalization(subject))
-            results.append(await check_cancellation_normalization(subject))
-            results.append(await check_deadline_enforcement(subject))
-            results.append(await check_usage_and_provenance(subject))
+            results.append(
+                await _guarded(
+                    CheckId.SECRETS_PLAINTEXT_REFUSED,
+                    check_secrets_plaintext_refused(subject),
+                )
+            )
+            results.append(
+                await _guarded(
+                    CheckId.SECRETS_CREDENTIAL_REF_RESOLUTION,
+                    check_credential_ref_resolution(subject),
+                )
+            )
+            results.append(
+                await _guarded(CheckId.SCOPE_PROPAGATION, check_scope_propagation(subject))
+            )
+            results.append(
+                await _guarded(CheckId.ERROR_NORMALIZATION, check_error_normalization(subject))
+            )
+            results.append(
+                await _guarded(
+                    CheckId.CANCELLATION_NORMALIZATION,
+                    check_cancellation_normalization(subject),
+                )
+            )
+            results.append(
+                await _guarded(CheckId.DEADLINE_ENFORCEMENT, check_deadline_enforcement(subject))
+            )
+            results.append(
+                await _guarded(CheckId.USAGE_AND_PROVENANCE, check_usage_and_provenance(subject))
+            )
 
             if subject.real_backend_available():
                 try:
@@ -206,23 +251,34 @@ class ConformanceRunner:
                 real_backend_executed = True
                 probe_url = f"http://127.0.0.1:{audit.port}/conformance-probe"
                 results.append(
-                    await check_egress(
-                        subject,
-                        probe_url=probe_url,
-                        audit_server=audit,
-                        allow_origin=False,
+                    await _guarded(
+                        CheckId.EGRESS_UNDECLARED_BLOCKED,
+                        check_egress(
+                            subject,
+                            probe_url=probe_url,
+                            audit_server=audit,
+                            allow_origin=False,
+                        ),
                     )
                 )
                 declare_egress_origin(outbound_origin(probe_url))
                 results.append(
-                    await check_egress(
-                        subject,
-                        probe_url=probe_url,
-                        audit_server=audit,
-                        allow_origin=True,
+                    await _guarded(
+                        CheckId.EGRESS_DECLARED_ALLOWED,
+                        check_egress(
+                            subject,
+                            probe_url=probe_url,
+                            audit_server=audit,
+                            allow_origin=True,
+                        ),
                     )
                 )
-                results.append(await check_bypass_refused(subject, audit_server=audit))
+                results.append(
+                    await _guarded(
+                        CheckId.BYPASS_REFUSED,
+                        check_bypass_refused(subject, audit_server=audit),
+                    )
+                )
             else:
                 results.append(
                     CheckResult(
