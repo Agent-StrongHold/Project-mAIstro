@@ -135,11 +135,15 @@ class _Acquire:
         self._pool = pool
 
     async def __aenter__(self) -> _Conn:
+        if self._pool.reject_concurrent_acquire and self._pool.active_acquires:
+            raise RuntimeError("cannot acquire a second connection before releasing the first")
+        self._pool.active_acquires += 1
         conn = _Conn(self._pool)
         self._pool.conns.append(conn)
         return conn
 
     async def __aexit__(self, *exc: Any) -> bool:
+        self._pool.active_acquires -= 1
         return False
 
 
@@ -152,6 +156,8 @@ class _Pool:
         self.execute_tags: list[str] = []
         self.conns: list[_Conn] = []
         self.transactions: list[_Txn] = []
+        self.active_acquires = 0
+        self.reject_concurrent_acquire = False
 
     def acquire(self) -> _Acquire:
         return _Acquire(self)
@@ -280,6 +286,10 @@ async def test_a_missing_row_sends_the_caller_back_to_claim() -> None:
 
 async def test_an_ambiguous_commit_rereads_and_replays_when_bound() -> None:
     pool = _Pool()
+    # A bounded production pool may have one connection available. The
+    # unknown-COMMIT read must happen only after returning the failed one;
+    # otherwise recovery deadlocks waiting on itself.
+    pool.reject_concurrent_acquire = True
     inserts = _Inserts()
     inserts.raise_after = 0  # the write lands, then the connection dies
     pool.row_results.append(_row(_claim()))

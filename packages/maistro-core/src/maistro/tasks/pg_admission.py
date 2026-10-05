@@ -225,30 +225,30 @@ class PgRootAdmissionCoordinator:
         reported upward as a failure the caller may release.
         """
         run = await prepare_run()
-        conn: asyncpg.Connection
-        async with self._pool.acquire() as conn:
-            try:
-                # READ COMMITTED, like every canonical spine transaction: the
-                # fences must evaluate against the locked row's current
-                # values, and the binding INSERT…UPDATE re-reads nothing
-                # older than the lock.
-                async with conn.transaction(isolation="read_committed"):
-                    return await self._bind_locked(
-                        conn,
-                        scope_key=scope_key,
-                        claim=claim,
-                        task_id=task_id,
-                        run=run,
-                    )
-            except _connection_errors():
-                # Ambiguous: the commit may or may not have landed. Reread the
-                # durable generation on a new connection instead of assuming
-                # "nothing admitted" — deleting the key here would be exactly
-                # the duplicate mint this module exists to forbid.
-                reread = await self._read(scope_key)
-                if reread is not None and reread.admitted:
-                    return AdmissionAlreadyBound(reread)
-                raise
+        try:
+            conn: asyncpg.Connection
+            # READ COMMITTED, like every canonical spine transaction: the
+            # fences must evaluate against the locked row's current values,
+            # and the binding INSERT…UPDATE re-reads nothing older than the
+            # lock.
+            async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+                return await self._bind_locked(
+                    conn,
+                    scope_key=scope_key,
+                    claim=claim,
+                    task_id=task_id,
+                    run=run,
+                )
+        except _connection_errors():
+            # Ambiguous: the commit may or may not have landed. The failed
+            # connection must be released before the durable reread: otherwise
+            # a one-connection pool deadlocks exactly when recovery is needed.
+            # `_read` now necessarily acquires a fresh connection rather than
+            # reusing a connection whose transaction outcome is unknown.
+            reread = await self._read(scope_key)
+            if reread is not None and reread.admitted:
+                return AdmissionAlreadyBound(reread)
+            raise
         # Unreachable: every path above returns or raises.
         raise AssertionError("bind_admission transaction context fell through")  # pragma: no cover
 
