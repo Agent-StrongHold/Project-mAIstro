@@ -70,16 +70,20 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
     # chain tip, and its learning-lifecycle columns (M4-B, ADR-100126-8c2d)
-    # continued that tip as `053_learning_lifecycle_columns`. #1892's forward
-    # admission-generation representation — numbered `053` when written on the
-    # `052` base — re-parents onto that tip as `054` per the chain's collision
-    # convention, and this branch's canonical Goal store (#1572) — which had
-    # itself taken `053` and then `054` in earlier collisions — re-parents
-    # onto develop's `054` as `055_canonical_goals`. Its upgrade is
-    # adoption-tolerant (`CREATE TABLE IF NOT EXISTS`, the 046/047 style)
-    # because the chain's stamp-back-and-re-upgrade walk re-runs it. The
-    # single linear head is now `055`.
-    walked = {item.revision for item in directory.walk_revisions("base", "055")}
+    # continued that tip as `053_learning_lifecycle_columns`. The learning
+    # applicability migration (M4-B3, #119) re-parents onto that `053` as
+    # `054_learning_applicability_epistemics`. #1892's forward
+    # admission-generation representation — numbered `053` when written,
+    # re-parented to `054` unaware of that open `054` — lands second in this
+    # sync and continues the applicability tip as
+    # `055_task_admission_generations`. This branch's canonical Goal store
+    # (#1572) — which had itself taken `053`, then `054`, then `055` in the
+    # earlier collisions — re-parents onto develop's `055` as
+    # `056_canonical_goals`. Its upgrade is adoption-tolerant (`CREATE TABLE
+    # IF NOT EXISTS`, the 046/047 style) because the chain's
+    # stamp-back-and-re-upgrade walk re-runs it. The single linear head is
+    # now `056`.
+    walked = {item.revision for item in directory.walk_revisions("base", "056")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -94,7 +98,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "053" in walked
     assert "054" in walked
     assert "055" in walked
-    assert directory.get_heads() == ["055"]
+    assert "056" in walked
+    assert directory.get_heads() == ["056"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

@@ -1,7 +1,7 @@
 """PostgreSQL persistence for the canonical Goal (#1572).
 
 The durable twin of `sqlite_store.py` and of `InMemoryGoalStore`, run against
-the same conformance suite. The tables come from Alembic migration ``055`` —
+the same conformance suite. The tables come from Alembic migration ``056`` —
 this store creates nothing of its own, so a deployment that has not run
 `alembic upgrade head` fails loudly at the first query instead of quietly
 keeping Goals in a second schema nobody migrates.
