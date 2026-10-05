@@ -40,7 +40,7 @@ from maistro.extensions import (
     ManifestRejected,
     UnknownInstall,
 )
-from maistro.extensions.types import TrustEvidence
+from maistro.extensions.types import TrustClaim
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
     get_workspace_store,
@@ -289,7 +289,7 @@ async def inspect_extension(
                 manifest_bytes=body.manifest_text.encode("utf-8"),
                 payload=_decode_payload(body.payload_b64),
             ),
-            trust_evidence=TrustEvidence(
+            trust_evidence=TrustClaim(
                 publisher_id=body.trust.publisher_id,
                 signature_present=body.trust.signature_present,
                 signer_key_id=body.trust.signer_key_id,

@@ -40,7 +40,7 @@ from maistro.extensions.types import (
     ExtensionPackage,
     ExtensionScope,
     ExtensionState,
-    TrustEvidence,
+    TrustClaim,
 )
 
 PAYLOAD = b"extension-payload-v1"
@@ -119,7 +119,7 @@ class SlowLoader:
         return LoadedExtension(extension_id=record.extension_id, version=record.version)
 
 
-TRUST = TrustEvidence(publisher_id="acme", signature_present=True, signer_key_id="key-1")
+TRUST = TrustClaim(publisher_id="acme", signature_present=True, signer_key_id="key-1")
 POLICY = TrustPolicy(
     trusted_publishers=frozenset({"acme"}),
     require_signature=True,
@@ -163,7 +163,7 @@ async def inspect_default(
     scope: ExtensionScope = SCOPE,
     permissions: tuple[str, ...] = ("network.http", "storage.workspace"),
     actor: str = "operator-1",
-    evidence: TrustEvidence = TRUST,
+    evidence: TrustClaim = TRUST,
     **manifest_kwargs: object,
 ) -> ExtensionInstallRecord:
     return await service.inspect(

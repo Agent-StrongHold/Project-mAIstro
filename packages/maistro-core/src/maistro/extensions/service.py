@@ -52,7 +52,7 @@ from maistro.extensions.types import (
     ExtensionTransition,
     InspectionConflict,
     InvalidTransition,
-    TrustEvidence,
+    TrustClaim,
     UnknownInstall,
 )
 
@@ -173,7 +173,7 @@ class ExtensionInstallService:
         actor: str,
         scope: ExtensionScope,
         package: ExtensionPackage,
-        trust_evidence: TrustEvidence,
+        trust_evidence: TrustClaim,
     ) -> ExtensionInstallRecord:
         """Inspect a candidate and park it for explicit authorization.
 

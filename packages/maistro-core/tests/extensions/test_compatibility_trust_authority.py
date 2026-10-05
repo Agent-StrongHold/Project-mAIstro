@@ -20,7 +20,7 @@ from maistro.extensions.authority import (
 )
 from maistro.extensions.compatibility import CompatibilityPolicy, evaluate_compatibility
 from maistro.extensions.trust import TrustPolicy, evaluate_trust
-from maistro.extensions.types import ExtensionScope, TrustEvidence
+from maistro.extensions.types import ExtensionScope, TrustClaim
 
 
 def _manifest_bytes(**overrides: object) -> bytes:
@@ -137,7 +137,7 @@ class TestCompatibility:
 
 
 class TestTrust:
-    EVIDENCE = TrustEvidence(publisher_id="acme", signature_present=True, signer_key_id="k1")
+    EVIDENCE = TrustClaim(publisher_id="acme", signature_present=True, signer_key_id="k1")
     POLICY = TrustPolicy(
         trusted_publishers=frozenset({"acme"}),
         require_signature=True,
@@ -149,7 +149,7 @@ class TestTrust:
         assert report.trusted
 
     def test_unsigned_package_fails_when_signature_required(self) -> None:
-        evidence = TrustEvidence(publisher_id="acme", signature_present=False)
+        evidence = TrustClaim(publisher_id="acme", signature_present=False)
         report = evaluate_trust(_manifest(), evidence, self.POLICY)
         assert not report.trusted
         assert any("no signature" in f for f in report.failures)
@@ -162,7 +162,7 @@ class TestTrust:
     def test_unlisted_publisher_is_refused(self) -> None:
         report = evaluate_trust(
             _manifest(publisher="shady"),
-            TrustEvidence(publisher_id="shady", signature_present=True, signer_key_id="k1"),
+            TrustClaim(publisher_id="shady", signature_present=True, signer_key_id="k1"),
             self.POLICY,
         )
         assert not report.trusted
@@ -171,30 +171,30 @@ class TestTrust:
     def test_evidence_naming_a_different_publisher_is_a_tamper_signal(self) -> None:
         report = evaluate_trust(
             _manifest(publisher="acme"),
-            TrustEvidence(publisher_id="someone-else", signature_present=True),
+            TrustClaim(publisher_id="someone-else", signature_present=True),
             self.POLICY,
         )
         assert not report.trusted
         assert any("publisher mismatch" in f for f in report.failures)
 
     def test_unknown_signer_key_is_refused_when_keys_are_pinned(self) -> None:
-        evidence = TrustEvidence(publisher_id="acme", signature_present=True, signer_key_id="rogue")
+        evidence = TrustClaim(publisher_id="acme", signature_present=True, signer_key_id="rogue")
         report = evaluate_trust(_manifest(), evidence, self.POLICY)
         assert not report.trusted
         assert any("signing key" in f for f in report.failures)
 
     def test_missing_signer_key_is_refused_when_keys_are_pinned(self) -> None:
-        evidence = TrustEvidence(publisher_id="acme", signature_present=True)
+        evidence = TrustClaim(publisher_id="acme", signature_present=True)
         report = evaluate_trust(_manifest(), evidence, self.POLICY)
         assert not report.trusted
 
     def test_signature_not_required_allows_unsigned(self) -> None:
         policy = TrustPolicy(trusted_publishers=frozenset({"acme"}), require_signature=False)
-        report = evaluate_trust(_manifest(), TrustEvidence(publisher_id="acme"), policy)
+        report = evaluate_trust(_manifest(), TrustClaim(publisher_id="acme"), policy)
         assert report.trusted
 
     def test_evidence_digest_must_match_the_manifest_claim(self) -> None:
-        evidence = TrustEvidence(
+        evidence = TrustClaim(
             publisher_id="acme",
             signature_present=True,
             signer_key_id="k1",
