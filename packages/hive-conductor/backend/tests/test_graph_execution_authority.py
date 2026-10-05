@@ -236,14 +236,17 @@ def test_shipped_http_refuses_without_a_spine(monkeypatch, admin_client):
         "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "No Graph spine"}
     )
     assert workspace.status_code == 201
-    dag_id = "http-unavailable-spine"
-    stores.dags[dag_id] = {
-        "id": dag_id,
-        "name": dag_id,
-        "nodes": [{"id": "only", "role": "worker"}],
-        "edges": [],
-    }
+    created = admin_client.post(
+        "/v1/dags", json={"name": "No-spine activation", "description": "fixture"}
+    )
+    assert created.status_code == 201
+    dag_id = created.json()["id"]
     try:
+        health = admin_client.get("/health")
+        assert health.json()["engine"]["graph_execution_available"] is False
+        activated = admin_client.post(f"/v1/dags/{dag_id}/activate")
+        assert activated.status_code == 200
+        assert activated.json()["status"] == "active"
         response = admin_client.post(
             f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace.json()["id"]}
         )
@@ -252,6 +255,20 @@ def test_shipped_http_refuses_without_a_spine(monkeypatch, admin_client):
             "error": "CanonicalGraphUnavailable: execution failed; see server logs",
         }
         traverse.assert_not_awaited()
+        runs = admin_client.get("/v1/dag-runs")
+        assert runs.status_code == 200
+        assert not any(row.get("dag_id") == dag_id for row in runs.json())
+        # A real definition identity cannot substitute for an admitted Run.
+        from services.feedback_service import get_outcome_store
+
+        outcomes = get_outcome_store()
+        before = len(outcomes._outcomes)
+        feedback = admin_client.post(
+            f"/v1/dag-runs/{dag_id}/feedback", json={"thumb": "up", "dag_id": dag_id}
+        )
+        assert feedback.status_code == 404
+        assert feedback.json() == {"detail": "run not found"}
+        assert len(outcomes._outcomes) == before
     finally:
         stores.dags.pop(dag_id, None)
 

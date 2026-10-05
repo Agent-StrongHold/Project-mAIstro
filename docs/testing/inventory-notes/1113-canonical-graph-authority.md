@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +24
+  packages/hive-conductor/backend/tests: +25
   packages/maistro-core/tests: +2
 ---
 # #1113: require canonical authority for new Hive Graph work
@@ -10,7 +10,7 @@ This is a fresh implementation and fresh test evidence, not a recovered prior pa
 
 ## Change and count
 
-The 24 new Hive cases cover missing Container/RunStore/Graph-continuation
+The original 24 new Hive cases cover missing Container/RunStore/Graph-continuation
 owners, refusal before admission/configuration/resolution/traversal, engine
 capability health, canonical admission failures, shipped HTTP and replay/live
 stream failure framing, and SQLite checkpoint-zero recovery for both the
@@ -82,3 +82,37 @@ resumption as `LegacyRunNotResumable`. No replacement identity is minted.
 The whole Hive/core test suites and live PostgreSQL, real-provider, sandbox
 infrastructure, merge and deployment checks were not run. This bounded slice
 must not be represented as completing any remaining broader #1113 proof.
+
+## CI repair: explicitly unconfigured PM walkthrough
+
+Published head `d96be1dd1ef9b23905067606fcd25173df014a1c` exposed two stale
+expectations in `tests/e2e/pm-workflow.spec.ts`: both required an `execution_id`
+from a stack whose `docker-compose.test.yml` deliberately supplies no core
+bridge, canonical database or model gateway. UI job `111801426087` in run
+`37321421391` failed those two cases; Integration Scope job `111801155723` in
+run `37321421268` only reported that required UI job's failure.
+
+The same two Playwright cases remain and now require explicit
+`CanonicalGraphUnavailable`, no projected Run and a 404 when an existing DAG
+definition ID is wrongly supplied as a Run-feedback target. No synthetic Run
+identity, skipped test, new runtime authority, permission grant, workflow or
+production-source change was introduced. The PM walkthrough documents this
+unconfigured harness instead of promising successful stub execution.
+
+The existing HTTP refusal regression now exercises create/activate/run/list
+and feedback refusal, including no Outcome write. One new positive test,
+`test_feedback_route_records_thumb_for_a_completed_canonical_graph_run` in
+`backend/tests/test_feedback_route.py`, performs real canonical Graph admission
+and completion with only the model terminal faked, then proves HTTP feedback
+persists the exact canonical Run/Project/actor. Earlier feedback tests used
+projection fixtures; this case explicitly protects the canonical success path.
+This raises the Hive delta to **+25**, current collection **3376**; the core
+**+2** delta is unchanged.
+
+Fresh validation: the authority and feedback suites pass **51 tests** with TCP
+blocked; one existing-style Pydantic serializer warning from the DAG update
+route remains. Playwright successfully parses/discovers **17 cases** in the PM
+workflow using the installed **1.62.1** runner. Docker is not installed here,
+so the CI-pinned **1.52.0** browser/full-stack run is still pending CI; local
+collection is not represented as a browser execution. Ruff, formatting,
+whitespace and relative-document-link checks pass.

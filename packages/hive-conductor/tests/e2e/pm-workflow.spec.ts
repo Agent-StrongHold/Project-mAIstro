@@ -6,9 +6,9 @@
  *   2. Login as PM user
  *   3. Dashboard overview
  *   4. Create a DAG (Fleet → DagBuilder)
- *   5. Run the DAG
- *   6. Check run results
- *   7. Give thumbs feedback
+ *   5. Activate the DAG
+ *   6. Verify this no-bridge harness refuses Graph execution
+ *   7. Verify an unadmitted DAG cannot receive Run feedback
  *   8. Visit Optimization Inbox
  *   9. Accept/reject a proposal
  *  10. Verify audit trail
@@ -97,10 +97,15 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     expect(dag.nodes.length).toBe(2);
   });
 
-  test("06 — PM can activate and run a DAG", async ({ page }) => {
+  test("06 — PM can activate a DAG but cannot execute without the canonical spine", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-run-dag");
     const workspaceId = await createWorkspace(page, "E2E Run Test Workspace");
+    // docker-compose.test.yml intentionally configures no core bridge or
+    // gateway. Activation is definition state, not execution authority (#1113).
+    const health = await page.request.get("/health");
+    expect(health.status()).toBe(200);
+    expect((await health.json()).engine.graph_execution_available).toBe(false);
 
     const createResp = await page.request.post("/v1/dags", {
       data: { name: "E2E Run Test", description: "test" },
@@ -118,10 +123,13 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
-    expect(run.execution_id).toBeTruthy();
+    expect(run).toEqual({
+      status: "failed",
+      error: "CanonicalGraphUnavailable: execution failed; see server logs",
+    });
   });
 
-  test("07 — PM can give thumbs feedback on a run", async ({ page }) => {
+  test("07 — an unadmitted DAG creates no Run and cannot receive Run feedback", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-feedback-dag");
     const workspaceId = await createWorkspace(page, "E2E Feedback Test Workspace");
@@ -139,12 +147,24 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
-    expect(run.execution_id).toBeTruthy();
-
-    const fbResp = await page.request.post(`/v1/dag-runs/${run.execution_id}/feedback`, {
-      data: { thumb: "up", comment: "Nailed it!", dag_id: dag.id },
+    expect(run).toEqual({
+      status: "failed",
+      error: "CanonicalGraphUnavailable: execution failed; see server logs",
     });
-    expect([200, 404]).toContain(fbResp.status());
+
+    const runsResp = await page.request.get("/v1/dag-runs");
+    expect(runsResp.status()).toBe(200);
+    const runs = await runsResp.json();
+    expect(runs.filter((candidate: { dag_id: string }) => candidate.dag_id === dag.id)).toEqual([]);
+
+    // A real DAG definition ID is not a Run ID. Refusal must not invent a Run
+    // to satisfy the feedback route. Positive feedback on a completed canonical
+    // Graph is proved by test_feedback_route_records_thumb_for_a_completed_canonical_graph_run.
+    const fbResp = await page.request.post(`/v1/dag-runs/${dag.id}/feedback`, {
+      data: { thumb: "up", comment: "No admitted Run", dag_id: dag.id },
+    });
+    expect(fbResp.status()).toBe(404);
+    expect(await fbResp.json()).toEqual({ detail: "run not found" });
   });
 
   test("08 — PM can trigger optimizer and see proposals", async ({ page }) => {
