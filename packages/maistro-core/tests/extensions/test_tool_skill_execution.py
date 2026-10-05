@@ -29,7 +29,8 @@ from maistro.extensions.tool_skill import (
     ExtensionToolCatalog,
     ExtensionToolOutcome,
     ExtensionToolRunner,
-    ToolOutcomeStatus,
+    ToolAccessPolicy,
+    ToolNotAllowlisted,
     UnknownToolError,
     effect_key_for,
     invoke_extension_tool,
@@ -134,7 +135,7 @@ async def test_state_changing_tool_executes_through_invocation_seam() -> None:
     )
 
     assert calls == [3]
-    assert outcome.status is ToolOutcomeStatus.COMPLETED
+    assert outcome.status is InvocationStatus.COMPLETED
     assert outcome.success
     assert outcome.result == {"value": 3, "bumped_by": 3}
     assert outcome.invocation is not None
@@ -223,7 +224,7 @@ async def test_denied_call_is_attributable_and_dispatches_nothing() -> None:
         attempt_id=ATTEMPT_ID,
     )
 
-    assert outcome.status is ToolOutcomeStatus.DENIED
+    assert outcome.status is InvocationStatus.FAILED
     assert not outcome.success
     assert outcome.error_code == "policy_denied"
     assert "test denies" in outcome.error
@@ -259,7 +260,7 @@ async def test_approval_gate_returns_request_id() -> None:
         attempt_id=ATTEMPT_ID,
     )
 
-    assert outcome.status is ToolOutcomeStatus.APPROVAL_REQUIRED
+    assert outcome.status is InvocationStatus.FAILED
     assert outcome.error_code == "approval_required"
     assert outcome.approval_request_id
     stored = await approvals.get(outcome.approval_request_id)
@@ -301,7 +302,7 @@ async def test_handler_exception_is_failed_and_recorded_unknown() -> None:
         attempt_id=ATTEMPT_ID,
     )
 
-    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.status is InvocationStatus.FAILED
     assert outcome.error_code == "handler_error"
     assert "remote said no" in outcome.error
     assert outcome.invocation_id  # attributable to a real Invocation row
@@ -334,7 +335,9 @@ async def test_deadline_expiry_is_the_canonical_cancellation_family() -> None:
             timeout_s=0.05,
         )
     outcome = excinfo.value.outcome
-    assert outcome.status is ToolOutcomeStatus.CANCELLED
+    # The outcome status mirrors the ledger row the service already wrote;
+    # the interruption family is typed by error_code.
+    assert outcome.status is InvocationStatus.UNKNOWN
     assert outcome.error_code == "deadline_exceeded"
     assert not outcome.success
     # The ledger recorded the interrupted call as UNKNOWN — the remote
@@ -375,7 +378,7 @@ async def test_external_cancellation_rethrows_with_attributable_outcome() -> Non
         await task
     outcome = getattr(excinfo.value, "outcome", None)
     assert isinstance(outcome, ExtensionToolOutcome)
-    assert outcome.status is ToolOutcomeStatus.CANCELLED
+    assert outcome.status is InvocationStatus.UNKNOWN
     assert outcome.error_code == "cancelled"
     assert outcome.invocation is not None
     assert outcome.invocation.status is InvocationStatus.UNKNOWN
@@ -401,7 +404,7 @@ async def test_downgrade_claim_refused_before_any_invocation_exists() -> None:
         effect_claim=EffectClass.READ_ONLY,  # floor is MUTATING
     )
 
-    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.status is InvocationStatus.FAILED
     assert outcome.error_code == "effect_downgrade_refused"
     assert outcome.invocation_id == ""
     assert calls == []
@@ -434,7 +437,7 @@ async def test_honest_higher_claim_runs_under_the_stricter_classification() -> N
         effect_claim=EffectClass.IRREVERSIBLE,
     )
 
-    assert outcome.status is ToolOutcomeStatus.COMPLETED
+    assert outcome.status is InvocationStatus.COMPLETED
     assert outcome.effect is EffectClass.IRREVERSIBLE
 
 
@@ -444,7 +447,9 @@ async def test_runner_resolves_by_tool_id_or_fails_typed() -> None:
     tool = register_counter(catalog, calls)
     binding = counter_binding(catalog, tool)
     effects = new_in_memory_effect_context(policy_evaluator=_allow)
-    runner = ExtensionToolRunner(effects, catalog)
+    runner = ExtensionToolRunner(
+        effects, catalog, access=ToolAccessPolicy(workspace_allowed=frozenset({"acme.counter"}))
+    )
 
     outcome = await runner.invoke(
         "acme.counter",
@@ -466,6 +471,51 @@ async def test_runner_resolves_by_tool_id_or_fails_typed() -> None:
             node_run_id=NODE_RUN_ID,
             attempt_id=ATTEMPT_ID,
         )
+
+
+async def test_runner_refuses_allowlisted_out_tool_even_when_named_directly() -> None:
+    """AC: exposure hiding is not the boundary. A tool the Agent/Workspace
+    allowlist excludes is refused by direct id, before any Binding is
+    resolved, policy is consulted, or the handler runs."""
+    calls: list[int] = []
+    catalog = ExtensionToolCatalog()
+    tool = register_counter(catalog, calls)
+    binding = counter_binding(catalog, tool)
+    effects = new_in_memory_effect_context(policy_evaluator=_allow)
+    runner = ExtensionToolRunner(
+        effects, catalog, access=ToolAccessPolicy(workspace_allowed=frozenset())
+    )
+
+    with pytest.raises(ToolNotAllowlisted) as excinfo:
+        await runner.invoke(
+            "acme.counter",
+            binding,
+            {"amount": 9},
+            run_id=RUN_ID,
+            node_run_id=NODE_RUN_ID,
+            attempt_id=ATTEMPT_ID,
+        )
+    assert "acme.counter" in str(excinfo.value)
+    assert calls == []  # never dispatched
+
+    # An Agent allowlist narrows the Workspace allowlist the same way.
+    narrowed = ExtensionToolRunner(
+        effects,
+        catalog,
+        access=ToolAccessPolicy(
+            workspace_allowed=frozenset({"acme.counter"}), agent_allowed=frozenset()
+        ),
+    )
+    with pytest.raises(ToolNotAllowlisted):
+        await narrowed.invoke(
+            "acme.counter",
+            binding,
+            {"amount": 9},
+            run_id=RUN_ID,
+            node_run_id=NODE_RUN_ID,
+            attempt_id=ATTEMPT_ID,
+        )
+    assert calls == []
 
 
 async def test_binding_for_another_tool_is_refused() -> None:
@@ -550,7 +600,7 @@ async def test_sync_handler_runs_off_loop_and_completes() -> None:
         node_run_id=NODE_RUN_ID,
         attempt_id=ATTEMPT_ID,
     )
-    assert outcome.status is ToolOutcomeStatus.COMPLETED
+    assert outcome.status is InvocationStatus.COMPLETED
     assert outcome.result == "Hello, m9!"
     assert outcome.invocation is not None
     assert outcome.invocation.request == {"target": "m9"}

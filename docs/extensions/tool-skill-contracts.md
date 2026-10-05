@@ -102,15 +102,18 @@ registered tool -> Binding (capability "extension.tool:<id>",
       -> your handler, dispatched under the host deadline
 ```
 
-What comes back is canonical and attributable in every terminal case:
+What comes back is canonical and attributable in every terminal case. The
+outcome's `status` is the canonical `InvocationStatus` — the same vocabulary
+the Invocation ledger records, with no second status enum — and the
+failure/interruption family is typed by `error_code`:
 
-| Outcome | Meaning | Attribution |
-|---------|---------|-------------|
-| `completed` | usable result | the Invocation record |
-| `denied` | policy refused | execution scope + the classification the decision ran on |
-| `approval_required` | durable request pending a human | the approval request id |
-| `failed` | handler/deadline-family failure | typed `error_code`, Invocation row (UNKNOWN after dispatch — the remote effect may have landed) |
-| `cancelled` | deadline expiry or cancellation | the interrupted Invocation (recorded UNKNOWN — never claimed as a clean outcome) |
+| `status` | `error_code` family | Meaning | Attribution |
+|---------|---------------------|---------|-------------|
+| `completed` | — | usable result | the Invocation record |
+| `failed` | `policy_denied` | policy refused | execution scope + the classification the decision ran on |
+| `failed` | `approval_required` | durable request pending a human | the approval request id |
+| `failed` | `handler_error` / `capability_unavailable` / `effect_downgrade_refused` | the call did not complete | typed `error_code`, Invocation row when one exists (UNKNOWN after dispatch — the remote effect may have landed) |
+| `unknown` | `cancelled` / `deadline_exceeded` | deadline expiry or cancellation | the interrupted Invocation (recorded UNKNOWN — never claimed as a clean outcome) |
 
 Cancellation stays cancellation: the call re-throws `CancelledError` with the
 canonical outcome attached (`exc.outcome`), so run-level cancellation

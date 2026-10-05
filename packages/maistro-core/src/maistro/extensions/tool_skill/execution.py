@@ -11,18 +11,23 @@ the same suite).
 
 What the seam produces is canonical and attributable:
 
-* **Results** are :class:`ExtensionToolOutcome` values with the Invocation's
-  identity and the ``Run -> NodeRun -> Attempt`` correlation the call ran
-  under.
+* **Results** are :class:`ExtensionToolOutcome` values whose ``status`` is the
+  canonical :class:`~maistro.capabilities.invocation.InvocationStatus` — the
+  one work-state vocabulary this seam reports, exactly as the Invocation
+  ledger recorded it — plus the ``Run -> NodeRun -> Attempt`` correlation the
+  call ran under.
 * **Errors** are typed and machine-readable (``error_code``), mapped from the
   canonical failure families: policy denial, approval required, capability
-  unavailable, provider exception (recorded ``UNKNOWN`` — an exception can
-  arrive after the remote effect landed, so it is never reported as a clean
-  failure).
+  unavailable, provider exception. All of them surface as
+  ``InvocationStatus.FAILED`` with the family named in ``error_code`` —
+  refused-before-dispatch calls (denial, approval, unavailable) never created
+  an Invocation, and that distinction lives in ``error_code``, not in a
+  second status vocabulary.
 * **Cancellation** (``asyncio.CancelledError``, deadline expiry included via
-  :func:`asyncio.wait_for`) surfaces as ``CANCELLED`` with the Invocation the
-  cancellation interrupted — which the Invocation service itself has already
-  terminalized as ``UNKNOWN`` with the cancellation named in its error.
+  :func:`asyncio.wait_for`) surfaces as ``InvocationStatus.UNKNOWN`` with the
+  Invocation the cancellation interrupted — mirroring the row the Invocation
+  service itself already terminalized as ``UNKNOWN`` — with the interruption
+  family named in ``error_code`` (``cancelled`` / ``deadline_exceeded``).
 
 The host re-validates the extension's per-call effect claim against the
 contract floor (:func:`validate_effect_claim`) before dispatch, so the
@@ -36,7 +41,6 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
 from maistro.capabilities.binding import Binding
@@ -58,6 +62,8 @@ from maistro.extensions.tool_skill.contracts import (
 from maistro.extensions.tool_skill.registration import (
     TOOL_CAPABILITY_PREFIX,
     RegisteredExtensionTool,
+    ToolAccessPolicy,
+    ToolNotAllowlisted,
 )
 
 
@@ -65,19 +71,13 @@ class UnknownToolError(LookupError):
     """A call named a tool no package registered."""
 
 
-class ToolOutcomeStatus(StrEnum):
-    """Canonical terminal dispositions for one tool call."""
-
-    COMPLETED = "completed"
-    DENIED = "denied"
-    APPROVAL_REQUIRED = "approval_required"
-    FAILED = "failed"
-    UNKNOWN = "unknown"
-    CANCELLED = "cancelled"
-
-
 #: Error codes the canonical mapping produces. Machine-readable so callers
-#: (and the model) branch without parsing prose.
+#: (and the model) branch without parsing prose. These — not a second status
+#: enum — are how the refusal and interruption families stay distinguishable
+#: from an ordinary failed dispatch: the outcome's ``status`` is always the
+#: canonical Invocation vocabulary, so ``FAILED`` + ``policy_denied`` reads
+#: "refused by policy, nothing dispatched" and ``UNKNOWN`` + ``cancelled``
+#: reads "interrupted mid-flight, remote outcome unknown".
 ERROR_CODE_DENIAL = "policy_denied"
 ERROR_CODE_APPROVAL = "approval_required"
 ERROR_CODE_UNAVAILABLE = "capability_unavailable"
@@ -92,7 +92,7 @@ ERROR_CODE_UNKNOWN = "unknown_outcome"
 class ExtensionToolOutcome:
     """The canonical, attributable result of one extension tool call."""
 
-    status: ToolOutcomeStatus
+    status: InvocationStatus
     tool_id: str
     run_id: str
     node_run_id: str
@@ -107,7 +107,7 @@ class ExtensionToolOutcome:
     @property
     def success(self) -> bool:
         """Whether the call completed with a usable result."""
-        return self.status is ToolOutcomeStatus.COMPLETED
+        return self.status is InvocationStatus.COMPLETED
 
     @property
     def invocation_id(self) -> str:
@@ -122,15 +122,24 @@ class ExtensionToolRunner:
     one governed call (AC: out-of-tree packages register without core edits —
     the surface needs the catalog, not per-tool code). An unknown id is a
     typed lookup failure before any Binding is resolved or policy consulted.
+
+    The runner is constructed with the caller's :class:`ToolAccessPolicy` and
+    enforces it on every lookup: exposure hiding a tool is not the boundary —
+    a caller or model that names an excluded id directly is refused here,
+    before any Binding is resolved or handler dispatched (AC: tool access is
+    constrained by Agent/Workspace allowlists).
     """
 
     def __init__(
         self,
         effects: CapabilityEffectContext,
         catalog: Any,
+        *,
+        access: ToolAccessPolicy,
     ) -> None:
         self._effects = effects
         self._catalog = catalog
+        self._access = access
 
     async def invoke(
         self,
@@ -149,6 +158,12 @@ class ExtensionToolRunner:
         tool = self._catalog.get(tool_id)
         if tool is None:
             raise UnknownToolError(f"no third-party tool registered as {tool_id!r}")
+        if not self._access.allows(tool.tool_id):
+            # The allowlist is the boundary, not the exposure list: a known
+            # id named directly is refused before any Binding is resolved.
+            raise ToolNotAllowlisted(
+                f"{tool.tool_id!r} is not admitted by the Agent/Workspace tool allowlist"
+            )
         return await invoke_extension_tool(
             self._effects,
             tool,
@@ -283,7 +298,7 @@ async def invoke_extension_tool(
         )
     except EffectDowngradeRefused as exc:
         return ExtensionToolOutcome(
-            status=ToolOutcomeStatus.FAILED,
+            status=InvocationStatus.FAILED,
             tool_id=tool.tool_id,
             run_id=run_id,
             node_run_id=node_run_id,
@@ -372,7 +387,7 @@ async def invoke_extension_tool(
             logical_effect=logical_effect,
         )
         return ExtensionToolOutcome(
-            status=ToolOutcomeStatus.FAILED,
+            status=InvocationStatus.FAILED,
             tool_id=tool.tool_id,
             run_id=run_id,
             node_run_id=node_run_id,
@@ -421,11 +436,13 @@ def _refusal_outcome(
     Denial and approval gating are policy facts; capability unavailability is
     a provider fact. All three refuse execution without an external effect,
     so all three carry the classification the decision ran on and the
-    execution scope it ran in.
+    execution scope it ran in. None of them created an Invocation — the
+    family is typed by ``error_code`` on a ``FAILED`` status, never by a
+    second status vocabulary.
     """
     if isinstance(exc, InvocationDenied):
         return ExtensionToolOutcome(
-            status=ToolOutcomeStatus.DENIED,
+            status=InvocationStatus.FAILED,
             tool_id=tool.tool_id,
             run_id=run_id,
             node_run_id=node_run_id,
@@ -436,7 +453,7 @@ def _refusal_outcome(
         )
     if isinstance(exc, InvocationApprovalRequired):
         return ExtensionToolOutcome(
-            status=ToolOutcomeStatus.APPROVAL_REQUIRED,
+            status=InvocationStatus.FAILED,
             tool_id=tool.tool_id,
             run_id=run_id,
             node_run_id=node_run_id,
@@ -447,7 +464,7 @@ def _refusal_outcome(
             effect=effect or tool.contract.effect_floor,
         )
     return ExtensionToolOutcome(
-        status=ToolOutcomeStatus.FAILED,
+        status=InvocationStatus.FAILED,
         tool_id=tool.tool_id,
         run_id=run_id,
         node_run_id=node_run_id,
@@ -472,11 +489,13 @@ async def _cancellation_outcome(
     error_code: str,
     error: str,
 ) -> ExtensionToolOutcome:
-    """Build the canonical CANCELLED outcome for an interrupted dispatch.
+    """Build the canonical interruption outcome for a cancelled dispatch.
 
     Attribution is best-effort on the cancel path: the Invocation service has
     already terminalized the call (UNKNOWN, cancellation named); re-reading
-    the ledger must never mask the cancellation itself.
+    the ledger must never mask the cancellation itself. The outcome status
+    mirrors that row (``UNKNOWN``) and the interruption family is typed by
+    ``error_code``.
     """
     interrupted = await _latest_invocation(
         effects,
@@ -487,7 +506,7 @@ async def _cancellation_outcome(
         logical_effect=logical_effect,
     )
     return ExtensionToolOutcome(
-        status=ToolOutcomeStatus.CANCELLED,
+        status=InvocationStatus.UNKNOWN,
         tool_id=tool.tool_id,
         run_id=run_id,
         node_run_id=node_run_id,
@@ -514,9 +533,7 @@ def _completed_outcome(
         # COMPLETED; anything else reaching here is a ledger state the
         # caller must reconcile explicitly.
         return ExtensionToolOutcome(
-            status=ToolOutcomeStatus.UNKNOWN
-            if invocation.status is InvocationStatus.UNKNOWN
-            else ToolOutcomeStatus.FAILED,
+            status=invocation.status,
             tool_id=tool.tool_id,
             run_id=run_id,
             node_run_id=node_run_id,
@@ -527,7 +544,7 @@ def _completed_outcome(
             effect=effect or tool.contract.effect_floor,
         )
     return ExtensionToolOutcome(
-        status=ToolOutcomeStatus.COMPLETED,
+        status=InvocationStatus.COMPLETED,
         tool_id=tool.tool_id,
         run_id=run_id,
         node_run_id=node_run_id,

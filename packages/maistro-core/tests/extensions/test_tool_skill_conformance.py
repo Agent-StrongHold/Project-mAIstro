@@ -14,22 +14,36 @@ import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.governed_invocation import InvocationPolicyContext
+from maistro.capabilities.invocation import InvocationStatus
 from maistro.extensions.tool_skill import (
+    ERROR_CODE_APPROVAL,
+    ERROR_CODE_CANCELLED,
+    ERROR_CODE_DENIAL,
+    ERROR_CODE_HANDLER_ERROR,
+    EffectClass,
     ExtensionContract,
     ExtensionToolCatalog,
     ExtensionToolOutcome,
-    ToolOutcomeStatus,
     invoke_extension_tool,
     load_entrypoint_handler,
     run_conformance,
 )
-from maistro.extensions.tool_skill.conformance import DEFAULT_CHECKS, CheckResult
+from maistro.extensions.tool_skill.conformance import (
+    DEFAULT_CHECKS,
+    CheckResult,
+    check_cancellation_is_canonical,
+    check_denial_is_attributable,
+    check_error_is_canonical,
+    check_exposure_is_canonical,
+    check_result_is_canonical,
+)
 from maistro.policy.types import Decision, PolicyVerdict
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -139,6 +153,58 @@ def registered_scenario_tool(catalog: ExtensionToolCatalog, tool_id: str):
     return catalog.register(contract, entrypoint, handler=scenario_handler)
 
 
+def crafted_outcome(**overrides: Any) -> ExtensionToolOutcome:
+    """One attributable FAILED/refusal-shaped outcome, per-field overridden.
+
+    The negative controls below feed single conformance checks a scripted
+    outcome; the defaults are the fully-attributed ``policy_denied`` refusal
+    the governed subject itself produces.
+    """
+    fields: dict[str, Any] = {
+        "status": InvocationStatus.FAILED,
+        "tool_id": "acme.scenario",
+        "run_id": RUN_ID,
+        "node_run_id": NODE_RUN_ID,
+        "attempt_id": ATTEMPT_ID,
+        "error_code": ERROR_CODE_DENIAL,
+        "error": "test denies",
+        "effect": EffectClass.READ_ONLY,
+    }
+    fields.update(overrides)
+    return ExtensionToolOutcome(**fields)
+
+
+class ScriptedSubject:
+    """A subject whose describe/invoke answers are scripted for one check."""
+
+    def __init__(
+        self,
+        *,
+        described: dict[str, Any] | None = None,
+        outcome: ExtensionToolOutcome | None = None,
+        raised: BaseException | None = None,
+        returns: Any = "__outcome__",
+    ) -> None:
+        self._described = (
+            described if described is not None else {"name": "x", "reversibility": "internal"}
+        )
+        self._outcome = outcome
+        self._raised = raised
+        self._returns = returns
+
+    def describe(self) -> dict[str, Any]:
+        return self._described
+
+    async def invoke(self, **kwargs: Any) -> Any:
+        del kwargs
+        if self._raised is not None:
+            raise self._raised
+        if self._returns != "__outcome__":
+            return self._returns
+        assert self._outcome is not None
+        return self._outcome
+
+
 @pytest.mark.asyncio
 async def test_external_and_builtin_pass_shared_conformance() -> None:
     """The epic AC: the same battery passes an external-style package and a
@@ -187,6 +253,212 @@ async def test_denying_policy_fails_result_check_for_the_refused_family() -> Non
     names = {result.name for result in report.results if not result.passed}
     assert "result-is-canonical" in names
     assert "denial-is-attributable" not in names  # the refusal itself conforms
+    # The failures projection names exactly the failing results, in order.
+    assert [r.name for r in report.failures] == [r.name for r in report.results if not r.passed]
+    assert report.failures[0].passed is False
+
+
+@pytest.mark.asyncio
+async def test_exposure_check_rejects_nameless_descriptor() -> None:
+    """Negative control: a descriptor with no name is non-conformant."""
+    result = await check_exposure_is_canonical(
+        ScriptedSubject(described={"reversibility": "internal"})
+    )
+    assert not result.passed
+    assert "no name" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_exposure_check_rejects_reversibility_outside_adr050() -> None:
+    """Negative control: a made-up reversibility label is outside the
+    ADR-050 taxonomy the exposure check enforces."""
+    result = await check_exposure_is_canonical(
+        ScriptedSubject(described={"name": "x", "reversibility": "sorta-reversible"})
+    )
+    assert not result.passed
+    assert "outside the ADR-050 taxonomy" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_result_check_rejects_non_completed_outcome() -> None:
+    """Negative control: a FAILED outcome cannot pass the result check."""
+    result = await check_result_is_canonical(ScriptedSubject(outcome=crafted_outcome()))
+    assert not result.passed
+    assert "expected completed" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_result_check_rejects_completed_call_with_no_invocation() -> None:
+    """Negative control: COMPLETED with no Invocation row is unattributable."""
+    result = await check_result_is_canonical(
+        ScriptedSubject(
+            outcome=crafted_outcome(
+                status=InvocationStatus.COMPLETED, result={"ok": 1}, invocation=None
+            )
+        )
+    )
+    assert not result.passed
+    assert "recorded no Invocation" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_result_check_rejects_missing_execution_correlation() -> None:
+    """Negative control: a completed outcome without Run/NodeRun/Attempt
+    correlation is not attributable."""
+    result = await check_result_is_canonical(
+        ScriptedSubject(
+            outcome=crafted_outcome(
+                status=InvocationStatus.COMPLETED,
+                result={"ok": 1},
+                invocation=SimpleNamespace(invocation_id="inv-1"),
+                run_id="",
+                attempt_id="",
+            )
+        )
+    )
+    assert not result.passed
+    assert "Run/NodeRun/Attempt correlation" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_error_check_rejects_non_failed_outcome() -> None:
+    """Negative control: an over-reported COMPLETED outcome for a failing
+    call is non-conformant."""
+    result = await check_error_is_canonical(
+        ScriptedSubject(outcome=crafted_outcome(status=InvocationStatus.COMPLETED, result="fine"))
+    )
+    assert not result.passed
+    assert "expected failed" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_error_check_rejects_unattributed_handler_failure() -> None:
+    """Negative control: a handler failure with no Invocation row cannot be
+    attributed to the call that produced it."""
+    result = await check_error_is_canonical(
+        ScriptedSubject(
+            outcome=crafted_outcome(
+                error_code=ERROR_CODE_HANDLER_ERROR, error="boom", invocation=None
+            )
+        )
+    )
+    assert not result.passed
+    assert "no attributable Invocation" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_error_check_rejects_silent_handler_failure() -> None:
+    """Negative control: a FAILED outcome with no error text is not a
+    machine-usable failure."""
+    result = await check_error_is_canonical(
+        ScriptedSubject(outcome=crafted_outcome(error_code=ERROR_CODE_HANDLER_ERROR, error=""))
+    )
+    assert not result.passed
+    assert "error text" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_cancellation_check_rejects_bare_cancelled_error() -> None:
+    """Negative control: an in-flight cancellation that carries no canonical
+    outcome fails the suite — cancellation must stay attributable."""
+    result = await check_cancellation_is_canonical(ScriptedSubject(raised=asyncio.CancelledError()))
+    assert not result.passed
+    assert "carried no canonical outcome" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_cancellation_check_accepts_outcome_on_bare_cancelled_error() -> None:
+    """The second cancellation spelling: a bare :class:`asyncio.CancelledError`
+    with the canonical outcome attached to ``exc.outcome`` passes."""
+    outcome = crafted_outcome(
+        status=InvocationStatus.UNKNOWN,
+        error_code=ERROR_CODE_CANCELLED,
+        error="tool invocation cancelled",
+    )
+    exc = asyncio.CancelledError()
+    exc.outcome = outcome  # type: ignore[attr-defined]
+    result = await check_cancellation_is_canonical(ScriptedSubject(raised=exc))
+    assert result.passed, result.detail
+
+
+@pytest.mark.asyncio
+async def test_cancellation_check_rejects_silent_return() -> None:
+    """Negative control: a subject that returns normally over an interrupted
+    call fails — the check holds the cancelled disposition, not a value."""
+    result = await check_cancellation_is_canonical(ScriptedSubject(returns=None))
+    assert not result.passed
+    assert "returned normally" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_cancellation_check_rejects_untyped_interruption() -> None:
+    """Negative control: an UNKNOWN outcome without a cancellation-family
+    error_code hides which interruption happened."""
+    result = await check_cancellation_is_canonical(
+        ScriptedSubject(
+            outcome=crafted_outcome(status=InvocationStatus.UNKNOWN, error_code="mystery")
+        )
+    )
+    assert not result.passed
+    assert "interruption family" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_denial_check_rejects_non_failed_outcome() -> None:
+    """Negative control: a refusal reported as COMPLETED is non-conformant."""
+    result = await check_denial_is_attributable(
+        ScriptedSubject(
+            outcome=crafted_outcome(status=InvocationStatus.COMPLETED, result="went through")
+        )
+    )
+    assert not result.passed
+    assert "must be FAILED" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_denial_check_rejects_untyped_refusal_family() -> None:
+    """Negative control: FAILED without a refusal-family error_code does not
+    distinguish a policy denial from an ordinary handler failure."""
+    result = await check_denial_is_attributable(
+        ScriptedSubject(outcome=crafted_outcome(error_code="vibes"))
+    )
+    assert not result.passed
+    assert "refusal family" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_denial_check_requires_execution_scope() -> None:
+    """Negative control: a refusal without Run/Attempt correlation cannot be
+    attributed to the execution that asked for it."""
+    result = await check_denial_is_attributable(
+        ScriptedSubject(outcome=crafted_outcome(run_id="", attempt_id=""))
+    )
+    assert not result.passed
+    assert "stay attributable" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_denial_check_requires_effect_classification() -> None:
+    """Negative control: the refusal must name the classification the
+    decision ran on — otherwise the floor it enforced is unauditable."""
+    result = await check_denial_is_attributable(
+        ScriptedSubject(outcome=crafted_outcome(effect=None))
+    )
+    assert not result.passed
+    assert "classification" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_denial_check_requires_durable_approval_request_id() -> None:
+    """Negative control: approval gating without a durable request id gives a
+    human nothing to resolve."""
+    result = await check_denial_is_attributable(
+        ScriptedSubject(
+            outcome=crafted_outcome(error_code=ERROR_CODE_APPROVAL, approval_request_id="")
+        )
+    )
+    assert not result.passed
+    assert "durable request id" in result.detail
 
 
 @pytest.mark.asyncio
@@ -198,7 +470,7 @@ async def test_subject_that_swallows_cancellation_fails_the_suite() -> None:
         async def invoke(self, **kwargs: Any) -> ExtensionToolOutcome:
             if kwargs.get("mode") == "conformance-cancel":
                 return ExtensionToolOutcome(
-                    status=ToolOutcomeStatus.COMPLETED,
+                    status=InvocationStatus.COMPLETED,
                     tool_id=self._tool.tool_id,
                     run_id=RUN_ID,
                     node_run_id=NODE_RUN_ID,

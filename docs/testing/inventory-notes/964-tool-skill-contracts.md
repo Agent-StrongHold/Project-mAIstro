@@ -1,15 +1,19 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +89
+  packages/maistro-core/tests: +107
 ---
 # 964-tool-skill-contracts
 
 M9-E3 (#964): the published third-party tool and Skill contracts with
-canonical capability/effect classification. All 89 new node IDs live in
+canonical capability/effect classification. All 107 new node IDs live in
 `packages/maistro-core/tests/` — four files over the new
 `maistro.extensions.tool_skill` package in `tests/extensions/`, plus the CLI
 command's exit paths in `tests/cli/test_extensions_contract.py`. No existing
-test moved.
+test moved. (+18 on top of the first recorded delta, added in the CI-repair
+round: seventeen negative controls driving every failure branch of the shared
+conformance battery, and the runner-side allowlist enforcement — a tool the
+Agent/Workspace allowlist excludes is refused by direct id before any Binding
+is resolved or handler dispatched, so exposure hiding is not the boundary.
 
 ## What the tests pin
 
@@ -54,15 +58,22 @@ real `new_in_memory_effect_context` seam:
   Invocation row carries run/node_run/attempt/workspace/actor attribution;
 - same-arguments retries replay the recorded Invocation without redispatch
   (effect-key ledger semantics);
+- the outcome's `status` is the canonical
+  `capabilities.invocation.InvocationStatus` — the one work-state vocabulary
+  this seam reports, exactly as the Invocation ledger recorded it. The
+  refusal and interruption families stay machine-readable through
+  `error_code` (policy_denied / approval_required / capability_unavailable /
+  handler_error / cancelled / deadline_exceeded); no second status enum is
+  introduced, so the execution-lifecycles ratchet classifies nothing new;
 - denial, approval (with durable pending request id), handler exceptions
-  (FAILED for the caller, UNKNOWN in the ledger), deadline expiry
-  (`ExtensionToolCancellation`, ledger UNKNOWN), and external task
-  cancellation (re-thrown `CancelledError` with the attributable outcome
-  attached) are all canonical and attributable;
+  (FAILED + `handler_error` for the caller, UNKNOWN in the ledger), deadline
+  expiry (`ExtensionToolCancellation`, outcome UNKNOWN mirroring the ledger
+  row), and external task cancellation (re-thrown `CancelledError` with the
+  attributable outcome attached) are all canonical and attributable;
 - a downgrade effect claim is refused before dispatch — no Invocation row, no
   dispatch; a higher claim runs under the stricter classification.
 
-`test_tool_skill_conformance.py` (+12) — the shared conformance suite:
+`test_tool_skill_conformance.py` (+29) — the shared conformance suite:
 
 - the identical battery passes an external-style package and a built-in
   surface (exposure, canonical result, attributable error, cancellation,
@@ -71,6 +82,17 @@ real `new_in_memory_effect_context` seam:
   while its refusal still conforms; a subject that reports success over an
   interrupted call fails the cancellation check; a fabricated completed
   outcome without an Invocation fails attribution;
+- every failure branch of every check is driven by a scripted subject:
+  nameless descriptors and non-ADR-050 reversibility fail exposure;
+  non-completed, invocation-less, and uncorrelated outcomes fail the result
+  check; over-reported, unattributed, and silent failures fail the error
+  check; bare `CancelledError` without an outcome, silent returns, and
+  untyped interruption families fail the cancellation check while the
+  outcome-on-`exc.outcome` spelling passes; over-reported refusals, untyped
+  refusal families, missing execution scope, missing effect classification,
+  and request-id-less approval gating fail the denial check. A conformance
+  suite that cannot fail is decorative — these pin that it fails for the
+  right reason, by name;
 - the real out-of-tree `extensions/reference-greeter` package is parsed from
   its `extension.json`, its handler loaded through the import boundary, and
   its governed call completes and records — the out-of-tree criterion, end to

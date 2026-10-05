@@ -21,10 +21,15 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from maistro.capabilities.invocation import InvocationStatus
 from maistro.extensions.tool_skill.execution import (
+    ERROR_CODE_APPROVAL,
+    ERROR_CODE_CANCELLED,
+    ERROR_CODE_DENIAL,
+    ERROR_CODE_HANDLER_ERROR,
+    ERROR_CODE_TIMEOUT,
     ExtensionToolCancellation,
     ExtensionToolOutcome,
-    ToolOutcomeStatus,
 )
 
 
@@ -94,7 +99,9 @@ async def check_exposure_is_canonical(tool: ConformantTool) -> CheckResult:
 async def check_result_is_canonical(tool: ConformantTool) -> CheckResult:
     """The happy path completes with an attributable canonical outcome."""
     outcome = await tool.invoke(mode="conformance-result")
-    if outcome.status is not ToolOutcomeStatus.COMPLETED or not outcome.success:
+    if outcome.status is not InvocationStatus.COMPLETED:
+        # ``success`` is derived from this same status; the status check is
+        # the whole test.
         return _result(
             "result-is-canonical",
             False,
@@ -114,19 +121,26 @@ async def check_result_is_canonical(tool: ConformantTool) -> CheckResult:
 async def check_error_is_canonical(tool: ConformantTool) -> CheckResult:
     """A failing call is a FAILED outcome with a typed error and correlation."""
     outcome = await tool.invoke(mode="conformance-error")
-    if outcome.status is not ToolOutcomeStatus.FAILED:
+    if outcome.status is not InvocationStatus.FAILED:
         return _result(
             "error-is-canonical",
             False,
             f"expected failed, got {outcome.status.value}: {outcome.error}",
         )
-    if outcome.success or not outcome.error_code or not outcome.error:
+    if outcome.error_code != ERROR_CODE_HANDLER_ERROR:
         return _result(
             "error-is-canonical",
             False,
-            "failed outcome must carry error_code and error text",
+            f"a handler failure must carry error_code {ERROR_CODE_HANDLER_ERROR!r}, "
+            f"got {outcome.error_code!r}",
         )
-    if not outcome.invocation_id and outcome.error_code != "effect_downgrade_refused":
+    if not outcome.error:
+        return _result(
+            "error-is-canonical",
+            False,
+            "failed outcome must carry error text",
+        )
+    if not outcome.invocation_id:
         return _result(
             "error-is-canonical",
             False,
@@ -141,7 +155,10 @@ async def check_cancellation_is_canonical(tool: ConformantTool) -> CheckResult:
     Both cancellation spellings are held: deadline expiry surfaces as
     :class:`ExtensionToolCancellation` (carrying the outcome), and an in-flight
     task cancellation re-raises :class:`asyncio.CancelledError` with the
-    outcome attached to ``exc.outcome``.
+    outcome attached to ``exc.outcome``. Success over an interruption is
+    structurally impossible once the status is pinned to the ledger's
+    ``UNKNOWN`` row — the status and family checks above are the whole
+    contract.
     """
     outcome: ExtensionToolOutcome | None
     try:
@@ -159,34 +176,45 @@ async def check_cancellation_is_canonical(tool: ConformantTool) -> CheckResult:
         outcome = candidate
     if outcome is None:
         return _result("cancellation-is-canonical", False, "cancelled call returned normally")
-    if outcome.status is not ToolOutcomeStatus.CANCELLED:
+    if outcome.status is not InvocationStatus.UNKNOWN:
         return _result(
             "cancellation-is-canonical",
             False,
-            f"expected cancelled, got {outcome.status.value}",
+            f"an interrupted call must report the ledger's UNKNOWN row, got {outcome.status.value}",
         )
-    if outcome.success:
-        return _result("cancellation-is-canonical", False, "a cancelled call reported success")
+    if outcome.error_code not in {ERROR_CODE_CANCELLED, ERROR_CODE_TIMEOUT}:
+        return _result(
+            "cancellation-is-canonical",
+            False,
+            f"interruption family must be named in error_code, got {outcome.error_code!r}",
+        )
     return _result("cancellation-is-canonical", True)
 
 
 async def check_denial_is_attributable(tool: ConformantTool) -> CheckResult:
-    """A refused call is the canonical refused disposition, fully attributed.
+    """A refused call is the canonical refusal family, fully attributed.
 
-    The refused family is policy denial (``DENIED``) and approval gating
-    (``APPROVAL_REQUIRED``): both refuse execution, and both must stay
-    attributable — execution-scope correlation, the classification the
-    decision ran on, and for an approval gate the durable request id a human
-    resolves later.
+    The refused family is policy denial (``policy_denied``) and approval
+    gating (``approval_required``): both refuse execution without creating an
+    Invocation, and both must stay attributable — execution-scope correlation,
+    the classification the decision ran on, and for an approval gate the
+    durable request id a human resolves later. The family is typed by
+    ``error_code`` on a ``FAILED`` status, not by a second status vocabulary.
     """
     outcome = await tool.invoke(mode="conformance-deny")
-    if outcome.status not in {ToolOutcomeStatus.DENIED, ToolOutcomeStatus.APPROVAL_REQUIRED}:
+    if outcome.status is not InvocationStatus.FAILED:
         return _result(
             "denial-is-attributable",
             False,
-            f"expected denied or approval_required, got {outcome.status.value}: {outcome.error}",
+            f"a refused call must be FAILED, got {outcome.status.value}",
         )
-    if outcome.success or not (outcome.run_id and outcome.attempt_id):
+    if outcome.error_code not in {ERROR_CODE_DENIAL, ERROR_CODE_APPROVAL}:
+        return _result(
+            "denial-is-attributable",
+            False,
+            f"expected refusal family in error_code, got {outcome.error_code!r}: {outcome.error}",
+        )
+    if not (outcome.run_id and outcome.attempt_id):
         return _result(
             "denial-is-attributable",
             False,
@@ -198,7 +226,7 @@ async def check_denial_is_attributable(tool: ConformantTool) -> CheckResult:
             False,
             "refused outcome does not name the classification the decision ran on",
         )
-    if outcome.status is ToolOutcomeStatus.APPROVAL_REQUIRED and not outcome.approval_request_id:
+    if outcome.error_code == ERROR_CODE_APPROVAL and not outcome.approval_request_id:
         return _result(
             "denial-is-attributable",
             False,
