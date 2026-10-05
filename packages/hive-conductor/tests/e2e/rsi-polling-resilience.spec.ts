@@ -149,6 +149,41 @@ async function setOnline(online: boolean): Promise<void> {
   }, online);
 }
 
+/** Flip a pause condition atomically with the loop's next /rsi/status
+ * settle — IN the page, not via a Node round trip. The previous shape
+ * (await the first count, then a Node-side evaluate dispatching the event)
+ * raced the loop's next cadence timer: under runner load the evaluate can
+ * land after the timer fires, so that poll runs with the condition not yet
+ * in force and the "no poll while paused" assertion fails — exactly the red
+ * hive-conductor-e2e-ui run this spec had at 24fe1c11 (expected baseline 1,
+ * received 2). Here the flip runs in the same microtask chain as the status
+ * fetch's settlement, strictly BEFORE the loop's finally arms the next
+ * timer, so the assertion window below always contains a full pinned
+ * cadence (3.75s) with the condition already in force. Hooks keyed to other
+ * /v1/rsi/ endpoints (the dashboard tick fires four requests in parallel)
+ * stay armed until the status settle they are synchronized to. */
+async function pauseAtNextStatusSettle(kind: "offline" | "hidden"): Promise<void> {
+  await page.evaluate((kind) => {
+    const w = window as unknown as { __rsiSettleHooks: Array<(url: string) => void> };
+    return new Promise<void>((resolve) => {
+      w.__rsiSettleHooks.push(function onSettle(url) {
+        if (!url.includes("/rsi/status")) return; // keep waiting for the status settle
+        w.__rsiSettleHooks = w.__rsiSettleHooks.filter((h) => h !== onSettle);
+        if (kind === "offline") {
+          Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => false });
+          window.dispatchEvent(new Event("offline"));
+        } else {
+          const doc = document as unknown as Record<string, unknown>;
+          Object.defineProperty(doc, "hidden", { configurable: true, get: () => true });
+          Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => "hidden" });
+          document.dispatchEvent(new Event("visibilitychange"));
+        }
+        resolve();
+      });
+    });
+  }, kind);
+}
+
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext({ baseURL: test.info().project.use.baseURL });
   // Every page in this context reports uncaught exceptions — the whole point
@@ -195,19 +230,34 @@ async function stubPageEnv(scope: BrowserContext): Promise<void> {
     const w = window as unknown as {
       __rsiStarts: Array<{ url: string; t: number }>;
       __rsiFails: Array<{ url: string; name: string }>;
+      __rsiSettleHooks: Array<(url: string) => void>;
     };
     w.__rsiStarts = [];
     w.__rsiFails = [];
+    w.__rsiSettleHooks = [];
     const wrapped = window.fetch.bind(window);
+    const settleRsi = (url: string, err: unknown): void => {
+      if (!url.includes("/v1/rsi/")) return;
+      if (err !== null) {
+        w.__rsiFails.push({ url, name: (err as { name?: string })?.name ?? "unknown" });
+      }
+      // Settle hooks run IN the page, in the microtask chain of the fetch's
+      // own settlement and strictly BEFORE the app's `await fetch`
+      // continuation (the loop's finally arms the next cadence timer only
+      // after that). The pause tests use them to flip offline/hidden at a
+      // poll boundary without a Node round trip in the critical path.
+      for (const hook of [...w.__rsiSettleHooks]) hook(url);
+    };
     window.fetch = (...args: Parameters<typeof fetch>) => {
       const url = String(args[0]);
       if (url.includes("/v1/rsi/")) w.__rsiStarts.push({ url, t: Date.now() });
       return wrapped(...args).then(
-        (res) => res,
+        (res) => {
+          settleRsi(url, null);
+          return res;
+        },
         (err: unknown) => {
-          if (url.includes("/v1/rsi/")) {
-            w.__rsiFails.push({ url, name: (err as { name?: string })?.name ?? "unknown" });
-          }
+          settleRsi(url, err);
           throw err;
         },
       );
@@ -543,7 +593,7 @@ test("the loop pauses while the tab is hidden and re-kicks on visibilitychange",
   await expect.poll(() => counts.status).toBeGreaterThanOrEqual(1);
   const baseline = counts.status;
 
-  await setHidden(true);
+  await pauseAtNextStatusSettle("hidden");
   await page.waitForTimeout(5_000); // longer than the exact 3.75s cadence
   expect(counts.status, "no poll fires while the tab is hidden").toBe(baseline);
 
@@ -557,8 +607,8 @@ test("the loop pauses while the browser is offline and re-kicks on going back on
   await expect.poll(() => counts.status).toBeGreaterThanOrEqual(1);
   const baseline = counts.status;
 
-  await setOnline(false);
-  await page.waitForTimeout(5_000);
+  await pauseAtNextStatusSettle("offline");
+  await page.waitForTimeout(5_000); // longer than the exact 3.75s cadence
   expect(counts.status, "no poll fires while offline").toBe(baseline);
 
   await setOnline(true);
