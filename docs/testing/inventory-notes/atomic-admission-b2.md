@@ -209,3 +209,70 @@ conflicts, no production-module change):
   -q` -> 38 passed.
 - `scripts/check-ratchet-provenance.py` -> exit 1, residual exactly the two
   campaign-level items above; nothing else moved.
+
+## CI-repair round 3 (L1893, head 7a0669c7c — hosted-CI log reconciliation)
+
+This round reconciled the merge-queue report ("test: failure") against the
+hosted CI runs themselves (read-only API), then re-proved every gate at this
+head instead of trusting earlier claims:
+
+- **Hosted run 37257451206 (`CI` at `0d663a48e`): the `test` job failed on
+  exactly three tests** — `tests/test_check_reachability.py::
+  test_baseline_matches_the_tree`, `tests/test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries` (assert 1 == 0)
+  and `::test_the_baseline_is_exactly_the_unreachable_set`. The logged diff
+  (baseline index 144: `maistro.testing` vs `maistro.tasks.admission_codec`,
+  plus a missing `maistro_rsi.rate_pacer` on the tree side) matches the
+  round-1 ledger state before the develop sync; at this head the committed
+  baseline is sorted, contains both new modules and `maistro_rsi.rate_pacer`,
+  and the two files pass (38 passed, locally re-run). Hosted corroboration:
+  the same workflow is green at `b9ddf1b75` (run 37265891410).
+- **Hosted run 37265891390 (`quality` at `b9ddf1b75`): the only failed step
+  was the radon CC ratchet** (job step list queried via API) — the cause the
+  round-2 section records, fixed by the `7a0669c7c` refactor.
+- **Hosted run 37265891391 (`Vulture Ratchet` / `exact-debt-ledger` at
+  `b9ddf1b75`): failed at its first step, `check-ratchet-provenance.py`** —
+  the two-merge residual below.
+
+Re-proven at this head (all locally executed; mypy under CI's
+`uv sync --locked --all-extras` environment):
+
+- The full Quality-gate ratchet battery in CI's exact form, all exit 0:
+  `check-radon-baseline.py` (143 -> 143 C-or-worse vs base `94781cf6b`),
+  `check-release-consistency.py`, `check-doc-links.py`,
+  `check_enumerations.py`, `check-workspace-retirement.py`,
+  `check-route-permissions.py`, `check-principal-identity.py`,
+  `check-frontend-typed-client.py`, `check-credential-authority.py`,
+  `check-wiring-reads.py`, `check-agent-store-writes.py`,
+  `check-contract-markers.py`, `check-convergence-matrix.py`,
+  `check-reachability-dispositions.py`, `check-security-inventory.py`,
+  `check-image-inventory.py`, `check-image-pins.py`,
+  `check-workflow-inventory.py`, `check-backlog-consistency.py`,
+  `check-promotion-surface.py`, `check_direct_effects.py`,
+  `check-reachability.py` (1267 modules, 174 unreachable),
+  `check-shipped-surface-truth.py`.
+- `uv run mypy --strict packages/maistro-core/src` -> Success, 708 files,
+  after `--all-extras` sync (the 5 `maistro_bootstrap` import-not-found
+  errors in the `--extra dev` env are environmental, not code).
+- Full changed-package suite: `uv run pytest packages/maistro-core/tests -q`
+  -> 12540 passed, 888 skipped, 1 xfailed (skips are PG-DSN-gated; not
+  counted as proof).
+- Focused: both admission files -> 139 passed (delta +66 unchanged).
+- Vulture at CI's exact invocation (`packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) -> exit 0, 1338 reviewed identities -> 1338
+  banked. **No unbanked identity exists, so the CI-repair round's vulture
+  ledger amendment is moot: nothing is genuinely dead and no row is removed.**
+
+**Two-merge landing path proven by experiment (scratch worktrees, no tree or
+branch mutation of this lane):** a probe commit `3235229f5fed` (develop
+`94781cf6b` + only the two `reachability` grants for
+`maistro.runs.admission_identity` and `maistro.tasks.admission_codec` in
+`quality/ratchet-authorizations.json`, owner/issue/reason fields complete)
+merged with this head (probe merge `083a660e2eff`) makes
+`RATCHET_BASE_REV=3235229f5fed uv run python scripts/check-ratchet-provenance.py`
+exit 0 — every ratchet OK including "174 unreachable module(s), no
+candidate-approved expansion" and "174 unreachable module(s) have
+dispositions; new debt uses prior reachability authorization". The grant
+payload and landing order are therefore proven, not guessed: the campaign
+lands the two grants on the integration base first, this branch syncs it,
+and the exact-debt-ledger goes green without any further change here.
