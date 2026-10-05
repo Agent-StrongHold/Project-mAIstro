@@ -498,3 +498,68 @@ develop `30144ad0f` — the only remaining action is campaign-level (land the
 two-entry `reachability` grant on develop, then merge origin/develop here);
 no in-branch edit can or may change this. All five driver checks and all
 other verified CI steps are green at the assigned head.
+
+## CI-repair round 8 (L1893, head 30af7539b — develop merged; `test:` signal root-caused to the L41 stack sibling)
+
+The round-8 brief named one CI gate failure — `test: failure` — plus the
+standing vulture-ledger amendment authorization. Actions taken, in order:
+
+1. **develop sync.** Merged `origin/develop` (`30144ad0f`, re-fetched and
+   unchanged this round) into the assigned head `ed320bb2f` — clean, no
+   conflicts, merge head `30af7539b`. Quality-ledger survival audited as a
+   multiset diff against BOTH parents: zero rows lost in either direction;
+   the only divergence is develop's stale informational `_generated_from`
+   string ("1053 production modules") which the merge replaces with ours —
+   no gate parses that scalar.
+2. **`test: failure` root-caused from hosted-CI evidence** (read-only `gh
+   run view 37310075429`): the red `test` check in this lane's snapshot is
+   PR **#1325** (branch `auto-41`, the L41 integration this leaf stages on),
+   job `111763032927`, completed 2026-10-05T12:52:10Z. Failing step 18:
+   "Generated API types match the backend's OpenAPI document (#1048)" —
+   `git diff --exit-code -- types.gen.ts` after `dump-hive-openapi.py` +
+   `gen:api`. Every Python pytest step of that run (steps 7-15, including
+   rsi/evolve) passed. Our own PR #1945 head `703543372` shows `test`
+   SUCCESS in the same snapshot; its only red is `exact-debt-ledger`. The
+   stale generated types live on the sibling branch and are that owner's
+   fix under COORDINATION_REQUIRED — not reachable from this worktree.
+3. **The whole `test` job reproduced green at the merged head** (first time
+   covering its non-Python steps too): bootstrap 232p/6s; maistro-core
+   12670p/888s/1xf; server 493p/9s; canvas 464p/75s; turing+backend 300p;
+   design 540p/1s; rsi+evolve 2078p/6s; root `tests/` 4519p/107s with
+   `RATCHET_BASE_REV=30144ad0f` (merge-group semantics, incl. the five
+   `real_repository_ratchet_base` self-check files — 156p); cross-suite
+   one-process step 8480p/114s; full 15-suite inventory ok (26493 node
+   IDs); `check-test-duplicates.py` ok; hive-conductor frontend `npm ci` /
+   `lint` (0 errors) / `build` ok and the #1048 gen:api step **exit 0**
+   (types regenerate byte-identical here); canvas frontend ci / `test:ci`
+   / lint / build / `npm audit --audit-level=high` (0 vulns) ok. The three
+   evolve Docker-sandbox tests that fail with this box's dead mirrored
+   `/var/run/docker.sock` pass against the live rootless daemon
+   (`DOCKER_HOST=unix:///run/user/1000/docker.sock`): 46/46 in the two
+   benchmark files — i.e. environmental, not code.
+4. **exact-debt-ledger at the merged head.** `check-vulture-baseline.py
+   packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+   (CI-exact argv) exit 0, 1338 = 1338 — nothing unbanked, so the round's
+   authorized `vulture-baseline.json` amendment is moot again (nothing to
+   bank, nothing eliminated). `check-shipped-surface-truth.py` exit 0.
+   `check-reachability-provenance.py` and
+   `check-reachability-dispositions-provenance.py` each exit 1 — the two
+   admission identities are NEW vs trusted base `30144ad0f` and not
+   previously authorized — aggregating to `check-ratchet-provenance.py`
+   exit 1. develop re-audited by exact module name: 0 occurrences of
+   `admission_identity`/`admission_codec` in its ratchet-authorizations,
+   reachability-baseline and reachability-dispositions (its 5 substring
+   `admission` hits are unrelated, pre-existing identities). Two-merge
+   blocker unchanged; round-7's probe `26ff3378c` remains the proven
+   unblock.
+5. **Static gates.** `ruff check .` clean, `ruff format --check .` 2955
+   files clean, `mypy` on both changed modules "Success: no issues found
+   in 2 source files", focused pytest 139 passed / 0 skipped.
+
+Round-8 conclusion: every `test`-job behavior is green at this branch's
+merged head, including the exact step that is red on the stack sibling; the
+only reds are (a) the develop-side reachability grant (two-merge rule —
+campaign-level, re-confirmed absent at `30144ad0f`) and (b) the sibling
+`auto-41` branch's stale `types.gen.ts`. Neither is reachable from this
+worktree; no code, test or `quality/` change is warranted or authorized,
+and none was made beyond this note.
