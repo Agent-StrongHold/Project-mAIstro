@@ -163,3 +163,77 @@ Executed this round (all exit 0 unless stated):
   (`['activate', 'deactivate', 'invoke']`); the repaired drivers raise
   `ScopeMismatch` before any hook code runs, which is what
   `test_lifecycle_drivers_enforce_hook_scope_pairing` pins.
+
+## Validation battery (develop-sync round, heads `3a621dabf` + `3fb6bc516` +
+## `9a6a274a1` + `72d561d30`, branch `auto-950`)
+
+Two develop syncs landed in this round: `cd5618223` (the preserved conflict
+round — one path, `docs/adr/ADR-INDEX.md`, resolved by keeping both
+`ADR-100126-5445` and `ADR-100126-8c2d` in index order) and `c560d4cca`
+(fetched after the first merge committed; six further commits touched this
+lane's exact surface, so the branch was synced again). The second merge had
+three conflicts, each resolved by union rather than side-taking:
+
+- `packages/maistro-core/src/maistro/extensions/__init__.py` (add/add):
+  develop's M9-B1 registry persistence (#939/#952) and this lane's M9-A2 SDK
+  (#950) both created the package. Resolved to one module docstring covering
+  both halves, both import sets, and the sorted `__all__` union (RUF022).
+- `packages/maistro-core/src/_vulture_whitelist.py`: both sides' whitelist
+  entries and their posture comments kept — M9-A2 context/lifecycle seams and
+  M9-B1 store/CLI seams are disjoint.
+- `scripts/verify-wheel-imports.py`: the single `"maistro.extensions"`
+  CORE_PUBLIC_SURFACE entry kept once, with both halves' rationale merged
+  into one comment.
+
+Executed at `72d561d30` (all exit 0 unless stated):
+
+- `uv sync --locked --extra dev`; `uv run ruff check .` (one RUF022 on the
+  merged `__all__`, fixed) and `ruff format --check .` (2989 files).
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py` → exit 0: all ten ratchets flat, base
+  `c560d4cca`, citation-status 0 exceptions, enumerations 1 tolerated,
+  contract-markers 371=371, promotion-surface/reachability/adr-status-language/
+  shell-execution/lifecycle unchanged.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0; 1342 reviewed
+  identities → 1342 findings (develop's registry work added four banked
+  identities); `unclassified: 0` with the union whitelist.
+- `uv run pytest packages/maistro-core/tests -q --ignore=tests/integration`
+  → **12854 passed, 938 skipped, 1 xfailed** (develop's registry/CLI suite
+  rides in the same directory; both halves' tests pass together).
+- `uv run pytest tests/test_check_extension_imports.py
+  tests/test_check_reference_extension.py tests/test_check_citation_status.py
+  tests/test_verify_wheel_imports.py tests/test_check_enumerations.py
+  tests/test_ratchet_base_rev_policy.py packages/maistro-registry/tests -q`
+  → 360 passed, 1 skipped.
+- `uv run pytest packages/maistro-core/tests/extensions
+  packages/maistro-registry/tests -q` → 79 passed.
+- `uv run mypy --strict packages/maistro-core/src/maistro/extensions` →
+  Success (10 files, SDK + registry halves).
+- `scripts/check-extension-imports.py` → ok (1 extension package, public SDK
+  only); `scripts/check-reference-extension.py` → ok (isolation fixture:
+  reference-greeter builds and tests in a clean environment).
+- `scripts/check_enumerations.py`, `check-citation-status.py`,
+  `check-adr-index.py`, `check-shipped-surface-truth.py`,
+  `check-route-permissions.py`, `check-reachability.py`,
+  `check-reachability-dispositions.py`, `check-contract-markers.py`,
+  `check-radon-baseline.py`, `check-security-inventory.py`,
+  `check-wiring-reads.py`, `check-agent-store-writes.py`,
+  `check-doc-links.py`, `check-backlog-consistency.py` → all exit 0.
+- `scripts/check-suite-inventory.py` → ok: 15 suites match the recorded
+  inventory (the merged baseline carries both halves' extensions tests; this
+  note's +30 delta is unchanged — no test added, removed, or renamed).
+- `scripts/check-ac-state.py --run-tests --ratchet --mandate 1885c8eda`
+  against a live migrated PG (alembic head): first run failed with
+  `design_coverage 42.8433 falls below the floor of 42.8609` — the six
+  develop commits' newly accepted, not-yet-proven decisions raise the taken
+  denominator to 163 (88 at zero), diluting the ratio. The lane's own
+  evidence is unchanged (mandate: every declared criterion proven). Re-banked
+  this lane's own note (`quality/ac-state-notes/auto-950.json`) from the
+  current measurement per the gate's `--bank` path:
+  design_coverage 42.8609 → **43.2114**, reproduced on two consecutive runs
+  (the 42.8433 reading was a first-run-after-upgrade outlier that did not
+  reproduce); every ratcheted counter flat; a pure floor raise vs the
+  previous value and vs the inherited base fold; no inherited note edited.
+  Residual risk: the floor is a single-machine measurement; a fresh-CI
+  container drawing the low outlier would need the same re-bank.
