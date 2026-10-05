@@ -703,6 +703,70 @@ def _validated_export(
     return resolved
 
 
+def _validate_harvest_clone_url(clone_url: str) -> None:
+    """Gate the harvest `--clone-url` through the #404 source policy.
+
+    The exact `validate_clone_source` verdict the MCP git tool applies — what
+    this fetches becomes the content of the PRs the harvest opens. A refusal
+    exits 2 before any work tree exists: like `_test_argv`, a bad invocation
+    is a launcher error, not a harvest outcome.
+    """
+    from maistro.tools.git.server import ClonePolicyError, validate_clone_source
+
+    try:
+        validate_clone_source(clone_url)
+    except ClonePolicyError as exc:
+        print(f"error: --clone-url rejected by clone policy: {exc.message}", file=sys.stderr)
+        print(f"       {exc.suggested_action}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _run_harvest_clone(clone_url: str, clone_base: str, repo: str) -> None:
+    """Materialize the harvest base from a resolved digest, never a ref.
+
+    The cloud harvest turns this checkout into agent-authored PRs, so it must
+    not have a second unpinned source path. Resolve the approved base ref
+    first under the same transport pins as the shared git tool, then fetch
+    that immutable digest into a fresh repository and create the expected
+    local branch from the verified object. No checkout follows a mutable
+    remote ref.
+    """
+    import subprocess
+
+    pins = ["-c", "protocol.git.allow=never", "-c", "http.followRedirects=false"]
+    resolved = subprocess.run(
+        [
+            "git",
+            *pins,
+            "ls-remote",
+            "--exit-code",
+            "--",
+            clone_url,
+            f"refs/heads/{clone_base}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    digest = resolved.stdout.split()[0] if resolved.returncode == 0 and resolved.stdout else ""
+    from maistro.tools.git.server import _COMMIT_DIGEST_RE
+
+    if not _COMMIT_DIGEST_RE.match(digest):
+        raise RuntimeError(
+            f"could not resolve harvest base {clone_base!r} to a full commit digest; "
+            "refusing unpinned candidate source"
+        )
+    subprocess.run(["git", "init", "-q", repo], check=True)
+    # Preserve the old clone command's LF work-tree behavior before the first
+    # checkout; a host-global autocrlf setting must not rewrite harvested
+    # patch context.
+    subprocess.run(["git", "-C", repo, "config", "core.autocrlf", "false"], check=True)
+    subprocess.run(["git", "-C", repo, "remote", "add", "origin", clone_url], check=True)
+    subprocess.run(["git", *pins, "-C", repo, "fetch", "--depth=1", "origin", digest], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "--detach", "FETCH_HEAD"], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "-B", clone_base, digest], check=True)
+
+
 def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup + am/skip/PR loop
     import subprocess
     import tempfile
@@ -796,6 +860,10 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
         # Cloud path: wire GH_TOKEN into git FIRST (so a private clone + the push
         # both authenticate), then clone fresh with an LF working tree (no CRLF
         # host artifacts). The credential lives only in this trusted step.
+        # The URL is gated through the #404 source policy before git spawns,
+        # and the clone itself carries the executable transport pins — the
+        # same verdict and enforcement as the MCP git tool (#404).
+        _validate_harvest_clone_url(args.clone_url)
         if args.push:
             subprocess.run(["gh", "auth", "setup-git"], check=True)
         repo = tempfile.mkdtemp(prefix="rsi-harvest-")
@@ -803,20 +871,7 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
         # would put every commit between them into the PR. Same default as the
         # target, for the same reason.
         clone_base = base or pr_base
-        subprocess.run(
-            [
-                "git",
-                "-c",
-                "core.autocrlf=false",
-                "clone",
-                "--single-branch",
-                "--branch",
-                clone_base,
-                args.clone_url,
-                repo,
-            ],
-            check=True,
-        )
+        _run_harvest_clone(args.clone_url, clone_base, repo)
         base = clone_base
     else:
         repo = str(Path(args.repo_dir).resolve())
