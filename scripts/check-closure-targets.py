@@ -263,29 +263,28 @@ def problems_for(target: Target, claims: set[int] | None = None) -> list[str]:
         )
 
     criteria = acceptance_criteria(target.body)
-    if criteria:
-        unticked = [c for c in criteria if not c.ticked]
-        if unticked:
+    unticked = [c for c in criteria if not c.ticked]
+    if unticked:
+        found.append(
+            f"#{target.number}'s acceptance record shows "
+            f"{len(unticked)} of {len(criteria)} registered criteria unproven "
+            f"(unticked: {', '.join(f'AC-{c.index}' for c in unticked[:5])}"
+            f"{' ...' if len(unticked) > 5 else ''}); a locally green diff "
+            "does not discharge them"
+        )
+    registered = {c.index for c in criteria}
+    for claimed in sorted(claims or set()):
+        if claimed not in registered:
             found.append(
-                f"#{target.number}'s acceptance record shows "
-                f"{len(unticked)} of {len(criteria)} registered criteria unproven "
-                f"(unticked: {', '.join(f'AC-{c.index}' for c in unticked[:5])}"
-                f"{' ...' if len(unticked) > 5 else ''}); a locally green diff "
-                "does not discharge them"
+                f"the PR claims AC-{claimed} of #{target.number}, which the "
+                f"acceptance record does not register ({len(criteria)} "
+                "criteria exist); the unsupported claim is rejected"
             )
-        for claimed in sorted(claims or set()):
-            registered = {c.index for c in criteria}
-            if claimed not in registered:
-                found.append(
-                    f"the PR claims AC-{claimed} of #{target.number}, which the "
-                    f"acceptance record does not register ({len(criteria)} "
-                    "criteria exist); the unsupported claim is rejected"
-                )
-            elif claimed in {c.index for c in unticked}:
-                found.append(
-                    f"the PR claims AC-{claimed} of #{target.number}, but the "
-                    "acceptance record does not show it proven"
-                )
+        elif claimed in {c.index for c in unticked}:
+            found.append(
+                f"the PR claims AC-{claimed} of #{target.number}, but the "
+                "acceptance record does not show it proven"
+            )
     return found
 
 

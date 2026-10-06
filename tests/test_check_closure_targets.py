@@ -356,6 +356,17 @@ def test_ticking_every_box_makes_the_leaf_closeable_again(gate, issues, tmp_path
     assert "acceptance records are met" in capsys.readouterr().out
 
 
+def test_claim_against_an_empty_record_is_still_rejected(gate, issues, tmp_path, capsys) -> None:
+    # The claims check must not hinge on the record being non-empty: a closing
+    # line that names AC-1 on an issue whose body registers nothing claims an
+    # id no record supports, and the gate must reject it by name.
+    issues[10] = ("Route table drops trailing slash", "open", "just prose", False)
+    assert _run(gate, tmp_path, "Closes #10 AC-1") == 1
+    assert "claims AC-1 of #10, which the acceptance record does not register" in (
+        capsys.readouterr().out
+    )
+
+
 def test_issue_without_a_record_is_not_held_by_the_acceptance_rule(gate, issues, tmp_path) -> None:
     issues[10] = ("Route table drops trailing slash", "open", "just prose", False)
     assert _run(gate, tmp_path, "Closes #10") == 0
