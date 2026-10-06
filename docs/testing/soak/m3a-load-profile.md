@@ -159,11 +159,16 @@ configuration before a representative promotion profile is considered complete.
 Historical RSS/descriptor series measured only the `uv` wrapper and cannot prove
 application health. The repaired sampler measures the process group, not detached
 workers or container cgroups; summed RSS may double-count shared pages. Snapshot
-membership can change during sampling. No new soak has validated this repair.
-Driver loop lag is not application event-loop lag. Process-exit/rejoin and terminal
-Run counts alone do not prove physical-work fencing/recovery. Required worker
-counts, pool saturation, lease reclaim and long-window leak/error observations
-remain unverified. These are blockers, not acceptance waivers.
+membership can change during sampling. Rounds 26–30 have since exercised the
+repaired sampler in full soaks (round 30: 212/212 rows `complete: true`, zero
+unmeasured or unclassified PIDs, pg probe p95 3.25 ms, driver loop lag max
+2.03 ms), so the sampler repair itself is soak-validated; the scope caveats in
+this paragraph remain, and long-window leak/error observations still require the
+≥ 4 h promotion window. Driver loop lag is not application event-loop lag.
+Process-exit/rejoin and terminal Run counts alone do not prove physical-work
+fencing/recovery. Required worker counts, pool saturation, lease reclaim and
+long-window leak/error observations remain unverified at promotion grade. These
+are blockers, not acceptance waivers.
 
 ## Round-2 amendments (repair lane, 2520eeb7369c → )
 

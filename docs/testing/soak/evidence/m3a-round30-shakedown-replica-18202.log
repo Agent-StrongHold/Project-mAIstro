@@ -1,0 +1,18 @@
+INFO:     Started server process [2431122]
+INFO:     Waiting for application startup.
+Projects are stored in PostgreSQL but the BacklogItem history store has no PostgreSQL backend yet, so BacklogItem history is in-process and lost on restart (#101).
+No SQLite database pool is available, so campaign records are in-process and operator controls (pin-next, pause, exclude, human-only) are lost on restart. Run with a sqlite database URL so campaigns persist (#103).
+No SQLite database pool is available, so the workspace observation log is in-process and working memory is lost on restart. Run with a sqlite database URL so log-as-context persists (#301).
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:18202 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [2431122]
+INFO:     Started server process [2447474]
+INFO:     Waiting for application startup.
+Projects are stored in PostgreSQL but the BacklogItem history store has no PostgreSQL backend yet, so BacklogItem history is in-process and lost on restart (#101).
+No SQLite database pool is available, so campaign records are in-process and operator controls (pin-next, pause, exclude, human-only) are lost on restart. Run with a sqlite database URL so campaigns persist (#103).
+No SQLite database pool is available, so the workspace observation log is in-process and working memory is lost on restart. Run with a sqlite database URL so log-as-context persists (#301).
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:18202 (Press CTRL+C to quit)
