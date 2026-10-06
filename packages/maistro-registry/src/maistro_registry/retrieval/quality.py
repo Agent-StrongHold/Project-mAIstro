@@ -174,9 +174,19 @@ def _evaluate_case(
     golden_query: GoldenQuery,
     k: int,
 ) -> QueryEvaluation:
-    """One golden query through `search_fn(query, k)`, fully measured."""
+    """One golden query through `search_fn(query, k)`, fully measured.
+
+    The ranking is reduced to first occurrences of each doc id before any
+    metric sees it. Duplicate identity is a real, addressable corpus
+    state (two files claiming one registry id), so a searcher may return
+    the same id twice — but the golden set is keyed by doc id, and one
+    relevant document found twice is still one document found. Without
+    the reduction, recall and nDCG count the second occurrence as a new
+    hit and report shares above 1.0, which is not a measurement of
+    anything.
+    """
     response = search_fn(golden_query.query, k)
-    ranked_ids = tuple(result.doc_id for result in response.results)
+    ranked_ids = tuple(dict.fromkeys(result.doc_id for result in response.results))
     relevant_ids = frozenset(
         doc for doc, grade in golden_query.relevant.items() if grade >= GRADE_RELEVANT
     )

@@ -168,6 +168,87 @@ def test_evaluate_aggregates_and_reports_misses() -> None:
     assert as_dict["cases"][1]["matched_relevant"] == []
 
 
+def test_duplicate_identity_keeps_metrics_within_bounds(
+    tmp_path: Path,
+    make_doc: object,
+) -> None:
+    """Duplicate identity may surface twice; the metrics may not count twice.
+
+    Two files claiming one registry id are a real corpus state (issue #26's
+    duplicate-identity case) and search must return both — but the golden
+    set is keyed by doc id, so evaluation must reduce the ranking to first
+    occurrences before measuring. This guards the measurement layer: on
+    exactly the corpus where a searcher returns the same id at two ranks,
+    every per-query metric stays within its theoretical maximum and the
+    audit trail names the id once, not once per claimant.
+    """
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-001-queueing.md",
+        "ADR-001",
+        "Queueing discipline",
+        body="Tasks queue for durable work.",
+    )
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-001-queueing-v2.md",
+        "ADR-001",
+        "Queueing discipline, revisited",
+        body="Tasks queue for durable work, with leases.",
+    )
+    # Unrelated filler so the claimants' shared vocabulary sits below the
+    # df-share ceiling and actually reaches the ranking (same shape as the
+    # corpus-side duplicate-identity test).
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-002-vault.md",
+        "ADR-002",
+        "Vault of secrets",
+        body="Vault prose about keys.",
+    )
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-003-render.md",
+        "ADR-003",
+        "Rendering pipeline",
+        body="Pixels are composited per frame.",
+    )
+    make_doc(
+        tmp_path,
+        "docs/adr",
+        "ADR-004-network.md",
+        "ADR-004",
+        "Networking substrate",
+        body="Peers exchange envelopes.",
+    )
+
+    searcher = RetrievalSearcher(build_index(load_corpus(tmp_path)))
+    golden = [GoldenQuery(query="durable queue", relevant={"ADR-001": 3})]
+    report = evaluate(lambda q, k: searcher.search(q, k=k), golden, k=10)
+
+    case = report.cases[0]
+    # The searcher really did return the duplicate — the guard is not
+    # passing vacuously on a ranking that only ever had one claimant.
+    assert case.ranked_ids.count("ADR-001") == 1, (
+        "search returned both claimants; evaluation must reduce to one"
+    )
+    assert len(set(case.ranked_ids)) == len(case.ranked_ids), (
+        "measured ranking is per doc id: first occurrences only"
+    )
+    assert case.recall <= 1.0, f"recall {case.recall} exceeds its maximum"
+    assert case.mrr <= 1.0, f"mrr {case.mrr} exceeds its maximum"
+    assert case.ndcg <= 1.0, f"ndcg {case.ndcg} exceeds its maximum"
+    # Fully relevant corpus hit: bounds hold and the audit trail counts
+    # the id once. recall 1.0, not 2.0; ndcg 1.0, not >1.
+    assert case.recall == 1.0
+    assert case.ndcg == 1.0
+    assert case.matched_relevant == ("ADR-001",)
+
+
 def test_shipped_golden_set_is_wellformed() -> None:
     golden = load_golden(GOLDEN_FILE)
     assert len(golden) >= 20
