@@ -248,3 +248,66 @@ with CI's exact sequence (`uv pip freeze --exclude-editable`,
 `pip-audit --strict --format=json`, `scripts/pip_audit_gate.py`): only the
 triaged `ecdsa PYSEC-2026-1325` remains, gate exit 0. No other test-count
 change; +62 is the suite truth.
+
+## Repair round 6: full develop-tip sync + gate battery re-proof (this note carries the round)
+
+`origin/develop` had advanced to df00785bb (M9-G1 #969 effective authority,
+M9-H2 #2016 ext-harness, M9-C1 #1997, M1-B1 #1325) while the worktree held an
+uncommitted merge started against the older tip bc40b6cda. Both merges are now
+committed: 70d0e31ae (bc40b6cda; `_vulture_whitelist.py` resolved as the sorted
+union of the #966 pack rows and develop's #969 `EffectiveAuthority` rows) and
+33457d599 (df00785bb; `extensions/__init__.py` `__all__` resolved as the
+alphabetical union of `pack_extension_view` and develop's `parse_*` entries).
+`quality/` is row-identical to origin/develop except the new per-branch bank
+below; no ledger rows were lost (`git diff --numstat origin/develop -- quality/`).
+
+No behavior or test change: the extensions suite collects 594 — the 476 at
+the round-5 head plus the 118 tests the develop-tip sync brings (45 of them
+develop's `test_effective_authority.py`); no collected test was removed
+(594 ≥ the 476 pre-sync head and the 471 at origin/develop, and the synced
+diff deletes no test file), so the +deltas above remain the suite truth and
+`inventory-delta` is unchanged.
+Gate battery re-proven on the synced head 33457d599 with CI's exact arguments
+(quality.yml / quality.yml coverage-gate):
+
+- `ruff check .` + `ruff format --check .` clean; `mypy --strict
+  packages/maistro-core/src` clean (747 files); pyright 21 = baseline 21
+  (`check-pyright-report.py` exit 0); xenon 0 blocks / 0 modules / 0 average
+  (≤ 145 / empty ledger / 0); `check-radon-baseline.py` 138 → 138 and
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` 1332 → 1332, both against base df00785bb, zero
+  new/regressed/stale; all nine doc/version/provenance gates
+  (bump-version, release-consistency, doc-links, enumerations,
+  route-permissions, principal-identity, workspace-retirement, IFEval/BFCL
+  vendored provenance) and all eleven interrogate floors exit 0.
+- Coverage gate halves, run as the workflow's own producers: publish-set
+  floor (core/canvas/evolve/rsi/bootstrap suites under `coverage run
+  --branch`, CI env) measures **92% ≥ 87** — a lower bound of CI's number,
+  which adds the archive/Postgres producers (coverage data is monotone);
+  `check-diff-coverage.py coverage.xml --base origin/develop` exit 0 (4
+  changed files measured incl. `scripts/extension_lifecycle_proof.py` via the
+  scripts producer; tests exempt; `_vulture_whitelist.py` declared unmeasured).
+- Acceptance-state ratchet + mandate vs origin/develop on a real pg18 with
+  pgvector (`check-ac-state.py --run-tests --ratchet --mandate origin/develop`,
+  DSN as the workflow's): criteria mandate 0 added / 0 unproven, chain
+  mandate clean, and — after develop's df00785bb raised design coverage to
+  43.5577% over the folded 36.5259% — the ordinary "unbanked improvement"
+  the ratchet names was cleared with `--bank`, writing this branch's own
+  `quality/ac-state-notes/auto-966.json` (design_coverage 36.5259 → 43.5577,
+  adrs_without_implementing_spec 33 → 31; tightens floors, banks no debt,
+  authorizes nothing). Re-run after banking: 10 debt counters exactly on
+  ceilings, 1 progress counter exactly on its floor, folded from 32 notes.
+- Suite inventory: all 17 suites match the recorded inventory (28141 unique
+  node IDs, 0 duplicates).
+
+Two local-environment notes, neither a branch defect: (1) the root-suite
+self-check `test_every_quality_json_state_surface_is_classified_once` fails on
+a dev machine whenever `scripts/check-ac-state.py` has generated the
+git-ignored `quality/ac-state.json` (the checker rglobs the directory without
+excluding ignored files); CI's fresh checkout never sees it — proven by moving
+the artifact aside, after which the test passes. (2) Three
+docker-sandbox tests in `packages/maistro-evolve/tests/benchmarks/`
+(test_sandbox_exec, test_swebench ×2) fail with docker-daemon connection
+errors on this host; the daemon is unavailable in this environment and the
+branch diff does not touch maistro-evolve. Both are outside the two gates
+this round repairs.
