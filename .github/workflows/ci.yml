@@ -356,7 +356,7 @@ jobs:
       # The canonical Goal store (#1572). Same contract as the Workspace step
       # above: the conformance suite's PostgreSQL leg must not silently skip
       # in the one job that owns a real server, and the canonical_goals tables
-      # (migration 054) must answer on every supported major.
+      # (migration 059) must answer on every supported major.
       - name: Goal stores conform across memory, SQLite and PostgreSQL
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"

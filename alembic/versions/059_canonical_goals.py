@@ -19,7 +19,7 @@ No execution state lives here: the canonical `Goal -> Graph -> Run ->
 NodeRun -> Attempt` spine keeps its own primitives, and a Run carries its
 Goal binding as payload provenance written once at admission (#1572).
 
-Numbered 058, continuing the integrated develop head. The installed base
+Numbered 059, continuing develop's integrated 058 learning-validation provenance revision. The installed base
 already carries two merged migration identities this store must not reuse:
 develop received the user-model tables as ``056_user_model_facts`` (#1951's
 merge ``c560d4c``) and planner stability as ``057_run_store_planner_stability``
@@ -31,13 +31,14 @@ to ``057``, planner to ``058``) and the 2026-10-06 clarification on #1572
 forbids it: merged identities keep their meaning and ancestry, and a new
 revision appends after the integrated develop head under a centrally
 coordinated, unused id. So this store restores develop's ``056``/``057``
-byte-for-byte and appends here as ``058`` — one linear head, no duplicate
-revision ids, and an installed base that upgrades forward without a stamp
+byte-for-byte, leaves develop's ``058`` learning-validation provenance in
+place, and appends here as ``059`` — one linear head, no duplicate revision
+ids, and an installed base that upgrades forward without a stamp
 edit (`tests/migrations/test_goal_installed_base_upgrade.py` drives exactly
 that walk against real ``c560d4c``/``4675101`` databases).
 
-Revision ID: 058
-Revises: 057 (057_run_store_planner_stability)
+Revision ID: 059
+Revises: 058 (058_learning_validation_provenance)
 Create Date: 2026-10-03
 """
 
@@ -45,8 +46,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "058"
-down_revision = "057"
+revision = "059"
+down_revision = "058"
 branch_labels = None
 depends_on = None
 

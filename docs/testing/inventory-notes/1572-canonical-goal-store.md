@@ -73,7 +73,7 @@ must carry both sides of their kind.
 
 Finally, the existing
 `workspaces/test_sqlite_alembic_schema_parity.py` (+0 node IDs) now walks
-the three Goal tables too: SQLite's own DDL and migration 054 are held to
+the three Goal tables too: SQLite's own DDL and migration 059 are held to
 one dialect-neutral spec (column sets, nullability, integer/timestamptz/doc
 types, keys, the self-referential lineage cascade, and the project index),
 so the two descriptions of the same tables cannot drift the way the scope
@@ -343,3 +343,15 @@ chain tip the store's migration sits at:
   regression (user-model at `056`, no Goal tables), true snapshot-tree
   upgrades from `c560d4c` and `4675101` with no stamp edit, and the durable
   Goal composition driven on the upgraded schema.
+
+## Round 7 — develop sync (b6c50ef99) migration collision and shared-DB repair
+
+- Develop's accepted `058_learning_validation_provenance` claimed the id this
+  branch had used for Goals. The Goal migration is therefore now
+  `059_canonical_goals` (`down_revision = "058"`), preserving develop's
+  installed 058 identity and retaining one linear head. The installed-base
+  graph test asserts both edges and filenames.
+- The installed-base fixture now restores the shared `tests/migrations`
+  PostgreSQL database to `alembic upgrade head` after each isolated
+  downgrade/drop walk. This prevents later migration modules in quality's
+  single `pytest tests/migrations` process from inheriting an empty database.

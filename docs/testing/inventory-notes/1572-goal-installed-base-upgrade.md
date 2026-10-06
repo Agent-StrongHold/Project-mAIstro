@@ -19,9 +19,10 @@ No existing test was removed or renamed.
 
 - `test_merged_ids_keep_their_meaning_and_goals_appends_after_them` — the
   revision graph is the installed-base contract: `056` parents on the quota
-  door, `057` on `056`, the Goal store takes a fresh `058` off the integrated
-  head, single head `058`, and the filenames carry the merged identities. No
-  server needed; fails on the renamed tree at two assertions.
+  door, `057` on `056`, develop's learning-validation provenance takes `058`,
+  and the Goal store takes a fresh `059` off that integrated head (single head
+  `059`). The filenames carry the merged identities. No server needed; fails
+  on the renamed tree at two assertions.
 - `test_restored_files_are_byte_identical_to_the_merged_snapshots` — pins the
   restored `056`/`057` files byte-for-byte against `git show c560d4c:…` /
   `git show 4675101:…`; skips when a shallow checkout lacks those commits.
@@ -43,9 +44,9 @@ No existing test was removed or renamed.
   the immutable `goal_id`/`goal_revision` provenance back.
 
 The PostgreSQL legs need `MAISTRO_TEST_DATABASE_URL` and skip without it
-(deliberately, like the rest of `tests/migrations/`); CI's `postgres (pg17)`
-and `postgres (pg18)` jobs own migrated servers, so both supported majors
-exercise the upgrade walk. Verified locally against a live PostgreSQL: the
-snapshot upgrades stamp `056`/`057`, the candidate forward upgrade stamps
-`058` with user-model rows, the Run row, planner artifacts and Goal tables
-all present, and the composition read-back green on the upgraded schema.
+(deliberately, like the rest of `tests/migrations/`). Quality's PostgreSQL
+coverage job runs the full `tests/migrations` directory on pg17; the ci.yml
+pg17/pg18 matrix runs the chain module only. The fixture restores `upgrade
+head` after each isolated installed-base walk so subsequent modules do not
+inherit an empty shared database. The prior pg18 local evidence is historical;
+this revision must be revalidated after the migration moved to `059`.

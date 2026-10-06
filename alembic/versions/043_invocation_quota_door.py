@@ -17,7 +17,8 @@ merged identities this chain had collided with: #1047's user-model tables
 (``057_run_store_planner_stability``) keep the ids develop already shipped
 (#1951's ``c560d4c``, #1914's ``4675101``), so installed databases stamped
 ``056`` or ``057`` keep their meaning, and the Goal DDL appends after the
-integrated head as `058_canonical_goals`.
+integrated 058 learning-validation provenance revision as
+`059_canonical_goals`.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:

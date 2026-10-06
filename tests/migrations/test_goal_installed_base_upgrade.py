@@ -11,7 +11,9 @@ would then treat the Goal DDL as already applied and silently skip it, leaving
 a deployment whose Goals vanish on every restart. The 2026-10-06
 clarification on #1572 forbids exactly that: merged identities keep their
 meaning and ancestry, and the new revision appends after the integrated
-develop head under an unused id (``058_canonical_goals``).
+develop head under an unused id. After the next develop sync claimed ``058``
+for learning-validation provenance, the Goal revision moved forward to
+``059_canonical_goals`` rather than reusing that installed identity.
 
 So this suite proves the three things the clarification asks for:
 
@@ -56,9 +58,9 @@ PLANNER_MERGE = "4675101647e629d290e0fece29694e43883e1395"
 USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
-#: The single linear head after the repair: develop's ``057`` plus the Goal
-#: store's fresh ``058``.
-GOAL_REVISION = "058"
+#: The single linear head after the repair: develop's ``058`` learning
+#: validation provenance plus the Goal store's fresh ``059``.
+GOAL_REVISION = "059"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -182,6 +184,12 @@ def empty_database():
     for (name,) in _query("select tablename from pg_tables where schemaname = 'public'"):
         quoted = str(name).replace('"', '""')
         _execute(f'drop table if exists "{quoted}" cascade')
+    # This module is collected inside the shared tests/migrations PostgreSQL
+    # run. Its installed-base scenarios must leave that shared database at the
+    # same migrated head the following modules expect, not empty after their
+    # isolated downgrade walk.
+    restored = _alembic("upgrade", "head")
+    assert restored.returncode == 0, restored.stderr
 
 
 def _insert_installed_base_rows(prefix: str) -> None:
@@ -391,13 +399,15 @@ class TestTheMergedIdentities:
         revisions = {rev.revision: rev for rev in script_directory.walk_revisions()}
         assert revisions["056"].down_revision == "043_invocation_quota_door"
         assert revisions["057"].down_revision == "056"
-        assert revisions[GOAL_REVISION].down_revision == "057"
+        assert revisions["058"].down_revision == "057"
+        assert revisions[GOAL_REVISION].down_revision == "058"
         assert script_directory.get_heads() == [GOAL_REVISION]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
         assert (VERSIONS / "056_user_model_facts.py").is_file()
         assert (VERSIONS / "057_run_store_planner_stability.py").is_file()
-        assert (VERSIONS / "058_canonical_goals.py").is_file()
+        assert (VERSIONS / "058_learning_validation_provenance.py").is_file()
+        assert (VERSIONS / "059_canonical_goals.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.

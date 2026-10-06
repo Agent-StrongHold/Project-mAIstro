@@ -88,10 +88,11 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # those trees migrated would have treated the Goal DDL as already
     # applied and skipped it. Per the #1572 clarification (2026-10-06) the
     # merged identities are restored byte-for-byte, and the Goal store
-    # appends after the integrated develop head as `058_canonical_goals` —
-    # the single linear head is now `058`, with `056`/`057` meaning exactly
-    # what the installed base already knows they mean.
-    walked = {item.revision for item in directory.walk_revisions("base", "058")}
+    # appends after develop's integrated `058_learning_validation_provenance`
+    # as `059_canonical_goals` — the single linear head is now `059`, with
+    # `056`/`057` meaning exactly what the installed base already knows they
+    # mean.
+    walked = {item.revision for item in directory.walk_revisions("base", "059")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -110,7 +111,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "056" in walked
     assert "057" in walked
     assert "058" in walked
-    assert directory.get_heads() == ["058"]
+    assert "059" in walked
+    assert directory.get_heads() == ["059"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

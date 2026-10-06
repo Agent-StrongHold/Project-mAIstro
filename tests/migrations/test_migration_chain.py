@@ -93,7 +93,7 @@ EXPECTED_TABLES = frozenset(
         # score names the Run, NodeRun and Attempt it scored, so it is
         # execution evidence, not a sidecar lifecycle.
         "canonical_run_eval_scores",
-        # The canonical Goal store (#1572, 058): identity + Subgoal lineage,
+        # The canonical Goal store (#1572, 059): identity + Subgoal lineage,
         # the append-only desired-state revision chain, and the recorded,
         # attributed transition ledger. Desired state and accountability, not
         # execution state — they are NOT children of canonical_runs.
