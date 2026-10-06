@@ -11,7 +11,9 @@ inside the governed boundary instead of being replaced by it:
 - an unpinned request naming a model keeps the explicit alias (today's
   gateway behavior);
 - an unpinned request with no alias is selected by ``CostAwareRouter``,
-  including its budget-constrained fallback chain.
+  including its budget-constrained fallback chain — scoped to the
+  Binding's declared adapter when one is recorded in ``config``, so a
+  credential-scoped Binding can never route to a model it cannot pay for.
 
 Token usage is read from the gateway response and cost is computed from
 registry metadata, then attached to the persisted canonical Invocation.
@@ -178,11 +180,25 @@ def resolve_model_chat_provider(
         selection = binding.provider_name or alias
         if selection:
             return await _resolve_named_model(registry, adapters, binding, selection)
+        # An adapter-backed Binding records its adapter in config. Its
+        # credential_refs authorize only that adapter's reference, so the
+        # router must not select a built-in or other-adapter model here: it
+        # would resolve fine and then fail at credential acquisition. Scope
+        # selection to the declared adapter's models; no eligible model is
+        # Unavailable, never a silently widened re-scope.
+        adapter_id = binding.config.get("adapter_id")
         try:
-            selected = await router.select(
-                task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
-                budget,
-            )
+            if adapter_id and adapters is not None:
+                selected = await router.select(
+                    task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
+                    budget,
+                    scope=frozenset(adapters.model_names(str(adapter_id))),
+                )
+            else:
+                selected = await router.select(
+                    task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
+                    budget,
+                )
         except NoEligibleModelError as exc:
             return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=f"no eligible model: {exc}")
         routed = (

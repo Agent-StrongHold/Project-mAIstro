@@ -7,13 +7,13 @@ status: Accepted
 created: 2026-10-05
 accepted: 2026-10-05
 substrate:
-  - maistro-engine#ADR-079
   - maistro-engine#ADR-081226-6b46
   - maistro-engine#ADR-082326-5386
   - maistro-engine#ADR-038
 implements: []
 related:
   - maistro-engine#ADR-101
+  - maistro-engine#ADR-079
 supersedes: []
 superseded-by: []
 blocks: []
@@ -128,6 +128,7 @@ capability, failed health probe) fails loudly instead of degrading.
 
 ## References
 
-- ADR-079 (model registry/routing), ADR-081226-6b46 (canonical effect path),
+- ADR-079 (model registry/routing; Proposed — historical companion, listed
+  under `related`), ADR-081226-6b46 (canonical effect path),
   ADR-082326-5386 (outbound HTTP policy seam), ADR-038 (fallback/circuits)
 - Issue #961 (M9-E1), Epic #942 (M9-E)

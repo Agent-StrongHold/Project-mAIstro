@@ -27,13 +27,16 @@ from __future__ import annotations
 
 from typing import Any
 
+import aiosqlite
 import httpx
 import pytest
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import SqliteBindingStore
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     binding_scope_policy,
+    new_effect_context,
     new_in_memory_effect_context,
 )
 from maistro.capabilities.invocation import (
@@ -832,6 +835,58 @@ async def test_router_selection_resolves_adapter_provider_for_unpinned_calls() -
     assert resolved.name == "acme-mini"
 
 
+async def test_unpinned_adapter_binding_stays_within_its_declared_adapter() -> None:
+    """A faster foreign model must not win a credential-scoped Binding.
+
+    The binding authorizes only acme's credential reference, so routing to
+    the gateway or another adapter would resolve fine and then fail at
+    credential acquisition (CredentialScopeError). Selection is scoped to
+    the adapter recorded on the Binding.
+    """
+
+    store = InMemoryProviderRegistry(
+        models=[
+            ModelMetadata(
+                name="gateway-model",
+                provider="litellm",
+                cost_per_1k_input=1.0,
+                cost_per_1k_output=1.0,
+                latency_p50_ms=100,
+            )
+        ]
+    )
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()), store)
+    faster = ReferenceChatAdapter(
+        _spec(
+            adapter_id="rival.models",
+            display_name="Rival inference",
+            credential_provider="rival",
+            credential_ref="rival-primary",
+            models=(
+                {
+                    "name": "rival-mini",
+                    "cost_per_1k_input": 0.1,
+                    "cost_per_1k_output": 0.4,
+                    "latency_p50_ms": 60,
+                    "tier": "fast",
+                },
+            ),
+        )
+    )
+    await register_adapter_models(catalog, store, faster)
+    resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
+
+    resolved = await resolver(_binding(provider_name="", config={"adapter_id": "acme.models"}))
+    assert isinstance(resolved, AdapterGatewayProvider)
+    assert resolved.name == "acme-mini"
+
+    # An adapter with no eligible models is Unavailable, never re-scoped
+    # wider to the models some other adapter could serve.
+    empty = await resolver(_binding(provider_name="", config={"adapter_id": "absent.models"}))
+    assert isinstance(empty, Unavailable)
+    assert "no eligible model" in empty.reason
+
+
 async def test_pinned_gateway_model_still_resolves_gateway_provider() -> None:
     store = InMemoryProviderRegistry(
         models=[
@@ -871,6 +926,46 @@ def test_configure_and_release_default_catalog() -> None:
     assert default_adapter_catalog() is catalog
 
     release_default_adapter_catalog(catalog)
+    assert default_adapter_catalog() is None
+    reset_default_adapter_catalog()
+
+
+def test_nested_catalog_close_restores_outer() -> None:
+    """Closing an inner container hands the default back to the outer one.
+
+    With the former single slot, B's configure overwrote A and B's release
+    cleared the slot entirely, so egress clients built while A was still
+    open silently lost adapter resolution (#1362, same rule as the
+    effect-context stack).
+    """
+
+    reset_default_adapter_catalog()
+    outer = ProviderAdapterCatalog()
+    inner = ProviderAdapterCatalog()
+    configure_default_adapter_catalog(outer)
+    configure_default_adapter_catalog(inner)
+    assert default_adapter_catalog() is inner
+
+    release_default_adapter_catalog(inner)
+    assert default_adapter_catalog() is outer
+
+    release_default_adapter_catalog(outer)
+    assert default_adapter_catalog() is None
+    reset_default_adapter_catalog()
+
+
+def test_republish_moves_catalog_to_top_without_duplicate() -> None:
+    reset_default_adapter_catalog()
+    outer = ProviderAdapterCatalog()
+    inner = ProviderAdapterCatalog()
+    configure_default_adapter_catalog(outer)
+    configure_default_adapter_catalog(inner)
+    configure_default_adapter_catalog(outer)
+    assert default_adapter_catalog() is outer
+
+    release_default_adapter_catalog(outer)
+    assert default_adapter_catalog() is inner
+    release_default_adapter_catalog(inner)
     assert default_adapter_catalog() is None
     reset_default_adapter_catalog()
 
@@ -1037,6 +1132,84 @@ class _ConfigShim:
         self.workspace_id = workspace_id
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("adapter_id", ""),
+        ("binding_id", "   "),
+        ("project_id", ""),
+    ],
+)
+def test_adapter_config_refuses_blank_identity_or_scope_fields(field: str, value: str) -> None:
+    """Adapter wiring identity/scope fields are non-empty by validation."""
+
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="non-empty"):
+        _adapter_config(**{field: value})
+
+
+@pytest.mark.parametrize("blank", ["", "  "])
+def test_adapter_config_refuses_a_blank_credential_reference(blank: str) -> None:
+    """A whitespace credential reference would authorize nothing: refuse."""
+
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="credential refs cannot be empty"):
+        _adapter_config(credential_refs=("acme-primary", blank))
+
+
+async def test_container_close_withdraws_its_published_adapter_catalog() -> None:
+    """The container that published the process-default catalog withdraws it.
+
+    Close must release exactly this container's catalog (identity-checked), so
+    a shutdown does not leave adapter destinations pointing at a torn-down
+    composition. create_container always publishes its catalog — even an
+    unconfigured deployment's empty one — so this exercises the real wiring,
+    not a hand-built dataclass.
+    """
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    reset_default_adapter_catalog()
+    assert default_adapter_catalog() is None
+    container = await create_container(AgentConfig(router_api_key="test-key"))
+    assert default_adapter_catalog() is container.provider_adapter_catalog
+
+    try:
+        await container.aclose()
+        assert container.closed
+        assert default_adapter_catalog() is None
+    finally:
+        reset_default_adapter_catalog()  # isolation for other suites
+
+
+async def test_container_close_without_a_catalog_leaves_the_default_alone() -> None:
+    """A container holding no catalog must not withdraw anyone else's.
+
+    The False arc of the close-time guard: releasing the process default is
+    conditional on this container actually publishing one, so a catalog-less
+    shutdown leaves the process default exactly as it was.
+    """
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    reset_default_adapter_catalog()
+    container = await create_container(AgentConfig(router_api_key="test-key"))
+    published = container.provider_adapter_catalog
+    assert published is not None
+    # Simulate the not-published composition: this container holds no catalog.
+    container.provider_adapter_catalog = None
+    try:
+        await container.aclose()
+        assert container.closed
+        assert default_adapter_catalog() is published  # close withdrew nothing
+    finally:
+        reset_default_adapter_catalog()  # isolation for other suites
+
+
 async def test_bootstrap_loads_binding_and_provisions_credential_via_authority() -> None:
     catalog, store = await _catalog_with(AcmeAdapter(_spec()))
     effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
@@ -1062,6 +1235,28 @@ async def test_bootstrap_loads_binding_and_provisions_credential_via_authority()
     assert record.api_key == "op-supplied-secret"
     # the Binding itself carries no secret material
     assert "op-supplied-secret" not in binding.model_dump_json()
+
+
+async def test_bootstrap_restarts_idempotently_against_a_durable_binding_store() -> None:
+    """A second boot over SQLite reuses the stored created_at, so the store's
+    immutability check sees an identical definition instead of rejecting the
+    re-registration as a changed one."""
+
+    catalog, registry = await _catalog_with(AcmeAdapter(_spec()))
+    async with aiosqlite.connect(":memory:") as conn:
+        store = SqliteBindingStore(conn)
+        await store.ensure_schema()
+        effects = new_effect_context(binding_store=store, policy_evaluator=binding_scope_policy)
+
+        first = await bootstrap_provider_adapters(
+            _ConfigShim([_adapter_config()]), effects, registry, catalog
+        )
+        second = await bootstrap_provider_adapters(
+            _ConfigShim([_adapter_config()]), effects, registry, catalog
+        )
+
+        assert second[0].created_at == first[0].created_at
+        assert await store.get("binding-acme") == first[0]
 
 
 async def test_bootstrap_pinned_model_resolves_after_registration() -> None:

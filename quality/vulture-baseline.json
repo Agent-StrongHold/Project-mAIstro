@@ -1085,8 +1085,6 @@
         "packages/maistro-core/src/maistro/protocols/tracing.py::unused variable 'exc_tb'",
         "packages/maistro-core/src/maistro/protocols/tracing.py::unused variable 'exc_type'",
         "packages/maistro-core/src/maistro/protocols/tracing.py::unused variable 'exc_val'",
-        "packages/maistro-core/src/maistro/providers/registry.py::unused method 'mark_available'",
-        "packages/maistro-core/src/maistro/providers/registry.py::unused method 'mark_unavailable'",
         "packages/maistro-core/src/maistro/quota/ambient.py::unused class 'CerebrasHeaderParser'",
         "packages/maistro-core/src/maistro/quota/ambient.py::unused class 'GeminiHeaderParser'",
         "packages/maistro-core/src/maistro/quota/ambient.py::unused class 'GroqHeaderParser'",

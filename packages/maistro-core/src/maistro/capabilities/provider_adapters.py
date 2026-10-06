@@ -53,7 +53,7 @@ import logging
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -846,7 +846,9 @@ def reference_adapter_spec() -> ProviderAdapterSpec:
     return ProviderAdapterSpec(
         adapter_id=REFERENCE_ADAPTER_ID,
         display_name="MAIstro reference chat adapter",
-        base_url="http://litellm:4000",
+        # Compose-internal service hostname; TLS terminates at the gateway and
+        # operators override base_url per deployment via the adapter catalog.
+        base_url="http://litellm:4000",  # devskim: ignore DS137138 until 2027-12-31
         credential_provider="litellm",
         credential_ref="litellm-gateway",
         capabilities=AdapterCapabilities(tools=True, structured_output=True),
@@ -864,35 +866,52 @@ def reference_adapter_spec() -> ProviderAdapterSpec:
 
 # --- Process-default composition (mirrors capabilities.effect_context) -------
 
-
-_default_catalog: ProviderAdapterCatalog | None = None
+#: Published Container catalogs, outermost first. A list rather than one slot
+#: because containers nest: closing an inner container must hand the default
+#: back to the still-open outer one, not drop the process to "no adapters" —
+#: the same out-of-order-close rule the effect-context stack follows (#1362).
+_published_catalogs: list[ProviderAdapterCatalog] = []
 
 
 def configure_default_adapter_catalog(catalog: ProviderAdapterCatalog) -> None:
     """Publish the Container-composed catalog as the process default.
 
-    ``None`` stays the default until a container wires one, so a deployment
-    with no adapter configuration behaves exactly like the pre-SDK gateway
-    path.
+    An empty list stays the default until a container wires one, so a
+    deployment with no adapter configuration behaves exactly like the
+    pre-SDK gateway path. Re-publishing a catalog already on the stack moves
+    it to the top rather than recording it twice, so a later release cannot
+    leave a stale duplicate behind it.
     """
 
-    global _default_catalog
-    _default_catalog = catalog
+    _drop_published_catalog(catalog)
+    _published_catalogs.append(catalog)
 
 
 def release_default_adapter_catalog(catalog: ProviderAdapterCatalog) -> None:
-    """Withdraw one container's catalog at shutdown, identity-checked."""
+    """Withdraw one container's catalog at shutdown, identity-checked.
 
-    global _default_catalog
-    if _default_catalog is catalog:
-        _default_catalog = None
+    Removes this catalog wherever it sits, so containers that close out of
+    order still leave the remaining catalogs in their original relative
+    order: the default becomes the innermost still-open container's catalog
+    — not "none" — unless this was the only one.
+    """
+
+    _drop_published_catalog(catalog)
+
+
+def _drop_published_catalog(catalog: ProviderAdapterCatalog) -> None:
+    """Remove a catalog by identity; equality would match a distinct twin."""
+
+    for index, published in enumerate(_published_catalogs):
+        if published is catalog:
+            del _published_catalogs[index]
+            return
 
 
 def reset_default_adapter_catalog() -> None:
     """Clear the process default (tests and isolated compositions)."""
 
-    global _default_catalog
-    _default_catalog = None
+    _published_catalogs.clear()
 
 
 def default_adapter_catalog() -> ProviderAdapterCatalog | None:
@@ -903,7 +922,9 @@ def default_adapter_catalog() -> ProviderAdapterCatalog | None:
     what a model call may do.
     """
 
-    return _default_catalog
+    if _published_catalogs:
+        return _published_catalogs[-1]
+    return None
 
 
 # --- Operator bootstrap ------------------------------------------------------
@@ -959,6 +980,11 @@ async def bootstrap_provider_adapters(
     ``credential_refs`` override may only restate the adapter's own reference —
     there is no production surface that registers any other reference, so
     allowing one would authorize a Binding that can never acquire a credential.
+    An unpinned entry (blank ``provider_name``) does not widen selection
+    either: resolution reads the Binding's recorded ``adapter_id`` and
+    constrains router selection to that adapter's declared models, so the
+    cost-aware router can never route unpinned traffic to a built-in or
+    other-adapter model the Binding's credential reference does not cover.
     """
 
     # Health probes feed registry availability so the cost-aware router
@@ -976,18 +1002,24 @@ async def bootstrap_provider_adapters(
         # registry already knows.
         await _entry_registry_rows(catalog, registry, declared, adapter)
         await _probe_entry_health(catalog, declared)
-        binding = Binding.model_validate(
-            {
-                "binding_id": declared.binding_id,
-                "workspace_id": workspace_id,
-                "project_id": declared.project_id,
-                "capability": MODEL_CHAT_CAPABILITY,
-                "provider_name": declared.provider_name,
-                "disabled": declared.disabled,
-                "credential_refs": credential_refs,
-                "config": {"adapter_id": declared.adapter_id},
-            }
-        )
+        # Durable stores may already hold this Binding from a prior process:
+        # preserve its created_at so an unchanged restart is idempotent
+        # instead of tripping the store's immutability check (same seam as
+        # bootstrap_model_bindings).
+        existing = await effects.bindings.get(declared.binding_id)
+        values: dict[str, Any] = {
+            "binding_id": declared.binding_id,
+            "workspace_id": workspace_id,
+            "project_id": declared.project_id,
+            "capability": MODEL_CHAT_CAPABILITY,
+            "provider_name": declared.provider_name,
+            "disabled": declared.disabled,
+            "credential_refs": credential_refs,
+            "config": {"adapter_id": declared.adapter_id},
+        }
+        if existing is not None:
+            values["created_at"] = existing.created_at
+        binding = Binding.model_validate(values)
         loaded.append(await effects.bindings.put(binding))
     return tuple(loaded)
 
