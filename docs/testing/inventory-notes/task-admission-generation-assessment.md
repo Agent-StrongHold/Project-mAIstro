@@ -1155,3 +1155,74 @@ no source or ledger edits this round, evidence only:
   fields (classification input, never executed, ships in no wheel) — the same
   contract-ships-first posture as the CampaignSelector/#116 entries above
   them; no new finding identity was banked because of them (1342 -> 1342).
+
+## CI-repair round 15 (2026-10-05, head 781296d2640e): supply-chain CVEs fixed in uv.lock; every remaining red re-derived as the sanctioned two-module blocker
+
+Re-validation at the round head after it absorbed the M6 / M4-B / M9-B2 /
+M9-D1 WIP merges (merge base with `origin/develop` moved to 56332162cf63,
+which is itself grantless and baseline-less for both admission modules:
+`git show 56332162cf63:quality/reachability-baseline.json` has zero
+`admission` rows and no authorization names either identity):
+
+- **Supply chain / security repaired — the round's one in-leaf-legal fix.**
+  Reproduced the pip-audit gate locally on the exact CI recipe
+  (`uv pip freeze --exclude-editable`, `pip-audit --strict --format=json`,
+  `scripts/pip_audit_gate.py`): two advisories outside the triaged allowlist —
+  `multidict==6.7.1 CVE-2026-104874` (fix 6.9.1) and `werkzeug==3.1.8
+  CVE-2026-102598` (fix 3.1.9), the exact remediation the gate itself
+  prescribes ("Fix by upgrading the dependency"). Fixed in `uv.lock` only
+  (`uv lock --upgrade-package multidict --upgrade-package werkzeug`; diff
+  touches exactly those two package blocks, no direct pins exist in any
+  pyproject or the hive-conductor requirements). Post-fix: `uv sync --locked
+  --extra dev` resolves clean, re-audit gives `pip-audit OK (1 known, all
+  triaged in ALLOWED)` (the pre-existing ecdsa disposition) plus `direct-
+  dependency usage OK` — gate exit 0. This greens the `Supply chain
+  (pip-audit)` and `security` jobs' verdict step; both jobs share the one
+  gate script.
+- **Full root suite re-derived at this head** (`RATCHET_BASE_REV=origin/develop
+  REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest tests/ --ignore=tests/tools/registry
+  -q --timeout=60`): **4529 passed, 122 skipped, exactly 3 failed**, and the
+  three are the known gate-identity assertions naming only
+  `maistro.runs.admission_identity` / `maistro.tasks.admission_generation`
+  (`test_check_reachability.py::test_baseline_matches_the_tree`, both
+  `test_reachability_baseline_identity.py` tests). Same sanctioned delta as
+  rounds 11–14; nothing else in the suite reds at this head, including
+  `test_check_convergence_matrix.py` (60/60).
+- **`exact-debt-ledger` re-derived with CI's exact argv**: vulture step exit 0
+  at 1336 reviewed identities -> 1336 findings against the new merge base —
+  **the prescribed vulture amendment is empty (15th consecutive round)**;
+  `check-ratchet-provenance.py` exit 1 with every sub-ratchet OK except
+  reachability (same two NEW-unreachable-unauthorized identities);
+  `check-shipped-surface-truth.py` exit 0.
+- **Quality-gate components re-derived**: `check-radon-baseline.py` exit 0
+  (138 -> 138 against the new base), `check-promotion-surface.py` exit 0,
+  `check-reachability-dispositions.py` exit 0, `check-reachability.py` exit 1
+  on exactly the two leaf modules (the sanctioned red).
+- **Leaf diff-coverage re-measured** with the coverage job's own producer
+  recipe on the leaf suites (`coverage run --branch --source=packages/
+  maistro-core/src/maistro` over the two focused files):
+  `admission_generation.py` 100% lines / 100% branches;
+  `admission_identity.py` 97% lines / ~92% branches — both above the
+  per-file 90% / 80% floors. The coverage job's remaining CI red is its
+  root-suite producer running the same `tests/` tree as the `test` job
+  (step-level confirmation on record from the b4d3ae948 round), i.e. the
+  same two-module delta, not a coverage defect.
+- **Mutation proof spot-re-derived at this head**: the "lease before
+  binding" reorder (TAKEOVER row hoisted above REPLAYED, legacy guard
+  inlined) fails 8 focused tests including
+  `test_v2_binding_wins_over_lease_and_acknowledgement` and
+  `test_bound_unacknowledged_admission_replays_after_lease_expiry`; module
+  restored byte-exact after (sha256 re-verified). Full four-mutation battery
+  on record from rounds 13–14 against byte-identical source.
+- **Battery unchanged and green**: focused suites 131 + 112 passed; ruff
+  check + format repo-wide clean; mypy clean on the classifier; scoped and
+  full `check-suite-inventory.py` exit 0 (15 suites, 27197 identities).
+
+The blocker statement is unchanged: no in-leaf edit can green the
+reachability/provenance step (candidate-side ledger rows cannot authorize
+themselves — the two-merge rule), and this leaf's scope forbids grants,
+baseline rows, dispositions, fake callers, and production wiring. Retirement
+paths remain exactly the two named in round 13: base-landed authorizations
+followed by the banking rebase, or the #1845 integration consumer that wires
+both modules and prunes the entries on arrival. Until one lands, the stack
+stays unmerged by design.
