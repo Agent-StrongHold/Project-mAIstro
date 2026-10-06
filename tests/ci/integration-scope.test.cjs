@@ -203,7 +203,17 @@ test('empty scope returns without querying while malformed budgets still fail cl
 test('workflow preserves read-only permissions, exact PR/merge-group SHA, and polling budget', () => {
   assert.deepEqual(workflow.permissions, { checks: 'read', contents: 'read' });
   assert.equal(step.env.CANDIDATE_SHA, '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}');
-  assert.equal(job['timeout-minutes'], 90);
-  assert.equal(job.env.EVIDENCE_WAIT_ATTEMPTS, '170');
+  // #41 run 36303867276: a 60-minute window expired while specialized
+  // producers were queued 38-55 minutes. The window was widened to 120
+  // minutes of evidence (240 x 30s) inside a 125-minute job timeout; the
+  // timeout must still cover attempts x interval plus checkout/setup slack.
+  assert.equal(job['timeout-minutes'], 125);
+  assert.equal(job.env.EVIDENCE_WAIT_ATTEMPTS, '240');
+  assert.ok(
+    job['timeout-minutes']
+      > (Number(job.env.EVIDENCE_WAIT_ATTEMPTS)
+        * Number(job.env.EVIDENCE_WAIT_INTERVAL_MS)) / 60000,
+    'job timeout must exceed the evidence window it bounds',
+  );
   assert.equal(job.env.EVIDENCE_WAIT_INTERVAL_MS, '30000');
 });

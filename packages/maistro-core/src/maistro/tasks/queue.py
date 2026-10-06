@@ -15,9 +15,9 @@ already commit.
 
 When an idempotency store is wired (#1176), ``submit()`` first claims stable
 admission identity for the request — supplied or payload-derived key, scoped
-to the principal and the effective Workspace — so a retry reconciles to the
-original admission instead of minting a second Run. The claim store is the
-admission contract; the queue stays the receipt's home. See
+to the principal and the effective Workspace and Project — so a retry
+reconciles to the original admission instead of minting a second Run. The
+claim store is the admission contract; the queue stays the receipt's home. See
 :mod:`maistro.tasks.idempotency` for the window, scope and concurrency
 semantics this thin integration relies on.
 """
@@ -58,6 +58,7 @@ from maistro.tasks.idempotency import (
     PENDING_POLL,
     TASK_SUBMIT_ACTION,
     AdmissionRecord,
+    Ambiguous,
     Claimed,
     IdempotencyPendingTimeout,
     Replayed,
@@ -519,24 +520,36 @@ class TaskQueue:
             actor_kind=actor_kind,
         )
 
-    async def _scope_workspace(self, workspace_id: str | None) -> str:
-        """The Workspace a submission will actually land in, for key scoping.
+    async def _scope_binding(self, workspace_id: str | None) -> tuple[str, str]:
+        """Return the effective Workspace and Project for key scoping.
 
-        The scope must name the *effective* Workspace, not the spelled one: a
-        retry that arrives without the Workspace header has to meet the claim
-        its first call made under the default. Routers resolve None to the
-        deployment default, bound admitters know their one Workspace, and an
-        admitter that knows neither gets the submission's own spelling.
+        The scope must name the binding a Run will actually use, not only the
+        header the caller spelled. Routers resolve both values before the
+        claim is written, so two Project bindings in one Workspace cannot
+        accidentally reconcile one another's Runs.
         """
         admitter = self._admitter
+        scope = getattr(admitter, "admission_scope", None)
+        if scope is not None:
+            binding = await scope(workspace_id)
+            if len(binding) != 2:
+                raise RuntimeError("admission_scope must return Workspace and Project")
+            return str(binding[0]).strip(), str(binding[1]).strip()
         route = getattr(admitter, "admitter_for", None)
         if route is not None:
             bound = await route(workspace_id)
-            return str(bound.workspace_id).strip()
+            return (
+                str(getattr(bound, "workspace_id", workspace_id or "")).strip(),
+                str(getattr(bound, "project_id", "")).strip(),
+            )
         fixed = getattr(admitter, "workspace_id", None)
-        if isinstance(fixed, str) and fixed.strip():
-            return fixed.strip()
-        return (workspace_id or "").strip()
+        workspace = (
+            fixed.strip()
+            if isinstance(fixed, str) and fixed.strip()
+            else (workspace_id or "").strip()
+        )
+        project = getattr(admitter, "project_id", "")
+        return workspace, project.strip() if isinstance(project, str) else ""
 
     async def _submit_idempotent(
         self,
@@ -551,12 +564,15 @@ class TaskQueue:
     ) -> TaskResponse:
         """Submit through the claim store: reconcile, or admit exactly once.
 
-        The ordering is the contract: claim, admit, complete — and release on
-        any admission failure, which is what keeps a failure before Run
-        creation retryable rather than pinning the key to an outcome that never
-        happened. A replay returns the recorded receipt; a pending twin is
-        waited out, with the claim lease's takeover as the backstop for a twin
-        that died mid-admission.
+        The ordering is the contract: claim, begin, admit, complete — and
+        release on any admission failure, which is what keeps a failure before
+        Run creation retryable rather than pinning the key to an outcome that
+        never happened. ``begin`` announces the receipt id before the Run is
+        minted, so a claimant that dies between minting and recording leaves
+        the one handle discovery needs: a retry resolves the minted Run by its
+        provenance instead of minting a second one. A replay returns the
+        recorded receipt; a pending twin is waited out, with the claim lease's
+        takeover as the backstop for a twin that died mid-admission.
         """
         store = self._idempotency
         if store is None:  # pragma: no cover - guarded by the only caller
@@ -564,18 +580,20 @@ class TaskQueue:
         owner = user_id or request.user_id or ""
         fingerprint = request_fingerprint(request)
         textual = key if key is not None else f"{DERIVED_KEY_PREFIX}{fingerprint}"
+        effective_workspace, _ = await self._scope_binding(workspace_id)
         scope_key = admission_scope_key(
             principal=owner,
-            workspace_id=await self._scope_workspace(workspace_id),
+            workspace_id=effective_workspace,
             action=TASK_SUBMIT_ACTION,
             key=textual,
         )
-        # The request as admitted: the owner filled in, so a replay after a
-        # restart reconstructs a receipt that names the same principal.
+        # The request as admitted: the owner, principal evidence and explicit
+        # key are persisted so restart replay reconstructs the same receipt.
         request_json = json.dumps(
             request.model_copy(
                 update={
                     "user_id": owner,
+                    "idempotency_key": key,
                     "service_principal_id": service_principal_id,
                     "delegation_id": delegation_id,
                     "actor_kind": actor_kind,
@@ -597,17 +615,17 @@ class TaskQueue:
                     explicit_key=key is not None,
                 )
                 return await self._replay_receipt(outcome)
-            # The claim store's get, not a remembered value: the atomic lane
-            # fences against the generation this caller actually won, and a
-            # row that vanished between the claim and here leaves nothing to
-            # protect — the legacy path below is the honest fallback.
             claim = await store.get(scope_key)
             if claim is None:
+                # Legacy admission fences its own ``begin`` with the token,
+                # so a concurrent deletion remains a visible retry instead
+                # of an unbound mint.
                 return await self._submit_legacy(
                     request,
                     key,
                     store=store,
                     scope_key=scope_key,
+                    claim_token=outcome.token,
                     user_id=user_id,
                     workspace_id=workspace_id,
                     service_principal_id=service_principal_id,
@@ -616,13 +634,12 @@ class TaskQueue:
                 )
             atomic = await self._atomic_admission(workspace_id)
             if atomic is None:
-                # No coordinator on this tier: the legacy two-commit path is
-                # the deployment's contract.
                 return await self._submit_legacy(
                     request,
                     key,
                     store=store,
                     scope_key=scope_key,
+                    claim_token=claim.claim_token,
                     user_id=user_id,
                     workspace_id=workspace_id,
                     service_principal_id=service_principal_id,
@@ -718,6 +735,7 @@ class TaskQueue:
         *,
         store: TaskIdempotencyStore,
         scope_key: str,
+        claim_token: str,
         user_id: str,
         workspace_id: str | None,
         service_principal_id: str | None,
@@ -731,9 +749,24 @@ class TaskQueue:
         lane exists to close, not a behavior this refactor may silently
         change for deployments that have not grown the coordinator.
         """
+        task_id = TaskResponse.new_id()
+        began = await store.begin(
+            scope_key,
+            token=claim_token,
+            task_id=task_id,
+            now=datetime.now(UTC),
+        )
+        if not began:
+            record = await self._await_outcome(store, scope_key)
+            if record is not None:
+                return await self._replay_receipt(record)
+            raise IdempotencyPendingTimeout(
+                "this idempotency claim was superseded before admission began"
+            )
         try:
-            task = await self._submit_once(
+            task = await self._mint(
                 request,
+                task_id=task_id,
                 user_id=user_id,
                 workspace_id=workspace_id,
                 service_principal_id=service_principal_id,
@@ -742,17 +775,16 @@ class TaskQueue:
                 idempotency_key=key,
             )
         except BaseException:
-            # Nothing was admitted. Releasing is what makes the caller's retry
-            # a fresh submission instead of a replay of a failure.
             with contextlib.suppress(Exception):
-                await store.release(scope_key)
+                await store.release(scope_key, token=claim_token)
             raise
-        # Best-effort like the receipt's own persistence: a failed write here
-        # is logged, not raised — the task exists, and failing the caller's
-        # 202 after admission would teach it to retry an admission that
-        # already happened.
         try:
-            await store.complete(scope_key, task_id=task.task_id, run_id=task.run_id)
+            recorded = await store.complete(
+                scope_key,
+                token=claim_token,
+                task_id=task.task_id,
+                run_id=task.run_id,
+            )
         except Exception as exc:
             await logger.awarning(
                 "task_admission_complete_failed",
@@ -760,7 +792,84 @@ class TaskQueue:
                 run_id=task.run_id,
                 error=str(exc),
             )
+            recorded = True
+        if not recorded:
+            return await self._reconcile_superseded(store, scope_key, task)
+        await self._enqueue(task)
         return task
+
+    async def _resolve_ambiguous(
+        self,
+        store: TaskIdempotencyStore,
+        scope_key: str,
+        record: AdmissionRecord,
+    ) -> AdmissionRecord | Claimed | None:
+        """Resolve a lease-lapsed begun claim before any takeover.
+
+        Legacy tiers announce a receipt before minting a Run. Discovery makes
+        a post-mint crash replay the original Run rather than take the key
+        over; a pre-mint crash may safely yield a fresh claim.
+        """
+        if record.task_id is None:  # pragma: no cover - ambiguous implies begun
+            return None
+        admitter = self._admitter
+        if admitter is None:
+            return await self._take_over_resolved(store, scope_key, record)
+        discover = getattr(admitter, "run_for_task_receipt", None)
+        if discover is None:
+            return None
+        run_id = await discover(record.task_id)
+        if run_id is None:
+            return await self._take_over_resolved(store, scope_key, record)
+        with contextlib.suppress(Exception):
+            await store.resolve_run(scope_key, task_id=record.task_id, run_id=run_id)
+        fresh = await store.get(scope_key)
+        return fresh if fresh is not None and fresh.admitted else None
+
+    async def _take_over_resolved(
+        self, store: TaskIdempotencyStore, scope_key: str, record: AdmissionRecord
+    ) -> Claimed | None:
+        return await store.take_over_resolved(
+            scope_key,
+            task_id=record.task_id or "",
+            fingerprint=record.fingerprint,
+            request=record.request,
+            now=datetime.now(UTC),
+            replay_window=DEFAULT_REPLAY_WINDOW,
+        )
+
+    async def _await_outcome(
+        self, store: TaskIdempotencyStore, scope_key: str
+    ) -> AdmissionRecord | None:
+        for _ in range(MAX_PENDING_POLLS):
+            record = await store.get(scope_key)
+            if record is not None and record.admitted:
+                return record
+            if record is None:
+                return None
+            await asyncio.sleep(PENDING_POLL)
+        return None
+
+    async def _reconcile_superseded(
+        self, store: TaskIdempotencyStore, scope_key: str, task: TaskResponse
+    ) -> TaskResponse:
+        """Cancel a late mint and return the generation that won the key."""
+        await logger.awarning(
+            "task_admission_superseded",
+            task_id=task.task_id,
+            run_id=task.run_id,
+            detail="claim lost past the pending lease mid-admission; compensating",
+        )
+        if self._admitter is not None and task.run_id:
+            with contextlib.suppress(Exception):
+                await self._admitter.record_transition(task.run_id, TaskStatus.CANCELLED)
+        record = await self._await_outcome(store, scope_key)
+        if record is None:
+            raise IdempotencyPendingTimeout(
+                "this submission's claim was superseded mid-admission and the winner "
+                "did not resolve within the bounded wait"
+            )
+        return await self._replay_receipt(record)
 
     async def _atomic_admission(
         self,
@@ -886,6 +995,10 @@ class TaskQueue:
                 return outcome.record
             if isinstance(outcome, Claimed):
                 return outcome
+            if isinstance(outcome, Ambiguous):
+                resolved = await self._resolve_ambiguous(store, scope_key, outcome.record)
+                if isinstance(resolved, (AdmissionRecord, Claimed)):
+                    return resolved
             waited += 1
             if waited > MAX_PENDING_POLLS:
                 raise IdempotencyPendingTimeout(
@@ -897,47 +1010,99 @@ class TaskQueue:
     async def _replay_receipt(self, record: AdmissionRecord) -> TaskResponse:
         """The original submission's answer, without minting anything.
 
-        The live receipt when this process still holds it; otherwise the durable
-        TaskRecord row, which carries the originating-principal evidence
-        (#1057) the claim's stored request does not; otherwise one reconstructed
-        from the claim's stored request. A reconstructed receipt says ``queued``
-        because that is what admission said — the Run behind it has moved on
-        without the queue, and current state is read from the task/Run
-        endpoints, not from a replay.
+        The live receipt when this process still holds it; otherwise the
+        durable TaskRecord row, which carries the originating-principal
+        evidence (#1057) the claim's stored request does not; otherwise one
+        reconstructed from the claim's stored request — which carries the
+        explicit key the caller supplied, so a replay after a restart answers
+        with the receipt the first call got, header key included. A
+        reconstructed receipt says ``queued`` because that is what admission
+        said — the Run behind it has moved on without the queue, and current
+        state is read from the task/Run endpoints, not from a replay. Only the
+        live receipt short-circuits: a receipt this process still holds in
+        ``_tasks`` is this process's queue's to dispatch, so answering it is
+        the end of the replay. The durable row and the reconstruction both
+        fall through to the resume gate below — a persisted row proves the
+        receipt was written, never that a live queue still holds the work.
+
+        Reconstructing is not quite enough: a claimant can die anywhere in the
+        window after the Run exists but before ``_enqueue`` lands the receipt
+        in a live queue — between the mint and the QUEUED transition, or
+        between ``complete`` and the enqueue. Every retry then reconciles, by
+        the contract's own terms, to a Run that no queue holds: answering
+        "queued" while the work sits stranded past every queue would be a
+        reconciliation that loses the work silently. This process is where the
+        reconciling retry landed and where a runner drains, so it is where the
+        stranded admission resumes: the Run is moved to QUEUED (a Run still
+        CREATED — death between mint and queue — becomes genuinely queued;
+        one already QUEUED confirms), and the receipt re-materializes into
+        this queue for execution. ``record_transition`` is the gate: it
+        succeeds exactly when the Run is CREATED or QUEUED, and refuses a Run
+        already RUNNING or terminal — somebody's live or finished work, which
+        re-enqueuing would duplicate. With no spine there is no Run state to
+        consult, so the receipt replays unqueued — the no-database tier's
+        documented ephemerality, and the one way this path could re-run work
+        that had already finished.
         """
+        task: TaskResponse | None = None
         if record.task_id is not None:
             live = self._tasks.get(record.task_id)
             if live is not None:
                 return live
-            persisted = await self._persisted_receipt(record.task_id)
-            if persisted is not None:
-                return persisted
-        stored = TaskCreate.model_validate_json(record.request)
-        if record.task_id is None:  # pragma: no cover - replayed claims are admitted
-            raise RuntimeError("replayed admission claim carries no receipt id")
-        return TaskResponse(
-            task_id=record.task_id,
-            status=TaskStatus.QUEUED,
-            description=stored.description,
-            workspace=stored.workspace,
-            user_id=stored.user_id or "",
-            service_principal_id=stored.service_principal_id,
-            delegation_id=stored.delegation_id,
-            actor_kind=stored.actor_kind,
-            task_type=stored.task_type,
-            agent_id=stored.agent_id,
-            capability=stored.capability,
-            program_context=stored.program_context,
-            tier=stored.tier or 2,
-            lane=stored.lane,
-            priority_tier=stored.priority_tier,
-            session_id=stored.session_id,
-            idempotency_key=stored.idempotency_key,
-            run_id=record.run_id,
-            phase="queued",
-            progress=TaskProgress(),
-            created_at=from_epoch_us(record.created_at_us),
+            # The durable row answers the receipt's identity questions, but it
+            # must not bypass the resume gate below. A row only proves the
+            # receipt was once persisted — `_persist` lands inside `_enqueue`, a
+            # process death (or a replica picking the replay up) can leave the
+            # row readable while no queue anywhere holds the work. Returning it
+            # here answered every later replay "queued" while the Run sat
+            # stranded past every queue, exactly the loss the resume path
+            # exists to stop.
+            task = await self._persisted_receipt(record.task_id)
+        if task is None:
+            stored = TaskCreate.model_validate_json(record.request)
+            if record.task_id is None:  # pragma: no cover - replayed claims are admitted
+                raise RuntimeError("replayed admission claim carries no receipt id")
+            task = TaskResponse(
+                task_id=record.task_id,
+                status=TaskStatus.QUEUED,
+                description=stored.description,
+                workspace=stored.workspace,
+                user_id=stored.user_id or "",
+                service_principal_id=stored.service_principal_id,
+                delegation_id=stored.delegation_id,
+                actor_kind=stored.actor_kind,
+                task_type=stored.task_type,
+                agent_id=stored.agent_id,
+                capability=stored.capability,
+                program_context=stored.program_context,
+                tier=stored.tier or 2,
+                lane=stored.lane,
+                priority_tier=stored.priority_tier,
+                session_id=stored.session_id,
+                idempotency_key=stored.idempotency_key,
+                run_id=record.run_id,
+                phase="queued",
+                progress=TaskProgress(),
+                created_at=from_epoch_us(record.created_at_us),
+            )
+        admitter = self._admitter
+        if admitter is None or task.run_id is None:
+            return task
+        # CREATED -> QUEUED here; refusal (already RUNNING, terminal, or the
+        # Run gone) means the work is not this queue's to re-materialize. A
+        # second replica racing the same replay enqueues too, and the Run
+        # spine — which refuses the second QUEUED -> RUNNING — keeps one
+        # executor: the loser's task fails visibly instead of duplicating.
+        if not await admitter.record_transition(task.run_id, TaskStatus.QUEUED):
+            return task
+        await logger.ainfo(
+            "task_admission_resumed",
+            task_id=task.task_id,
+            run_id=task.run_id,
+            detail="reconciled admission was stranded outside the queue; re-enqueued",
         )
+        await self._enqueue(task)
+        return task
 
     async def _persisted_receipt(self, task_id: str) -> TaskResponse | None:
         """The durable receipt row for a replayed admission, best-effort.
@@ -962,10 +1127,11 @@ class TaskQueue:
         except (TypeError, ValueError):
             return None
 
-    async def _submit_once(
+    async def _mint(
         self,
         request: TaskCreate,
         *,
+        task_id: str,
         user_id: str = "",
         workspace_id: str | None = None,
         service_principal_id: str | None = None,
@@ -973,12 +1139,14 @@ class TaskQueue:
         actor_kind: TaskActorKind = "user",
         idempotency_key: str | None = None,
     ) -> TaskResponse:
-        """Admit and queue one submission unconditionally — the pre-#1176 path.
+        """Build one receipt and mint its Run — everything durable admission
+        means, and nothing enqueue-shaped.
 
-        No claim is consulted or written here: idempotency wraps this method,
-        which stays the single place a receipt is born and a Run minted.
+        The idempotent path calls this between ``begin`` and ``complete`` so
+        the minted Run's provenance names an announced receipt (the discovery
+        handle), and so a claim lost mid-mint can be compensated before the
+        task ever reaches the queue.
         """
-        task_id = TaskResponse.new_id()
         created_at = datetime.now(UTC)
         task = _build_unpublished_task(
             request,
@@ -996,19 +1164,54 @@ class TaskQueue:
             # is the execution identity, and a task admitted without one would
             # be exactly the untracked second lifecycle #41 exists to remove.
             task.run_id = await self._admitter.admit(task, workspace_id=workspace_id)
+        return task
+
+    async def _enqueue(self, task: TaskResponse) -> None:
+        """Take a minted receipt into the live queue: store, persist, hand to
+        the runner, count it. The point this lands, the submission exists to
+        the rest of the process; everything before it can still be unwound by
+        the idempotency layer without a trace in the task list."""
         async with self._lock:
-            self._tasks[task_id] = task
+            self._tasks[task.task_id] = task
             self._maybe_prune()
         self._persist(task)
-        await self._pending.put(task_id)
+        await self._pending.put(task.task_id)
         tasks_submitted_total.inc()
         active_tasks.inc()
         await logger.ainfo(
             "task_queued",
-            task_id=task_id,
+            task_id=task.task_id,
             run_id=task.run_id,
-            description=request.description[:DESCRIPTION_LOG_PREVIEW_LEN],
+            description=task.description[:DESCRIPTION_LOG_PREVIEW_LEN],
         )
+
+    async def _submit_once(
+        self,
+        request: TaskCreate,
+        *,
+        user_id: str = "",
+        workspace_id: str | None = None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
+        idempotency_key: str | None = None,
+    ) -> TaskResponse:
+        """Admit and queue one submission unconditionally — the pre-#1176 path.
+
+        No claim is consulted or written here: idempotency wraps this method,
+        which stays the single place a receipt is born and a Run minted.
+        """
+        task = await self._mint(
+            request,
+            task_id=TaskResponse.new_id(),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
+            idempotency_key=idempotency_key,
+        )
+        await self._enqueue(task)
         return task
 
     async def recover(self, run_store: Any, *, batch_size: int = 100) -> int:

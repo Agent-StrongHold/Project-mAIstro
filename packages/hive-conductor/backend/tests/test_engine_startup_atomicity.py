@@ -223,8 +223,9 @@ async def test_demo_backend_failure_unwinds_recovery_cadences(
             stopped.append(True)
 
     class _Queue:
-        def __init__(self, *, admitter: Any = None) -> None:
+        def __init__(self, *, admitter: Any = None, idempotency_store: Any = None) -> None:
             self.admitter = admitter
+            self.idempotency_store = idempotency_store
 
     queue_mod = types.ModuleType("maistro.tasks.queue")
     queue_mod.TaskQueue = _Queue  # type: ignore[attr-defined]

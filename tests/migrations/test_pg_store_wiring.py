@@ -69,8 +69,14 @@ def _require_postgres() -> str:
 
 
 def _alembic_env(url: str) -> dict[str, str]:
-    """`DB_*` for alembic's `DatabaseSettings`, pointed at the scratch database."""
+    """Point every database spelling at this suite's scratch database.
+
+    The shared resolver gives `DATABASE_URL` precedence over `DB_*`; retaining
+    the service URL would apply the chain outside the scratch database this
+    fixture returns.
+    """
     parts = urlsplit(url)
+    scratch = urlsplit(url)._replace(path=f"/{SCRATCH_DB}").geturl()
     return {
         **os.environ,
         "DB_HOST": parts.hostname or "127.0.0.1",
@@ -78,6 +84,8 @@ def _alembic_env(url: str) -> dict[str, str]:
         "DB_NAME": SCRATCH_DB,
         "DB_USER": parts.username or "postgres",
         "DB_PASSWORD": parts.password or "",
+        "DATABASE_URL": scratch,
+        "MAISTRO_DATABASE_URL": scratch,
     }
 
 
