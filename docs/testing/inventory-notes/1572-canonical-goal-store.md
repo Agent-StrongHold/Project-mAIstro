@@ -453,3 +453,73 @@ CI-exact step sequences:
   19 classifications and no already-landed authorization. Everything
   repairable in this worktree is repaired; the separate grant on develop
   followed by a branch sync remains the release step.
+
+## Round 12 — every required integration-scope check executed at head `45df99115` (2026-10-06)
+
+The merge-queue evaluation had named `integration-scope: failure`. Its
+required-check set for this diff is all nine specialized producers
+(`scripts/check-integration-scope.py` over the merge-base diff:
+docker-build, durable-events, hive-conductor-e2e, hive-conductor-e2e-ui,
+object storage (MinIO), postgres (pg17), postgres (pg18), strike-ladder,
+wheel-imports). All nine were re-executed locally against this exact head;
+the rootless daemon (`DOCKER_HOST=unix:///run/user/1000/docker.sock`) served
+every container:
+
+- **quality.yml coverage (PostgreSQL) step 1, CI-exact** — full
+  `pytest tests/migrations` under coverage against an unmigrated pg17
+  database: **153 passed** (the shared-database teardown leak that made this
+  step fail with 5 failed/40 errors is fixed by the round-7 restore; the
+  installed-base module re-stamps `upgrade head` after each walk).
+- **quality.yml coverage (PostgreSQL) step 2, CI-exact** — `alembic upgrade
+  head` (converged to `059`, 70 tables) then the step's full 13-suite list
+  (persistence, container-postgres, events, runs, graph, projects,
+  workspaces, goals, scheduling, idempotency purge, elevation durable,
+  memory/user_model, quota): **5634 passed, 92 skipped**.
+- **postgres (pg17), CI-exact ci.yml walk** on a fresh database — chain
+  apply on empty → `upgrade head` → `downgrade base` → `upgrade head` →
+  persistence **809 passed** → container-postgres **15 passed** → workspaces
+  **328 passed, 2 skipped** → goals **60 passed, 0 skipped** → canvas
+  supported path **7 passed** (all with `MAISTRO_REQUIRE_PG_LEGS=1`).
+- **postgres (pg18)** — the same walk on pgvector pg18: persistence **809**,
+  container-postgres **15**, workspaces **328, 2 skipped**, goals
+  **60, 0 skipped**, canvas **7** — all green.
+- **wheel-imports** — every package wheel built from this tree, then
+  `verify-wheel-imports.py --dist dist/ --python 3.12`: all wheels import
+  from a clean venv, exit 0 (bare tier includes `maistro.goals`).
+- **hive-conductor-e2e-ui** — CI-exact compose bring-up of the live hive
+  service from this tree (host port overridden to 18101 only because the
+  dev stack holds 8101; in-container networking untouched): Playwright UI
+  suite **121 passed, exit 0**.
+- **hive-conductor-e2e** — the api-tests profile against the same live
+  composition: **exit 0** (10 passed, 13 skipped, matching round 4).
+- **durable-events** — CI-exact against pg17 with legs required: events
+  **382 passed**, `test_event_schema_agreement.py` **5 passed**.
+- **strike-ladder** — CI-exact: **40 passed** with the PostgreSQL leg
+  required.
+- **object storage (MinIO)** — server built from the pinned pseudo-version
+  through the Go module proxy exactly as the workflow does
+  (`v0.0.0-20250422221226-0d7408fc9969`), health-checked on 127.0.0.1:9000;
+  archive conformance **128 passed** with the workflow's S3 env.
+- **docker-build** — `maistro-engine:test` built from this tree; the #406
+  shipped-image examples-namespace check passed; the empty-PostgreSQL-18
+  volume boot smoke passed end to end: engine boots, applies the chain —
+  **stamped revision `059`** — `/health/live` and `/health/ready` answer ok,
+  and after tearing down both containers the restarted engine serves ready
+  from the migrated volume. (The engine-research and rsi-runner image builds
+  were not re-run locally; no Dockerfile changed in this diff, and their
+  package content is import-proven by the wheel leg above.)
+- Ratchet state at this head: vulture ledger with CI's exact scan arguments
+  **1332 reviewed identities = 1332 findings, 0 unclassified** (no amendment
+  owed); durable-table inventory **ok: 100 tables**; M1 convergence freeze
+  vs base `bc40b6cda` ok; ruff check + format green; suite inventory 16
+  suites match.
+- Still red, and still the only red: `check-execution-lifecycles.py` and
+  its mirrored shipped-ledger unit test (**28 passed, 1 failed**) on the
+  single `maistro.goals.model::GoalStatus` finding. Trusted base `1e640df17`
+  classifies 19 vocabularies and carries no `GoalStatus` authorization, and
+  `origin/develop` at its current tip `bc40b6cda` carries none either — so
+  the mandated separate-grant-then-sync repair is still not available in
+  this worktree. The candidate's `quality/execution-lifecycles.json`
+  classification cannot approve itself, and no edit on this branch can
+  satisfy `load_authorizations(RATCHET, base=...)`. The release step remains:
+  merge the GoalStatus DOMAIN grant on develop, then sync this branch.
