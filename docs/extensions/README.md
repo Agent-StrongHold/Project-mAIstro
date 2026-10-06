@@ -23,6 +23,25 @@ The reference extension lives at `extensions/reference-greeter/` — outside
 `packages/`, with its own `pyproject.toml`, because that is how every
 third-party extension looks from the outside.
 
+## Domain packs (M9-F, #966)
+
+A **domain pack** is an extension that ships reusable *defaults* — Graph
+shapes, Persona templates, Rubric dimension catalogs — as version-addressable
+assets instead of (or alongside) code. Its manifest is a governed-install
+subtype (`"kind": "domain-pack"`, parsed fail-closed from bytes by
+`maistro.extensions.packs.inspect_pack_manifest`, the M9-B machinery's
+namespace), and its contract is canonical-object-only: instantiation mints
+canonical `GraphTemplate`/`Persona`/`RubricSemantic` identities bound to
+caller-named Workspaces, the pack-local asset ids ride only in provenance,
+dependencies resolve through the same compatibility evaluator every extension
+uses, and disabling a pack gates new use without touching anything already
+created. No pack can declare an executor, a store, or a Goal/Persona/Rubric
+authority — the schema has no such field, and instantiation persists nothing.
+The in-repo product/game/book packs of `maistro_design.packs` (#793) remain
+the shipped defaults; `maistro.extensions.packs` is the installable,
+out-of-tree generalization (M9-F1), whose Workspace-scoped activation
+lifecycle is M9-F3 (#968).
+
 ## Guides
 
 | Document | What it covers |
