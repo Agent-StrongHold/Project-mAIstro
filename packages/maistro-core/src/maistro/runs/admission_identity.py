@@ -236,9 +236,12 @@ class RootAdmissionEnvelope:
         _require_microseconds(self.expires_at_us, "expires_at_us")
         if self.expires_at_us <= self.created_at_us:
             raise ValueError("expires_at_us must be strictly greater than created_at_us")
-        for snapshot_name in ("request_snapshot", "receipt_snapshot", "provenance_snapshot"):
-            if type(getattr(self, snapshot_name)) is not CanonicalJsonObject:
-                raise ValueError(f"{snapshot_name} must be a CanonicalJsonObject")
+        if type(self.request_snapshot) is not CanonicalJsonObject:
+            raise ValueError("request_snapshot must be a CanonicalJsonObject")
+        if type(self.receipt_snapshot) is not CanonicalJsonObject:
+            raise ValueError("receipt_snapshot must be a CanonicalJsonObject")
+        if type(self.provenance_snapshot) is not CanonicalJsonObject:
+            raise ValueError("provenance_snapshot must be a CanonicalJsonObject")
 
 
 @dataclass(frozen=True, slots=True)

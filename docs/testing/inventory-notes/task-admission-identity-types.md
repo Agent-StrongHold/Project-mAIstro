@@ -551,3 +551,57 @@ reachability new-unreachable) that the issue itself predicts and prohibits
 curing in-leaf. Resolution stays with the orchestrator: land the reviewed
 vulture grant on the integration base first (two-merge rule), or absorb the
 leaf into parent #1845 integration where the real consumer retires the debt.
+
+## 2026-10-06 round-5 identity-elimination repair
+
+Round 4 concluded "nothing further is repairable"; round 5 found one genuine
+in-leaf repair. Of the seven unauthorized vulture identities, two were
+eliminable without touching the frozen contract:
+
+- `RootAdmissionEnvelope.__post_init__` validated its three snapshot fields
+  through a string-driven `getattr` loop, so `receipt_snapshot` and
+  `provenance_snapshot` had no attribute read anywhere in scanned production
+  code (`request_snapshot` was already read directly by
+  `RootAdmissionResult.__post_init__`). The validation now reads each field
+  directly — the same mandated exact-type check with byte-identical error
+  messages, and the idiom `RootAdmissionResult` already uses. No field, name,
+  `__all__` entry, signature, or semantic changed; the module stays unwired
+  with zero production importers.
+- The two eliminated rows were pruned from `quality/vulture-baseline.json`
+  (lane-permitted pruning of fixed identities), leaving exactly five banked
+  rows in the branch diff against `origin/develop`.
+
+Evidence at this round's head:
+
+- `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  = 77 passed; focused ruff check/format clean; module `mypy` clean.
+- CI-exact `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`: rc=1, candidate ledger exact (1,332 trusted
+  rows -> 1,337 findings, 0 unbanked/stale/unclassified) and the unauthorized
+  set is now exactly the five `AdmissionAssessment` enum members
+  (MISMATCH/REPLAYED/TAKEOVER/REPLACE_EXPIRED/LEGACY_UNRESOLVED), down from
+  seven.
+- The five remaining identities are inherent to the unwired leaf, not
+  repairable: vulture flags enum members (60% "unused variable") unless a
+  scanned name token references them; the issue mandates no runtime consumer
+  ("returned only by the prospective inactive C2 classifier") and prohibits
+  wiring, dummy references, `__all__` changes (fixed at 21 names),
+  suppressions, and self-grants. The repo's own `schema-enum-member` ledger
+  rule records the established treatment: bank declarative enum members.
+- `origin/develop` re-fetched this round: unchanged at `1e640df17c8a` — no
+  vulture grant for `admission_identity` exists to merge, and the gate reads
+  authorizations from the base only (two-merge rule).
+- Other exact-debt-ledger job commands: `check-shipped-surface-truth.py`
+  rc=0; `check-ratchet-provenance.py` rc=1 solely through the reachability
+  provenance sub-gate. `check-reachability.py` rc=1 with exactly one
+  NEW-unreachable (`maistro.runs.admission_identity`) — the failure the issue
+  itself predicts and prohibits curing in-leaf.
+- `check-suite-inventory.py --suite packages/maistro-core/tests` ok (14,472
+  node IDs); `ruff check .` and `ruff format --check .` clean tree-wide;
+  `git diff --numstat origin/develop -- quality/` is exactly the five sorted
+  vulture rows and nothing else.
+
+Net effect of round 5: unauthorized vulture debt reduced 7 -> 5; both
+remaining reds are the two structural, issue-anticipated gates whose cure
+(vulture grant on the integration base, or #1845 integration wiring the real
+consumer) lies outside leaf authority.
