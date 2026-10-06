@@ -231,3 +231,14 @@ unwired `maistro.runs.admission_identity`; reachability dispositions and
 promotion-surface pass. No prohibited production import, suppression,
 reachability baseline/disposition, or authorization grant was added. Parent
 integration remains required before these integration-head gates can pass.
+
+## 2026-10-06 repair validation
+
+At `68f9ef00f6cac955838b97c0ea05fb3cf4bd582e`, the focused DTO suite passed
+77 tests; focused Ruff check/format and module mypy passed. The exact Vulture
+command still exits 1 against trusted base `c560d4ccad82` for the nine DTO
+field/enum identities already present in the candidate ledger. Reachability
+still reports only the intentionally inactive module, and ratchet provenance
+fails through that reachability debt. This staged leaf has no permitted repair
+for either trusted-base failure; parent integration must provide the real
+consumer before integration-head quality can pass.
