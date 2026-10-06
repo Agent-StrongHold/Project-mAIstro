@@ -560,6 +560,10 @@ jobs:
       # The extension host harness (#974): stdlib-only runtime, no services,
       # so no env gates are needed — a third-party CI runs exactly this shape.
       - run: uv run pytest packages/maistro-ext-harness/tests -v --tb=short
+      - run: uv run pytest packages/maistro-ext-sdk/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
       - run: uv run pytest tests/ --ignore=tests/tools/registry -v --tb=short
         env:
           REQUIRE_AUTH: "false"

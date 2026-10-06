@@ -591,6 +591,12 @@ jobs:
           # infrastructure the job does not have.
           uv run coverage run --append --branch --source=packages/maistro-ext-harness/src/maistro_ext_harness \
             -m pytest packages/maistro-ext-harness/tests --timeout=30 -q
+          # maistro-ext-sdk joins the measured set with #949: the manifest
+          # contract an external author codes against is exactly the tree
+          # where an uncovered bug bites hardest, and nothing else runs its
+          # suite under coverage.
+          uv run coverage run --append --branch --source=packages/maistro-ext-sdk/src/maistro_ext_sdk \
+            -m pytest packages/maistro-ext-sdk/tests --timeout=30 -q
           # hive-conductor's pytest-bdd is declared in that workspace member's
           # OWN `dev` extra, and `--all-extras` includes every optional
           # dependency of the ROOT project only — not of each member. So the
@@ -920,6 +926,7 @@ jobs:
             -i third_party \
             packages/maistro-bootstrap/src packages/maistro-canvas/src \
             packages/maistro-core/src packages/maistro-design/src \
+            packages/maistro-ext-sdk/src \
             packages/maistro-evolve/src packages/maistro-registry/src \
             packages/maistro-rsi/src packages/maistro-server/src \
             packages/maistro-turing/src > xenon.log 2>&1 || true # the exit code is re-derived from xenon.log below

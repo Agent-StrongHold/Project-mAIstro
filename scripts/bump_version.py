@@ -156,6 +156,7 @@ _PYPROJECT_SITES = [
     _pyproject("packages/maistro-design/pyproject.toml"),
     _pyproject("packages/maistro-bootstrap/pyproject.toml"),
     _pyproject("packages/maistro-ext-harness/pyproject.toml"),
+    _pyproject("packages/maistro-ext-sdk/pyproject.toml"),
     _pyproject("packages/hive-conductor/pyproject.toml"),
 ]
 
@@ -176,6 +177,7 @@ _VERSION_FALLBACK_SITES = [
     _version_fallback("packages/maistro-rsi/src/maistro_rsi/__init__.py"),
     _version_fallback("packages/maistro-design/src/maistro_design/__init__.py"),
     _version_fallback("packages/maistro-bootstrap/src/maistro_bootstrap/__init__.py"),
+    _version_fallback("packages/maistro-ext-sdk/src/maistro_ext_sdk/__init__.py"),
     _version_fallback("packages/maistro-registry/src/maistro_registry/__init__.py"),
     _version_fallback("packages/maistro-ext-harness/src/maistro_ext_harness/__init__.py"),
 ]

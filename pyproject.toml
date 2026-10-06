@@ -205,6 +205,7 @@ src = [
     "packages/maistro-evolve/src",
     "packages/maistro-rsi/src",
     "packages/maistro-design/src",
+    "packages/maistro-ext-sdk/src",
     "packages/maistro-ext-harness/src",
 ]
 
@@ -254,6 +255,10 @@ testpaths = [
     "packages/maistro-evolve/tests",
     "packages/maistro-rsi/tests",
     "packages/maistro-design/tests",
+    # The public extension SDK (#949). Its suite is small and dependency-light
+    # by contract — the SDK imports no maistro module — so it rides the same
+    # default run.
+    "packages/maistro-ext-sdk/tests",
     # The Conductor app's own suite (#267). Absent until now, which meant
     # `scripts/check-ac-state.py::configured_test_roots()` -- which reads this
     # list -- never scanned it, so a `@pytest.mark.ac` marker in the product
@@ -284,6 +289,7 @@ pythonpath = [
     "packages/maistro-bootstrap/src",
     "packages/maistro-rsi/src",
     "packages/maistro-evolve/src",
+    "packages/maistro-ext-sdk/src",
     ".",
 ]
 
