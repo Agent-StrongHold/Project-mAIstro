@@ -127,8 +127,6 @@ under `maistro.ontology` (maistro-core) and the coverage lives in the
 package suite — paths repointed when cited test paths were made to resolve
 (#812).
 
-Covered by `tests/ontology/test_registry.py` and `tests/ontology/test_types.py`.
-
 ## Open questions
 
 - Whether/when to wire `entity_id` into `MemoryEntry`/`EpisodicMemory` so
