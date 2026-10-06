@@ -905,6 +905,14 @@ class TestManifestInspection:
         document["manifest_version"] = 2
         self._rejected(json.dumps(document).encode(), "unsupported manifest_version: 2")
 
+    @pytest.mark.parametrize("version", [True, False])
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_boolean_envelope_version_is_rejected(self, version: bool) -> None:
+        document = json.loads(ACME_PACK)
+        document["manifest_version"] = version
+        self._rejected(json.dumps(document).encode(), "unsupported manifest_version:")
+
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
     def test_wrong_subtype_is_rejected(self) -> None:

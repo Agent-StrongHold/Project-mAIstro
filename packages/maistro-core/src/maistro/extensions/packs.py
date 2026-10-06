@@ -898,8 +898,13 @@ def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
     missing = [key for key in required if key not in document]
     if missing:
         raise _reject(f"missing manifest keys: {missing}")
-    if document["manifest_version"] != SUPPORTED_PACK_MANIFEST_VERSION:
-        raise _reject(f"unsupported manifest_version: {document['manifest_version']!r}")
+    manifest_version = document["manifest_version"]
+    if (
+        isinstance(manifest_version, bool)
+        or not isinstance(manifest_version, int)
+        or manifest_version != SUPPORTED_PACK_MANIFEST_VERSION
+    ):
+        raise _reject(f"unsupported manifest_version: {manifest_version!r}")
     if document["kind"] != PACK_MANIFEST_KIND:
         raise _reject(f"unsupported manifest kind: {document['kind']!r}")
 
