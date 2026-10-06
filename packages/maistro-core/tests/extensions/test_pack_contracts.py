@@ -30,6 +30,7 @@ Attempt spine, no second identity scheme anywhere.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from typing import Any, ClassVar
@@ -1009,6 +1010,26 @@ class TestManifestInspection:
             with_graph(
                 {
                     "name": "g",
+                    "nodes": [{"node_type": "t"}],
+                    "edges": [],
+                }
+            ),
+            "graph node missing required keys: \\[\\'node_id\\'\\]",
+        )
+        self._rejected(
+            with_graph(
+                {
+                    "name": "g",
+                    "nodes": [{"node_id": "a"}],
+                    "edges": [],
+                }
+            ),
+            "graph node missing required keys: \\[\\'node_type\\'\\]",
+        )
+        self._rejected(
+            with_graph(
+                {
+                    "name": "g",
                     "nodes": [],
                     "edges": [],
                 }
@@ -1145,6 +1166,34 @@ class TestManifestInspection:
                     assets=[vetoed],
                 )
             )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_manifest_snapshot_is_deep_frozen(self) -> None:
+        """Post-inspection mutation of the snapshot is impossible.
+
+        Provenance must keep describing the instantiated content: a
+        consumer holding ``manifest`` cannot alter an asset payload and
+        have later instantiations drift from ``source_sha256``.
+        """
+        manifest = inspect_pack_manifest(ACME_PACK)
+        persona = next(a for a in manifest.assets if a.asset_id == "critic")
+        rubric = next(a for a in manifest.assets if a.asset_id == "scene")
+        # Mappings — top-level and nested — reject writes.
+        with pytest.raises(TypeError):
+            persona.persona.payload["purpose"] = "tampered"  # type: ignore[index]
+        with pytest.raises(TypeError):
+            persona.persona.payload["defaults"]["tone"] = "tampered"  # type: ignore[index]
+        # Arrays are frozen as tuples.
+        assert isinstance(persona.persona.payload["surfaces"], tuple)
+        # Canonical Pydantic objects never live in the snapshot: the
+        # pack-local frozen dataclass refuses attribute writes.
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            rubric.rubric.dimensions[0].weight = 99.0  # type: ignore[misc]
+        # Instantiation still produces the original, sha-consistent content.
+        minted = instantiate_persona_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
+        assert minted.purpose == "judge scenes against the rubric"
+        assert minted.extension_metadata["pack"]["pack.manifest_sha256"] == (manifest.source_sha256)
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")

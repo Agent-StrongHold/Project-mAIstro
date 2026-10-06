@@ -65,6 +65,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import ValidationError
@@ -256,7 +257,9 @@ class PackPersonaDefinition:
     arguments built from these string keys, so the scanner's name-level
     analysis keeps attributing ``purpose``/``style_guidance`` usages to the
     canonical Persona model that owns them (their banked debt lives there),
-    not to this pass-through payload.
+    not to this pass-through payload. It is deep-frozen (nested mappings
+    and lists included) so the inspected snapshot cannot drift away from
+    the ``source_sha256`` stamped on it.
     """
 
     name: str
@@ -264,11 +267,56 @@ class PackPersonaDefinition:
 
 
 @dataclass(frozen=True)
+class PackRubricNumericScale:
+    """A bounded numeric scale, as parsed pack data (immutable)."""
+
+    min_value: float = 0.0
+    max_value: float = 100.0
+
+
+@dataclass(frozen=True)
+class PackRubricPassFailScale:
+    """A binary pass/fail scale, as parsed pack data (immutable)."""
+
+    pass_value: float = 1.0
+    fail_value: float = 0.0
+
+
+@dataclass(frozen=True)
+class PackRubricScale:
+    """A dimension's scale, as parsed pack data (immutable).
+
+    The canonical ``RubricScale`` models are minted from these primitives
+    at every probe/instantiation, so a mutable Pydantic object never lives
+    inside the inspected manifest snapshot.
+    """
+
+    numeric: PackRubricNumericScale | None = None
+    pass_fail: PackRubricPassFailScale | None = None
+
+
+@dataclass(frozen=True)
+class PackRubricDimension:
+    """One rubric dimension, as parsed pack data (immutable).
+
+    Pack-local, not the canonical ``RubricDimension``: the canonical
+    Pydantic model is mutable, and the snapshot stores only frozen data.
+    """
+
+    id: str
+    name: str
+    weight: Any
+    scale: PackRubricScale
+    method: ScoringMethod
+    evidence_required: bool = False
+
+
+@dataclass(frozen=True)
 class PackRubricDefinition:
     """A Rubric default catalog. Instantiated as a canonical ``RubricSemantic``."""
 
     name: str
-    dimensions: tuple[RubricDimension, ...]
+    dimensions: tuple[PackRubricDimension, ...]
     gate_pass_threshold: float
     veto_dimension_ids: tuple[str, ...] = ()
 
@@ -293,6 +341,9 @@ def _parse_graph_nodes(raw_nodes: object) -> tuple[PackGraphNode, ...]:
     for item in raw_nodes:
         if not isinstance(item, dict) or set(item) - {"node_id", "node_type", "name"}:
             raise _reject("each graph node must have only node_id, node_type, name")
+        missing = [key for key in ("node_id", "node_type") if key not in item]
+        if missing:
+            raise _reject(f"graph node missing required keys: {missing}")
         node_id = _require_str(item, "node_id")
         if _ASSET_ID_RE.match(node_id) is None:
             raise _reject(f"malformed graph node_id: {node_id!r}")
@@ -384,10 +435,25 @@ def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
     for key in ("defaults", "behavior"):
         if not isinstance(payload.get(key, {}), dict):
             raise _reject(f"persona {key} must be an object")
-    return PackPersonaDefinition(name=name, payload=dict(payload))
+    return PackPersonaDefinition(name=name, payload=_deep_freeze(payload))
 
 
-def _parse_scale(raw: object) -> RubricScale:
+def _deep_freeze(value: Any) -> Any:
+    """Recursively freeze parsed JSON data into immutable equivalents.
+
+    Objects become read-only mappings and arrays become tuples, so a
+    consumer holding the inspected manifest snapshot cannot mutate an
+    asset after inspection (the snapshot must keep describing exactly
+    the bytes ``source_sha256`` anchors).
+    """
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
+
+
+def _parse_scale(raw: object) -> PackRubricScale:
     if not isinstance(raw, dict) or not raw:
         raise _reject("rubric dimension scale must be a non-empty object")
     unknown = sorted(set(raw) - {"numeric", "pass_fail"})
@@ -399,16 +465,16 @@ def _parse_scale(raw: object) -> RubricScale:
         block = raw["numeric"]
         if not isinstance(block, dict) or set(block) - {"min_value", "max_value"}:
             raise _reject("numeric scale must have only min_value and max_value")
-        numeric = NumericScale(**block)
+        numeric = PackRubricNumericScale(**block)
     if "pass_fail" in raw:
         block = raw["pass_fail"]
         if not isinstance(block, dict) or set(block) - {"pass_value", "fail_value"}:
             raise _reject("pass_fail scale must have only pass_value and fail_value")
-        pass_fail = PassFailScale(**block)
-    return RubricScale(numeric=numeric, pass_fail=pass_fail)
+        pass_fail = PackRubricPassFailScale(**block)
+    return PackRubricScale(numeric=numeric, pass_fail=pass_fail)
 
 
-def _parse_rubric_dimension(item: object) -> RubricDimension:
+def _parse_rubric_dimension(item: object) -> PackRubricDimension:
     if not isinstance(item, dict):
         raise _reject("each rubric dimension must be an object")
     allowed_dim = {"id", "name", "weight", "method", "scale", "evidence_required"}
@@ -421,7 +487,7 @@ def _parse_rubric_dimension(item: object) -> RubricDimension:
     method = item["method"]
     if not isinstance(method, str) or method not in {m.value for m in ScoringMethod}:
         raise _reject(f"unknown rubric scoring method: {method!r}")
-    return RubricDimension(
+    return PackRubricDimension(
         id=_require_str(item, "id"),
         name=_require_str(item, "name"),
         weight=item["weight"],
@@ -713,6 +779,36 @@ def _probe_persona(definition: PackPersonaDefinition) -> Persona:
     )
 
 
+def _canonical_dimension(dimension: PackRubricDimension) -> RubricDimension:
+    """Mint one canonical ``RubricDimension`` from frozen pack data."""
+    scale = dimension.scale
+    return RubricDimension(
+        id=dimension.id,
+        name=dimension.name,
+        weight=dimension.weight,
+        method=dimension.method,
+        evidence_required=dimension.evidence_required,
+        scale=RubricScale(
+            numeric=(
+                NumericScale(
+                    min_value=scale.numeric.min_value,
+                    max_value=scale.numeric.max_value,
+                )
+                if scale.numeric is not None
+                else None
+            ),
+            pass_fail=(
+                PassFailScale(
+                    pass_value=scale.pass_fail.pass_value,
+                    fail_value=scale.pass_fail.fail_value,
+                )
+                if scale.pass_fail is not None
+                else None
+            ),
+        ),
+    )
+
+
 def _probe_rubric(definition: PackRubricDefinition, *, pack_id: str) -> RubricSemantic:
     """A scratch RubricSemantic: canonical dimension/gate/provenance validation."""
     return RubricSemantic(
@@ -722,7 +818,7 @@ def _probe_rubric(definition: PackRubricDefinition, *, pack_id: str) -> RubricSe
         goal_revision=1,
         workspace_id=_PROBE,
         project_id=_PROBE,
-        dimensions=list(definition.dimensions),
+        dimensions=[_canonical_dimension(d) for d in definition.dimensions],
         aggregation=RubricAggregation(veto_dimension_ids=list(definition.veto_dimension_ids)),
         gate=RubricGate(pass_threshold=definition.gate_pass_threshold),
         provenance=RubricProvenance(
