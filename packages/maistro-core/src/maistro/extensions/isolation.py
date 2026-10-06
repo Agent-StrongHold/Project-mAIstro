@@ -521,6 +521,12 @@ class ViolationKind(StrEnum):
     #: The sandbox ran but the backend failed mid-execution; no result.
     SANDBOX_FAILURE = "sandbox_failure"
 
+    #: The sandbox ran and the workload finished, but the backend could not
+    #: tear the sandbox down. Reported even though the workload itself may
+    #: have succeeded: a live environment or undeleted workspace behind a
+    #: "success" is a leak the caller must not mistake for clean (#970).
+    SANDBOX_TEARDOWN_FAILURE = "sandbox_teardown_failure"
+
 
 @dataclass(frozen=True)
 class ExtensionSandboxViolation:
@@ -623,9 +629,16 @@ _ESCALATION_THRESHOLD = 3
 #: memory ceiling and the PID ceiling (the kernel does not say which), so
 #: the detail names both rather than guessing one.
 _LIMIT_SIGNALS: dict[int, str] = {
-    signal.SIGKILL: "memory ceiling or PID ceiling (SIGKILL)",
-    signal.SIGXCPU: "CPU budget exhausted (SIGXCPU)",
-    signal.SIGXFSZ: "file-size ceiling hit (SIGXFSZ)",
+    getattr(signal, name): meaning
+    for name, meaning in (
+        ("SIGKILL", "memory ceiling or PID ceiling (SIGKILL)"),
+        ("SIGXCPU", "CPU budget exhausted (SIGXCPU)"),
+        ("SIGXFSZ", "file-size ceiling hit (SIGXFSZ)"),
+    )
+    # Windows' ``signal`` module lacks these POSIX-only signals; a sandbox
+    # execution tier is meaningless there, so absent names are simply omitted
+    # and import stays safe for consumers that never run sandboxes.
+    if hasattr(signal, name)
 }
 
 
@@ -668,6 +681,7 @@ class ExtensionSandboxRunner:
         cpu_cores: float | None = None,
         max_processes: int | None = None,
         timeout_s: int | None = None,
+        max_file_mb: int | None = None,
     ) -> ExtensionSandboxOutcome:
         """Run ``command`` inside a sandbox compiled from ``profile``."""
         if profile.in_process:
@@ -682,6 +696,7 @@ class ExtensionSandboxRunner:
             cpu_cores=cpu_cores,
             max_processes=max_processes,
             timeout_s=timeout_s,
+            max_file_mb=max_file_mb,
         )
         started = time.monotonic()
         try:
@@ -721,9 +736,14 @@ class ExtensionSandboxRunner:
             # leaves the sandbox child running. Shielded so a second cancel
             # delivered mid-teardown cannot abandon it either.
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(self._destroy_quietly(backend, instance))
+                teardown_violation = await self._destroy(
+                    profile, backend, instance
+                )
 
-        violations = self._classify_limits(profile, instance, result)
+        violations = (
+            *self._classify_limits(profile, config, instance, result),
+            *((teardown_violation,) if teardown_violation else ()),
+        )
         outcome = ExtensionSandboxOutcome(
             extension_id=profile.extension_id,
             version=profile.version,
@@ -801,21 +821,22 @@ class ExtensionSandboxRunner:
         detail: str,
         *,
         sandbox_id: str | None,
-    ) -> None:
-        self._violations.record(
-            ExtensionSandboxViolation(
-                extension_id=profile.extension_id,
-                version=profile.version,
-                kind=kind,
-                detail=detail,
-                at=self._clock(),
-                sandbox_id=sandbox_id,
-            )
+    ) -> ExtensionSandboxViolation:
+        violation = ExtensionSandboxViolation(
+            extension_id=profile.extension_id,
+            version=profile.version,
+            kind=kind,
+            detail=detail,
+            at=self._clock(),
+            sandbox_id=sandbox_id,
         )
+        self._violations.record(violation)
+        return violation
 
     def _classify_limits(
         self,
         profile: ExtensionIsolationProfile,
+        config: SandboxConfig,
         instance: object,
         result: ExecResult,
     ) -> tuple[ExtensionSandboxViolation, ...]:
@@ -824,10 +845,16 @@ class ExtensionSandboxRunner:
         Only evidence counts: a signal the kernel sent for a ceiling, or the
         wall-clock timeout. A workload's ordinary nonzero exit is its own
         business and is reported on the outcome, not recorded as a violation.
+
+        The *effective* ``config`` is classified, not the profile: per-run
+        overrides may have tightened the ceilings, and the evidence must name
+        the values that actually killed the workload.
         """
         violations: list[ExtensionSandboxViolation] = []
         if result.timed_out:
-            violations.append(self._limit_violation(profile, instance, "wall-clock timeout"))
+            violations.append(
+                self._limit_violation(profile, config, instance, "wall-clock timeout")
+            )
         # Signal death arrives in either convention: negative (the subprocess
         # wait convention, when the harness sees the process itself die) or
         # wrapped as 128+signal (the shell convention, when a wrapper like
@@ -837,19 +864,24 @@ class ExtensionSandboxRunner:
         if sig > 0:
             meaning = _LIMIT_SIGNALS.get(sig)
             if meaning is not None:
-                violations.append(self._limit_violation(profile, instance, meaning))
+                violations.append(self._limit_violation(profile, config, instance, meaning))
         return tuple(violations)
 
     def _limit_violation(
-        self, profile: ExtensionIsolationProfile, instance: object, meaning: str
+        self,
+        profile: ExtensionIsolationProfile,
+        config: SandboxConfig,
+        instance: object,
+        meaning: str,
     ) -> ExtensionSandboxViolation:
         violation = ExtensionSandboxViolation(
             extension_id=profile.extension_id,
             version=profile.version,
             kind=ViolationKind.RESOURCE_LIMIT_EXCEEDED,
             detail=(
-                f"{meaning}; ceilings: memory={profile.memory_mb}MB, "
-                f"pids={profile.max_processes}, timeout={profile.timeout_s}s"
+                f"{meaning}; effective ceilings: memory={config.memory_mb}MB, "
+                f"cpu={config.cpu_cores} cores, file={config.max_file_mb}MB, "
+                f"pids={config.max_processes}, timeout={config.timeout_s}s"
             ),
             at=self._clock(),
             sandbox_id=getattr(instance, "id", None),
@@ -857,12 +889,27 @@ class ExtensionSandboxRunner:
         self._violations.record(violation)
         return violation
 
-    @staticmethod
-    async def _destroy_quietly(backend: SandboxProtocol, instance: SandboxInstance) -> None:
+    async def _destroy(
+        self, profile: ExtensionIsolationProfile, backend: SandboxProtocol, instance: SandboxInstance
+    ) -> ExtensionSandboxViolation | None:
+        """Tear the sandbox down; record and return a violation on failure.
+
+        A teardown failure must not be silent in the outcome: the backend may
+        still hold a live environment or an undeleted workspace, so the run is
+        attributed a :attr:`ViolationKind.SANDBOX_TEARDOWN_FAILURE` violation,
+        which also makes ``outcome.succeeded`` false (#970).
+        """
         try:
             await backend.destroy(instance)
-        except Exception:
+        except Exception as exc:
             logger.exception("extension_sandbox_destroy_failed sandbox=%s", instance.id)
+            return self._record(
+                profile,
+                ViolationKind.SANDBOX_TEARDOWN_FAILURE,
+                f"backend {type(backend).__name__} failed to destroy sandbox: {exc}",
+                sandbox_id=instance.id,
+            )
+        return None
 
 
 class InProcessExtensionLoader(ExtensionCodeLoader):
