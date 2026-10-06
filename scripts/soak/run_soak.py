@@ -267,6 +267,51 @@ def port_closed(port: int, timeout: float = 1.0) -> bool:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
+def resolve_out_dir(raw: str) -> str:
+    """Normalize --out-dir to an absolute path before any process boots.
+
+    ``docker run -v`` rejects relative bind sources, and that failure
+    surfaces only after both replicas are already up (2026-10-06: a relative
+    --out-dir failed the LB mount and the boot-failure path leaked both
+    replicas), so the CLI resolves the directory first.
+    """
+    return str(Path(raw).resolve())
+
+
+def ensure_replica_ports_free(ports: tuple[int, ...] = (18201, 18202)) -> None:
+    """Refuse to boot while a previous run's replica still serves.
+
+    A boot that succeeds instantly ("boot completed in 0.0s") against an
+    orphan silently samples a process this run never started — and a later
+    --fresh-db schema reset then lands under the orphan's live pool. That
+    contamination was observed 2026-10-06 after the LB-failure leak below, so
+    occupied replica ports abort the run before any state is touched.
+    """
+    busy = [port for port in ports if not port_closed(port)]
+    if busy:
+        raise RuntimeError(
+            "refusing to boot: orphaned servers still accept on replica ports "
+            f"{busy}; kill them first so evidence cannot measure a process "
+            "this run did not start"
+        )
+
+
+def kill_replicas_and_collect_orphans(
+    procs: dict[str, subprocess.Popen[Any]], ports: tuple[int, ...]
+) -> list[int]:
+    """Kill every booted replica's process group; return ports still serving.
+
+    A "cleaned up" replica that still serves is worse than one that crashed:
+    the next boot either fails on the bound port or silently adopts the
+    orphan, and mid-run evidence keeps flowing from a process the harness
+    believes dead. Boot-failure cleanup (replica or LB) must end in this
+    check, not a bare kill.
+    """
+    for proc in procs.values():
+        kill_replica(proc)
+    return [port for port in ports if not port_closed(port)]
+
+
 def start_replica(port: int, out_dir: Path, env: dict[str, str]) -> subprocess.Popen[Any]:
     """Boot one replica exactly as the RC image does, minus the container."""
     log_file = open(out_dir / f"replica-{port}.log", "ab")  # noqa: SIM115
@@ -1126,6 +1171,7 @@ async def boot_stack(
 ) -> tuple[dict[str, subprocess.Popen[Any]], dict[str, str]]:
     """Postgres + migrations + two replicas + nginx LB; returns procs and env."""
     ensure_postgres()
+    ensure_replica_ports_free()
     if args.fresh_db:
         reset_db_schema()
     run_migrations()
@@ -1151,13 +1197,11 @@ async def boot_stack(
     boot_seconds = round(time.monotonic() - boot_t0, 1)
     log(f"replica boot completed in {boot_seconds}s (r1={ok1}, r2={ok2})")
     if not (ok1 and ok2):
-        for p in procs.values():
-            kill_replica(p)
         # A "cleaned up" replica that still serves is worse than one that
         # crashed: the next boot fails on the bound port and mid-run evidence
         # keeps flowing from a process the harness believes dead. Fail loudly
         # instead of leaving an orphan.
-        orphans = [port for port in (18201, 18202) if not port_closed(port)]
+        orphans = kill_replicas_and_collect_orphans(procs, (18201, 18202))
         if orphans:
             raise RuntimeError(
                 f"replicas failed to become ready (r1={ok1}, r2={ok2}) and "
@@ -1169,6 +1213,15 @@ async def boot_stack(
     start_nginx(Path(args.out_dir))
     oklb = await wait_ready("lb", f"http://127.0.0.1:{LB_PORT}/health/live", None, 60)
     if not oklb:
+        # The same doctrine as the replica path: an LB boot failure must not
+        # leak the replicas. Observed 2026-10-06: a rejected nginx bind mount
+        # left both replicas serving, and the retry adopted them with
+        # "boot completed in 0.0s" and soaked stale state under a fresh DB.
+        orphans = kill_replicas_and_collect_orphans(procs, (18201, 18202))
+        if orphans:
+            raise RuntimeError(
+                f"LB did not become ready and orphaned servers still accept on ports {orphans}"
+            )
         raise RuntimeError("LB did not become ready")
     log("nginx LB ready")
     return procs, {"env2": env2, "boot_seconds": boot_seconds}
@@ -1650,6 +1703,10 @@ def main() -> None:
         claim_probe_cli(args.claim_probe[0], args.claim_probe[1], args.claim_due_at)
         return
 
+    # Absolute before anything boots: docker bind sources must be absolute
+    # (see resolve_out_dir), and every later Path(args.out_dir) consumer —
+    # replica logs, metrics, evidence — must agree on one directory.
+    args.out_dir = resolve_out_dir(args.out_dir)
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     evidence = asyncio.run(main_async(args))
     failed = failed_promotion_checks(evidence)

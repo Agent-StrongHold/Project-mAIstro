@@ -486,3 +486,80 @@ async def test_replica_selection_has_an_independent_production_allowance(
             assert (await first.get("/tasks", headers=headers)).status_code == 429
     finally:
         get_settings.cache_clear()
+
+
+# ─── boot hygiene (2026-10-06 incident chain) ────────────────────────────────
+
+
+def test_resolve_out_dir_gives_docker_an_absolute_bind_source(soak: ModuleType) -> None:
+    # `docker run -v` rejects relative bind sources; the driver must resolve
+    # --out-dir before the LB mount is attempted, not after replicas are up.
+    relative = soak.resolve_out_dir("docs/testing/soak/evidence")
+    assert Path(relative).is_absolute()
+    assert relative == str((Path.cwd() / "docs" / "testing" / "soak" / "evidence").resolve())
+    assert soak.resolve_out_dir("/tmp/soak-scratch") == "/tmp/soak-scratch"
+
+
+def test_boot_refuses_occupied_replica_ports(
+    soak: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A crashed earlier run's replicas must never be silently adopted as this
+    # run's samples (observed: "boot completed in 0.0s" against orphans, then
+    # a --fresh-db reset landed under the orphans' live pools).
+    monkeypatch.setattr(soak, "port_closed", lambda port, timeout=1.0: port != 18202)
+    with pytest.raises(RuntimeError, match=r"orphaned servers still accept.*18202"):
+        soak.ensure_replica_ports_free()
+    monkeypatch.setattr(soak, "port_closed", lambda port, timeout=1.0: True)
+    soak.ensure_replica_ports_free()
+
+
+def test_boot_failure_cleanup_kills_groups_and_reports_survivors(
+    soak: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[object] = []
+    monkeypatch.setattr(soak, "kill_replica", lambda proc: killed.append(proc))
+    monkeypatch.setattr(soak, "port_closed", lambda port, timeout=1.0: port != 18201)
+    procs = {"replica_1": object(), "replica_2": object()}
+    assert soak.kill_replicas_and_collect_orphans(procs, (18201, 18202)) == [18201]
+    assert len(killed) == 2
+
+
+async def test_lb_boot_failure_kills_both_replicas_instead_of_leaking_them(
+    soak: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-06: a rejected nginx bind mount raised while both replicas kept
+    serving; the retry adopted the orphans ("boot completed in 0.0s") and its
+    evidence measured stale state. The LB-failure path must end every replica
+    it started before raising — the same doctrine as the replica path."""
+    monkeypatch.setattr(soak, "ensure_postgres", lambda: None)
+    monkeypatch.setattr(soak, "ensure_replica_ports_free", lambda: None)
+    monkeypatch.setattr(soak, "reset_db_schema", lambda: None)
+    monkeypatch.setattr(soak, "run_migrations", lambda: None)
+    monkeypatch.setattr(soak, "replica_env", lambda *args, **kwargs: {})
+    procs: dict[str, object] = {}
+
+    def fake_start_replica(port: int, out_dir: Path, env: dict[str, str]) -> object:
+        procs[f"replica_{port}"] = object()
+        return procs[f"replica_{port}"]
+
+    async def fake_wait_ready(name: str, url: str, proc: object, timeout: int) -> bool:
+        return name != "lb"  # replicas become ready; the LB never does
+
+    killed: list[object] = []
+    monkeypatch.setattr(soak, "start_replica", fake_start_replica)
+    monkeypatch.setattr(soak, "wait_ready", fake_wait_ready)
+    monkeypatch.setattr(soak, "start_nginx", lambda out_dir: None)
+    monkeypatch.setattr(soak, "kill_replica", lambda proc: killed.append(proc))
+    monkeypatch.setattr(soak, "port_closed", lambda port, timeout=1.0: True)
+
+    args = SimpleNamespace(
+        fresh_db=True,
+        pool_size=1,
+        max_overflow=1,
+        rate_limit_per_minute=3000,
+        rate_limit_burst=100,
+        out_dir="/tmp/soak-boot-hygiene-test",
+    )
+    with pytest.raises(RuntimeError, match="LB did not become ready"):
+        await soak.boot_stack(args)
+    assert len(killed) == 2
