@@ -35,6 +35,14 @@ Fresh focused validation:
 - Exact assigned vulture command: passed, 1,332 findings / 1,335 reviewed
   identities, zero unclassified. No additional ledger edit justified.
 
+After merge commit f13e0c1d3, the exact vulture gate passed against the merged
+base: 1,332 reviewed identities / 1,332 findings. Root CI pytest selection
+(`tests/ --ignore=tests/tools/registry -x -q`, with REQUIRE_AUTH=false and
+MAISTRO_DRY_RUN=1) passed: 4,532 passed, 122 skipped. Inventory gates passed
+for tests/ (4,730) and core (14,156). In-memory ScriptDirectory mutations
+proved the existing guard rejects both head 057 and resurrected revision 043;
+no files were mutated in the regression experiment.
+
 Further acceptance validation and limitations are recorded in
 `repair-42-handoff.md`. The Docker socket is unavailable; skipped live-database
-cases must not be reported as acceptance passes. Local merge commit only.
+cases must not be reported as acceptance passes. Local commits only.
