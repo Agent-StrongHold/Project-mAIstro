@@ -455,3 +455,49 @@ Resolving the residual gate failure requires a decision outside this
 worktree: land the reviewed grant on the integration base first (two merges),
 or supply the real runtime consumer via the #1845 integration branch and
 retarget the leaf's PR accordingly.
+
+## 2026-10-06 round-3 exact-debt-ledger revalidation
+
+Independent re-execution at `adf87306123288c1278d8348199709be7a2428a8`
+(every claim below re-proven this round, not carried forward):
+
+- Exact Vulture gate (CI args) rc=1 with no candidate bookkeeping delta:
+  the candidate ledger is exact (0 unclassified, 0 never-allowlist, 0
+  unbanked/stale rows; 1,332 trusted rows -> 1,339 findings), and the sole
+  failure is trusted-base authorization of the same seven reviewed retained
+  identities against merge base `1e640df17c8a`.
+- `origin/develop` re-fetched this round: still `1e640df17c8a`. Its `vulture`
+  grant section contains no admission-identity entry and its baseline holds
+  zero `admission_identity` rows, so the two-merge authorization cannot be
+  sourced from any available base today.
+- `quality/` diff vs `origin/develop` is exactly +7 sorted rows in
+  `vulture-baseline.json` and nothing else — no ledger rows were lost in the
+  develop merge, and the candidate multiset matches the scan.
+- `tests/test_check_vulture_baseline.py` passes 10/10 at this head: the
+  round-1 ledger-sort repair holds, so the `test`/Coverage-gate failures CI
+  recorded at `c5e6440b8b7e` (unsorted rows reding
+  `test_committed_baseline_has_explicit_identities`) are fixed at this head;
+  only the structural reachability self-checks remain red
+  (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set` — 3 failed, 35 passed).
+- Focused DTO suite 77 passed; `ruff check .`, `ruff format --check .`, and
+  module `mypy` clean; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` matches (+77, unchanged front-matter).
+- `check-shipped-surface-truth.py`, `check-reachability-dispositions.py`, and
+  `check-promotion-surface.py` all rc=0; `check-reachability.py` rc=1 with
+  exactly one NEW unreachable module (`maistro.runs.admission_identity`);
+  `check-ratchet-provenance.py` rc=1 solely through that reachability
+  provenance sub-gate.
+- Contract-shape audit: `__all__` is set-exact against the issue's 21 names
+  (sorted form required by the repo's enabled RUF lint, which passes);
+  `AdmissionAssessment` carries exactly the six mandated member/value pairs;
+  all twelve issue-named tests are present; no production module references
+  `admission_identity` and `maistro/runs/__init__.py` does not export it.
+
+Verdict unchanged and now triple-confirmed: the seven identities are fixed
+issue contract, the CI-repair-permitted ledger amendment is already complete
+and exact, and no in-leaf edit can authorize trusted-base debt. Parent #1845
+integration (real consumer) or a develop-side reviewed grant remains the only
+path to a green `exact-debt-ledger`; per the issue's staging constraint this
+leaf is reported ready-but-blocked and left unmerged.
