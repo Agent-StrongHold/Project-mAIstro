@@ -1,0 +1,34 @@
+[project]
+name = "maistro-ext-harness"
+version = "0.9.0"
+description = "Local public-SDK host harness and extension-family conformance runner for MAIstro extensions (M9-H2, #974)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+# Deliberately empty. The harness is the tool a third-party CI installs; it
+# loads extension code, never the other way around. A stdlib-only runtime is
+# what lets an extension author's clean CI environment install this wheel and
+# run conformance without pulling any part of the MAIstro product — the
+# installability half of the issue's first acceptance criterion (the harness
+# must never teach an extension to depend on internals, and the cheapest way
+# to keep that promise is to depend on nothing).
+dependencies = []
+
+[project.scripts]
+maistro-ext-harness = "maistro_ext_harness.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maistro_ext_harness"]
+
+[tool.pytest.ini_options]
+# importlib mode keeps pytest from inserting this directory on sys.path, the
+# same rule the reference extension's own pyproject pins (#951): the suite
+# imports the installed `maistro_ext_harness` (dev extra at the repo root) or
+# fails, never a checkout-relative rescue.
+addopts = "--import-mode=importlib --strict-markers"
+testpaths = ["tests"]

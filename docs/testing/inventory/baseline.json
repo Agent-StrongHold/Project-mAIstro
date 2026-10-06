@@ -14,6 +14,7 @@
     "packages/maistro-turing/backend/tests": 69,
     "tests/": 4117,
     "extensions/reference-greeter/tests": 5,
+    "packages/maistro-ext-harness/tests": 0,
     "formal/": 664,
     "packages/hive-conductor/backend/tests": 2937,
     "packages/hive-conductor/tests/e2e": 23
