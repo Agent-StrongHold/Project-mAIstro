@@ -76,9 +76,10 @@ def _policy(**overrides: object) -> ExtensionSandboxPolicy:
 
 def _profile(**kwargs: object) -> ExtensionIsolationProfile:
     granted = kwargs.pop("granted", ("workspace.read",))
+    publisher = kwargs.pop("publisher", "acme")
     policy = kwargs.pop("policy", None) or _policy(**kwargs)
     return select_isolation_profile(
-        _manifest(tuple(granted)),  # type: ignore[arg-type]
+        _manifest(tuple(granted), publisher=publisher),  # type: ignore[arg-type]
         granted=tuple(granted),  # type: ignore[arg-type]
         trust=TRUSTED,
         policy=policy,  # type: ignore[arg-type]
@@ -397,6 +398,49 @@ class TestRepeatedViolationEscalation:
             r for r in caplog.records if "extension_repeated_sandbox_violations" in r.getMessage()
         ]
         assert len(escalated) == 1
+
+    async def test_escalation_count_is_independent_of_log_capacity(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Eviction from the bounded query window must not change when the
+        threshold fires or how often: a log too small to hold three entries
+        still escalates on the third violation, and a full log whose length
+        is pinned at the threshold does not re-escalate on every event."""
+        for capacity in (1, 2, 3, 4):
+            log = SandboxViolationLog(capacity=capacity)
+            runner = _runner(_KilledOnceBackend(), violations=log)
+            with caplog.at_level(logging.WARNING, logger="maistro.extensions.isolation"):
+                for _ in range(6):
+                    await runner.exec(_profile(), ["x"])
+            escalated = [
+                r
+                for r in caplog.records
+                if "extension_repeated_sandbox_violations" in r.getMessage()
+            ]
+            assert len(escalated) == 1, f"capacity={capacity} escalated {len(escalated)}x"
+            assert "count=3" in escalated[0].getMessage()
+            caplog.clear()
+
+    async def test_one_extensions_eviction_does_not_re_escalate_another(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two extensions interleaving in a tiny log evict each other's
+        entries; each still escalates exactly once at its own third hit."""
+        log = SandboxViolationLog(capacity=2)
+        runner = _runner(_KilledOnceBackend(), violations=log)
+        other = _profile(publisher="other")
+        with caplog.at_level(logging.WARNING, logger="maistro.extensions.isolation"):
+            for _ in range(6):
+                await runner.exec(_profile(), ["x"])
+                await runner.exec(other, ["x"])
+        escalated = [
+            r for r in caplog.records if "extension_repeated_sandbox_violations" in r.getMessage()
+        ]
+        assert len(escalated) == 2
+        assert {r.getMessage().split()[1].split("=")[1] for r in escalated} == {
+            "acme.chart_tools",
+            "other.chart_tools",
+        }
 
     async def test_violations_for_queries_by_identity_and_version(self) -> None:
         log = SandboxViolationLog()

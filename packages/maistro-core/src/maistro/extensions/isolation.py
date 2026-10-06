@@ -553,6 +553,11 @@ class SandboxViolationLog:
         if capacity < 1:
             raise ValueError("capacity must be at least 1")
         self._entries: deque[ExtensionSandboxViolation] = deque(maxlen=capacity)
+        # Escalation state lives outside the bounded deque: eviction must not
+        # change when the threshold fires or how often it does (the deque is
+        # an operator query window, not the escalation counter).
+        self._violation_counts: dict[tuple[str, str], int] = {}
+        self._escalated: set[tuple[str, str]] = set()
 
     def record(self, violation: ExtensionSandboxViolation) -> None:
         logger.warning(
@@ -564,14 +569,16 @@ class SandboxViolationLog:
             violation.sandbox_id or "-",
         )
         self._entries.append(violation)
-        repeated = self.violations_for(violation.extension_id, violation.version)
-        if len(repeated) == _ESCALATION_THRESHOLD:
+        key = (violation.extension_id, violation.version)
+        count = self._violation_counts[key] = self._violation_counts.get(key, 0) + 1
+        if count >= _ESCALATION_THRESHOLD and key not in self._escalated:
+            self._escalated.add(key)
             logger.warning(
                 "extension_repeated_sandbox_violations extension=%s version=%s count=%d "
                 "— candidate for disable/quarantine through canonical controls (M9-G4)",
                 violation.extension_id,
                 violation.version,
-                len(repeated),
+                count,
             )
 
     def violations_for(
