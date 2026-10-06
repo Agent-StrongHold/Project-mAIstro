@@ -1,0 +1,130 @@
+{
+  "schema": "m3a860.production-quick-probes/v1",
+  "captured_at": "2026-10-06T11:10:06.333533+00:00",
+  "stack": {
+    "git_head": "ad9b17cb9d25b4fab82799f6cc206a23e323234c",
+    "server_image_ids": [
+      "sha256:ef3698e0c56ae2827795254234adfd83af5a9bdad24839617e94d1ccccfa6ba0",
+      "sha256:e1952541787efab9ac80e8990d7c221b9e553bb5b5ab4f4874b3d8545d8c1102"
+    ],
+    "compose_config_sha256": "7ec2839b92d6bba8730b92f4881ff5e1a935d58b682bac3ceef6e552030ccc5b"
+  },
+  "phase_d_exactly_once_task_admission": {
+    "idempotency_key": "prod7-eo-62c22568a0474014add2b42b8d573098",
+    "statuses": {
+      "202": 12
+    },
+    "distinct_run_ids": 1,
+    "every_200_202_has_identity": true,
+    "statuses_subset_200_202_409": true
+  },
+  "phase_e_rate_limit": {
+    "round_1_note": "first burst round: in-container direct-replica bursts recorded cleanly; the host-side LB bursts faulted in the probe client (httpx .status vs .status_code) after the responses were served, so round-1 LB rows are excluded; their bucket consumption is visible in the round-1 direct-replica results (10 passes then burst rejections).",
+    "round_1_direct_replica_corroboration": {
+      "unauth_direct_r1_50": {
+        "statuses": {
+          "401": 10,
+          "429": 40
+        },
+        "retry_after": "59"
+      },
+      "unauth_direct_r2_50": {
+        "statuses": {
+          "401": 10,
+          "429": 40
+        },
+        "retry_after": "59"
+      },
+      "auth1_direct_r1_50": {
+        "statuses": {
+          "429": 50
+        },
+        "retry_after": "58"
+      },
+      "auth1_direct_r2_50": {
+        "statuses": {
+          "429": 50
+        },
+        "retry_after": "57"
+      },
+      "auth2_direct_r1_50": {
+        "statuses": {
+          "200": 10,
+          "429": 40
+        },
+        "retry_after": "57"
+      },
+      "auth2_selects_r2_50": {
+        "statuses": {
+          "200": 10,
+          "429": 40
+        },
+        "retry_after": "57"
+      },
+      "note": "auth1/auth2 share principal 'soak' (bucket principal:soak), hence identical treatment"
+    },
+    "round_2_isolated": {
+      "captured_at": "2026-10-06T11:13:35.640507+00:00",
+      "E1_same_ip_identity_direct_r1_60": {
+        "statuses": {
+          "401": 10,
+          "429": 50
+        },
+        "retry_after_values": [
+          "59"
+        ],
+        "x_rate_limit_remaining_seen": [
+          "0"
+        ],
+        "total": 60
+      },
+      "E1_elapsed_s": 0.22,
+      "E2_same_ip_identity_selects_r2_60": {
+        "statuses": {
+          "401": 10,
+          "429": 50
+        },
+        "retry_after_values": [
+          "59"
+        ],
+        "x_rate_limit_remaining_seen": [
+          "0"
+        ],
+        "total": 60
+      },
+      "E2_elapsed_s": 0.25,
+      "E3_principal_via_lb_150": {
+        "statuses": {
+          "200": 20,
+          "429": 130
+        },
+        "retry_after_values": [
+          "59"
+        ],
+        "x_rate_limit_remaining_seen": [
+          "0"
+        ],
+        "total": 150
+      },
+      "E4_429_response_shape": {
+        "status": 429,
+        "retry_after": "59",
+        "x_rate_limit_remaining": "0"
+      }
+    },
+    "effective_production_limits": {
+      "per_process": {
+        "requests_per_minute": 60,
+        "burst": 10
+      },
+      "source": "maistro-core security/resource_policy.py BASELINE_RATE_LIMIT_PER_MINUTE=60, BASELINE_RATE_LIMIT_BURST=10 (server Settings defaults; compose sets no override)"
+    },
+    "observed_semantics": "per-process enforcement: one ip-identity exhausted r1's burst (10 passes) and immediately obtained a fresh 10-pass allowance on r2 (E1->E2, ~0.25 s apart); the principal identity through the LB received 20 passes = 10+10 across the two replica limiters (E3). Aggregate allowance scales with replica selection, as documented (api/rate_limit.py:25-30); the issue's 'cannot be bypassed by replica selection' criterion is NOT met by this design and requires a shared-store budget decision.",
+    "metrics_gate": {
+      "unauth_401": true,
+      "auth_401": true,
+      "note": "GET /metrics gated for both unauthenticated and authenticated principals"
+    }
+  },
+  "promotion_disclaimer": "falsification probes on the production topology at the assigned head; not a promotion soak"
+}
