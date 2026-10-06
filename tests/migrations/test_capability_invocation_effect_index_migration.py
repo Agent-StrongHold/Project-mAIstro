@@ -84,14 +84,18 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # `056_user_model_facts`. Develop's quota-door revision (#1196/#718)
     # then claimed `055`'s child slot on develop as
     # `043_invocation_quota_door` — a third collision — so the quota door
-    # keeps develop's parent, and the branch-side revision that follows the
-    # deployed head is #863's planner-stability one: numbered `052` when
-    # written and re-parented onto the chain tip as `053`, `054`, and `056`
-    # in the earlier collisions, it re-parents onto develop's
-    # `056_user_model_facts` tip as `057` per the convention (the
-    # branch-side revision re-parents onto the incoming develop tip), so the
-    # single linear head is `057`.
-    walked = {item.revision for item in directory.walk_revisions("base", "057")}
+    # keeps develop's parent. Two branch-side revisions then followed the
+    # deployed head: develop's #863 planner-stability one, numbered `052`
+    # when written and re-parented onto the chain tip as `053`, `054`, and
+    # `056` in the earlier collisions, re-parented onto develop's
+    # `056_user_model_facts` tip as `057`; and this branch's Gauntlet
+    # provenance (#118, M4-B2) — `053` through six collision renumberings,
+    # most recently past develop's `053_learning_lifecycle_columns` —
+    # re-parented onto that quota-door tip `056` as `057_learning_
+    # validation_provenance` and now re-parents onto the planner-stability
+    # tip as `058_learning_validation_provenance`. The single linear head
+    # is `058`.
+    walked = {item.revision for item in directory.walk_revisions("base", "058")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -108,7 +112,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "055" in walked
     assert "056" in walked
     assert "043_invocation_quota_door" in walked
-    assert directory.get_heads() == ["057"]
+    assert "057" in walked
+    assert "058" in walked
+    assert directory.get_heads() == ["058"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
