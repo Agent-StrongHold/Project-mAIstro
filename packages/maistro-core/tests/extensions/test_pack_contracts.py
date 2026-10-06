@@ -36,7 +36,7 @@ import json
 from typing import Any, ClassVar
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from maistro.extensions.compatibility import (
     CompatibilityPolicy,
@@ -529,6 +529,28 @@ class TestCanonicalIdentityWins:
         assert template.template_id == "template-caller-pinned"
         assert persona.id == "persona-caller-pinned"
         assert rubric.rubric_id == "rubric-caller-pinned"
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_caller_rubric_bindings_are_revalidated(self) -> None:
+        registry = _active_registry()
+        kwargs: dict[str, Any] = {
+            "goal_id": GOAL_ID,
+            "goal_revision": GOAL_REVISION,
+            "workspace_id": WORKSPACE_ID,
+            "project_id": PROJECT_ID,
+            "authored_by": "principal-1",
+        }
+        # model_copy(update=...) skips validation; caller-supplied identity
+        # fields must still satisfy the canonical constraints.
+        manifest = registry.active_manifest("acme.film_critique")
+        base = {k: v for k, v in kwargs.items() if k != "goal_revision"}
+        with pytest.raises(ValidationError):
+            instantiate_rubric_asset(manifest, "scene", revision=0, **kwargs)
+        with pytest.raises(ValidationError):
+            instantiate_rubric_asset(manifest, "scene", goal_revision=0, **base)
+        with pytest.raises(ValidationError):
+            instantiate_rubric_asset(manifest, "scene", goal_revision=None, **base)  # type: ignore[arg-type]
 
 
 # --- AC-4: disable stops new use, deletes nothing ----------------------------

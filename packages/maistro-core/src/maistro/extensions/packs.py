@@ -1086,19 +1086,23 @@ def instantiate_rubric_asset(
     definition = asset.rubric
 
     rubric = _probe_rubric(definition, pack_id=manifest.pack_id)
-    return rubric.model_copy(
-        update={
+    # ``model_copy(update=...)`` does not validate, so revalidate the final
+    # model: caller-supplied ``revision``/``goal_revision`` must still satisfy
+    # the canonical ``ge=1`` constraints before reaching canonical stores.
+    return RubricSemantic.model_validate(
+        {
+            **rubric.model_dump(),
             "rubric_id": _canonical_id(rubric_id, "rubric_id"),
             "revision": revision,
             "goal_id": goal_id,
             "goal_revision": goal_revision,
             "workspace_id": workspace_id,
             "project_id": project_id,
-            "provenance": RubricProvenance(
-                authored_by=authored_by,
-                origin=ProvenanceOrigin.PACK,
-                pack_id=manifest.pack_id,
-            ),
+            "provenance": {
+                "authored_by": authored_by,
+                "origin": ProvenanceOrigin.PACK,
+                "pack_id": manifest.pack_id,
+            },
         }
     )
 
