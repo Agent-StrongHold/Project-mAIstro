@@ -556,6 +556,10 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
+      - run: uv run pytest packages/maistro-ext-sdk/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
       - run: uv run pytest tests/ --ignore=tests/tools/registry -v --tb=short
         env:
           REQUIRE_AUTH: "false"
