@@ -429,10 +429,15 @@ def _case_tool_handler_invocation(env: CaseEnvironment) -> CaseOutcome:
     try:
         handler = _tool_handler(env)
         result = env.host.invoke(env.loaded)
+    except HandlerRaised as exc:
+        # HandlerRaised IS a ContractError (HostError -> ContractError), so
+        # this clause must precede the ContractError clause: a handler that
+        # raised on invocation is a different verdict from a handler that
+        # never resolved, and the broader clause would otherwise swallow it
+        # and mislabel every raise as "did not resolve".
+        return CaseOutcome(False, f"tool handler raised on invocation: {exc}")
     except ContractError as exc:
         return CaseOutcome(False, f"tool handler did not resolve: {exc}")
-    except HandlerRaised as exc:
-        return CaseOutcome(False, f"tool handler raised on invocation: {exc}")
     return CaseOutcome(
         True,
         f"declared tool handler {getattr(handler, '__name__', '<object>')!r} "

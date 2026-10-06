@@ -195,3 +195,116 @@ def test_filesystem_paths_must_be_absolute(valid_manifest: dict[str, Any]) -> No
 def test_unreadable_manifest_fails_loudly(tmp_path: Path) -> None:
     with pytest.raises(ManifestRejected, match=r"unreadable"):
         load_manifest_file(tmp_path / "absent" / "extension.json")
+
+
+# ---------------------------------------------------------------------------
+# Authority-block shape rejections: every parse branch must fail loudly, so a
+# malformed declaration is a named rejection, never a silently empty grant.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "fragment"),
+    [
+        ("capabilities", "workspace.read", "list of strings"),
+        ("capabilities", ["workspace.read", 7], "list of strings"),
+        ("capabilities", ["workspace.read", "workspace.read"], "repeats a value"),
+        ("data", "workspace", "must be an object"),
+        ("network", 5, "must be an object"),
+        ("network", {"allow": ["not a host!"]}, "not host patterns"),
+        ("filesystem", [], "must be an object"),
+        ("filesystem", {"paths": ["/out"], "mode": "rw"}, "must be one of"),
+        ("secrets", "ACME_TOKEN", "must be a list"),
+        ("secrets", [{"name": "A"}, {}], "exactly 'name'"),
+        ("secrets", [{"name": "bad-name"}], "env-style name"),
+        ("secrets", [{"name": "A"}, {"name": "A"}], "repeat a reference name"),
+        ("dependencies", "other.lib", "must be a list"),
+        ("dependencies", ["other.lib"], "must be an object"),
+        ("dependencies", [{"id": "lib", "range": ">=1.0.0"}], "publisher"),
+        (
+            "network",
+            {"allow": ["api.example.com"], "allowed_ports": [70000]},
+            "ports 1..65535",
+        ),
+        ("entrypoint", "PLUGIN", "must be an object"),
+        (
+            "entrypoint",
+            {"module": "acme_widget.plugin", "object": "PLUGIN", "extra": 1},
+            "unknown key",
+        ),
+        ("entrypoint", {"module": "acme_widget./plugin", "object": "PLUGIN"}, "dotted import path"),
+        ("entrypoint", {"module": 7, "object": "PLUGIN"}, "non-empty string"),
+        ("entrypoint", {"module": "acme_widget.plugin", "object": "not-an-id"}, "identifier"),
+    ],
+)
+def test_authority_block_shape_rejections(
+    field: str,
+    value: object,
+    fragment: str,
+    valid_manifest: dict[str, Any],
+) -> None:
+    broken = {**valid_manifest, field: value}
+    with pytest.raises(ManifestRejected, match=fragment):
+        load_manifest_bytes(json.dumps(broken))
+
+
+def test_contract_range_mixing_a_pin_with_comparisons_rejected(
+    valid_manifest: dict[str, Any],
+) -> None:
+    """The one-major rule: pin with `==` alone, or comparisons alone — never
+    both in one range, which would pin nothing."""
+    broken = {**valid_manifest, "contract": "==1.0.0,>=1.0.0"}
+    with pytest.raises(ManifestRejected, match=r"pin exactly one major one way"):
+        load_manifest_bytes(json.dumps(broken))
+
+
+def test_omitted_data_block_defaults_to_no_scopes(valid_manifest: dict[str, Any]) -> None:
+    """The public SDK contract treats the whole `data` block as optional
+    (`DataAuthority.scopes` defaults empty); the harness's stdlib parser must
+    agree — an omitted block is an empty authority, not a rejection."""
+    lean = {k: v for k, v in valid_manifest.items() if k != "data"}
+    manifest = load_manifest_bytes(json.dumps(lean))
+    assert manifest.data_scopes == ()
+
+
+def test_network_allow_without_ports_declares_hosts_only(
+    valid_manifest: dict[str, Any],
+) -> None:
+    manifest = load_manifest_bytes(
+        json.dumps(
+            {
+                **valid_manifest,
+                "capabilities": ["network.outbound"],
+                "network": {"allow": ["api.example.com"]},
+            }
+        )
+    )
+    assert manifest.network_allow == ("api.example.com",)
+    assert manifest.network_ports == ()
+
+
+def test_network_allow_with_ports_declares_both(valid_manifest: dict[str, Any]) -> None:
+    manifest = load_manifest_bytes(
+        json.dumps(
+            {
+                **valid_manifest,
+                "capabilities": ["network.outbound"],
+                "network": {"allow": ["api.example.com"], "allowed_ports": [443, 8443]},
+            }
+        )
+    )
+    assert manifest.network_ports == (443, 8443)
+
+
+def test_filesystem_paths_without_a_filesystem_capability_rejected(
+    valid_manifest: dict[str, Any],
+) -> None:
+    """Detail without its capability is an inconsistent declaration — the
+    same cross-check the network and secrets axes enforce."""
+    broken = {
+        **valid_manifest,
+        "capabilities": [],
+        "filesystem": {"paths": ["/exports"], "mode": "read"},
+    }
+    with pytest.raises(ManifestRejected, match=r"filesystem\.read/write capability"):
+        load_manifest_bytes(json.dumps(broken))

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-ext-harness/tests: +72
+  packages/maistro-ext-harness/tests: +138
 ---
 # 974-ext-host-harness
 
@@ -11,11 +11,11 @@ stdlib-only runtime, console script `maistro-ext-harness`).
 
 ## What moved
 
-`packages/maistro-ext-harness/tests` is a **new suite** (72 collected node
+`packages/maistro-ext-harness/tests` is a **new suite** (138 collected node
 IDs), registered in `scripts/check-suite-inventory.py`'s `RECIPES`,
 `SUITE-INVENTORY.md`, and `inventory/baseline.json`. The suite did not exist
 at the last compaction, so its baseline entry is 0 and this note carries the
-whole `+70` — expected = 0 + 70, which is the same arithmetic the #951
+whole `+138` — expected = 0 + 138, which is the same arithmetic the #951
 registration reached the other way (baseline count, no delta). Collection needs no
 `PYTHONPATH` repair: the package is a workspace member installed by the root
 `dev` extra (the same wiring `extensions/reference-greeter` uses), and its
@@ -56,6 +56,19 @@ would be exactly the checkout-relative rescue extensions must not need.
   with the original cause, host-side cancellation refuses the invocation
   (observed through the handler's call record — no wall-clock timing), and
   release evicts the extension's modules.
+- **Detector failure branches** (`test_failure_detectors.py`, added in the
+  coverage repair): the conformance cases' rejection verdicts are the
+  runner's product, so each detector's False outcome is proven directly — a
+  context that lies about its capabilities, a grant wider than its
+  declaration, a host that swallows a raise or runs a cancelled handler, a
+  subject that swaps its manifest after validation, and the CLI's
+  could-not-run/reporting paths in-process (the subprocess CLI tests cannot
+  carry coverage). This batch also fixed a real detector bug it exposed:
+  `_case_tool_handler_invocation` caught `ContractError` before
+  `HandlerRaised`, which is its subclass, so a handler that raised on
+  invocation was mislabeled "did not resolve" and the raise branch was dead
+  code — the clauses are now ordered subclass-first with the hierarchy
+  documented at the site.
 
 ## Reconciliations recorded in the package README
 
