@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NoReturn, cast
 
 from pydantic import ValidationError
 
@@ -333,29 +333,30 @@ class PackAsset:
     rubric: PackRubricDefinition | None = None
 
 
+def _parse_graph_node(item: object, node_ids: set[str]) -> PackGraphNode:
+    """Validate one graph-node object, registering its id in ``node_ids``."""
+    if not isinstance(item, dict) or set(item) - {"node_id", "node_type", "name"}:
+        raise _reject("each graph node must have only node_id, node_type, name")
+    missing = [key for key in ("node_id", "node_type") if key not in item]
+    if missing:
+        raise _reject(f"graph node missing required keys: {missing}")
+    node_id = _require_str(item, "node_id")
+    if _ASSET_ID_RE.match(node_id) is None:
+        raise _reject(f"malformed graph node_id: {node_id!r}")
+    if node_id in node_ids:
+        raise _reject(f"duplicate graph node_id: {node_id!r}")
+    node_ids.add(node_id)
+    node_name = item.get("name", "")
+    if not isinstance(node_name, str):
+        raise _reject("graph node name must be a string")
+    return PackGraphNode(node_id=node_id, node_type=_require_str(item, "node_type"), name=node_name)
+
+
 def _parse_graph_nodes(raw_nodes: object) -> tuple[PackGraphNode, ...]:
     if not isinstance(raw_nodes, list) or not raw_nodes:
         raise _reject("graph nodes must be a non-empty list")
-    nodes: list[PackGraphNode] = []
     node_ids: set[str] = set()
-    for item in raw_nodes:
-        if not isinstance(item, dict) or set(item) - {"node_id", "node_type", "name"}:
-            raise _reject("each graph node must have only node_id, node_type, name")
-        missing = [key for key in ("node_id", "node_type") if key not in item]
-        if missing:
-            raise _reject(f"graph node missing required keys: {missing}")
-        node_id = _require_str(item, "node_id")
-        if _ASSET_ID_RE.match(node_id) is None:
-            raise _reject(f"malformed graph node_id: {node_id!r}")
-        if node_id in node_ids:
-            raise _reject(f"duplicate graph node_id: {node_id!r}")
-        node_ids.add(node_id)
-        node_type = _require_str(item, "node_type")
-        node_name = item.get("name", "")
-        if not isinstance(node_name, str):
-            raise _reject("graph node name must be a string")
-        nodes.append(PackGraphNode(node_id=node_id, node_type=node_type, name=node_name))
-    return tuple(nodes)
+    return tuple(_parse_graph_node(item, node_ids) for item in raw_nodes)
 
 
 def _parse_graph_edges(raw_edges: object, node_ids: set[str]) -> tuple[tuple[str, str], ...]:
@@ -377,6 +378,16 @@ def _parse_graph_edges(raw_edges: object, node_ids: set[str]) -> tuple[tuple[str
     return tuple(edges)
 
 
+def _parse_graph_entry_node(payload: dict[str, Any], node_ids: set[str]) -> str | None:
+    """The optional entry node: well-formed, and a node of this graph."""
+    entry_node = payload.get("entry_node")
+    if entry_node is not None and (not isinstance(entry_node, str) or not entry_node.strip()):
+        raise _reject("graph entry_node must be a non-empty string when present")
+    if entry_node is not None and entry_node not in node_ids:
+        raise _reject(f"graph entry_node {entry_node!r} is not a node of this graph")
+    return entry_node
+
+
 def _parse_graph_payload(payload: object) -> PackGraphDefinition:
     if not isinstance(payload, dict):
         raise _reject("graph payload must be an object")
@@ -391,22 +402,27 @@ def _parse_graph_payload(payload: object) -> PackGraphDefinition:
     description = payload.get("description", "")
     if not isinstance(description, str):
         raise _reject("graph description must be a string")
-    entry_node = payload.get("entry_node")
-    if entry_node is not None and (not isinstance(entry_node, str) or not entry_node.strip()):
-        raise _reject("graph entry_node must be a non-empty string when present")
 
     nodes = _parse_graph_nodes(payload["nodes"])
     node_ids = {node.node_id for node in nodes}
     edges = _parse_graph_edges(payload["edges"], node_ids)
-    if entry_node is not None and entry_node not in node_ids:
-        raise _reject(f"graph entry_node {entry_node!r} is not a node of this graph")
     return PackGraphDefinition(
         name=name,
         nodes=nodes,
         edges=edges,
         description=description,
-        entry_node=entry_node,
+        entry_node=_parse_graph_entry_node(payload, node_ids),
     )
+
+
+def _parse_persona_surfaces(payload: dict[str, Any]) -> list[str]:
+    """The optional ``surfaces`` list: strings, and none of them blank."""
+    surfaces_raw = payload.get("surfaces", [])
+    if not isinstance(surfaces_raw, list) or not all(isinstance(s, str) for s in surfaces_raw):
+        raise _reject("persona surfaces must be a list of strings")
+    if any(not surface.strip() for surface in surfaces_raw):
+        raise _reject("persona surfaces must be non-empty strings")
+    return surfaces_raw
 
 
 def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
@@ -427,11 +443,7 @@ def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
     if "name" not in payload:
         raise _reject("missing persona payload keys: ['name']")
     name = _require_str(payload, "name")
-    surfaces_raw = payload.get("surfaces", [])
-    if not isinstance(surfaces_raw, list) or not all(isinstance(s, str) for s in surfaces_raw):
-        raise _reject("persona surfaces must be a list of strings")
-    if any(not surface.strip() for surface in surfaces_raw):
-        raise _reject("persona surfaces must be non-empty strings")
+    _parse_persona_surfaces(payload)
     for key in ("defaults", "behavior"):
         if not isinstance(payload.get(key, {}), dict):
             raise _reject(f"persona {key} must be an object")
@@ -503,6 +515,22 @@ def _parse_rubric_dimension(item: object) -> PackRubricDimension:
     )
 
 
+def _parse_rubric_dimensions(payload: dict[str, Any]) -> tuple[PackRubricDimension, ...]:
+    """The required ``dimensions`` list: a non-empty list of valid dimensions."""
+    raw_dimensions = payload["dimensions"]
+    if not isinstance(raw_dimensions, list) or not raw_dimensions:
+        raise _reject("rubric dimensions must be a non-empty list")
+    return tuple(_parse_rubric_dimension(item) for item in raw_dimensions)
+
+
+def _parse_veto_dimension_ids(payload: dict[str, Any]) -> tuple[str, ...]:
+    """The optional ``veto_dimension_ids``: a list of strings when present."""
+    veto_raw = payload.get("veto_dimension_ids", [])
+    if not isinstance(veto_raw, list) or not all(isinstance(v, str) for v in veto_raw):
+        raise _reject("veto_dimension_ids must be a list of strings")
+    return tuple(veto_raw)
+
+
 def _parse_rubric_payload(payload: object) -> PackRubricDefinition:
     if not isinstance(payload, dict):
         raise _reject("rubric payload must be an object")
@@ -518,19 +546,11 @@ def _parse_rubric_payload(payload: object) -> PackRubricDefinition:
     if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
         raise _reject("rubric gate_pass_threshold must be a number")
 
-    raw_dimensions = payload["dimensions"]
-    if not isinstance(raw_dimensions, list) or not raw_dimensions:
-        raise _reject("rubric dimensions must be a non-empty list")
-    dimensions = tuple(_parse_rubric_dimension(item) for item in raw_dimensions)
-
-    veto_raw = payload.get("veto_dimension_ids", [])
-    if not isinstance(veto_raw, list) or not all(isinstance(v, str) for v in veto_raw):
-        raise _reject("veto_dimension_ids must be a list of strings")
     return PackRubricDefinition(
         name=name,
-        dimensions=dimensions,
+        dimensions=_parse_rubric_dimensions(payload),
         gate_pass_threshold=float(threshold),
-        veto_dimension_ids=tuple(veto_raw),
+        veto_dimension_ids=_parse_veto_dimension_ids(payload),
     )
 
 
@@ -710,6 +730,22 @@ def _parse_capabilities(raw: object) -> tuple[str, ...]:
 # --------------------------------------------------------------------------
 
 
+def _probe_asset(asset: PackAsset, *, pack_id: str) -> None:
+    """Dispatch one parsed asset to the canonical probe of its kind.
+
+    ``_parse_asset`` already guarantees the exactly-one payload block per
+    kind, so the probe reads it straight out of the kind's payload slot
+    (the ``cast`` documents that parse-time invariant for the type checker;
+    it never converts anything at runtime).
+    """
+    if asset.kind is PackAssetKind.GRAPH_TEMPLATE:
+        _probe_graph_template(cast(PackGraphDefinition, asset.graph))
+    elif asset.kind is PackAssetKind.PERSONA:
+        _probe_persona(cast(PackPersonaDefinition, asset.persona))
+    else:
+        _probe_rubric(cast(PackRubricDefinition, asset.rubric), pack_id=pack_id)
+
+
 def _canonical_probe_assets(manifest: PackManifest) -> None:
     """Construct (and discard) the canonical object each asset declares.
 
@@ -722,14 +758,7 @@ def _canonical_probe_assets(manifest: PackManifest) -> None:
     """
     for asset in manifest.assets:
         try:
-            if asset.kind is PackAssetKind.GRAPH_TEMPLATE and asset.graph is not None:
-                _probe_graph_template(asset.graph)
-            elif asset.kind is PackAssetKind.PERSONA and asset.persona is not None:
-                _probe_persona(asset.persona)
-            elif asset.kind is PackAssetKind.RUBRIC and asset.rubric is not None:
-                _probe_rubric(asset.rubric, pack_id=manifest.pack_id)
-            else:
-                raise _reject(f"asset {asset.asset_id!r} carries no {asset.kind.value} payload")
+            _probe_asset(asset, pack_id=manifest.pack_id)
         except (ValidationError, ValueError) as exc:
             raise _reject(
                 f"asset {asset.asset_id!r} payload fails canonical "
@@ -879,6 +908,25 @@ def inspect_pack_manifest(raw: bytes) -> PackManifest:
         raise _reject(f"payload fails canonical validation: {exc}") from exc
 
 
+def _parse_manifest_version(value: object) -> int:
+    """The envelope version: a plain int pinned to the one supported value."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value != SUPPORTED_PACK_MANIFEST_VERSION
+    ):
+        raise _reject(f"unsupported manifest_version: {value!r}")
+    return value
+
+
+def _parse_assets(raw_assets: object) -> tuple[PackAsset, ...]:
+    """The asset inventory: a non-empty list of unique (asset_id, version)."""
+    if not isinstance(raw_assets, list) or not raw_assets:
+        raise _reject("assets must be a non-empty list")
+    seen: set[tuple[str, str]] = set()
+    return tuple(_parse_asset(item, seen) for item in raw_assets)
+
+
 def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
     required = (
         "manifest_version",
@@ -898,26 +946,14 @@ def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
     missing = [key for key in required if key not in document]
     if missing:
         raise _reject(f"missing manifest keys: {missing}")
-    manifest_version = document["manifest_version"]
-    if (
-        isinstance(manifest_version, bool)
-        or not isinstance(manifest_version, int)
-        or manifest_version != SUPPORTED_PACK_MANIFEST_VERSION
-    ):
-        raise _reject(f"unsupported manifest_version: {manifest_version!r}")
+    manifest_version = _parse_manifest_version(document["manifest_version"])
     if document["kind"] != PACK_MANIFEST_KIND:
         raise _reject(f"unsupported manifest kind: {document['kind']!r}")
 
     pack_id, name, publisher, version, api_version = _parse_pack_identity(document)
 
-    raw_assets = document["assets"]
-    if not isinstance(raw_assets, list) or not raw_assets:
-        raise _reject("assets must be a non-empty list")
-    seen: set[tuple[str, str]] = set()
-    assets = tuple(_parse_asset(item, seen) for item in raw_assets)
-
     manifest = PackManifest(
-        manifest_version=SUPPORTED_PACK_MANIFEST_VERSION,
+        manifest_version=manifest_version,
         kind=PACK_MANIFEST_KIND,
         pack_id=pack_id,
         name=name,
@@ -926,7 +962,7 @@ def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
         api_version=api_version,
         capabilities=_parse_capabilities(document.get("capabilities", [])),
         dependencies=_parse_dependencies(document.get("dependencies")),
-        assets=assets,
+        assets=_parse_assets(document["assets"]),
         source_sha256=sha256_hex(raw),
         raw=raw,
     )
@@ -1355,29 +1391,44 @@ class InstallablePackRegistry:
                 versions[pack_id] = record.manifest.version
         return versions
 
-    def _require_record(
-        self, pack_id: str, version: str | None, *, active_only: bool
-    ) -> PackInstallRecord:
-        installed = [
+    def _records_for_pack(
+        self, pack_id: str, version: str | None
+    ) -> list[tuple[tuple[str, str], PackInstallRecord]]:
+        """Every installed record of one pack id, optionally version-pinned."""
+        return [
             (key, record)
             for key, record in self._records.items()
             if key[0] == pack_id and (version is None or key[1] == version)
         ]
+
+    @staticmethod
+    def _raise_unavailable(
+        pack_id: str,
+        version: str | None,
+        installed: list[tuple[tuple[str, str], PackInstallRecord]],
+    ) -> NoReturn:
+        """The typed refusal for a use gate with nothing active to answer."""
+        if installed:
+            # Installed but not active: the disabled record itself answers,
+            # with the operator's note surfaced verbatim.
+            disabled = max(installed, key=lambda entry: _semver_key(entry[0][1]))[1]
+            detail = f"; note: {disabled.note}" if disabled.note else ""
+            raise PackDisabledError(f"pack {pack_id!r} is disabled in this registry{detail}")
+        raise PackDisabledError(
+            f"pack {pack_id!r}"
+            + (f" at version {version!r}" if version else "")
+            + " has no active install in this registry"
+        )
+
+    def _require_record(
+        self, pack_id: str, version: str | None, *, active_only: bool
+    ) -> PackInstallRecord:
+        installed = self._records_for_pack(pack_id, version)
         candidates = [
             entry for entry in installed if not active_only or entry[1].state is PackState.ACTIVE
         ]
         if not candidates:
-            if installed:
-                # Installed but not active: the disabled record itself answers,
-                # with the operator's note surfaced verbatim.
-                disabled = max(installed, key=lambda entry: _semver_key(entry[0][1]))[1]
-                detail = f"; note: {disabled.note}" if disabled.note else ""
-                raise PackDisabledError(f"pack {pack_id!r} is disabled in this registry{detail}")
-            raise PackDisabledError(
-                f"pack {pack_id!r}"
-                + (f" at version {version!r}" if version else "")
-                + " has no active install in this registry"
-            )
+            self._raise_unavailable(pack_id, version, installed)
         # Highest active version wins when the caller does not pin one —
         # deterministic, and version-pinned callers are never surprised.
         _key, record = max(candidates, key=lambda entry: _semver_key(entry[0][1]))

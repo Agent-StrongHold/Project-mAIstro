@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +62
+  packages/maistro-core/tests: +123
 ---
 
 # 966 — Installable domain-pack contracts over canonical objects (M9-F1)
@@ -123,6 +123,52 @@ repair; the +58 above is the suite truth.
 - `InstallablePackRegistry` is the in-memory reference authority for the
   contract rules; the Workspace-scoped activation/config/upgrade/disable
   lifecycle over durable storage is #968 and must not grow here.
+
+## Repair round 5: quality-gate radon ratchet + diff-coverage floor (+61)
+
+The merge queue failed two gates on the feature head, both about
+`packs.py` itself and both fixed without touching any canonical model,
+ledger, or grant:
+
+- **radon CC ratchet** — six parse/registry helpers sat at C (11–14):
+  `_parse_graph_nodes`, `_parse_graph_payload`, `_parse_persona_payload`,
+  `_parse_rubric_payload`, `_inspect_document`, `_require_record`. Each was
+  split into single-purpose helpers (node/entry-node/surfaces/dimensions/
+  veto/version/assets parsers, `_probe_asset` kind dispatch,
+  `_records_for_pack`/`_raise_unavailable` registry lookups) with identical
+  rejection messages, so the scan returns to exactly the trusted base
+  (138 → 138, zero new/regressed/stale) and `quality/radon-baseline.json`
+  is untouched — no grant needed, because no new debt was banked. xenon's
+  block count also returns under its floor (146 → 140 ≤ 145).
+- **diff-coverage floor (per file, branches 80%)** — `packs.py` measured
+  76.7% of its 202 changed branch arcs. The new `TestFailClosedParseMatrix`
+  pins every remaining branch outcome of the fail-closed parser: one
+  mutation per row (envelope, identity, graph node/edge/entry shape,
+  persona surfaces/defaults/behavior, rubric dimensions/scales/veto, asset
+  keys, dependency id/range grammar, capabilities), each asserting its
+  specific rejection fragment; plus the entry-node-omitted positive arm and
+  instantiation guard rails (`TestInstantiationInputValidation`: blank
+  workspace/rubric bindings and blank caller-pinned ids refused, wrong-kind
+  assets name their kind), `test_activate_on_an_active_pack_changes_nothing`,
+  and `test_a_disabled_pack_does_not_satisfy_dependencies` (the active-
+  version view the M9 evaluator resolves against skips disabled records).
+  Measured with the two CI producers (core suite, scripts): every measured
+  changed file is at/above 90% lines / 80% branch arcs — `packs.py` at
+  99.5% lines / 98% branch outcomes — gate exit 0.
+
+The extensions suite goes 415 → 476 collected (+61); suite inventory
+re-checked with `scripts/check-suite-inventory.py`.
+
+Same round, develop sync: `origin/develop` advanced one commit (e28835544,
+M9-E2 connector SDK, #2007) after the first CI evaluation; merged as
+d2869d934 conflict-free (`quality/` row-identical to origin/develop by
+`git diff --numstat`), and the gates re-proven on the merge head: radon
+138 → 138, vulture 1332/1332, xenon 140 ≤ 145, pyright 21 = baseline (with
+the workflow's own `uv sync --locked --all-extras` + tool installs — an
+under-synced venv phantom-counts missing optional imports), diff coverage
+exit 0 against e28835544, and `check-ac-state.py --run-tests --ratchet
+--mandate e28835544` exit 0 against a real pg18 (0 criteria added,
+0 unproven; chain mandate clean).
 
 ## Repair round 4: develop-tip merge + M9-J3 canonical-truth-boundary reconciliation (this note carries the round)
 
