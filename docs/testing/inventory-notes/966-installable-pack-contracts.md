@@ -124,6 +124,35 @@ repair; the +58 above is the suite truth.
   contract rules; the Workspace-scoped activation/config/upgrade/disable
   lifecycle over durable storage is #968 and must not grow here.
 
+## Repair round 3: develop sync merge (this note carries the round)
+
+The lane brief's carried block (branch diverged from `origin/develop` while
+`_vulture_whitelist.py` and `extensions/__init__.py` both grew import/
+re-export blocks) resolved as a real merge: `origin/develop` (13 commits,
+through 626683154) merged into `auto-966` and committed as bd7637433. Both
+conflicts were additive on both sides and resolved by keeping both sides:
+the pack-contract imports/`__all__` names (#966) alongside the resolution/
+semver re-exports (#956), and both whitelist imports (`InstallablePackRegistry`,
+`LockState` — each referenced by its own whitelist entries below them).
+`quality/*.json` auto-resolved to develop's rows; verified row-lossless in
+both directions (develop's `memory-advanced-retrieval` rationale is the newer
+superset text; the four vulture rows develop drops correspond to code develop
+itself fixed).
+
+Re-proven on the merge head: vulture exact-debt 1332/1332 (develop's fixes
+shrank the ledger by the same 4 rows); supply chain re-run with security.yml's
+exact sequence (`uv sync --locked --all-extras`, `uv pip install pip-audit`,
+freeze, `pip-audit --strict --format=json`, `scripts/pip_audit_gate.py`) —
+gate exit 0, only the triaged `ecdsa PYSEC-2026-1325` remains; all 15 suites
+match the recorded inventory (14307 in `packages/maistro-core/tests` — the
+sum absorbed develop's 956/960/961 deltas additively, no new note needed);
+extensions suite 329 passed, a2a/capabilities 904 passed, learnings/persistence
+920 passed, pack-contracts + resolution + semver 146 passed; `check-merge-markers.py`,
+`check-reachability.py`, `check-ratchet-provenance.py`,
+`check-shipped-surface-truth.py`, `check-dependency-namespaces.py` all exit 0;
+mypy maistro-core clean. No test-count change from this round; the deltas
+above remain the suite truth.
+
 ## Repair round 2: boolean manifest_version (this note carries the round)
 
 The prior round's NEEDS-DEEP-REVIEW blocker (`packs.py:901` accepted a JSON
