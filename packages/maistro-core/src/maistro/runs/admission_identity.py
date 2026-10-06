@@ -237,7 +237,7 @@ class RootAdmissionEnvelope:
         if self.expires_at_us <= self.created_at_us:
             raise ValueError("expires_at_us must be strictly greater than created_at_us")
         for snapshot_name in ("request_snapshot", "receipt_snapshot", "provenance_snapshot"):
-            if not isinstance(getattr(self, snapshot_name), CanonicalJsonObject):
+            if type(getattr(self, snapshot_name)) is not CanonicalJsonObject:
                 raise ValueError(f"{snapshot_name} must be a CanonicalJsonObject")
 
 
@@ -271,7 +271,7 @@ class AdmissionRecordV2:
     format_version: Literal[2] = field(default=2, init=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.envelope, RootAdmissionEnvelope):
+        if type(self.envelope) is not RootAdmissionEnvelope:
             raise ValueError(
                 f"envelope must be a RootAdmissionEnvelope, not {type(self.envelope).__name__}"
             )
@@ -284,7 +284,7 @@ class AdmissionRecordV2:
                 "lease_expires_at_us must satisfy created_at_us <= lease <= expires_at_us"
             )
         if self.binding is not None:
-            if not isinstance(self.binding, AdmissionBinding):
+            if type(self.binding) is not AdmissionBinding:
                 raise ValueError(
                     f"binding must be an AdmissionBinding, not {type(self.binding).__name__}"
                 )
@@ -332,7 +332,7 @@ class LegacyAdmissionRecord:
 
     def __post_init__(self) -> None:
         _require_hex64(self.fingerprint, "fingerprint")
-        if not isinstance(self.request_snapshot, CanonicalJsonObject):
+        if type(self.request_snapshot) is not CanonicalJsonObject:
             raise ValueError(
                 f"request_snapshot must be a CanonicalJsonObject, not {type(self.request_snapshot).__name__}"
             )
@@ -341,7 +341,7 @@ class LegacyAdmissionRecord:
         _require_microseconds(self.lease_expires_at_us, "lease_expires_at_us")
         if self.expires_at_us <= self.created_at_us:
             raise ValueError("expires_at_us must be strictly greater than created_at_us")
-        if self.binding is not None and not isinstance(self.binding, AdmissionBinding):
+        if self.binding is not None and type(self.binding) is not AdmissionBinding:
             raise ValueError(
                 f"binding must be an AdmissionBinding, not {type(self.binding).__name__}"
             )
@@ -371,7 +371,7 @@ class RootAdmissionResult:
     def __post_init__(self) -> None:
         _require_identity_string(self.run_id, "run_id")
         _require_identity_string(self.receipt_id, "receipt_id")
-        if not isinstance(self.run_snapshot, CanonicalJsonObject):
+        if type(self.run_snapshot) is not CanonicalJsonObject:
             raise ValueError(
                 f"run_snapshot must be a CanonicalJsonObject, not {type(self.run_snapshot).__name__}"
             )
@@ -390,9 +390,9 @@ class Claimed:
     record: AdmissionRecordV2
 
     def __post_init__(self) -> None:
-        if not isinstance(self.ticket, AdmissionTicket):
+        if type(self.ticket) is not AdmissionTicket:
             raise ValueError(f"ticket must be an AdmissionTicket, not {type(self.ticket).__name__}")
-        if not isinstance(self.record, AdmissionRecordV2):
+        if type(self.record) is not AdmissionRecordV2:
             raise ValueError(
                 f"record must be an AdmissionRecordV2, not {type(self.record).__name__}"
             )
@@ -412,7 +412,7 @@ class Replayed:
     record: AdmissionRecordV2 | LegacyAdmissionRecord
 
     def __post_init__(self) -> None:
-        if not isinstance(self.record, (AdmissionRecordV2, LegacyAdmissionRecord)):
+        if type(self.record) not in (AdmissionRecordV2, LegacyAdmissionRecord):
             raise ValueError(
                 f"record must be an AdmissionRecordV2 or LegacyAdmissionRecord, "
                 f"not {type(self.record).__name__}"
@@ -429,7 +429,7 @@ class Pending:
     record: AdmissionRecordV2
 
     def __post_init__(self) -> None:
-        if not isinstance(self.record, AdmissionRecordV2):
+        if type(self.record) is not AdmissionRecordV2:
             raise ValueError(
                 f"record must be an AdmissionRecordV2, not {type(self.record).__name__}"
             )
@@ -444,7 +444,7 @@ class LegacyUnresolved:
     record: LegacyAdmissionRecord
 
     def __post_init__(self) -> None:
-        if not isinstance(self.record, LegacyAdmissionRecord):
+        if type(self.record) is not LegacyAdmissionRecord:
             raise ValueError(
                 f"record must be a LegacyAdmissionRecord, not {type(self.record).__name__}"
             )
@@ -469,7 +469,7 @@ class AlreadyBound:
     binding: AdmissionBinding
 
     def __post_init__(self) -> None:
-        if not isinstance(self.binding, AdmissionBinding):
+        if type(self.binding) is not AdmissionBinding:
             raise ValueError(
                 f"binding must be an AdmissionBinding, not {type(self.binding).__name__}"
             )

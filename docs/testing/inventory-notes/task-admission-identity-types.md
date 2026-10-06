@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +76
+  packages/maistro-core/tests: +77
 ---
 
 # #1851 root-admission identity types
@@ -213,6 +213,15 @@ module mypy, and the 76-case DTO suite passed. The core inventory check matched
 13,844 node IDs, preserving this suite's `+76` delta. A production-source
 search found no import of `admission_identity`, as required for this inactive
 leaf.
+
+## Exact nested DTO type validation
+
+The contract requires nested DTO and binding fields to use their exact declared
+type or union. A subclass passes `isinstance` but is not the declared immutable
+snapshot/identity type, so the constructors now reject it with `ValueError`.
+`test_nested_dtos_require_exact_declared_types` covers every nested snapshot,
+binding, ticket, record, and union position. This adds one collected node; the
+suite delta is now `+77`.
 
 The exact Vulture gate found 1,351 findings and reports the same nine reviewed
 DTO identities as new relative to trusted base `c560d4ccad82`; candidate ledger

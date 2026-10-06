@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, dataclass, fields
+from typing import Any
 
 import pytest
 
@@ -104,6 +105,15 @@ def _legacy(**overrides: object) -> LegacyAdmissionRecord:
 
 def _run_snapshot(run_id: str = "run-1") -> CanonicalJsonObject:
     return CanonicalJsonObject(text=json.dumps({"run_id": run_id, "status": "pending"}))
+
+
+def _subclass_copy(base: type[object], instance: object) -> object:
+    """Construct a frozen dataclass subclass carrying an otherwise valid value."""
+    subclass = dataclass(frozen=True, slots=True)(type("ContractSubclass", (base,), {}))
+    constructor: Any = subclass
+    return constructor(
+        **{item.name: getattr(instance, item.name) for item in fields(instance) if item.init}
+    )
 
 
 # --- module-local API ------------------------------------------------------
@@ -235,6 +245,41 @@ def test_canonical_json_normalizes_excessive_nesting_to_value_error() -> None:
 
 
 # --- immutability ----------------------------------------------------------
+
+
+def test_nested_dtos_require_exact_declared_types() -> None:
+    snapshot = CanonicalJsonObject(text='{"value": 1}')
+    snapshot_subclass = _subclass_copy(CanonicalJsonObject, snapshot)
+    binding = _binding()
+    binding_subclass = _subclass_copy(AdmissionBinding, binding)
+    envelope = _envelope()
+    envelope_subclass = _subclass_copy(RootAdmissionEnvelope, envelope)
+    record = _record()
+    record_subclass = _subclass_copy(AdmissionRecordV2, record)
+    legacy = _legacy()
+    legacy_subclass = _subclass_copy(LegacyAdmissionRecord, legacy)
+    ticket_subclass = _subclass_copy(AdmissionTicket, _ticket())
+
+    invalid_builders = (
+        lambda: _envelope(request_snapshot=snapshot_subclass),
+        lambda: _record(envelope=envelope_subclass),
+        lambda: _record(binding=binding_subclass),
+        lambda: _legacy(request_snapshot=snapshot_subclass),
+        lambda: _legacy(binding=binding_subclass),
+        lambda: RootAdmissionResult(
+            run_id="run-1", receipt_id="receipt-1", run_snapshot=snapshot_subclass, created=True
+        ),
+        lambda: Claimed(ticket=ticket_subclass, record=record),
+        lambda: Claimed(ticket=_ticket(), record=record_subclass),
+        lambda: Replayed(record=_record(binding=binding_subclass)),
+        lambda: Replayed(record=legacy_subclass),
+        lambda: Pending(record=record_subclass),
+        lambda: LegacyUnresolved(record=legacy_subclass),
+        lambda: AlreadyBound(binding=binding_subclass),
+    )
+    for build in invalid_builders:
+        with pytest.raises(ValueError):
+            build()
 
 
 def test_identity_dtos_are_frozen_and_snapshot_fields_are_immutable() -> None:
