@@ -776,3 +776,86 @@ to the parent #1845 integration (runtime consumer + wiring) or an
 orchestrator sequencing decision. Reported per the issue's directive:
 implementation/test readiness plus the explicit merge blocker; stack left
 unmerged. Escalated as NEEDS-DEEP-REVIEW.
+
+## 2026-10-06 round-9 independent revalidation of the four named CI gates
+
+Round 8's driver completed every deterministic check at this head but died on
+a provider timeout before recording a verdict, so this round re-derived the
+evidence from scratch at the exact head `77f0d3a091fa` (base `df00785bb41b`).
+No tree change was needed: every red in the last merge-queue evaluation
+(c5e6440b8b7e) is either already cured at this head or is the one structural
+reachability blocker this note documents.
+
+- **exact-debt-ledger**: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (the job's exact argv)
+  rc=0, 1,332 reviewed -> 1,332 findings — the c5e6440b8 vulture failure stays
+  cured. The job's first step, `check-ratchet-provenance.py`, still exits 1
+  via the reachability sub-ratchet only (`maistro.runs.admission_identity`:
+  NEW unreachable absent from trusted base and not previously authorized;
+  verified `quality/ratchet-authorizations.json` is byte-identical to base and
+  contains no grant for the module — the two-merge rule puts that grant on the
+  integration base, not this branch). `check-shipped-surface-truth.py` rc=0.
+- **Quality gate (Pillars 1–4, 7, 8)**: every script pillar re-run green at
+  this head — radon ledger 138 -> 138, promotion surface ok, reachability
+  dispositions ok (49 groups / 170 modules), shipped-surface ok, enumerations,
+  route-permissions, principal-identity, workspace-retirement,
+  frontend-typed-client, doc-links, backlog-consistency, convergence-matrix,
+  security-inventory, workflow-inventory, image-inventory, image-pins,
+  credential-authority, wiring-reads, agent-store-writes, contract-markers,
+  `bump_version.py --check`, release consistency ("released none, shipping
+  0.9.0, working toward 1.0.0"), vendored IFEval/BFCL provenance, and xenon
+  (140 blocks <= 145 baseline; 0 module-rank; 0 average). `ruff check .` and
+  `ruff format --check .` clean tree-wide (3,092 files); `mypy
+  packages/maistro-core/src` clean (747 files); module-scoped mypy clean.
+  Sole red: `check-reachability.py` rc=1 with exactly the one NEW unreachable
+  module — the issue-predicted structural blocker.
+- **test**: all package suites green at this head — maistro-core 13,761
+  passed / 940 skipped (PostgreSQL legs skip exactly as in CI's no-services
+  coverage job), server 531, canvas 464, turing 300 (incl. backend),
+  design + ext-harness + ext-sdk 828, evolve 987 (see Docker note below), rsi
+  1,111, bootstrap 232, root `tests/` 4,540 passed / 128 skipped with exactly
+  3 failures: `test_check_reachability.py::test_baseline_matches_the_tree` and
+  the two `test_reachability_baseline_identity.py` identity tests — the root
+  suite's expression of the same reachability-baseline structural red
+  (baseline must equal the tree's unreachable set; the candidate adds one
+  unauthorized module). The c5e6440b8 test-job root cause named in round 3
+  (unsorted banked vulture identities) is verified fixed:
+  `tests/test_check_vulture_baseline.py` 10/10 pass. Focused suite 77 passed.
+  Suite inventory ok at 14,702 collected node IDs for
+  `packages/maistro-core/tests` (expected 14,702 = baseline 7,690 + all
+  unfolded note deltas including this leaf's +77; re-proven twice — the
+  round-8 driver log and this round's run).
+- **Coverage gate (publish-set floor + diff coverage)**: fully replicated
+  locally at this head. All five publish-set producers run with CI's exact
+  argv and appended into one branch database (core 4m38s, canvas 464, evolve
+  987, rsi 1,111, bootstrap 232): `coverage report --fail-under=87` -> **92%
+  TOTAL, exit 0**. `coverage xml` over the same database and
+  `check-diff-coverage.py --base df00785bb41b` -> **ok: 1 changed file(s)
+  measured** — `admission_identity.py` at 99.6% lines / 95.1% branch arcs
+  (244/245 lines hit) against the 90/80 floors; the focused test file is
+  exempt ("test code is the evidence"), `_vulture_whitelist.py` is outside
+  every measured root by design and listed, not scored. Both halves of the
+  c5e6440b8 coverage failure are cured at this head.
+
+Corrections and environment notes for future rounds:
+
+- Round 8 recorded "14,581 node IDs" for the scoped maistro-core inventory;
+  the actual collected and expected count at `28902b9ce`/`77f0d3a09` is
+  **14,702** (the round-8 number predates the df00785bb merge's +121 and was
+  mis-transcribed into its evidence block). The gate is green at 14,702; the
+  leaf delta is unchanged at +77.
+- `packages/maistro-evolve/tests/benchmarks/test_swebench.py` fails 3 tests
+  when no Docker daemon answers at the default socket ("Cannot connect to the
+  Docker daemon"); with the machine's rootless dockerd
+  (`DOCKER_HOST=unix:///run/user/1000/docker.sock`) the same suite passes
+  987/987. CI runners always have Docker, so the coverage-unit producer is
+  green there; run the evolve producer with a live daemon locally.
+
+Round-9 verdict: unchanged in substance. The four named merge-queue failures
+at c5e6440b8 are, at this head: two fully cured and locally proven (vulture
+ledger; both coverage-gate halves), one cured at its named root cause (test
+gate), and one — the reachability new-unreachable expressed through the
+provenance, quality, and root-suite gates — structural, issue-predicted, and
+forbidden to cure in-leaf. The leaf remains implementation- and test-complete
+with the explicit merge blocker recorded; integration, the base-side
+reachability grant, or wiring belongs to parent #1845. Stack left unmerged.
