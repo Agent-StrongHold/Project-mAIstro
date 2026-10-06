@@ -277,6 +277,13 @@ class Learning:
     #: Gauntlet provenance (#118): which independent validator accepted, and when.
     validated_by: str = ""
     validated_at: datetime | None = None
+    #: The Gauntlet's full audit trail (M4-B2): the evaluator build that ran
+    #: the trials, the exact canonical evaluation Runs that justified the
+    #: acceptance, and the content hash of the frozen candidate that was
+    #: judged. Blank/empty is the honest "never validated".
+    validated_evaluator_version: str = ""
+    validation_run_ids: list[str] = field(default_factory=list)
+    validation_content_hash: str = ""
     #: Promotion actor (ADR-103): who committed the validated claim for reuse.
     promoted_by: str = ""
     #: Supersession links (#120). Both rows survive: institutional knowledge is
