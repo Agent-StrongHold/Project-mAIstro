@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from maistro_registry.citations import CitationProblem, check_citations
 from maistro_registry.dag import Cycle, DuplicateId, find_cycles, find_duplicate_ids
@@ -33,31 +34,89 @@ from maistro_registry.linker import (
 from maistro_registry.schema import FrontMatter
 from maistro_registry.validator import ValidationResult, validate_file
 
-# Walked file patterns. Order is for determinism, not precedence.
-_WALK_PATTERNS: tuple[str, ...] = (
-    "docs/adr/ADR-*.md",
-    "docs/specs/**/*.md",
+# Walked trees. Every Markdown file under either tree is a candidate registry
+# record, and both are walked recursively (rglob includes the tree root
+# itself): a decision document cannot escape validation by living in a
+# subdirectory, and — unlike the pre-#813 `docs/adr/ADR-*.md` glob — not by
+# lacking the `ADR-` prefix either. Specs were always recursive; ADRs now
+# match them, so the two kinds cannot drift apart on discovery (#813 AC-1/4).
+_WALK_TREES: tuple[str, ...] = (
+    "docs/adr",
+    "docs/specs",
 )
+
+#: Scaffolding templates (e.g. ADR-000-template.md) carry placeholder ids/dates
+#: by design and are not real registry records. Match the "-template.md" suffix
+#: precisely — a substring check on "template" would wrongly skip real records
+#: like ADR-033-templates-and-copier-workflow.md.
+_TEMPLATE_SUFFIX = "-template.md"
+
+#: The one, total skip list for the walk (#813).
+#:
+#: A Markdown file under a walked tree is a registry record and is validated
+#: unless its exact filename is declared here with a reason. `_walk` applies
+#: no other filter, so this list is total by construction: a newly added
+#: Markdown file defaults to walked-and-validated — and `lint --strict` fails
+#: on it until it carries front matter — so it cannot silently fall outside
+#: validation (#813 AC-2). Every entry states its disposition, because a bare
+#: filename with an undocumented reason is exactly the implicit exclusion set
+#: #813 started from.
+#:
+#: The decision ledgers are dispositioned rather than validated because they
+#: *record* decisions without being decision records: each disposition they
+#: carry cites the ADR (`←ADR-NNN`) whose own front matter is what the
+#: registry validates. Naming them here is a declared contract, not a filename
+#: accident — the #813 stop condition forbids hiding a decision-bearing file
+#: merely for lacking the `ADR-` prefix, and any new decision-bearing file
+#: outside this list is walked.
+NON_RECORD_FILES: Mapping[str, str] = MappingProxyType(
+    {
+        "README.md": (
+            "navigation aid, not a record; docs/specs/README.md is itself "
+            "generated (scripts/generate-spec-ac-defined-index.py)"
+        ),
+        "ADR-INDEX.md": (
+            "the derived index (ADR-031 §5); the records it summarises carry "
+            "their own front matter, audited by scripts/check-adr-index.py"
+        ),
+        "OUT-OF-SCOPE.md": (
+            "settled-dispositions ledger; each disposition cites the ADR that "
+            "owns it, and that ADR's front matter is what the registry validates"
+        ),
+        "DECISION-BACKLOG.md": (
+            "historical (2026-05) open-decisions snapshot; live decision "
+            "tracking moved to BACKLOG.md / ROADMAP.md / ADR-INDEX.md"
+        ),
+    }
+)
+
+
+def disposition(path: Path) -> str:
+    """Why the walk does or does not validate `path`: 'record', or the reason.
+
+    The single classification `_walk` applies, kept separate so tests (and
+    readers) can ask why any given file is or is not validated without
+    re-deriving the rules from `_walk`'s body.
+    """
+    if path.name.endswith(_TEMPLATE_SUFFIX):
+        return "scaffolding template (placeholder ids/dates by design)"
+    non_record = NON_RECORD_FILES.get(path.name)
+    if non_record is not None:
+        return f"declared non-record: {non_record}"
+    return "record"
 
 
 def _walk(root: Path) -> Iterable[Path]:
     seen: set[Path] = set()
-    for pattern in _WALK_PATTERNS:
-        for p in root.glob(pattern):
-            # Skip scaffolding templates (e.g. ADR-000-template.md): they carry
-            # placeholder ids/dates by design and are not real registry records.
-            # Match the "-template.md" suffix precisely — a substring check on
-            # "template" would wrongly skip real records like
-            # ADR-033-templates-and-copier-workflow.md.
-            if p.name.endswith("-template.md"):
+    for tree in _WALK_TREES:
+        base = root / tree
+        if not base.is_dir():
+            continue
+        for p in sorted(base.rglob("*.md")):
+            if not p.is_file() or p in seen:
                 continue
-            # Skip index/readme docs: they are navigation aids, not registry
-            # records (the inventory is derived per ADR-031 §5), so they carry
-            # no front-matter by design.
-            if p.name in ("README.md", "ADR-INDEX.md"):
-                continue
-            if p.suffix == ".md" and p.is_file() and p not in seen:
-                seen.add(p)
+            seen.add(p)
+            if disposition(p) == "record":
                 yield p
 
 

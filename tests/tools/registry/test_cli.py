@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from maistro_registry.cli import _walk, main
+from maistro_registry.cli import NON_RECORD_FILES, _walk, disposition, main
 
 _VALID_SPEC = """\
 ---
@@ -31,6 +31,12 @@ owners:
 
 # SPEC-001: A real record
 """
+
+
+_VALID_ADR = _VALID_SPEC.replace("SPEC-001", "ADR-901").replace("kind: spec", "kind: adr")
+
+#: The real repository root (tests/tools/registry/test_cli.py -> parents[3]).
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
@@ -60,6 +66,80 @@ class TestWalkDiscovery:
         (nested / "SPEC-002-nested.md").write_text(_VALID_SPEC)
         found = {p.name for p in _walk(repo_root)}
         assert "SPEC-002-nested.md" in found
+
+    def test_finds_nested_adr_files(self, repo_root: Path) -> None:
+        # Discovery asymmetry regression (#813 AC-4): specs were walked
+        # recursively while ADRs were not, so a decision document in a
+        # subdirectory silently bypassed validation. A nested ADR must be
+        # discovered exactly like a nested spec.
+        nested = repo_root / "docs" / "adr" / "sub"
+        nested.mkdir()
+        (nested / "ADR-901-nested.md").write_text(_VALID_ADR)
+        found = {p.name for p in _walk(repo_root)}
+        assert "ADR-901-nested.md" in found
+
+    def test_unprefixed_decision_document_is_walked(
+        self, repo_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The #813 stop condition: a decision-bearing file must not be
+        # invisible merely because its filename lacks the `ADR-` prefix. The
+        # old `docs/adr/ADR-*.md` glob excluded it silently; the recursive
+        # walk validates it by default, and --strict fails loudly until it
+        # carries front matter — it cannot fall outside validation quietly.
+        adr = repo_root / "docs" / "adr"
+        (adr / "PLATFORM-DECISION.md").write_text("# decision, no front matter yet")
+        assert "PLATFORM-DECISION.md" in {p.name for p in _walk(repo_root)}
+        assert main(["walk", str(repo_root), "--strict"]) == 1
+        assert "PLATFORM-DECISION.md" in capsys.readouterr().out
+
+    def test_non_record_disposition_is_by_declared_name_not_prefix(self, repo_root: Path) -> None:
+        # OUT-OF-SCOPE.md is skipped because NON_RECORD_FILES declares it, not
+        # because of how it is spelt: the same bytes under a different name are
+        # walked (#813 AC-3 + stop condition).
+        adr = repo_root / "docs" / "adr"
+        (adr / "OUT-OF-SCOPE.md").write_text("# ledger")
+        (adr / "OUT-OF-SCOPE-COPY.md").write_text("# same content, different name")
+        found = {p.name for p in _walk(repo_root)}
+        assert "OUT-OF-SCOPE.md" not in found
+        assert "OUT-OF-SCOPE-COPY.md" in found
+
+    def test_decision_ledgers_are_declared_non_records(self) -> None:
+        # The declared contract must name both ledgers explicitly, each with a
+        # stated reason — a bare filename would recreate the implicit
+        # exclusion set #813 began from.
+        for name in ("OUT-OF-SCOPE.md", "DECISION-BACKLOG.md"):
+            assert name in NON_RECORD_FILES
+            assert NON_RECORD_FILES[name].strip()
+        assert disposition(Path("docs/adr/OUT-OF-SCOPE.md")).startswith("declared non-record:")
+        assert disposition(Path("docs/adr/ADR-000-template.md")).startswith("scaffolding template")
+        assert disposition(Path("docs/adr/ADR-031-front-matter-and-registry.md")) == "record"
+
+    @pytest.mark.skipif(
+        not (REPO_ROOT / "docs" / "adr").is_dir(),
+        reason="real docs/adr corpus not present (installed-package context)",
+    )
+    def test_real_corpus_fully_dispositioned(self) -> None:
+        # Totality, against the corpus CI actually gates (#813 AC-1/2/3):
+        # every Markdown file under either walked tree is either validated as
+        # a record or carries an explicit disposition — none is silently
+        # outside. In particular the two decision ledgers must be explicitly
+        # dispositioned rather than missed by the old non-recursive,
+        # ADR-prefixed glob.
+        corpus = {
+            p
+            for tree in ("docs/adr", "docs/specs")
+            for p in (REPO_ROOT / tree).rglob("*.md")
+            if p.is_file()
+        }
+        walked = set(_walk(REPO_ROOT))
+        assert corpus, "sanity: the real corpus is non-empty"
+        for path in corpus:
+            if disposition(path) == "record":
+                assert path in walked, f"{path} is a record but the walk missed it"
+            else:
+                assert path not in walked, f"{path} has a disposition but was walked"
+        ledger_names = {p.name for p in corpus} & set(NON_RECORD_FILES)
+        assert {"OUT-OF-SCOPE.md", "DECISION-BACKLOG.md"} <= ledger_names
 
 
 class TestStrictFlag:
