@@ -118,6 +118,16 @@ class DuplicateCheckError(CertificationError):
     """Two checks in one certification run share a check id."""
 
 
+class UnboundCheckError(CertificationError):
+    """A bundle-bound check was built for a bundle other than the certified one.
+
+    Checks that execute against package bytes capture their bundle at
+    construction. Certification refuses to run such a check against a
+    different bundle than the one whose digests the report will describe,
+    so the evidence in the report can only come from the certified bytes.
+    """
+
+
 class CheckOutcome(StrEnum):
     """The four truthful answers a check can give.
 
@@ -179,6 +189,11 @@ class CertificationCheck(Protocol):
     title: str
 
     def run(self) -> CheckResult: ...
+
+
+#: Checks that execute against a specific :class:`ExtensionBundle` expose it
+#: through a ``bound_bundle`` attribute; :func:`certify` refuses a run in
+#: which such a check is bound to any bundle but the one being certified.
 
 
 @dataclass(frozen=True)
@@ -428,6 +443,11 @@ class PackageStructureCheck:
     def __init__(self, bundle: ExtensionBundle) -> None:
         self._bundle = bundle
 
+    @property
+    def bound_bundle(self) -> ExtensionBundle:
+        """The bundle this check executes against (binding validation)."""
+        return self._bundle
+
     def run(self) -> CheckResult:
         parsed = _parse_for_certification(self._bundle.manifest_bytes)
         if parsed.manifest is None:
@@ -485,6 +505,11 @@ class EntryPointPresenceCheck:
 
     def __init__(self, bundle: ExtensionBundle) -> None:
         self._bundle = bundle
+
+    @property
+    def bound_bundle(self) -> ExtensionBundle:
+        """The bundle this check executes against (binding validation)."""
+        return self._bundle
 
     def run(self) -> CheckResult:
         parsed = _parse_for_certification(self._bundle.manifest_bytes)
@@ -572,6 +597,11 @@ class PublicImportCheck:
     def __init__(self, bundle: ExtensionBundle, policy: ImportPolicy) -> None:
         self._bundle = bundle
         self._policy = policy
+
+    @property
+    def bound_bundle(self) -> ExtensionBundle:
+        """The bundle this check executes against (binding validation)."""
+        return self._bundle
 
     def run(self) -> CheckResult:
         if not self._bundle.sources:
@@ -716,6 +746,11 @@ class SecurityScanCheck:
 
     def __init__(self, bundle: ExtensionBundle) -> None:
         self._bundle = bundle
+
+    @property
+    def bound_bundle(self) -> ExtensionBundle:
+        """The bundle this check executes against (binding validation)."""
+        return self._bundle
 
     def run(self) -> CheckResult:
         if not self._bundle.sources:
@@ -873,6 +908,14 @@ def certify(
     """
     if len({check.check_id for check in checks}) != len(checks):
         raise DuplicateCheckError("a certification run received two checks with the same id")
+    for check in checks:
+        bound = getattr(check, "bound_bundle", None)
+        if bound is not None and bound.digest() != bundle.digest():
+            raise UnboundCheckError(
+                f"check {check.check_id!r} was constructed for a different bundle "
+                f"than the one being certified (bound {bound.digest()}, "
+                f"certified {bundle.digest()})"
+            )
 
     results = tuple(check.run() for check in checks)
     certified, refusals = _evaluate(results, profile.required_checks)

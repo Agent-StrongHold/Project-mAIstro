@@ -33,6 +33,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from maistro.extensions import (
     CONFORMANCE_CHECK_ID,
+    SECURITY_SCAN_CHECK_ID,
+    STRUCTURE_CHECK_ID,
     MANIFEST_PROFILE,
     PUBLICATION_PROFILE,
     CertificationEnvironment,
@@ -54,6 +56,7 @@ from maistro.extensions import (
     PackageStructureCheck,
     PublicImportCheck,
     SecurityScanCheck,
+    UnboundCheckError,
     TrustPolicy,
     certification_as_trust_claim,
     certify,
@@ -137,6 +140,20 @@ def make_bundle(
 
 def environment() -> CertificationEnvironment:
     return ENVIRONMENT
+
+
+class StubCheck:
+    """A pre-recorded answer, for summary rendering tests that do not need
+    real check semantics (bundle-bound checks must match the certified
+    bundle, so foreign-bundle fixtures cannot fake outcomes anymore)."""
+
+    def __init__(self, check_id: str, result: CheckResult) -> None:
+        self.check_id = check_id
+        self.title = result.title
+        self._result = result
+
+    def run(self) -> CheckResult:
+        return self._result
 
 
 class StaticSuite(ConformanceSuite):
@@ -516,6 +533,33 @@ def test_publication_profile_refuses_without_executed_conformance() -> None:
         "conformance" in refusal and "did not pass" in refusal for refusal in report.refusals
     )
     assert suite.runs == 0, "a suite nobody supplied cannot have executed"
+
+
+def test_certify_refuses_a_check_bound_to_a_different_bundle() -> None:
+    """A bundle-bound check may only run against the certified bundle.
+
+    Otherwise the report's subject digests describe one set of bytes while
+    the evidence was produced from another — the report could sign "this
+    package passed" using verdicts earned by different bytes entirely.
+    """
+    bundle = make_bundle()
+    other = make_bundle(payload=b"extension-payload-v2")
+    assert other.digest() != bundle.digest()
+    with pytest.raises(UnboundCheckError, match="security-scan"):
+        certify(
+            bundle,
+            profile=MANIFEST_PROFILE,
+            environment=environment(),
+            checks=(PackageStructureCheck(bundle), SecurityScanCheck(other)),
+        )
+    # The same checks over the bundle they were built for certify fine.
+    report, _ = certify(
+        bundle,
+        profile=MANIFEST_PROFILE,
+        environment=environment(),
+        checks=(PackageStructureCheck(bundle), SecurityScanCheck(bundle)),
+    )
+    assert report.certified
 
 
 def test_publication_profile_refuses_a_required_check_that_never_ran() -> None:
@@ -961,8 +1005,14 @@ def test_summary_states_the_no_claim_and_no_seal_cases() -> None:
         profile=MANIFEST_PROFILE,
         environment=environment(),
         checks=(
-            PackageStructureCheck(
-                make_bundle(payload=b"declared", manifest=manifest_bytes(b"other"))
+            StubCheck(
+                STRUCTURE_CHECK_ID,
+                CheckResult(
+                    check_id=STRUCTURE_CHECK_ID,
+                    title="structure",
+                    outcome=CheckOutcome.FAILED,
+                    detail="manifest unparseable",
+                ),
             ),
         ),
     )
@@ -978,7 +1028,15 @@ def test_summary_states_the_no_claim_and_no_seal_cases() -> None:
 
 def test_summary_shows_outcomes_claims_and_refusals() -> None:
     bundle = make_bundle()
-    failing = make_bundle(sources=(("pkg/mod.py", b"eval(x)\n"),))
+    failing = StubCheck(
+        SECURITY_SCAN_CHECK_ID,
+        CheckResult(
+            check_id=SECURITY_SCAN_CHECK_ID,
+            title="security scan",
+            outcome=CheckOutcome.FAILED,
+            detail="eval(x) at pkg/mod.py:1",
+        ),
+    )
     report, seal = certify(
         bundle,
         profile=PUBLICATION_PROFILE,
@@ -987,7 +1045,7 @@ def test_summary_shows_outcomes_claims_and_refusals() -> None:
             PackageStructureCheck(bundle),
             EntryPointPresenceCheck(bundle),
             PublicImportCheck(bundle, ImportPolicy(public_namespaces=frozenset({"maistro"}))),
-            SecurityScanCheck(failing),  # a check that fails
+            failing,  # a check that fails
             ConformanceCheck(suites=[]),  # a check that skips
         ),
     )
