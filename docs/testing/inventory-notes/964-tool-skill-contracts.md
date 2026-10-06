@@ -125,3 +125,26 @@ New framework surface whose callers live outside this tree
 `maistro extensions contract` CLI command) is referenced in
 `packages/maistro-core/src/_vulture_whitelist.py` per the established
 framework-surface pattern.
+
+## CI-repair round (coverage gate, merge-queue run 37498676474)
+
+No test added, moved, or removed in this round; the delta above is unchanged.
+Two non-test repairs, both driven by the gate's own failure evidence:
+
+- `tests/test_check_security_inventory.py::test_the_shipped_document_passes`
+  red at the suite's 30s default on a merge-queue runner that executed the
+  identical root suite ~1.7x slower than develop's passing run (599s vs
+  995s), while the tree's own scan cost is ~10-11s locally and the
+  fetch-helper walk the traceback names is 0.3s of it. Given the explicit
+  120s allowance the sibling whole-tree scans in
+  `test_check_cross_package_imports.py` already carry. No gate logic changed;
+  the gate still fails on a wrong document, only the time allowance is
+  stated instead of discovered.
+- The develop sync (merging origin/develop #2016) added fourteen reached
+  `maistro_ext_harness` modules to the "Skills, code registry, repertoire"
+  subsystem, moving its unreachable census from 12/48 = 25.0% (`some`) to
+  12/62 = 19.4% (`few`) and stranding the shipped matrix row on the wrong
+  side of the 20% boundary. The row word was updated per
+  SPEC-082926-061d (the prose and MIGRATE disposition are untouched); both
+  pre-merge parent and develop passed this gate, only the combination
+  failed.
