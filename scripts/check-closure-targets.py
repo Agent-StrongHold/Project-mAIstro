@@ -103,9 +103,7 @@ _BARE_SECTION = re.compile(r"^\s{0,3}[A-Za-z][\w '/-]{0,40}:\s*$")
 # A task-list item in every GFM form (review: parse every valid marker):
 # bullets ``-``/``*``/``+`` and ordered ``1.``/``1)`` markers all carry the
 # checkbox, and items nest, so leading whitespace is unbounded.
-_CHECKBOX = re.compile(
-    r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\[(?P<box>[ xX])\]\s*(?P<text>\S.*)$"
-)
+_CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\[(?P<box>[ xX])\]\s*(?P<text>\S.*)$")
 
 # ``Closes #76 AC-2`` / ``fixes #56 (AC-3)``: a criterion claimed on the same
 # line as the keyword. Both orders, with or without the hyphen.
