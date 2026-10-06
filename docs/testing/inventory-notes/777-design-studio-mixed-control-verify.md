@@ -12508,3 +12508,83 @@ identity/lineage. The branch is battery-green, develop-current, contains
 the complete PR-#1660 head, and leaves the canonical
 `Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched. No repair
 exists in this lane until the dependencies land (Refs #777).
+
+## Round 190 (2026-10-06, job a6485f99ac0d) — develop sync merged; block re-confirmed with fresh evidence
+
+**Develop sync (lane-brief conditional discharged):** `origin/develop` moved past
+the rounds-183–189 base `56332162cf63` to `7334621bf797` (PR #2004, "[M9-D3]
+Normalize external Agent progress, cancellation, timeout, retry, and
+terminal-stat", landed 03:00:11Z). Branch and origin/develop had diverged
+(`git merge-base --is-ancestor origin/develop HEAD` false), so `git merge
+origin/develop` was performed per the lane brief → merge commit `0e34f1b110bf`,
+**clean auto-merge, no conflicts**. The only overlapping path was
+`quality/vulture-baseline.json`; both sides removed exactly one *different*
+finding row in different hunks (develop: `capabilities/invocation.py::observed_at`;
+branch: `maistro_bootstrap/builders/agent_loop.py::tool_definitions`).
+Post-merge row-loss check (per quality-gates runbook):
+`git diff --numstat origin/develop -- quality/vulture-baseline.json` →
+`0  1` (0 insertions, 1 deletion); findings rows 1335 (develop) → 1334 (merged
+branch) — exactly the branch's intentional removal, **no silent row loss**.
+
+**Merged develop content does not touch the dependency block:** #2004 ships
+`maistro.a2a.normalize` (RemoteLifecycleState projection vocabulary, settlement/
+retry/cancellation decision functions, conformance suite) — remote-lifecycle
+normalization for external A2A agents (#960, M9-D3). It is *not* the #1572
+canonical Goal store (`maistro.goals`) nor #804/#805/#806 Goal reconciliation.
+
+**Fresh dependency capture 2026-10-06T03:52:16–43Z (61 sources,
+complete_for_scope):** #804/#805/#806 **open**, #773/#774/#776/#53/#93/#95
+open, #775/#39/#458 closed; #1572 absent from the capture. #805 owner decision
+(2026-09-25) still gates #805/#806/#773/#774 on #1572. Newest #777 comments
+(128 total) are only this lane's own bot markers; no human maintainer activity.
+PR #1660 open draft, head `78f8f6476466` confirmed ancestor of merged HEAD,
+`mergeable_state: clean`, 31 check-runs (30 success, 1 skipped).
+
+**AC1 prerequisites re-proven absent on the merged tree (`0e34f1b110bf`):**
+- `packages/maistro-core/src/maistro/goals/` → No such file or directory
+- `grep -rlE 'GoalReconciler|delegate_goal' packages/*/src` → 0 files
+- `design_service.py` workspace-agent/control-mode/delegation matches → 0
+- `ControlMode.COLLABORATIVE` still the deliberate placeholder at
+  `packages/maistro-design/src/maistro_design/versions.py:1064`
+- no mixed-control browser E2E spec anywhere (`find packages -name '*.spec.ts'
+  -path '*e2e*'` lists only unrelated specs)
+- no #1572/Goal-store references under `packages/*/src` or `docs/adr`
+
+**Battery re-run fresh at `0e34f1b110bf` (post-merge):**
+- `uv sync --locked --extra dev` → EXIT 0 (uv.lock changed with #2004)
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (3013 files already formatted; +4
+  files from the merged develop commit)
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI-exact args) → EXIT 0,
+  base `7334621bf797` → candidate `0e34f1b110bf`, 1335 reviewed identities →
+  1334 findings, unclassified 0, never_allowlist 0; no unbanked identities,
+  no ledger amendment
+- check-api-route-contracts / check-route-permissions / check-promotion-surface
+  / check-reachability / check-ratchet-provenance / check-backlog-consistency /
+  check-cross-package-imports / check-suite-inventory → all EXIT 0 (15 suites
+  match the recorded inventory, including develop's #960 additions)
+- `uv run pytest packages/maistro-core/tests/a2a
+  packages/maistro-core/tests/graph/nodes/test_agent_delegate_remote_normalization.py
+  -q` → **250 passed** (2.34s) — develop's new #960 suites green post-merge
+- `uv run pytest packages/maistro-bootstrap/tests
+  packages/hive-conductor/backend/tests packages/maistro-design/tests -q` →
+  **4179 passed, 13 skipped** (156.68s) = bootstrap 232P/6S + backend
+  3407P/6S + design 540P/1S, matching the rounds 183–189 baseline exactly
+
+**Driver checks:** job a6485f99ac0d carried `checks: []` — no check-*.log
+files existed to inspect; all evidence above was executed locally.
+
+Verdict: **BLOCKED** (dependency-blocking, eighth consecutive round with fresh
+evidence). AC1 — Design Studio consumes the persistent Workspace Agent and Goal
+reconciliation APIs from #804 — remains unimplementable: #804/#805/#806 are
+open and owner-gated on #1572 (canonical `maistro.goals` Goal store), the
+consumed APIs do not exist anywhere reachable, and the issue's own stop
+condition forbids a Design-Studio-private Agent runtime, Goal owner, or
+reconciliation loop. The develop sync (#2004) is unrelated remote-lifecycle
+normalization and does not land any consumed dependency. Every other AC is
+downstream of AC1's front door or requires the absent canonical Goal
+identity/lineage. The branch is battery-green and now develop-current
+(merge `0e34f1b110bf`), contains the complete PR-#1660 head, and leaves the
+canonical `Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched. No
+repair exists in this lane until the dependencies land (Refs #777).
