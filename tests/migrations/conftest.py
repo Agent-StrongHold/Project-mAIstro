@@ -18,6 +18,36 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 _DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
+#: Revision 001 opens with ``CREATE EXTENSION IF NOT EXISTS vector`` (the
+#: memory embedding column), so ``alembic upgrade head`` — which is what the
+#: restore runs — can only ever apply where that statement succeeds. The
+#: `durable-events` CI job owns a plain ``postgres:17`` service: no pgvector,
+#: and its schema-agreement suite is that job's last step, so the restore
+#: could never succeed there and no later suite needs it. Probe the exact
+#: prerequisite rather than reading ``pg_available_extensions``:
+#: availability is not creatability — a non-superuser on a pgvector image is
+#: equally unable to apply the chain (the extension is not `trusted`).
+_FIRST_CHAIN_STATEMENT = "CREATE EXTENSION IF NOT EXISTS vector"
+
+
+def _chain_can_apply(database_url: str) -> bool:
+    """Whether revision 001's first statement can run on this server at all.
+
+    Runs the statement inside a transaction that is rolled back, so a capable
+    server is left exactly as it was found. A connect failure also means the
+    restore cannot run; the suites that follow in the same job fail on their
+    own connections, so failing the session here would add nothing.
+    """
+    import psycopg
+
+    try:
+        with psycopg.connect(database_url) as connection:
+            connection.execute(_FIRST_CHAIN_STATEMENT)
+            connection.rollback()
+    except psycopg.Error:
+        return False
+    return True
+
 
 def _alembic_environment() -> dict[str, str]:
     """Point Alembic at the same database migration tests exercise."""
@@ -41,6 +71,16 @@ def _drop_public_tables() -> None:
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Leave the shared CI service at Alembic head for its next coverage suite."""
     if not _DATABASE_URL:
+        return
+
+    # A server that cannot apply revision 001 cannot be restored to head, and
+    # failing the session for it would red a job whose every test passed —
+    # exactly what run 37472873061 did to `durable-events`, whose service is
+    # a pgvector-less postgres:17 and whose schema-agreement suite is the
+    # job's last step. Skip the restore there; jobs with a pgvector-capable
+    # service (ci.yml `postgres`, the quality.yml coverage producer) are
+    # unaffected and behave as before.
+    if not _chain_can_apply(_DATABASE_URL):
         return
 
     _drop_public_tables()
