@@ -907,6 +907,45 @@ async def test_unpinned_adapter_binding_stays_within_its_declared_adapter() -> N
     assert "no eligible model" in empty.reason
 
 
+@pytest.mark.ac("SPEC-284/AC-4")
+async def test_request_alias_cannot_bypass_an_adapter_scoped_binding() -> None:
+    """A request alias must stay below the Binding's declared adapter ceiling."""
+
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()))
+    rival = ReferenceChatAdapter(
+        _spec(
+            adapter_id="rival.models",
+            display_name="Rival inference",
+            credential_provider="rival",
+            credential_ref="rival-primary",
+            models=(
+                {
+                    "name": "rival-mini",
+                    "cost_per_1k_input": 0.1,
+                    "cost_per_1k_output": 0.4,
+                    "latency_p50_ms": 60,
+                    "tier": "fast",
+                },
+            ),
+        )
+    )
+    await register_adapter_models(catalog, store, rival)
+    binding = _binding(provider_name="", config={"adapter_id": "acme.models"})
+
+    escaped = await resolve_model_chat_provider(
+        store, CostAwareRouter(store), alias="rival-mini", adapters=catalog
+    )(binding)
+    assert isinstance(escaped, Unavailable)
+    assert "request alias" in escaped.reason
+    assert "outside adapter-scoped Binding" in escaped.reason
+
+    allowed = await resolve_model_chat_provider(
+        store, CostAwareRouter(store), alias="acme-big", adapters=catalog
+    )(binding)
+    assert isinstance(allowed, AdapterGatewayProvider)
+    assert allowed.name == "acme-big"
+
+
 async def test_pinned_gateway_model_still_resolves_gateway_provider() -> None:
     store = InMemoryProviderRegistry(
         models=[

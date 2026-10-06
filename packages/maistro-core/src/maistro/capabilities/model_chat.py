@@ -178,6 +178,29 @@ def resolve_model_chat_provider(
 
     async def resolve(binding: Binding) -> ResolvedCapabilityProvider | Unavailable:
         selection = binding.provider_name or alias
+        # An adapter-backed Binding records its adapter in config. That
+        # authorization ceiling applies equally to a request alias: accepting
+        # an alias first would let the caller replace the Binding's adapter.
+        adapter_id = binding.config.get("adapter_id")
+        if adapter_id and adapters is None:
+            return Unavailable(
+                slot=MODEL_CHAT_CAPABILITY,
+                reason=(
+                    f"adapter-scoped Binding requires catalog {adapter_id!r}; "
+                    "canonical selection refuses without it"
+                ),
+            )
+        if adapter_id and adapters is not None:
+            allowed_models = frozenset(adapters.model_names(str(adapter_id)))
+            if selection and selection not in allowed_models:
+                source = "pinned model" if binding.provider_name else "request alias"
+                return Unavailable(
+                    slot=MODEL_CHAT_CAPABILITY,
+                    reason=(
+                        f"{source} {selection!r} is outside adapter-scoped Binding "
+                        f"{adapter_id!r}; canonical selection refuses"
+                    ),
+                )
         if selection:
             return await _resolve_named_model(registry, adapters, binding, selection)
         # An adapter-backed Binding records its adapter in config. Its
@@ -186,7 +209,6 @@ def resolve_model_chat_provider(
         # would resolve fine and then fail at credential acquisition. Scope
         # selection to the declared adapter's models; no eligible model is
         # Unavailable, never a silently widened re-scope.
-        adapter_id = binding.config.get("adapter_id")
         try:
             if adapter_id and adapters is not None:
                 selected = await router.select(
