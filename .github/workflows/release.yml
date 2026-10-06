@@ -215,10 +215,11 @@ jobs:
   # ---------------------------------------------------------------------------
   # wheels — build the publish set, twine check it, install+import it clean.
   #
-  # The publish set is FIVE packages. maistro-server, maistro-turing,
+  # The publish set is SIX packages. maistro-server, maistro-turing,
   # maistro-registry and maistro-design build in CI but are not published, and
   # hive-conductor is an application (no pyproject.toml) and is shipped as a
-  # container image, never as a wheel.
+  # container image, never as a wheel. maistro-ext-sdk joined with #949 —
+  # it is the surface external extension authors install.
   # ---------------------------------------------------------------------------
   wheels:
     name: Build + verify wheels
@@ -226,7 +227,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      PUBLISH_SET: "maistro-core maistro-canvas maistro-evolve maistro-rsi maistro-bootstrap"
+      PUBLISH_SET: "maistro-core maistro-canvas maistro-evolve maistro-rsi maistro-bootstrap maistro-ext-sdk"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -257,7 +258,7 @@ jobs:
 
       # Every artifact must be for exactly the version the tag names, and the
       # count must match the publish set — a silently skipped package would
-      # otherwise ship a release that is missing one of its five names.
+      # otherwise ship a release that is missing one of its six names.
       - name: Artifact filenames must match the tagged version
         env:
           VERSION: ${{ needs.guard.outputs.version }}
@@ -317,7 +318,7 @@ jobs:
   # when unconfigured) is a publish job that reports green having published
   # nothing, which is worse than a red one.
   #
-  # Required PyPI-side config, per package, for all five names:
+  # Required PyPI-side config, per package, for all six names:
   #   owner: Agent-StrongHold   repository: Project-mAIstro
   #   workflow: release.yml      environment: release
   # ---------------------------------------------------------------------------
@@ -643,9 +644,9 @@ jobs:
 # Maintainer prerequisites — none of these can be done from inside this repo,
 # and the workflow fails loudly (never silently) without them:
 #
-#  1. PyPI + TestPyPI trusted publishers for all five publish-set names
+#  1. PyPI + TestPyPI trusted publishers for all six publish-set names
 #     (maistro-core, maistro-canvas, maistro-evolve, maistro-rsi,
-#     maistro-bootstrap), each configured with
+#     maistro-bootstrap, maistro-ext-sdk), each configured with
 #     owner Agent-StrongHold / repo Project-mAIstro / workflow release.yml /
 #     environment `release`. Until then the `pypi` job fails at upload.
 #  2. A GitHub environment named `release` with a required reviewer
