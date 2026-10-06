@@ -811,3 +811,22 @@ record).
   candidate baseline/dispositions rows are already banked and exact).
 - **No test inventory delta** — no tests added, removed or renamed; the
   suite-inventory baseline is untouched.
+
+## Eleventh CI-repair addendum (56332162c develop sync, backlog re-parents onto 057 as 058)
+
+This round completed the inherited mid-flight merge of `origin/develop`
+(`56332162c`) and re-parented this migration once more: develop's deployed
+numbering won, the branch's renumbered copies of develop's own revisions were
+dropped verbatim-equivalent, and the backlog work source re-attached after
+develop's `057_run_store_planner_stability` tip as `058_backlog_work_source`
+(`alembic heads` → single `058`; full-chain `pytest tests/migrations` 147
+passed on pg18; backlog conformance 53 passed + 1 skip against the migrated
+database). The candidate vulture ledger was re-banked under CI's exact scan
+arguments (1336 reviewed → 1333 findings, `unclassified: 0`,
+`never_allowlist: 0`; the identities stay covered by the in-source
+`_vulture_whitelist.py`, so the trusted-base comparison passes with no
+backlog rows at all), and the named supply-chain CI failure was repaired by
+the lockfile bumps the gate prescribes (`multidict` 6.9.1 for
+CVE-2026-104874, `werkzeug` 3.1.9 for CVE-2026-102598; `pip_audit_gate.py`
+exit 0). The reachability residual is unchanged — see
+`auto-82-develop-sync-058-head.md` for the full round record.
