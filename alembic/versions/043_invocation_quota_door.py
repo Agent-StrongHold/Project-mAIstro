@@ -5,12 +5,15 @@ Revises: 055
 Create Date: 2026-09-27
 
 The effect door's budget reservations (#1196) and the at-most-once provider
-usage evidence (#718) attach to the canonical Invocation. They follow the
-current chain tip so they do not reuse revision ids 033/035/036, which
-develop already assigned. Re-parented onto each new develop head as this
-branch has stayed open -- 046, then 047, 048, 050, 051, 052, 053, 054, now
-055: a migration must append after the deployed head, never fork beside
-it, or `alembic upgrade head` refuses with multiple heads.
+usage evidence (#718) attach to the canonical Invocation. They do not reuse
+revision ids 033/035/036, which develop already assigned, and each sync
+re-parents whichever branch-side revision trails the chain onto the new
+tip -- 046, then 047, 048, 050, 051, 052, 053, 054, 055, 056, now 057,
+#863's planner-stability revision: a migration must append
+after the deployed head, never fork beside it, or `alembic upgrade head`
+refuses with multiple heads. On develop the quota door itself claimed
+`055`'s child slot, so the door keeps that parent here and #863's
+revision follows the `056_user_model_facts` tip as `057`.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:
