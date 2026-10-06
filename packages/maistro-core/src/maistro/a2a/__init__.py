@@ -54,6 +54,21 @@ from maistro.a2a.guest_peers import (
     PeerTrust,
 )
 from maistro.a2a.lifecycle import TaskLifecycleManager, TaskQueue, WorkerConfig, WorkerPool
+from maistro.a2a.normalize import (
+    CancellationProjection,
+    CanonicalDelegationTruth,
+    RemoteProgressObservation,
+    RemoteRetryDecision,
+    RemoteState,
+    RetryDecision,
+    SettlementDecision,
+    decide_cancellation,
+    decide_retry,
+    decide_settlement,
+    normalize_remote_state,
+    record_progress,
+    settle_outcome,
+)
 
 __all__ = [
     "EXTERNAL_PRIORITY_TIER",
@@ -67,6 +82,8 @@ __all__ = [
     "AuthorityEscalationRefused",
     "Availability",
     "AvailabilityState",
+    "CancellationProjection",
+    "CanonicalDelegationTruth",
     "CapabilityAuthorization",
     "CardResolver",
     "DefaultDenyProjectionPolicy",
@@ -88,6 +105,11 @@ __all__ = [
     "RegisteredExternalAgent",
     "RemoteAgentDescriptor",
     "RemoteCapabilities",
+    "RemoteProgressObservation",
+    "RemoteRetryDecision",
+    "RemoteState",
+    "RetryDecision",
+    "SettlementDecision",
     "SpecialistProjection",
     "TaskLifecycleManager",
     "TaskQueue",
@@ -97,6 +119,12 @@ __all__ = [
     "UnsupportedCapability",
     "WorkerConfig",
     "WorkerPool",
+    "decide_cancellation",
+    "decide_retry",
+    "decide_settlement",
+    "normalize_remote_state",
     "parse_remote_card",
     "payload_digest",
+    "record_progress",
+    "settle_outcome",
 ]
