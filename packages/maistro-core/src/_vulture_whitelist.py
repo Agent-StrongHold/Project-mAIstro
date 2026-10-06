@@ -20,6 +20,7 @@ from maistro.cli._extensions import (
     extensions_show,
 )
 from maistro.container import Container
+from maistro.extensions.effective_authority import EffectiveAuthority
 from maistro.extensions.packs import InstallablePackRegistry
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
@@ -348,4 +349,13 @@ _VULTURE_WHITELIST = (
     InstallablePackRegistry.instantiate_graph,
     InstallablePackRegistry.instantiate_persona,
     InstallablePackRegistry.instantiate_rubric,
+    # Effective-authority evidence linkage (M9-G1, #969). `with_execution_context`
+    # pins a computed intersection to canonical Run evidence (run/node-run/attempt
+    # ids) without mutating the digest-anchored result; its consumers are the
+    # Invocation/Run wiring that lands with the M9-G2/G3 enforcement and policy
+    # issues. Until then its callers are the conformance suite
+    # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
+    # same contract-ships-first posture as the seams above.
+    EffectiveAuthority.with_execution_context,
+
 )
