@@ -926,3 +926,70 @@ reachability grants (owner, issue #1893, CONNECT group
 `merge-base(RATCHET_BASE_REV, HEAD)`, so the grant must land on develop
 before a develop merge here can authorize them. No ledger, grant, or gate
 file was modified in this branch.
+
+## Round 17 (develop sync to d39a2e4ce + real-PostgreSQL durability re-executed on a local server, head `14c1c596946d`)
+
+`origin/develop` advanced `3b8e090fe531` -> `d39a2e4ce330` (M9-J3 extension
+lifecycle proof #2017: `scripts/extension_lifecycle_proof.py` rooted as a CI
+entry point, workflow edits, docs, and its tests/inventory note). The branch
+merged `origin/develop` cleanly (merge `14c1c596946d`; no conflicts).
+Ledger-survival audit per the multiset hazard: `git diff --numstat <merge-base>
+origin/develop -- quality/` is EMPTY — develop touched no quality ledger since
+the merge base, so no develop-side row could be lost; branch rows are
+unchanged (reachability 172 = 172, dispositions 51 = 51 before and after the
+merge). The grant `3235229f5fed` is still NOT an ancestor of `origin/develop`
+(it lives only on the `probe/grant-1893-*` branches), so the two-merge
+blocker persists upstream.
+
+The merge-queue signal named for this round is `test: failure`; its root-suite
+leg was re-run in CI's form at the merged head:
+
+- `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/
+  --ignore=tests/tools/registry -q` -> **4533 passed, 122 skipped**
+  (develop's new lifecycle-proof tests included).
+- `tests/test_check_reachability.py` +
+  `tests/test_reachability_baseline_identity.py` under
+  `RATCHET_BASE_REV=origin/develop` -> **38 passed**.
+- `python scripts/check-suite-inventory.py` (full, 16 suites) -> ok, 27704
+  unique node IDs; `python scripts/check-test-duplicates.py` -> ok
+  (1464 files, 0 duplicate groups).
+- `ruff check .` and `ruff format --check .` clean; `mypy` on both changed
+  admission modules -> no issues; all ten prospective tests present by exact
+  name in `test_admission_codec.py`.
+
+Real-database durability re-executed (Docker daemon unreachable this round;
+a local PostgreSQL 18.6 server on `/var/run/postgresql` was used instead —
+same contract: a dedicated disposable DB migrated through the real chain):
+
+- Role/database `maistro_b2_1893` created for the run;
+  `DATABASE_URL=postgresql://dev:dev@127.0.0.1:5432/maistro_b2_1893
+  uv run alembic upgrade head` applied the full chain (head `058`), including
+  `054 -> 055 Forward admission-generation representation on
+  task_idempotency (#1892)`.
+- Both admission suites with `MAISTRO_TEST_PG_DSN` and
+  `MAISTRO_TEST_DATABASE_URL` on that migrated DB under
+  `MAISTRO_REQUIRE_PG_LEGS=1`: **143 passed, 0 skipped** — the raw-vs-
+  production two-pool durability test ran for real against the migrated TEXT
+  schema (same-server identity asserted inside the test).
+- Destructive migration evidence on the same disposable DB:
+  `tests/migrations/test_migration_chain.py` +
+  `tests/migrations/test_task_admission_generation_upgrade.py` -> **27
+  passed**.
+
+exact-debt-ledger steps at the merged head (CI's exact argv, trusted base
+resolves to `d39a2e4ce330`): `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` -> exit 0, **1332 = 1332**
+(nothing unbanked — the lane's conditional vulture-ledger amendment stays
+moot); `check-shipped-surface-truth.py` exit 0; `check-reachability.py` exit 0
+(1312 modules, 172 unreachable, candidate ledger matches);
+`check-reachability-dispositions.py` exit 0 (50 groups: 150 CONNECT,
+20 LIBRARY, 2 RETIRE). `check-ratchet-provenance.py` -> exit 1 on exactly the
+two reachability provenance sub-gates (`maistro.runs.admission_identity` +
+`maistro.tasks.admission_codec` NEW vs trusted base and not previously
+authorized); every other sub-ratchet OK. Zero production importers of either
+module exist (verified by grep — the C consumer leaf owns the wiring), so no
+in-branch change can or may green the provenance pair: the campaign lands
+grant `3235229f5fed` on develop, this branch syncs it, and the job passes
+with zero content change (landing order proven by probe merges recorded in
+rounds 4–11). No code, test, or `quality/` file was modified this round
+beyond the develop merge and this note.
