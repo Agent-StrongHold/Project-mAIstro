@@ -643,7 +643,9 @@ def _parse_source(path: str, data: bytes) -> ast.Module | None:
         return None
 
 
-def _scan_import_node(path: str, node: ast.stmt | ast.Call, policy: ImportPolicy) -> list[str]:
+def _scan_import_node(
+    path: str, node: ast.stmt | ast.Call, policy: ImportPolicy, aliases: frozenset[str]
+) -> list[str]:
     """Violations one AST node contributes, dispatched by node kind."""
     if isinstance(node, ast.Import):
         return [
@@ -655,7 +657,7 @@ def _scan_import_node(path: str, node: ast.stmt | ast.Call, policy: ImportPolicy
         return _scan_import_from(path, node, policy)
     if isinstance(node, ast.Call):
         return [
-            *_scan_dynamic_import_call(path, node, policy),
+            *_scan_dynamic_import_call(path, node, policy, aliases),
             *_scan_sys_path_call(path, node),
         ]
     return []
@@ -685,10 +687,36 @@ def _scan_imports(path: str, data: bytes, policy: ImportPolicy) -> list[str]:
     if tree is None:
         return [f"{path}: source not parseable; import policy scan skipped for this file"]
     violations: list[str] = []
+    aliases = _dynamic_import_aliases(tree)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)):
-            violations.extend(_scan_import_node(path, node, policy))
+            violations.extend(_scan_import_node(path, node, policy, aliases))
     return violations
+
+
+def _dynamic_import_aliases(tree: ast.Module) -> frozenset[str]:
+    """Alias spellings bound to importlib's dynamic-import functions.
+
+    ``from importlib import import_module as load`` re-binds the loader under
+    a name the call-site spelling check cannot recognize on its own; every
+    scanned file contributes its aliases and the scanners match calls against
+    the canonical names plus these. Module aliases (``import importlib as
+    il``) need no tracking — the attribute's final segment already spells
+    ``import_module``. Untracked rebinding through plain assignment remains
+    outside what the scans claim to see.
+    """
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").split(".")[0] == "importlib"
+        ):
+            aliases.update(
+                alias.asname
+                for alias in node.names
+                if alias.asname and alias.name in {"__import__", "import_module"}
+            )
+    return frozenset(aliases)
 
 
 def _called_name(func: ast.expr) -> str:
@@ -700,9 +728,11 @@ def _called_name(func: ast.expr) -> str:
     return ""
 
 
-def _scan_dynamic_import_call(path: str, node: ast.Call, policy: ImportPolicy) -> list[str]:
+def _scan_dynamic_import_call(
+    path: str, node: ast.Call, policy: ImportPolicy, aliases: frozenset[str]
+) -> list[str]:
     """Literal-argument dynamic imports that name a forbidden root."""
-    if _called_name(node.func) not in {"__import__", "import_module"}:
+    if _called_name(node.func) not in {"__import__", "import_module"} | aliases:
         return []
     if not node.args or not isinstance(node.args[0], ast.Constant):
         return []  # non-literal dynamic imports are the security scan's finding
@@ -735,8 +765,8 @@ class SecurityScanCheck:
 
     Flags the constructs a static scan *can* answer for: calls to ``eval``
     and ``exec``, and dynamic (non-literal) ``__import__`` /
-    ``importlib.import_module`` calls, which the literal-target rules of
-    :class:`PublicImportCheck` cannot see through. It claims exactly what it
+    ``importlib.import_module`` calls — under aliases too — which the
+    literal-target rules of :class:`PublicImportCheck` cannot see through. It claims exactly what it
     is — no dynamic code execution found in these bytes — and nothing
     broader; "the package is secure" is not a claim any static scan earns.
     """
@@ -784,6 +814,7 @@ def _scan_dynamic_execution(path: str, data: bytes) -> list[str]:
     tree = _parse_source(path, data)
     if tree is None:
         return [f"{path}: source not parseable; dynamic-execution scan skipped for this file"]
+    aliases = _dynamic_import_aliases(tree)
     findings: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -791,7 +822,7 @@ def _scan_dynamic_execution(path: str, data: bytes) -> list[str]:
         name = _called_name(node.func)
         if name in {"eval", "exec"}:
             findings.append(f"{path}:{node.lineno}: call to {name}()")
-        elif name in {"__import__", "import_module"}:
+        elif name in {"__import__", "import_module"} | aliases:
             literal_argument = bool(node.args) and isinstance(node.args[0], ast.Constant)
             if not literal_argument:
                 findings.append(f"{path}:{node.lineno}: dynamic {name}() on a non-literal argument")

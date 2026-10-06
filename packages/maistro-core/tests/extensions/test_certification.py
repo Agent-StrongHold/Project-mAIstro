@@ -708,6 +708,18 @@ def test_public_import_policy_flags_violations() -> None:
     dynamic = _import_scan('__import__("maistro._hidden")\n')
     assert dynamic.outcome is CheckOutcome.FAILED
 
+    aliased = _import_scan(
+        "from importlib import import_module as load\n"
+        'load("maistro._hidden")\n'
+    )
+    assert aliased.outcome is CheckOutcome.FAILED
+    assert "maistro._hidden" in aliased.detail
+    # A name merely similar to the loader, or aliased from another module,
+    # is an ordinary call, not a tracked dynamic import.
+    assert _import_scan("from json import load\nload('maistro._hidden')\n").outcome is (
+        CheckOutcome.PASSED
+    )
+
     path_repair = _import_scan("sys.path.insert(0, '../src')\n")
     assert path_repair.outcome is CheckOutcome.FAILED
     assert "sys.path" in path_repair.detail
@@ -789,6 +801,12 @@ def test_security_scan_flags_dynamic_execution_only() -> None:
     # policy scan's subject, not a dynamic-execution finding.
     assert _security_scan("handler = eval\n").outcome is CheckOutcome.PASSED
     assert _security_scan('__import__("json")\n').outcome is CheckOutcome.PASSED
+    # Aliased re-bindings of the loader are tracked, not missed.
+    aliased = _security_scan(
+        "from importlib import import_module as load\nload(name)\n"
+    )
+    assert aliased.outcome is CheckOutcome.FAILED
+    assert "non-literal" in aliased.detail
 
 
 # ---------------------------------------------------------------------------
