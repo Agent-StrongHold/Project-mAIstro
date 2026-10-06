@@ -676,3 +676,46 @@ sole remaining red is the reachability new-unreachable of the deliberately
 unwired contract module — the one failure the issue predicts, prohibits curing
 in-leaf, and neutralizes by declaring the leaf "not independently mergeable or
 releasable while unwired".
+
+## 2026-10-06 round-7 independent revalidation (worker b7a2fddb)
+
+Independent confirmation of round 6's evidence at the same head `18d160476f09`
+(clean tree; no code change this round), plus one develop-movement check:
+
+- `origin/develop` advanced `bc40b6cdad46` -> `3f8ccbe9d40d` (M9-H2 #2016,
+  ext-harness package). The commit touches no `quality/*.json` ledger and no
+  `packages/maistro-core/src` file, so the round-6 gate evidence remains valid
+  for it and no develop sync was required for this round.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (exact-debt-ledger's exact command): **rc=0**, trusted
+  base `bc40b6cdad46`, 1,332 reviewed identities -> 1,332 findings, zero
+  deltas. `git diff origin/develop HEAD -- quality/` is empty; no
+  `admission_identity` grant exists on either side (expected — the module is
+  not bankable from this leaf).
+- `check-shipped-surface-truth.py` rc=0; `check-reachability-dispositions.py`
+  rc=0 (49 groups, 170 modules); `check-promotion-surface.py` rc=0.
+- `check-reachability.py` rc=1 with exactly one NEW unreachable module,
+  `maistro.runs.admission_identity` (1,321 production modules, 171
+  unreachable) — the issue-predicted blocker, uncurable in-leaf: wiring is
+  prohibited by the leaf scope, and both the baseline row and its required
+  disposition grow only behind an already-landed base authorization
+  (two-merge rule; develop at `3f8ccbe9d40d` carries none for this module).
+- `check-ratchet-provenance.py` (RATCHET_BASE_REV=origin/develop) rc=1 via
+  the reachability sub-ratchet only; shell-execution, contract-markers,
+  enumerations, and lifecycle sub-ratchets all OK.
+- Focused: `pytest .../test_root_admission_identity.py -q` 77 passed; all 12
+  issue-mandated test names present; `ruff check` / `ruff format --check` on
+  both files clean; module `mypy` clean; `check-suite-inventory.py` (full,
+  16 suites) ok at 27,808 node IDs; scoped `--suite packages/maistro-core/tests`
+  ok at 14,581 with the leaf delta unchanged at +77.
+- Module re-read in full against the issue text: frozen+slots dataclasses,
+  exact field order/annotations, 21-name `__all__`, all validation invariants,
+  no UUID generation, no `maistro.runs.__init__` export, and repr tests that
+  assert field omission (not blanket UUID-text absence) — all conformant.
+
+Round-7 verdict: the leaf's local acceptance criteria are fully proven; the
+exact-debt-ledger red is reduced to the reachability new-unreachable, whose
+cure (develop-side reachability grant, or real-consumer wiring in parent
+#1845 integration) is an orchestrator decision outside this leaf's
+authorization. Escalated as NEEDS-DEEP-REVIEW per the issue's instruction to
+report implementation/test readiness plus the explicit merge blocker.
