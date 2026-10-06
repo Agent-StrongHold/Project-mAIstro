@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from maistro.providers.errors import ModelNotFoundError, NoEligibleModelError
@@ -12,12 +13,20 @@ if TYPE_CHECKING:
     from maistro.providers.types import EmbeddingModelMetadata, ModelMetadata, RoutingTask
 
 
+def _in_scope(name: str, scope: Collection[str] | None) -> bool:
+    """Scope is a constraint, never a widening: an empty scope elects nothing."""
+
+    return scope is None or name in scope
+
+
 class CostAwareRouter:
     """Implements the LLMRouter protocol.
 
     Selection: filter by budget (cost, latency, reasoning), prefer the
     lowest-latency candidate, and fall through each candidate's fallback
-    chain when the preferred model is unavailable (ADR-038).
+    chain when the preferred model is unavailable (ADR-038). ``scope``
+    optionally constrains every stage — candidates and fallback chains —
+    to the given model names.
     """
 
     def __init__(self, registry: LLMProviderRegistry) -> None:
@@ -27,23 +36,46 @@ class CostAwareRouter:
         self,
         task: RoutingTask,
         budget: RouterBudget | None = None,
+        scope: Collection[str] | None = None,
     ) -> ModelMetadata:
         budget = budget or RouterBudget()
         models = await self._registry.list_models()
-        candidates = [m for m in models if self._satisfies(m, budget)]
+        candidates = [m for m in models if self._satisfies(m, budget) and _in_scope(m.name, scope)]
         if not candidates:
             raise NoEligibleModelError(budget)
 
         candidates.sort(key=lambda m: m.latency_p50_ms)
+        selected = await self._first_available_in_chains(candidates, budget, scope)
+        if selected is None:
+            raise NoEligibleModelError(budget, detail=f"all eligible models unavailable: {budget}")
+        return selected
+
+    async def _first_available_in_chains(
+        self,
+        candidates: list[ModelMetadata],
+        budget: RouterBudget,
+        scope: Collection[str] | None,
+    ) -> ModelMetadata | None:
+        """Walk each candidate's fallback chain for the first selectable model.
+
+        Every chain member is considered once across candidates; scope is a
+        constraint at this stage too, so a fallback outside the declared
+        adapter's models cannot be elected by a scoped selection.
+        """
+
         tried: set[str] = set()
         for candidate in candidates:
             for model in await self.fallback_chain(candidate.name):
                 if model.name in tried:
                     continue
                 tried.add(model.name)
-                if self._satisfies(model, budget) and self._registry.is_available(model.name):
+                if (
+                    self._satisfies(model, budget)
+                    and _in_scope(model.name, scope)
+                    and self._registry.is_available(model.name)
+                ):
                     return model
-        raise NoEligibleModelError(budget, detail=f"all eligible models unavailable: {budget}")
+        return None
 
     async def select_embedding(self, input_size_tokens: int) -> EmbeddingModelMetadata:
         """Pick the cheapest available embedding model that fits the input size."""

@@ -1,10 +1,12 @@
 """Ordered exact-scope audit cursor indexes (#358).
 
-Revision ID: 058
-Revises: 057
+Revision ID: 059
+Revises: 058
 
-Re-parented after develop's Run-store planner migration to keep one linear chain.
-The audit-index revision has not landed; existing revisions are unchanged.
+Re-parented onto develop's Gauntlet-validation-provenance tip to keep one
+linear chain: develop claimed `058` while this branch's audit revision was
+open, so the audit indexes move past it as `059`. The audit-index revision
+has not landed; existing revisions are unchanged.
 
 Each equality-filter shape needs an ordered seek, including timestamp ties.
 Build at migration time, not on the first audit request. Eight indexes trade
@@ -15,8 +17,8 @@ from itertools import combinations
 
 from alembic import op
 
-revision = "058"
-down_revision = "057"
+revision = "059"
+down_revision = "058"
 branch_labels = None
 depends_on = None
 

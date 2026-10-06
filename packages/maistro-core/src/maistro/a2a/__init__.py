@@ -22,6 +22,12 @@ from maistro.a2a.broker import (
     Transport,
 )
 from maistro.a2a.delegate import A2ADelegator, A2ATask, DelegationMode, TaskStatus
+from maistro.a2a.delegation_context import (
+    DelegationContext,
+    DelegationContextError,
+    DelegationScopeExceeded,
+    attenuate_scopes,
+)
 from maistro.a2a.external import (
     EXTERNAL_PRIORITY_TIER,
     EXTERNAL_TRUST_TIER,
@@ -54,6 +60,21 @@ from maistro.a2a.guest_peers import (
     PeerTrust,
 )
 from maistro.a2a.lifecycle import TaskLifecycleManager, TaskQueue, WorkerConfig, WorkerPool
+from maistro.a2a.normalize import (
+    CancellationProjection,
+    CanonicalDelegationTruth,
+    RemoteProgressObservation,
+    RemoteRetryDecision,
+    RemoteState,
+    RetryDecision,
+    SettlementDecision,
+    decide_cancellation,
+    decide_retry,
+    decide_settlement,
+    normalize_remote_state,
+    record_progress,
+    settle_outcome,
+)
 
 __all__ = [
     "EXTERNAL_PRIORITY_TIER",
@@ -67,13 +88,18 @@ __all__ = [
     "AuthorityEscalationRefused",
     "Availability",
     "AvailabilityState",
+    "CancellationProjection",
+    "CanonicalDelegationTruth",
     "CapabilityAuthorization",
     "CardResolver",
     "DefaultDenyProjectionPolicy",
     "DelegationBudget",
+    "DelegationContext",
+    "DelegationContextError",
     "DelegationMode",
     "DelegationRefused",
     "DelegationResult",
+    "DelegationScopeExceeded",
     "DescriptorAlreadyRegistered",
     "DescriptorError",
     "DescriptorInvalid",
@@ -88,6 +114,11 @@ __all__ = [
     "RegisteredExternalAgent",
     "RemoteAgentDescriptor",
     "RemoteCapabilities",
+    "RemoteProgressObservation",
+    "RemoteRetryDecision",
+    "RemoteState",
+    "RetryDecision",
+    "SettlementDecision",
     "SpecialistProjection",
     "TaskLifecycleManager",
     "TaskQueue",
@@ -97,6 +128,13 @@ __all__ = [
     "UnsupportedCapability",
     "WorkerConfig",
     "WorkerPool",
+    "attenuate_scopes",
+    "decide_cancellation",
+    "decide_retry",
+    "decide_settlement",
+    "normalize_remote_state",
     "parse_remote_card",
     "payload_digest",
+    "record_progress",
+    "settle_outcome",
 ]

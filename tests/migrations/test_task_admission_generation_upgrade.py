@@ -132,6 +132,29 @@ def _stamped_version() -> str | None:
     return str(rows[0][0]) if rows else None
 
 
+def _chain_head() -> str:
+    """The single head of the migration chain, read from the version files.
+
+    Every develop collision re-parents this branch's revisions onto a new
+    chain tip, so a fixed literal in an assertion about "the head" is only
+    ever an artifact of whichever sync wrote it — it has rotted three times
+    already (043_invocation_quota_door, 055, 056). The invariant under test
+    is that the refused downgrade leaves the stamp AT HEAD, so the head is
+    resolved from the same scripts the upgrade above ran.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1, (
+        f"expected exactly one migration head, found {sorted(heads)}; "
+        "see tests/migrations/test_single_migration_head.py"
+    )
+    return heads[0]
+
+
 @pytest.fixture
 def empty_database():
     """Start each test from `base`, so one failure cannot cascade into the next."""
@@ -542,7 +565,6 @@ class TestTheDowngrade:
         _insert_v2(_valid_v2_row(task_id="receipt-1", run_id="run-1", acknowledged_at=3000))
         _execute(_shipped_row_sql("legacy-claim", complete=True))
         before = _query("select * from task_idempotency order by scope_key")
-        version_before = _stamped_version()
 
         result = _alembic("downgrade", "052")
 
@@ -550,7 +572,13 @@ class TestTheDowngrade:
         assert "format_version" in result.stderr + result.stdout
         # The multi-revision downgrade is transactional: even revisions
         # preceding the refusal roll back, preserving the original head.
-        assert _stamped_version() == version_before
+        # The assertion tracks the head, not a fixed literal — every develop
+        # collision re-parents the chain tip, and the invariant under test is
+        # that the refused downgrade leaves the stamp AT HEAD. The literal
+        # drifted twice already (043_invocation_quota_door, 055, 056, and
+        # the Gauntlet revision moved the head again), so the head is read
+        # from the same version files the upgrade above ran.
+        assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 

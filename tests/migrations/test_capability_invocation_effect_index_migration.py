@@ -69,12 +69,24 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # artifact-version ledger took the same number on the same parent,
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
-    # chain tip, followed by learning lifecycle (053), applicability (054),
-    # and admission generations (055). Develop's quota door follows 055,
-    # then user-model facts (056) and Run-store planner stability (057).
-    # Only this lane's unlanded audit indexes move onto that tip, as 058;
-    # develop's deployed revisions stay intact.
-    walked = {item.revision for item in directory.walk_revisions("base", "058")}
+    # chain tip as `052_learning_stage_ladder`, and its learning-lifecycle
+    # columns (M4-B, ADR-100126-8c2d) continued that tip as
+    # `053_learning_lifecycle_columns`. The learning applicability migration
+    # (M4-B3, #119) — after four collision renumberings — re-parented onto
+    # that `053` as `054_learning_applicability_epistemics`. Develop's
+    # forward admission-generation representation (#1892) landed second again
+    # in an earlier sync and re-parented onto the applicability tip as
+    # `055_task_admission_generations`. #1047's user-model tables collided a
+    # second time there and re-parented onto that `055` as
+    # `056_user_model_facts`. Develop's quota-door revision (#1196/#718)
+    # keeps develop's parent as `043_invocation_quota_door`. Develop's #863
+    # planner-stability one re-parented onto that tip as
+    # `057_run_store_planner_stability`, and develop's Gauntlet provenance
+    # (#118, M4-B2) re-parented onto that tip as
+    # `058_learning_validation_provenance`. Only this lane's unlanded audit
+    # indexes move onto that deployed tip, as `059`, keeping every develop
+    # revision intact and one linear head.
+    walked = {item.revision for item in directory.walk_revisions("base", "059")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -93,15 +105,18 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "056" in walked
     assert "057" in walked
     assert "058" in walked
+    assert "059" in walked
     assert directory.get_revision("055").down_revision == "054"
     assert directory.get_revision("043_invocation_quota_door").down_revision == "055"
     assert directory.get_revision("056").down_revision == "043_invocation_quota_door"
     assert directory.get_revision("057").down_revision == "056"
     assert directory.get_revision("058").down_revision == "057"
+    assert directory.get_revision("059").down_revision == "058"
     assert Path(directory.get_revision("056").path).name == "056_user_model_facts.py"
     assert Path(directory.get_revision("057").path).name == "057_run_store_planner_stability.py"
-    assert Path(directory.get_revision("058").path).name == "058_audit_cursor_indexes.py"
-    assert directory.get_heads() == ["058"]
+    assert Path(directory.get_revision("058").path).name == "058_learning_validation_provenance.py"
+    assert Path(directory.get_revision("059").path).name == "059_audit_cursor_indexes.py"
+    assert directory.get_heads() == ["059"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
