@@ -18,6 +18,12 @@ from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
 )
+from maistro.extensions.ui import (
+    GovernedActionCall,
+    RenderedComponent,
+    SandboxPolicy,
+    UiProjectionService,
+)
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
@@ -287,4 +293,22 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Governed UI/A2UI extension components (M9-F2, #967). The projection
+    # contract ships first by design, the same contract-first posture as the
+    # M9-B1 store seams and the M9-D1 registry above. `render_component` is
+    # the single-component read the HTTP/UI seam calls (the multi-component
+    # `render` already has its in-tree caller shape); its consumers are the
+    # host's surface layer, outside this packages/*/src scan until the UI
+    # packs land (#968). The SandboxPolicy directive fields are read through
+    # the closed directive table (`to_csp` walks them via getattr), and
+    # `sandbox_csp`/`permissions_required` are serialized projection surface
+    # consumed by the rendering client and the host's seam executor — the
+    # same posture as the ledger's schema-field rule: contract vocabulary
+    # need not appear as direct scans in package-local analysis.
+    SandboxPolicy.script_src,  # type: ignore[misc]
+    SandboxPolicy.style_src,
+    SandboxPolicy.img_src,
+    RenderedComponent.sandbox_csp,  # type: ignore[misc]
+    GovernedActionCall.permissions_required,  # type: ignore[misc]
+    UiProjectionService.render_component,
 )

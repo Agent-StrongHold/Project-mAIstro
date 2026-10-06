@@ -14,6 +14,11 @@ Public surface of the ``maistro.extensions`` package, in two layers:
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
   authorization.
+- **M9-F2 UI components (issue #967)**: the governed UI/A2UI component
+  contract (:mod:`maistro.extensions.ui`) — declarative component catalogs
+  that project canonical state through a closed binding allowlist, route
+  mutating actions to governed server seams only, enforce availability
+  server-side, and carry sandbox policy and provenance on every render.
 
 Neither layer executes extension code: verification, evaluation and
 authorization all operate on bytes and declarations alone.
@@ -91,6 +96,31 @@ from maistro.extensions.types import (
     identity_key,
     manifest_snapshot,
 )
+from maistro.extensions.ui import (
+    ActionAvailability,
+    ActionUnavailable,
+    CatalogRejected,
+    ClientStateRejected,
+    ComponentAsset,
+    ComponentProvenance,
+    DataBinding,
+    GovernedActionCall,
+    GovernedRoute,
+    RenderedComponent,
+    RouteParam,
+    SandboxPolicy,
+    UiAction,
+    UiComponentDefinition,
+    UiComponentManifest,
+    UiExtensionError,
+    UiProjectionService,
+    UnknownAction,
+    UnknownCatalog,
+    UnknownComponent,
+    assert_ui_snapshot_intact,
+    inspect_ui_manifest,
+    verify_component_asset,
+)
 
 __all__ = [
     "DIGEST_ALGORITHM",
@@ -98,12 +128,19 @@ __all__ = [
     "TERMINAL_STATES",
     "TRANSITIONS",
     "TRUST_POLICY",
+    "ActionAvailability",
+    "ActionUnavailable",
     "ActivationCallback",
     "ArtifactMismatch",
     "AuthorityBaseline",
     "AuthorityDelta",
+    "CatalogRejected",
+    "ClientStateRejected",
     "CompatibilityPolicy",
     "CompatibilityReport",
+    "ComponentAsset",
+    "ComponentProvenance",
+    "DataBinding",
     "ExtensionCodeLoader",
     "ExtensionDependency",
     "ExtensionEntryPoint",
@@ -119,6 +156,8 @@ __all__ = [
     "ExtensionState",
     "ExtensionStore",
     "ExtensionTransition",
+    "GovernedActionCall",
+    "GovernedRoute",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
     "InspectionConflict",
@@ -134,23 +173,37 @@ __all__ = [
     "PublisherIdentity",
     "PublisherKeyConflict",
     "RegistryProvenance",
+    "RenderedComponent",
+    "RouteParam",
+    "SandboxPolicy",
     "SqliteExtensionInstallStore",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
     "TrustReport",
+    "UiAction",
+    "UiComponentDefinition",
+    "UiComponentManifest",
+    "UiExtensionError",
+    "UiProjectionService",
+    "UnknownAction",
+    "UnknownCatalog",
+    "UnknownComponent",
     "UnknownInstall",
     "UnknownPublisher",
     "UnwiredExtensionLoader",
     "assert_snapshot_intact",
+    "assert_ui_snapshot_intact",
     "canonical_install_payload",
     "compute_authority_delta",
     "evaluate_compatibility",
     "evaluate_trust",
     "identity_key",
     "inspect_manifest",
+    "inspect_ui_manifest",
     "manifest_snapshot",
     "normalize_permission",
     "sha256_hex",
+    "verify_component_asset",
     "verify_package_payload",
 ]
