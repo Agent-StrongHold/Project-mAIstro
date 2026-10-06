@@ -31,15 +31,6 @@ from maistro.extensions.authority import (
     compute_authority_delta,
     normalize_permission,
 )
-# NOTE: both `compat` (M9-C1 negotiation, #955) and `compatibility` (M9-B2
-# activation, #953) define a class named `CompatibilityReport`. The package
-# binds the M9-C1 negotiation report; the activation-layer report stays on
-# its module path (`maistro.extensions.compatibility.CompatibilityReport`),
-# which is how its in-tree consumers already import it.
-from maistro.extensions.compatibility import (
-    CompatibilityPolicy,
-    evaluate_compatibility,
-)
 from maistro.extensions.compat import (
     CONTRACT_VERSION,
     FEATURE_DEPRECATED,
@@ -68,6 +59,10 @@ from maistro.extensions.compat import (
     parse_contract_version,
     parse_feature_status,
 )
+from maistro.extensions.compatibility import (
+    CompatibilityPolicy,
+    evaluate_compatibility,
+)
 from maistro.extensions.manifest import (
     SUPPORTED_MANIFEST_VERSION,
     assert_snapshot_intact,
@@ -91,6 +86,12 @@ from maistro.extensions.store import (
     InMemoryExtensionStore,
 )
 from maistro.extensions.trust import TrustPolicy, TrustReport, evaluate_trust
+
+# NOTE: both `compat` (M9-C1 negotiation, #955) and `compatibility` (M9-B2
+# activation, #953) define a class named `CompatibilityReport`. The package
+# binds the M9-C1 negotiation report; the activation-layer report stays on
+# its module path (`maistro.extensions.compatibility.CompatibilityReport`),
+# which is how its in-tree consumers already import it.
 from maistro.extensions.types import (
     DIGEST_ALGORITHM,
     TERMINAL_STATES,
