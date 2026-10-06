@@ -13149,3 +13149,57 @@ prohibition on competing Goal stores / execution authorities. The
 branch is battery-green, develop-current at `a8258ee24` (merged,
 zero-conflict), contains the complete PR-#1660 head, and leaves the
 canonical `Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched.
+
+## Round 198 re-verification at lane head (2026-10-06, job c39bed24)
+
+No tree changes this round: starting head equals the round-197 end
+head `0973f1184255` exactly (`git status` clean), so all round-197
+pytest evidence carries over byte-identically. This round re-proved
+the block and re-ran the fast battery.
+
+### Block re-confirmation (fresh dispatch capture 2026-10-06T08:53Z, 61 sources)
+
+- `origin/develop` unchanged at `a8258ee24` (already merged in round
+  197; no sync needed).
+- Dependencies still open: #804/#805/#806 (persistent Workspace Agent
+  + Goal reconciliation), #774 (CreativeBrief store), #776 (Workspace
+  working graph), #773 (parent), #53/#93/#95. Closed: only
+  #775/#458/#39. Linked PR #1660 still an open draft at head
+  `78f8f6476466`, unchanged.
+- AC1 prerequisites re-proven absent at `0973f1184255`:
+  `packages/maistro-core/src/maistro/goals` does not exist;
+  `grep -rEl "GoalReconciler|delegate_goal" packages/*/src` -> 0
+  files; `ControlMode.COLLABORATIVE` remains the `_ =` vulture-shim
+  placeholder at `maistro_design/versions.py:1064`;
+  `GoalRevisionCatalog` remains a declaration-only Protocol at
+  `maistro/projects/rubric_store.py:71`.
+
+### Gate battery re-run (all at `0973f1184255`)
+
+- `uv run ruff check .` -> EXIT 0; `uv run ruff format --check .` ->
+  EXIT 0 (3045 files).
+- Vulture with CI's exact arguments (`packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`): 1331 findings;
+  `check-vulture-baseline.py` EXIT 0 (base `a8258ee24`, candidate
+  `0973f1184255`, 1332 reviewed identities -> 1331 findings, no
+  unbanked). No ledger amendment needed or made.
+- `check-suite-inventory.py` EXIT 0 (16 suites);
+  `check-backlog-consistency.py` EXIT 0 (167 items);
+  `check-doc-links.py` EXIT 0; `check-radon-baseline.py` EXIT 0
+  (138 = 138); `check-promotion-surface.py` EXIT 0;
+  `check-reachability.py` EXIT 0 (170 unreachable, tolerated).
+- Targeted pytest on this lane's manifest surfaces:
+  `uv run pytest packages/hive-conductor/backend/tests/{test_design_service_startup,test_design_scope}.py packages/maistro-bootstrap/tests/{test_agent_loop_turns,test_agent_loop_run_tests_args}.py -q`
+  -> **87 passed**.
+- `check-ac-state.py --run-tests --ratchet` was NOT re-run: the docker
+  daemon is down in this environment, so the pg18 CI-exact env cannot
+  be recreated. Round 197's proof stands unchanged at this identical
+  SHA: without DB env the gate reads 38.5301 < 43.2114 identically on
+  `origin/develop` itself (environmental), and with CI's env
+  (quality.yml:655-684) it passes at 43.2114 == floor.
+
+Verdict: **BLOCKED** (dependency-blocking, sixteenth consecutive round
+with fresh evidence). No legitimate repair exists until #804/#805/#806
+(+#774/#776) land; the issue's stop condition forbids private
+substitutes for the Workspace Agent / Goal reconciliation /
+CreativeBrief / working-graph owners.
