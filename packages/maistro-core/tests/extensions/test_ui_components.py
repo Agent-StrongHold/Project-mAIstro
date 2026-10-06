@@ -9,6 +9,7 @@ surface projects only what the host's canonical snapshot supplies.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -83,7 +84,7 @@ def _component(**overrides: Any) -> dict[str, Any]:
                 "action": "cancel",
                 "intent": "cancel_run",
                 "permissions": ["runs.cancel"],
-                "route": "POST /v1/runs/{run_id}/cancel",
+                "route": "POST /v1/dag-runs/{run_id}/cancel",
                 "precondition": "run_cancellable",
             },
         ],
@@ -309,7 +310,7 @@ def test_mutating_action_permissions_are_canonical_not_catalog_chosen() -> None:
                             "action": "cancel",
                             "intent": "cancel_run",
                             "permissions": ["notes.read"],
-                            "route": "POST /v1/runs/{run_id}/cancel",
+                            "route": "POST /v1/dag-runs/{run_id}/cancel",
                         }
                     ]
                 )
@@ -324,7 +325,7 @@ def test_mutating_action_permissions_are_canonical_not_catalog_chosen() -> None:
                             "action": "cancel",
                             "intent": "cancel_run",
                             "permissions": ["runs.cancel", "notes.read"],
-                            "route": "POST /v1/runs/{run_id}/cancel",
+                            "route": "POST /v1/dag-runs/{run_id}/cancel",
                         }
                     ]
                 )
@@ -382,7 +383,7 @@ async def test_dispatch_resolves_the_governed_seam_from_canonical_state() -> Non
     )
     assert (call.method, call.path) == (
         "POST",
-        f"/v1/runs/{FROZEN_RUN_ID}/cancel",
+        f"/v1/dag-runs/{FROZEN_RUN_ID}/cancel",
     )
     assert call.permissions_required == ("runs.cancel",)
 
@@ -840,6 +841,20 @@ def test_manifest_snapshot_tampering_is_detected() -> None:
         assert_ui_snapshot_intact(tampered)
 
 
+def test_replace_cannot_smuggle_fields_past_the_anchor() -> None:
+    """Substituted fields fail the snapshot check even with matching bytes."""
+    manifest = _inspect()
+    unsafe = ui_module.SandboxPolicy(script_src=("'self'", "*"), connect_src=("https://evil.example",))
+    smuggled = dataclasses.replace(
+        manifest,
+        components=(dataclasses.replace(manifest.components[0], sandbox=unsafe),),
+    )
+    assert smuggled.raw == manifest.raw
+    assert smuggled.source_sha256 == manifest.source_sha256
+    with pytest.raises(CatalogRejected, match="parsed fields differ"):
+        assert_ui_snapshot_intact(smuggled)
+
+
 # --------------------------------------------------------------------------
 # Versioned component assets.
 # --------------------------------------------------------------------------
@@ -929,13 +944,13 @@ def test_duplicate_bindings_and_actions_are_refused() -> None:
                             "action": "cancel",
                             "intent": "cancel_run",
                             "permissions": ["runs.cancel"],
-                            "route": "POST /v1/runs/{run_id}/cancel",
+                            "route": "POST /v1/dag-runs/{run_id}/cancel",
                         },
                         {
                             "action": "cancel",
                             "intent": "cancel_run",
                             "permissions": ["runs.cancel"],
-                            "route": "POST /v1/runs/{run_id}/cancel",
+                            "route": "POST /v1/dag-runs/{run_id}/cancel",
                         },
                     ]
                 )
@@ -958,7 +973,7 @@ def test_unknown_action_keys_are_refused() -> None:
                             "action": "cancel",
                             "intent": "cancel_run",
                             "permissions": ["runs.cancel"],
-                            "route": "POST /v1/runs/{run_id}/cancel",
+                            "route": "POST /v1/dag-runs/{run_id}/cancel",
                             "on_success": "close",
                         }
                     ]

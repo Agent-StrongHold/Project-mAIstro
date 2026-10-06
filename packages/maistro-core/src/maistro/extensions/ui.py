@@ -292,7 +292,7 @@ GOVERNED_ROUTES: Mapping[str, GovernedRoute] = MappingProxyType({
     "cancel_run": GovernedRoute(
         intent="cancel_run",
         method="POST",
-        path="/v1/runs/{run_id}/cancel",
+        path="/v1/dag-runs/{run_id}/cancel",
         required_permissions=("runs.cancel",),
         params=(RouteParam(name="run_id", kind="run", field="run_id"),),
     ),
@@ -721,16 +721,24 @@ class UiComponentManifest:
 
 
 def assert_ui_snapshot_intact(manifest: UiComponentManifest) -> None:
-    """Raise if the manifest snapshot's bytes no longer match their anchor.
+    """Raise unless the snapshot's fields are exactly what its bytes parse to.
 
     Every projection and dispatch re-verifies the snapshot, so a corrupted
     or swapped manifest fails loudly instead of rendering something nobody
-    authorized.
+    authorized. Hashing ``raw`` alone would let a ``dataclasses.replace()``
+    carry substituted fields under the original anchor, so the anchored
+    bytes are reparsed and the complete snapshot compared field for field.
     """
     if sha256_hex(manifest.raw) != manifest.source_sha256:
         raise CatalogRejected(
             f"UI manifest snapshot integrity failure for {manifest.catalog_id!r}: "
             "bytes no longer match the inspected digest"
+        )
+    reparsed = inspect_ui_manifest(manifest.raw)
+    if reparsed != manifest:
+        raise CatalogRejected(
+            f"UI manifest snapshot integrity failure for {manifest.catalog_id!r}: "
+            "parsed fields differ from the anchored manifest bytes"
         )
 
 
