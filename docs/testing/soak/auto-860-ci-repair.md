@@ -314,3 +314,81 @@ replica-selection criterion).
 
 Progress: checked 1 issue; harness repairs done 1; production-artifact evidence
 rounds 4; skipped 0; validation-command errors 0; promotion-blocked 1.
+
+## Independent revalidation: job 01490135637a46118642be9021f7408d
+
+Frozen scope: #860 only; verified clean starting HEAD
+`1e01771f8ae5093cabc657f64ab9e2269876ca0f`, develop base
+`d39a2e4ce3309d11871180f6645329300cb84e58` (= local `origin/develop`). The job
+directory supplied no `check-*.log` files; the prior round's claims were NOT
+assumed true — every check below was executed fresh, and the round-7 evidence
+chain was re-derived from the tree rather than trusted.
+
+### Evidence-chain re-derivation (not assumed)
+
+- `git diff --stat 88edcc7ea..HEAD -- packages/ deploy/` is **empty**: the only
+  delta between the sustained-round evidence head and the assigned head is
+  `scripts/soak/run_soak.py` (+6, harness) and docs/evidence. The production
+  artifact exercised by rounds A/B and the probes is code-identical at the
+  assigned head.
+- All four round-7 evidence documents carry matching stack identity
+  (`stack.hashes.git_head` / `hashes.git_head` = `ad9b17cb9`/`88edcc7ea`, image
+  ids `ef3698e0…`/`e1952541…`, compose-config hash).
+- Live re-verification against the still-running compose project `m3a860`:
+  `docker inspect` image ids of both replicas equal the recorded ids exactly;
+  through the LB `GET /health/live` = 200, `GET /health/ready` = 503 (open
+  circuit, documented `api/health.py:228-247` semantics), `GET /metrics`
+  unauthenticated = 401; `pg_stat_replication` on the primary reports
+  `walreceiver|streaming`.
+- The schedule-occurrence harness repair was re-derived against the canonical
+  validator: `packages/maistro-core/src/maistro/runs/model.py:321` rejects an
+  empty `actor_principal_id`, and `run_soak.py:553-558` now supplies the same
+  fixture wiring as `packages/maistro-core/tests/scheduling/test_pg_admission.py:56`.
+
+### Executed validation (all fresh at HEAD)
+
+| Command | Outcome |
+| --- | --- |
+| `git diff --check d39a2e4c...HEAD` | PASS — the historical EOF-whitespace findings do not reproduce. |
+| `uv run ruff check .` | PASS. |
+| `uv run ruff format --check .` | PASS: 3003 files. |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1336 reviewed identities = 1336 findings, zero unclassified; no ledger amendment justified. |
+| `uv run pytest tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q` | PASS: 60 tests. |
+| `uv run pytest packages/maistro-server/tests -q` | PASS: 516 passed, 9 skipped, fresh at the assigned head. |
+| `uv run python scripts/check-suite-inventory.py` | PASS: 15/15 suites match; no test added, no inventory delta. |
+| `uv run python scripts/check-backlog-consistency.py` | PASS: 168 items. |
+| `uv run python scripts/check-adr-index.py` | PASS. |
+| Gate-evaluator probe (imported `run_soak.py`) | `preflight_artifact_check()` returns ok=false host-uvicorn; `failed_promotion_checks` on `m3a-round6-shakedown.json` fails exactly `sustain_duration` (90.43 s vs 14400 s) and `exact_rc_artifact`; a synthetic all-gates-true document passes; a document missing `graceful_drain` fails. The evaluator is honest in both directions. |
+
+### Acceptance disposition (unchanged by this round)
+
+Advanced-to-artifact evidence stands as recorded in the round-7 sections above
+(two deployed replicas; exactly-once task admission; cross-replica
+schedule-occurrence fencing; kill/restart drain/failover with zero loss or
+duplication in the window; per-process rate-limit behavior with its
+replica-selection bypass demonstrated on the artifact; PG/latency/RSS/FD
+telemetry; streaming replication). Still unmet, and not resolvable by a repair
+worker: (1) `sustain_duration`/`exact_rc_artifact` require a frozen, selected
+immutable RC artifact and a ≥4 h instrumented soak — all current windows are
+360 s observation rounds and the harness correctly still fails both gates;
+(2) successful tool/model calls are impossible without provider keys in this
+environment, so Graph/node fan-out with successful work, multi-user/Workspace
+successful traffic, Canvas operations and sustained Goal reconciliation remain
+UNVERIFIED (`m3a-load-profile.md` declares these as blockers); (3) the
+"cannot be bypassed by replica selection" criterion conflicts with the
+deliberate per-process design (`api/rate_limit.py:28-35`, reproduced by
+`tests/test_soak_promotion_gates.py:439-489` with real middleware) and needs an
+owner/ADR decision, not a silent policy change; (4) filing load findings
+github-side is prohibited to this worker.
+
+**Verdict: BLOCKED for promotion acceptance remains correct.** This round found
+no defect in the prior round's evidence: every deterministic gate passes at the
+assigned head, the recorded artifact evidence is hash-consistent and live
+verifiable, and no gate was weakened. No code, tests, ledgers or gates were
+changed here — only this record. Next step is operational (freeze the RC
+artifact, provider keys into the gateway, ≥4 h instrumented soak) plus the
+rate-limit ownership decision; another validation-only round cannot advance
+acceptance.
+
+Progress: checked 1 issue; validation rounds done 1; code changes 0; skipped 0;
+errors 0; promotion-blocked 1.
