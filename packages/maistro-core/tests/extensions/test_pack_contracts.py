@@ -1273,3 +1273,17 @@ class TestManifestInspection:
         tampered["name"] = "A Different Pack Wearing The Same Version"
         with pytest.raises(PackIdentityConflict, match="different manifest bytes"):
             registry.install(json.dumps(tampered).encode())
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_pack_id_occupied_by_an_active_extension_is_rejected(self) -> None:
+        # A pack sharing an id with an already-active extension would let
+        # _active_versions() overwrite the extension's version with the
+        # pack's, silently retargeting dependency resolution; refuse instead.
+        registry = InstallablePackRegistry(
+            platform_api_version="1.0.0",
+            active_extensions={"acme.film_critique": "1.0.0"},
+        )
+        with pytest.raises(PackIdentityConflict, match="already an active extension"):
+            registry.install(ACME_PACK)
+        assert registry.records() == ()

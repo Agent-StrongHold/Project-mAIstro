@@ -1175,6 +1175,16 @@ class InstallablePackRegistry:
         with different bytes is an identity conflict, never a replacement.
         """
         manifest = inspect_pack_manifest(raw)
+        occupied = self._active_extensions.get(manifest.pack_id)
+        if occupied is not None:
+            # An extension with this identity is already active here; letting
+            # the pack install would let _active_versions() overwrite the
+            # extension's version with the pack's, so dependency decisions
+            # could silently resolve to a different provider. Refuse instead.
+            raise PackIdentityConflict(
+                f"{manifest.pack_id} is already an active extension in this "
+                f"registry (version {occupied}); one identity, one provider"
+            )
         key = (manifest.pack_id, manifest.version)
         existing = self._records.get(key)
         if existing is not None:
