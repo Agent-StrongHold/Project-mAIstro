@@ -71,9 +71,10 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
     # chain tip, followed by learning lifecycle (053), applicability (054),
     # and admission generations (055). Develop's quota door follows 055,
-    # then user-model facts (056). Only this lane's unlanded audit indexes
-    # move onto that incoming tip, as 057; develop's revisions stay intact.
-    walked = {item.revision for item in directory.walk_revisions("base", "057")}
+    # then user-model facts (056) and Run-store planner stability (057).
+    # Only this lane's unlanded audit indexes move onto that tip, as 058;
+    # develop's deployed revisions stay intact.
+    walked = {item.revision for item in directory.walk_revisions("base", "058")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -91,13 +92,16 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "043_invocation_quota_door" in walked
     assert "056" in walked
     assert "057" in walked
+    assert "058" in walked
     assert directory.get_revision("055").down_revision == "054"
     assert directory.get_revision("043_invocation_quota_door").down_revision == "055"
     assert directory.get_revision("056").down_revision == "043_invocation_quota_door"
     assert directory.get_revision("057").down_revision == "056"
+    assert directory.get_revision("058").down_revision == "057"
     assert Path(directory.get_revision("056").path).name == "056_user_model_facts.py"
-    assert Path(directory.get_revision("057").path).name == "057_audit_cursor_indexes.py"
-    assert directory.get_heads() == ["057"]
+    assert Path(directory.get_revision("057").path).name == "057_run_store_planner_stability.py"
+    assert Path(directory.get_revision("058").path).name == "058_audit_cursor_indexes.py"
+    assert directory.get_heads() == ["058"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

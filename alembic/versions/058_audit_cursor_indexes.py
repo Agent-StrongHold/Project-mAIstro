@@ -1,9 +1,9 @@
 """Ordered exact-scope audit cursor indexes (#358).
 
-Revision ID: 057
-Revises: 056
+Revision ID: 058
+Revises: 057
 
-Re-parented after develop's user-model migration to keep one linear chain.
+Re-parented after develop's Run-store planner migration to keep one linear chain.
 The audit-index revision has not landed; existing revisions are unchanged.
 
 Each equality-filter shape needs an ordered seek, including timestamp ties.
@@ -15,8 +15,8 @@ from itertools import combinations
 
 from alembic import op
 
-revision = "057"
-down_revision = "056"
+revision = "058"
+down_revision = "057"
 branch_labels = None
 depends_on = None
 
