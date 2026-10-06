@@ -832,3 +832,23 @@ The local repair environment has neither required DSN and its Docker socket is
 unavailable, so the live leg is intentionally reported as unverified here
 until the disposable migrated database is supplied. The focused suite still
 runs its unit contracts; it does not claim a skipped leg as durability proof.
+
+## Round 14 (direct-header scalar-type repair)
+
+A verifier reproduced that a caller could construct an `AdmissionRowHeader`
+with `format_version=1.0`: Python compares that float equal to `1`, so the
+dataclass equality check accepted it against an integer-decoded row header and
+wrongly selected the legacy path. `AdmissionRowHeader.__post_init__` now
+requires a non-boolean `int` before accepting values 1 or 2. The existing
+`test_unknown_format_cannot_be_reinterpreted_as_legacy` parametrization now
+also passes each invalid raw value (`3`, `True`, and `1.0`) to the public
+header constructor; this preserves the suite inventory because it adds cases
+to an existing collected test node rather than a test file/node.
+
+On the local repair worktree rooted at `f4b5f01b6c`: `uv run pytest
+packages/maistro-core/tests/tasks/test_admission_codec.py
+packages/maistro-core/tests/runs/test_root_admission_identity.py -q -x` ->
+142 passed, 1 PostgreSQL durability test skipped (DSNs unset); `ruff check`,
+`ruff format --check`, targeted mypy, CI-exact vulture, and the core suite
+inventory (`14070` nodes) pass. The trusted-base exact-debt-ledger remains
+red only on the already-recorded, in-branch-unfixable reachability grants.

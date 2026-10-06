@@ -241,7 +241,7 @@ def test_unknown_format_cannot_be_reinterpreted_as_legacy(bad_format: object) ->
     with pytest.raises(AdmissionRowDecodeError):
         AdmissionRowHeader(
             scope_key=_SCOPE,
-            format_version=3,  # type: ignore[arg-type]
+            format_version=bad_format,  # type: ignore[arg-type]
             fingerprint=_FINGERPRINT,
             created_at_us=_CREATED_US,
             expires_at_us=_EXPIRES_US,

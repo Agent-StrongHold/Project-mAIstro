@@ -178,7 +178,11 @@ class AdmissionRowHeader:
                 code=AdmissionDecodeCode.INVALID_HEADER,
                 scope_key=None,
             )
-        if isinstance(self.format_version, bool) or self.format_version not in (1, 2):
+        if (
+            not isinstance(self.format_version, int)
+            or isinstance(self.format_version, bool)
+            or self.format_version not in (1, 2)
+        ):
             raise AdmissionRowDecodeError(
                 "format_version must be exactly 1 or 2",
                 code=AdmissionDecodeCode.INVALID_HEADER,
