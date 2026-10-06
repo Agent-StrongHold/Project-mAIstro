@@ -728,6 +728,31 @@ class TestTenantScopedState:
         with pytest.raises(ValueError, match="checkpoint name"):
             handle.checkpoint_save("", b"d")
 
+    async def test_deletes_report_what_this_tenant_held_and_nothing_else(self) -> None:
+        """Config/cache deletes answer truthfully per tenant key: a miss on
+        an unbound bucket, a hit only for the holder, and never a foreign
+        tenant's entry."""
+        state = TenantScopedExtensionState()
+        handle_a = state.bind(ExtensionScope("org-1", "ws-a"), "acme.chart_tools")
+        handle_b = state.bind(ExtensionScope("org-1", "ws-b"), "acme.chart_tools")
+        # Misses with no bucket at all for this tenant key.
+        assert handle_a.delete_config("k") is False
+        assert handle_a.cache_delete("c") is False
+        handle_a.set_config("k", "v")
+        handle_a.cache_set("c", b"1")
+        # Hits remove exactly this tenant's entries; a second delete misses.
+        assert handle_a.delete_config("k") is True
+        assert handle_a.delete_config("k") is False
+        assert handle_a.cache_delete("c") is True
+        assert handle_a.cache_delete("c") is False
+        assert handle_a.get_config("k") is None
+        assert handle_a.cache_get("c") is None
+        # B's same-named keys were never reachable, so nothing changed there.
+        handle_b.set_config("k", "b-v")
+        handle_b.cache_set("c", b"b-1")
+        assert handle_b.delete_config("k") is True
+        assert handle_b.cache_delete("c") is True
+
 
 # ---------------------------------------------------------------------------
 # Cross-Workspace noninterference (property)

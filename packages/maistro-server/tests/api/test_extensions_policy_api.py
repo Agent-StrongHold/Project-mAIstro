@@ -511,6 +511,36 @@ class TestTenantScopedConfigurationSurface:
         )
         assert foreign.status_code == 404
 
+    def test_policy_refused_activation_maps_to_403_with_record_unchanged(self, harness) -> None:
+        """A pin landing between authorization and activation refuses the
+        install route with 403 — and the operator's approval stands: the
+        record keeps its AUTHORIZED state, nothing was activated."""
+        h, _workspaces, loader = harness
+        inspected = h.inspect()
+        install_id = inspected.json()["install_id"]
+        assert inspected.json()["state"] == "awaiting_authorization"
+        decided = h.authorize(install_id)
+        assert decided.json()["state"] == "authorized"
+
+        pinned = h.client.put(
+            "/extensions/policy/orgs/org-1",
+            json={"pins": {"acme.chart_tools": {"publisher_id": "acme", "version": "1.2.3"}}},
+        )
+        assert pinned.status_code == 200, pinned.text
+
+        installed = h.client.post(
+            f"/extensions/installations/{install_id}/installation",
+            json={"org_id": "org-1", "workspace_id": "ws-a", "payload_b64": _payload_b64()},
+        )
+        assert installed.status_code == 403, installed.text
+        assert "organization pin requires version 1.2.3" in installed.text
+        assert loader.calls == []
+        record = h.client.get(
+            f"/extensions/installations/{install_id}",
+            params={"org_id": "org-1", "workspace_id": "ws-a"},
+        )
+        assert record.json()["state"] == "authorized", record.text
+
     def test_state_read_requires_workspace_authority(self, harness) -> None:
         """The acceptance boundary: the extension is ACTIVE in ws-a with a
         config value set, and a principal who is a member of neither ws-a nor
@@ -632,3 +662,18 @@ class TestPolicyRoutesAreAuthenticated:
         )
         assert put.status_code == 200, put.text
         assert put.json()["approved_publishers"] == ["acme"]
+
+    def test_policy_engine_dependency_503s_without_a_container(self) -> None:
+        """The dependency fails closed when no host wired a container at all:
+        503, not an AttributeError."""
+        app = FastAPI()
+        app.include_router(extensions_api.router)
+        app.dependency_overrides[verify_api_key] = lambda: _principal("operator-1")
+        client = TestClient(app)
+        try:
+            response = client.get("/extensions/policy/orgs/org-1")
+        finally:
+            client.close()
+            app.dependency_overrides.clear()
+        assert response.status_code == 503
+        assert "No extension policy engine is configured" in response.text
