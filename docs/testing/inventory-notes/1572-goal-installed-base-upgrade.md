@@ -45,8 +45,11 @@ No existing test was removed or renamed.
 
 The PostgreSQL legs need `MAISTRO_TEST_DATABASE_URL` and skip without it
 (deliberately, like the rest of `tests/migrations/`). Quality's PostgreSQL
-coverage job runs the full `tests/migrations` directory on pg17; the ci.yml
-pg17/pg18 matrix runs the chain module only. The fixture restores `upgrade
-head` after each isolated installed-base walk so subsequent modules do not
-inherit an empty shared database. The prior pg18 local evidence is historical;
-this revision must be revalidated after the migration moved to `059`.
+coverage job is the only CI job that runs the full `tests/migrations` directory
+(and currently runs it on pg17); the ci.yml pg17/pg18 matrix invokes only
+`test_migration_chain.py`. Therefore this installed-base suite has no pg18 CI
+leg, and a local pg18 run remains required before that platform can be claimed.
+The fixture restores `upgrade head` after each isolated installed-base walk so
+subsequent modules do not inherit an empty shared database. The prior pg18
+local evidence is historical; this revision must be revalidated after the
+migration moved to `059`.
