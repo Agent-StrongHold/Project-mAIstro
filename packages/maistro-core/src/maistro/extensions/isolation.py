@@ -736,9 +736,7 @@ class ExtensionSandboxRunner:
             # leaves the sandbox child running. Shielded so a second cancel
             # delivered mid-teardown cannot abandon it either.
             with contextlib.suppress(asyncio.CancelledError):
-                teardown_violation = await self._destroy(
-                    profile, backend, instance
-                )
+                teardown_violation = await self._destroy(profile, backend, instance)
 
         violations = (
             *self._classify_limits(profile, config, instance, result),
@@ -890,7 +888,10 @@ class ExtensionSandboxRunner:
         return violation
 
     async def _destroy(
-        self, profile: ExtensionIsolationProfile, backend: SandboxProtocol, instance: SandboxInstance
+        self,
+        profile: ExtensionIsolationProfile,
+        backend: SandboxProtocol,
+        instance: SandboxInstance,
     ) -> ExtensionSandboxViolation | None:
         """Tear the sandbox down; record and return a violation on failure.
 

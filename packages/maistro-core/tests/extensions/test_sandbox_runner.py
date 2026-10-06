@@ -304,6 +304,29 @@ class TestViolationAttribution:
         assert expected_fragment in violation.detail
         assert log.violations_for("acme.chart_tools", "1.4.0") == (violation,)
 
+    async def test_a_failed_teardown_fails_the_outcome(self) -> None:
+        """A destroy that raises after a clean exec is not a silent success:
+        the backend may still hold a live environment or undeleted workspace,
+        so the run carries a teardown violation and ``succeeded`` is false."""
+
+        class _LeakingDestroyBackend(_StubBackend):
+            async def destroy(self, instance: SandboxInstance) -> None:
+                self.calls.append(("destroy", instance.id))
+                raise RuntimeError("bwrap cleanup failed: Device or resource busy")
+
+        log = SandboxViolationLog()
+        outcome = await _runner(_LeakingDestroyBackend(), violations=log).exec(
+            _profile(), ["echo", "hello"]
+        )
+        assert outcome.exit_code == 0  # the workload itself was fine
+        assert outcome.succeeded is False
+        assert len(outcome.violations) == 1
+        violation = outcome.violations[0]
+        assert violation.kind is ViolationKind.SANDBOX_TEARDOWN_FAILURE
+        assert violation.sandbox_id == outcome.sandbox_id
+        assert "bwrap cleanup failed" in violation.detail
+        assert log.violations_for("acme.chart_tools", "1.4.0") == (violation,)
+
     async def test_an_ordinary_nonzero_exit_is_not_a_boundary_violation(self) -> None:
         """A workload's own failure is reported on the outcome; the violation
         log stays reserved for kernel-evidenced boundary events."""
