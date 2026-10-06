@@ -439,3 +439,13 @@ revision landing between them as `057_run_store_planner_stability`. On the
 merged branch the chain test walks to `059` and asserts
 `get_heads() == ["059"]`; the refused-downgrade stamp assertion tracks the
 head at `059`.
+
+Update (auto-102 lane sync of `11376c7bef`, Gauntlet provenance takes `058`):
+develop landed #118's M4-B2 Gauntlet validation provenance as
+`058_learning_validation_provenance` (parent `057`), colliding with the
+branch backlog pair's `058_backlog_work_source` on the same parent. Per the
+convention the branch-side pair re-parents past the incoming develop tip:
+the pair renumbers to `059_backlog_work_source` and
+`060_backlog_authority_cutover`, the chain test walks to `060` and asserts
+`get_heads() == ["060"]`, and the refused-downgrade stamp assertion now
+reads the head dynamically (`_chain_head()`) instead of pinning a literal.

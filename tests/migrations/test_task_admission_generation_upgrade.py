@@ -132,6 +132,29 @@ def _stamped_version() -> str | None:
     return str(rows[0][0]) if rows else None
 
 
+def _chain_head() -> str:
+    """The single head of the migration chain, read from the version files.
+
+    Every develop collision re-parents this branch's revisions onto a new
+    chain tip, so a fixed literal in an assertion about "the head" is only
+    ever an artifact of whichever sync wrote it — it has rotted three times
+    already (043_invocation_quota_door, 055, 056). The invariant under test
+    is that the refused downgrade leaves the stamp AT HEAD, so the head is
+    resolved from the same scripts the upgrade above ran.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1, (
+        f"expected exactly one migration head, found {sorted(heads)}; "
+        "see tests/migrations/test_single_migration_head.py"
+    )
+    return heads[0]
+
+
 @pytest.fixture
 def empty_database():
     """Start each test from `base`, so one failure cannot cascade into the next."""
@@ -556,9 +579,12 @@ class TestTheDowngrade:
         # (#1196/#718) landed on `055` as `043_invocation_quota_door`;
         # develop's trunk then landed `056_user_model_facts` (#1047) on that
         # quota-door parent with #863's planner-stability revision on top as
-        # `057`, so the backlog authority-cutover pair (#98/#102) re-parents
-        # past the develop tip as `058` and `059` — that is the head now.
-        assert _stamped_version() == "059"
+        # `057`, and the backlog authority-cutover pair (#98/#102) re-parents
+        # past each incoming develop tip in turn — `058`/`059`, then `059`/
+        # `060` once develop's `058_learning_validation_provenance` claimed
+        # `058`. The literal has drifted once per landing, so the head is now
+        # read from the same version files the upgrade above ran.
+        assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 

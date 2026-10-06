@@ -111,3 +111,17 @@ revision landing between them as `057_run_store_planner_stability`. The chain
 sentinel now walks to head `059`, and the refused-downgrade stamp assertion
 pins that head by the same head-artifact reasoning as the rounds above. No
 test added or removed — delta above unchanged.
+
+Repair at this lane (develop sync, fifth landing, the Gauntlet provenance
+ledger takes `058`): the next develop sync (`11376c7bef`) landed #118's
+M4-B2 Gauntlet validation provenance on develop's trunk as
+`058_learning_validation_provenance` (parent `057`), colliding with this
+branch's `058_backlog_work_source` on the same parent. Per the chain's
+convention — a landed trunk migration never moves; the branch-side pair
+re-parents onto the incoming develop tip — the backlog pair renumbers to
+`059_backlog_work_source` and `060_backlog_authority_cutover`. The chain
+sentinel now walks to head `060` (asserting `056`/`057`/`058`/`059`/`060`),
+and the refused-downgrade stamp assertion — previously head-pinned — reads
+the head dynamically (`_chain_head()`) from the same version files the
+upgrade ran, so this and future collisions cannot stale-pin it. No test
+added or removed — delta above unchanged.

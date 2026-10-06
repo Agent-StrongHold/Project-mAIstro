@@ -1,12 +1,14 @@
 """Backlog authority cutover control state (#102).
 
-Follows `058_backlog_work_source` (its pre-renumber ids were `049`, then
-`053`, then `055`, then `057`; develop's landed `049_design_artifact_versions`,
-`053_learning_lifecycle_columns`, `054_learning_applicability_epistemics`
-and `055_task_admission_generations` own those slots now, and develop's
-`056_user_model_facts` plus #863's `057_run_store_planner_stability` claim
-`056` and `057`), attaching after the work-source tables so the chain stays
-linear with exactly one head.
+Follows `059_backlog_work_source` (its pre-renumber ids were `049`, then
+`053`, then `055`, then `057`, then `059`; develop's landed
+`049_design_artifact_versions`, `053_learning_lifecycle_columns`,
+`054_learning_applicability_epistemics` and `055_task_admission_generations`
+own those slots now, develop's `056_user_model_facts` plus #863's
+`057_run_store_planner_stability` claim `056` and `057`, and develop's
+Gauntlet provenance ledger `058_learning_validation_provenance` (#118,
+M4-B2) claims `058`), attaching after the work-source tables so the chain
+stays linear with exactly one head.
 The explicit authority cutover is a recorded, reversible decision, and the
 generated Markdown must be reproducible from the database alone — so the
 control state is durable, with the same schema discipline as the work-source
@@ -31,8 +33,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "059"
-down_revision = "058"
+revision = "060"
+down_revision = "059"
 branch_labels = None
 depends_on = None
 

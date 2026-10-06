@@ -85,13 +85,18 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # parent, and #863's planner-stability revision — numbered `052` when
     # written and re-parented onto the chain tip as `053`, `054`, and `056`
     # in develop's earlier collisions — landed on top of it as
-    # `057_run_store_planner_stability`. So the backlog work-source
-    # migration (#98) — renumbered `048` -> `052` -> `054` as each develop
-    # revision landed — and the authority-cutover ledger (#102), `049` ->
-    # `053` -> `055`, re-parent past the incoming develop tip as `058` and
-    # `059` (a landed trunk migration never moves) — the single linear head
-    # is `059`.
-    walked = {item.revision for item in directory.walk_revisions("base", "059")}
+    # `057_run_store_planner_stability`; this branch's Gauntlet provenance
+    # (#118, M4-B2) — `053` through six collision renumberings, most
+    # recently past develop's `053_learning_lifecycle_columns` — re-parented
+    # onto that planner-stability tip as `058_learning_validation_provenance`
+    # on develop. So the backlog work-source migration (#98) — renumbered
+    # `048` -> `052` -> `054` -> `058` as each develop revision landed — and
+    # the authority-cutover ledger (#102), `049` -> `053` -> `055` -> `059`,
+    # re-parent past the incoming develop tip (a landed trunk migration
+    # never moves): the pair took `058`/`059` in the previous sync and
+    # renumbers to `059`/`060` now that develop's Gauntlet provenance ledger
+    # claimed `058` — the single linear head is `060`.
+    walked = {item.revision for item in directory.walk_revisions("base", "060")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -111,7 +116,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "057" in walked
     assert "058" in walked
     assert "059" in walked
-    assert directory.get_heads() == ["059"]
+    assert "060" in walked
+    assert directory.get_heads() == ["060"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
