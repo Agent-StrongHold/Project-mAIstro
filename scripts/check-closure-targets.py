@@ -81,9 +81,17 @@ _CLOSING = re.compile(
 # The acceptance record: a heading that opens one (``## Acceptance``,
 # ``## Acceptance criteria``, a bare ``Acceptance:`` paragraph -- the corpus
 # carries both), then checkbox items until the next heading of any level.
-# Case-insensitive: issues write the heading both ways.
+# Case-insensitive: issues write the heading both ways. The heading text is
+# anchored on ``acceptance`` (optionally qualified by criteria/criterion/
+# checklist) so lookalikes -- ``## Non-acceptance criteria`` -- open nothing:
+# an unchecked out-of-scope checklist there must not register as unproven
+# acceptance evidence (review: exclude non-acceptance headings).
 _ACCEPTANCE_HEADING = re.compile(
-    r"^\s{0,3}(?:#{1,6}\s+.*\bacceptance\b.*|acceptance\b:?)\s*$",
+    r"^\s{0,3}"
+    r"(?:"
+    r"#{1,6}\s+acceptance(?:\s+(?:criteria|criterion|checklist))?\s*:?"
+    r"|acceptance\b:?"
+    r")\s*$",
     re.IGNORECASE,
 )
 _ANY_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+\S")

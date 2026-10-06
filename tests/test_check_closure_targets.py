@@ -134,17 +134,21 @@ def test_acceptance_heading_variants_open_the_record(gate) -> None:
         assert [c.index for c in gate.acceptance_criteria(body)] == [1], heading
 
 
+def test_non_acceptance_headings_open_no_record(gate) -> None:
+    # A heading that merely contains the word must not open the record:
+    # unchecked boxes under "## Non-acceptance criteria" are out-of-scope
+    # tasks, not unproven acceptance evidence that would block closure
+    # (review: exclude non-acceptance headings).
+    for heading in ("## Non-acceptance criteria", "## Non-acceptance", "## Scope note"):
+        body = f"{heading}\n- [ ] an out-of-scope box\n"
+        assert gate.acceptance_criteria(body) == [], heading
+
+
 def test_bare_section_label_closes_the_record(gate) -> None:
     # A bare "Acceptance:" opens the record, so the bare "Tasks:" that
     # follows must end it: an unchecked task there is not an acceptance
     # criterion and must not block closure (review: bare section boundaries).
-    body = (
-        "Acceptance:\n"
-        "- [x] one real backend is registered\n"
-        "\n"
-        "Tasks:\n"
-        "- [ ] wire the runbook\n"
-    )
+    body = "Acceptance:\n- [x] one real backend is registered\n\nTasks:\n- [ ] wire the runbook\n"
     criteria = gate.acceptance_criteria(body)
     assert [(c.index, c.ticked) for c in criteria] == [(1, True)]
 
