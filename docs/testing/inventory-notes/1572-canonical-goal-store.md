@@ -523,3 +523,68 @@ every container:
   classification cannot approve itself, and no edit on this branch can
   satisfy `load_authorizations(RATCHET, base=...)`. The release step remains:
   merge the GoalStatus DOMAIN grant on develop, then sync this branch.
+
+## Round 13 — head `4b65be6d6bc3` re-verified end to end; live CI failures root-caused to the one structural red (2026-10-06)
+
+This round closed the two evidence gaps the previous dispatch recorded and
+root-caused every red job in the latest merge-queue evaluation to the single
+known structural finding. No production file changed; the only edit is this
+note.
+
+- **PostgreSQL legs re-executed at this exact head.** The prior round's
+  "Docker daemon unreachable" premise no longer held: the rootless daemon
+  (`unix:///run/user/1000/docker.sock`) served a fresh `pgvector/pgvector:pg17`
+  container on 127.0.0.1:15432 and the full ci.yml `postgres (pg17)` walk ran
+  CI-exact against it: migration chain **13 passed**; `alembic upgrade head`
+  → `downgrade base` → `upgrade head` (stamped **059**); persistence
+  **809 passed, 84 skipped**; container-postgres **15 passed**; workspaces
+  **328 passed, 2 skipped**; goals **60 passed, 0 skipped** with
+  `MAISTRO_REQUIRE_PG_LEGS=1`; canvas supported path **7 passed**. Without a
+  DSN the goals suite still behaves correctly (45 passed, 15 loudly-skipped
+  PG legs). Code-identity with the round-12 head is confirmed by an empty
+  `git diff 45df99115..4b65be6d` over `packages/maistro-core/src/maistro/goals`,
+  `tests/goals`, `container.py`, `alembic/`, `tests/migrations`, and
+  `tests/workspaces` — and is now superseded by execution at this head.
+- **Live CI state at this SHA, read via the checks API.** All nine
+  integration-scope required producers succeeded at `4b65be6d` (docker-build,
+  durable-events, hive-conductor-e2e, hive-conductor-e2e-ui, object storage
+  (MinIO), postgres pg17, postgres pg18, strike-ladder, wheel-imports), as did
+  `integration-scope` itself and `exact-debt-ledger`. Three jobs failed —
+  Quality gate (job 112396757644), Coverage gate (112402090487) and test
+  (112396758942) — and their logs show **one shared root cause**:
+  `check-execution-lifecycles.py` exit 1 on
+  `maistro.goals.model::GoalStatus: NEW work-state vocabulary is absent from
+  the trusted base and has no already-landed authorization` (baseline
+  bc40b6cda, 19 classified → 20 discovered; candidate 417f74b67c54 in the
+  queue merge). The test and coverage jobs failed on nothing else — the test
+  job's sole failure was the mirrored
+  `test_the_shipped_ledger_matches_the_shipped_code` (1 failed, 4621 passed),
+  re-reproduced locally (1 failed, 28 passed in the module).
+- **origin/develop re-fetched and still grant-less.** The branch is "behind 1"
+  only by `3f8ccbe9d` (unrelated M9-H2 SDK-harness WIP, #2016); its
+  `quality/ratchet-authorizations.json` contains no `GoalStatus` entry under
+  `execution-lifecycles` (grep count 0). A develop sync therefore cannot clear
+  the gate by itself — the dispatch's "if it was a develop sync conflict"
+  remedy does not apply; this is not a sync conflict.
+- **Lane's vulture-ledger repair instruction evaluated; not applicable.** The
+  vulture gate was re-run with CI's exact arguments
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`):
+  **1332 reviewed identities = 1332 findings, unclassified 0** — nothing dead
+  to fix, no amendment owed, and CI's `exact-debt-ledger` job agrees. The red
+  ledger is `execution-lifecycles`, whose authorization file is read from the
+  base by design; amending it on this branch would be the self-authorization
+  the two-merge rule exists to prevent, so `quality/` is untouched here.
+- **Ratchets that can pass at this head, re-run and green:** vulture (above),
+  durable-table inventory (**ok: 100 tables**, canonical retention declared),
+  M1 convergence freeze vs base `bc40b6cda` (no unapproved architecture
+  island — the issue's no-second-executor criterion), ruff check/format, and
+  suite inventory (14,564 unique node IDs across one suite).
+
+The release step is unchanged and precise: land the GoalStatus DOMAIN grant on
+develop (`quality/ratchet-authorizations.json` → `execution-lifecycles` →
+`maistro.goals.model::GoalStatus`, owner/issue/reason), then merge
+origin/develop into this branch so `load_authorizations` reads it from the new
+base. The classification is already banked in this branch's
+`quality/execution-lifecycles.json`; after the grant lands and the branch
+syncs, the gate, its mirrored test, and the three red jobs clear without any
+further code change.
