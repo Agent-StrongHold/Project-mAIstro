@@ -13,6 +13,7 @@ from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._extensions import extensions_history, extensions_show
 from maistro.container import Container
+from maistro.extensions.packs import InstallablePackRegistry
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
@@ -287,4 +288,19 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Installable domain-pack contracts (M9-F1, #966). The pack contract
+    # ships first by design, the same posture as the M9-B1 store seams and
+    # the M9-D1 registry above: its in-tree consumers are the conformance
+    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
+    # and the Workspace-scoped activation/configuration lifecycle that drives
+    # these verbs in production is M9-F3 (#968). `activate` is the disable
+    # gate's reversal (new use only — nothing was deleted; named activate,
+    # not enable, so the scanner's name-level matching cannot un-bank the
+    # unrelated security-store `enable` rows); the three `instantiate_*`
+    # methods are the gated instantiation entrypoints that compose the
+    # module-level pure functions behind the registry's active check.
+    InstallablePackRegistry.activate,
+    InstallablePackRegistry.instantiate_graph,
+    InstallablePackRegistry.instantiate_persona,
+    InstallablePackRegistry.instantiate_rubric,
 )
