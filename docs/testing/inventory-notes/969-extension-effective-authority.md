@@ -107,6 +107,27 @@ vulture per-identity scan (CI arguments: `packages/*/src --min-confidence 60
 zero added and zero stale identities; `scripts/check-reachability.py`
 reports the same 170-entry unreachable set as the baseline.
 
+## Repair-round re-verification (CI-repair lane, post develop sync)
+
+The preserved develop-sync block was resolved by merging `origin/develop`
+(`bc40b6cda`, which carries this branch's own #2013 work squash-merged plus the
+M9-E2 connector SDK, `e28835544`): merge `3f1ba511c`, zero conflicts — the
+squash content is identical for every effective-authority file. The review-
+findings commit was reworded from "close #969/#2013 …" to "address #969/#2013
+…" (now `34abf3763`, formerly `26653119a`) so no branch commit carries a GitHub
+closure keyword; a keyword scan over `origin/develop..HEAD` is clean, the
+old→new content diff is empty, and merge topology/parents are preserved.
+Re-executed in this round against the merged, reworded tree: ruff check/format
+clean; extensions suite 398 passed (the 45 tests of this note among them);
+server extensions API 16 passed; **maistro-design + ext-sdk + server aggregate
+executed: 1215 passed, 10 skipped** (the aggregate below was previously
+recorded without first-hand execution in the verify lane; it is now verified);
+full `packages/maistro-core/tests` 13565 passed, 938 skipped, 1 xfailed; mypy
+canonical 845 files clean; vulture with CI-exact arguments (`packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`) 1332=1332 with the base read
+from the develop merge base; reachability 170 = baseline; suite-inventory
+core-suite check matches.
+
 ## Develop-sync re-verification (post-merge round)
 
 The branch was synced with `origin/develop` (merges `2e772aaf9`, `4ab512f01`
