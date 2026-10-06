@@ -28,4 +28,5 @@ here.
 - `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` passed: 1,332 reviewed identities, 1,332 findings, zero unclassified and zero never-allowlisted.
 - The focused task admission/idempotency/API seam passed: 125 passed, 1 skipped.
 - `uv run ruff check .` and `uv run ruff format --check .` passed.
+- The canonical task/chat and one-node-spine battery passed: `uv run pytest packages/maistro-core/tests/runs/test_spine_conformance.py packages/maistro-core/tests/runs/test_wiring.py packages/maistro-core/tests/test_container_chat_runs.py packages/maistro-server/tests/api/test_chat_completions.py packages/maistro-server/tests/api/test_chat_completions_gate.py -q -x` → 367 passed, 119 skipped.
 - `MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py -q -x` collected two tests and skipped both because no DSN was configured. `DOCKER_HOST=unix:///var/run/docker.sock docker info --format '{{.ServerVersion}}'` failed because the daemon was unreachable.
