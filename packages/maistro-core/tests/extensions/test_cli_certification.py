@@ -13,7 +13,9 @@ non-zero for a mutated package or an untrusted key.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -33,9 +35,24 @@ runner = CliRunner()
 PLUGIN_SOURCE = b"PLUGIN = object()\n"
 
 
-def _write_package(dir: Path, payload: bytes = b"extension-payload-v1") -> dict[str, Path]:
-    """A valid package on disk: manifest, payload, and packaged sources."""
+def _wheel_bytes(*entries: tuple[str, bytes]) -> bytes:
+    """A wheel-style zip archive carrying the given ``(path, bytes)`` files."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, data in entries:
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+def _write_package(dir: Path) -> dict[str, Path]:
+    """A valid package on disk: manifest and a payload wheel with its sources.
+
+    The payload is the only carrier of source code: the certification scans
+    read it from the artifact, so there is no side-channel source directory
+    a malicious wheel could be paired with.
+    """
     dir.mkdir(parents=True, exist_ok=True)
+    payload = _wheel_bytes(("acme_chart/main.py", PLUGIN_SOURCE))
     document = {
         "manifest_version": 1,
         "id": "acme.chart_tools",
@@ -51,13 +68,9 @@ def _write_package(dir: Path, payload: bytes = b"extension-payload-v1") -> dict[
     manifest.write_text(json.dumps(document))
     payload_path = dir / "payload.bin"
     payload_path.write_bytes(payload)
-    source_dir = dir / "sources" / "acme_chart"
-    source_dir.mkdir(parents=True)
-    (source_dir / "main.py").write_bytes(PLUGIN_SOURCE)
     return {
         "manifest": manifest,
         "payload": payload_path,
-        "source_dir": dir / "sources",
     }
 
 
@@ -80,8 +93,6 @@ def _certify(package: dict[str, Path], out: Path, *args: str) -> Any:
             str(package["manifest"]),
             "--payload",
             str(package["payload"]),
-            "--source-dir",
-            str(package["source_dir"]),
             "--report-json",
             str(out / "report.json"),
             "--seal-json",
@@ -178,8 +189,6 @@ def _verify(
             str(package["manifest"]),
             "--payload",
             str(package["payload"]),
-            "--source-dir",
-            str(package["source_dir"]),
             *args,
         ],
     )
@@ -207,8 +216,10 @@ def test_verify_certification_refuses_mutated_package(tmp_path: Any) -> None:
     key_file, public_hex = _write_key(tmp_path)
     assert _certify(package, out, "--sign-key-file", str(key_file)).exit_code == 0
 
-    # One flipped byte in the payload after certification.
-    package["payload"].write_bytes(b"extension-payload-v2")
+    # One flipped source byte inside the payload wheel after certification.
+    package["payload"].write_bytes(
+        _wheel_bytes(("acme_chart/main.py", b"PLUGIN = object()\n# x\n"))
+    )
 
     result = _verify(package, out, "--trusted-public-key", public_hex)
 
@@ -280,12 +291,16 @@ def test_certify_honors_an_import_policy_file_and_skips_pycache(tmp_path: Any) -
     package = _write_package(tmp_path / "pkg")
     out = tmp_path / "out"
     out.mkdir()
-    # A stale bytecode cache in the source tree must not become a packaged
+    # A stale bytecode cache inside the artifact must not become a packaged
     # source file.
-    cache = package["source_dir"] / "acme_chart" / "__pycache__"
-    cache.mkdir()
-    (cache / "main.cpython-312.pyc").write_bytes(b"")
-    (cache / "rogue.py").write_bytes(b"import maistro._hidden\n")
+    package["payload"].write_bytes(
+        _wheel_bytes(
+            ("acme_chart/main.py", PLUGIN_SOURCE),
+            ("acme_chart/__pycache__/main.cpython-312.pyc", b""),
+            ("acme_chart/__pycache__/rogue.py", b"import maistro._hidden\n"),
+        )
+    )
+    _refresh_artifact_claim(package)
     policy = tmp_path / "policy.json"
     policy.write_text(json.dumps({"public_namespaces": ["maistro"]}))
 
@@ -293,6 +308,59 @@ def test_certify_honors_an_import_policy_file_and_skips_pycache(tmp_path: Any) -
 
     assert result.exit_code == 0, result.output
     assert "imports.public-sdk-only" in result.output
+
+
+def test_certify_scans_the_payload_not_a_side_directory(tmp_path: Any) -> None:
+    """The static scans read the artifact's own sources — nothing else.
+
+    Regression for the review finding that a benign ``--source-dir`` could
+    be paired with a malicious wheel: with sources extracted from the
+    payload, a wheel whose code violates the import policy cannot ride on
+    an unrelated clean tree.
+    """
+    package = _write_package(tmp_path / "pkg")
+    out = tmp_path / "out"
+    out.mkdir()
+    package["payload"].write_bytes(
+        _wheel_bytes(("acme_chart/main.py", b"import maistro._hidden\n"))
+    )
+    _refresh_artifact_claim(package)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"public_namespaces": ["maistro"]}))
+
+    result = _certify(package, out, "--profile", "publication", "--import-policy", str(policy))
+
+    assert result.exit_code != 0
+    assert "NOT CERTIFIED" in result.output
+    assert "maistro._hidden" in result.output
+
+
+def test_certify_non_zip_payload_scans_no_sources(tmp_path: Any) -> None:
+    package = _write_package(tmp_path / "pkg")
+    out = tmp_path / "out"
+    out.mkdir()
+    package["payload"].write_bytes(b"extension-payload-v1")
+    _refresh_artifact_claim(package)
+
+    result = _certify(package, out, "--profile", "publication")
+
+    assert result.exit_code != 0
+    report = json.loads((out / "report.json").read_text())
+    not_applicable = {
+        check["id"] for check in report["checks"] if check["outcome"] == "not_applicable"
+    }
+    assert not_applicable, report
+
+
+def _refresh_artifact_claim(package: dict[str, Path]) -> None:
+    """Re-align a package manifest's artifact claim with its mutated payload."""
+    payload = package["payload"].read_bytes()
+    manifest = json.loads(package["manifest"].read_text())
+    manifest["artifact"] = {
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size": len(payload),
+    }
+    package["manifest"].write_text(json.dumps(manifest))
 
 
 def test_certify_writes_no_files_when_none_are_requested(tmp_path: Any) -> None:

@@ -33,6 +33,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -318,19 +320,25 @@ def _load_import_policy(policy_path: Path | None) -> ImportPolicy:
     )
 
 
-def _collect_sources(source_dirs: list[Path]) -> tuple[tuple[str, bytes], ...]:
-    """Gather every ``*.py`` under each dir, keyed relative to that dir.
+def _sources_from_payload(payload: bytes) -> tuple[tuple[str, bytes], ...]:
+    """Extract every ``*.py`` file from the payload itself, keyed archive-relative.
 
-    The relative path is what entry-point containment matches dotted module
+    The scanned sources are always the artifact's own contents — never a
+    directory supplied alongside it — so a benign source tree cannot be
+    paired with an unrelated payload to slip past the static checks. The
+    relative path is what entry-point containment matches dotted module
     names against, mirroring how the files sit inside a built wheel.
     """
-    sources: list[tuple[str, bytes]] = []
-    for base in source_dirs:
-        for file in sorted(base.rglob("*.py")):
-            if "__pycache__" in file.parts:
-                continue
-            sources.append((file.relative_to(base).as_posix(), file.read_bytes()))
-    return tuple(sources)
+    try:
+        archive = zipfile.ZipFile(BytesIO(payload))
+    except zipfile.BadZipFile:
+        return ()
+    with archive:
+        return tuple(
+            (name, archive.read(name))
+            for name in sorted(archive.namelist())
+            if name.endswith(".py") and "__pycache__" not in name.split("/")
+        )
 
 
 @app.command("certify")
@@ -341,14 +349,6 @@ def extensions_certify(
     payload_path: Annotated[
         Path, Option("--payload", help="Path to the artifact bytes the manifest declares.")
     ],
-    source_dir: Annotated[
-        list[Path] | None,
-        Option(
-            "--source-dir",
-            help="Directory of packaged sources to scan (repeatable; *.py files, "
-            "paths relative to the directory).",
-        ),
-    ] = None,
     profile_name: Annotated[
         str,
         Option(
@@ -381,10 +381,11 @@ def extensions_certify(
             f"available: {', '.join(sorted(_CERTIFICATION_PROFILES))}[/red]"
         )
         raise Exit(code=1)
+    payload = _read_bytes(payload_path, "payload")
     bundle = ExtensionBundle(
         manifest_bytes=_read_bytes(manifest_path, "manifest"),
-        payload=_read_bytes(payload_path, "payload"),
-        sources=_collect_sources(source_dir or []),
+        payload=payload,
+        sources=_sources_from_payload(payload),
     )
     signer = _read_key_file(key_file) if key_file is not None else None
     report, seal = certify(
@@ -432,14 +433,6 @@ def extensions_verify_certification(
     payload_path: Annotated[
         Path, Option("--payload", help="Presented artifact bytes to verify against.")
     ],
-    source_dir: Annotated[
-        list[Path] | None,
-        Option(
-            "--source-dir",
-            help="Directory of packaged sources (same layout as `certify`), so the "
-            "full certified package digest can be recomputed.",
-        ),
-    ] = None,
     trusted_public_key: Annotated[
         str | None,
         Option(
@@ -456,10 +449,11 @@ def extensions_verify_certification(
     authorization by itself.
     """
     report, seal = _load_certification(report_path, seal_path)
+    payload = _read_bytes(payload_path, "payload")
     bundle = ExtensionBundle(
         manifest_bytes=_read_bytes(manifest_path, "manifest"),
-        payload=_read_bytes(payload_path, "payload"),
-        sources=_collect_sources(source_dir or []),
+        payload=payload,
+        sources=_sources_from_payload(payload),
     )
     try:
         fingerprint = verify_certification(report, seal, trusted_public_key=trusted_public_key)
