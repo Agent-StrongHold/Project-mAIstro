@@ -1283,3 +1283,119 @@ reduces to the one sanctioned two-module delta that only the separately
 scoped #1845 integration (or a base-landed grant followed by the banking
 rebase) can retire. The stack stays unmerged by design; implementation and
 test readiness stand proven at 6efe5a25b40c.
+
+## CI-repair round 17 (2026-10-06, head 3e75c148ddee = merge of develop tip
+## a8258ee24dd9 into the branch): full four-mutation battery re-derived; the
+## acceptance-state design_coverage undercut bound to the same two-module delta
+
+Round 16's head was synced once more (merge commit 3e75c148ddee brings
+`origin/develop` tip a8258ee24dd9 into the branch; the PR's merge base IS
+a8258ee24dd9, still carrying zero `admission` rows in
+`quality/reachability-baseline.json` and `quality/ratchet-authorizations.json`,
+and `git diff --numstat origin/develop -- quality/` is empty — the branch's
+quality tree is byte-identical to the base). Everything below was re-derived
+at this exact head in the round's environment:
+
+- **Driver battery green**: `uv sync --locked --extra dev` ok; `ruff check .`
+  and `ruff format --check .` clean (3040 files); focused driver pytest over
+  `tests/runs/test_root_admission_identity.py` +
+  `tests/tasks/test_admission_generation_assessment.py` 204 passed;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (14513
+  identities).
+- **exact-debt-ledger re-derived with CI's exact argv, step by step**: step 2
+  `check-shipped-surface-truth.py` exit 0; step 3 `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` exit 0 (1332
+  reviewed identities -> 1332 findings, `unclassified: 0` — the prescribed
+  amendment stays empty, 17th consecutive round); step 1
+  `check-ratchet-provenance.py` exit 1 with every sub-ratchet OK except the
+  reachability trusted-base gate (both leaf modules NEW-unreachable,
+  unauthorized at base a8258ee24dd9, and absent from the candidate baseline —
+  the two-merge rule).
+- **Quality gate re-derived component by component**: ruff both clean;
+  `check-radon-baseline.py` exit 0 (138 -> 138); `bump_version.py --check`
+  exit 0 (40 sites, 0.9.0); `check-release-consistency.py` exit 0;
+  `check-doc-links.py` exit 0; `check_enumerations.py` exit 0;
+  `check-workspace-retirement.py` exit 0 (89 entries);
+  `check-route-permissions.py` exit 0 (40 declared);
+  `check-principal-identity.py` exit 0 (4 tolerated, none new);
+  `check-frontend-typed-client.py` exit 0 (60 + 142 tolerated, none new);
+  `vendor_ifeval.py --check` and `vendor_bfcl.py --check` exit 0; xenon with
+  CI's exact argv 140 block violations (baseline 145), 0 module-rank, 0
+  average (138 -> 140 is the base sync's own movement, still under the
+  floor); vulture step exit 0 as above; `check-reachability.py` exit 1 on
+  exactly the two leaf modules (the sanctioned red — the first failing step
+  of the CI job, so CI never reaches the steps below it);
+  `check-credential-authority.py`, `check-wiring-reads.py`,
+  `check-agent-store-writes.py`, `check-contract-markers.py`,
+  `check-convergence-matrix.py`, `check-reachability-dispositions.py`,
+  `check-security-inventory.py`, `check-image-inventory.py`,
+  `check-image-pins.py`, `check-workflow-inventory.py`,
+  `check-backlog-consistency.py` all exit 0; `mypy --strict
+  packages/maistro-core/src` clean over 736 files.
+- **NEW this round — the acceptance-state ratchet is bound to the same root
+  cause.** `check-ac-state.py --run-tests --ratchet --mandate a8258ee24dd9`
+  against a live PostgreSQL (the quality-gate job's pg18 service; CI never
+  reaches this step because `check-reachability.py` fails first) fails with
+  `design_coverage: 43.0887 falls below the floor of 43.2114`. The floor is
+  the max-fold of the 30 committed `quality/ac-state-notes/*.json`; the
+  current value is lower because the `-m ac` outcome run inside the ratchet
+  fails exactly two AC-marked tests —
+  `tests/test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries` (SPEC-082926-
+  f1c3/AC-2) and `::test_the_baseline_is_exactly_the_unreachable_set`
+  (SPEC-082926-f1c3/AC-3) — the reachability gate-identity self-checks, whose
+  criteria therefore drop from `reachable` to `covered` for this run. The
+  mandate half is green (0 criteria added or newly claimed, 0 unproven; 0
+  chain gaps). So the acceptance-state red is the same two-module delta, not
+  an independent defect. (The core package suite run under the coverage
+  producer additionally showed one environment-only failure,
+  `test_container_postgres.py::test_an_unreachable_server_is_an_error_not_a_fallback`,
+  caused by a local service already listening on 127.0.0.1:5432 in this
+  round's environment; it passes in isolation and in the plain full-suite
+  run, which showed 13574 passed / 938 skipped / 1 xfailed / 0 failed.)
+- **test job fully bound at this head**: core suite 13574 passed / 938
+  skipped / 1 xfailed / 0 failed; bootstrap 232 passed; server 516 passed;
+  canvas 464 passed; turing 210 + backend 90 passed; design 572 passed;
+  ext-sdk 118 passed; rsi 1111 passed; evolve 984 passed + 3 failed, the
+  three being Docker-daemon-dependent sandbox/swebench tests that fail only
+  because this environment's Docker daemon is unreachable (the docker binary
+  is present, `docker ps` fails; CI's own docker-build and integration jobs
+  are success at this head); root `tests/` re-derived 4530 passed / 122
+  skipped / exactly 3 failed — the same three reachability gate-identity
+  tests naming only the two leaf modules (4529 -> 4530 passed is the base
+  sync's own test count, not a candidate edit).
+- **Coverage gate bound at this head**: the leaf's own diff coverage
+  re-measured with the coverage-unit producer recipe over the whole core
+  suite — `check-diff-coverage.py coverage.xml --base a8258ee24dd9` exit 0
+  ("ok: every measured file this change touches is at or above 90% lines /
+  80% branch arcs"; the two leaf modules measured, tests exempt,
+  `_vulture_whitelist.py` unmeasured-but-listed). The job's remaining red is
+  its `combine` step's `--source=scripts` producer re-running the same root
+  suite, whose 3 sanctioned failures abort the step under `set -euo pipefail`
+  — the same two-module delta, not a coverage defect.
+- **Full four-mutation battery re-derived at this exact head** (cp backup /
+  restore after each, md5-verified byte-identical restoration,
+  `git status` clean after): swap TAKEOVER/REPLACE_EXPIRED -> 50 focused
+  failures; lease before binding (TAKEOVER row hoisted above REPLAYED,
+  legacy-guarded) -> 8 focused failures; legacy pending treated as v2
+  (LEGACY_UNRESOLVED row deleted so unbound legacy rows fall through to the
+  lease comparison) -> 10 focused failures; mismatch before expiry without
+  an expiry exception -> 22 focused failures. All four required mutations
+  make the focused suite fail.
+- **Focused battery green**: classifier suite 131 passed (== the
+  `inventory-delta`); #1851 + live-idempotency suites 112 passed; mypy clean
+  on the classifier module; full `check-suite-inventory.py` exit 0 (16
+  suites, 27731 identities — 15 -> 16 suites is the base sync's own
+  addition).
+
+The blocker statement is unchanged and now exhaustive: every red gate at
+this head (exact-debt-ledger, Quality gate incl. its acceptance-state step,
+test, Coverage gate) reduces to the one sanctioned two-module reachability
+delta that no in-leaf-legal edit can retire — candidate-side ledger rows
+cannot authorize themselves (the two-merge rule), and this leaf's scope
+forbids grants, baseline rows, dispositions, fake callers, and production
+wiring. Retirement paths remain exactly the two named in round 13: a
+base-landed authorization followed by the banking rebase, or the #1845
+integration consumer that wires both modules and prunes the entries on
+arrival. The stack stays unmerged by design; implementation and test
+readiness stand proven at 3e75c148ddee.
