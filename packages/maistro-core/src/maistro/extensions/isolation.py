@@ -387,6 +387,47 @@ def _sandboxed_profile(
     )
 
 
+def _intersect_grants_with_declaration(
+    manifest: ExtensionManifest, granted: Sequence[str]
+) -> tuple[str, ...]:
+    """Normalized grant tokens, narrowed to what the manifest declared.
+
+    The third selection rule guards the grant source itself: a grant token
+    the manifest never declared (a mismatched preview/record, a replayed
+    install record against a newer manifest) is dropped with a warning, so a
+    record can never widen authority past the declaration — undeclared means
+    denied, whatever the record says.
+    """
+    declared = {normalize_permission(token) for token in manifest.permissions}
+    tokens = tuple(normalize_permission(token) for token in granted)
+    undeclared = sorted({token for token in tokens if token not in declared})
+    if undeclared:
+        logger.warning(
+            "%s %s: dropping granted permissions the manifest never declared: %s",
+            manifest.extension_id,
+            manifest.version,
+            ", ".join(undeclared),
+        )
+        tokens = tuple(token for token in tokens if token in declared)
+    return tokens
+
+
+def _in_process_eligible(
+    manifest: ExtensionManifest, policy: ExtensionSandboxPolicy, risk: ExtensionRiskTier
+) -> bool:
+    """Whether the explicit trusted in-process tier applies to this version.
+
+    Every condition is a named policy decision (publisher allowlist, the
+    opt-in flag, standard risk only) — the tier is a choice made up front,
+    never a fallback after sandbox failure.
+    """
+    return bool(
+        policy.allow_in_process
+        and manifest.publisher in policy.in_process_publishers
+        and risk is ExtensionRiskTier.STANDARD
+    )
+
+
 def select_isolation_profile(
     manifest: ExtensionManifest,
     *,
@@ -423,17 +464,7 @@ def select_isolation_profile(
     warning, so a record can never widen authority past the declaration —
     undeclared means denied, whatever the record says.
     """
-    tokens = tuple(normalize_permission(token) for token in granted)
-    declared = {normalize_permission(token) for token in manifest.permissions}
-    undeclared = sorted({token for token in tokens if token not in declared})
-    if undeclared:
-        logger.warning(
-            "%s %s: dropping granted permissions the manifest never declared: %s",
-            manifest.extension_id,
-            manifest.version,
-            ", ".join(undeclared),
-        )
-        tokens = tuple(token for token in tokens if token in declared)
+    tokens = _intersect_grants_with_declaration(manifest, granted)
 
     if not trust.trusted:
         raise ExtensionIsolationRefused(
@@ -441,17 +472,8 @@ def select_isolation_profile(
             f"trust evaluation failed ({'; '.join(trust.failures) or 'unspecified'})"
         )
 
-    network_granted = NETWORK_OUTBOUND_PERMISSION in tokens
-    fs_write_granted = FILESYSTEM_WRITE_PERMISSION in tokens
-    fs_read_granted = FILESYSTEM_READ_PERMISSION in tokens
     risk = risk_tier_for(tokens)
-
-    in_process_eligible = (
-        policy.allow_in_process
-        and manifest.publisher in policy.in_process_publishers
-        and risk is ExtensionRiskTier.STANDARD
-    )
-    if in_process_eligible:
+    if _in_process_eligible(manifest, policy, risk):
         return _in_process_profile(manifest, risk=risk, mode=mode)
 
     return _sandboxed_profile(
@@ -459,9 +481,9 @@ def select_isolation_profile(
         granted_tokens=tokens,
         policy=policy,
         mode=mode,
-        network_granted=network_granted,
-        fs_read_granted=fs_read_granted,
-        fs_write_granted=fs_write_granted,
+        network_granted=NETWORK_OUTBOUND_PERMISSION in tokens,
+        fs_read_granted=FILESYSTEM_READ_PERMISSION in tokens,
+        fs_write_granted=FILESYSTEM_WRITE_PERMISSION in tokens,
         risk=risk,
     )
 
@@ -587,9 +609,13 @@ class SandboxViolationLog:
         """Violations for one extension, optionally narrowed to a version.
 
         The query an operator surface (or the M9-G4 quarantine trigger) uses
-        to answer "which extension/version keeps tripping its boundaries?" —
-        the runner consults it after every recorded event to escalate
-        repeated violations into a louder, named warning.
+        to answer "which extension/version keeps tripping its boundaries?".
+        Escalation itself does not read this method — the per-identity count
+        is kept outside the bounded deque (:meth:`record`) so eviction from
+        the operator query window can never change when the threshold fires —
+        but the quarantine flow that the escalation warning names consumes
+        this query, and its in-tree callers are the conformance suites
+        (packages/maistro-core/tests/extensions/) until that flow lands.
         """
         return tuple(
             v
