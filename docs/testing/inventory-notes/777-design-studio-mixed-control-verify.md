@@ -13053,3 +13053,99 @@ stores / execution authorities. The branch is battery-green,
 develop-current at `ce19fd99e4` (merged at `f3a7c0bbcf`), contains the
 complete PR-#1660 head, and leaves the canonical
 `Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched.
+
+## Round 197 re-verification at lane head (2026-10-06, develop sync to a8258ee24)
+
+Prior attempt `684a7961e2` died on a provider timeout with `checks: []` —
+no evidence was carried; everything below was executed locally in this
+round.
+
+### Develop sync
+
+- Fresh fetch: `origin/develop` moved `ce19fd99e4` -> `a8258ee24` (two
+  commits: `75dcbbd39` #1982 M9-A1 versioned extension SDK package
+  `packages/maistro-ext-sdk` + machine-validatable manifest schema, and
+  `a8258ee24` #2012 M9-F3 Workspace-scoped pack activation/lifecycle in
+  `maistro-design/packs`). Neither lands a #777 dependency.
+- Merge landed zero-conflict; `git status` clean. `quality/` post-merge
+  numstat vs `origin/develop` is exactly the known one-line vulture
+  removal (the retired `agent_loop.py::tool_definitions` row — the
+  variable is genuinely gone from `agent_loop.py` since round 190's
+  fix), verified as a multiset delta with no other row loss.
+
+### Dependency states (dispatch capture 2026-10-06T07:57:25Z, 61 sources)
+
+- Open: #773 (parent), #774, #776, #779, #780, #804, #805, #806, #53,
+  #93, #95. Closed: #775, #458 (+ #39 Persona, long closed). #1572
+  (canonical Goal store under #804) still absent from the tree.
+- Linked PR #1660: open draft, head `78f8f6476466` unchanged for the
+  fifteenth round; content already an ancestor of HEAD. Latest #777
+  comments are only progress-marker admissions (no substantive change).
+
+### AC1 prerequisites re-proven absent at the merged head
+
+- `packages/maistro-core/src/maistro/goals` — missing.
+- `GoalReconciler|delegate_goal` — 0 matches in `packages/*/src`.
+- `design_service` — only the evolve benchmark corpus JSON
+  (`maistro_evolve/benchmarks/corpora/repo_history_tasks.json`);
+  `hive-conductor/backend/services/design_service.py` imports nothing
+  Agent/Goal/reconciler-related (its only delta vs develop is a
+  comment-period edit).
+- `ControlMode.COLLABORATIVE` — placeholder
+  (`maistro-design/src/maistro_design/versions.py:1064`, a `_vulture_`
+  shim whose docstring names #777/#774 as the future consumers).
+- Mixed-control spec — only SPEC-092826.
+- `GoalRevisionCatalog` — still the declaration-only Protocol
+  (`projects/rubric_store.py:71`); the new test references are test
+  doubles of that seam (#458 rubric store), not a Goal store.
+
+### Battery re-run fresh at the merged head (post `uv sync --locked --extra dev`)
+
+- `uv run ruff check .` -> EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` -> EXIT 0 (3045 files, +18 from the
+  merge's ext-sdk/packs sources)
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI-exact args) ->
+  EXIT 0, 1332 reviewed identities -> 1331 findings, no unbanked; no
+  ledger amendment needed or made
+- check-radon-baseline (138 = 138 C-or-worse) / check-promotion-surface /
+  check-reachability (1307 production modules, 170 unreachable) /
+  check-suite-inventory (**16 suites match**, +1 = `maistro-ext-sdk`
+  118, `maistro-design` now 573) / check-backlog-consistency (167
+  items) / check-doc-links -> all EXIT 0
+- check-ac-state `--run-tests --ratchet`: **EXIT 1 without the CI DB
+  env** (design_coverage 38.5301 < floor 43.2114) — diagnosed as
+  environmental, not a branch regression: the identical measurement run
+  against a detached `origin/develop` worktree at `a8258ee24` (the
+  gate's own base-measurement procedure) yields the identical 38.5301.
+  CI runs this gate with a pgvector/pg18 service and exported
+  `MAISTRO_TEST_PG_DSN`/`DATABASE_URL` precisely because "a skip counts
+  as not-passing" (quality.yml:655-684). With that exact env (local
+  PG18 cluster, `alembic upgrade head` at head) the gate passes:
+  **design coverage 43.2114% == floor, EXIT 0** — the branch satisfies
+  the gate exactly as develop does.
+- `uv run pytest packages/maistro-ext-sdk/tests
+  packages/maistro-design/tests -q` (CI DB env) -> **690 passed, 1
+  skipped** (the merge's two new/grown suites)
+- `uv run pytest packages/maistro-bootstrap/tests
+  packages/maistro-server/tests tests/test_release_guard.py -q` (no DB
+  env, matching CI's DB-less unit jobs) -> **772 passed, 15 skipped**.
+  Methodology note: exporting `DATABASE_URL` globally contaminates four
+  no-DB-path tests (lifespan-without-database, two quota-ledger,
+  sigkill restart); all four pass with the export unset — verified
+  individually, not a merge or develop regression.
+- `uv run pytest packages/hive-conductor/backend/tests -q` -> **3407
+  passed, 6 skipped** (141.9s)
+- `uv run pytest packages/maistro-core/tests/{graph,memory,persistence,
+  providers,a2a} -q` -> **3593 passed, 416 skipped** (46.1s)
+
+Verdict: **BLOCKED** (dependency-blocking, fifteenth consecutive round
+with fresh evidence). The round's only content is the develop sync
+(#1982 + #2012), which lands no #777 dependency: #804/#805/#806
+(+#774/#776, and #1572's canonical Goal store underneath #804) remain
+open/absent, so every acceptance criterion is still unimplementable
+without violating the issue's stop condition and the campaign
+prohibition on competing Goal stores / execution authorities. The
+branch is battery-green, develop-current at `a8258ee24` (merged,
+zero-conflict), contains the complete PR-#1660 head, and leaves the
+canonical `Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched.
