@@ -4,7 +4,7 @@ Same convention as `workspaces/campaigns/sqlite_store.py`: an injected
 ``aiosqlite`` connection, plain typed columns for everything that filters or
 orders, a JSON payload column the model round-trips through, and an
 ``ensure_schema()`` under the shared ``serialized_schema_upgrade`` discipline.
-The PostgreSQL tables come from Alembic migration ``058``; this store owns the
+The PostgreSQL tables come from Alembic migration ``059``; this store owns the
 SQLite DDL, and ``tests/goals/test_goal_schema_parity.py`` holds the two
 descriptions of the same tables to one dialect-neutral spec so they cannot
 drift apart the way the scope tables once did (#1135).
