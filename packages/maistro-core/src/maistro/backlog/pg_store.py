@@ -16,7 +16,7 @@ codec (`maistro.persistence._register_json_codecs`). That is why this reads
 binds a payload casts the parameter `$n::text::jsonb` (see `json_of`).
 
 **No `ensure_schema`.** These tables come from Alembic migration
-`056_backlog_work_source`. A store that quietly created its own would be a
+`058_backlog_work_source`. A store that quietly created its own would be a
 second schema owner and a second thing to keep in step -- the defect migration
 003 left behind and #178 had to undo. `wire_workspace_store` documents the
 same refusal for Workspaces.
@@ -61,7 +61,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
 
 #: Tables the PostgreSQL backlog store needs before it may be used.
-#: Migration `056_backlog_work_source` owns them.
+#: Migration `058_backlog_work_source` owns them.
 BACKLOG_PG_TABLES: tuple[str, ...] = (
     "backlog_items",
     "backlog_claims",
@@ -69,7 +69,7 @@ BACKLOG_PG_TABLES: tuple[str, ...] = (
 )
 
 #: Tables the cutover control stores (#102) need before they may be used.
-#: Migration `057_backlog_authority_cutover` owns them, with the same guarded
+#: Migration `059_backlog_authority_cutover` owns them, with the same guarded
 #: DDL the SQLite twins create in `maistro.backlog.cutover`.
 PG_CUTOVER_TABLES: tuple[str, ...] = (
     "backlog_authority",

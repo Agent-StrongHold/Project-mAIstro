@@ -97,8 +97,18 @@ Repair at this lane (develop sync, #102 backlog pair, third landing): the
 auto-102 sync that merged `origin/develop` `b672b799a` re-parented the
 backlog work-source/authority-cutover pair (#98/#102) after this revision's
 chain — the quota door `043_invocation_quota_door` (parent `055`) is the
-merged tip, and the backlog pair attaches after it as `056` and `057`. The
-revision itself is untouched (`055`, parent `054`); the chain sentinel now
-walks to head `057`, and the refused-downgrade stamp assertion pins that
-head by the same head-artifact reasoning as the round above. No test added
-or removed — delta above unchanged.
+merged tip, and the backlog pair attached after it as `056` and `057`. The
+revision itself is untouched (`055`, parent `054`).
+
+Repair at this lane (develop sync, fourth landing, #1047 lands on the tip): the
+next develop sync (`c560d4cca`) landed #1047's user-model tables on develop's
+trunk as `056_user_model_facts` on the same quota-door parent as the backlog
+pair. Per the chain's convention — a landed trunk migration never moves; the
+branch-side pair re-parents onto the incoming develop tip — the backlog
+work-source/authority-cutover pair renumbers to `058_backlog_work_source` and
+`059_backlog_authority_cutover`, leaving `057` for develop's #863
+planner-stability revision (which revises `056_user_model_facts` on develop
+and takes that slot at the next sync). The chain sentinel now walks to head
+`059`, and the refused-downgrade stamp assertion pins that head by the same
+head-artifact reasoning as the rounds above. No test added or removed — delta
+above unchanged.

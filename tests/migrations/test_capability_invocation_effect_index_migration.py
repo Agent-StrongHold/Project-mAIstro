@@ -80,12 +80,17 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # `055_task_admission_generations`. This branch's
     # `043_invocation_quota_door` (#1196/#718) is re-parented onto whichever
     # of them is develop's head at merge time -- 046, then 047, 048, 050,
-    # 051, 052, 053, 054, now 055. The backlog work-source migration (#98)
-    # was renumbered `048` -> `052` -> `054` and the authority-cutover ledger
-    # (#102) `049` -> `053` -> `055` as each of those develop revisions
-    # landed, attaching after the quota-door head as `056` and `057` — so the
-    # single linear head is `057`.
-    walked = {item.revision for item in directory.walk_revisions("base", "057")}
+    # 051, 052, 053, 054, now 055. #1047's user-model tables then landed on
+    # develop's trunk as `056_user_model_facts` on that same quota-door
+    # parent, so the backlog work-source migration (#98) — renumbered
+    # `048` -> `052` -> `054` as each develop revision landed — and the
+    # authority-cutover ledger (#102), `049` -> `053` -> `055`, re-parent
+    # past the incoming develop tip as `058` and `059` (a landed trunk
+    # migration never moves), leaving `057` for develop's #863
+    # planner-stability revision, which revises `056_user_model_facts` on
+    # develop and takes that slot at the next sync — so the single linear
+    # head is `059`.
+    walked = {item.revision for item in directory.walk_revisions("base", "059")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -100,9 +105,11 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "053" in walked
     assert "054" in walked
     assert "055" in walked
+    assert "043_invocation_quota_door" in walked
     assert "056" in walked
-    assert "057" in walked
-    assert directory.get_heads() == ["057"]
+    assert "058" in walked
+    assert "059" in walked
+    assert directory.get_heads() == ["059"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

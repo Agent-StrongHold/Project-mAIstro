@@ -1,10 +1,12 @@
 """Backlog authority cutover control state (#102).
 
-Follows `056_backlog_work_source` (its pre-renumber ids were `049`, then
-`053`, then `055`; develop's landed `049_design_artifact_versions`,
+Follows `058_backlog_work_source` (its pre-renumber ids were `049`, then
+`053`, then `055`, then `057`; develop's landed `049_design_artifact_versions`,
 `053_learning_lifecycle_columns`, `054_learning_applicability_epistemics`
-and `055_task_admission_generations` own those slots now), attaching after
-the work-source tables so the chain stays linear with exactly one head.
+and `055_task_admission_generations` own those slots now, and develop's
+`056_user_model_facts` plus its #863 planner-stability successor claim `056`
+and `057`), attaching after the work-source tables so the chain stays linear
+with exactly one head.
 The explicit authority cutover is a recorded, reversible decision, and the
 generated Markdown must be reproducible from the database alone — so the
 control state is durable, with the same schema discipline as the work-source
@@ -29,8 +31,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "057"
-down_revision = "056"
+revision = "059"
+down_revision = "058"
 branch_labels = None
 depends_on = None
 

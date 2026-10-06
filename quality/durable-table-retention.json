@@ -1284,6 +1284,30 @@
       "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
       "issue": "#325",
       "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (put_result is INSERT OR IGNORE on the content address). Deleted by the same purge_workspace that removes the log entries referencing them; the lifetime question is the log's."
+    },
+    {
+      "table": "user_model_facts",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/user_model/pg_store.py",
+      "data_class": "memory",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#1047",
+      "notes": "One row per UserModelFact revision (ADR-092526-4391: facts never decay; only an explicit revision or tombstone changes them). Tombstoning a lineage deletes its content revisions and keeps a single tombstone revision recording who deleted the fact and why, so deletion is itself the retention decision; live rows persist until the owner deletes them."
+    },
+    {
+      "table": "user_model_statement_keys",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/user_model/pg_store.py",
+      "data_class": "memory",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#1047",
+      "notes": "Owner-bound statement key to lineage id. Kept forever on purpose: after a tombstone purges the lineage's content revisions, these rows are what still block re-promotion of every wording the lineage ever held, including one replayed from a stale Ladybug working graph. Identifiers only, never statement content."
     }
   ]
 }
