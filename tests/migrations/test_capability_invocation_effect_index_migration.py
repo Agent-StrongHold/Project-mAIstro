@@ -35,8 +35,9 @@ sync then lands its ``043_invocation_quota_door`` (#1196/#718) on that
 develop's ``054`` and ``055`` as ``056`` in their own two collisions — revise
 the quota door; #863's planner-stability revision — numbered ``052`` when
 written, re-parented onto each tip in the earlier collisions — follows the
-``056_user_model_facts`` tip as ``057``, so the single linear head is the
-planner-stability revision.
+``056_user_model_facts`` tip as ``057``, so the planner-stability revision follows it. The incoming Gauntlet provenance
+revision continues that chain as ``058_learning_validation_provenance``,
+so the single linear head is ``058``.
 """
 
 from __future__ import annotations
@@ -175,8 +176,8 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     directory = ScriptDirectory.from_config(config)
 
-    assert directory.get_heads() == ["057"]
-    walked = {item.revision for item in directory.walk_revisions("base", "057")}
+    assert directory.get_heads() == ["058"]
+    walked = {item.revision for item in directory.walk_revisions("base", "058")}
     # The claim chain this branch folded the #1194 corrections into, and every
     # develop collision the chronicle above records, must stay on the one
     # linear path to the head. Develop's #1756 learning-applicability
@@ -190,7 +191,7 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # two collisions — revise the quota door; and #863's planner-stability
     # revision — numbered `052` when written, re-parented onto each tip in
     # the earlier collisions — follows develop's `056_user_model_facts` tip
-    # as `057`, so the single linear head is the planner-stability revision.
+    # as `057`. Gauntlet provenance follows it as `058`, the single head.
     assert {
         "034_canonical_run_effect_claim",
         "034",
@@ -210,6 +211,7 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
         "043_invocation_quota_door",
         "056",
         "057",
+        "058",
     } <= walked
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —
