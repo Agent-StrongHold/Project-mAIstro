@@ -124,7 +124,10 @@ class MemoryIngestStore:
 
 @runtime_checkable
 class CheckpointStore(Protocol):
-    """Durable home for sync cursors, addressed by the full scope triple."""
+    """Durable home for sync cursors, addressed by the full scope triple.
+
+    M1 product-local projection: Checkpoint
+    """
 
     async def load(self, workspace_id: str, connector_id: str, config_id: str) -> SyncCursor | None:
         """Return the saved cursor for one sync stream, or None."""
@@ -136,7 +139,10 @@ class CheckpointStore(Protocol):
 
 
 class MemoryCheckpointStore:
-    """In-process reference :class:`CheckpointStore`."""
+    """In-process reference :class:`CheckpointStore`.
+
+    M1 product-local projection: Checkpoint
+    """
 
     def __init__(self) -> None:
         self._cursors: dict[tuple[str, str, str], SyncCursor] = {}
