@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +66
+  packages/maistro-core/tests: +72
 ---
 # 967 — Governed UI/A2UI extension components projecting canonical state (M9-F2)
 
@@ -64,3 +64,26 @@ against reachable behavior.
     keys, malformed JSON) and lookup errors (unknown catalog/component/
     action fail with distinct types; catalogs register only under the
     extension id that shipped them; local actions dispatch nothing).
+
+## Repair round on top of the PR head (+6, all in the same file)
+
+Three follow-up fixes after the PR head (905f23db) hardened the contract and
+each pinned the fix with tests that the original +66 did not include. Recorded
+here so the ledger matches the reachable tree (collected: 72, not 66):
+
+- `test_mutating_action_permissions_are_canonical_not_catalog_chosen` —
+  AC-2: a governed route's required permissions are fixed by the platform;
+  the catalog cannot swap in a low-authority token (or add one alongside).
+- `test_component_required_permissions_are_enforced_at_dispatch` — AC-3:
+  component-level `required_permissions` gate dispatch, not just render
+  visibility.
+- `test_replace_cannot_smuggle_fields_past_the_anchor` — AC-6: a
+  `dataclasses.replace` of parsed fields with byte-identical raw bytes fails
+  the snapshot integrity check.
+- `test_scoped_state_keeps_installs_isolated_per_scope` — AC-3/AC-6: the same
+  extension active in two scopes carries its own catalog and grant per
+  (scope, extension_id); an org-scope grant does not authorize a
+  workspace-scope mutation and provenance reflects each scope's manifest.
+- Two more `test_unsafe_csp_tokens_are_rejected` cases (10 → 12): a CSP value
+  smuggling `'unsafe-inline'` through `connect_src`, and a comma-joined
+  multi-origin `connect_src` (header-injection smuggling) is refused.

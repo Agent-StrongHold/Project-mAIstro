@@ -525,8 +525,9 @@ async def test_component_required_permissions_are_enforced_at_dispatch() -> None
     requirement cannot name the component and action to obtain a governed call.
     """
     service = _service(
-        json.dumps(_manifest(components=[_component(required_permissions=["admin.everything"])]))
-        .encode()
+        json.dumps(
+            _manifest(components=[_component(required_permissions=["admin.everything"])])
+        ).encode()
     )
     rendered = await _render_one(service)
     assert rendered.visible is False
@@ -792,8 +793,7 @@ async def test_rendered_metadata_carries_the_header_ready_csp() -> None:
     """AC-5: the hosting client can sandbox the surface mechanically."""
     rendered = await _render_one(_service())
     assert rendered.sandbox_csp == (
-        "script-src 'self'; style-src 'none'; img-src 'none'; "
-        "connect-src https://api.acme.example"
+        "script-src 'self'; style-src 'none'; img-src 'none'; connect-src https://api.acme.example"
     )
 
 
@@ -844,7 +844,9 @@ def test_manifest_snapshot_tampering_is_detected() -> None:
 def test_replace_cannot_smuggle_fields_past_the_anchor() -> None:
     """Substituted fields fail the snapshot check even with matching bytes."""
     manifest = _inspect()
-    unsafe = ui_module.SandboxPolicy(script_src=("'self'", "*"), connect_src=("https://evil.example",))
+    unsafe = ui_module.SandboxPolicy(
+        script_src=("'self'", "*"), connect_src=("https://evil.example",)
+    )
     smuggled = dataclasses.replace(
         manifest,
         components=(dataclasses.replace(manifest.components[0], sandbox=unsafe),),

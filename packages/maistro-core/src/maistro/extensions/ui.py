@@ -288,41 +288,43 @@ class GovernedRoute:
 #: mutations a UI component can express. There is no completion route on
 #: purpose: Runs and Goals are completed by the canonical executor and
 #: reconciler, never by a client-rendered button.
-GOVERNED_ROUTES: Mapping[str, GovernedRoute] = MappingProxyType({
-    "cancel_run": GovernedRoute(
-        intent="cancel_run",
-        method="POST",
-        path="/v1/dag-runs/{run_id}/cancel",
-        required_permissions=("runs.cancel",),
-        params=(RouteParam(name="run_id", kind="run", field="run_id"),),
-    ),
-    "answer_hitl": GovernedRoute(
-        intent="answer_hitl",
-        method="POST",
-        path="/v1/hitl/{run_id}/{node_id}/answer",
-        required_permissions=("hitl.answer",),
-        params=(
-            RouteParam(name="run_id", kind="run", field="run_id"),
-            RouteParam(name="node_id", kind="node_run", field="node_id"),
+GOVERNED_ROUTES: Mapping[str, GovernedRoute] = MappingProxyType(
+    {
+        "cancel_run": GovernedRoute(
+            intent="cancel_run",
+            method="POST",
+            path="/v1/dag-runs/{run_id}/cancel",
+            required_permissions=("runs.cancel",),
+            params=(RouteParam(name="run_id", kind="run", field="run_id"),),
         ),
-    ),
-    "cancel_hitl": GovernedRoute(
-        intent="cancel_hitl",
-        method="POST",
-        path="/v1/hitl/{run_id}/{node_id}/cancel",
-        required_permissions=("hitl.cancel",),
-        params=(
-            RouteParam(name="run_id", kind="run", field="run_id"),
-            RouteParam(name="node_id", kind="node_run", field="node_id"),
+        "answer_hitl": GovernedRoute(
+            intent="answer_hitl",
+            method="POST",
+            path="/v1/hitl/{run_id}/{node_id}/answer",
+            required_permissions=("hitl.answer",),
+            params=(
+                RouteParam(name="run_id", kind="run", field="run_id"),
+                RouteParam(name="node_id", kind="node_run", field="node_id"),
+            ),
         ),
-    ),
-    "start_task": GovernedRoute(
-        intent="start_task",
-        method="POST",
-        path="/v1/tasks",
-        required_permissions=("tasks.start",),
-    ),
-})
+        "cancel_hitl": GovernedRoute(
+            intent="cancel_hitl",
+            method="POST",
+            path="/v1/hitl/{run_id}/{node_id}/cancel",
+            required_permissions=("hitl.cancel",),
+            params=(
+                RouteParam(name="run_id", kind="run", field="run_id"),
+                RouteParam(name="node_id", kind="node_run", field="node_id"),
+            ),
+        ),
+        "start_task": GovernedRoute(
+            intent="start_task",
+            method="POST",
+            path="/v1/tasks",
+            required_permissions=("tasks.start",),
+        ),
+    }
+)
 
 #: Intents that mutate canonical state through a governed server seam. Every
 #: other declared intent is renderer-local and must not carry a route.
@@ -1330,9 +1332,7 @@ class UiProjectionService:
 
     # -- reads ------------------------------------------------------------
 
-    def _require_catalog(
-        self, scope: ExtensionScope, extension_id: str
-    ) -> UiComponentManifest:
+    def _require_catalog(self, scope: ExtensionScope, extension_id: str) -> UiComponentManifest:
         manifest = self._catalogs.get((scope, extension_id))
         if manifest is None:
             raise UnknownCatalog(f"no UI component catalog for extension {extension_id!r}")
@@ -1545,9 +1545,7 @@ class UiProjectionService:
         availability = self._availability(
             declared_action,
             active=active,
-            extension_grant=self._extension_permissions.get(
-                (scope, extension_id), frozenset()
-            ),
+            extension_grant=self._extension_permissions.get((scope, extension_id), frozenset()),
             principal_permissions=principal_permissions,
             state=state,
         )
