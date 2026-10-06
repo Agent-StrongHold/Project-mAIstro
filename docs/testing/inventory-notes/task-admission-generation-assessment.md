@@ -1226,3 +1226,60 @@ paths remain exactly the two named in round 13: base-landed authorizations
 followed by the banking rebase, or the #1845 integration consumer that wires
 both modules and prunes the entries on arrival. Until one lands, the stack
 stays unmerged by design.
+
+## CI-repair round 16 (2026-10-06, head 6efe5a25b40c after develop sync to
+11376c7bef4): merge absorbed, full battery re-derived, amendment empty 16th round
+
+Round 15's head 926590632 was synced to the new `origin/develop` tip
+11376c7bef4 (merge commit 6efe5a25b40c, conflict-free — develop's M9-E1 /
+M4-B2 / M9-D3 content merged alongside). The new base is still grantless and
+baseline-less for both admission modules (`git grep` over
+`quality/ratchet-authorizations.json` and `quality/reachability-baseline.json`
+at 11376c7bef4: zero `admission_identity` / `admission_generation` rows), and
+the branch's `quality/` tree is byte-identical to the new base
+(`git diff --numstat origin/develop -- quality/` empty), so the sanctioned
+blocker translates unchanged. Full battery re-derived at this head:
+
+- **Vulture ledger (exact-debt-ledger step 3) green, amendment empty the
+  16th consecutive round**: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exit 0, 1332 reviewed
+  identities -> 1332 findings, `unclassified: 0`. (1336 -> 1332 is the new
+  base's own ledger trim, not a candidate edit.) Step 2
+  `check-shipped-surface-truth.py` exit 0. Step 1
+  `check-ratchet-provenance.py` exit 1 with every sub-ratchet OK except the
+  reachability trusted-base gate — the same two
+  NEW-unreachable-unauthorized identities, now against base 11376c7bef4.
+- **Root suite re-derived** (`pytest tests/ --ignore=tests/tools/registry
+  -q --timeout=300`): 4529 passed, 122 skipped, exactly 3 failed — the same
+  three reachability gate-identity tests naming only the two leaf modules;
+  nothing else reds at the merged head.
+- **Quality-gate components**: `check-reachability.py` exit 1 on exactly the
+  two leaf modules (the sanctioned red); `check-radon-baseline.py` exit 0
+  (138 -> 138 against the new base); xenon with CI's exact argv 138 block
+  violations (baseline 145), 0 module-rank, 0 average;
+  `check-reachability-dispositions.py` exit 0 (49 groups, 170 modules);
+  `check-promotion-surface.py` exit 0; `check-convergence-matrix.py` exit 0
+  (52 subsystems classify all 1298 modules).
+- **Supply-chain fix retained through the merge**: `uv.lock` still pins
+  multidict 6.9.1 and werkzeug 3.1.9; CI check-runs at 6efe5a25b40c show
+  `Supply chain (pip-audit)` and `security` = success (captured in this
+  round's dispatch context), so round 15's CVE repair survived the sync.
+- **Focused battery green**: 131 passed in the classifier suite (==
+  `inventory-delta`), 112 passed in the #1851 + live-idempotency suites;
+  ruff check + format clean repo-wide (driver) and on the two leaf files;
+  mypy clean on the classifier; full `check-suite-inventory.py` exit 0
+  (15 suites, 27401 identities).
+- **Mutation proof spot-re-derived at this head** (cp backup/restore, tree
+  verified clean after, module byte-identical): lease-before-binding reorder
+  -> 14 focused failures; mismatch-before-expiry reorder -> 22 focused
+  failures. Same catching pattern as rounds 13-15 against byte-identical
+  source.
+
+The round-15 NEEDS-DEEP-REVIEW attention request is resolved by this
+evidence: at the new base there is still no authorization path for either
+module, no new fixable red appeared from the develop sync, and every
+remaining CI red (exact-debt-ledger, Quality gate, test, coverage producer)
+reduces to the one sanctioned two-module delta that only the separately
+scoped #1845 integration (or a base-landed grant followed by the banking
+rebase) can retire. The stack stays unmerged by design; implementation and
+test readiness stand proven at 6efe5a25b40c.
