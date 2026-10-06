@@ -329,3 +329,35 @@ but correctly failed because trusted base `626683154ce9` predates them.
 and the provenance aggregate failed only at that same reachability gate. This
 leaf has no permitted runtime consumer, reachability ledger/disposition,
 suppression, or grant; parent integration remains the required next step.
+
+## 2026-10-06 merge-head revalidation
+
+At merge head `9731c6d929579fb99d2c1b96fc95e4dac042d212` (develop base
+`d39a2e4ce3309d11871180f6645329300cb84e58`): the focused DTO suite passed 77
+tests; focused and repository-wide Ruff check/format passed; module mypy
+passed; and the core suite inventory matched 14,386 node IDs, preserving this
+suite's `+77` delta. The exact Vulture command
+(`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`) found 1,339 findings with no candidate-ledger bookkeeping
+delta — the candidate ledger banks exactly the seven scanner-reported
+reviewed identities — and exited 1 only because trusted base
+`a8258ee24dd9` predates them; a candidate ledger cannot authorize its own
+debt. `check-reachability.py` exited 1 only for the deliberately inactive
+`maistro.runs.admission_identity`; `check-reachability-dispositions.py`
+(170 modules dispositioned) and `check-promotion-surface.py` passed.
+`check-ratchet-provenance.py` exited 1 solely through its reachability
+sub-gate for that same unwired module (shell, contract-marker, enumeration,
+lifecycle, and vulture provenance sub-gates all passed).
+`check-reachability-provenance.py` confirms `maistro.runs.admission_identity`
+is the only reachability debt: NEW unreachable absent from the trusted base
+and, per this leaf's staging constraint, intentionally absent from the
+candidate baseline. Source inspection at this head reconfirmed the #1841
+prerequisite signatures (`require_admitted_actor`, `get_run(*,
+principal_id=...)`, `actor_principal_id` guards on `create_run`/
+`claim_run_by_effect`) and found no production import, `maistro.runs` export,
+Vulture whitelist reference, suppression, reachability baseline/disposition,
+or grant anywhere in the tree. All prior forbidden leaf artifacts (whitelist
+import and suppressions, reachability baseline entry, dispositions) remain
+removed. Parent integration must supply the real reviewed consumer before
+these trusted-base gates can pass; this leaf's staged scope forbids every
+available shortcut.
