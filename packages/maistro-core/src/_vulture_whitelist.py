@@ -11,6 +11,7 @@ from maistro import identity as identity_package
 from maistro.a2a.external import ExternalAgentRegistry
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
     extensions_compat,
     extensions_explain,
@@ -33,6 +34,7 @@ from maistro.extensions.compat import (
     parse_contract_version,
     parse_feature_status,
 )
+from maistro.extensions.effective_authority import EffectiveAuthority
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
@@ -346,6 +348,15 @@ _VULTURE_WHITELIST = (
     FeatureStatus.__str__,
     CompatError,
     IncompatibleContract,
+    # Connector/source SDK (M9-E2, #963). The Typer callbacks are dispatched
+    # by registration, and the protocol members below are the public SDK
+    # surface out-of-tree connectors implement and call — the same
+    # consumed-outside-this-scan posture the core-public-api-surface ledger
+    # rule records. SyncEngine.query_items routing keeps query_items called in
+    # src; the rest of the SDK surface (dataclass fields, store/protocol
+    # members) is exercised by the engine and the shared conformance suite.
+    connectors_verify,
+    connectors_describe,
     # External Agent discovery (M9-D1, #958). The registry's lifecycle API
     # ships first by design, the same contract-first posture as the M9-B1
     # store seams above: its in-tree consumers are the conformance suite
@@ -360,4 +371,12 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Effective-authority evidence linkage (M9-G1, #969). `with_execution_context`
+    # pins a computed intersection to canonical Run evidence (run/node-run/attempt
+    # ids) without mutating the digest-anchored result; its consumers are the
+    # Invocation/Run wiring that lands with the M9-G2/G3 enforcement and policy
+    # issues. Until then its callers are the conformance suite
+    # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
+    # same contract-ships-first posture as the seams above.
+    EffectiveAuthority.with_execution_context,
 )
