@@ -1173,6 +1173,12 @@ class InstallablePackRegistry:
 
         Idempotent for identical bytes; a same-(pack_id, version) install
         with different bytes is an identity conflict, never a replacement.
+
+        Deliberately *not* the authorization step: publisher trust, signature
+        evidence, operator consent, and audit transitions belong to the M9-B2
+        governed install service (#953), which packs flow through before they
+        are offered here (wired in M9-F3, #968). This registry is the pack's
+        use gate over data-only manifests, not a second lifecycle.
         """
         manifest = inspect_pack_manifest(raw)
         occupied = self._active_extensions.get(manifest.pack_id)
@@ -1333,8 +1339,14 @@ class InstallablePackRegistry:
     def _active_versions(self) -> dict[str, str]:
         """Every extension/pack id active here, for dependency resolution."""
         versions = dict(self._active_extensions)
-        for (pack_id, _version), record in self._records.items():
-            if record.state is PackState.ACTIVE:
+        for (pack_id, version_key), record in self._records.items():
+            if record.state is not PackState.ACTIVE:
+                continue
+            # Keep the highest active version per id: installs may arrive out
+            # of semver order, and dependency resolution must see the same
+            # version that unpinned lookups resolve to.
+            current = versions.get(pack_id)
+            if current is None or _semver_key(version_key) > _semver_key(current):
                 versions[pack_id] = record.manifest.version
         return versions
 
