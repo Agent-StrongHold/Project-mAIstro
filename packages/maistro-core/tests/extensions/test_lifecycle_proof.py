@@ -25,6 +25,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -114,8 +115,22 @@ class TestFullLifecycleProof:
 @pytest.mark.contract("boundary")
 @pytest.mark.scope("integration")
 class TestProofDeterminism:
-    async def test_core_digest_is_identical_across_runs(self, proof_module, tmp_path: Path) -> None:
+    async def test_core_digest_is_identical_across_runs(
+        self, proof_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         first = await _run_proof(proof_module, tmp_path / "run1")
+        # Force the second build into a different ZIP timestamp bucket.
+        # ``ZipFile.writestr`` dates a str arcname from ``time.localtime()``
+        # and DOS time has 2-second granularity, so a builder that inherits
+        # the wall clock hashes identical sources differently depending on
+        # when the run started — this monkeypatch is what makes the
+        # assertions below a regression test rather than a timing
+        # coincidence that only holds while two runs share one bucket.
+        monkeypatch.setattr(
+            time,
+            "localtime",
+            lambda *args: time.struct_time((2000, 1, 1, 12, 0, 4, 5, 1, 0)),
+        )
         second = await _run_proof(proof_module, tmp_path / "run2")
         assert first["deterministic_core_sha256"] == second["deterministic_core_sha256"]
         first_lock = next(s for s in first["stages"] if s["name"] == "discover")

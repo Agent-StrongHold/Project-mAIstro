@@ -271,8 +271,20 @@ def _artifact_zip(spec: PackageSpec) -> bytes:
     """The payload artifact: a zip carrying the module tree, nothing else."""
     buffer = io.BytesIO()
     module_path = spec.module_name.replace(".", "/") + ".py"
+    # Fixed entry metadata. ``ZipFile.writestr`` dates a str arcname from
+    # ``time.localtime()``, and ZIP (DOS) timestamps have 2-second
+    # granularity — so the same plugin source hashed differently depending
+    # on which bucket the build started in, and every digest downstream
+    # (manifest, signature, catalog snapshot, lineage core) inherited that
+    # drift. The artifact is a function of the source alone; measured
+    # drift between back-to-back runs is pinned by
+    # ``TestProofDeterminism``, which forces a bucket cross on the second
+    # build.
+    entry = zipfile.ZipInfo(module_path, date_time=(1980, 1, 1, 0, 0, 0))
+    entry.compress_type = zipfile.ZIP_DEFLATED
+    entry.external_attr = 0o600 << 16  # writestr's own default for files
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(module_path, spec.plugin_source)
+        archive.writestr(entry, spec.plugin_source)
     return buffer.getvalue()
 
 

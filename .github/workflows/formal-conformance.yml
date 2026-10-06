@@ -114,8 +114,17 @@ jobs:
       # from `uv sync --extra dev`; a pip-based job has to say so. The version
       # matches the root pyproject's own `psycopg[binary]>=3.2` rather than
       # floating.
+      #
+      # aiosqlite is here for the same reason: the #981 proof's durable-restart
+      # stage drives `SqliteExtensionInstallStore`, and `aiosqlite` is a
+      # *declared optional extra* of maistro-core (the `sqlite` extra), not a
+      # base dependency — so a bare `pip install -e packages/maistro-core`
+      # above does not bring it. Measured in CI: the proof died on
+      # `ModuleNotFoundError: No module named 'aiosqlite'` until this job said
+      # so explicitly. The root pyproject pins `aiosqlite>=0.20`; the floor
+      # here matches rather than floating.
       - name: Install PostgreSQL drivers and alembic
-        run: pip install asyncpg "psycopg[binary]>=3.2" alembic
+        run: pip install asyncpg "psycopg[binary]>=3.2" alembic "aiosqlite>=0.20"
 
       # The canonical tables I29 writes to. Without this the model fails on a
       # missing relation, which reads as a broken test rather than a missing

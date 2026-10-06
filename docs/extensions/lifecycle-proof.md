@@ -96,7 +96,13 @@ Publisher keys are fixed test-only Ed25519 material, the install service
 runs on a deterministic clock with sequential install ids, and resolution is
 documented as deterministic — so the lineage's *core* (lock, checks,
 invocation outcomes, digests, signatures, decisions) is byte-identical
-across runs. Audit timestamps that production stores record internally are
+across runs. Artifact zips carry fixed entry metadata (a fixed DOS epoch
+timestamp, not the wall clock): ``ZipFile.writestr`` otherwise dates each
+entry from ``time.localtime()``, and ZIP time's 2-second granularity made
+identical sources hash differently depending on when the build started —
+drift that every downstream digest inherited. ``TestProofDeterminism``
+pins exactly this by forcing the second build into a different bucket.
+Audit timestamps that production stores record internally are
 excluded from the core digest and called out in the lineage. The core digest
 is the reproducibility handle: two runs agreeing on it means the same
 platform decision chain happened.
