@@ -55,10 +55,13 @@ the scratch layout can exercise.
   `TestMutationBoundaries.test_last_line_waiver_does_not_suppress_first_line_finding`,
   and by nothing else: it is the only test that fails under the mutant beyond the
   control baseline.
-- `_imported_by` L146 `or` -> `and` -- killed by
+- `_imported_by` L147 `or` -> `and` -- killed by
   `TestMutationBoundaries.test_dotted_import_alias_binds_the_alias_not_the_top_level_name`
-  (an aliased dotted import must bind the alias, not the top-level name).
-- `_imported_by` L146 `.split(".")[0]` -> `[-1]` -- killed by
+  (an aliased dotted import must bind the alias, not the top-level name) and by
+  `TestMutationBoundaries.test_plain_dotted_import_binds_the_top_level_name`
+  (for an unaliased import `alias.asname` is `None`, so the mutant records `None`
+  instead of the top-level name and the test's first no-finding assertion fails).
+- `_imported_by` L147 `.split(".")[0]` -> `[-1]` -- killed by
   `TestMutationBoundaries.test_plain_dotted_import_binds_the_top_level_name`.
 - `_collect` L199 `core/ReplaceContinueWithBreak` -- killed by
   `TestMutationBoundaries.test_collect_continues_after_type_checking_block`.
@@ -67,12 +70,17 @@ the scratch layout can exercise.
 
 ### The equivalent rows: re-confirmed under the mutant, not just argued
 
-The packet reported the comparison mutants below as killed, but that status is load
-noise: the packet's test command carries `--timeout=20`, and the two whole-tree scans
-in `TestTheRepository` take ~13.5s of it, so four concurrent workers can push them
-over. Each mutant was therefore applied to the working tree and the full focused suite
-run **without** `--timeout`: 58 passed in every case, so no test kills them and the
-equivalence records above stand as written.
+The packet reported the comparison mutants below as killed. The cause recorded
+earlier (per-test `--timeout=20` contention) was wrong and is retracted: the two
+whole-tree tests in `TestTheRepository` carry `@pytest.mark.timeout(120)`
+(`tests/test_check_cross_package_imports.py:189` and `:211`), and a per-test
+marker overrides the `--timeout` flag, so worker contention cannot push those
+tests over a 20-second limit. No worker output survives from the #419 run to
+inspect, so the kill cause is left unverified; cosmic-ray's own `timeout = 60.0`
+process limit is the remaining candidate. What the closeout re-run does
+establish, independently of cause: each mutant was applied to the working tree
+and the full focused suite run **without** `--timeout`: 58 passed in every case,
+so no test kills them and the equivalence records above stand as written.
 
 - `scan` L388 `core/ReplaceComparisonOperator_Lt_IsNot`: `index < len(lines)` ->
   `index is not len(lines)` -- unreachable-input equivalent, as recorded above.
@@ -96,3 +104,36 @@ mutants make the CLI print nothing when run as a script, and
   unchanged under the `>= 0` mutant; the `index > 0` guard structurally preserves every
   index above it, and `test_a_waiver_two_lines_above_does_not_reach` pins the no-overreach
   side at index 2.
+
+### Independent in-tree re-verification (2026-10-06 salvage, `0e1a1257`)
+
+Each disposition above was re-executed with the mutant applied directly to the working
+`scripts/check-cross-package-imports.py` (not a scratch copy), byte-restored and
+sha256-compared after every run (`87b8f28ab7f25215...` intact), against
+`pytest tests/test_check_cross_package_imports.py -q -rf` with no `--timeout` and no
+`-x`. Pristine baseline: 58 passed.
+
+- L290 `Gt` -> `GtE`: 1 failed, 57 passed -- the only failure is
+  `test_last_line_waiver_does_not_suppress_first_line_finding`, confirming "and by
+  nothing else" exactly.
+- L147 `or` -> `and`: 2 failed, 56 passed -- both dotted-import tests, matching the
+  corrected attribution above.
+- L147 `.split(".")[0]` -> `[-1]`: 1 failed, 57 passed -- only the plain dotted-import
+  test.
+- L199 `continue` -> `break`: 3 failed, 55 passed --
+  `test_collect_continues_after_type_checking_block` plus the two real-tree
+  `TestTheRepository` tests, consistent with the genuine-gap rationale.
+- L314 `continue` -> `break`: 1 failed, 57 passed -- only
+  `test_import_scan_continues_after_type_checking_block`.
+- L388 `Lt` -> `IsNot` / L348 `Eq` -> `Is` / L547 `Eq` -> `LtE`: 58 passed in every
+  recorded run. One earlier `Lt` -> `IsNot` execution showed a single transient failure
+  whose identity was not captured; the mutant's semantics are identical on every
+  reachable input (`index < len(lines)` and `index is not len(lines)` are both true
+  whenever `0 <= index < len(lines)`, and `scan` cannot produce `index == len(lines)`),
+  so a genuine kill is impossible there, and the suite passed 58/58 on the three
+  recorded runs since plus the pristine control.
+
+The retraction above was independently confirmed: `@pytest.mark.timeout(120)` sits at
+`tests/test_check_cross_package_imports.py:189` and `:211`, and a per-test marker
+overrides the packet command's `--timeout=20` default, so the original load-noise
+explanation was impossible as written.
