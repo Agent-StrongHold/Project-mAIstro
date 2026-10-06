@@ -355,3 +355,20 @@ chain tip the store's migration sits at:
   PostgreSQL database to `alembic upgrade head` after each isolated
   downgrade/drop walk. This prevents later migration modules in quality's
   single `pytest tests/migrations` process from inheriting an empty database.
+
+## Round 8 — current trusted-base ratchet evidence (2026-10-06)
+
+`quality/execution-lifecycles.json` **does** carry the candidate's
+`maistro.goals.model::GoalStatus` `DOMAIN` classification. Earlier wording
+that the candidate ledger was untouched described the pre-classification
+rounds and is not current-state evidence. It cannot authorize this change:
+`uv run python scripts/check-execution-lifecycles.py` at
+`be45a17d1a77e10acd20862128f542d855f1dcc7` resolves trusted base
+`11376c7bef4ea7d17195b90bea8ca9a64a769bb1`, finds 19 classified lifecycles
+there and 20 in the candidate, and fails because that base contains no
+already-landed authorization for `GoalStatus`. The mirrored shipped-ledger
+unit test fails for the same reason. The vulture ledger is independently
+clean with CI's exact scan arguments (1332 reviewed identities and findings).
+The required repair remains a separately merged authorization on develop,
+followed by a branch sync; no candidate-only ledger edit can satisfy the
+two-merge rule.
