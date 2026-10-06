@@ -86,12 +86,41 @@ class ExtensionInstallStore(Protocol):
         """
         ...
 
+    async def record_installs(
+        self,
+        installs: Sequence[tuple[InstallRequest, bytes]],
+        *,
+        activate: ActivationCallback | None = None,
+    ) -> list[InstallRecord]:
+        """Atomic batch form of :meth:`record_install`.
+
+        Verification and identity rules run for *every* entry first — each
+        against the store's history plus the records already resolved in this
+        batch — before the first record is persisted. Any failure raises
+        having persisted nothing and invoked ``activate`` zero times, so a
+        batch can never land half-installed. On success every record is
+        persisted, then ``activate`` runs once per newly persisted record in
+        batch order; idempotent re-records return the existing record without
+        re-activating, exactly as the single-record path does.
+        """
+        ...
+
     async def install_history(self, extension_name: str) -> list[InstallRecord]:
         """All install records for one extension, oldest first."""
         ...
 
     async def get_install(self, identity: PackageIdentity) -> InstallRecord | None:
         """The record for an exact installed-version identity, or ``None``."""
+        ...
+
+    async def all_installs(self) -> list[InstallRecord]:
+        """Every install record across every extension, oldest first per name.
+
+        The whole installed lock state in one read — the input surface the
+        upgrade preflight evaluates. Records from different extensions are
+        ordered by extension name; records for one extension keep install
+        order.
+        """
         ...
 
 
@@ -172,6 +201,19 @@ def resolve_install(
     )
 
 
+def _record_for_identity(
+    records: Sequence[InstallRecord], identity: PackageIdentity
+) -> InstallRecord:
+    """The already-known record for ``identity`` (idempotent path)."""
+    wanted = identity_key(identity)
+    for record in records:
+        if identity_key(record.identity) == wanted:
+            return record
+    raise ExtensionRegistryError(
+        "idempotent re-record matched no persisted record; store state is inconsistent"
+    )
+
+
 def _ensure_same_key(existing: PublisherIdentity, incoming: PublisherIdentity) -> None:
     """Refuse to re-register a publisher id under a different signing key."""
     if existing.signing_key_fingerprint != incoming.signing_key_fingerprint:
@@ -217,10 +259,53 @@ class InMemoryExtensionInstallStore:
             install_id=uuid.uuid4().hex,
         )
         if resolved is None:
-            return self._existing(request.identity)
+            return _record_for_identity(
+                self._installs.get(request.identity.extension_name, ()), request.identity
+            )
         history.append(resolved)
         if activate is not None:
             activate(resolved)
+        return resolved
+
+    async def record_installs(
+        self,
+        installs: Sequence[tuple[InstallRequest, bytes]],
+        *,
+        activate: ActivationCallback | None = None,
+    ) -> list[InstallRecord]:
+        """Verify the whole batch, then record all, then activate.
+
+        See the protocol docstring for the all-or-nothing contract.
+        """
+        pending: list[InstallRecord] = []
+        resolved: list[InstallRecord] = []
+        for request, package_bytes in installs:
+            prior = [
+                *self._installs.get(request.identity.extension_name, ()),
+                *(
+                    record
+                    for record in pending
+                    if record.identity.extension_name == request.identity.extension_name
+                ),
+            ]
+            record = resolve_install(
+                self._publishers,
+                prior,
+                request,
+                package_bytes=package_bytes,
+                now=datetime.now(UTC),
+                install_id=uuid.uuid4().hex,
+            )
+            if record is None:
+                resolved.append(_record_for_identity(prior, request.identity))
+            else:
+                pending.append(record)
+                resolved.append(record)
+        for record in pending:
+            self._installs.setdefault(record.identity.extension_name, []).append(record)
+        if activate is not None:
+            for record in pending:
+                activate(record)
         return resolved
 
     async def install_history(self, extension_name: str) -> list[InstallRecord]:
@@ -235,14 +320,12 @@ class InMemoryExtensionInstallStore:
                 return record
         return None
 
-    def _existing(self, identity: PackageIdentity) -> InstallRecord:
-        """The already-persisted record for ``identity`` (idempotent path)."""
-        for record in self._installs.get(identity.extension_name, ()):
-            if identity_key(record.identity) == identity_key(identity):
-                return record
-        raise ExtensionRegistryError(
-            "idempotent re-record matched no persisted record; store state is inconsistent"
-        )
+    async def all_installs(self) -> list[InstallRecord]:
+        """Every install record across every extension, oldest first per name."""
+        records: list[InstallRecord] = []
+        for name in sorted(self._installs):
+            records.extend(self._installs[name])
+        return records
 
 
 # --------------------------------------------------------------------------

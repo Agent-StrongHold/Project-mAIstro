@@ -1,6 +1,7 @@
-"""Governed extension registry and activation flow (M9-B, issues #952/#953).
+"""Governed extension registry, activation flow, and dependency resolution
+(M9-B/M9-C, issues #952/#953/#956).
 
-Public surface of the ``maistro.extensions`` package, in two layers:
+Public surface of the ``maistro.extensions`` package, in three layers:
 
 - **M9-B1 registry (issue #952)**: immutable install records with publisher
   identity, package digest/signature metadata, manifest snapshots, catalog
@@ -14,9 +15,19 @@ Public surface of the ``maistro.extensions`` package, in two layers:
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
   authorization.
+- **M9-C2 resolution (issue #956)**: strict semantic-version ranges
+  (``semver``), a deterministic resolver producing a reproducible
+  :class:`LockState` (``resolution``), and lock-driven reinstall through the
+  install store (:func:`materialize_lock`).
+- **M9-C3 preflight (issue #957)**: host-upgrade compatibility preflight —
+  :func:`run_preflight` evaluates the installed lock state against a target
+  host contract (:class:`TargetHostContract`) built from public manifest
+  metadata only, naming compatible, deprecated, migration-required and
+  blocking extensions before the upgrade is applied. The target release is
+  data, never imported code; nothing is activated.
 
-Neither layer executes extension code: verification, evaluation and
-authorization all operate on bytes and declarations alone.
+No layer executes extension code: verification, evaluation, authorization
+and resolution all operate on bytes and declarations alone.
 """
 
 from __future__ import annotations
@@ -39,6 +50,47 @@ from maistro.extensions.manifest import (
     sha256_hex,
     verify_package_payload,
 )
+from maistro.extensions.preflight import (
+    ExtensionStatus,
+    PreflightPolicy,
+    PreflightReport,
+    TargetHostContract,
+    run_preflight,
+)
+from maistro.extensions.resolution import (
+    LOCK_FORMAT,
+    ROOT_REQUEST_ORIGIN,
+    SELECTION_POLICY,
+    CatalogEntry,
+    ConstraintRecord,
+    DependencyCycle,
+    ExtensionCatalog,
+    ExtensionDependency,
+    LockArtifacts,
+    LockDiff,
+    LockEntry,
+    LockFormatError,
+    LockKind,
+    LockState,
+    MissingLockArtifacts,
+    RejectedCandidate,
+    ResolutionConflict,
+    ResolutionError,
+    RootRequest,
+    SelectionExplanation,
+    SkippedOptional,
+    UnresolvableDependency,
+    diff_locks,
+    materialize_lock,
+    resolve_lock,
+)
+from maistro.extensions.semver import (
+    InvalidSemanticVersion,
+    InvalidVersionRange,
+    SemVer,
+    VersionRange,
+    parse_range,
+)
 from maistro.extensions.service import (
     ExtensionCodeLoader,
     ExtensionInstallService,
@@ -60,7 +112,6 @@ from maistro.extensions.types import (
     TERMINAL_STATES,
     TRANSITIONS,
     ArtifactMismatch,
-    ExtensionDependency,
     ExtensionEntryPoint,
     ExtensionIdentityConflict,
     ExtensionInstallRecord,
@@ -94,6 +145,9 @@ from maistro.extensions.types import (
 
 __all__ = [
     "DIGEST_ALGORITHM",
+    "LOCK_FORMAT",
+    "ROOT_REQUEST_ORIGIN",
+    "SELECTION_POLICY",
     "SUPPORTED_MANIFEST_VERSION",
     "TERMINAL_STATES",
     "TRANSITIONS",
@@ -102,8 +156,12 @@ __all__ = [
     "ArtifactMismatch",
     "AuthorityBaseline",
     "AuthorityDelta",
+    "CatalogEntry",
     "CompatibilityPolicy",
     "CompatibilityReport",
+    "ConstraintRecord",
+    "DependencyCycle",
+    "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionDependency",
     "ExtensionEntryPoint",
@@ -117,6 +175,7 @@ __all__ = [
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
+    "ExtensionStatus",
     "ExtensionStore",
     "ExtensionTransition",
     "InMemoryExtensionInstallStore",
@@ -124,33 +183,59 @@ __all__ = [
     "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
+    "InvalidSemanticVersion",
     "InvalidTransition",
+    "InvalidVersionRange",
     "LoadedExtension",
+    "LockArtifacts",
+    "LockDiff",
+    "LockEntry",
+    "LockFormatError",
+    "LockKind",
+    "LockState",
     "ManifestRejected",
     "ManifestSnapshot",
+    "MissingLockArtifacts",
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
+    "PreflightPolicy",
+    "PreflightReport",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "RegistryProvenance",
+    "RejectedCandidate",
+    "ResolutionConflict",
+    "ResolutionError",
+    "RootRequest",
+    "SelectionExplanation",
+    "SemVer",
+    "SkippedOptional",
     "SqliteExtensionInstallStore",
+    "TargetHostContract",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
     "TrustReport",
     "UnknownInstall",
     "UnknownPublisher",
+    "UnresolvableDependency",
     "UnwiredExtensionLoader",
+    "VersionRange",
     "assert_snapshot_intact",
     "canonical_install_payload",
     "compute_authority_delta",
+    "diff_locks",
     "evaluate_compatibility",
     "evaluate_trust",
     "identity_key",
     "inspect_manifest",
     "manifest_snapshot",
+    "materialize_lock",
     "normalize_permission",
+    "parse_range",
+    "resolve_lock",
+    "run_preflight",
     "sha256_hex",
     "verify_package_payload",
 ]

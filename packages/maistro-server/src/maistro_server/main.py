@@ -41,6 +41,7 @@ from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.api import (
     a2a,
     canvas,
+    catalog,
     chat_completions,
     extensions,
     health,
@@ -718,6 +719,7 @@ app.include_router(workspaces.router, prefix=API_V1_PREFIX)
 # Governed extension install lifecycle (#953): inspect → authorize → install.
 # Every route is authenticated; Workspace-scoped writes require ADMINISTER.
 app.include_router(extensions.router, prefix=API_V1_PREFIX)
+app.include_router(catalog.router, prefix=API_V1_PREFIX)
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
 app.include_router(webhooks.router, prefix=API_V1_PREFIX)

@@ -9,11 +9,12 @@ the data round-tripped instead of merely "didn't raise".
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
-from maistro.memory.exposure import MemoryExposureMode
+from maistro.memory.exposure import MemoryExposureMode, MemoryWriteDenied
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS
 from maistro.observability.correlation import bind_execution_context
 from maistro.persistence.pg_learnings import (
@@ -309,6 +310,11 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         LearningStage.MEMORY,
         "",
         None,
+        # The Gauntlet's audit trail (M4-B2): a fresh row has never been
+        # validated, so blank/empty is the honest value for all three.
+        "",
+        "[]",
+        "",
         "",
         None,
         None,
@@ -1205,3 +1211,100 @@ async def test_text_of_reads_the_text_that_actually_persisted(pg_pool: Any) -> N
 
     assert await store.text_of(learning_id) == "surviving text"
     assert await store.text_of(10**9) == ""
+
+
+# --------------------------------------------------------------------------
+# promote_learning() — the per-candidate Gauntlet promotion seam (M4-B2)
+# --------------------------------------------------------------------------
+
+
+def _promoted_record(learning_id: int) -> dict[str, Any]:
+    """A row as the UPDATE ... RETURNING * hands it back: promoted, repertoire."""
+    return {
+        "id": learning_id,
+        "category": "tooling",
+        "trigger_keys": ["deploy"],
+        "learning": "snapshot the workspace before deploying",
+        "tool_name": "bash",
+        "agent_id": "",
+        "user_id": None,
+        "org_id": "org-g",
+        "team_id": "",
+        "scope": "agent",
+        "hit_count": 12,
+        "status": "promoted",
+        "stage": "repertoire",
+        "validated_by": "independent-trials",
+        "validated_at": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        "validated_evaluator_version": "1.4.2",
+        "validation_run_ids": ["run-eval-1", "run-eval-2"],
+        "validation_content_hash": "deadbeef",
+    }
+
+
+async def test_promote_learning_updates_one_active_row_with_the_verdict(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow(_promoted_record(41))
+
+    promoted = await store.promote_learning(
+        41,
+        org_id="org-g",
+        validated_by="independent-trials",
+        evaluator_version="1.4.2",
+        validated_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        validation_run_ids=("run-eval-1", "run-eval-2"),
+        validation_content_hash="deadbeef",
+    )
+
+    assert promoted is not None
+    assert promoted.status == "promoted"
+    assert promoted.validated_by == "independent-trials"
+    assert promoted.validated_evaluator_version == "1.4.2"
+    assert promoted.validated_at == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    assert promoted.validation_run_ids == ["run-eval-1", "run-eval-2"]
+    assert promoted.validation_content_hash == "deadbeef"
+
+    (call,) = conn.calls
+    assert call.method == "fetchrow"
+    # Exactly one row flips, and the ladder rides along (ADR-103): the same
+    # statement writes the repertoire stage the promoted status implies.
+    assert "SET status = 'promoted', stage = 'repertoire'" in call.query
+    assert "validated_evaluator_version = $3" in call.query
+    assert "validation_run_ids = $5" in call.query
+    assert "validation_content_hash = $6" in call.query
+    # The predicate is the whole scoping contract: an already-promoted, a
+    # rejected, or another org's row does not match and is not touched.
+    assert "WHERE id = $1 AND org_id = $7 AND status = 'active'" in call.query
+    assert call.args == (
+        41,
+        "independent-trials",
+        "1.4.2",
+        datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        '["run-eval-1", "run-eval-2"]',
+        "deadbeef",
+        "org-g",
+    )
+
+
+async def test_promote_learning_returns_none_when_no_row_matches(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow(None)
+
+    assert await store.promote_learning(410, org_id="org-g") is None
+
+    (call,) = conn.calls
+    assert "WHERE id = $1 AND org_id = $7 AND status = 'active'" in call.query
+
+
+async def test_promote_learning_is_denied_before_any_sql_under_system_managed(
+    conn: FakeConnection,
+) -> None:
+    """ADR-057: promoting shared knowledge is system authority (or an approved actor)."""
+    store = PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)
+
+    with pytest.raises(MemoryWriteDenied):
+        await store.promote_learning(41, org_id="org-g")
+
+    assert conn.calls == []

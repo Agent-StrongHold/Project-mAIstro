@@ -11,7 +11,9 @@ inside the governed boundary instead of being replaced by it:
 - an unpinned request naming a model keeps the explicit alias (today's
   gateway behavior);
 - an unpinned request with no alias is selected by ``CostAwareRouter``,
-  including its budget-constrained fallback chain.
+  including its budget-constrained fallback chain — scoped to the
+  Binding's declared adapter when one is recorded in ``config``, so a
+  credential-scoped Binding can never route to a model it cannot pay for.
 
 Token usage is read from the gateway response and cost is computed from
 registry metadata, then attached to the persisted canonical Invocation.
@@ -31,6 +33,10 @@ from maistro.capabilities.invocation import (
     Invocation,
     InvocationUsage,
     ProviderResolver,
+)
+from maistro.capabilities.provider_adapters import (
+    AdapterGatewayProvider,
+    default_adapter_catalog,
 )
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
@@ -53,15 +59,27 @@ from maistro.quota.usage_report import reported_usage
 
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
+    from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 
 
-def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage | None:
-    """Extract usage/cost metadata from one gateway response body."""
+def _gateway_usage(
+    provider: LlmGatewayProvider | AdapterGatewayProvider, body: Any
+) -> InvocationUsage | None:
+    """Extract usage/cost metadata from one canonical response body.
+
+    An adapter's ``usage_from`` hook reports first — it knows where its
+    provider puts the numbers — and the canonical OpenAI-shape parser is the
+    fallback, so usage reaches the canonical Invocation either way.
+    """
 
     if not isinstance(body, dict):
         return None
-    reported = reported_usage(body)
+    reported: tuple[int, int] | None = None
+    if isinstance(provider, AdapterGatewayProvider):
+        reported = provider.adapter.usage_from(body)
+    if reported is None:
+        reported = reported_usage(body)
     if reported is None:
         return None
     input_units, output_units = reported
@@ -80,6 +98,61 @@ def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage |
     )
 
 
+def _adapter_health_refusal(
+    adapters: ProviderAdapterCatalog | None,
+    provider: ResolvedCapabilityProvider,
+) -> str | None:
+    """Why canonical selection refuses an adapter whose latest probe failed.
+
+    Unpinned routing never reaches this refusal on the happy path: recorded
+    health is synced into registry availability, so ``CostAwareRouter.select``
+    skips an unhealthy adapter's models up front and falls through to the next
+    healthy candidate or fallback (ADR-038) — one failed adapter cannot take
+    unpinned traffic offline. The check remains as the fail-closed backstop
+    for catalogs wired without a sync and for pinned/aliased selections,
+    which never fall back by policy.
+    """
+
+    if (
+        adapters is None
+        or not isinstance(provider, AdapterGatewayProvider)
+        or adapters.is_healthy(provider.spec.adapter_id)
+    ):
+        return None
+    return (
+        f"adapter {provider.spec.adapter_id!r} failed its latest health probe; "
+        "canonical selection refuses until it recovers"
+    )
+
+
+def _undeclared_capability(
+    provider: LlmGatewayProvider | AdapterGatewayProvider,
+    request: ModelChatRequest,
+) -> str | None:
+    """Why ``request`` needs a capability the resolved provider does not declare.
+
+    Adapter capabilities fail explicitly (M9-E1): a tools or structured-output
+    request against an adapter that did not declare the feature refuses as a
+    typed unavailable resolution before any HTTP, instead of degrading silently
+    or escaping through some permissive default. Gateway models keep their
+    existing behavior.
+    """
+
+    if not isinstance(provider, AdapterGatewayProvider):
+        return None
+    missing: list[str] = []
+    if (request.tools or request.tool_choice) and not provider.capabilities.tools:
+        missing.append("tools/tool_choice")
+    if request.response_format is not None and not provider.capabilities.structured_output:
+        missing.append("response_format (structured output)")
+    if not missing:
+        return None
+    return (
+        f"model {provider.name!r} on adapter {provider.spec.adapter_id!r} does not declare "
+        f"{', '.join(missing)}; unsupported features fail explicitly"
+    )
+
+
 def resolve_model_chat_provider(
     registry: LLMProviderRegistry,
     router: LLMRouter,
@@ -87,6 +160,7 @@ def resolve_model_chat_provider(
     alias: str = "",
     task: RoutingTask | None = None,
     budget: RouterBudget | None = None,
+    adapters: ProviderAdapterCatalog | None = None,
 ) -> ProviderResolver:
     """Build the slot-specific resolver preserving ADR-079 selection policy.
 
@@ -94,44 +168,113 @@ def resolve_model_chat_provider(
     cost-aware router select"). A Binding pin outranks it and must already
     exist in the configured ProviderRegistry; gateway registration alone is
     not model metadata registration.
+
+    ``adapters`` resolves registered provider-adapter models to adapter
+    providers; every other selection resolves to the shipped gateway exactly
+    as before the adapter SDK existed. Selection policy is untouched: adapter
+    models sit in the same registry, so the cost-aware router picks them under
+    the same cost/latency/fallback rules.
     """
 
     async def resolve(binding: Binding) -> ResolvedCapabilityProvider | Unavailable:
         selection = binding.provider_name or alias
-        if selection:
-            try:
-                metadata: ModelMetadata | None = await registry.get_model(selection)
-            except ModelNotFoundError:
-                if binding.provider_name:
-                    return Unavailable(
-                        slot=MODEL_CHAT_CAPABILITY,
-                        reason=(
-                            f"pinned model {selection!r} is unknown; register its metadata "
-                            "in the configured ProviderRegistry before using a Binding pin "
-                            "(provider_config_path); gateway /model/new is not sufficient"
-                        ),
-                    )
-                metadata = None
-            if metadata is not None and not registry.is_available(metadata.name):
+        # An adapter-backed Binding records its adapter in config. That
+        # authorization ceiling applies equally to a request alias: accepting
+        # an alias first would let the caller replace the Binding's adapter.
+        adapter_id = binding.config.get("adapter_id")
+        if adapter_id and adapters is None:
+            return Unavailable(
+                slot=MODEL_CHAT_CAPABILITY,
+                reason=(
+                    f"adapter-scoped Binding requires catalog {adapter_id!r}; "
+                    "canonical selection refuses without it"
+                ),
+            )
+        if adapter_id and adapters is not None:
+            allowed_models = frozenset(adapters.model_names(str(adapter_id)))
+            if selection and selection not in allowed_models:
                 source = "pinned model" if binding.provider_name else "request alias"
                 return Unavailable(
                     slot=MODEL_CHAT_CAPABILITY,
                     reason=(
-                        f"{source} {selection!r} is unavailable; "
-                        "an explicit selection does not fall back"
+                        f"{source} {selection!r} is outside adapter-scoped Binding "
+                        f"{adapter_id!r}; canonical selection refuses"
                     ),
                 )
-            return LlmGatewayProvider(metadata, model=selection)
+        if selection:
+            return await _resolve_named_model(registry, adapters, binding, selection)
+        # An adapter-backed Binding records its adapter in config. Its
+        # credential_refs authorize only that adapter's reference, so the
+        # router must not select a built-in or other-adapter model here: it
+        # would resolve fine and then fail at credential acquisition. Scope
+        # selection to the declared adapter's models; no eligible model is
+        # Unavailable, never a silently widened re-scope.
         try:
-            selected = await router.select(
-                task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
-                budget,
-            )
+            if adapter_id and adapters is not None:
+                selected = await router.select(
+                    task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
+                    budget,
+                    scope=frozenset(adapters.model_names(str(adapter_id))),
+                )
+            else:
+                selected = await router.select(
+                    task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
+                    budget,
+                )
         except NoEligibleModelError as exc:
             return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=f"no eligible model: {exc}")
+        routed = (
+            adapters.resolve_provider(selected.name, selected) if adapters is not None else None
+        )
+        if routed is not None:
+            # Backstop only: with the availability sync wired (bootstrap),
+            # selection already skipped unhealthy adapter models, so the
+            # router's fallback chain continued past them.
+            refusal = _adapter_health_refusal(adapters, routed)
+            if refusal is not None:
+                return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
+            return routed
         return LlmGatewayProvider(selected, model=selected.name)
 
     return resolve
+
+
+async def _resolve_named_model(
+    registry: LLMProviderRegistry,
+    adapters: ProviderAdapterCatalog | None,
+    binding: Binding,
+    selection: str,
+) -> ResolvedCapabilityProvider | Unavailable:
+    """Resolve an explicitly named (pinned or aliased) model selection."""
+
+    try:
+        metadata: ModelMetadata | None = await registry.get_model(selection)
+    except ModelNotFoundError:
+        if binding.provider_name:
+            return Unavailable(
+                slot=MODEL_CHAT_CAPABILITY,
+                reason=(
+                    f"pinned model {selection!r} is unknown; register its metadata "
+                    "in the configured ProviderRegistry before using a Binding pin "
+                    "(provider_config_path); gateway /model/new is not sufficient"
+                ),
+            )
+        metadata = None
+    if metadata is not None and not registry.is_available(metadata.name):
+        source = "pinned model" if binding.provider_name else "request alias"
+        return Unavailable(
+            slot=MODEL_CHAT_CAPABILITY,
+            reason=(
+                f"{source} {selection!r} is unavailable; an explicit selection does not fall back"
+            ),
+        )
+    resolved = adapters.resolve_provider(selection, metadata) if adapters is not None else None
+    if resolved is not None:
+        refusal = _adapter_health_refusal(adapters, resolved)
+        if refusal is not None:
+            return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
+        return resolved
+    return LlmGatewayProvider(metadata, model=selection)
 
 
 class GovernedLLMClient:
@@ -307,7 +450,12 @@ class ModelCallResult(BaseModel):
 
 
 class ModelChatEgress:
-    """Cross the one governed model boundary on behalf of an effect consumer."""
+    """Cross the one governed model boundary on behalf of an effect consumer.
+
+    ``adapters`` selects registered provider-adapter models (M9-E1); ``None``
+    means the process default, and an unconfigured default leaves the egress
+    gateway-only — an adapter can add a destination, never a second boundary.
+    """
 
     def __init__(
         self,
@@ -316,11 +464,13 @@ class ModelChatEgress:
         registry: LLMProviderRegistry,
         router: LLMRouter,
         endpoint: GatewayEndpoint,
+        adapters: ProviderAdapterCatalog | None = None,
     ) -> None:
         self._effects = effects
         self._registry = registry
         self._router = router
         self._endpoint = endpoint
+        self._adapters = adapters if adapters is not None else default_adapter_catalog()
 
     async def complete(
         self,
@@ -343,12 +493,20 @@ class ModelChatEgress:
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
         """
-        resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
-        selected: list[LlmGatewayProvider] = []
+        resolver = resolve_model_chat_provider(
+            self._registry,
+            self._router,
+            alias=request.model,
+            adapters=self._adapters,
+        )
+        selected: list[LlmGatewayProvider | AdapterGatewayProvider] = []
 
         async def tracked_resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
             provider = await resolver(candidate)
-            if isinstance(provider, LlmGatewayProvider):
+            if isinstance(provider, (LlmGatewayProvider, AdapterGatewayProvider)):
+                refusal = _undeclared_capability(provider, request)
+                if refusal is not None:
+                    return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
                 selected[:] = [provider]
             return provider
 
@@ -358,7 +516,7 @@ class ModelChatEgress:
                     "model-chat physical execution requires a Binding-scoped credential"
                 )
             base = provider.base
-            if not isinstance(base, LlmGatewayProvider):
+            if not isinstance(base, (LlmGatewayProvider, AdapterGatewayProvider)):
                 raise TypeError(f"credential routed a non-gateway provider: {base!r}")
             if setup is not None:
                 await setup()

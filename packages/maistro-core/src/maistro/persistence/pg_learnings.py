@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -85,6 +86,10 @@ _PG_INSERT_FIELDS = (
     "stage",
     "validated_by",
     "validated_at",
+    # The Gauntlet's audit trail beyond the ladder's own columns (M4-B2).
+    "validated_evaluator_version",
+    "validation_run_ids",
+    "validation_content_hash",
     "promoted_by",
     "supersedes",
     "superseded_by",
@@ -108,6 +113,9 @@ _EPISTEMIC_COLUMNS = (
     ("contradiction_count", "INTEGER NOT NULL DEFAULT 0"),
     ("last_confirmed_at", "TIMESTAMPTZ"),
     ("validated_at", "TIMESTAMPTZ"),
+    ("validated_evaluator_version", "TEXT NOT NULL DEFAULT ''"),
+    ("validation_run_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("validation_content_hash", "TEXT NOT NULL DEFAULT ''"),
     ("supersedes", "BIGINT"),
     ("superseded_by", "BIGINT"),
 )
@@ -301,12 +309,14 @@ class PgLearningStore:
                     evidence_run_ids, evaluation_ids,
                     applicability, reinforcement_count, contradiction_count,
                     created_at, last_confirmed_at,
-                    stage, validated_by, validated_at, promoted_by,
+                    stage, validated_by, validated_at,
+                    validated_evaluator_version, validation_run_ids,
+                    validation_content_hash, promoted_by,
                     supersedes, superseded_by)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                            $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
                            $23, $24, $25, $26, $27, $28, $29, $30, $31, $32,
-                           $33, $34, $35, $36)
+                           $33, $34, $35, $36, $37, $38, $39)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -341,6 +351,9 @@ class PgLearningStore:
                 learning.stage,
                 learning.validated_by,
                 learning.validated_at,
+                learning.validated_evaluator_version,
+                _dump_keys(learning.validation_run_ids),
+                learning.validation_content_hash,
                 learning.promoted_by,
                 learning.supersedes,
                 learning.superseded_by,
@@ -719,6 +732,63 @@ class PgLearningStore:
                 return []
             return await self._claim_promoted(conn, promoted)
 
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+        authority: Actor = Actor.AGENT,
+    ) -> Learning | None:
+        """Flip one active learning to promoted, writing its validation provenance.
+
+        The per-candidate promotion seam the Gauntlet path needs (M4-B2):
+        `check_auto_promotions` promotes every threshold-crossing row that
+        passes the shared evidence verdict, but an independent validator
+        decides per candidate after running its own trials, so the store must
+        be able to promote exactly one, writing the verdict's provenance: the
+        exact evaluation Runs, the evaluator version, and the frozen-content
+        hash. Only an `active`, in-scope row flips — an already-promoted,
+        already-rejected or out-of-scope row returns None rather than being
+        touched, and a rejected candidate's row (its evidence, its
+        anti-learning) is never modified here. Scoped like `mark_outcome`:
+        an unscoped caller must not promote another org's id.
+
+        The ladder (ADR-103) is honoured atomically: a promoted row is written
+        as a repertoire row in the same statement, and the commit instant is
+        the validation instant (the Gauntlet's acceptance *is* the
+        transition).
+
+        ADR-057: this is the ``promote`` authority, like
+        `check_auto_promotions` — an agent-authority call under
+        ``SYSTEM_MANAGED`` is denied before the UPDATE runs.
+        """
+        require_write_authority(
+            self._exposure_mode, "promote", authority, subject=type(self).__name__
+        )
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE learnings
+                   SET status = 'promoted', stage = 'repertoire',
+                       validated_by = $2,
+                       validated_evaluator_version = $3, validated_at = $4,
+                       validation_run_ids = $5, validation_content_hash = $6
+                   WHERE id = $1 AND org_id = $7 AND status = 'active'
+                   RETURNING *""",
+                learning_id,
+                validated_by,
+                evaluator_version,
+                validated_at or datetime.now(UTC),
+                _dump_keys(list(validation_run_ids)),
+                validation_content_hash,
+                org_id,
+            )
+        return _row_to_learning(row) if row else None
+
     async def _claim_promoted(
         self,
         conn: asyncpg.pool.PoolConnectionProxy,
@@ -951,6 +1021,12 @@ def _provenance_fields(row: asyncpg.Record) -> dict[str, Any]:
     }
 
 
+def _confidence_field(row: asyncpg.Record) -> float:
+    """Measured confidence, or the dataclass default for pre-M4-B3 rows."""
+    value = row.get("confidence")
+    return float(value) if value is not None else DEFAULT_LEARNING_CONFIDENCE
+
+
 def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
     """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d, M4-B3).
 
@@ -961,11 +1037,7 @@ def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
     return {
         "stage": LearningStage(row.get("stage") or "memory"),
         "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
-        "confidence": (
-            float(row["confidence"])
-            if row.get("confidence") is not None
-            else DEFAULT_LEARNING_CONFIDENCE
-        ),
+        "confidence": _confidence_field(row),
         "works_when": _load_keys(row.get("works_when")),
         "avoid_in": _load_keys(row.get("avoid_in")),
         "evidence_run_ids": _load_keys(row.get("evidence_run_ids")),
@@ -977,6 +1049,11 @@ def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
         "last_confirmed_at": row.get("last_confirmed_at"),
         "validated_by": row.get("validated_by") or "",
         "validated_at": row.get("validated_at"),
+        # The Gauntlet's provenance (M4-B2): blank/None/empty is the honest
+        # "never validated".
+        "validated_evaluator_version": row.get("validated_evaluator_version") or "",
+        "validation_run_ids": _load_keys(row.get("validation_run_ids")),
+        "validation_content_hash": row.get("validation_content_hash") or "",
         "promoted_by": row.get("promoted_by") or "",
         "supersedes": row.get("supersedes"),
         "superseded_by": row.get("superseded_by"),

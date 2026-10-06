@@ -584,6 +584,12 @@ jobs:
           # that exist and pass but were never pointed at this --source.
           uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
             -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py --timeout=30 -q
+          # maistro-ext-sdk joins the measured set with #949: the manifest
+          # contract an external author codes against is exactly the tree
+          # where an uncovered bug bites hardest, and nothing else runs its
+          # suite under coverage.
+          uv run coverage run --append --branch --source=packages/maistro-ext-sdk/src/maistro_ext_sdk \
+            -m pytest packages/maistro-ext-sdk/tests --timeout=30 -q
           # hive-conductor's pytest-bdd is declared in that workspace member's
           # OWN `dev` extra, and `--all-extras` includes every optional
           # dependency of the ROOT project only — not of each member. So the
@@ -614,8 +620,15 @@ jobs:
           #
           # Its PostgreSQL-dependent legs skip in this job, which has no server.
           # That is fine for this --source: no gate script needs a database.
+          #
+          # The #981 lifecycle-proof test is named here for the same reason
+          # tests/test_check_citation_status.py is named in the registry
+          # producer above: the suite that exercises a measured scripts/ file
+          # lives in a package suite this producer would otherwise never run,
+          # so the file's changed lines would measure 0% and the diff-coverage
+          # gate would fail on evidence that exists and passes.
           uv run coverage run --append --branch --source=scripts \
-            -m pytest tests/ --timeout=30 -q
+            -m pytest tests/ packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=30 -q
           uv run coverage xml -o coverage.xml
 
       # ----- Pillar 1b: diff coverage (the lines this candidate added) -----
@@ -913,6 +926,7 @@ jobs:
             -i third_party \
             packages/maistro-bootstrap/src packages/maistro-canvas/src \
             packages/maistro-core/src packages/maistro-design/src \
+            packages/maistro-ext-sdk/src \
             packages/maistro-evolve/src packages/maistro-registry/src \
             packages/maistro-rsi/src packages/maistro-server/src \
             packages/maistro-turing/src > xenon.log 2>&1 || true # the exit code is re-derived from xenon.log below
