@@ -13,6 +13,7 @@ from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
+    extensions_compat,
     extensions_explain,
     extensions_history,
     extensions_lock,
@@ -20,6 +21,19 @@ from maistro.cli._extensions import (
     extensions_show,
 )
 from maistro.container import Container
+from maistro.extensions.compat import (
+    FEATURE_DEPRECATED,
+    FEATURE_REMOVED,
+    CompatError,
+    ContractRange,
+    ContractVersion,
+    FeatureStatus,
+    IncompatibleContract,
+    ensure_compatible,
+    parse_contract_range,
+    parse_contract_version,
+    parse_feature_status,
+)
 from maistro.extensions.effective_authority import EffectiveAuthority
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
@@ -310,6 +324,30 @@ _VULTURE_WHITELIST = (
     extensions_lock,
     extensions_explain,
     LockState.identity_keys,
+    extensions_compat,
+    # Extension contract compatibility policy (M9-C1, #955). The negotiation
+    # core (`negotiate`, `parse_compat_metadata`, `HostContractMetadata`,
+    # `CompatibilityReport.to_dict`) is referenced by the `maistro extensions
+    # compat` preflight command, so only the fail-fast form and the
+    # low-level parse/version surfaces lack an in-tree caller: they are the
+    # API an activating host (#953/#954) and the ext-sdk host binding
+    # (#956/#957 preflight/migration reporting) call.
+    ensure_compatible,
+    parse_contract_range,
+    parse_contract_version,
+    ContractRange.parse,
+    ContractVersion.__str__,
+    # The closed feature-lifecycle vocabulary: the `supported` singleton is
+    # exercised by HOST_FEATURES; the deprecated/removed states have no live
+    # row by design (nothing is deprecated today — the first real
+    # deprecation adds a table row, not new code) and are reached by tests
+    # plus future policy edits. The parser is the only string→status path.
+    FEATURE_DEPRECATED,
+    FEATURE_REMOVED,
+    parse_feature_status,
+    FeatureStatus.__str__,
+    CompatError,
+    IncompatibleContract,
     # Connector/source SDK (M9-E2, #963). The Typer callbacks are dispatched
     # by registration, and the protocol members below are the public SDK
     # surface out-of-tree connectors implement and call — the same
