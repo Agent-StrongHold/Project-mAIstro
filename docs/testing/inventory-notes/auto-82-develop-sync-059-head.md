@@ -9,7 +9,7 @@ inventory-delta:
 Sync round merging `origin/develop` (`a8258ee24`, nine commits: the M9-A1/C2/D2/D3/E1/F3
 series, M4-B2's `058_learning_validation_provenance`, and the mako 1.4.2 /
 source-map-js dependency bumps) into auto-82 at `5071e953f`. Merge committed as
-`cfefa2b13`. No tests were added or removed by this branch;
+`f577c6d8f`. No tests were added or removed by this branch;
 `scripts/check-suite-inventory.py` reports both changed suites matching the
 recorded baseline (develop's incoming suite rows arrived with its own
 `docs/testing/inventory/baseline.json` row).
