@@ -142,6 +142,7 @@ file per change, alongside the delta itself.
 | `packages/maistro-turing/backend/tests` | `ci.yml` (own invocation) |
 | `tests/` (root) | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 | `extensions/reference-greeter/tests` | `ci.yml` (isolation fixture, #951; collected from the root dev env) |
+| `packages/maistro-ext-harness/tests` | `ci.yml` (extension host harness, #974; collected from the root dev env) |
 | `formal/` | `formal-conformance.yml` + `quality.yml` Pillar 2 |
 | `packages/hive-conductor/backend/tests` | `ci.yml` (bare python) |
 | `packages/hive-conductor/tests/e2e` | `ci.yml` `hive-conductor-e2e` (docker-compose) |

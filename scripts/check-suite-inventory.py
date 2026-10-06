@@ -153,6 +153,12 @@ RECIPES: dict[str, Recipe] = {
     # (scripts/check-extension-imports.py) keeps it free of repo-relative
     # repair that could make collection checkout-dependent.
     "extensions/reference-greeter/tests": Recipe(args=[]),
+    # The extension host harness's own suite (#974). A packages/ workspace
+    # member installed by the root `dev` extra (like reference-greeter), so
+    # plain collection sees it with no PYTHONPATH repair: its runtime is
+    # stdlib-only and its conftest works under the root --import-mode=importlib
+    # config without sys.path rescue.
+    "packages/maistro-ext-harness/tests": Recipe(args=[]),
     # formal/ ships its own pytest config whose `addopts = "-v --tb=short"`
     # arithmetically cancels the CLI `-q` (net verbosity 0), so a plain
     # collection prints the tree format instead of node-ID lines. Clearing

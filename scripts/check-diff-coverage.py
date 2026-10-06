@@ -92,6 +92,10 @@ MEASURED_ROOTS = (
     # the kind of change this gate exists to score, so the last producer-less
     # package joins here alongside the quality.yml producer that measures it.
     "packages/maistro-registry/src/maistro_registry",
+    # The extension host harness (#974): third-party CI runs this code, so a
+    # change that lowers its coverage is exactly what the diff gate exists to
+    # name. Measured by its own quality.yml producer over its own suite.
+    "packages/maistro-ext-harness/src/maistro_ext_harness",
     "packages/hive-conductor/backend",
     # The gates themselves (#257). Every one of #160's five mandates is
     # enforced by a file in here, and until this entry they were the only

@@ -180,6 +180,7 @@ FIRST_PARTY_OWNERS: dict[str, set[str]] = {
     "maistro_canvas": {"maistro-canvas"},
     "maistro_design": {"maistro-design"},
     "maistro_evolve": {"maistro-evolve"},
+    "maistro_ext_harness": {"maistro-ext-harness"},
     "maistro_registry": {"maistro-registry"},
     "maistro_rsi": {"maistro-rsi"},
     "maistro_server": {"maistro-server"},

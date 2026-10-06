@@ -81,6 +81,14 @@ dev = [
     # (scripts/check-reference-extension.py), which builds the wheel into a
     # venv holding none of this repository.
     "reference-greeter",
+    # The extension host harness (#974), installed editable so its suite runs
+    # from this environment (`uv run pytest packages/maistro-ext-harness/tests`)
+    # and so its CLI tests can execute `python -m maistro_ext_harness` the way
+    # a third-party CI would. Stdlib-only runtime: the root dev env supplies
+    # pytest, nothing else. Like the reference extension, this is developer
+    # tooling — product code does not import it, and the namespace policy
+    # keeps extension imports pointed at the SDK root only.
+    "maistro-ext-harness",
     # A real in-process S3 server for the archive conformance suite
     # (ADR-082226-f436). Not a boto3 patch: the tests go over HTTP, because
     # #122 found six PostgreSQL defects that client-level mocking could not see.
@@ -197,6 +205,7 @@ src = [
     "packages/maistro-evolve/src",
     "packages/maistro-rsi/src",
     "packages/maistro-design/src",
+    "packages/maistro-ext-harness/src",
 ]
 
 [tool.ruff.lint]
@@ -409,3 +418,8 @@ hive-conductor = { workspace = true }
 # names. Not a product package — the extension namespace policy
 # (extensions/namespace-policy.json) governs what it may import.
 reference-greeter = { workspace = true }
+# The extension host harness (#974): a workspace member under packages/, named
+# here because the root dev extra installs it (same shape as reference-greeter
+# above). Developer tooling with a stdlib-only runtime — see
+# packages/maistro-ext-harness/README.md for the boundary it keeps.
+maistro-ext-harness = { workspace = true }

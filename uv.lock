@@ -16,6 +16,7 @@ members = [
     "maistro-core",
     "maistro-design",
     "maistro-evolve",
+    "maistro-ext-harness",
     "maistro-registry",
     "maistro-rsi",
     "maistro-server",
@@ -2690,6 +2691,11 @@ requires-dist = [
 provides-extras = ["ifeval"]
 
 [[package]]
+name = "maistro-ext-harness"
+version = "0.9.0"
+source = { editable = "packages/maistro-ext-harness" }
+
+[[package]]
 name = "maistro-registry"
 version = "0.9.0"
 source = { editable = "packages/maistro-registry" }
@@ -2844,6 +2850,7 @@ dev = [
     { name = "gherkin-official" },
     { name = "google-re2" },
     { name = "hypothesis" },
+    { name = "maistro-ext-harness" },
     { name = "moto", extra = ["s3", "server"] },
     { name = "mypy" },
     { name = "pytest" },
@@ -2903,6 +2910,7 @@ requires-dist = [
     { name = "maistro-canvas", editable = "packages/maistro-canvas" },
     { name = "maistro-core", extras = ["s3"], marker = "extra == 's3'", editable = "packages/maistro-core" },
     { name = "maistro-core", extras = ["tui", "identity"], editable = "packages/maistro-core" },
+    { name = "maistro-ext-harness", marker = "extra == 'dev'", editable = "packages/maistro-ext-harness" },
     { name = "maistro-registry", editable = "packages/maistro-registry" },
     { name = "moto", extras = ["s3", "server"], marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
