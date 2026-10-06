@@ -111,6 +111,10 @@ CORE_PUBLIC_SURFACE = [
     # maistro.identity), and anything here that needs an extra belongs there
     # with a written reason instead.
     "maistro.code_registry",
+    # Governed extension install lifecycle (#953, M9-B2): inspect → authorize
+    # → install without pre-authorization code execution. Pure-library
+    # surface, no extras required.
+    "maistro.extensions",
     "maistro.codebase",
     "maistro.collaboration",
     "maistro.config",

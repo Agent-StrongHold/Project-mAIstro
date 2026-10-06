@@ -217,7 +217,9 @@ ignore = ["E501", "UP046", "UP047"]
 # V105 (unused method) backs the Pydantic-dispatched ClaimRule
 # _require_evidence_backing validator marker that PR #1663 landed in
 # maistro_design/consistency.py; the round-4 merge resolution dropped it
-# believing only the removed creative_brief.py used it.
+# believing only the removed creative_brief.py used it. It also covers
+# #773's CreativeBrief contract API: retained, test-consumed now,
+# production consumers arrive with #774/#775.
 external = ["V102", "V105", "V106", "V107"]
 
 [tool.ruff.lint.mccabe]
