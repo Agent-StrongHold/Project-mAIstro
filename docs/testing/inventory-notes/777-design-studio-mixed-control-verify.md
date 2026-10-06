@@ -12878,3 +12878,80 @@ authorities forbids Design-Studio-private substitutes. The branch remains
 battery-green, develop-current at `11376c7bef4e`, contains the complete
 PR-#1660 head, and leaves the canonical
 `Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched.
+
+## Round 195 (2026-10-06, job 2dd8a95c52354482b1f4d50e34594097)
+
+Documentation-only round. Arrived at unchanged HEAD `820d99c6c` (round-194
+end, tree clean; the prior job dir's check-2.log "failure" — ruff format on
+`builders/agent_loop.py` — predates the current tree and is superseded by
+the fresh format gate below). Develop sync round: fresh `git fetch origin`
+shows `origin/develop` moved `11376c7bef4e` → `626683154ce9` (2 commits:
+#1998 M9-C2 deterministic extension dependency resolution + #2015 mako
+1.3.12→1.4.2 bump) — neither lands a #777 dependency. `git merge-tree`
+pre-flight: 0 conflict markers; merged zero-conflict → `81ebf0cd7`.
+Ledger integrity post-merge: `git diff 81ebf0cd7^1 81ebf0cd7 -- quality/`
+empty (merge touched no ledger), `git diff --numstat origin/develop --
+quality/` = the single pre-existing vulture row delta (0 added / 1 removed,
+the documented 1332→1331 prune); no row loss.
+
+### Dependency states (gh api read-only, 2026-10-06T06:3xZ, job capture 06:26Z)
+
+#777 open; #773/#774/#776/#804/#805/#806 all OPEN; #775 and #458 the only
+closed dependencies. Linked PR #1660 still an open draft, head
+`78f8f6476466`, `mergeable_state: clean`. No dependency moved since
+round 194.
+
+### AC1 prerequisites re-proven absent at `81ebf0cd7`
+
+- `packages/maistro-core/src/maistro/goals` — absent (`ls`: No such file)
+- `GoalReconciler|delegate_goal` — 0 files in `packages/*/src`
+- `design_service` — the only `packages/*/src` match is
+  `maistro_evolve/benchmarks/corpora/repo_history_tasks.json` (benchmark
+  corpus data, not production code); no production design_service module
+- `ControlMode.COLLABORATIVE` — still the placeholder at
+  `maistro_design/versions.py:1064` inside the documented
+  `_vulture_artifact_version_contract_usage` TYPE_CHECKING block ("the
+  mixed-control surface (#777) and the CreativeBrief store (#774)
+  consume") — declaration + artifact only, no production consumer
+- no #777 mixed-control E2E spec: the only `mixed-control` match under
+  `docs/specs/` remains SPEC-092826, which records the absence itself
+- `projects/rubric_store.py:71` `GoalRevisionCatalog` — declaration-only
+  Protocol seam; canonical Goal store still absent
+
+### Battery re-run fresh at `81ebf0cd7` (post `uv sync --locked --extra dev`)
+
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (3023 files, +6 from #1998's
+  new extension test files)
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI-exact args) → EXIT 0,
+  1332 reviewed identities → 1331 findings, no unbanked identities; no
+  ledger amendment needed or made
+- check-radon-baseline (138 = 138 C-or-worse) / check-promotion-surface /
+  check-reachability (170 modules unreachable) / check-suite-inventory (15
+  suites match; #1998 carried its own +14-node-ID note `auto-956-c525.md`)
+  / check-ac-state / check-backlog-consistency (167 items) /
+  check-doc-links → all EXIT 0
+- `uv run pytest packages/hive-conductor/backend/tests
+  packages/maistro-bootstrap/tests -q` → **3639 passed, 12 skipped**
+  (125.82s)
+- `uv run pytest packages/maistro-design/tests packages/maistro-core/tests/
+  memory packages/maistro-core/tests/persistence
+  packages/maistro-core/tests/providers packages/maistro-core/tests/a2a
+  packages/maistro-core/tests/extensions -q` → **2595 passed, 302
+  skipped** (22.38s); +267 passed vs round 194 = the extensions suites
+  (pre-existing tests plus #1998's new resolution/lock-reinstall/semver/
+  cli-lock files)
+- `uv run pytest packages/maistro-core/tests/capabilities/
+  test_provider_adapters.py -q` → **85 passed**
+
+Verdict: **BLOCKED** (dependency-blocking, thirteenth consecutive round with
+fresh evidence). The round's only content is the develop sync (#1998 +
+#2015), which lands no #777 dependency: #804/#805/#806 (+#774/#776, and
+#1572's canonical Goal store underneath #804) remain open/absent, so every
+acceptance criterion is still unimplementable without violating the issue's
+stop condition and the campaign prohibition on competing Goal stores /
+execution authorities. The branch is battery-green, develop-current at
+`626683154ce9` (merged at `81ebf0cd7`), contains the complete PR-#1660
+head, and leaves the canonical
+`Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched.
