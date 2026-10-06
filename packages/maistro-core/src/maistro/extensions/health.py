@@ -130,6 +130,21 @@ class ExtensionErrorKind(StrEnum):
     PLATFORM = "platform"
 
 
+def _require_aware_at(record: str, value: datetime) -> None:
+    """Refuse timezone-naive evidence timestamps at the shared model.
+
+    Both store twins record ``at`` verbatim, so awareness must hold for the
+    in-memory twin too — otherwise evidence that fails only on the SQLite
+    twin (or exports as a timezone-ambiguous timestamp) could be recorded
+    against the default container. One check here gives both twins the rule.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(
+            f"{record} 'at' must be timezone-aware; a naive timestamp "
+            "cannot round-trip its instant"
+        )
+
+
 @dataclass(frozen=True)
 class ExtensionErrorRecord:
     """One classified extension failure, with full provenance.
@@ -159,6 +174,7 @@ class ExtensionErrorRecord:
     dependency_version: str | None = None
 
     def __post_init__(self) -> None:
+        _require_aware_at("ExtensionErrorRecord", self.at)
         if self.kind is ExtensionErrorKind.DEPENDENCY and not self.dependency:
             raise ValueError(
                 "a dependency-kind error must name the dependency it failed on: "
@@ -212,6 +228,7 @@ class ExtensionObservation:
     error: ExtensionErrorRecord | None = None
 
     def __post_init__(self) -> None:
+        _require_aware_at("ExtensionObservation", self.at)
         if self.outcome is ObservationOutcome.FAILURE and self.error is None:
             raise ValueError("a failed observation must carry its classified ExtensionErrorRecord")
         if self.outcome is ObservationOutcome.SUCCESS and self.error is not None:
@@ -309,6 +326,7 @@ class OperatorDecision:
     reason: str
 
     def __post_init__(self) -> None:
+        _require_aware_at("OperatorDecision", self.at)
         if self.state is not state_for_action(self.action):
             raise ValueError(
                 f"action {self.action} cannot produce state {self.state}; "
@@ -1305,7 +1323,7 @@ class ExtensionHealthService:
         even though no install record stands behind it.
         """
         observations = await self._health_store.observations(
-            scope, extension_id=extension_id, version=version
+            scope, extension_id=extension_id, version=version, limit=HEALTH_WINDOW
         )
         decisions = await self._health_store.decisions(scope)
         return project_operational_status(
@@ -1328,7 +1346,7 @@ class ExtensionHealthService:
         """Assemble the evidence inputs and project them for one record."""
         installed_versions = await self._install_store.installed_versions(scope)
         observations = await self._health_store.observations(
-            scope, extension_id=extension_id, version=record.version
+            scope, extension_id=extension_id, version=record.version, limit=HEALTH_WINDOW
         )
         health = evaluate_health(observations)
         decisions = await self._health_store.decisions(scope)
@@ -1370,7 +1388,10 @@ class ExtensionHealthService:
                 continue
             health[dependency.extension_id] = evaluate_health(
                 await self._health_store.observations(
-                    scope, extension_id=dependency.extension_id, version=version
+                    scope,
+                    extension_id=dependency.extension_id,
+                    version=version,
+                    limit=HEALTH_WINDOW,
                 )
             )
         return health

@@ -259,26 +259,62 @@ async def test_corrupted_durable_evidence_fails_closed(tmp_path: Path) -> None:
             await store.observations(SCOPE)
 
 
-async def test_naive_evidence_timestamps_are_refused_at_the_write() -> None:
+def test_naive_evidence_timestamps_are_refused_at_the_model() -> None:
     """Durable evidence must round-trip its instant; a timezone-naive
-    timestamp would read back as a different moment, so neither twin accepts
-    it."""
+    timestamp would read back as a different moment, so the shared evidence
+    model refuses it at construction. Both store twins therefore inherit the
+    rule — the in-memory twin cannot append what cannot be built — and the
+    SQLite serializer keeps its write-time check as the backstop for writes
+    that bypass the constructor (tested below)."""
     naive = datetime(2026, 10, 1, 12, 0, 0)
-    observation = ExtensionObservation(
-        observation_id="obs-naive",
-        at=naive,
-        org_id=ORG,
-        workspace_id=WORKSPACE,
-        extension_id="acme.chart",
-        version="1.4.0",
-        latency_ms=1.0,
-        outcome=ObservationOutcome.SUCCESS,
-    )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        ExtensionObservation(
+            observation_id="obs-naive",
+            at=naive,
+            org_id=ORG,
+            workspace_id=WORKSPACE,
+            extension_id="acme.chart",
+            version="1.4.0",
+            latency_ms=1.0,
+            outcome=ObservationOutcome.SUCCESS,
+        )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        ExtensionErrorRecord(
+            error_id="err-naive",
+            at=naive,
+            org_id=ORG,
+            workspace_id=WORKSPACE,
+            extension_id="acme.chart",
+            version="1.4.0",
+            kind=ExtensionErrorKind.PLATFORM,
+            code="loader_crash",
+            message="naive timestamps are refused",
+        )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        OperatorDecision(
+            decision_id="decision-naive",
+            at=naive,
+            org_id=ORG,
+            workspace_id=WORKSPACE,
+            extension_id="acme.chart",
+            action=ExtensionOperatorAction.DISABLE,
+            state=ExtensionOperatorState.DISABLED,
+            actor="op-1",
+            reason="naive timestamps are refused",
+        )
+
+
+async def test_sqlite_write_refuses_naive_timestamp_bypassing_the_model() -> None:
+    """Backstop: a record forged past the shared-model check (frozen
+    dataclasses can be mutated via ``object.__setattr__``) is still refused
+    at the durable write, so a naive instant can never reach storage."""
+    forged = _observation("obs-bypass")
+    object.__setattr__(forged, "at", datetime(2026, 10, 1, 12, 0, 0))
     async with aiosqlite.connect(":memory:") as conn:
         store = SqliteExtensionHealthStore(conn)
         await store.ensure_schema()
         with pytest.raises(ValueError, match="timezone-aware"):
-            await store.append_observation(observation)
+            await store.append_observation(forged)
 
 
 async def test_twin_round_trip_preserves_every_field(tmp_path: Path) -> None:
