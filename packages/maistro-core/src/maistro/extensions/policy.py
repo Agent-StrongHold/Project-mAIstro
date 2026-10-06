@@ -481,6 +481,19 @@ def _org_layer(
         )
         return
 
+    _org_deny_list_gate(policy, candidate, trace, denials)
+    _org_allow_list_gate(policy, candidate, trace, denials)
+    _org_publishers_gate(policy, candidate, trace, denials)
+    _org_pin_gate(policy, candidate, trace, denials)
+
+
+def _org_deny_list_gate(
+    policy: OrgExtensionPolicy,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Rule 1: the organization deny-list denies everywhere."""
     if candidate.extension_id in policy.denied_extensions:
         detail = f"extension {candidate.extension_id} is denied by the organization deny-list"
         trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.deny-list", True, detail))
@@ -495,6 +508,14 @@ def _org_layer(
             )
         )
 
+
+def _org_allow_list_gate(
+    policy: OrgExtensionPolicy,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Rule 2: a configured allow-list admits only the listed extensions."""
     if policy.allowed_extensions is not None and candidate.extension_id not in (
         policy.allowed_extensions
     ):
@@ -509,6 +530,14 @@ def _org_layer(
         )
         trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.allow-list", False, detail))
 
+
+def _org_publishers_gate(
+    policy: OrgExtensionPolicy,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Rule 3: configured approved-publishers gate every install."""
     if policy.approved_publishers is not None and candidate.publisher not in (
         policy.approved_publishers
     ):
@@ -523,6 +552,14 @@ def _org_layer(
         )
         trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.approved-publishers", False, detail))
 
+
+def _org_pin_gate(
+    policy: OrgExtensionPolicy,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Rule 4: the organization pin binds the publisher (and exact version)."""
     pin = policy.pins.get(candidate.extension_id)
     if pin is None:
         trace.append(
