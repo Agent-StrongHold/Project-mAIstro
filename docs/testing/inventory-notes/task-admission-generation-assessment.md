@@ -1399,3 +1399,96 @@ base-landed authorization followed by the banking rebase, or the #1845
 integration consumer that wires both modules and prunes the entries on
 arrival. The stack stays unmerged by design; implementation and test
 readiness stand proven at 3e75c148ddee.
+
+## CI-repair round 18 (2026-10-06, head 74bc299f094d): round-17's design_coverage
+## binding independently re-derived to the exact criterion pair; merge-base
+## measured at the floor exactly; all four reds re-executed; prior
+## NEEDS-DEEP-REVIEW resolved by full contract re-verification
+
+Prior attempt died on a provider timeout after its five driver checks passed
+(ruff, format, both focused suites, suite inventory). This round re-executed
+every gate named in the merge-queue evaluation at this exact head, plus one
+new experiment round 17 did not run: measuring the merge base itself.
+
+- **exact-debt-ledger re-derived step by step**: step 2
+  (`check-shipped-surface-truth.py`) exit 0; step 3 vulture with CI's exact
+  arguments (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`)
+  1332 reviewed identities -> 1332 findings, exit 0 — the prescribed ledger
+  amendment is empty for the 18th consecutive round (nothing genuinely dead to
+  fix, no unbanked identity to bank). Step 1 (`check-ratchet-provenance.py`)
+  fails only in its reachability sub-gate: both admission modules NEW
+  unreachable vs trusted base a8258ee24dd9 and missing from the candidate
+  baseline (round 14 removed the self-authorizing rows). All other sub-gates
+  green (170 dispositions, 3 shell calls, 371 contract markers, 1 enumeration
+  gap, 0 lifecycle violations).
+- **develop remains grantless**: origin/develop moved +4 commits since the
+  merge base (3b8e090fe, d39a2e4ce, a9a27b063, 1e640df17 — all M9 WIP);
+  `git show <commit> --name-only` for each touches no `quality/` path, and
+  neither `ratchet-authorizations.json` nor `reachability-baseline.json` at
+  origin/develop mentions either admission module. Merge-base with
+  origin/develop is still a8258ee24dd9. The two-merge-rule line stands.
+- **test job re-derived**: `pytest tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py
+  tests/test_reachability_source_universe.py
+  tests/test_check_reachability_dispositions.py -q` -> exactly 3 failed / 58
+  passed, the same three sanctioned gate-identity tests
+  (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`), each asserting
+  `set(unreachable) == baseline` with exactly the two leaf modules as the
+  extra items.
+- **acceptance-state undercut re-derived with a NEW exactness proof**: with
+  PG18 up, `check-ac-state.py --run-tests --ratchet --mandate a8258ee24dd9`
+  fails ONLY on `design_coverage: 43.0887 falls below the floor of 43.2114`
+  (mandate green: 0 criteria added/newly claimed, 0 unproven; 0 chain gaps).
+  Round 17 bound the undercut to the two-module delta; this round proves the
+  binding per criterion: diffing the fold's per-decision rows between the
+  candidate (`quality/ac-state.json`, gitignored) and the base shows exactly
+  ONE changed decision — ADR-082526-aef8 (reachability-for-repo-tooling) falls
+  10/10 -> 8/10 reachable criteria — and the two lost criteria are
+  SPEC-082926-f1c3/AC-2 and /AC-3, anchored on the very
+  `test_reachability_baseline_identity.py` tests that fail above. The
+  counterfactual was executed: the same measurement in a throwaway worktree at
+  the merge base a8258ee24dd9 reports exactly 43.2114% over the same 163
+  taken decisions — i.e. the base sits exactly AT the banked floor (folded by
+  max from `quality/ac-state-notes/auto-961.json`), so the 8-file leaf delta
+  alone causes the 0.1227-point fall. No independent defect.
+- **Coverage gate re-derived**: leaf diff coverage with the coverage-unit
+  producer recipe (`check-diff-coverage.py coverage.xml --base a8258ee24dd9`)
+  exit 0 — both leaf modules measured above the 90% lines / 80% branch floors,
+  tests exempt, `_vulture_whitelist.py` unmeasured-but-listed. The job's red
+  stays the `combine` step's `--source=scripts` producer re-running the root
+  suite, whose 3 sanctioned failures abort under `set -euo pipefail` — the
+  same two-module delta.
+- **Focused battery green**: both suites 204 passed; the four required
+  mutations each re-applied from a cp backup and caught with `-x` (swap
+  TAKEOVER/REPLACE_EXPIRED, lease before binding, legacy pending treated as
+  v2, mismatch before expiry without an expiry exception), each restored
+  byte-identical (git diff clean). `check-suite-inventory.py --suite
+  packages/maistro-core/tests` exit 0 (14513 identities == recorded delta).
+  mypy --strict on `packages/maistro-core/src`: zero errors in either leaf
+  module (the 5 reported errors are pre-existing import-not-found environment
+  artifacts in untouched `cli/` files under a `--extra dev` sync). radon
+  138 -> 138. `check-reachability-dispositions.py` and
+  `check-promotion-surface.py` exit 0; `check-reachability.py` fails with
+  exactly the two leaf modules, as designed.
+- **Deep-review block resolved**: the prior round's NEEDS-DEEP-REVIEW was
+  closed by re-verifying the contract against the issue text: exact-record-class
+  input gate (`type(record) is ...`, not isinstance), `[0-9a-f]{64}` fullmatch
+  fingerprint, bool-rejecting signed-int64 `now_us`, the fixed six-branch
+  decision order (inclusive expiry first, mismatch second, binding third,
+  legacy fourth, lease fifth, PENDING fallback), `acknowledged_at_us`
+  deliberately unread, no clock/store/log/UUID/mutation, initializers
+  untouched, no exports added, `idempotency.py`/`queue.py` import neither new
+  module (grep-verified), and the live flow still answering its unchanged
+  four-variant contract.
+
+The blocker statement is unchanged: every red gate at this head still reduces
+to the one sanctioned two-module reachability delta that no in-leaf-legal edit
+can retire — candidate-side ledger rows cannot authorize themselves (the
+two-merge rule), and this leaf's scope forbids grants, baseline rows,
+dispositions, fake callers, and production wiring. Retirement paths remain the
+two named in round 13: a base-landed authorization followed by the banking
+rebase, or the #1845 integration consumer that wires both modules and prunes
+the entries on arrival. The stack stays unmerged by design; implementation and
+test readiness stand proven at 74bc299f094d.
