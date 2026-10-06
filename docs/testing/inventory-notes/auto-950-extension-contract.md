@@ -321,3 +321,70 @@ Executed at `4c672507c` (all exit 0 unless stated):
   base-resolved fold, which only a base-side grant or evidence restoration
   can move. Residual risk: until develop re-banks or grants, every branch
   off develop fails the acceptance-state ratchet the same way.
+
+## Validation battery (verification round at head `e1500a6de`, branch
+## `auto-950`)
+
+Independent re-verification of the whole battery at the develop-sync round 2
+head; no code changed this round. Environment rebuilt to CI parity first
+(`uv sync --locked --all-extras`, then `uv pip install radon xenon vulture
+pyright interrogate pytest-timeout`, then `uv pip install -e
+packages/maistro-evolve` — the same order as quality.yml's quality-gate job).
+
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py` → exit 0; base `a8258ee24`, all ten
+  ratchets flat (citation-status 0, enumerations 1=1, promotion-surface 74=74,
+  reachability 170=170, contract-markers 371=371, adr-status/shell/lifecycle
+  flat), 49 consumers with provenance.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → exit 0, **1332 = 1332** (no ledger amendment needed).
+- `pytest packages/maistro-core/tests/extensions/ -q` → **297 passed**;
+  `pytest packages/maistro-server/tests/api/test_extensions_api.py -q` → 16
+  passed (develop-side consumers intact).
+- `mypy --strict packages/maistro-core/src` → 0 issues, 739 files; pyright →
+  21 errors = baseline 21 (`check-pyright-report.py` exit 0); xenon (CI scope
+  incl. ext-sdk/rsi) → 140 blocks ≤ 145, 0 module/average violations;
+  interrogate → all 13 package floors pass (maistro/ floor 57.9% ≥ 46%);
+  `check-radon-baseline.py` → 138 = 138.
+- `pytest formal/ --timeout=120 -q` → 663 passed, 1 skipped; fitness suite →
+  23 passed; suite-inventory (`--suite packages/maistro-core/tests`) → ok
+  (14339 collected = recorded).
+- All architecture/consistency gates exit 0: enumerations, workspace
+  retirement, route permissions, principal identity, frontend typed client,
+  vendor_ifeval/vendor_bfcl, credential authority, wiring reads, agent store
+  writes, contract markers, convergence matrix, reachability +
+  dispositions, security inventory, image inventory + pins, workflow
+  inventory, backlog consistency, execution lifecycles, model egress,
+  foreign-harness egress, shipped-surface-truth,
+  citation-status-provenance, m1-convergence-freeze (`--base a8258ee24`),
+  adr-index, `bump_version.py --check`, release consistency, doc links,
+  `maistro-registry lint . --strict` (435 files), extension-imports,
+  reference-extension (clean-environment build).
+- `alembic upgrade head` against a live pgvector/pg18 → exit 0 (head `058`).
+- `check-diff-coverage.py` with combined coverage (extensions suite +
+  `pytest tests/ --source=scripts` producer) and `--base
+  d39a2e4ce` (develop tip, CI's PR form) → ok, every measured touched file
+  ≥ 90% lines / 80% branches.
+- Acceptance-state gate re-run in CI's PR form (`--run-tests --ratchet
+  --mandate d39a2e4ce`): the **mandate halves both pass** — 5 criteria added
+  or newly claimed, 0 unproven; 0 new chain gaps. The **only** failure line
+  remains `design_coverage: 38.9049 falls below the floor of 43.2114`.
+- Base re-measurement reproduced with the gate's own base-measurement recipe
+  (`git worktree add --detach` at `a8258ee24`, `uv run --project <tree>
+  --locked --all-extras python scripts/check-ac-state.py --run-tests`):
+  **38.5301% over 163 taken decisions (89 at zero)** — the develop base
+  itself sits below the fold's 43.2114 floor, and `git diff --stat
+  a8258ee24..origin/develop -- quality/` is empty (the two newer develop
+  commits, `3b8e090fe`/`d39a2e4ce`, touch only docs/inventory notes), so no
+  develop-side grant or re-bank has landed. The fold at the candidate's base
+  is unmeetable at develop; the candidate is +0.37pp above its actual base.
+- One environmental note for future rounds: running `check-ac-state.py`
+  locally writes the gitignored report `quality/ac-state.json` into the tree,
+  and `tests/test_branch_independence_repository.py::
+  test_every_quality_json_state_surface_is_classified_once` scans the
+  filesystem, so a root-`tests/` run AFTER an ac-state run reports
+  `unclassified quality state: quality/ac-state.json`. CI's coverage-unit job
+  runs `pytest tests/` on a fresh checkout where the file does not exist; the
+  test passes on that state (verified: 1 passed with the generated file moved
+  aside). Run root-`tests/` before any local ac-state run, or move the
+  generated report aside first.
