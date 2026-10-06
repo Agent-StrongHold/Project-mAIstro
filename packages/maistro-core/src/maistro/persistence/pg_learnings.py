@@ -1001,6 +1001,12 @@ def _provenance_fields(row: asyncpg.Record) -> dict[str, Any]:
     }
 
 
+def _confidence_field(row: asyncpg.Record) -> float:
+    """Measured confidence, or the dataclass default for pre-M4-B3 rows."""
+    value = row.get("confidence")
+    return float(value) if value is not None else DEFAULT_LEARNING_CONFIDENCE
+
+
 def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
     """The ladder + lifecycle + epistemics columns (ADR-103, ADR-100126-8c2d, M4-B3).
 
@@ -1011,11 +1017,7 @@ def _lifecycle_fields(row: asyncpg.Record) -> dict[str, Any]:
     return {
         "stage": LearningStage(row.get("stage") or "memory"),
         "epistemic_type": EpistemicType(row.get("epistemic_type") or "empirical"),
-        "confidence": (
-            float(row["confidence"])
-            if row.get("confidence") is not None
-            else DEFAULT_LEARNING_CONFIDENCE
-        ),
+        "confidence": _confidence_field(row),
         "works_when": _load_keys(row.get("works_when")),
         "avoid_in": _load_keys(row.get("avoid_in")),
         "evidence_run_ids": _load_keys(row.get("evidence_run_ids")),
