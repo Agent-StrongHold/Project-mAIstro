@@ -851,3 +851,55 @@ The named supply-chain failure was re-proven green with CI's exact pipeline
 maistro-core: 13479 passed / 0 failed. The reachability residual is unchanged
 — develop still carries zero `maistro.backlog.*` authorization keys — see
 `auto-82-develop-sync-059-head.md` for the full round record.
+
+## Thirteenth CI-repair addendum (72c3a5d0 merge-queue round: supply-chain re-proven, ledger exact, provenance residual unchanged)
+
+No test inventory delta — no tests added, removed or renamed; the front-matter
+baseline is untouched.
+
+- **"Supply chain (pip-audit)" re-proven green at this head with CI's exact
+  pipeline** (`security.yml` supply-chain shape: `uv sync --locked
+  --all-extras`; `uv pip freeze --exclude-editable` → 217 requirements;
+  `pip-audit --strict --format=json` exit 1 on `ecdsa==0.19.2
+  PYSEC-2026-1325` ×2 and nothing else; `scripts/pip_audit_gate.py` exit 0 —
+  "1 known, all triaged in ALLOWED"; `check-dependency-namespaces.py` exit 0).
+  The failure reported by the merge-queue evaluation cannot be content-caused
+  by this branch: `git diff a8258ee24..HEAD` is empty for `uv.lock`, every
+  `packages/*/pyproject.toml`, `scripts/pip_audit_gate.py` and
+  `quality/direct-dependency-exceptions.json`, and the triage entry predates
+  the base (`48ee34bcb` is an ancestor of `a8258ee24`). The workflow's own
+  retry contract classifies three consecutive unusable reports as an
+  infrastructure outage — "retry the job" — which remains the only consistent
+  explanation across three rounds of green local reproductions.
+- **Exact-debt-ledger vulture leg green; no amendment warranted.** CI-exact
+  scan (`check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) exits 0 at 1329 findings, `unclassified: 0`,
+  `never_allowlist: 0` — the instruction to "list unbanked identities" lists
+  none, so there is nothing genuinely dead to fix and no reviewed-retained
+  identity to amend into the ledger; the conditional permission does not
+  trigger.
+- **Reachability-provenance residual re-measured at base `a8258ee24`,
+  unchanged and mechanically branch-unfixable.** `check-ratchet-provenance.py`
+  (with `RATCHET_BASE_REV=origin/develop`) exits 1 on exactly the five
+  `maistro.backlog*` legs; all nine other ratchet legs report OK. The branch's
+  `quality/ratchet-authorizations.json` already carries all five grants, but
+  `ratchet_provenance.load_authorizations` reads the file **from the base
+  revision** by construction ("a new grant does not take effect in the change
+  that introduces it", `scripts/ratchet_provenance.py:478`), and
+  `a8258ee24:quality/ratchet-authorizations.json` still has zero backlog keys.
+  Editing the branch copy again is a no-op for the gate; wiring the modules
+  into a process entry point to appease the scanner would contradict the
+  reviewed #98 decision (server wiring is #99's scope). Repair remains the
+  grants-only develop merge of the +5 reachability rows, after which this
+  branch passes unchanged. See `auto-82-develop-sync-059-head.md` for the
+  full round record.
+- **Validation at this head:** ruff check clean; format --check 3044 files
+  clean; backlog suites 38 passed / 16 skipped; full
+  `packages/maistro-core/tests` 13412 passed / 950 skipped / 1 xfailed /
+  0 failed (PG-dependent legs skip with the stack down this round — the
+  migration-chain PG18 evidence at this exact head is recorded in the twelfth
+  addendum and unchanged since); `alembic heads` → single `059`;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (14363
+  unique node IDs, matches recorded inventory); `check-shipped-surface-truth.py`
+  exit 0; `check-reachability.py` exit 0 (175/1312 banked);
+  `check-reachability-dispositions.py` exit 0 (50 groups).
