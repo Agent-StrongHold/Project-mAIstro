@@ -242,6 +242,7 @@ class ExtensionInstallService:
             requested_permissions=manifest.permissions,
             artifact_sha256=manifest.artifact_sha256,
             requested_by=actor,
+            trust_evidence=trust_evidence,
             created_at=now,
             updated_at=now,
         )
@@ -402,9 +403,35 @@ class ExtensionInstallService:
         """
         inputs = self._authority_inputs
         assert inputs is not None  # the only caller checks this
+        # The Workspace layer is only applicable to its own scope. A service
+        # may hold records from several orgs/Workspaces; applying one scope's
+        # enablement and ceiling to another's record would authorize an
+        # extension in a scope whose policy never admitted it. A policy that
+        # does not cover the record's scope is not an applicable ceiling, so
+        # the request is denied before any authority is computed.
+        record_scope = ExtensionScope(org_id=record.org_id, workspace_id=record.workspace_id)
+        if inputs.workspace.scope != record_scope:
+            return await self._transition(
+                record,
+                ExtensionState.DENIED,
+                actor=actor,
+                reason="denied: no Workspace extension policy covers "
+                f"{record_scope.describe}; the wired policy is scoped to "
+                f"{inputs.workspace.scope.describe} and a mismatched policy "
+                "cannot authorize this record",
+                now=now,
+            )
+        # Authorization re-evaluates trust against the evidence that admitted
+        # *this* record at inspection, not the service-wide claim: when the
+        # service handles packages from several publishers, each install must
+        # stand on its own evidence. Records created before evidence was
+        # persisted fall back to the deployment-wide claim.
+        evidence = (
+            record.trust_evidence if record.trust_evidence is not None else inputs.trust_claim
+        )
         publisher_trust = resolve_publisher_trust(
             record.manifest,
-            inputs.trust_claim,
+            evidence,
             self._trust_policy,
             tier_of=inputs.tier_of,
             default_tier=inputs.default_tier,
@@ -420,15 +447,26 @@ class ExtensionInstallService:
             f"manifest {authority.manifest_sha256[:12]}…; decision "
             f"{authority.decision_digest[:12]}…"
         )
-        if authority.granted_none and record.requested_permissions:
+        # A package-level blocker (untrusted publisher; not enabled in the
+        # Workspace) denies outright — including the degenerate manifest that
+        # requests no permissions at all, where there are no per-permission
+        # denials to explain but the extension still must not be authorized.
+        if authority.granted_none:
+            # Blockers alone cannot explain a trusted, enabled package that a
+            # host/caller ceiling empties out: surface the per-permission
+            # denials too, so the trail always says why authorization failed.
+            denial_summary = "; ".join(
+                f"{denial.permission} ({'; '.join(denial.reasons)})" for denial in authority.denials
+            )
             return await self._transition(
                 record,
                 ExtensionState.DENIED,
                 actor=actor,
                 reason="denied: effective authority is empty; operator approval cannot "
                 f"create authority policy disallows ({detail}; blockers: "
-                f"{'; '.join(authority.blockers)})",
+                f"{'; '.join(authority.blockers)}; denials: {denial_summary})",
                 now=now,
+                mutate=lambda r: replace(r, decision_digest=authority.decision_digest),
             )
         outcome = (
             "authorized with effective authority: granted "
@@ -450,6 +488,7 @@ class ExtensionInstallService:
                 r,
                 granted_permissions=authority.effective,
                 authorized_by=actor,
+                decision_digest=authority.decision_digest,
             ),
         )
 
