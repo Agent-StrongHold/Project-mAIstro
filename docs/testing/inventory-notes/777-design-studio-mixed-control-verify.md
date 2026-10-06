@@ -12105,3 +12105,72 @@ pause/redirect/reclaim lineage, refresh restore) are downstream of AC1 and
 remain unverifiable. The branch is battery-green, develop-current, and
 carries the complete PR-#1660 head; no repair exists in this lane until the
 dependency issues land (Refs #777).
+
+## Round 184 (job `1830a04815bc44b5b9f04e184a94884a`, repair) — 2026-10-06
+
+Block re-resolved as **dependency-blocking** with a newly evidenced,
+deeper dependency chain. All claims re-proven fresh by this round; nothing
+inherited from rounds 180-183 was trusted without re-execution.
+
+**Dispatch evidence is post-issue-update.** The dispatch snapshot was
+captured 2026-10-06T01:03:47Z (61 sources, `complete_for_scope: true`),
+*after* the issue's `updated_at 2026-10-06T00:47:57Z`. Inspection of the
+115 comments shows that update is the prior round's own automated progress
+marker (`maistro-progress:78b690e4...:blocked`) — no maintainer guidance,
+no dependency closure, no scope change.
+
+**New finding — the chain is longer than previously recorded.** #805's
+owner-decision comment (2026-09-25T02:13:54Z) states #1572 builds the
+canonical Goal store (`maistro.goals`: Goal, GoalRevision, Subgoal lineage,
+Run `goal_id`/`goal_revision` binding) and that #805 — plus #806, #773,
+#774 — *consume* it and are blocked until #1572 lands. So the blocking
+frontier for #777 is #777 → #804/#805/#806 → #1572, not merely #804.
+Consistent with that: `packages/maistro-core/src/maistro/goals/` does not
+exist in this tree; the only `GoalRevision*` symbols are the
+`GoalRevisionCatalog` Protocol in `maistro/projects/rubric_store.py`
+(rubric revision resolution, not the canonical Goal store).
+
+**Prerequisites re-proven fresh at head `27fe2b659e9e`:**
+- `git fetch origin` → `origin/develop` == `56332162cf63` (base,
+  byte-identical). The lane brief's sync-conflict conditional does not
+  apply; worktree clean at the assigned head.
+- `grep -rEl 'GoalReconciler|delegate_goal' packages/*/src` → 0 files
+  (#804's reconciliation APIs absent).
+- `grep -ciE 'workspace_agent|control_mode|delegat'
+  packages/hive-conductor/backend/services/design_service.py` → 0 (AC1's
+  integration target carries no seam to consume).
+- PR #1660 (supplied linked draft, head `78f8f6476466` per dispatch
+  01:03:44Z): `git merge-base --is-ancestor` confirms the head is already
+  an ancestor of this branch — nothing new to absorb.
+
+**Battery fresh at `27fe2b659e9e`:**
+- `uv run ruff check .` → EXIT 0, all checks passed
+- `uv run ruff format --check .` → EXIT 0, 3009 files already formatted
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact, vulture-ratchet.yml:82 args) →
+  EXIT 0, base `56332162cf63` → cand `27fe2b659e9e`, 1336 reviewed
+  identities → 1335 findings
+- `check-api-route-contracts` (279 handlers, 15 audited routes, 0 canned) /
+  `check-route-permissions` (40 declared, 0 tolerated undeclared) /
+  `check-promotion-surface` / `check-reachability` (1294 production
+  modules) / `check-ratchet-provenance` (49 quality JSON consumers) /
+  `check-backlog-consistency` (167 items) / `check-cross-package-imports`
+  (6 tolerated flat modules) / `check-suite-inventory` (15 suites match) →
+  all EXIT 0
+- `uv run pytest packages/maistro-bootstrap/tests
+  packages/hive-conductor/backend/tests -q` → **3639 passed, 12 skipped**
+  (127.11s)
+
+Verdict: **BLOCKED** (dependency-blocking, unchanged; now with the deeper
+#1572 frontier documented). AC1 ("Design Studio consumes the persistent
+Workspace Agent and Goal reconciliation APIs from #804") remains
+unimplementable: the dispatch capture at 01:03Z shows #804/#805/#806 open,
+#805 is owner-blocked on #1572, and neither `maistro.goals` nor any
+reconciler/delegation API exists in any reachable tree — while the issue's
+stop condition forbids a Design-Studio-private runtime, Goal owner, or
+reconciliation loop. All runtime acceptance criteria (CreativeBrief
+binding, #776 context retrieval, tool composition, three product E2Es,
+mixed-control lineage, pause/redirect/reclaim, refresh restore, browser
+E2E) are downstream of AC1 and unverifiable. The branch is
+battery-green, develop-current, and contains the complete PR-#1660 head;
+no repair exists in this lane until the dependency issues land (Refs #777).
