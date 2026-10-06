@@ -396,3 +396,24 @@ round: `DOCKER_HOST=unix:///var/run/docker.sock docker info` could not connect
 to a daemon, and neither PostgreSQL test URL was configured. The lifecycle
 ratchet is therefore the release blocker; no source or vulture debt was
 changed to disguise it.
+
+## Round 10 — current-base verification (2026-10-06, `69be819b5`)
+
+The issue's relevant acceptance tests were re-run against the current merged
+base `a8258ee24`: the focused Goal/Run/SQLite-parity selection passed **46
+passed, 16 skipped**; installed-base identity and migration-chain static
+coverage passed **2 passed, 17 skipped**; M1 convergence freeze,
+durable-table inventory (100 tables), the core suite inventory (14,369 node
+IDs), and the CI-exact vulture scan all passed (1,332 reviewed identities =
+1,332 findings, zero unclassified).
+
+The required PostgreSQL acceptance legs remain **unverified** in this local
+round: the configured Docker socket cannot reach a daemon, so no PostgreSQL
+server could be started. The sole release blocker is independently
+reproduced: both `check-execution-lifecycles.py` and
+`test_the_shipped_ledger_matches_the_shipped_code` fail because the trusted
+base has 19 classifications and no already-landed authorization for the
+candidate's `maistro.goals.model::GoalStatus` entry (20 discovered
+lifecycles). The branch cannot self-authorize that new vocabulary; the
+separate grant must merge to develop before this branch can sync and pass the
+two-merge ratchet.
