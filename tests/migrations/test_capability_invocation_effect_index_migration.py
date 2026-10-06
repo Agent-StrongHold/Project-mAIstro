@@ -82,14 +82,15 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # of them is develop's head at merge time -- 046, then 047, 048, 050,
     # 051, 052, 053, 054, now 055. #1047's user-model tables then landed on
     # develop's trunk as `056_user_model_facts` on that same quota-door
-    # parent, so the backlog work-source migration (#98) — renumbered
-    # `048` -> `052` -> `054` as each develop revision landed — and the
-    # authority-cutover ledger (#102), `049` -> `053` -> `055`, re-parent
-    # past the incoming develop tip as `058` and `059` (a landed trunk
-    # migration never moves), leaving `057` for develop's #863
-    # planner-stability revision, which revises `056_user_model_facts` on
-    # develop and takes that slot at the next sync — so the single linear
-    # head is `059`.
+    # parent, and #863's planner-stability revision — numbered `052` when
+    # written and re-parented onto the chain tip as `053`, `054`, and `056`
+    # in develop's earlier collisions — landed on top of it as
+    # `057_run_store_planner_stability`. So the backlog work-source
+    # migration (#98) — renumbered `048` -> `052` -> `054` as each develop
+    # revision landed — and the authority-cutover ledger (#102), `049` ->
+    # `053` -> `055`, re-parent past the incoming develop tip as `058` and
+    # `059` (a landed trunk migration never moves) — the single linear head
+    # is `059`.
     walked = {item.revision for item in directory.walk_revisions("base", "059")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
@@ -107,6 +108,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "055" in walked
     assert "043_invocation_quota_door" in walked
     assert "056" in walked
+    assert "057" in walked
     assert "058" in walked
     assert "059" in walked
     assert directory.get_heads() == ["059"]

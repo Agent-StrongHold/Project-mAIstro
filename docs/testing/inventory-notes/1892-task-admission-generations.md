@@ -103,12 +103,11 @@ revision itself is untouched (`055`, parent `054`).
 Repair at this lane (develop sync, fourth landing, #1047 lands on the tip): the
 next develop sync (`c560d4cca`) landed #1047's user-model tables on develop's
 trunk as `056_user_model_facts` on the same quota-door parent as the backlog
-pair. Per the chain's convention — a landed trunk migration never moves; the
+pair. per the chain's convention — a landed trunk migration never moves; the
 branch-side pair re-parents onto the incoming develop tip — the backlog
 work-source/authority-cutover pair renumbers to `058_backlog_work_source` and
-`059_backlog_authority_cutover`, leaving `057` for develop's #863
-planner-stability revision (which revises `056_user_model_facts` on develop
-and takes that slot at the next sync). The chain sentinel now walks to head
-`059`, and the refused-downgrade stamp assertion pins that head by the same
-head-artifact reasoning as the rounds above. No test added or removed — delta
-above unchanged.
+`059_backlog_authority_cutover`, with develop's #863 planner-stability
+revision landing between them as `057_run_store_planner_stability`. The chain
+sentinel now walks to head `059`, and the refused-downgrade stamp assertion
+pins that head by the same head-artifact reasoning as the rounds above. No
+test added or removed — delta above unchanged.

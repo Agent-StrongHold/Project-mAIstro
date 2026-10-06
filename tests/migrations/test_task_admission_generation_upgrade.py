@@ -553,11 +553,11 @@ class TestTheDowngrade:
         # head, not a fixed literal — every develop collision re-parents the
         # chain tip, and the invariant under test is that the refused
         # downgrade leaves the stamp AT HEAD. Develop's quota door
-        # (#1196/#718) landed on `055` as `043_invocation_quota_door`, and
+        # (#1196/#718) landed on `055` as `043_invocation_quota_door`;
         # develop's trunk then landed `056_user_model_facts` (#1047) on that
-        # quota-door parent, so the backlog authority-cutover pair
-        # (#98/#102) re-parents past the develop tip as `058` and `059` —
-        # that is the head now.
+        # quota-door parent with #863's planner-stability revision on top as
+        # `057`, so the backlog authority-cutover pair (#98/#102) re-parents
+        # past the develop tip as `058` and `059` — that is the head now.
         assert _stamped_version() == "059"
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()

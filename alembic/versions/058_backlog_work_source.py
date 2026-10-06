@@ -10,13 +10,11 @@ claimed `052` (`052_learning_stage_ladder`, ADR-103) and `053`
 (`053_learning_lifecycle_columns`), then onto `056`/`057` after develop
 claimed `054` (M4-B3, #119) and `055` (#1892) and re-parented its quota door
 onto that tip, and now onto `058`/`059` after develop's trunk landed
-`056_user_model_facts` (#1047) on the same quota-door parent. Because a
-landed trunk migration never moves, the branch-side pair re-parents past the
-incoming develop tip — the numbering tracks the chain, not the issue number,
-so the chain stays linear with exactly one head — and `057` is left for
-develop's #863 planner-stability revision, which revises
-`056_user_model_facts` on develop and takes that slot when this branch next
-syncs.
+`056_user_model_facts` (#1047) on the same quota-door parent with #863's
+planner-stability revision on top as `057_run_store_planner_stability`.
+Because a landed trunk migration never moves, the branch-side pair re-parents
+past the incoming develop tip — the numbering tracks the chain, not the issue
+number, so the chain stays linear with exactly one head.
 
 The DDL is guarded (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
 EXISTS`), matching the SQLite twin's `ensure_schema`
@@ -37,7 +35,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "058"
-down_revision = "056"
+down_revision = "057"
 branch_labels = None
 depends_on = None
 

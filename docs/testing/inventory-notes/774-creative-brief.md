@@ -433,8 +433,9 @@ tip): on this lane the #102 backlog work-source/authority-cutover pair
 (#98/#102) already held the quota door's child slots as `056`/`057`, so
 merging develop's trunk-landed `056_user_model_facts` collides with it. Per
 the convention — a landed trunk migration never moves; the branch-side pair
-re-parents onto the incoming develop tip — the backlog pair renumbers to
-`058_backlog_work_source` and `059_backlog_authority_cutover`, leaving `057`
-for develop's #863 planner-stability revision. On the merged branch the
-chain test walks to `059` and asserts `get_heads() == ["059"]`; the
-refused-downgrade stamp assertion tracks the head at `059`.
+re-parents onto the incoming develop tip — the backlog pair renumbers to `058_backlog_work_source` and
+`059_backlog_authority_cutover`, with develop's #863 planner-stability
+revision landing between them as `057_run_store_planner_stability`. On the
+merged branch the chain test walks to `059` and asserts
+`get_heads() == ["059"]`; the refused-downgrade stamp assertion tracks the
+head at `059`.
