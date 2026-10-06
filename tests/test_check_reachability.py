@@ -111,6 +111,52 @@ def test_module_becoming_reachable_fails_until_the_baseline_is_pruned(
     assert "must shrink" in out
 
 
+def test_an_identical_second_walk_reparses_nothing(check, monkeypatch):
+    """The walk is computed once per argument tuple, not once per call site.
+
+    Every consumer of this module paid a full walk per call: `main()` walked,
+    and the self-checks below each walked again to ask `unreachable_modules()`
+    a question `main()` had just answered. That doubled cost scaled with the
+    repository until it crossed the root suite's 30s per-test bound on a CI
+    runner under `--source=scripts` tracing (quality.yml run 37522612054 timed
+    the two baseline-manipulation tests above out at >30s each, reding the
+    coverage gate's combine step).
+
+    Pinned structurally, not by wall clock: counting `ast.parse` calls makes
+    the bound hold on any machine. The cache is cleared first so the first
+    walk here is a real full pass on any test order; the second, identical
+    call must parse nothing at all, and the first pass must not parse any
+    module twice. Against the pre-fix walk this test cannot pass — there is no
+    cache to clear, and the identical second call re-parses every module.
+    """
+    check._reachability_walk.cache_clear()
+    try:
+        parses = 0
+        real_parse = check.ast.parse
+
+        def counting_parse(*args: object, **kwargs: object) -> object:
+            nonlocal parses
+            parses += 1
+            return real_parse(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(check.ast, "parse", counting_parse)
+        first = check._reachability()
+        parses_after_first = parses
+        second = check._reachability()
+    finally:
+        check._reachability_walk.cache_clear()
+
+    # The bound is not vacuous: the first walk really did parse the tree, and
+    # did so at most once per module it found (tooling included).
+    assert first[0], "the walk must find modules for the parse bound to mean anything"
+    assert parses_after_first <= len(first[0])
+    # The regression this test names: a second identical walk re-parsing every
+    # module. Pre-fix this count doubles; post-fix it must not move at all.
+    assert parses == parses_after_first
+    # And the cached answer is the answer, not a degraded copy of it.
+    assert second == first
+
+
 class TestEagerImportSweep:
     """A package that registers its plugins with ``importlib.import_module``.
 
