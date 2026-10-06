@@ -302,3 +302,17 @@ unreachable module. A production-source search confirms no other production
 module imports or calls the DTOs and no reachability baseline, disposition,
 grant, export, or Vulture whitelist was introduced. Parent integration remains
 required for mergeable exact-head quality.
+
+## 2026-10-06 ledger repair
+
+The exact Vulture scan at merge head `65f5376fae59` identified two stale
+candidate-ledger entries for `format_version`; scanner output contains neither
+identity. This repair prunes both entries. The candidate ledger now exactly
+banks the seven scanner-reported DTO identities, but the exact gate still exits
+1 because those identities are absent from trusted base `626683154ce9`; a
+candidate ledger cannot grant itself authorization. The same head's focused
+DTO suite passed 77 tests, the full core suite passed 13,383 tests (938
+skipped, 1 xfailed), and full suite inventory matched 14,322 core test IDs
+(the existing `+77` delta). `check-reachability.py` and the provenance
+aggregate remain blocked solely by the intentionally unwired
+`maistro.runs.admission_identity`; dispositions and promotion-surface pass.

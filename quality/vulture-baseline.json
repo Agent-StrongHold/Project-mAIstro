@@ -286,8 +286,6 @@
         "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'REPLAYED'",
         "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'REPLACE_EXPIRED'",
         "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'TAKEOVER'",
-        "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'format_version'",
-        "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'format_version'",
         "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'provenance_snapshot'",
         "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'receipt_snapshot'",
         "packages/maistro-core/src/maistro/runs/model.py::unused variable 'accepted_at'",
