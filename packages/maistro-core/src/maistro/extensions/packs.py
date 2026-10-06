@@ -487,13 +487,19 @@ def _parse_rubric_dimension(item: object) -> PackRubricDimension:
     method = item["method"]
     if not isinstance(method, str) or method not in {m.value for m in ScoringMethod}:
         raise _reject(f"unknown rubric scoring method: {method!r}")
+    # ``PackRubricDimension`` is a frozen dataclass, not the canonical Pydantic
+    # model, so no field validation runs here: require an explicit JSON boolean
+    # so a truthy string like "false" cannot invert evidence requirements.
+    evidence_required = item.get("evidence_required", False)
+    if not isinstance(evidence_required, bool):
+        raise _reject("rubric dimension evidence_required must be a boolean")
     return PackRubricDimension(
         id=_require_str(item, "id"),
         name=_require_str(item, "name"),
         weight=item["weight"],
         scale=_parse_scale(item["scale"]),
         method=ScoringMethod(method),
-        evidence_required=bool(item.get("evidence_required", False)),
+        evidence_required=evidence_required,
     )
 
 

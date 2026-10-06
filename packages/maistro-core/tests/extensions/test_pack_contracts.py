@@ -1138,6 +1138,34 @@ class TestManifestInspection:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_evidence_required_must_be_a_json_boolean(self) -> None:
+        # A truthy string like "false" must not be coerced by bool() into
+        # ``True`` (that would silently invert the evidence requirement);
+        # only an explicit JSON boolean is accepted.
+        dimension = dict(_rubric_asset()["rubric"]["dimensions"][0])
+        dimension["evidence_required"] = "false"
+        self._rejected(
+            _pack_bytes(
+                pack_id="acme.film_critique",
+                publisher="acme",
+                assets=[
+                    {
+                        "asset_id": "r",
+                        "version": "1.0.0",
+                        "kind": "rubric",
+                        "rubric": {
+                            "name": "r",
+                            "gate_pass_threshold": 1.0,
+                            "dimensions": [dimension],
+                        },
+                    }
+                ],
+            ),
+            "evidence_required must be a boolean",
+        )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_canonical_validation_refuses_what_the_models_refuse(self) -> None:
         # The canonical probe: a rubric whose veto names a non-dimension and a
         # numeric scale with min >= max both fail at inspection, via the
