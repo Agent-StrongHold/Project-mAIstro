@@ -104,4 +104,3 @@ Progress: checked 1 assigned issue; done 0 acceptance-complete issues; skipped 0
 issues; errors 0 implementation attempts. Environment blocker and acceptance
 counterexample are recorded above. Local report commit is the handoff, not
 integration approval.
-
