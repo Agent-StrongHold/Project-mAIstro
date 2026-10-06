@@ -372,3 +372,27 @@ clean with CI's exact scan arguments (1332 reviewed identities and findings).
 The required repair remains a separately merged authorization on develop,
 followed by a branch sync; no candidate-only ledger edit can satisfy the
 two-merge rule.
+
+## Round 9 — focused validation at `f30f31210` (2026-10-06)
+
+The CI-repair instruction named the vulture exact-debt ledger. Re-running its
+CI scan found **1332 reviewed identities, 1332 findings, 0 unclassified and 0
+never-allowlisted**, so there is no vulture ledger amendment to make. The
+remaining failure is instead independently reproduced by both
+`check-execution-lifecycles.py` and its shipped-ledger unit test: trusted base
+`11376c7bef4e` has 19 classifications while this candidate has 20, and lacks
+the already-landed authorization for
+`maistro.goals.model::GoalStatus`. `origin/develop` at `626683154` still has
+no GoalStatus authorization, so the mandated separate-grant-then-sync repair
+is not available in this worktree. The GoalStatus entry already present in the
+candidate's `quality/execution-lifecycles.json` cannot approve itself.
+
+Focused non-PostgreSQL behavior passed: the Goal suite plus SQLite schema
+parity was **46 passed, 16 skipped**, and the installed-base module plus
+migration-chain static checks was **2 passed, 17 skipped**. Ruff, the core
+suite inventory, durable-table inventory (100 tables), and the M1 convergence
+freeze also passed. PostgreSQL acceptance legs remain unverified in this
+round: `DOCKER_HOST=unix:///var/run/docker.sock docker info` could not connect
+to a daemon, and neither PostgreSQL test URL was configured. The lifecycle
+ratchet is therefore the release blocker; no source or vulture debt was
+changed to disguise it.
