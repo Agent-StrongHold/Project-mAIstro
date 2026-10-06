@@ -20,18 +20,7 @@ blocked-by: []
 contracts:
   - behavioral
   - boundary
-tests:
-  - packages/maistro-bootstrap/tests/test_builders_turn_record.py
-  - packages/maistro-bootstrap/tests/test_builders_agent_loop.py
-  - packages/maistro-bootstrap/tests/test_builders_cli.py
-  - packages/maistro-bootstrap/tests/test_builders_actions.py
-  - packages/maistro-bootstrap/tests/test_builders_models.py
-  - packages/maistro-bootstrap/tests/test_builders_quality.py
-  - packages/maistro-bootstrap/tests/test_builders_store.py
-  - packages/maistro-bootstrap/tests/test_builders_message_board.py
-  - packages/maistro-bootstrap/tests/test_builders_dagflow.py
-  - packages/maistro-bootstrap/tests/test_builders_spec_session.py
-  - packages/maistro-bootstrap/tests/test_builders_edge_coverage.py
+tests: []
 layer: Ability
 owners:
   - '@BlakeMatthews-dev'
@@ -126,6 +115,18 @@ Options: `--config`/`-c`, `--repo`/`-r`, `--autonomy`/`-a`, `--session`/`-s`.
 Uses `LocalWorktreeSandbox` (git + filesystem only). No containers, Docker, or Podman needed.
 
 ## File Layout
+
+Test-evidence disposition (#812): the eleven `packages/maistro-bootstrap/tests/test_builders_*.py`
+paths cited in front matter since authoring **never existed in this tree** —
+`git log` holds no such path. They named the intended bootstrap app's suite
+before implementation, and the builders runtime that did ship is the
+canonical pipeline graph under `packages/maistro-core/src/maistro/builders/`
+(ADR-099), covered by `packages/maistro-core/tests/builders/`. The TUI, CLI,
+and turn-record scope of this spec was not carried into that landing, so
+none of the shipped builders tests prove this document's acceptance
+criteria. Front matter therefore cites no tests: the contracts above carry
+an explicit test-evidence debt (surfaced by registry lint) until this spec
+is re-scoped to the shipped runtime or superseded.
 
 ```
 packages/maistro-bootstrap/src/maistro_bootstrap/builders/

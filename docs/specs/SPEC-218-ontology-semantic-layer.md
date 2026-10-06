@@ -19,8 +19,8 @@ contracts:
   - boundary
   - behavioral
 tests:
-  - tests/ontology/test_registry.py
-  - tests/ontology/test_types.py
+  - packages/maistro-core/tests/ontology/test_registry.py
+  - packages/maistro-core/tests/ontology/test_types.py
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -119,6 +119,13 @@ such field exists on `MemoryEntry`/`EpisodicMemory` as of this writing.
       ontology entity (ADR-036 goal, not yet implemented)
 
 ## Testing
+
+Covered by `packages/maistro-core/tests/ontology/test_registry.py` and
+`packages/maistro-core/tests/ontology/test_types.py`. This spec originally
+cited the monorepo-root `tests/ontology/` paths; the ontology layer shipped
+under `maistro.ontology` (maistro-core) and the coverage lives in the
+package suite — paths repointed when cited test paths were made to resolve
+(#812).
 
 Covered by `tests/ontology/test_registry.py` and `tests/ontology/test_types.py`.
 

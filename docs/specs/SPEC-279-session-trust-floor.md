@@ -19,9 +19,7 @@ blocked-by: []
 contracts:
   - boundary
   - behavioral
-tests:
-  - packages/maistro-core/tests/security/test_session_trust_floor.py
-  - formal/models/test_session_trust_floor.py
+tests: []
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -168,6 +166,11 @@ filter keyed off STF.
   by floor value.
 
 ## Test plan
+
+> Test-evidence disposition (#812): front matter cited the two test files
+> below; neither exists — this spec is Proposed and its tests have not been
+> written. The citations named planned evidence, not proof, and have been
+> removed from front matter until the files land.
 
 1. **Unit** — `packages/maistro-core/tests/security/test_session_trust_floor.py`:
    `TrustSignal` construction, `SessionTrustState.observe()` monotonicity (direct assertions),

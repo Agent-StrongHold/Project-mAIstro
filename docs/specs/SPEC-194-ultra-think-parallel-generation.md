@@ -19,9 +19,7 @@ related:
 contracts:
   - boundary
   - behavioral
-tests:
-  - apps/conductor-gateway/tests/test_ultra_think.py
-  - packages/maistro-core/tests/agents/test_ultra_think_tiers.py
+tests: []
 layer: Agents
 owners:
   - '@BlakeMatthews-dev'
@@ -214,6 +212,13 @@ silently degrade.
 Reference implementation in git history at `d6603c9^`,
 path `potential-dead-code/code-worth-implementing-from-Conductor/snapshot/gateway/ultra_think.py`.
 Port to `apps/conductor-gateway/gateway/ultra_think.py` per SPEC-193.
+
+Test-evidence disposition (#812): front matter cited
+`apps/conductor-gateway/tests/test_ultra_think.py` and
+`packages/maistro-core/tests/agents/test_ultra_think_tiers.py` — neither
+exists (the gateway app was never ported; no ultra-think implementation has
+landed in maistro-core). Those were planned tests, not proof; removed until
+they exist.
 
 The tier taxonomy, diversity profiles, and slot-restore pattern are stable and should
 be ported verbatim. The cost controls and reviewer integration are new in this spec.

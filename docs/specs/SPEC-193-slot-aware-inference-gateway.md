@@ -18,8 +18,7 @@ related:
 contracts:
   - boundary
   - behavioral
-tests:
-  - apps/conductor-gateway/tests/
+tests: []
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -29,6 +28,12 @@ history:
 ---
 
 # SPEC-193: Slot-aware local inference gateway
+
+> Test-evidence disposition (#812): front matter cited
+> `apps/conductor-gateway/tests/`, a suite for an app that has never been
+> ported — the tree has no `apps/` at all (the reference snapshot was removed
+> per SPEC-178). The citation named planned evidence, not proof, and has been
+> removed; it returns with the port.
 
 ## Context
 
