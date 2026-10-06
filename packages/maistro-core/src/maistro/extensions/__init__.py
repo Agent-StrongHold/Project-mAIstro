@@ -39,9 +39,25 @@ from maistro.extensions.manifest import (
     sha256_hex,
     verify_package_payload,
 )
+from maistro.extensions.policy import (
+    INHERITANCE_SEMANTICS,
+    ExtensionCandidate,
+    ExtensionPin,
+    ExtensionPolicyEngine,
+    OrgExtensionPolicy,
+    PolicyAuditEvent,
+    PolicyAuditLog,
+    PolicyConfigurationError,
+    PolicyDecision,
+    PolicyLayer,
+    PolicyRuleOutcome,
+    PolicyVerdict,
+    WorkspaceExtensionPolicy,
+)
 from maistro.extensions.service import (
     ExtensionCodeLoader,
     ExtensionInstallService,
+    ExtensionPolicyViolation,
     LoadedExtension,
     UnwiredExtensionLoader,
 )
@@ -53,6 +69,11 @@ from maistro.extensions.store import (
     ExtensionStore,
     InMemoryExtensionInstallStore,
     InMemoryExtensionStore,
+)
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
+    tenant_scope_key,
 )
 from maistro.extensions.trust import TrustPolicy, TrustReport, evaluate_trust
 from maistro.extensions.types import (
@@ -94,6 +115,7 @@ from maistro.extensions.types import (
 
 __all__ = [
     "DIGEST_ALGORITHM",
+    "INHERITANCE_SEMANTICS",
     "SUPPORTED_MANIFEST_VERSION",
     "TERMINAL_STATES",
     "TRANSITIONS",
@@ -104,6 +126,7 @@ __all__ = [
     "AuthorityDelta",
     "CompatibilityPolicy",
     "CompatibilityReport",
+    "ExtensionCandidate",
     "ExtensionCodeLoader",
     "ExtensionDependency",
     "ExtensionEntryPoint",
@@ -114,6 +137,9 @@ __all__ = [
     "ExtensionLifecycleError",
     "ExtensionManifest",
     "ExtensionPackage",
+    "ExtensionPin",
+    "ExtensionPolicyEngine",
+    "ExtensionPolicyViolation",
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
@@ -128,13 +154,23 @@ __all__ = [
     "LoadedExtension",
     "ManifestRejected",
     "ManifestSnapshot",
+    "OrgExtensionPolicy",
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
+    "PolicyAuditEvent",
+    "PolicyAuditLog",
+    "PolicyConfigurationError",
+    "PolicyDecision",
+    "PolicyLayer",
+    "PolicyRuleOutcome",
+    "PolicyVerdict",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "RegistryProvenance",
+    "ScopeBoundExtensionState",
     "SqliteExtensionInstallStore",
+    "TenantScopedExtensionState",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
@@ -142,6 +178,7 @@ __all__ = [
     "UnknownInstall",
     "UnknownPublisher",
     "UnwiredExtensionLoader",
+    "WorkspaceExtensionPolicy",
     "assert_snapshot_intact",
     "canonical_install_payload",
     "compute_authority_delta",
@@ -152,5 +189,6 @@ __all__ = [
     "manifest_snapshot",
     "normalize_permission",
     "sha256_hex",
+    "tenant_scope_key",
     "verify_package_payload",
 ]

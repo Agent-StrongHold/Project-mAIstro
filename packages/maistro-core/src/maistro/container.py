@@ -143,8 +143,10 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.policy import ExtensionPolicyEngine
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.store import InMemoryExtensionStore
+    from maistro.extensions.tenancy import TenantScopedExtensionState
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -480,6 +482,11 @@ class Container:
     # this is a records-and-authority store, never an execution authority.
     extension_install_store: InMemoryExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Organization/Workspace extension policy + tenant-scoped runtime state
+    # (#971, M9-G3). The default engine configures nothing, which leaves the
+    # machine's behavior unchanged while still recording decision evidence.
+    extension_policy_engine: ExtensionPolicyEngine | None = None
+    extension_runtime_state: TenantScopedExtensionState | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -2031,6 +2038,21 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_policy_engine(self) -> ExtensionPolicyEngine:
+        """Return the organization/Workspace extension policy engine (#971).
+
+        The default engine configures nothing: evaluation passes every
+        candidate with an explicit "the layer imposes nothing" trace, so
+        wiring the policy layer changes no behavior until an operator sets a
+        policy — but every install decision gains audit evidence from then
+        on. Hosts with a policy backend replace ``extension_policy_engine``.
+        """
+        from maistro.extensions.policy import ExtensionPolicyEngine
+
+        if self.extension_policy_engine is None:
+            self.extension_policy_engine = ExtensionPolicyEngine()
+        return self.extension_policy_engine
+
     def ensure_extension_install_service(self) -> ExtensionInstallService:
         """Return the governed extension install lifecycle service (#953).
 
@@ -2043,11 +2065,14 @@ class Container:
         """
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
+        from maistro.extensions.tenancy import TenantScopedExtensionState
 
         if self.extension_install_service is None:
             self.extension_install_service = ExtensionInstallService(
                 self.extension_install_store or InMemoryExtensionStore(),
                 loader=UnwiredExtensionLoader(),
+                policy_engine=self.ensure_extension_policy_engine(),
+                runtime_state=self.extension_runtime_state or TenantScopedExtensionState(),
             )
         return self.extension_install_service
 

@@ -18,6 +18,10 @@ from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
 )
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
+)
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
@@ -296,4 +300,22 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Tenant-scoped extension runtime state (#971, M9-G3). Configuration is
+    # served over the operator API (GET/PUT /v1/extensions/state); the cache
+    # and checkpoint namespaces are the host/runtime substrate — the
+    # activation substrate (M9-B2's ExtensionCodeLoader hosts) and the
+    # quarantine flow (#972) bind them through
+    # ExtensionInstallService.extension_state, so their in-tree callers are
+    # the cross-tenant noninterference suites
+    # (packages/maistro-core/tests/extensions/test_org_workspace_policy.py)
+    # until those hosts land. Same contract-ships-first posture as the store
+    # seams above.
+    ScopeBoundExtensionState.delete_config,
+    ScopeBoundExtensionState.cache_set,
+    ScopeBoundExtensionState.cache_get,
+    ScopeBoundExtensionState.cache_delete,
+    ScopeBoundExtensionState.checkpoint_save,
+    ScopeBoundExtensionState.checkpoint_load,
+    ScopeBoundExtensionState.checkpoint_names,
+    TenantScopedExtensionState.clear_scope,
 )
