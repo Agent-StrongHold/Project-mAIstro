@@ -417,3 +417,39 @@ candidate's `maistro.goals.model::GoalStatus` entry (20 discovered
 lifecycles). The branch cannot self-authorize that new vocabulary; the
 separate grant must merge to develop before this branch can sync and pass the
 two-merge ratchet.
+
+## Round 11 — PostgreSQL acceptance executed on both supported majors (2026-10-06, `9e223f0708`)
+
+Rounds 9–10 recorded the durable legs as unverified because no Docker daemon
+was reachable. This round reached the rootless daemon
+(`DOCKER_HOST=unix:///run/user/1000/docker.sock`) and ran both `pgvector`
+majors as containers (pg17 on 127.0.0.1:15432, pg18 on 15433), driving the
+CI-exact step sequences:
+
+- **pg17** — `tests/migrations` against an unmigrated database: **153 passed**
+  (previously the shared-database teardown leak made this exact CI step fail);
+  then `alembic upgrade head` → `downgrade base` → `upgrade head`
+  (the log shows `058 -> 059` on both walks); then persistence +
+  `test_container_postgres.py` **824 passed, 84 skipped**; then
+  `tests/workspaces` **328 passed, 2 skipped** and `tests/goals`
+  **60 passed, 0 skipped** under `MAISTRO_REQUIRE_PG_LEGS=1` — the
+  PostgreSQL conformance leg did not skip.
+- **pg18** — `tests/migrations` **153 passed**; after `alembic upgrade head`,
+  goals + workspaces + persistence + container-postgres **1212 passed,
+  86 skipped**.
+- The installed-base walks ran on both majors: databases built by the actual
+  develop snapshots (`c560d4c` at 056, `4675101` at 057) forward-upgrade to
+  `059` with no stamp edit, keep the planner indexes/CHECK and the pre-existing
+  user-model/Run rows, serve the durable Goal composition, and read back the
+  bound Run provenance after a full close/reopen.
+- Gates re-run at this head with CI arguments: vulture **1332 = 1332,
+  unclassified 0** (no amendment needed); M1 convergence freeze ok;
+  durable-table inventory **100 tables**; canonical mypy line **842 files,
+  no issues**; ruff check/format green (driver checks).
+- The one red gate is unchanged and structural:
+  `check-execution-lifecycles.py` and its mirrored shipped-ledger unit test
+  (**28 passed, 1 failed** — the mirror) still fail on
+  `maistro.goals.model::GoalStatus` because trusted base `d39a2e4ce330` has
+  19 classifications and no already-landed authorization. Everything
+  repairable in this worktree is repaired; the separate grant on develop
+  followed by a branch sync remains the release step.

@@ -53,3 +53,14 @@ The fixture restores `upgrade head` after each isolated installed-base walk so
 subsequent modules do not inherit an empty shared database. The prior pg18
 local evidence is historical; this revision must be revalidated after the
 migration moved to `059`.
+
+**Revalidated at `059` on both supported majors (2026-10-06, head
+`9e223f0708`):** pgvector pg17 and pg18 containers; `pytest tests/migrations`
+**153 passed on each major** against an unmigrated database — including the
+`c560d4c`/`4675101` snapshot walks, the no-stamp-edit upgrade, planner
+artifact assertions, and the close/reopen durable Goal composition. On pg17
+the full CI step sequence followed: chain apply → downgrade base → apply,
+persistence + container-postgres **824 passed**, workspaces **328 passed**,
+goals **60 passed** with `MAISTRO_REQUIRE_PG_LEGS=1`; on pg18 the same four
+schema suites total **1212 passed, 86 skipped** after `alembic upgrade head`.
+See round 11 of `1572-canonical-goal-store.md` for the full command record.
