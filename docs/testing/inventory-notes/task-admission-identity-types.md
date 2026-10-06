@@ -259,3 +259,19 @@ unwired module. No Vulture whitelist, reachability baseline/disposition,
 suppression, grant, or production import was added: each would violate this
 leaf's staging constraint. Parent integration must add the real consumer before
 integration-head quality can pass.
+
+## 2026-10-06 verifier repair validation
+
+At `7d0fc25b42b441762ff916c54a0ba631207b3077`, the focused DTO suite passed
+77 tests; module Ruff check/format and mypy passed; and the core suite inventory
+matched 13,845 node IDs (`+77`). The exact Vulture gate found 1,351 findings
+and failed only because the nine reviewed DTO identities are not present in
+trusted base `c560d4ccad82`; the candidate ledger already contains exactly
+those identities. `check-reachability.py` and the provenance aggregate fail
+only because the deliberately inactive `maistro.runs.admission_identity` has
+no permitted runtime consumer. Reachability dispositions and promotion-surface
+pass. Production-source search confirms no import, caller, package export,
+whitelist reference, reachability baseline/disposition, or grant was added.
+The remaining exact-debt failures require the separately scoped parent
+integration to supply a real consumer or a prior trusted-base authorization;
+this leaf cannot do either without violating its staging constraint.
