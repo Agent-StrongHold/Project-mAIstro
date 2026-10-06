@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from maistro.backlog.cutover import AuthorityRecord, BacklogAuthority
 from maistro.backlog.model import (
@@ -197,7 +197,7 @@ class PgBacklogStore:
             origin=origin,
             priority=priority,
             rank=rank,
-            **({"item_id": item_id} if item_id is not None else {}),
+            **(cast(dict[str, Any], {"item_id": item_id} if item_id is not None else {})),
         )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
@@ -230,7 +230,7 @@ class PgBacklogStore:
                     kind=BacklogEventKind.CREATED,
                     item_version=item.version,
                     payload={"title": item.title, "parent_id": parent_id},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             if parent_id is not None:
@@ -243,7 +243,7 @@ class PgBacklogStore:
                         kind=BacklogEventKind.DECOMPOSED,
                         item_version=parent.version,
                         payload={"child_id": item.item_id, "child_title": item.title},
-                        **({"at": at} if at is not None else {}),
+                        **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                     ),
                 )
         return item
@@ -326,7 +326,7 @@ class PgBacklogStore:
                     else BacklogEventKind.UPDATED,
                     item_version=updated.version,
                     payload=_jsonable_changes(changes),
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -387,7 +387,7 @@ class PgBacklogStore:
                         "closure_summary": closure.summary,
                         "evidence_refs": list(closure.evidence_refs),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -422,7 +422,7 @@ class PgBacklogStore:
                     kind=BacklogEventKind.REOPENED,
                     item_version=updated.version,
                     payload={"previous_status": item.status},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -481,7 +481,7 @@ class PgBacklogStore:
                         "claim_id": claim.claim_id,
                         "lease_expires_at": claim.lease_expires_at.isoformat(),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return claim
@@ -524,7 +524,7 @@ class PgBacklogStore:
                         "claim_id": claim_id,
                         "lease_expires_at": extended.lease_expires_at.isoformat(),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return extended
@@ -558,7 +558,7 @@ class PgBacklogStore:
                     kind=BacklogEventKind.CLAIM_RELEASED,
                     item_version=item.version,
                     payload={"claim_id": claim_id},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
 

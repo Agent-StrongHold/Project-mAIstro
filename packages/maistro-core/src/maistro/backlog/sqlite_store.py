@@ -26,7 +26,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from maistro.backlog.model import (
     BacklogClaim,
@@ -239,7 +239,7 @@ class SqliteBacklogStore:
             origin=origin,
             priority=priority,
             rank=rank,
-            **({"item_id": item_id} if item_id is not None else {}),
+            **(cast(dict[str, Any], {"item_id": item_id} if item_id is not None else {})),
         )
         async with self._write() as conn:
             if await self._item_row_exists(conn, item.item_id):
@@ -255,7 +255,7 @@ class SqliteBacklogStore:
                     kind=BacklogEventKind.CREATED,
                     item_version=item.version,
                     payload={"title": item.title, "parent_id": parent_id},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             if parent_id is not None:
@@ -268,7 +268,7 @@ class SqliteBacklogStore:
                         kind=BacklogEventKind.DECOMPOSED,
                         item_version=parent.version,
                         payload={"child_id": item.item_id, "child_title": item.title},
-                        **({"at": at} if at is not None else {}),
+                        **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                     ),
                 )
         return item
@@ -330,7 +330,7 @@ class SqliteBacklogStore:
                     else BacklogEventKind.UPDATED,
                     item_version=updated.version,
                     payload=dict(changes.items()),
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -391,7 +391,7 @@ class SqliteBacklogStore:
                         "closure_summary": closure.summary,
                         "evidence_refs": list(closure.evidence_refs),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -426,7 +426,7 @@ class SqliteBacklogStore:
                     kind=BacklogEventKind.REOPENED,
                     item_version=updated.version,
                     payload={"previous_status": item.status},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -486,7 +486,7 @@ class SqliteBacklogStore:
                         "claim_id": claim.claim_id,
                         "lease_expires_at": claim.lease_expires_at.isoformat(),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return claim
@@ -528,7 +528,7 @@ class SqliteBacklogStore:
                         "claim_id": claim_id,
                         "lease_expires_at": extended.lease_expires_at.isoformat(),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return extended
@@ -561,7 +561,7 @@ class SqliteBacklogStore:
                     kind=BacklogEventKind.CLAIM_RELEASED,
                     item_version=item.version,
                     payload={"claim_id": claim_id},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
 

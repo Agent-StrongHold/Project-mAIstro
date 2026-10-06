@@ -29,7 +29,7 @@ module knows about; hard tenant isolation stays with the importing product
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Final, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, cast, runtime_checkable
 
 from maistro.backlog.model import (
     _MUTABLE_STATUSES,
@@ -375,7 +375,7 @@ class InMemoryBacklogStore:
             origin=origin,
             priority=priority,
             rank=rank,
-            **({"item_id": item_id} if item_id is not None else {}),
+            **(cast(dict[str, Any], {"item_id": item_id} if item_id is not None else {})),
         )
         if item.item_id in self._items:
             raise ValueError(f"BacklogItem {item.item_id!r} already exists")
@@ -389,7 +389,7 @@ class InMemoryBacklogStore:
                 kind=BacklogEventKind.CREATED,
                 item_version=item.version,
                 payload={"title": item.title, "parent_id": parent_id},
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             )
         ]
         if parent_id is not None:
@@ -401,7 +401,7 @@ class InMemoryBacklogStore:
                     kind=BacklogEventKind.DECOMPOSED,
                     item_version=parent.version,
                     payload={"child_id": item.item_id, "child_title": item.title},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 )
             )
         return item.model_copy(deep=True)
@@ -472,7 +472,7 @@ class InMemoryBacklogStore:
                 else BacklogEventKind.UPDATED,
                 item_version=updated.version,
                 payload=dict(changes),
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return updated.model_copy(deep=True)
@@ -534,7 +534,7 @@ class InMemoryBacklogStore:
                     "closure_summary": closure.summary,
                     "evidence_refs": list(closure.evidence_refs),
                 },
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return updated.model_copy(deep=True)
@@ -568,7 +568,7 @@ class InMemoryBacklogStore:
                 kind=BacklogEventKind.REOPENED,
                 item_version=updated.version,
                 payload={"previous_status": item.status},
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return updated.model_copy(deep=True)
@@ -608,7 +608,7 @@ class InMemoryBacklogStore:
                     "claim_id": claim.claim_id,
                     "lease_expires_at": claim.lease_expires_at.isoformat(),
                 },
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return claim.model_copy(deep=True)
@@ -646,7 +646,7 @@ class InMemoryBacklogStore:
                     "claim_id": claim_id,
                     "lease_expires_at": extended.lease_expires_at.isoformat(),
                 },
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return extended.model_copy(deep=True)
@@ -674,7 +674,7 @@ class InMemoryBacklogStore:
                 kind=BacklogEventKind.CLAIM_RELEASED,
                 item_version=item.version,
                 payload={"claim_id": claim_id},
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
 
