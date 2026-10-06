@@ -136,3 +136,68 @@ def test_lock_commands_exit_nonzero_for_an_invalid_lock(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "not a valid extension lock" in result.output
+
+
+def test_explain_renders_rejected_candidates_with_their_reason(tmp_path: Path) -> None:
+    """A constraint that passes over a higher version names the loser and why."""
+    entries = [
+        catalog_entry(
+            install_bundle(name="tool-a", version="1.0.0"),
+            dependencies=(ExtensionDependency(target="lib-b", range_text=">=1.0.0,<2.0.0"),),
+        ),
+        catalog_entry(install_bundle(name="lib-b", version="1.0.0")),
+        catalog_entry(install_bundle(name="lib-b", version="2.0.0")),
+    ]
+    lock = resolve_lock(
+        [RootRequest(extension_name="tool-a")], ExtensionCatalog(entries=tuple(entries))
+    )
+    lib_b = lock.get("lib-b")
+    assert lib_b is not None and lib_b.semantic_version == "1.0.0"
+    assert lib_b.rejected, "the scenario must leave a rejected candidate to explain"
+    (tmp_path / "lock.json").write_text(lock.to_json())
+
+    result = runner.invoke(app, ["explain", str(tmp_path / "lock.json"), "lib-b"])
+
+    assert result.exit_code == 0
+    assert "rejected candidates:" in result.output
+    assert "2.0.0" in result.output
+    assert "<2.0.0" in result.output  # the constraint that excluded it
+
+
+def test_explain_marks_an_optional_branch_head(tmp_path: Path) -> None:
+    """An optional pin says what it is present *for*, alongside its requirer."""
+    _write_lock(tmp_path / "lock.json")  # tool-a optionally depends on opt-c
+
+    result = runner.invoke(app, ["explain", str(tmp_path / "lock.json"), "opt-c"])
+
+    assert result.exit_code == 0
+    assert "optional dependency of tool-a" in result.output
+    assert "optional for:" in result.output
+    assert "required by:     tool-a" in result.output
+
+
+def test_explain_reports_a_skip_on_the_target_side(tmp_path: Path) -> None:
+    """The skipped-optional target explains the skip aimed *at* it."""
+    entries = [
+        catalog_entry(
+            install_bundle(name="tool-a", version="1.0.0"),
+            dependencies=(
+                ExtensionDependency(target="opt-c", range_text=">=9.0.0", required=False),
+            ),
+        ),
+        catalog_entry(install_bundle(name="opt-c", version="1.0.0")),
+    ]
+    # opt-c is installed on its own behalf, so the lock pins it at 1.0.0 —
+    # the optional >=9.0.0 edge from tool-a then skips without touching it.
+    lock = resolve_lock(
+        [RootRequest(extension_name="tool-a"), RootRequest(extension_name="opt-c")],
+        ExtensionCatalog(entries=tuple(entries)),
+    )
+    assert lock.get("opt-c") is not None
+    assert any(skip.target == "opt-c" for skip in lock.skipped_optional)
+    (tmp_path / "lock.json").write_text(lock.to_json())
+
+    result = runner.invoke(app, ["explain", str(tmp_path / "lock.json"), "opt-c"])
+
+    assert result.exit_code == 0
+    assert "skipped optional on this: tool-a wanted '>=9.0.0'" in result.output

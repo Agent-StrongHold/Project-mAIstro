@@ -31,9 +31,13 @@ from extensions.extension_fixtures import (
     sign,
 )
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
-from maistro.extensions.store import InMemoryExtensionInstallStore
+from maistro.extensions.store import (
+    InMemoryExtensionInstallStore,
+    _record_for_identity,
+)
 from maistro.extensions.types import (
     ExtensionIdentityConflict,
+    ExtensionRegistryError,
     InstallRecord,
     PackageIdentity,
     PublisherKeyConflict,
@@ -162,6 +166,45 @@ async def test_batch_install_records_all_and_activates_in_order(
     assert activated == [first["identity"], second["identity"]]
     assert await store.install_history("ext-tool") == [records[0]]
     assert await store.install_history("ext-lib") == [records[1]]
+
+
+async def test_batch_install_is_idempotent_for_a_duplicate_entry(
+    store: InMemoryExtensionInstallStore | SqliteExtensionInstallStore,
+) -> None:
+    """The same (request, bytes) twice in one batch lands once, activates once."""
+    bundle = install_bundle()
+    await store.register_publisher(bundle["publisher"])
+    installed = await store.record_install(bundle["request"], package_bytes=bundle["package_bytes"])
+    activated: list[PackageIdentity] = []
+
+    def activate(record: InstallRecord) -> None:
+        activated.append(record.identity)
+
+    records = await store.record_installs(
+        [
+            (bundle["request"], bundle["package_bytes"]),
+            (bundle["request"], bundle["package_bytes"]),
+        ],
+        activate=activate,
+    )
+
+    # Both positions resolve to the persisted record; nothing is re-activated.
+    assert records == [installed, installed]
+    assert activated == []
+    assert len(await store.install_history("ext-tool")) == 1
+
+
+async def test_batch_install_runs_without_an_activation_callback(
+    store: InMemoryExtensionInstallStore | SqliteExtensionInstallStore,
+) -> None:
+    """``activate=None`` is the default batch shape, not an error."""
+    bundle = install_bundle()
+    await store.register_publisher(bundle["publisher"])
+
+    records = await store.record_installs([(bundle["request"], bundle["package_bytes"])])
+
+    assert [record.identity for record in records] == [bundle["identity"]]
+    assert len(await store.install_history("ext-tool")) == 1
 
 
 async def test_batch_install_is_all_or_nothing_on_a_late_failure(
@@ -321,3 +364,18 @@ async def test_schema_creation_is_repeatable(tmp_path: Any) -> None:
     await store.ensure_schema()
     assert len(await store.install_history("ext-tool")) == 1
     await leg.stop()
+
+
+async def test_record_for_identity_fails_closed_when_nothing_matches(
+    store: InMemoryExtensionInstallStore | SqliteExtensionInstallStore,
+) -> None:
+    """The idempotent path is total: a miss is a loud inconsistency, not None."""
+    other = install_bundle(name="ext-lib", version="2.0.0")
+    await store.register_publisher(other["publisher"])
+    unrelated = await store.record_install(other["request"], package_bytes=other["package_bytes"])
+
+    bundle = install_bundle()
+    with pytest.raises(ExtensionRegistryError, match="matched no persisted record"):
+        _record_for_identity([], bundle["identity"])
+    with pytest.raises(ExtensionRegistryError, match="matched no persisted record"):
+        _record_for_identity([unrelated], bundle["identity"])

@@ -304,7 +304,3 @@ class InMemoryExtensionInstallStore:
             if identity_key(record.identity) == wanted:
                 return record
         return None
-
-    def _existing(self, identity: PackageIdentity) -> InstallRecord:
-        """The already-persisted record for ``identity`` (idempotent path)."""
-        return _record_for_identity(self._installs.get(identity.extension_name, ()), identity)

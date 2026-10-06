@@ -139,6 +139,21 @@ def test_highest_satisfying_version_is_selected() -> None:
     assert "tie-break" in reasons["1.0.0"]
 
 
+def test_highest_version_is_semantic_not_lexicographic() -> None:
+    # Regression: ``2.0.0`` sorts above ``10.0.0`` as a string, so the
+    # catalog-order key must compare the parsed SemVer, not the raw text.
+    catalog = _cat(
+        [
+            _entry("tool-a", "2.0.0"),
+            _entry("tool-a", "10.0.0"),
+        ]
+    )
+    lock = resolve_lock(_one_root(range_text="*"), catalog)
+    entry = lock.get("tool-a")
+    assert entry is not None
+    assert entry.semantic_version == "10.0.0"
+
+
 def test_same_version_tie_breaks_on_digest_deterministically() -> None:
     low_digest = _entry("tool-a", "1.0.0", package_bytes=b"package one\n")
     high_digest = _entry("tool-a", "1.0.0", package_bytes=b"package two\n")
