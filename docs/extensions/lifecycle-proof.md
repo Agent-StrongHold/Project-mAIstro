@@ -18,6 +18,13 @@ plugin that lies about its identity is recorded `FAILED` with nothing
 active) and the determinism pin (two runs produce the identical
 `deterministic_core_sha256`).
 
+The proof is also a CI entry point, not only a test fixture: the Formal
+Conformance workflow (`.github/workflows/formal-conformance.yml`) runs the
+script directly on every PR, merge-group candidate, and protected-branch
+push, and uploads the emitted lineage as a job artifact — so every candidate
+re-proves the lifecycle against itself and the reachability gate sees a real
+rooted entry point rather than test-only usage.
+
 ## What the lifecycle is, stage by stage
 
 The proof's scenario is one operator (`operator:alice`) in one canonical

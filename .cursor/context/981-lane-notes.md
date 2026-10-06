@@ -37,3 +37,31 @@ the lineage document and in the result record. Do NOT implement #954/#979/#980 f
 - durable: SQLite B1 twin restart + lock re-materialization; catalog outage/tamper can't
   rewrite installed truth.
 - remove/rollback: UNREACHABLE at this head (documented, blocked on #954).
+
+## CI-repair round (2026-10-06, head 1bd77d562321)
+
+CI at this head failed 4 jobs (exact-debt-ledger, test, Quality gate, Coverage
+gate) on ONE root cause: `scripts/extension_lifecycle_proof.py` was exercised
+only by the test wrapper, so the reachability gate correctly reported it as a
+new unreachable module (`@tool/extension_lifecycle_proof`) that no baseline or
+authorization could absorb (two-merge rule: grants are read from the merge
+base, so a same-PR grant cannot authorize its own introduction).
+
+Fixes (no gate weakened; both follow in-repo precedent):
+1. `formal-conformance.yml` now runs the proof directly (the #460 precedent:
+   "run it directly in this already-required architecture/conformance job so
+   its reachability claim is true rather than baselined away") and uploads the
+   lineage artifact. This makes `@tool/extension_lifecycle_proof` a rooted CI
+   entry point — no baseline growth, no grant needed.
+2. `quality.yml`'s `--source=scripts` coverage producer now names the lifecycle
+   test file alongside `tests/` (the #1096/#374 citation-status precedent), so
+   the script's changed lines are measured by the suite that exercises them
+   (96% lines / 83% branches measured; floors are 90/80).
+
+Validated locally: check-ratchet-provenance.py RC=0; check-vulture-baseline.py
+(CI argv) RC=0 (1332==1332); check-reachability.py RC=0 (170 unreachable, no
+growth); tests/test_check_reachability.py + test_reachability_baseline_identity
+38 passed; full scripts producer run `pytest tests/ packages/maistro-core/
+tests/extensions/test_lifecycle_proof.py` → 4620 passed, 122 skipped;
+check-diff-coverage.py RC=0; check-workflow-inventory.py clean; proof standalone
+PROVED 10/10 stages; ruff check/format clean.
