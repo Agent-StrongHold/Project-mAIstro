@@ -108,3 +108,26 @@ arguments:
   branch's own code eliminated (the scan-wide name is now used by
   `normalize.py`'s progress observation), so the row was pruned from
   `quality/vulture-baseline.json`; the scan introduces no new identities.
+
+## Develop-sync merge (this round, 2026-10-06)
+
+`origin/develop` (56332162c, the M4-B/#958/#1990 convergence) was merged into
+the branch; the only conflict was `maistro/a2a/__init__.py`, where develop's
+#958 discovery exports and this change's #960 normalization exports are
+disjoint — resolved as the alphabetical union of both `__all__` lists (the
+import block had merged cleanly). Verified bidirectionally that every `__all__`
+name is imported and vice versa; `from maistro.a2a import ...` resolves for
+both vocabularies.
+
+Re-validation on the merged head b752c6462: `pytest
+packages/maistro-core/tests` 13068 passed / 938 skipped / 1 xfailed (a2a +
+graph/nodes slice: 250 passed); the three per-identity gates re-run with CI's
+exact arguments all exit 0 — execution-lifecycles 19/19 classified, radon
+138/138 with 0 new/regressed, vulture 1335 findings all banked with 0
+unclassified; `mypy --strict packages/maistro-core/src` clean (730 files,
+after `uv sync --locked --all-extras` matching CI's install); `ruff check` /
+`format --check` clean tree-wide; `check-suite-inventory.py --suite
+packages/maistro-core/tests` ok (14007 node IDs, 0 duplicate identities);
+`check-reachability.py` ok (1295 modules / 170 unreachable); `check-shipped-
+surface-truth.py` ok. Upstream CI on the pre-merge head remains unverified
+(check-runs captured queued/None); nothing in this round mutates GitHub.
