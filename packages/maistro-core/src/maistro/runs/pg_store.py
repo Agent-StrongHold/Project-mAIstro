@@ -132,17 +132,47 @@ _PAYLOAD_TABLES = {
 _TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_STATUSES))
 
 
+#: The terminal statuses as SQL literals, not a `$n::text[]` parameter. The
+#: partial `ix_canonical_runs_retention` and `ix_canonical_runs_archive_candidates`
+#: indexes predicate on exactly these values, and PostgreSQL can only prove such
+#: a predicate from a clause that names the same constants: parameterized, a
+#: generic prepared plan — the steady state after five executions — cannot
+#: prove it, and the sweep degenerates to a sequential scan precisely once the
+#: table is big enough for the index to matter (#863). These are store-owned
+#: constants derived from the model, interpolated the way
+#: `_ACTIVE_ROOT_COUNTS_SQL` below already interpolates the live set; no caller
+#: input ever reaches the string.
+_TERMINAL_STATUS_LITERALS = ", ".join(f"'{status}'" for status in _TERMINAL_RUN_STATUS_VALUES)
+
 #: Retention candidate selection — the two scope variants' whole difference is
 #: one Workspace predicate line (#1175).
 #: One more row than the batch is requested (the LIMIT parameter is sent as
 #: ``limit + 1``) so the outcome can say whether the scope drained or the
 #: batch ran out; the surplus row's lock lives only as long as the
 #: transaction.
-_PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id
+_PURGE_CANDIDATES_SQL_GLOBAL = f"""SELECT run_id
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
-      AND r.status = ANY($2::text[])
+      AND r.status IN ({_TERMINAL_STATUS_LITERALS})
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_node_runs n
+          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+          WHERE n.run_id = r.run_id
+      )
+    ORDER BY r.retention_expires_at
+    LIMIT $2
+    FOR UPDATE SKIP LOCKED"""  # nosec B608
+
+_PURGE_CANDIDATES_SQL_SCOPED = f"""SELECT run_id
+    FROM canonical_runs r
+    WHERE r.retention_expires_at IS NOT NULL
+      AND r.retention_expires_at <= $1
+      AND r.status IN ({_TERMINAL_STATUS_LITERALS})
+      AND r.workspace_id = $2
       AND NOT EXISTS (
           SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
       )
@@ -153,25 +183,68 @@ _PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id
       )
     ORDER BY r.retention_expires_at
     LIMIT $3
-    FOR UPDATE SKIP LOCKED"""
+    FOR UPDATE SKIP LOCKED"""  # nosec B608
 
-_PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id
-    FROM canonical_runs r
-    WHERE r.retention_expires_at IS NOT NULL
-      AND r.retention_expires_at <= $1
-      AND r.status = ANY($2::text[])
-      AND r.workspace_id = $3
-      AND NOT EXISTS (
-          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM canonical_node_runs n
-          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
-          WHERE n.run_id = r.run_id
-      )
-    ORDER BY r.retention_expires_at
-    LIMIT $4
-    FOR UPDATE SKIP LOCKED"""
+#: Archive candidate selection (migration 017): the mirror population of the
+#: retention sweep, kept off the same partial-index proof problem — literal
+#: statuses, parameterized deadline and batch (#863).
+_ARCHIVE_CANDIDATES_SQL = f"""SELECT run_id, project_id, payload FROM canonical_runs
+    WHERE archive_key IS NULL
+      AND retention_expires_at IS NULL
+      AND finished_at IS NOT NULL
+      AND finished_at <= $1
+      AND status IN ({_TERMINAL_STATUS_LITERALS})
+      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
+    ORDER BY finished_at
+    LIMIT $2
+    FOR UPDATE SKIP LOCKED"""  # nosec B608
+
+
+def _list_by_status_query(
+    status_value: str,
+    *,
+    limit: int,
+    offset: int,
+    project_id: str | None = None,
+    workspace_id: str | None = None,
+    admission_source: str | None = None,
+    after: tuple[str, str] | None = None,
+) -> tuple[str, list[object]]:
+    """The exact SQL `list_by_status` runs, as a module function so a test can
+    `EXPLAIN` the query that actually ships — the same reason `pg_episodic`
+    exposes its query shape.
+
+    `status = $1` stays a parameter on purpose: it is caller input. That is
+    precisely why the index serving it (`ix_canonical_runs_status_created`,
+    migration 057) is unconditional — a partial status index could not be
+    proven under a generic prepared plan, and the queue cursor would pay a
+    scan-plus-sort per tick. The `ORDER BY` names the same payload expression
+    the index carries, so the plan needs no Sort node at any cardinality, and
+    the `(payload->>'created_at', run_id)` keyset rides the index's trailing
+    columns.
+    """
+    sql = (
+        "SELECT payload, archive_key FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
+    )
+    params: list[object] = [status_value]
+    if project_id is not None:
+        sql += f" AND project_id = ${len(params) + 1}"
+        params.append(project_id)
+    if workspace_id is not None:
+        sql += f" AND workspace_id = ${len(params) + 1}"
+        params.append(workspace_id)
+    if admission_source is not None:
+        sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
+        params.append(admission_source)
+    if after is not None:
+        cursor_param = len(params) + 1
+        sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
+        params.extend(after)
+    sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
+    params.append(limit)
+    sql += f" OFFSET ${len(params) + 1}"
+    params.append(offset)
+    return sql, params
 
 
 class PgRunStore:
@@ -419,7 +492,6 @@ class PgRunStore:
                 rows = await conn.fetch(
                     _PURGE_CANDIDATES_SQL_SCOPED,
                     cutoff,
-                    _TERMINAL_RUN_STATUS_VALUES,
                     scope.workspace_id,
                     limit + 1,
                 )
@@ -427,7 +499,6 @@ class PgRunStore:
                 rows = await conn.fetch(
                     _PURGE_CANDIDATES_SQL_GLOBAL,
                     cutoff,
-                    _TERMINAL_RUN_STATUS_VALUES,
                     limit + 1,
                 )
             backlog_remaining = len(rows) > limit
@@ -510,18 +581,8 @@ class PgRunStore:
         cutoff = (now if now is not None else datetime.now(UTC)) - archive_after
         async with self._pool.acquire() as conn, conn.transaction():
             rows = await conn.fetch(
-                """SELECT run_id, project_id, payload FROM canonical_runs
-                    WHERE archive_key IS NULL
-                      AND retention_expires_at IS NULL
-                      AND finished_at IS NOT NULL
-                      AND finished_at <= $1
-                      AND status = ANY($2::text[])
-                      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
-                    ORDER BY finished_at
-                    LIMIT $3
-                    FOR UPDATE SKIP LOCKED""",
+                _ARCHIVE_CANDIDATES_SQL,
                 cutoff,
-                _TERMINAL_RUN_STATUS_VALUES,
                 limit,
             )
             for row in rows:
@@ -904,8 +965,8 @@ class PgRunStore:
     ) -> dict[str, Run]:
         """The batched twin of `get_run_for_occurrence`, one query for many.
 
-        `= ANY($2::text[])`, the same list-parameter shape `list_by_status`
-        uses elsewhere in this store, in place of one round trip per
+        `= ANY($2::text[])`, the store's list-parameter shape for
+        caller-supplied value sets, in place of one round trip per
         occurrence — the difference between a single query and tens of
         thousands of serial ones on a schedule whose enumeration cap dropped
         a large truncated tail (#1533).
@@ -990,25 +1051,15 @@ class PgRunStore:
             raise ValueError("limit must be positive")
         if offset < 0:
             raise ValueError("offset must not be negative")
-        sql = "SELECT payload, archive_key FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
-        params: list[object] = [status.value]
-        if project_id is not None:
-            sql += f" AND project_id = ${len(params) + 1}"
-            params.append(project_id)
-        if workspace_id is not None:
-            sql += f" AND workspace_id = ${len(params) + 1}"
-            params.append(workspace_id)
-        if admission_source is not None:
-            sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
-            params.append(admission_source)
-        if after is not None:
-            cursor_param = len(params) + 1
-            sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
-            params.extend(after)
-        sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
-        params.append(limit)
-        sql += f" OFFSET ${len(params) + 1}"
-        params.append(offset)
+        sql, params = _list_by_status_query(
+            status.value,
+            limit=limit,
+            offset=offset,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            admission_source=admission_source,
+            after=after,
+        )
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
         # Route status enumeration through the same row hydrator as every

@@ -25,6 +25,33 @@ or placeholder-only section.
 
 ### Added
 
+- **Third-party provider adapter SDK with canonical routing and usage semantics (#961).**
+  An out-of-tree provider package implements the `ProviderAdapter` normalization
+  protocol over a declarative `ProviderAdapterSpec` and registers through
+  `maistro.capabilities.provider_adapters.register_adapter_models` — the whole
+  integration: declared models join the canonical ADR-079 registry and the
+  cost-aware router selects them under unchanged policy, with no core routing
+  edit. Adapters hold no HTTP client: the approved model-egress module
+  transports them over its one governed POST, injecting the scoped credential
+  per the adapter's declared auth style (bearer/header/query); the spec refuses
+  secret-shaped fields and userinfo-bearing base URLs, so secrets resolve only
+  through the canonical credential authority. Usage, errors (the taxonomy is
+  pinned to canonical classification: auth statuses → auth, 429 →
+  rate-limited, 5xx → retryable, every other 4xx → permanent),
+  and streaming declarations map to canonical interfaces; undeclared
+  capabilities (tools, structured output) refuse explicitly before any HTTP;
+  health probes feed canonical selection instead of a second circuit breaker.
+  Registration runs a shared conformance suite (every declared model, under
+  the transport's strict JSON encoder) that both the built-in
+  reference adapter and external adapters must pass; a pre-effect
+  normalization refusal records as not-applied, never UNKNOWN. Operators wire
+  adapters via `AgentConfig.provider_adapters` — one `model.chat` Binding per
+  entry with `node_id`/`policy_refs` scoping, the entry's endpoint seeded
+  into the outbound policy, boot probes per entry, the reference adapter
+  honoring `litellm_url`, and `create_container` accepting a host-registered
+  catalog through `provider_adapter_catalog`; configuring an adapter
+  authorizes nothing by itself). See ADR-104.
+
 - **The extension SDK boundary is enforced and a reference extension ships outside the
   core tree (#951).** `extensions/namespace-policy.json` declares the public
   package namespace policy — the public SDK root (`maistro_ext_sdk`) versus the
@@ -56,6 +83,18 @@ or placeholder-only section.
   stable `/v1` mounts; no `/vN` path duplication exists.
 
 ### Changed
+
+- **Evolve model effects require declared, execution-scoped authority (#1087).**
+  Manual/request-scoped Evolve work now resolves an operator-declared `model.chat`
+  Binding in its canonical Run's Workspace/Project/Node scope and records the real
+  Run, NodeRun, Attempt and admitted actor on each Invocation. Configure a model
+  Binding for that Project; missing/ambiguous/disabled authority fails closed.
+  The synthetic cycle identities, `agent-runtime` scope and raw HTTP fallback are
+  removed. Recovered Attempts reuse completed paid effects without duplicate
+  quota, while ambiguous or failed model work cannot publish accepted scores.
+  Existing replay-safe population/archive/finalize recovery behavior is retained.
+  Unattended cadence actor/readiness remains the separate owner-decision hold
+  (#1867); this change does not select a service actor or enable cadence.
 
 - **Advisory DAG-shape proportionality judge failures are explicit, not silent allows (#1191).**
   `LLMProportionalityJudge` no longer collapses a timeout, provider error, malformed response
@@ -106,6 +145,16 @@ or placeholder-only section.
 
 ### Security
 
+- **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
+  `clarify` and the model fallback of `web_search` require a configured
+  `model.chat` Binding referenced by the DAG node's `model_binding_id`
+  (top-level or under `config`). Provider selection, scoped credentials,
+  actor/execution correlation, quota and usage use the existing canonical
+  effect authority. Missing authority and malformed model answers fail the
+  node instead of dispatching with ambient credentials or inventing answers.
+  The generic tool Invocation remains in place. Ordinary legacy model and
+  sandbox callers and Agent tool composition remain separate convergence work.
+
 - **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
   Pinned models must have metadata in the configured ProviderRegistry before
   use; registered-but-unavailable pins continue to refuse without fallback.
@@ -114,6 +163,7 @@ or placeholder-only section.
   supply trusted model metadata through `provider_config_path` before activating
   a pinned health model; LiteLLM `/model/new` registration alone is insufficient.
   Unavailable request-alias diagnostics no longer describe aliases as pins.
+
 
 - **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
   (#1362).** Serialized budget definitions, reservation identities, and usage
