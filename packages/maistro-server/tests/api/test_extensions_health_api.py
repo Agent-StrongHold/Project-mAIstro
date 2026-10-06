@@ -400,11 +400,18 @@ class TestHealthViews:
 
     def test_detail_can_project_a_historical_version(self, harness: _Harness) -> None:
         """Acceptance: a superseded version stays identifiable — its detail
-        says SUPERSEDED, never ready, while the active version stays ready."""
+        says SUPERSEDED, never ready, while the active version stays ready.
+        The detail's SLO and failures are the requested version's own
+        evidence, not the active version's."""
         harness.own_workspace()
         harness.login()
         harness.install_active(version="1.4.0")
-        harness.observe("obs-old", version="1.4.0")
+        harness.observe(
+            "obs-old",
+            version="1.4.0",
+            outcome=ObservationOutcome.FAILURE,
+            error=_dependency_error(),
+        )
         harness.install_active(version="1.5.0")
         harness.observe("obs-new", version="1.5.0")
 
@@ -413,12 +420,20 @@ class TestHealthViews:
         ).json()
         assert old["status"]["summary"] == "superseded"
         assert old["status"]["ready"] is False
+        assert old["slo"]["window_observations"] == 1
+        assert old["slo"]["observed_success_rate"] == 0.0
+        assert [error["version"] for error in old["recent_errors"]] == ["1.4.0"]
 
         current = harness.client.get(
             "/extensions/health/acme.chart?org_id=org-1&workspace_id=ws-1"
         ).json()
         assert current["status"]["version"] == "1.5.0"
         assert current["status"]["ready"] is True
+        assert current["slo"]["window_observations"] == 1
+        assert current["slo"]["observed_success_rate"] == 1.0
+        # Without an explicit version the failures span all versions (the
+        # historical default); only the requested-version view narrows them.
+        assert [error["version"] for error in current["recent_errors"]] == ["1.4.0"]
 
 
 class TestRankingAndExport:

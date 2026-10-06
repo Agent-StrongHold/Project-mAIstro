@@ -988,6 +988,7 @@ class ExtensionHealthStore(Protocol):
         scope: ExtensionScope,
         *,
         extension_id: str | None = None,
+        version: str | None = None,
         kind: ExtensionErrorKind | None = None,
         limit: int | None = None,
     ) -> tuple[ExtensionErrorRecord, ...]:
@@ -1076,6 +1077,7 @@ class InMemoryExtensionHealthStore:
         scope: ExtensionScope,
         *,
         extension_id: str | None = None,
+        version: str | None = None,
         kind: ExtensionErrorKind | None = None,
         limit: int | None = None,
     ) -> tuple[ExtensionErrorRecord, ...]:
@@ -1085,6 +1087,7 @@ class InMemoryExtensionHealthStore:
             if error.org_id == scope.org_id
             and error.workspace_id == scope.workspace_id
             and (extension_id is None or error.extension_id == extension_id)
+            and (version is None or error.version == version)
             and (kind is None or error.kind is kind)
         ]
         return tuple(rows[-limit:] if limit is not None else rows)
@@ -1413,20 +1416,27 @@ class ExtensionHealthService:
         extension_id: str,
         *,
         slo_target: float = 0.99,
+        version: str | None = None,
     ) -> SloPosition | None:
-        """Error-budget inputs for an extension's active version.
+        """Error-budget inputs for one extension version.
 
-        With no active install the position covers the extension's recorded
+        The requested ``version`` scopes the position to that version's
+        recorded telemetry; without it the active version answers, and with
+        no active install the position covers the extension's recorded
         telemetry across versions (historical evidence, still attributable).
-        ``None`` when the extension has no recorded observations at all:
+        ``None`` when there are no recorded observations at all:
         there is no SLO position without data, and fabricating a perfect one
         would be success-shaped telemetry of exactly the kind this issue
         removes.
         """
         active = await self._install_store.active_record(scope, extension_id)
-        version = active.version if active is not None else None
+        telemetry_version = (
+            version
+            if version is not None
+            else (active.version if active is not None else None)
+        )
         observations = await self._health_store.observations(
-            scope, extension_id=extension_id, version=version
+            scope, extension_id=extension_id, version=telemetry_version
         )
         if not observations:
             return None
@@ -1440,11 +1450,19 @@ class ExtensionHealthService:
         scope: ExtensionScope,
         extension_id: str,
         *,
+        version: str | None = None,
         kind: ExtensionErrorKind | None = None,
         limit: int = 50,
     ) -> tuple[ExtensionErrorRecord, ...]:
-        """The extension's recorded failures, newest first (provenance kept)."""
-        recorded = await self._health_store.errors(scope, extension_id=extension_id, kind=kind)
+        """The extension's recorded failures, newest first (provenance kept).
+
+        A requested ``version`` restricts the failures to that version, so a
+        historical detail view presents its own evidence; without it the
+        failures span all versions.
+        """
+        recorded = await self._health_store.errors(
+            scope, extension_id=extension_id, version=version, kind=kind
+        )
         return tuple(reversed(recorded[-limit:]))
 
     async def export_telemetry(self, scope: ExtensionScope) -> TelemetryExport:

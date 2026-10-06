@@ -698,7 +698,8 @@ async def get_extension_health_detail(
     error_limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> HealthDetailView:
     """One extension's status (``version`` selects a historical one), its
-    newest classified failures, and its SLO error-budget position.
+    newest classified failures, and its SLO error-budget position, all
+    scoped to the requested version when one is given.
 
     A historical version projects with its own evidence and the scope's
     current active pointer, so a superseded or removed version stays
@@ -715,8 +716,8 @@ async def get_extension_health_detail(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"no install record for {extension_id!r} in this scope",
         )
-    slo = await health.slo(scope, extension_id, slo_target=slo_target)
-    errors = await health.recent_errors(scope, extension_id, limit=error_limit)
+    slo = await health.slo(scope, extension_id, slo_target=slo_target, version=version)
+    errors = await health.recent_errors(scope, extension_id, version=version, limit=error_limit)
     return HealthDetailView(
         status=_status_view(projection),
         recent_errors=[_error_view(error) for error in errors],

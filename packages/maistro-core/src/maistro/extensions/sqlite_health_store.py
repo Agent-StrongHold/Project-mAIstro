@@ -311,6 +311,7 @@ class SqliteExtensionHealthStore:
         scope: ExtensionScope,
         *,
         extension_id: str | None = None,
+        version: str | None = None,
         kind: ExtensionErrorKind | None = None,
         limit: int | None = None,
     ) -> tuple[ExtensionErrorRecord, ...]:
@@ -318,6 +319,7 @@ class SqliteExtensionHealthStore:
             scope,
             event_kind=_ERROR,
             extension_id=extension_id,
+            version=version,
             kind=kind,
             limit=limit,
         )
