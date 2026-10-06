@@ -1089,3 +1089,90 @@ modifications to make an unwired slice green, the round's ledger-amendment
 exception names only the vulture ledger, and vulture has nothing unbanked).
 No code, test, or `quality/` file was modified this round beyond the
 develop merge and this note.
+
+## CI-repair round 19 (L1893, develop sync to 30a30d10e — M9-A2 #1986
+extension-context landing — head `1a742c384a4e`)
+
+This round's lane brief re-issued the BLOCKED block plus the merge-queue
+`test: failure` signal at base `30a30d10e2a64`. develop was re-fetched
+before judging: `origin/develop` advanced `df00785bb41b6` -> `30a30d10e2a64`
+(one commit: M9-A2 "canonical extension context and lifecycle interfaces
+with least-authority access" #1986, which adds `maistro.extensions`
+context/host/errors/identity/lifecycle under `maistro-core`, registry walk
+changes, and `quality/ac-state-notes/auto-950.json`). The sync merge
+`1a742c384a4e` = `f54f6040fb9f` x `30a30d10e2a64` applied cleanly
+(auto-merged `packages/maistro-core/src/_vulture_whitelist.py`, both
+appends retained); `git diff --numstat origin/develop -- quality/` after
+the merge shows exactly the branch's two intended banking files
+(`reachability-baseline.json` +3/-1, `reachability-dispositions.json` +11)
+and zero drift in any other quality ledger. The four B2 surfaces
+(`admission_codec.py`, `admission_identity.py`, both admission test files)
+are byte-identical to the round-18-validated content
+(`git diff f54f6040f..HEAD -- <four paths>` is empty).
+
+Battery re-executed at `1a742c384a4e` (trusted base resolves to
+`9ad158230f19`, the new merge base):
+
+- `uv run ruff check .` -> All checks passed. `uv run ruff format --check .`
+  -> 3103 files already formatted. `scripts/check-merge-markers.py` -> ok.
+- Focused admission suites pure:
+  `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q` ->
+  142 passed, 1 skipped (the PG durability leg skips without a DSN).
+- Focused admission suites with PG legs enforced on the same disposable
+  migrated database as rounds 17-18 (`maistro_b2_1893` on
+  `127.0.0.1:5432`, verified at alembic head `058` before the run;
+  `MAISTRO_REQUIRE_PG_LEGS=1 MAISTRO_TEST_PG_DSN=MAISTRO_TEST_DATABASE_URL=
+  postgresql://dev:dev@127.0.0.1:5432/maistro_b2_1893`): **143 passed,
+  0 skipped** — the raw-pool vs production-pool TEXT snapshot identity
+  proof re-executed against the same server the migration chain ran on.
+- CI-exact mypy (the workflow's ten src paths, ci.yml:109) -> Success, no
+  issues in 1008 source files. quality.yml:1414 form
+  (`uv run mypy --strict packages/maistro-core/src` after
+  `uv sync --locked --all-extras`, the job's own env at quality.yml:104)
+  -> Success, no issues in 753 source files. (Without the full-extra sync
+  the strict form reports 5 import-not-found errors for
+  `maistro_bootstrap.builders.*` — the AGENTS.md fresh-worktree env
+  footgun, not a candidate defect.)
+- Full `scripts/check-suite-inventory.py` (CI form, ci.yml:622, no args)
+  -> ok: 17 suites match the recorded inventory, 28202 collected node IDs,
+  0 duplicate/byte-identical evidence. The round-18 `inventory-delta:`
+  front-matter (+70) is unchanged; this round adds no tests.
+- CI-exact debt-ledger legs at the merged head:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` -> 1332 reviewed identities = 1332
+  findings, exit 0 (nothing unbanked; the lane's conditional vulture
+  ledger amendment stays moot for the tenth consecutive round);
+  `check-shipped-surface-truth.py` -> exit 0.
+- Root-suite `test` leg in CI form (ci.yml:567: `REQUIRE_AUTH=false
+  MAISTRO_DRY_RUN=1 pytest tests/ --ignore=tests/tools/registry`):
+  **4543 passed, 128 skipped** in 398s — identical counts to the round-18
+  run at `85e520d494e6`, so the M9-A2 develop content and the inactive
+  admission stack coexist green.
+- `RATCHET_BASE_REV=origin/develop scripts/check-ratchet-provenance.py` ->
+  exit 1, unchanged in shape: exactly the two reachability provenance
+  sub-gates fail (`maistro.runs.admission_identity` +
+  `maistro.tasks.admission_codec` NEW vs trusted base `9ad158230f19`,
+  dispositions NEW and "not covered by an already-landed reachability
+  authorization"); every other sub-ratchet OK. The grant commit
+  `3235229f5fed` is still not an ancestor of `origin/develop`
+  (`merge-base --is-ancestor` fails at `30a30d10e2a64`), whose
+  `ratchet-authorizations.json` carries the same 11 reachability grants,
+  none for the admission modules.
+
+Hosted CI check-runs at the new heads (`30a30d10e` develop tip,
+`1a742c384a4e`) remain UNVERIFIED from this environment — no hosted
+evidence is claimed; the prior hosted snapshot (30/31 success, sole
+`exact-debt-ledger` failure at `7f18b51ddbb2`) is the last observed state.
+
+Round-19 conclusion: identical to rounds 4-18. All B2 acceptance evidence
+is green at the new merged head; the only red is the exact-debt-ledger
+reachability provenance pair, which by the ratchet's two-merge rule
+(`scripts/ratchet_provenance.py` reads authorizations from the merge base)
+can only clear after the prepared two-entry `reachability` grant
+(`3235229f5fed`) lands on develop and origin/develop is merged here. That
+is campaign-level, out of worker authority (no push permitted), and
+in-branch alternatives are forbidden by the issue ("no baseline/grant/gate
+modifications to make an unwired slice green"). No code, test, or
+`quality/` file was modified this round beyond the develop merge and this
+note.
