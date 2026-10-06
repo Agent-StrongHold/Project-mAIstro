@@ -381,15 +381,36 @@ def test_generate_regenerates_the_document_from_database_state(docs: Path) -> No
 
     # A database-side edit makes the file stale until generate runs.
     claim = _invoke(
-        "claim", "a-001", "--workspace", WORKSPACE, "--db", db,
-        "--actor", "agent-7", "--role", "editor",
+        "claim",
+        "a-001",
+        "--workspace",
+        WORKSPACE,
+        "--db",
+        db,
+        "--actor",
+        "agent-7",
+        "--role",
+        "editor",
     )
     assert claim.exit_code == 0, claim.output
     claim_id = json.loads(claim.output)["claim_id"]
     write = _invoke(
-        "write", "a-001", "--workspace", WORKSPACE, "--db", db,
-        "--actor", "agent-7", "--role", "editor", "--claim-id", claim_id,
-        "--expected-version", "1", "--title", "Renamed in the database",
+        "write",
+        "a-001",
+        "--workspace",
+        WORKSPACE,
+        "--db",
+        db,
+        "--actor",
+        "agent-7",
+        "--role",
+        "editor",
+        "--claim-id",
+        claim_id,
+        "--expected-version",
+        "1",
+        "--title",
+        "Renamed in the database",
     )
     assert write.exit_code == 0, write.output
     assert "Renamed in the database" not in document.read_text()
@@ -440,8 +461,16 @@ def test_select_with_nothing_claimable_answers_none_without_error(docs: Path) ->
     # Every open item claimed: select still exits 0, with the plain answer.
     for item_id in ("a-001", "b-001"):
         claim = _invoke(
-            "claim", item_id, "--workspace", WORKSPACE, "--db", db,
-            "--actor", "agent-7", "--role", "editor",
+            "claim",
+            item_id,
+            "--workspace",
+            WORKSPACE,
+            "--db",
+            db,
+            "--actor",
+            "agent-7",
+            "--role",
+            "editor",
         )
         assert claim.exit_code == 0, claim.output
 
@@ -507,22 +536,53 @@ def test_agent_verbs_run_against_the_postgres_store() -> None:
     assert json.loads(selected.output)["item"]["item_id"] == item_id
 
     claimed = _invoke(
-        "claim", item_id, "--workspace", workspace, "--db", dsn,
-        "--actor", "agent-9", "--role", "editor",
+        "claim",
+        item_id,
+        "--workspace",
+        workspace,
+        "--db",
+        dsn,
+        "--actor",
+        "agent-9",
+        "--role",
+        "editor",
     )
     assert claimed.exit_code == 0, claimed.output
     claim_id = json.loads(claimed.output)["claim_id"]
 
     written = _invoke(
-        "write", item_id, "--workspace", workspace, "--db", dsn,
-        "--actor", "agent-9", "--role", "editor", "--claim-id", claim_id,
-        "--expected-version", "1", "--title", "PG CLI progress",
+        "write",
+        item_id,
+        "--workspace",
+        workspace,
+        "--db",
+        dsn,
+        "--actor",
+        "agent-9",
+        "--role",
+        "editor",
+        "--claim-id",
+        claim_id,
+        "--expected-version",
+        "1",
+        "--title",
+        "PG CLI progress",
     )
     assert written.exit_code == 0, written.output
     assert json.loads(written.output)["title"] == "PG CLI progress"
 
     released = _invoke(
-        "release", item_id, "--claim-id", claim_id, "--workspace", workspace,
-        "--db", dsn, "--actor", "agent-9", "--role", "editor",
+        "release",
+        item_id,
+        "--claim-id",
+        claim_id,
+        "--workspace",
+        workspace,
+        "--db",
+        dsn,
+        "--actor",
+        "agent-9",
+        "--role",
+        "editor",
     )
     assert released.exit_code == 0, released.output
