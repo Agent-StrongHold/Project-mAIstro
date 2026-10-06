@@ -437,8 +437,11 @@ def _v2_binding(
 
     The v2 binding write is one statement setting both columns, so a task
     announced without its Run is corruption (``invalid_v2_record``), never an
-    unbound row. ``task_id`` itself is queue bookkeeping the task-agnostic DTO
-    cannot express: it is type-checked and then deliberately not carried.
+    unbound row. The forward-table constraint also binds ``task_id`` to this
+    row's immutable receipt identity. The DTO deliberately does not carry the
+    queue bookkeeping identifier, but decoding must validate it before
+    dropping it so corrupt storage cannot be silently re-described as a valid
+    canonical binding.
     """
     raw_task_id = row["task_id"]
     raw_run_id = row["run_id"]
@@ -452,6 +455,12 @@ def _v2_binding(
         if raw_run_id is None:
             raise AdmissionRowDecodeError(
                 "task_id announced without run_id violates the v2 binding write",
+                code=AdmissionDecodeCode.INVALID_V2_RECORD,
+                scope_key=scope_key,
+            ) from None
+        if raw_task_id != receipt_id:
+            raise AdmissionRowDecodeError(
+                "task_id must equal the v2 receipt identity when bound",
                 code=AdmissionDecodeCode.INVALID_V2_RECORD,
                 scope_key=scope_key,
             ) from None

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +69
+  packages/maistro-core/tests: +70
 ---
 # atomic-admission-b2
 
@@ -10,7 +10,7 @@ B2 of the #1845 admission-decode stack (#1893): the new
 `maistro.tasks.admission_codec` module turns forward-schema admission rows
 into exact #1851 immutable DTOs or typed fail-closed errors, and the new
 `packages/maistro-core/tests/tasks/test_admission_codec.py` pins that
-contract with 69 tests. Sixty-eight are pure unit tests over `Mapping` rows;
+contract with 70 tests. Sixty-nine are pure unit tests over `Mapping` rows;
 one is a PostgreSQL durability test gated on the required disposable database.
 At the original B2 leaf B1 (#1892) was not yet on the coordinated branch; the
 real-pool test was added only after B1 reached this branch.
@@ -49,7 +49,11 @@ PostgreSQL leg as durability proof.
 - The v2 mapping always emits `task_id` as NULL: the #1851 DTO is
   task-agnostic by design, and the binding statement owns that bookkeeping.
   `test_v2_round_trip_preserves_all_snapshot_bytes` pins the resulting
-  encode→decode→encode identity.
+  encode→decode→encode identity. A v2 bound row must additionally have
+  `task_id == receipt_id`: although the DTO intentionally omits task queue
+  bookkeeping, the codec validates that immutable storage invariant before it
+  drops the column, so corrupt storage cannot be re-described as a valid
+  canonical binding.
 - Error messages never quote snapshot bytes or owner tokens, and parsing
   chains are suppressed (`__suppress_context__` asserted).
 

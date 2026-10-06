@@ -507,6 +507,16 @@ def test_v2_task_without_run_is_corruption_not_unbound() -> None:
     assert error.code is AdmissionDecodeCode.INVALID_V2_RECORD
 
 
+def test_v2_bound_task_must_match_its_immutable_receipt_identity() -> None:
+    row = _v2_row(
+        binding=AdmissionBinding(run_id="run-1", receipt_id="rcpt-1"),
+        row_overrides={"task_id": "another-receipt"},
+    )
+    error = _code_of(row)
+    assert error.code is AdmissionDecodeCode.INVALID_V2_RECORD
+    assert "another-receipt" not in str(error)
+
+
 def test_v2_acknowledged_requires_bound_record() -> None:
     # The row is built from a valid unbound record, then the acknowledged_at
     # column is stamped on — the v2 constructor rejects the combination.
