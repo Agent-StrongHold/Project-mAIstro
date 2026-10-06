@@ -586,8 +586,13 @@ jobs:
           # without naming that file here the module's changed lines measure
           # 0% in this producer and the diff-coverage gate fails on tests
           # that exist and pass but were never pointed at this --source.
+          # The same holds for the #813 walk/disposition logic in
+          # maistro_registry.cli: its tests live in the root suite's
+          # tests/tools/registry/test_cli.py, and the root producer measures
+          # --source=scripts only, so cli.py's changed lines scored 0% here
+          # until that file was named in this producer's pytest args too.
           uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
-            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py --timeout=30 -q
+            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py tests/tools/registry/test_cli.py --timeout=30 -q
           # The extension host harness (#974) joins the measured set: it is
           # the code third-party CI executes, so an unmeasured change there
           # would be indistinguishable from a tested one. Its suite needs no
