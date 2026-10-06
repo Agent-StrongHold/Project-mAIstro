@@ -237,3 +237,87 @@ Executed at `72d561d30` (all exit 0 unless stated):
   previous value and vs the inherited base fold; no inherited note edited.
   Residual risk: the floor is a single-machine measurement; a fresh-CI
   container drawing the low outlier would need the same re-bank.
+
+## Validation battery (develop-sync round 2, heads `fecbcc6bb` + `b35e42659`,
+## branch `auto-950`)
+
+Second develop sync, resolving the preserved conflict block: a merge of
+`626683154` (develop's M9-C2 #1998) had been left in progress with three
+unmerged paths, then current `origin/develop` (`a8258ee24`: M9-F3 #2012,
+M9-A1 #1982, M9-D2 #2003 + dependabot bumps) was merged on top. Both merges
+committed. Resolutions, all union-preserving:
+
+- `extensions/__init__.py`: four-layer union surface (#950 runtime contract,
+  #952 registry, #953 activation, #956 resolution). **Name collision**:
+  `errors.ExtensionLifecycleError` (#950 hook-failure wrapper) renamed to
+  `ExtensionHookError` — the governed-install flow (#952/#953) already
+  exports `ExtensionLifecycleError` as the base of `ManifestRejected` et al.
+  and is consumed end-to-end by `maistro_server/api/extensions.py` and
+  `test_install_lifecycle.py`; the #950 side owns fewer call sites (ADR-104,
+  two test files) and was renamed in lockstep. Test count unchanged — no
+  test added, removed, or renamed; only the referenced name changed.
+- **ADR number collision**: both sides authored "ADR-104". The
+  extension-context ADR (authored 2026-10-05, `fb15092f4`) keeps ADR-104;
+  the provider-adapter ADR (merged 2026-10-06 via M9-E1) renumbered to
+  ADR-105 (`git mv`), with its SPEC-284 governing citation, the 961 lane
+  note, ADR-INDEX and CHANGELOG updated. No `@pytest.mark.ac` marker
+  referenced the provider ADR (those use `SPEC-284/AC-N`).
+- `_vulture_whitelist.py`: both sides' explicit-reference imports kept.
+
+Executed at `4c672507c` (all exit 0 unless stated):
+
+- `uv sync --locked --all-extras` (CI parity; `--extra dev` alone leaves
+  `maistro_bootstrap` import-not-found noise in mypy) plus `uv pip install
+  -e packages/maistro-evolve` (formal/ imports it; not a workspace member).
+- `uv run ruff check .` → all checks pass; `ruff format --check .` → 3043
+  files already formatted.
+- `uv run mypy --strict packages/maistro-core/src` → Success, 739 files, 0
+  issues.
+- `uv run pytest packages/maistro-core/tests/extensions/ -q` → **297
+  passed** (both halves: #950 conformance/reference-execution and
+  #952/#953/#956 install/registry/resolution).
+- `PYTHONPATH=packages/maistro-core/src uv run pytest formal/ --timeout=120
+  -q` → **663 passed, 1 skipped** (quality.yml's Pillar 2 step, exact args).
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py` (CI's exact env spelling,
+  vulture-ratchet.yml) → exit 0: citation-status 0 exceptions,
+  enumerations 1 tolerated → 1 current, promotion-surface 74=74,
+  reachability 170=170, shell-execution 3=3, contract-markers 371=371,
+  adr-status-language/lifecycle flat, 49 consumers with provenance.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0; **1332 = 1332**
+  reviewed identities → findings (exact multiset match; the vulture ledger
+  needed no amendment this round — the rename introduced no unbanked
+  identity). `check-shipped-surface-truth.py` → ok.
+- `uv run python scripts/check-citation-status-provenance.py` (registry.yml
+  step) → exit 0, 0 exceptions vs base `a8258ee24`.
+- `uv run pyright --outputjson packages/maistro-core/src` +
+  `scripts/check-pyright-report.py --baseline 21` → exit 0; 21 errors = the
+  21-error baseline, none in `maistro/extensions/`.
+- xenon (CI's exact scope incl. `packages/maistro-ext-sdk/src`) → 140 blocks
+  ≤ 145 baseline, 0 average violations, none in extensions/.
+- `scripts/check-radon-baseline.py`, `check_enumerations.py`,
+  `check-doc-links.py` (exercised by the ADR-105 rename),
+  `check-release-consistency.py`, `bump_version.py --check`,
+  `check-suite-inventory.py` (16 suites match; the merged baseline carries
+  both halves' extension tests and the new `maistro-ext-sdk` suite) → all
+  exit 0.
+- `scripts/check-diff-coverage.py` over a scoped coverage run
+  (`pytest packages/maistro-core/tests/extensions/ --cov=maistro
+  --cov-branch`, `--base origin/develop`) → all five measured
+  `maistro/extensions/*` files plus `maistro/runtime/__init__.py` pass the
+  90% line / 80% branch floors; the only absent file,
+  `scripts/verify-wheel-imports.py`, is unchanged branch content measured by
+  CI's full `coverage-unit` producer, which a scoped run cannot reproduce.
+- `scripts/check-ac-state.py --run-tests --ratchet --bank` → measured
+  design coverage **38.9049** over 164 taken decisions (89 at zero), banked
+  in this lane's own note (43.2114 → 38.9049). The fall is inherited, not
+  introduced: base `a8258ee24` itself measures **38.5301** over 163
+  decisions (89 at zero; verified in a throwaway worktree) — develop's WIP
+  merges added unproven decisions after the M9-E1 note banked 43.2114, and
+  no `quality/ratchet-authorizations.json` grant exists at base to disown
+  the merged floor. The candidate is above its base (+0.37pp, the lane's own
+  ADR-104 evidence); the ratchet's regression half still judges against the
+  base-resolved fold, which only a base-side grant or evidence restoration
+  can move. Residual risk: until develop re-banks or grants, every branch
+  off develop fails the acceptance-state ratchet the same way.
