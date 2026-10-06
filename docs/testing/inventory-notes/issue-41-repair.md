@@ -262,3 +262,46 @@ suites from the repo-root CWD — environment, not tree):
   `quality/ac-state.json` artifact on disk (backed up to the job dir, then
   removed); `check-enumerations.py` was deleted upstream by develop.
 - `gh issue view 1176` read-only = **CLOSED** (re-confirmed this round).
+
+## Round 9 — CI-repair at f3b42a046 (integration-scope / workflow-lint / test /
+gates-ran failures)
+
+Merge-queue CI at `f3b42a046` (runs 37456491211 / 37456491320 /
+37460441928) failed four checks. Read-only log retrieval showed two root
+causes and two pure cascades:
+
+1. **`test` — "Generated API types match the backend's OpenAPI document
+   (#1048)".** `git diff --exit-code` on `types.gen.ts` failed because the
+   backend's `Mission` schema carries `run_id: str | None` (canonical-Run
+   correlation, this issue's seam) while the committed generated types did
+   not. Repaired per the step's own comment: ran
+   `uv run python scripts/dump-hive-openapi.py` and
+   `npm --prefix packages/hive-conductor/frontend run gen:api` locally; the
+   regenerated diff is byte-identical to the one CI reported
+   (`+ run_id?: string | null`), then committed. Frontend `npm run build`
+   (tsc + vite) and `npm run lint` (0 errors, 94 warnings < 96 budget) pass
+   with the regenerated types.
+2. **`workflow-lint` — "Integration scope judges the newest check attempt"
+   (`node --test tests/ci/integration-scope.test.cjs`).** Test 12 pinned
+   `timeout-minutes == 90` / `EVIDENCE_WAIT_ATTEMPTS == '170'`, but commit
+   `7b46d630f` (ci(#41): widen integration-scope evidence window) had
+   deliberately raised the workflow to 125/240 — documented in the workflow
+   comment — without updating the pin. The pin now asserts 125/'240' plus the
+   invariant that the job timeout exceeds the evidence window it bounds, so
+   future widening cannot silently drop the slack. 12/12 node tests pass; the
+   other five workflow-lint scripts (`check-required-checks.py`,
+   `check-uv-setup.py`, `check-workflow-write-safety.py`,
+   `check-branch-protection.py`, `check-install-functions.py`) all exit 0.
+3. **`integration-scope`** failed only because `docker-build` — a required
+   specialized producer — concluded `skipped`: every `needs: workflow-lint`
+   job is skipped when workflow-lint fails. Pure cascade of (2); no scope
+   logic changed.
+4. **`gates-ran`** failed with "Required execution evidence is missing or
+   non-executed" (2 not present, 6 present-but-skipped — all `needs:
+   workflow-lint` producers). Pure cascade of (2); no evaluator changed.
+
+`packages/*` pytest inventory delta is **+0**: both repairs are outside the
+recorded suites (`packages/hive-conductor/frontend/src/api/types.gen.ts` is
+generated TypeScript; `tests/ci/integration-scope.test.cjs` runs under
+`node --test` and is not a pytest suite). No test added or removed; test
+count in the node file remains 12.
