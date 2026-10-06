@@ -64,3 +64,23 @@ One pre-existing graph-node test (`test_sync_kinds.py`) asserts the wire
 shape its strict `post()` double accepts; the adapter `params` kwarg now
 crosses only for query-style auth, so gateway-era call sites see the
 unchanged shape.
+
+## Repair round (2026-10-06, head bccdea79 + this fix)
+
+No suite-count delta: zero tests added or removed; `inventory-delta` above is
+unchanged. This round only adds traceability and governance artifacts:
+
+- **20 `@pytest.mark.ac("SPEC-284/AC-n")` markers** on existing tests in
+  `test_provider_adapters.py` (collect count unchanged at 84), mapping the six
+  issue acceptance bullets to the tests that already pin them.
+- **`docs/specs/SPEC-284-provider-adapter-sdk.md`** — the spec implementing
+  ADR-104 (fixes the `check-ac-state.py` failure: `adrs_without_implementing_spec`
+  32 → 31, `design_coverage` raised past the 42.8609 floor), with all six
+  criteria measured `reachable` on a full `--run-tests --ratchet --mandate
+  56332162` run (mandates OK, improvement banked to
+  `quality/ac-state-notes/auto-961.json`).
+- **devskim pragma relocation in `provider_adapters.py`** — the two
+  `DS137138` suppressions moved from adjacent lines onto the flagged lines
+  (same-line is the syntax CI honors; adjacent-line pragmas at 898/1141 did
+  not suppress findings at 899/1140), and the module docstring's bare
+  ``http://`` literal reworded away (line 112).

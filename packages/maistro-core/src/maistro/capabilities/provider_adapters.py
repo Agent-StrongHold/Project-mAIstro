@@ -109,8 +109,8 @@ _SECRET_FIELD_NAMES = frozenset({"api_key", "apikey", "secret", "token", "passwo
 def _parse_adapter_base_url(url: str) -> SplitResult | None:
     """Parse ``url`` as an absolute http(s) URL with a host, or ``None``.
 
-    A real parse rather than a prefix check: ``http://`` with no host and
-    IPv6 garbage both pass a prefix check and only fail later inside the
+    A real parse rather than a prefix check: a plain-HTTP scheme with no host
+    and IPv6 garbage both pass a prefix check and only fail later inside the
     transport, at the first request. ``None`` is the refusal answer so the
     validator can raise with the offending value attached.
     """
@@ -895,8 +895,8 @@ class ReferenceChatAdapter:
         return payload.get("status") in (None, "ok", "healthy")
 
 
-def reference_adapter_spec(  # devskim: ignore DS137138 until 2027-12-31
-    base_url: str = "http://litellm:4000",
+def reference_adapter_spec(
+    base_url: str = "http://litellm:4000",  # devskim: ignore DS137138 until 2027-12-31
 ) -> ProviderAdapterSpec:
     """The built-in reference adapter's spec, ready to register.
 
@@ -1137,8 +1137,9 @@ async def _entry_adapter(
         # ``litellm:4000`` routes the reference adapter to the same endpoint
         # every ordinary gateway call uses.
         base_url = (
-            litellm_base_url.strip() or "http://litellm:4000"
-        )  # devskim: ignore DS137138 until 2027-12-31
+            litellm_base_url.strip()
+            or "http://litellm:4000"  # devskim: ignore DS137138 until 2027-12-31
+        )
         reference = ReferenceChatAdapter(reference_adapter_spec(base_url))
         await register_adapter_models(catalog, registry, reference)
         return reference

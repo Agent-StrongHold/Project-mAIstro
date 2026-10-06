@@ -218,6 +218,7 @@ def test_spec_refuses_non_http_base_url() -> None:
         _spec(base_url="ftp://api.acme.example")
 
 
+@pytest.mark.ac("SPEC-284/AC-2")
 def test_spec_refuses_secret_fields_it_did_not_declare() -> None:
     """A manifest arriving with credential material is a misconfigured package."""
 
@@ -245,6 +246,7 @@ def test_spec_refuses_relative_health_path() -> None:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-284/AC-6")
 async def test_builtin_reference_adapter_passes_conformance_and_registers() -> None:
     adapter = ReferenceChatAdapter(reference_adapter_spec())
     report = run_adapter_conformance(adapter)
@@ -255,6 +257,7 @@ async def test_builtin_reference_adapter_passes_conformance_and_registers() -> N
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-284/AC-6")
 async def test_third_party_style_adapter_passes_the_same_conformance_suite() -> None:
     adapter = AcmeAdapter(_spec())
     report = run_adapter_conformance(adapter)
@@ -264,6 +267,7 @@ async def test_third_party_style_adapter_passes_the_same_conformance_suite() -> 
     assert store.is_available("acme-mini")
 
 
+@pytest.mark.ac("SPEC-284/AC-6")
 def test_conformance_catches_an_adapter_lying_about_usage() -> None:
     class LyingUsage(AcmeAdapter):
         def usage_from(self, payload: dict[str, object]) -> tuple[int, int] | None:
@@ -275,6 +279,7 @@ def test_conformance_catches_an_adapter_lying_about_usage() -> None:
     assert not report.ok
 
 
+@pytest.mark.ac("SPEC-284/AC-6")
 def test_conformance_catches_an_adapter_outside_the_error_taxonomy() -> None:
     class RenegadeErrors(AcmeAdapter):
         def error_kind_for(self, status: int) -> str:
@@ -295,6 +300,7 @@ def test_conformance_catches_a_response_normalizer_dropping_choices() -> None:
     assert "response_normalization" in {check.name for check in report.failures}
 
 
+@pytest.mark.ac("SPEC-284/AC-6")
 def test_conformance_catches_a_spec_carrying_a_secret_field() -> None:
     spec = _spec()
     # Simulate a spec that arrived with secret material on it (a schema-less
@@ -323,6 +329,7 @@ def test_conformance_refuses_a_raising_normalization_hook() -> None:
 # --- Registration: the out-of-tree seam, no core routing edits ---------------
 
 
+@pytest.mark.ac("SPEC-284/AC-1")
 async def test_registration_places_models_in_canonical_registry_and_routing() -> None:
     catalog, store = await _catalog_with(AcmeAdapter(_spec()))
     router = CostAwareRouter(store)
@@ -511,6 +518,7 @@ def _egress(
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-284/AC-3")
 async def test_adapter_call_records_canonical_invocation_with_usage_and_cost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -559,6 +567,7 @@ async def test_adapter_call_records_canonical_invocation_with_usage_and_cost(
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-284/AC-2")
 async def test_adapter_never_sees_the_secret_and_payload_carries_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -656,6 +665,7 @@ async def test_header_auth_style_uses_the_declared_header_name(
     ],
 )
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-284/AC-3")
 async def test_adapter_error_taxonomy_raises_canonical_typed_errors(
     monkeypatch: pytest.MonkeyPatch,
     status: int,
@@ -704,6 +714,7 @@ async def test_unreachable_adapter_endpoint_is_retryable_not_applied(
         )
 
 
+@pytest.mark.ac("SPEC-284/AC-5")
 async def test_undeclared_tool_support_fails_explicitly_before_any_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -730,6 +741,7 @@ async def test_undeclared_tool_support_fails_explicitly_before_any_http(
     assert captured.requests == []
 
 
+@pytest.mark.ac("SPEC-284/AC-5")
 async def test_undeclared_structured_output_fails_explicitly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -803,6 +815,7 @@ async def test_declared_capabilities_pass_through_to_the_normalized_payload(
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-284/AC-4")
 async def test_foreign_provider_handle_is_a_wiring_error_not_an_egress() -> None:
     class Rogue:
         """Impersonates a resolved provider but is neither gateway nor adapter."""
@@ -832,6 +845,7 @@ async def test_unavailable_adapter_model_refuses_instead_of_falling_back() -> No
     assert "does not fall back" in resolved.reason
 
 
+@pytest.mark.ac("SPEC-284/AC-4")
 async def test_router_selection_resolves_adapter_provider_for_unpinned_calls() -> None:
     catalog, store = await _catalog_with(AcmeAdapter(_spec()))
     resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
@@ -840,6 +854,7 @@ async def test_router_selection_resolves_adapter_provider_for_unpinned_calls() -
     assert resolved.name == "acme-mini"
 
 
+@pytest.mark.ac("SPEC-284/AC-4")
 async def test_unpinned_adapter_binding_stays_within_its_declared_adapter() -> None:
     """A faster foreign model must not win a credential-scoped Binding.
 
@@ -1215,6 +1230,7 @@ async def test_container_close_without_a_catalog_leaves_the_default_alone() -> N
         reset_default_adapter_catalog()  # isolation for other suites
 
 
+@pytest.mark.ac("SPEC-284/AC-2")
 async def test_bootstrap_loads_binding_and_provisions_credential_via_authority() -> None:
     catalog, store = await _catalog_with(AcmeAdapter(_spec()))
     effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
@@ -1297,6 +1313,7 @@ async def test_bootstrap_refuses_a_pin_outside_the_adapters_models() -> None:
         )
 
 
+@pytest.mark.ac("SPEC-284/AC-2")
 async def test_bootstrap_refuses_a_foreign_credential_reference() -> None:
     catalog, store = await _catalog_with(AcmeAdapter(_spec()))
     effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
@@ -1418,6 +1435,7 @@ async def test_registration_refuses_an_adapter_failing_on_a_later_model() -> Non
     assert catalog.registered_ids() == ()
 
 
+@pytest.mark.ac("SPEC-284/AC-3")
 def test_conformance_refuses_a_taxonomy_contradicting_canonical_classification() -> None:
     """A provider may classify within the taxonomy, never against it.
 
@@ -1438,6 +1456,7 @@ def test_conformance_refuses_a_taxonomy_contradicting_canonical_classification()
     assert "500" in failed[0].detail
 
 
+@pytest.mark.ac("SPEC-284/AC-3")
 def test_reference_error_taxonomy_matches_canonical_classification() -> None:
     from maistro.capabilities.provider_adapters import _PINNED_ERROR_STATUSES
 
@@ -1577,6 +1596,7 @@ def test_adapter_config_refuses_a_blank_policy_reference() -> None:
         _adapter_config(policy_refs=("policy/ok", "  "))
 
 
+@pytest.mark.ac("SPEC-284/AC-4")
 async def test_bootstrap_allows_the_configured_adapter_origin() -> None:
     """The operator-named endpoint joins the outbound policy's origins.
 
