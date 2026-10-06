@@ -993,3 +993,99 @@ grant `3235229f5fed` on develop, this branch syncs it, and the job passes
 with zero content change (landing order proven by probe merges recorded in
 rounds 4–11). No code, test, or `quality/` file was modified this round
 beyond the develop merge and this note.
+
+## CI-repair round 18 (L1893, develop sync to df00785bb — the M1-B1 #1325
+landing — head `85e520d494e6`)
+
+This round's lane brief re-issued the BLOCKED block plus the merge-queue
+`test: failure` signal. develop was re-fetched before judging:
+`origin/develop` advanced `3f8ccbe9d40d` -> `df00785bb41b6` (two commits:
+M9-C1 extension contract versioning #1997, then the M1-B1 landing "Route
+every ordinary task/chat request into a canonical Run (#1325)" — the parent
+integration this issue is staged on, and the dispatch's declared base).
+Hosted check-runs at the pre-sync head `7f18b51ddbb2` (dispatch source 35):
+31 checks, exactly one failure — `exact-debt-ledger` — with `test` success,
+so the merge-queue `test: failure` label does not correspond to any red at
+this head; the real red is and remains the debt-ledger job.
+
+The branch merged `origin/develop` cleanly (merge `85e520d494e6`; the only
+both-sides-changed file, `packages/maistro-core/src/_vulture_whitelist.py`,
+auto-merged to the exact union of both sides' entries — verified by diff
+against each parent). Ledger-survival audit per the multiset hazard:
+`git diff --numstat origin/develop -- quality/` shows ONLY the branch's
+intentional rows (reachability-baseline +3/-1, dispositions +11); develop
+touched no quality ledger since the merge base, and the branch's admission
+rows survive (2 baseline identities, 1 disposition group). develop's B1
+did not add `admission_codec`/`admission_identity` (files absent from the
+develop tree), and the grant `3235229f5fed` is still NOT an ancestor of
+`origin/develop`.
+
+Battery re-executed at the merged head `85e520d494e6`:
+
+- `uv sync --locked --extra dev` ok (no uv.lock/pyproject change on
+develop); `ruff check .` clean; `ruff format --check .` 3094 files clean.
+- Focused admission suites -> 142 passed, 1 skipped (PG-gated); with
+  `MAISTRO_TEST_PG_DSN` + `MAISTRO_TEST_DATABASE_URL` on a freshly created
+  disposable DB `maistro_b2_1893` migrated through the real chain
+  (`alembic upgrade head` -> head `058`) under `MAISTRO_REQUIRE_PG_LEGS=1`:
+  **143 passed, 0 skipped** — first-hand this round, matching round 17.
+  The four admission source/test files are byte-identical since the
+  round-17 durability head `14c1c596946d` (`git diff 14c1c5969..HEAD` on
+  those paths is empty), so the durability evidence carries by content
+  identity as well.
+- Destructive migration evidence on the same disposable DB:
+  `tests/migrations/test_migration_chain.py` +
+  `tests/migrations/test_task_admission_generation_upgrade.py` -> **31
+  passed** (develop's B1 extended these from round 17's 27).
+- Root-suite leg of the `test` job in CI's exact form (`REQUIRE_AUTH=false
+  MAISTRO_DRY_RUN=1 uv run pytest tests/ --ignore=tests/tools/registry -q`)
+  -> **4543 passed, 128 skipped** (develop's B1 tests included).
+- Reachability gate self-tests under `RATCHET_BASE_REV=origin/develop` ->
+  38 passed; `check-suite-inventory.py` full -> ok, 17 suites;
+  `--suite packages/maistro-core/tests` -> ok (14647); `check-test-
+duplicates.py` ok; `check-convergence-matrix.py` OK (1337 production
+  modules, 172 unreachable attributed).
+- `check-reachability.py` exit 0 (1337 modules, 172 unreachable, candidate
+  ledger matches); `check-reachability-dispositions.py` exit 0 (50 groups:
+  150 CONNECT, 20 LIBRARY, 2 RETIRE); `check-shipped-surface-truth.py`
+  exit 0; vulture at CI's exact argv -> exit 0, 1332 = 1332 (the merged
+  whitelist absorbs develop's B1 findings; nothing unbanked — the lane's
+  conditional vulture-ledger amendment stays moot for the ninth round).
+- CI-exact mypy (the workflow's ten src paths) -> Success, no issues in
+  1002 source files.
+- Acceptance spot-checks re-read at this head: all ten prospective tests
+  present by exact name; zero clock reads in either module (grep hits are
+  docstrings only); the six required codec interfaces at the documented
+  lines (126/137/156/206/232/259); zero production importers of either
+  module (grep over `packages/*/src` excluding the modules and the
+  whitelist) — the unreachable classification remains honest and the C
+  leaf owns the wiring.
+
+exact-debt-ledger at the merged head (trusted base now resolves to
+`df00785bb41b6`): `check-shipped-surface-truth.py` exit 0, vulture exit 0,
+but `RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` still
+exits 1 on exactly the two reachability provenance sub-gates
+(`maistro.runs.admission_identity` + `maistro.tasks.admission_codec` NEW
+vs trusted base / NEW dispositions, not covered by an already-landed
+reachability authorization); every other sub-ratchet OK. The unblock path
+was re-proven at this round's head for the fourth consecutive develop
+state: probe worktree `~/Git/worktrees/probe-1893-round18`, merge
+`27b4cfe80438` = `85e520d494e6` + grant `3235229f5fed` (clean, +10 lines
+of `quality/ratchet-authorizations.json` only),
+`RATCHET_BASE_REV=3235229f5fedd7f9ba876650b4baad0ef22d9993` -> aggregator
+exit 0 (stable across three consecutive invocations; a first invocation
+in the freshly-synced probe venv exited 1 — the AGENTS.md fresh-worktree
+env footgun — with all later runs green and full OK inventory), both
+admission identities printing `authorized: ... #1893`, shipped-surface
+exit 0, vulture 1332 = 1332 exit 0 under the same base. The complete
+exact-debt-ledger job is therefore green in the post-landing state and
+red only before the grant lands.
+
+Round-18 conclusion: unchanged from rounds 4–17 — the only remaining
+action is campaign-level (land the two-entry `reachability` grant on
+develop, then merge origin/develop here); no in-branch edit can or may
+green the provenance pair (the issue forbids baseline/grant/gate
+modifications to make an unwired slice green, the round's ledger-amendment
+exception names only the vulture ledger, and vulture has nothing unbanked).
+No code, test, or `quality/` file was modified this round beyond the
+develop merge and this note.
