@@ -146,6 +146,7 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.store import InMemoryExtensionStore
     from maistro.graph.harness import HarnessAdapter
@@ -503,6 +504,10 @@ class Container:
     # this is a records-and-authority store, never an execution authority.
     extension_install_store: InMemoryExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Private organizational extension catalog (#979). In-memory catalog per
+    # organization until a durable backend is configured.
+    catalog_store: InMemoryCatalogStore | None = None
+    catalog_service: CatalogService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -2073,6 +2078,21 @@ class Container:
                 loader=UnwiredExtensionLoader(),
             )
         return self.extension_install_service
+
+    def ensure_catalog_service(self) -> CatalogService:
+        """Return the private organizational extension catalog service (#979).
+
+        Lazily built over the process-lifetime in-memory store. The store is
+        cached back onto the container so callers that bypass the service see
+        the same snapshot the API serves.
+        """
+        from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+
+        if self.catalog_service is None:
+            store = self.catalog_store or InMemoryCatalogStore()
+            self.catalog_store = store
+            self.catalog_service = CatalogService(store)
+        return self.catalog_service
 
 
 def _wire_schedule_admission(
