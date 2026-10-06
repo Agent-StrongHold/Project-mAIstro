@@ -357,5 +357,4 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
-
 )
