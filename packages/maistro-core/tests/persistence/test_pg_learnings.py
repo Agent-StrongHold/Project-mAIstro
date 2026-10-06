@@ -172,6 +172,11 @@ async def test_ensure_schema_fences_ddl_behind_advisory_lock(
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS contradiction_count ",
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS last_confirmed_at ",
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_at ",
+        # The Gauntlet's audit trail (M4-B2, merged from develop) upgrades three
+        # more columns here; the fence must cover them like every other upgrade.
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_evaluator_version ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validation_run_ids ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validation_content_hash ",
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS supersedes ",
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS superseded_by ",
         "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS stage ",
