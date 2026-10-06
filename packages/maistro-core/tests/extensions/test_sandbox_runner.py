@@ -46,11 +46,12 @@ TRUSTED = TrustReport(trusted=True)
 def _manifest(
     permissions: tuple[str, ...] = ("workspace.read",),
     publisher: str = "acme",
+    extension_id: str | None = None,
 ) -> object:
     payload = b"runner-payload-v1"
     document = {
         "manifest_version": 1,
-        "id": f"{publisher}.chart_tools",
+        "id": extension_id or f"{publisher}.chart_tools",
         "name": "Chart Tools",
         "version": "1.4.0",
         "publisher": publisher,
@@ -243,6 +244,42 @@ class TestStartupFailsClosed:
         with pytest.raises(asyncio.CancelledError):
             await task
         # teardown still ran despite cancellation, and nothing leaked
+        assert backend.calls[-1][0] == "destroy"
+        assert list(backend._instances) == []
+
+    async def test_a_second_cancel_cannot_abandon_teardown(self) -> None:
+        """A cancel delivered *while the destroy itself is running* must not
+        abort it: the teardown await is shielded, so the destroy either
+        finishes in-band or continues out-of-band — the sandbox child and its
+        registration never outlive the exec() call, whatever the cancellation
+        timing (#970 review)."""
+
+        destroy_started = asyncio.Event()
+        release_destroy = asyncio.Event()
+
+        class _SlowDestroyBackend(_StubBackend):
+            async def destroy(self, instance: SandboxInstance) -> None:
+                destroy_started.set()
+                await release_destroy.wait()
+                await super().destroy(instance)
+
+        backend = _SlowDestroyBackend()
+        runner = _runner(backend)
+        task = asyncio.create_task(runner.exec(_profile(), ["echo", "hi"]))
+        await asyncio.sleep(0)  # let spawn+exec start
+        task.cancel()  # first cancel: lands during exec, drives the finally
+        await destroy_started.wait()  # teardown is now in flight
+        task.cancel()  # second cancel: lands mid-teardown
+        release_destroy.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # the second cancel surfaced at the shield, but the destroy it was
+        # protecting kept running: give the shielded inner coroutine ticks to
+        # finish and assert nothing leaked
+        for _ in range(50):
+            if not backend._instances:
+                break
+            await asyncio.sleep(0)
         assert backend.calls[-1][0] == "destroy"
         assert list(backend._instances) == []
 
@@ -552,3 +589,25 @@ class TestInProcessExtensionLoader:
         wrong = replace(self._record(), version="2.0.0")
         with pytest.raises(Exception, match="is wired for"):
             await loader.load(wrong, b"payload")
+
+    async def test_a_foreign_publisher_record_is_refused_before_activation(self) -> None:
+        """The trusted tier's authorization is keyed on the publisher, and a
+        manifest's id does not bind its publisher (the format validates the
+        two independently) — so a record sharing only the extension id and
+        version must not activate under a profile selected for another
+        publisher's trust evidence (#970 review)."""
+
+        activated: list[str] = []
+
+        async def activate(record: ExtensionInstallRecord, payload: bytes) -> str:
+            activated.append(record.extension_id)
+            return "extension-up"
+
+        loader = self._loader(activate=activate)
+        foreign = replace(
+            self._record(),
+            manifest=_manifest(extension_id="acme.chart_tools", publisher="mallory"),
+        )
+        with pytest.raises(Exception, match=r"by publisher 'acme', not.*by 'mallory'"):
+            await loader.load(foreign, b"payload")
+        assert activated == []

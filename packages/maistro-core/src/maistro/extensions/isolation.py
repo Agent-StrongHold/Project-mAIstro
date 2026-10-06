@@ -35,6 +35,8 @@ a nonzero exit is reported on the outcome, and only kernel-evidenced kills
 boundary is a guardrail, not a containment guarantee for hostile code; the
 tier ladder and mode floors in :mod:`maistro.sandbox.policy` govern how much
 boundary an execution mode demands, and this module never selects below them.
+And ``max_file_mb`` is a per-file ceiling (``RLIMIT_FSIZE``), not an aggregate
+storage quota: a workspace quota needs backing this substrate does not provide.
 """
 
 from __future__ import annotations
@@ -181,9 +183,12 @@ class ExtensionSandboxPolicy:
     #: PID ceiling — the fork-bomb bound, enforced as ``RLIMIT_NPROC``.
     max_processes: int = 64
     max_timeout_s: int = 120
-    #: Per-file size ceiling inside the sandbox (``RLIMIT_FSIZE``): the
-    #: temporary/workspace storage rule that keeps a workload from filling
-    #: the host disk.
+    #: Per-file size ceiling inside the sandbox (``RLIMIT_FSIZE``): no single
+    #: file the workload writes may exceed this. It is deliberately **not** an
+    #: aggregate storage quota — unboundedly many just-under-limit files can
+    #: still accumulate in the sandbox workspace, so a host that needs a hard
+    #: disk-exhaustion bound adds a quota-backed filesystem or a usage monitor
+    #: on top; this field must not be read as promising one (#970 review).
     max_file_mb: int = 64
     #: The network ceiling for sandboxed extensions. Extensions never get
     #: ``HOST`` egress: sharing the host namespace whole with third-party
@@ -767,9 +772,11 @@ class ExtensionSandboxRunner:
             # Teardown must be cancellation-safe: CancelledError is a
             # BaseException, so an ``except Exception`` path skips cleanup and
             # leaves the sandbox child running. Shielded so a second cancel
-            # delivered mid-teardown cannot abandon it either.
+            # delivered mid-teardown cannot abandon the destroy either: the
+            # shielded inner coroutine keeps running out-of-band even though
+            # this task's cancellation still surfaces through the suppress.
             with contextlib.suppress(asyncio.CancelledError):
-                teardown_violation = await self._destroy(profile, backend, instance)
+                teardown_violation = await asyncio.shield(self._destroy(profile, backend, instance))
 
         violations = (
             *self._classify_limits(profile, config, instance, result),
@@ -958,9 +965,14 @@ class InProcessExtensionLoader(ExtensionCodeLoader):
     operational logging.
 
     Fail-closed by construction: a record that does not match the profile
-    this loader was built for is refused, and a sandboxed profile is refused
-    outright — in-process activation cannot be reached by asking a sandboxed
-    loader, only by being wired for it.
+    this loader was built for — id, version, and the manifest's publisher,
+    which is the axis the trusted tier's authorization is keyed on
+    (``policy.in_process_publishers``) — is refused, and a sandboxed profile
+    is refused outright — in-process activation cannot be reached by asking
+    a sandboxed loader, only by being wired for it. The binding is identity-
+    level, not byte-level: that the payload is the artifact the record's
+    manifest digest names is the governed install flow's contract upstream
+    (M9-B), not this adapter's to re-verify.
     """
 
     def __init__(
@@ -982,10 +994,13 @@ class InProcessExtensionLoader(ExtensionCodeLoader):
         if (
             record.extension_id != self._profile.extension_id
             or record.version != self._profile.version
+            or record.manifest.publisher != self._profile.publisher
         ):
             raise ExtensionIsolationError(
                 f"InProcessExtensionLoader is wired for {self._profile.extension_id} "
-                f"{self._profile.version}, not {record.extension_id} {record.version}"
+                f"{self._profile.version} by publisher {self._profile.publisher!r}, "
+                f"not {record.extension_id} {record.version} by "
+                f"{record.manifest.publisher!r}"
             )
         result = await self._runner.run_in_process(
             self._profile, lambda: self._activate(record, payload)

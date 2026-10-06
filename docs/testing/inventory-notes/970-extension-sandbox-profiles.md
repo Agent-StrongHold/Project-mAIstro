@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +86
+  packages/maistro-core/tests: +88
 ---
 # 970-extension-sandbox-profiles
 
@@ -93,3 +93,25 @@ Review increments (+3, same issue), closing holes found while re-verifying:
   quarantine-candidate warning and one extension's eviction cannot re-arm
   or disarm another's count (`test_escalation_count_is_independent_of_log_capacity`,
   `test_one_extensions_eviction_does_not_re_escalate_another`).
+
+Repair increment (+2, same issue), closing findings that survived independent
+re-verification of the review round:
+
+- the teardown await is now actually shielded (`asyncio.shield`), making the
+documented cancellation contract true rather than aspirational: a second
+cancel delivered while the destroy itself is running surfaces at the shield
+but cannot abandon the destroy — it finishes out-of-band and nothing leaks
+(`test_a_second_cancel_cannot_abandon_teardown`, proven to fail against the
+unshielded form);
+- `InProcessExtensionLoader.load` now binds the record's manifest publisher,
+not just the extension id and version: the trusted tier's authorization is
+keyed on the publisher (`in_process_publishers`), and the manifest format
+validates id and publisher independently, so a record sharing only the id
+and version must not activate under another publisher's trust decision
+(`test_a_foreign_publisher_record_is_refused_before_activation`). The
+binding is identity-level; byte-level artifact identity stays the governed
+install flow's contract, stated in the loader's docstring;
+- `ExtensionSandboxPolicy.max_file_mb` no longer claims to keep a workload
+"from filling the host disk": `RLIMIT_FSIZE` is a per-file ceiling, not an
+aggregate quota, and the docstring plus the module's honesty notes now say
+exactly that.
