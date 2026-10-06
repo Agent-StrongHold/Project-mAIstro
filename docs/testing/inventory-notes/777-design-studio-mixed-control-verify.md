@@ -12588,3 +12588,64 @@ identity/lineage. The branch is battery-green and now develop-current
 (merge `0e34f1b110bf`), contains the complete PR-#1660 head, and leaves the
 canonical `Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched. No
 repair exists in this lane until the dependencies land (Refs #777).
+
+## Round 191 (2026-10-06, job 184d210bf923) — no movement; block re-confirmed with fresh evidence
+
+Job manifest head equals round 190's end head `0be637515ca4` exactly; working
+tree was clean at start. This job's driver also carried `checks: []` (no
+`check-*.log` files exist), so all evidence below was executed locally at
+`0be637515ca4`.
+
+**No develop sync needed:** fresh `git fetch origin`; `origin/develop` is
+byte-identical to the round-190 base `7334621bf797` — no new develop commits,
+no sync conflict. (New `gh-readonly-queue/develop/pr-1755|2008|2011` queue
+refs appeared; none merged to develop.)
+
+**Fresh dependency capture (gh api, read-only, this round):** #804 open,
+#805 open, #806 open, #1572 open (canonical Goal store, updated
+2026-10-06T04:06Z — still unlanded), #773 open, #774 open, #776 open;
+#775 closed (only dependency ever closed, insufficient for AC1).
+The #805 owner decision (2026-09-25) still gates #805/#806/#773/#774 on
+#1572.
+
+**AC1 prerequisites re-proven absent at `0be637515ca4` (all greps/ls fresh):**
+- `packages/maistro-core/src/maistro/goals/` → No such file or directory
+- `grep -rlE 'GoalReconciler|delegate_goal' packages/*/src` → 0 files
+- `design_service.py` workspace-agent/control-mode/delegation matches → 0
+- `ControlMode.COLLABORATIVE` still the deliberate placeholder at
+  `versions.py:1064` (`_ = ControlMode.COLLABORATIVE`)
+- Design-Studio Playwright specs remain only `design-studio-keyboard.spec.ts`
+  and `design-studio-truthfulness.spec.ts`; no mixed-control E2E (AC13 absent)
+- `goal_store|GoalRevision` hits under `packages/*/src` resolve to
+  `projects/rubric_store.py`'s `GoalRevisionCatalog` Protocol — whose
+  docstring (lines 19–25) states the canonical module "does not exist yet at
+  this head" and forbids a competing Goal store; declaration-only seam
+
+**Battery re-run fresh at `0be637515ca4`:**
+- `uv run ruff check .` → EXIT 0 ("All checks passed!")
+- `uv run ruff format --check .` → EXIT 0 (3013 files already formatted)
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI-exact args) → EXIT 0,
+  base `7334621bf797` → candidate `0be637515ca4`, 1335 reviewed identities →
+  1334 findings, unclassified 0, never_allowlist 0; no unbanked identities,
+  no ledger amendment needed or made
+- check-api-route-contracts / check-route-permissions / check-promotion-surface
+  / check-reachability / check-ratchet-provenance / check-backlog-consistency /
+  check-cross-package-imports / check-suite-inventory → all EXIT 0
+- `uv run pytest packages/maistro-bootstrap/tests
+  packages/hive-conductor/backend/tests packages/maistro-design/tests -q` →
+  **4179 passed, 13 skipped** (141.44s) = bootstrap 232P/6S + backend
+  3407P/6S + design 540P/1S, matching the rounds 183–190 baseline exactly
+- `uv run pytest packages/maistro-core/tests/a2a -q` → **239 passed** (2.20s)
+  — develop's merged #960 suites green at this head
+
+Verdict: **BLOCKED** (dependency-blocking, ninth consecutive round with fresh
+evidence). Nothing changed since round 190: no develop movement, no dependency
+issue transitioned, AC1's consumed APIs remain absent from every reachable
+surface, and the issue's stop condition still forbids Design-Studio-private
+substitutes (mirrored by the campaign prohibition on competing Goal stores /
+execution authorities). The branch is battery-green, develop-current, contains
+the complete PR-#1660 head, and leaves the canonical
+`Goal -> Graph -> Run -> NodeRun -> Attempt` model untouched. No repair exists
+in this lane until #1572/#804/#805/#806 (+#774/#776 for AC2–AC13) land
+(Refs #777).
