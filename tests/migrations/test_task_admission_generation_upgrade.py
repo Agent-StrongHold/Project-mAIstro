@@ -554,9 +554,10 @@ class TestTheDowngrade:
         # chain tip, and the invariant under test is that the refused
         # downgrade leaves the stamp AT HEAD. Develop's quota door
         # (#1196/#718) landed on `055` as `043_invocation_quota_door` in this
-        # sync, and #1047's user-model tables re-parent past it as `056`, so
-        # that is the head now.
-        assert _stamped_version() == "056"
+        # sync, and #1047's user-model tables re-parent past it as `056`; this
+        # branch's #863 planner-stability revision re-parents onto that tip
+        # as `057`, so that is the head now.
+        assert _stamped_version() == "057"
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 
