@@ -1,6 +1,63 @@
 # Issue #860 — current CI repair
 
-## Latest checkpoint — job `97a26abf2d78434dbc8c424a44b1f392`
+## Latest checkpoint — job `7d8dc6e818e340e6b08c9f1df256168a`
+
+Frozen scope: issue #860, assigned worktree `/home/dev/Git/wt/auto-860`, branch
+`auto-860`; clean starting HEAD `011688e3a20b72bd68fb3765d24e92f76045a624`,
+assigned base `626683154ce9dbd521e6754cee494190c0fb29f0`. No salvage or merge
+conflict present. Inspected supplied dispatch snapshot and prior result
+`8c1c10c6`; no driver `check-*.log` files existed at initial inspection.
+Only this existing handoff and the reproduced blank-EOF defect in
+`issue-860-8c1c10c6-repair.md` change. No source, tests, inventory, runtime
+configuration, ledger, grants or historical raw evidence changed.
+
+Fresh validation (1200-second timeouts; job-local `check-*-worker.log`):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, **1336 findings / 1336 reviewed identities**, zero unclassified/never-allowlist. Scanner comparison base `56332162cf63`. No unbanked identity or dead-code repair was identified; manufacturing a ledger amendment is not justified.
+- `uv run ruff check .`: PASS. `uv run ruff format --check .`: PASS, 3003 files.
+- `uv run pytest tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q`: **61 passed in 2.42s**. No new tests, so no inventory delta required.
+- `uv run python scripts/check-suite-inventory.py`: PASS, 15 suites, 27048 unique identities, no duplicate evidence.
+- `uv run python scripts/check-ratchet-provenance.py` and `uv run python scripts/check-shipped-surface-truth.py`: PASS.
+- Inline `uv run python` evaluated `m3a-round6-shakedown.json` with the current runner: failures are `sustain_duration` and `exact_rc_artifact`. It records 90.43 seconds and `hashes.git_head=b31c5fdaa63b40506335bbb288889e87bdb9ba0c`, not the assigned HEAD. The initial diagnostic queried the wrong top-level identity key; the appended correction reads the actual nested key. This is evidence reevaluation, **not a fresh soak**.
+- `git diff --check 626683154ce9dbd521e6754cee494190c0fb29f0...HEAD` initially failed at `issue-860-8c1c10c6-repair.md:115`. Removed that single extra EOF line; `git diff --check 626683154ce9dbd521e6754cee494190c0fb29f0` then passed. This fixes a demonstrated check failure, not the missing soak.
+
+Reviewed repository instructions and accepted ADR-085, ADR-081626-f383 and
+ADR-082526-b36a. ADR-081 is Proposed, not an acceptance waiver. Preserve
+Goal -> Graph -> Run -> NodeRun -> Attempt and canonical lease/fence authority:
+one admission or terminal Run count does not prove physical-work uniqueness.
+ADR-085 principal-keying does not establish shared replica state. The stronger
+#860 non-bypass criterion remains unmet rather than silently narrowed to #842's
+local-enforcement contract. No competing authority or policy change introduced.
+
+| Acceptance criterion | Executed evidence / disposition |
+|---|---|
+| Representative users/Workspaces and execution/product workload | **UNVERIFIED**; profile gaps at `m3a-load-profile.md:152-164` remain. |
+| Two application replicas | Boot-contract tests pass; deployed exact-RC replicas **UNVERIFIED**. |
+| Sustained saturation, reclaim, retry, memory/fd/process leaks | **UNVERIFIED**; historical 90.43-second run is not a long soak. |
+| No duplicate physical schedule/task/Run/Attempt work; Goal reconciliation | **UNVERIFIED**; admission tests cannot establish execution/fencing/reconciliation under load. |
+| Rate/security/degraded non-bypass by replica selection | Counterexample reproduced for authenticated and pre-auth identities by `test_replica_selection_has_an_independent_production_allowance`: same identity receives `[200,200,429]` on each replica. Production installs that middleware at `maistro_server/main.py:628`; constructor at `api/rate_limit.py:72` uses independent memory. Full RC security/degraded behavior **UNVERIFIED**. |
+| Complete PostgreSQL/application-loop/worker/RSS/fd/queue/error telemetry | Process-group sampler tests pass; complete production telemetry and threshold observations **UNVERIFIED**. |
+| Active-work replica kill/restart drain/fencing/recovery | **UNVERIFIED**; no new deployed failure/recovery run. |
+| Long-running exact RC artifact/config soak | **UNVERIFIED / blocked**; current evaluator rejects historical artifact/duration; `run_soak.py:635-646` rejects its own host-process topology. |
+| Findings filed/reclassified to earliest invariant | Complete disposition **UNVERIFIED**; no GitHub mutations permitted or performed. |
+| Machine/human evidence bound to exact image/package/commit/config | Historical pack reevaluated; current qualifying RC evidence **UNVERIFIED**. |
+
+**BLOCKED, not merge-ready.** The vulture failure does not reproduce and the
+remaining block is not a develop-sync conflict. No immutable RC/configuration
+was designated by this assignment; do not invent one or equate a longer host
+preflight with production. Next: select the RC, complete representative workloads
+and application/physical-effect oracles, resolve the replica-budget mismatch,
+then run the unchanged production artifact for >=14400 seconds with active-work
+failure/recovery observations. Docker availability is not claimed as a blocker;
+a production soak was not executed in this bounded CI-repair round.
+
+Progress: checked 1 issue; done 0 acceptance-complete; skipped 0 issues;
+1 initial validation failure repaired (diff whitespace). Commit locally only;
+no push or integration approval. Existing work preserved.
+
+---
+
+## Historical checkpoint — job `97a26abf2d78434dbc8c424a44b1f392`
 
 Frozen scope: #860 only, assigned `auto-860` worktree. Verified clean starting
 HEAD `e28917ddb6f26f5408a0dec2a58145da68357f46` and locally resolving assigned
