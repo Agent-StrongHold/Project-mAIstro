@@ -131,6 +131,63 @@ async def test_claim_write_release_cycle_is_attributed_and_enforced(store) -> No
     assert edited_again.version == 3
 
 
+async def test_select_returns_none_when_nothing_is_claimable(store) -> None:
+    surface = AgentBacklogSurface(store, _roles({"agent:x": "editor"}))
+    # No work at all: the honest answer is None, not a crash.
+    assert await surface.select(actor="agent:x", workspace_id=WS) is None
+
+    # Open work that is fully claimed is equally unselectable.
+    await _seed(store, "eng-001", "Only item")
+    await surface.claim("eng-001", actor="agent:x")
+    assert await surface.select(actor="agent:x", workspace_id=WS) is None
+
+
+async def test_select_names_unresolved_dependencies_but_still_selects(store) -> None:
+    """A blocked item is still the item to work on — but the reason says so,
+    and only *defined* open dependencies count as unresolved."""
+    surface = AgentBacklogSurface(store, _roles({"agent:x": "editor"}))
+    await _seed(store, "eng-001", "Blocked work", deps=("eng-002", "eng-404"))
+    await _seed(store, "eng-002", "The open dependency")
+
+    selection = await surface.select(actor="agent:x", workspace_id=WS)
+    assert selection is not None
+    assert selection.item.item_id == "eng-001"
+    assert "dependencies unresolved: eng-002" in selection.reason
+    assert "eng-404" not in selection.reason, "an undefined id is not an unresolved dependency"
+
+    # Once the dependency closes, the same item selects with the plain reason.
+    dep = await store.get_item("eng-002")
+    assert dep is not None
+    await store.close_item(
+        "eng-002",
+        expected_version=dep.version,
+        actor="human:owner",
+        outcome=BacklogItemStatus.DONE,
+        closure_summary="landed",
+        evidence_refs=("PR #2",),
+    )
+    resolved = await surface.select(actor="agent:x", workspace_id=WS)
+    assert resolved is not None
+    assert resolved.reason == "highest-priority open item"
+
+
+async def test_release_without_a_claim_is_a_no_op_and_a_foreign_claim_is_refused(store) -> None:
+    surface = AgentBacklogSurface(store, _roles({"agent:a": "editor", "agent:b": "editor"}))
+    await _seed(store, "eng-001", "Work item")
+
+    # No live claim: releasing is a silent no-op, never an error.
+    await surface.release("eng-001", actor="agent:a", claim_id="claim-none")
+
+    claim = await surface.claim("eng-001", actor="agent:a")
+    with pytest.raises(AgentSurfaceError, match="is not 'agent:b''s active claim"):
+        await surface.release("eng-001", actor="agent:b", claim_id=claim.claim_id)
+    with pytest.raises(AgentSurfaceError, match="is not 'agent:a''s active claim"):
+        await surface.release("eng-001", actor="agent:a", claim_id="claim-other")
+    # The refusals left the lease intact; its holder can still release it.
+    await surface.release("eng-001", actor="agent:a", claim_id=claim.claim_id)
+    assert await store.active_claim("eng-001") is None
+
+
 async def test_viewer_reads_but_cannot_claim_or_write(store) -> None:
     surface = AgentBacklogSurface(store, _roles({"agent:v": "viewer"}))
     await _seed(store, "eng-001", "Work item")
