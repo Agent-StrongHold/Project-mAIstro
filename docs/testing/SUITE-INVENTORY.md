@@ -137,6 +137,7 @@ file per change, alongside the delta itself.
 | `packages/maistro-server/tests` | `ci.yml` |
 | `packages/maistro-turing/tests` | `ci.yml` |
 | `packages/maistro-design/tests` | `ci.yml` |
+| `packages/maistro-ext-sdk/tests` | `ci.yml` |
 | `packages/maistro-bootstrap/tests` | `ci.yml` |
 | `packages/maistro-canvas/tests` | `ci.yml` |
 | `packages/maistro-turing/backend/tests` | `ci.yml` (own invocation) |
