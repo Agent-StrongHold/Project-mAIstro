@@ -115,7 +115,7 @@ a second identity on the effect row.
 **6. The lifecycle is three hooks; failures are attributed, not hidden.**
 `ExtensionLifecycle` is a structural protocol — `activate(context)`,
 `invoke(context)`, `deactivate(context)` — driven by the host through
-`ExtensionHost`, which wraps hook failures in `ExtensionLifecycleError` naming
+`ExtensionHost`, which wraps hook failures in `ExtensionHookError` naming
 the extension identity and preserves the original cause. The host
 (`ExtensionHost`) is a context factory and lifecycle driver only: it is not a
 scheduler, run store, or execution authority, and hosts keep driving physical

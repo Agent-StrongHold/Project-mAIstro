@@ -34,9 +34,9 @@ from maistro.extensions import (
     ExtensionContext,
     ExtensionContractError,
     ExtensionDescriptor,
+    ExtensionHookError,
     ExtensionHost,
     ExtensionIdentity,
-    ExtensionLifecycleError,
     GovernedEffectRoute,
     InvocationScope,
     ScopeMismatch,
@@ -330,7 +330,7 @@ async def test_governed_route_refuses_dispatch_outside_an_attempt(
 
     # The hook refusal surfaces attributed to the extension that raised it,
     # with the contract refusal preserved as the cause.
-    with pytest.raises(ExtensionLifecycleError, match=r"reference\.greeter.*activate") as exc_info:
+    with pytest.raises(ExtensionHookError, match=r"reference\.greeter.*activate") as exc_info:
         await host.activate(_EffectTryingLifecycle(), activation)
     assert isinstance(exc_info.value.__cause__, EffectNotDeclared)
     assert "outside an Attempt" in str(exc_info.value.__cause__)

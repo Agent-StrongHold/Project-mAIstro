@@ -53,8 +53,15 @@ class ExtensionCancelled(ExtensionContractError):
     """
 
 
-class ExtensionLifecycleError(ExtensionContractError):
-    """A lifecycle hook raised, attributed to the extension that raised it."""
+class ExtensionHookError(ExtensionContractError):
+    """A lifecycle hook raised, attributed to the extension that raised it.
+
+    Renamed from ``ExtensionLifecycleError`` at the develop sync: the
+    governed-install flow (#952/#953) already exports ``ExtensionLifecycleError``
+    as the base of its install-record failures, and one package cannot export
+    two classes under one name. Hook failures keep the contract-error
+    hierarchy; only the name changed.
+    """
 
 
 class ExtensionContractUnavailableError(ExtensionContractError):

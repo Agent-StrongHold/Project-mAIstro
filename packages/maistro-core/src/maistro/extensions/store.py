@@ -1,25 +1,22 @@
-"""Extension install-record store: protocol and in-memory reference (M9-B1).
+"""Durable homes for extension registry records and activation state (#939).
 
-The store is append-only. There is no update and no delete: an install record
-is evidence, and evidence is not rewritten. Every record snapshots the
-publisher identity, digest, signature, manifest, catalog provenance and trust
-evidence from install time, so registry-side changes — a re-registered
-publisher, an edited catalog entry, a deleted catalog — cannot reach back into
-history.
+Two stores share this module, one per layer of the M9-B epic:
 
-Two rules give the records their identity discipline:
-
-* **Idempotent re-record.** Recording the exact same identity (same name,
-  version, package digest, manifest digest) again returns the original record.
-  Nothing is duplicated, and activation is not re-run.
-* **Identity conflict.** Recording a *different* package under an already
-  installed ``(extension_name, semantic_version)`` raises
-  :class:`ExtensionIdentityConflict` and persists nothing. Two packages that
-  share a semantic version but differ in digest never silently share identity:
-  the second one is a loud refusal, not an overwrite.
-
-Verification runs before persistence and before the ``activate`` callback is
-invoked, so a tampered package fails before any extension code is imported.
+- **M9-B1 install-record store (issue #952)**: append-only records of who
+  published what, and what was installed. There is no update and no delete: an
+  install record is evidence, and evidence is not rewritten. Every record
+  snapshots the publisher identity, digest, signature, manifest, catalog
+  provenance and trust evidence from install time. Verification runs before
+  persistence and before the ``activate`` callback is invoked, so a tampered
+  package fails before any extension code is imported. Identity discipline:
+  an exact re-record of an installed identity is idempotent; a *different*
+  package under an installed ``(extension_name, semantic_version)`` raises
+  :class:`~maistro.extensions.types.ExtensionIdentityConflict`.
+- **M9-B2 activation store (issue #953)**: the persistence seam the
+  activation state machine speaks to — lifecycle records plus their audited
+  transition trail. The in-memory implementation keeps full history for the
+  process lifetime, explicitly not a restart-surviving store; a PostgreSQL
+  backend can arrive behind the same protocol without touching the machine.
 """
 
 from __future__ import annotations
@@ -31,7 +28,11 @@ from typing import Protocol, runtime_checkable
 
 from maistro.extensions.types import (
     ExtensionIdentityConflict,
+    ExtensionInstallRecord,
     ExtensionRegistryError,
+    ExtensionScope,
+    ExtensionState,
+    ExtensionTransition,
     InstallRecord,
     InstallRequest,
     PackageIdentity,
@@ -43,6 +44,10 @@ from maistro.extensions.types import (
     manifest_snapshot,
 )
 from maistro.extensions.verify import verify_package_bytes, verify_package_signature
+
+# --------------------------------------------------------------------------
+# M9-B1: install-record store (issue #952)
+# --------------------------------------------------------------------------
 
 #: The trust policy an install-time verification is recorded under. One value,
 #: on purpose: this store records exactly one kind of check, and the string is
@@ -78,6 +83,25 @@ class ExtensionInstallStore(Protocol):
 
         Raises before persisting — and before ``activate`` runs — on any
         verification or identity failure. Returns the immutable record.
+        """
+        ...
+
+    async def record_installs(
+        self,
+        installs: Sequence[tuple[InstallRequest, bytes]],
+        *,
+        activate: ActivationCallback | None = None,
+    ) -> list[InstallRecord]:
+        """Atomic batch form of :meth:`record_install`.
+
+        Verification and identity rules run for *every* entry first — each
+        against the store's history plus the records already resolved in this
+        batch — before the first record is persisted. Any failure raises
+        having persisted nothing and invoked ``activate`` zero times, so a
+        batch can never land half-installed. On success every record is
+        persisted, then ``activate`` runs once per newly persisted record in
+        batch order; idempotent re-records return the existing record without
+        re-activating, exactly as the single-record path does.
         """
         ...
 
@@ -167,6 +191,19 @@ def resolve_install(
     )
 
 
+def _record_for_identity(
+    records: Sequence[InstallRecord], identity: PackageIdentity
+) -> InstallRecord:
+    """The already-known record for ``identity`` (idempotent path)."""
+    wanted = identity_key(identity)
+    for record in records:
+        if identity_key(record.identity) == wanted:
+            return record
+    raise ExtensionRegistryError(
+        "idempotent re-record matched no persisted record; store state is inconsistent"
+    )
+
+
 def _ensure_same_key(existing: PublisherIdentity, incoming: PublisherIdentity) -> None:
     """Refuse to re-register a publisher id under a different signing key."""
     if existing.signing_key_fingerprint != incoming.signing_key_fingerprint:
@@ -212,10 +249,53 @@ class InMemoryExtensionInstallStore:
             install_id=uuid.uuid4().hex,
         )
         if resolved is None:
-            return self._existing(request.identity)
+            return _record_for_identity(
+                self._installs.get(request.identity.extension_name, ()), request.identity
+            )
         history.append(resolved)
         if activate is not None:
             activate(resolved)
+        return resolved
+
+    async def record_installs(
+        self,
+        installs: Sequence[tuple[InstallRequest, bytes]],
+        *,
+        activate: ActivationCallback | None = None,
+    ) -> list[InstallRecord]:
+        """Verify the whole batch, then record all, then activate.
+
+        See the protocol docstring for the all-or-nothing contract.
+        """
+        pending: list[InstallRecord] = []
+        resolved: list[InstallRecord] = []
+        for request, package_bytes in installs:
+            prior = [
+                *self._installs.get(request.identity.extension_name, ()),
+                *(
+                    record
+                    for record in pending
+                    if record.identity.extension_name == request.identity.extension_name
+                ),
+            ]
+            record = resolve_install(
+                self._publishers,
+                prior,
+                request,
+                package_bytes=package_bytes,
+                now=datetime.now(UTC),
+                install_id=uuid.uuid4().hex,
+            )
+            if record is None:
+                resolved.append(_record_for_identity(prior, request.identity))
+            else:
+                pending.append(record)
+                resolved.append(record)
+        for record in pending:
+            self._installs.setdefault(record.identity.extension_name, []).append(record)
+        if activate is not None:
+            for record in pending:
+                activate(record)
         return resolved
 
     async def install_history(self, extension_name: str) -> list[InstallRecord]:
@@ -230,11 +310,115 @@ class InMemoryExtensionInstallStore:
                 return record
         return None
 
-    def _existing(self, identity: PackageIdentity) -> InstallRecord:
-        """The already-persisted record for ``identity`` (idempotent path)."""
-        for record in self._installs.get(identity.extension_name, ()):
-            if identity_key(record.identity) == identity_key(identity):
-                return record
-        raise ExtensionRegistryError(
-            "idempotent re-record matched no persisted record; store state is inconsistent"
+
+# --------------------------------------------------------------------------
+# M9-B2: activation store (issue #953)
+# --------------------------------------------------------------------------
+
+
+@runtime_checkable
+class ExtensionStore(Protocol):
+    """Persistence seam for install records and their audit trail."""
+
+    async def save_record(self, record: ExtensionInstallRecord) -> None: ...
+
+    async def get_record(self, install_id: str) -> ExtensionInstallRecord | None: ...
+
+    async def latest_record(
+        self, scope: ExtensionScope, extension_id: str, version: str
+    ) -> ExtensionInstallRecord | None:
+        """Most recent record for the (scope, extension, version) key."""
+        ...
+
+    async def active_record(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> ExtensionInstallRecord | None: ...
+
+    async def set_active(self, record: ExtensionInstallRecord) -> None:
+        """Swap the scope's active pointer for the record's extension id.
+
+        Implementations must make this a single atomic replacement: callers
+        rely on it for caller-perceived activation atomicity.
+        """
+        ...
+
+    async def installed_versions(self, scope: ExtensionScope) -> dict[str, str]:
+        """extension_id -> version for every ACTIVE record in the scope."""
+        ...
+
+    async def records_in_state(self, state: ExtensionState) -> list[ExtensionInstallRecord]: ...
+
+    async def append_transition(self, transition: ExtensionTransition) -> None: ...
+
+    async def transitions_for(self, install_id: str) -> tuple[ExtensionTransition, ...]: ...
+
+    async def next_seq(self) -> int: ...
+
+
+class InMemoryExtensionStore:
+    """Process-lifetime implementation of :class:`ExtensionStore`."""
+
+    def __init__(self) -> None:
+        self._records: dict[str, ExtensionInstallRecord] = {}
+        self._active: dict[tuple[str, str, str], str] = {}
+        self._transitions: list[ExtensionTransition] = []
+        self._seq = 0
+
+    async def save_record(self, record: ExtensionInstallRecord) -> None:
+        self._records[record.install_id] = record
+
+    async def get_record(self, install_id: str) -> ExtensionInstallRecord | None:
+        return self._records.get(install_id)
+
+    async def latest_record(
+        self, scope: ExtensionScope, extension_id: str, version: str
+    ) -> ExtensionInstallRecord | None:
+        candidates = [
+            record
+            for record in self._records.values()
+            if record.org_id == scope.org_id
+            and record.workspace_id == scope.workspace_id
+            and record.extension_id == extension_id
+            and record.version == version
+        ]
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda record: record.created_at or datetime.min.replace(tzinfo=UTC),
         )
+
+    async def active_record(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> ExtensionInstallRecord | None:
+        install_id = self._active.get((scope.org_id, scope.workspace_id, extension_id))
+        if install_id is None:
+            return None
+        return self._records.get(install_id)
+
+    async def set_active(self, record: ExtensionInstallRecord) -> None:
+        self._active[(record.org_id, record.workspace_id, record.extension_id)] = record.install_id
+
+    async def installed_versions(self, scope: ExtensionScope) -> dict[str, str]:
+        versions: dict[str, str] = {}
+        for record in self._records.values():
+            if (
+                record.org_id == scope.org_id
+                and record.workspace_id == scope.workspace_id
+                and record.state is ExtensionState.ACTIVE
+            ):
+                versions[record.extension_id] = record.version
+        return versions
+
+    async def records_in_state(self, state: ExtensionState) -> list[ExtensionInstallRecord]:
+        return [record for record in self._records.values() if record.state is state]
+
+    async def append_transition(self, transition: ExtensionTransition) -> None:
+        self._transitions.append(transition)
+
+    async def transitions_for(self, install_id: str) -> tuple[ExtensionTransition, ...]:
+        return tuple(t for t in self._transitions if t.install_id == install_id)
+
+    async def next_seq(self) -> int:
+        self._seq += 1
+        return self._seq

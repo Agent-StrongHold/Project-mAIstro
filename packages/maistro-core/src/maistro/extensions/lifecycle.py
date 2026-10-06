@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.extensions.context import ExtensionContext
-from maistro.extensions.errors import ExtensionLifecycleError, ScopeMismatch
+from maistro.extensions.errors import ExtensionHookError, ScopeMismatch
 
 
 @runtime_checkable
@@ -26,7 +26,7 @@ class ExtensionLifecycle(Protocol):
 
     Implementations must be pure asyncio callables over the given context;
     raising from any hook aborts the corresponding host operation with the
-    extension identity attached (:class:`ExtensionLifecycleError`).
+    extension identity attached (:class:`ExtensionHookError`).
     """
 
     async def activate(self, context: ExtensionContext) -> None: ...
@@ -67,12 +67,10 @@ async def run_activation(lifecycle: ExtensionLifecycle, context: ExtensionContex
     _require_scope(context, "activate", in_attempt=False)
     try:
         await lifecycle.activate(context)
-    except ExtensionLifecycleError:
+    except ExtensionHookError:
         raise
     except Exception as exc:
-        raise ExtensionLifecycleError(
-            f"{_lifecycle_label(context, 'activate')} failed: {exc}"
-        ) from exc
+        raise ExtensionHookError(f"{_lifecycle_label(context, 'activate')} failed: {exc}") from exc
 
 
 async def run_invocation(lifecycle: ExtensionLifecycle, context: ExtensionContext) -> Any:
@@ -80,12 +78,10 @@ async def run_invocation(lifecycle: ExtensionLifecycle, context: ExtensionContex
     _require_scope(context, "invoke", in_attempt=True)
     try:
         return await lifecycle.invoke(context)
-    except ExtensionLifecycleError:
+    except ExtensionHookError:
         raise
     except Exception as exc:
-        raise ExtensionLifecycleError(
-            f"{_lifecycle_label(context, 'invoke')} failed: {exc}"
-        ) from exc
+        raise ExtensionHookError(f"{_lifecycle_label(context, 'invoke')} failed: {exc}") from exc
 
 
 async def run_deactivation(lifecycle: ExtensionLifecycle, context: ExtensionContext) -> None:
@@ -93,10 +89,10 @@ async def run_deactivation(lifecycle: ExtensionLifecycle, context: ExtensionCont
     _require_scope(context, "deactivate", in_attempt=False)
     try:
         await lifecycle.deactivate(context)
-    except ExtensionLifecycleError:
+    except ExtensionHookError:
         raise
     except Exception as exc:
-        raise ExtensionLifecycleError(
+        raise ExtensionHookError(
             f"{_lifecycle_label(context, 'deactivate')} failed: {exc}"
         ) from exc
 

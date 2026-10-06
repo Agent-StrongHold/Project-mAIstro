@@ -27,10 +27,10 @@ from maistro.extensions import (
     ExtensionContext,
     ExtensionContractError,
     ExtensionDescriptor,
+    ExtensionHookError,
     ExtensionHost,
     ExtensionIdentity,
     ExtensionLifecycle,
-    ExtensionLifecycleError,
     ExtensionProgress,
     InvocationScope,
     ScopeMismatch,
@@ -619,13 +619,13 @@ async def test_lifecycle_failures_are_attributed_to_the_extension() -> None:
     )
     lifecycle = _ExplodingLifecycle()
 
-    with pytest.raises(ExtensionLifecycleError, match=r"conformance\.probe.*activate"):
+    with pytest.raises(ExtensionHookError, match=r"conformance\.probe.*activate"):
         await run_activation(lifecycle, activation)
-    with pytest.raises(ExtensionLifecycleError, match=r"conformance\.probe.*invoke"):
+    with pytest.raises(ExtensionHookError, match=r"conformance\.probe.*invoke"):
         await run_invocation(lifecycle, invocation)
-    with pytest.raises(ExtensionLifecycleError, match=r"conformance\.probe.*deactivate"):
+    with pytest.raises(ExtensionHookError, match=r"conformance\.probe.*deactivate"):
         await run_deactivation(lifecycle, activation)
     # The wrapper preserves the original failure for diagnosis.
-    with pytest.raises(ExtensionLifecycleError) as exc_info:
+    with pytest.raises(ExtensionHookError) as exc_info:
         await run_invocation(lifecycle, invocation)
     assert isinstance(exc_info.value.__cause__, RuntimeError)
