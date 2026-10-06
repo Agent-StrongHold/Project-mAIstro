@@ -588,3 +588,55 @@ base. The classification is already banked in this branch's
 `quality/execution-lifecycles.json`; after the grant lands and the branch
 syncs, the gate, its mirrored test, and the three red jobs clear without any
 further code change.
+
+## Round 14 — head `da516dd9daed` (develop sync to `df00785bb41b`) re-verified; the GoalStatus two-merge red persists and remains the sole blocker (2026-10-06)
+
+Independent verification at the merged head. No production file changed; the
+only edit is this note.
+
+- **The lifecycle ratchet still fails, now against base `df00785bb41b`.**
+  CI-exact `uv run python scripts/check-execution-lifecycles.py`: **EXIT 1**
+  (`19 classified -> 20 discovered`; `maistro.goals.model::GoalStatus: NEW
+  work-state vocabulary is absent from the trusted base and has no
+  already-landed authorization`). The mirrored
+  `tests/test_check_execution_lifecycles.py::test_the_shipped_ledger_matches_the_shipped_code`
+  failed (1 failed, 28 passed). The `quality.yml` execution-lifecycles step
+  (line 1470) and therefore the `integration-scope` aggregator stay red on
+  this PR until the grant lands.
+- **The sync did not and could not clear it.** `git diff
+  df00785bb41b..da516dd9daed -- quality/ratchet-authorizations.json` is
+  empty and the base file carries no `GoalStatus` entry (grep count 0) —
+  develop has not yet merged the grant, so the two-merge sequence is still
+  unsatisfied and no edit on this branch can satisfy
+  `load_authorizations(RATCHET, base=...)`. Release step unchanged: land the
+  GoalStatus DOMAIN grant on develop, then sync this branch.
+- **Everything runnable without PostgreSQL re-ran green at this head:**
+  `ruff check .` (all checks passed) and `ruff format --check .` (3104
+  files); the lane's pytest argv (`tests/goals/*` + workspaces parity) —
+  **46 passed, 16 skipped** (every skip is a `MAISTRO_TEST_PG_DSN` leg);
+  migrations modules (chain, installed-base, planner stability, task
+  admission, invocation-effect) — **9 passed, 50 skipped** (pg-gated);
+  `check-suite-inventory.py --suite packages/maistro-core/tests` — ok,
+  14,685 node IDs; `check-m1-convergence-freeze.py --base df00785bb41b` —
+  exit 0 (the issue's no-second-executor criterion).
+- **Migration identity criterion holds at this head.** `alembic heads` is
+  the single head `059` (`down_revision = "058"`); `056_user_model_facts`,
+  `057_run_store_planner_stability` and `058_learning_validation_provenance`
+  are byte-identical to base (empty diff over those paths); the two
+  structural installed-base tests passed
+  (`test_merged_ids_keep_their_meaning_and_goals_appends_after_them`,
+  `test_restored_files_are_byte_identical_to_the_merged_snapshots`); both
+  snapshot merge commits (`c560d4c`, `4675101`) are present in the clone.
+- **PostgreSQL legs not executed this round (UNVERIFIED at this head
+  locally).** `/var/run/docker.sock` is unreachable and the rootless
+  `unix:///run/user/1000/docker.sock` used in round 13 hangs; both
+  conformance pg legs and the four installed-base upgrade walks therefore
+  skip pending a PostgreSQL environment (CI pg17/pg18 or a future round
+  with the daemon up).
+- **Production composition re-confirmed:** `create_container` wires
+  `goal_store` via `wire_goal_store(db_pool, pg_pool=pg_pool)` and derives
+  the authorized `goal_reader` seam; both shipped compositions call it
+  (`packages/hive-conductor/backend/adapters/maistro_core.py`,
+  `packages/maistro-server/src/maistro_server/main.py:344`).
+- **No closure keywords** in any branch commit message or the PR body
+  ("Refs #1572" only).
