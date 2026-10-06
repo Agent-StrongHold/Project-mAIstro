@@ -160,6 +160,7 @@ class PackLifecycleService:
             from_version = "" if record is None else record.version
             await self._commit(
                 new_record,
+                expected=record,
                 kind=PackTransitionKind.ENABLE,
                 actor=actor,
                 reason=reason,
@@ -188,6 +189,7 @@ class PackLifecycleService:
         )
         await self._commit(
             resumed,
+            expected=record,
             kind=PackTransitionKind.ENABLE,
             actor=actor,
             reason=reason,
@@ -218,6 +220,7 @@ class PackLifecycleService:
         )
         await self._commit(
             disabled,
+            expected=record,
             kind=PackTransitionKind.DISABLE,
             actor=actor,
             reason=reason,
@@ -273,6 +276,7 @@ class PackLifecycleService:
         )
         await self._commit(
             removed,
+            expected=record,
             kind=PackTransitionKind.REMOVE,
             actor=actor,
             reason=reason,
@@ -312,6 +316,7 @@ class PackLifecycleService:
         )
         await self._commit(
             configured,
+            expected=record,
             kind=PackTransitionKind.CONFIGURE,
             actor=actor,
             reason=reason,
@@ -342,14 +347,17 @@ class PackLifecycleService:
         target = self._registry_pack(pack_id)
         authorized = frozenset(authorized_backends)
 
-        if record is None:
+        # A tombstoned (REMOVED) activation is as unavailable as a missing one:
+        # upgrade_pack refuses both, so preflight must never advertise an
+        # upgrade the operation is guaranteed to reject.
+        if record is None or record.state is PackLifecycleState.REMOVED:
             return PackUpgradePreflight(
                 workspace_id=workspace_id,
                 pack_id=pack_id,
                 current_version="",
                 target_version=target.version,
                 can_upgrade=False,
-                blocked_by=(f"pack {pack_id.value!r} is not activated in this workspace",),
+                blocked_by=(f"pack {pack_id.value!r} has no active activation in this workspace",),
             )
         return _evaluate_upgrade(record, target, authorized, record.configuration)
 
@@ -424,6 +432,7 @@ class PackLifecycleService:
         )
         await self._commit(
             upgraded,
+            expected=record,
             kind=PackTransitionKind.UPGRADE,
             actor=actor,
             reason=reason,
@@ -553,6 +562,7 @@ class PackLifecycleService:
         self,
         record: PackActivationRecord,
         *,
+        expected: PackActivationRecord | None,
         kind: PackTransitionKind,
         actor: str,
         reason: str,
@@ -560,6 +570,11 @@ class PackLifecycleService:
         from_version: str,
         to_version: str,
     ) -> None:
+        """Commit through the store's compare-and-set seam: `expected` is the
+        record this operation read (`None` if none), so a concurrent write
+        since the read makes the store reject this one — a stale disable can
+        never overwrite a `REMOVED` tombstone. `next_seq` may suspend before
+        the CAS, but the store checks and writes in one step."""
         transition = PackTransition(
             seq=await self._store.next_seq(),
             at=self._clock(),
@@ -573,7 +588,7 @@ class PackLifecycleService:
             to_version=to_version,
             reason=reason,
         )
-        await self._store.commit(record, transition)
+        await self._store.commit(record, transition, expected=expected)
 
 
 def _block_on_regression(

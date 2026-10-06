@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -58,6 +59,7 @@ __all__ = [
     "InMemoryPackLifecycleStore",
     "InvalidLifecycleOperation",
     "PackActivationRecord",
+    "PackConcurrentWriteConflict",
     "PackConfigurationInvalid",
     "PackIdentityConflict",
     "PackLifecycleError",
@@ -129,6 +131,17 @@ class SnapshotIntegrityError(PackLifecycleError):
     The snapshot is the evidence of what a Workspace activated; a mismatching
     digest means the evidence was tampered with, and new use refuses to
     materialize from it.
+    """
+
+
+class PackConcurrentWriteConflict(PackLifecycleError):
+    """A lifecycle write raced another and lost the compare-and-set.
+
+    `commit` persists only if the stored record is still the one the
+    operation read (`expected`). A mismatch means a concurrent operation
+    moved the state between the read and the write — the loser raises here
+    and re-reads; nothing stale is ever persisted (so, e.g., a slow disable
+    cannot overwrite a concurrent `REMOVED` tombstone).
     """
 
 
@@ -227,6 +240,12 @@ class WorkspacePackConfiguration(BaseModel):
     registry is never consulted for it and never mutated by it — Workspace
     configuration cannot change what any other Workspace (or the registry)
     sees.
+
+    `frozen=True` is shallow, so the mutable `settings` dict is guarded at
+    the store seam instead: the reference store deep-copies records on both
+    write and read, so the only way stored `settings` change is a `CONFIGURE`
+    transition (a durable backend serializes to JSON, which severs aliasing
+    structurally).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -238,6 +257,11 @@ class WorkspacePackConfiguration(BaseModel):
     def _no_duplicate_dimension_ids(self) -> WorkspacePackConfiguration:
         if self.rubric_dimension_ids is None:
             return self
+        if not self.rubric_dimension_ids:
+            raise ValueError(
+                "rubric_dimension_ids must select at least one dimension; "
+                "use None to keep the pack defaults"
+            )
         if len(set(self.rubric_dimension_ids)) != len(self.rubric_dimension_ids):
             raise ValueError("rubric_dimension_ids must not repeat a dimension")
         return self
@@ -330,10 +354,28 @@ class PackLifecycleStore(Protocol):
     together or not at all, which is what makes a lifecycle transition
     restart-safe: a crash between compute and commit leaves the previous
     state, a crash after it leaves the new state plus its evidence.
+
+    `commit` is also the concurrency seam. Async reads and writes suspend,
+    so between an operation's `get_record` and its `commit` another
+    operation may move the record (e.g. removal tombstones while a stale
+    disable is in flight). `expected` closes that window with a
+    compare-and-set: the caller passes exactly the record it read (or
+    `None` when it read no record), and the store persists only if the
+    stored row still matches — otherwise it raises
+    `PackConcurrentWriteConflict` and nothing is written. A durable backend
+    implements this with a state/revision-conditional update under its
+    transaction; the check and the write must be one atomic step.
     """
 
-    async def commit(self, record: PackActivationRecord, transition: PackTransition) -> None:
-        """Persist `record` and append `transition` atomically."""
+    async def commit(
+        self,
+        record: PackActivationRecord,
+        transition: PackTransition,
+        *,
+        expected: PackActivationRecord | None,
+    ) -> None:
+        """Persist `record` and append `transition` atomically, iff the
+        stored record still equals `expected` (`None` = still absent)."""
         ...
 
     async def get_record(
@@ -361,16 +403,37 @@ class InMemoryPackLifecycleStore:
         self._transitions: list[PackTransition] = []
         self._seq = 0
 
-    async def commit(self, record: PackActivationRecord, transition: PackTransition) -> None:
-        self._records[(record.workspace_id, record.pack_id)] = record
+    async def commit(
+        self,
+        record: PackActivationRecord,
+        transition: PackTransition,
+        *,
+        expected: PackActivationRecord | None,
+    ) -> None:
+        key = (record.workspace_id, record.pack_id)
+        current = self._records.get(key)
+        if current != expected:
+            raise PackConcurrentWriteConflict(
+                f"concurrent write on pack {record.pack_id.value!r} in workspace "
+                f"{record.workspace_id!r}: expected "
+                f"{expected.state.value if expected is not None else 'no record'}, "
+                f"found {current.state.value if current is not None else 'no record'}"
+            )
+        # Compare-and-set then write with no await between: atomic in the
+        # event loop, mirroring the single-statement conditional update a
+        # durable backend must issue. The write stores a deep copy so a
+        # caller's record (and the mutable `settings` dict inside its
+        # configuration) cannot alias the stored activation.
+        self._records[key] = deepcopy(record)
         self._transitions.append(transition)
 
     async def get_record(self, workspace_id: str, pack_id: PackId) -> PackActivationRecord | None:
-        return self._records.get((workspace_id, pack_id))
+        record = self._records.get((workspace_id, pack_id))
+        return None if record is None else deepcopy(record)
 
     async def records_for_workspace(self, workspace_id: str) -> list[PackActivationRecord]:
         return [
-            self._records[key]
+            deepcopy(self._records[key])
             for key in sorted(self._records, key=lambda key: (key[1], key[0]))
             if key[0] == workspace_id
         ]

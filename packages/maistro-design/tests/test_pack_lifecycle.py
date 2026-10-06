@@ -27,6 +27,7 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from maistro.graph.definitions import GraphTemplate
 from maistro_design.packs import (
@@ -35,6 +36,7 @@ from maistro_design.packs import (
     GoalRubricCatalog,
     InMemoryPackLifecycleStore,
     InvalidLifecycleOperation,
+    PackConcurrentWriteConflict,
     PackConfigurationInvalid,
     PackId,
     PackIdentityConflict,
@@ -226,6 +228,14 @@ class TestConfigurationNeverMutatesGlobalIdentity:
                 authorized_backends=GRANTS,
             )
 
+    @pytest.mark.scope("unit")
+    async def test_override_rejects_empty_selection(self) -> None:
+        """An empty selection would configure an enabled pack that can never
+        instantiate a catalog (`GoalRubricCatalog.dimensions` min_length=1);
+        it is rejected at the configuration model itself."""
+        with pytest.raises(ValidationError, match="at least one dimension"):
+            WorkspacePackConfiguration(rubric_dimension_ids=())
+
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
     async def test_instantiation_applies_the_override_over_the_defaults(self) -> None:
@@ -342,7 +352,26 @@ class TestUpgradePreservesHistoricalRevisions:
             WS_A, PackId.PRODUCT, authorized_backends=GRANTS
         )
         assert not preflight.can_upgrade
-        assert "not activated" in preflight.blocked_by[0]
+        assert "no active activation" in preflight.blocked_by[0]
+        with pytest.raises(PackRegistryUpgradeUnavailable):
+            await service.upgrade_pack(WS_A, PackId.PRODUCT, actor=ACTOR, reason="r")
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    async def test_upgrade_preflight_refuses_a_tombstoned_activation(self) -> None:
+        service = _service(registry=_registry_with(_release("1.1.0")))
+        await service.enable_pack(
+            WS_A, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
+        )
+        await service.remove_pack(WS_A, PackId.PRODUCT, actor=ACTOR, reason="offboard")
+        # The REMOVED tombstone stays in the store: preflight must treat it
+        # like a missing record, never advertise an upgrade upgrade_pack
+        # would refuse as having no active activation.
+        preflight = await service.preflight_upgrade(
+            WS_A, PackId.PRODUCT, authorized_backends=GRANTS
+        )
+        assert not preflight.can_upgrade
+        assert "no active activation" in preflight.blocked_by[0]
         with pytest.raises(PackRegistryUpgradeUnavailable):
             await service.upgrade_pack(WS_A, PackId.PRODUCT, actor=ACTOR, reason="r")
 
@@ -621,6 +650,22 @@ class TestUpgradeReevaluatesDependencyAndAuthority:
 # --- AC-6: audited, atomic, restart-safe -------------------------------------
 
 
+class _StaleReadStore(InMemoryPackLifecycleStore):
+    """Serves one stale `get_record`: the row as a concurrent operation read
+    it before another operation moved it — the read-commit interleaving a
+    durable store permits."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stale: Any = None
+
+    async def get_record(self, workspace_id: str, pack_id: PackId) -> Any:
+        if self.stale is not None:
+            stale, self.stale = self.stale, None
+            return stale
+        return await super().get_record(workspace_id, pack_id)
+
+
 class _CommitSpyStore(InMemoryPackLifecycleStore):
     """Counts `commit` calls: one per lifecycle operation, record+transition."""
 
@@ -628,9 +673,9 @@ class _CommitSpyStore(InMemoryPackLifecycleStore):
         super().__init__()
         self.commits: list[tuple[Any, Any]] = []
 
-    async def commit(self, record: Any, transition: Any) -> None:
-        self.commits.append((record, transition))
-        await super().commit(record, transition)
+    async def commit(self, record: Any, transition: Any, *, expected: Any) -> None:
+        self.commits.append((record, transition, expected))
+        await super().commit(record, transition, expected=expected)
 
 
 class TestTransitionsAreAuditedAtomicAndRestartSafe:
@@ -652,7 +697,7 @@ class TestTransitionsAreAuditedAtomicAndRestartSafe:
         await service.disable_pack(WS_A, PackId.PRODUCT, actor=ACTOR, reason="r")
         await service.remove_pack(WS_A, PackId.PRODUCT, actor=ACTOR, reason="r")
         assert len(store.commits) == 4
-        for record, transition in store.commits:
+        for record, transition, _expected in store.commits:
             # Record and evidence commit together — the atomicity seam.
             assert (record.workspace_id, record.pack_id, record.state) == (
                 WS_A,
@@ -660,13 +705,69 @@ class TestTransitionsAreAuditedAtomicAndRestartSafe:
                 transition.to_state,
             )
             assert transition.seq >= 1 and transition.reason == "r" and transition.actor == ACTOR
-        kinds = [transition.kind for _record, transition in store.commits]
+        kinds = [transition.kind for _record, transition, _expected in store.commits]
         assert kinds == [
             PackTransitionKind.ENABLE,
             PackTransitionKind.CONFIGURE,
             PackTransitionKind.DISABLE,
             PackTransitionKind.REMOVE,
         ]
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("integration")
+    async def test_stale_write_loses_the_compare_and_set(self) -> None:
+        """A disable that read ENABLED, then raced a removal, must not land:
+        commit is conditional on the state that was read, so the terminal
+        REMOVED tombstone survives and no stale `from_state` is appended."""
+        store = _StaleReadStore()
+        service = _service(store=store)
+        await service.enable_pack(
+            WS_A, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
+        )
+        enabled = await service.record(WS_A, PackId.PRODUCT)
+        assert enabled is not None
+        await service.remove_pack(WS_A, PackId.PRODUCT, actor=ACTOR, reason="r")
+        store.stale = enabled  # the disable's read now predates the removal
+        with pytest.raises(PackConcurrentWriteConflict):
+            await service.disable_pack(WS_A, PackId.PRODUCT, actor=ACTOR, reason="r")
+        record = await service.record(WS_A, PackId.PRODUCT)
+        assert record is not None and record.state is PackLifecycleState.REMOVED
+        kinds = [t.kind for t in await service.transitions(WS_A, PackId.PRODUCT)]
+        assert kinds == [PackTransitionKind.ENABLE, PackTransitionKind.REMOVE]
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    async def test_stored_settings_cannot_be_mutated_through_shared_references(self) -> None:
+        """`frozen=True` is shallow, so the store — not the model — guards the
+        audited-configuration contract: it deep-copies records at both the
+        write and read seams, so mutating `settings` through a returned record
+        (or through the configuration a caller kept) edits a copy, never the
+        stored activation, and no unattributed state change is possible."""
+        store = InMemoryPackLifecycleStore()
+        service = _service(store=store)
+        await service.enable_pack(
+            WS_A, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
+        )
+        configuration = WorkspacePackConfiguration(settings={"tone": "plain"})
+        await service.configure_pack(WS_A, PackId.PRODUCT, configuration, actor=ACTOR, reason="r")
+
+        # Caller keeps its original configuration object: editing it must not
+        # reach the stored activation (the write seam copied it).
+        configuration.settings["tone"] = "mutated"
+        # A record handed out by the store shares nothing: editing its settings
+        # must not reach the stored activation (the read seam copies it).
+        record = await store.get_record(WS_A, PackId.PRODUCT)
+        assert record is not None
+        record.configuration.settings["tone"] = "mutated"
+        listing = await store.records_for_workspace(WS_A)
+        assert len(listing) == 1
+        listing[0].configuration.settings["tone"] = "mutated"
+
+        stored = await service.record(WS_A, PackId.PRODUCT)
+        assert stored is not None
+        assert stored.configuration.settings == {"tone": "plain"}
+        # No transition was appended: mutation attempts left no trace at all.
+        assert len(await service.transitions(WS_A, PackId.PRODUCT)) == 2
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
