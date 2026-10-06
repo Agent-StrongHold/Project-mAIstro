@@ -63,6 +63,10 @@ CORE_PUBLIC_SURFACE = [
     "maistro.builders",
     "maistro.capabilities",
     "maistro.classifier",
+    # Connector/source SDK (ADR-100526-be49, #963): the public surface out-of-tree
+    # connectors import. Pure-library surface; httpx is a base dependency, so
+    # the bare tier asserts it imports.
+    "maistro.connectors",
     "maistro.conduit",
     "maistro.container",
     "maistro.credentials",

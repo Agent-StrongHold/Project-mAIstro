@@ -19,6 +19,12 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-C3 preflight (issue #957)**: host-upgrade compatibility preflight —
+  :func:`run_preflight` evaluates the installed lock state against a target
+  host contract (:class:`TargetHostContract`) built from public manifest
+  metadata only, naming compatible, deprecated, migration-required and
+  blocking extensions before the upgrade is applied. The target release is
+  data, never imported code; nothing is activated.
 
 No layer executes extension code: verification, evaluation, authorization
 and resolution all operate on bytes and declarations alone.
@@ -37,12 +43,33 @@ from maistro.extensions.compatibility import (
     CompatibilityReport,
     evaluate_compatibility,
 )
+from maistro.extensions.effective_authority import (
+    CallerAuthority,
+    EffectiveAuthority,
+    ExtensionAuthorityEvidence,
+    ExtensionAuthorityInputs,
+    HostExtensionPolicy,
+    PermissionDenial,
+    PublisherTrust,
+    TrustTier,
+    WorkspaceExtensionPolicy,
+    compute_effective_authority,
+    extension_family,
+    resolve_publisher_trust,
+)
 from maistro.extensions.manifest import (
     SUPPORTED_MANIFEST_VERSION,
     assert_snapshot_intact,
     inspect_manifest,
     sha256_hex,
     verify_package_payload,
+)
+from maistro.extensions.preflight import (
+    ExtensionStatus,
+    PreflightPolicy,
+    PreflightReport,
+    TargetHostContract,
+    run_preflight,
 )
 from maistro.extensions.resolution import (
     LOCK_FORMAT,
@@ -143,11 +170,15 @@ __all__ = [
     "ArtifactMismatch",
     "AuthorityBaseline",
     "AuthorityDelta",
+    "CallerAuthority",
     "CatalogEntry",
     "CompatibilityPolicy",
     "CompatibilityReport",
     "ConstraintRecord",
     "DependencyCycle",
+    "EffectiveAuthority",
+    "ExtensionAuthorityEvidence",
+    "ExtensionAuthorityInputs",
     "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionDependency",
@@ -162,8 +193,10 @@ __all__ = [
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
+    "ExtensionStatus",
     "ExtensionStore",
     "ExtensionTransition",
+    "HostExtensionPolicy",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
     "InspectionConflict",
@@ -185,8 +218,12 @@ __all__ = [
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
+    "PermissionDenial",
+    "PreflightPolicy",
+    "PreflightReport",
     "PublisherIdentity",
     "PublisherKeyConflict",
+    "PublisherTrust",
     "RegistryProvenance",
     "RejectedCandidate",
     "ResolutionConflict",
@@ -196,21 +233,26 @@ __all__ = [
     "SemVer",
     "SkippedOptional",
     "SqliteExtensionInstallStore",
+    "TargetHostContract",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
     "TrustReport",
+    "TrustTier",
     "UnknownInstall",
     "UnknownPublisher",
     "UnresolvableDependency",
     "UnwiredExtensionLoader",
     "VersionRange",
+    "WorkspaceExtensionPolicy",
     "assert_snapshot_intact",
     "canonical_install_payload",
     "compute_authority_delta",
+    "compute_effective_authority",
     "diff_locks",
     "evaluate_compatibility",
     "evaluate_trust",
+    "extension_family",
     "identity_key",
     "inspect_manifest",
     "manifest_snapshot",
@@ -218,6 +260,8 @@ __all__ = [
     "normalize_permission",
     "parse_range",
     "resolve_lock",
+    "resolve_publisher_trust",
+    "run_preflight",
     "sha256_hex",
     "verify_package_payload",
 ]
