@@ -213,6 +213,13 @@ STATIC_ROOTS = (
     # is the package's own entry point, the maistro_registry.cli precedent for
     # a standalone library shipping its CLI as the in-graph root.
     "maistro_ext_sdk.cli",
+    # The extension host harness's console runner (#974): `maistro-ext-harness
+    # run` is the package's own entry point ([project.scripts] in
+    # packages/maistro-ext-harness/pyproject.toml), the same
+    # maistro_registry.cli / maistro_ext_sdk.cli precedent — this is the
+    # invocation a third-party CI performs, so the runner is the harness's
+    # in-graph root, not unreachable library debt.
+    "maistro_ext_harness.cli",
 )
 
 # Package modules reached only through runtime strings or external launchers.
@@ -221,6 +228,11 @@ DYNAMIC_ROOTS = (
     "maistro_rsi.__main__",
     "maistro_turing.runtime",
     "maistro_canvas.canvas.routes",
+    # The harness's `python -m maistro_ext_harness` form (#974): the same CLI
+    # behind the console script, launched by module — the maistro_rsi.__main__
+    # precedent for an external launcher naming the package. __main__ imports
+    # cli.main, so this root also carries the console-script surface.
+    "maistro_ext_harness.__main__",
 )
 
 
