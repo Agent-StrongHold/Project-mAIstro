@@ -310,6 +310,7 @@ class InMemoryExtensionInstallStore:
                 return record
         return None
 
+
 # --------------------------------------------------------------------------
 # M9-B2: activation store (issue #953)
 # --------------------------------------------------------------------------
