@@ -162,7 +162,7 @@ class PackManifestSnapshot:
     """The exact pack contract an activation was made from.
 
     `body` is the pack's canonical JSON serialization (sorted keys, excluded
-    none) and `sha256` digests those bytes at snapshot time. Materialization
+    none) and `sha256` digests those bytes when captured. Materialization
     re-validates the digest before the bytes are parsed, so what a Workspace
     runs can never drift from what it activated — the pack-side twin of the
     extension machine's `ManifestSnapshot`.
