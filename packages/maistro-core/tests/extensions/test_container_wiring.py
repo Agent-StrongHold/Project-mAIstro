@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from maistro.container import Container
-from maistro.extensions.service import UnwiredExtensionLoader
+from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
 from maistro.extensions.store import InMemoryExtensionStore
 
 
@@ -67,3 +67,21 @@ class TestContainerWiring:
         assert health is container.ensure_extension_health_service()
         assert health._install_store is install._store
         assert isinstance(health._install_store, InMemoryExtensionStore)
+
+    def test_pre_wired_service_backfills_store_and_health_reads_it(self) -> None:
+        """A host following the documented extension point may prewire the
+        install service over its own loader and store without mirroring the
+        store onto ``extension_install_store``. The container must
+        synchronize the field from the supplied service and project health
+        from that service's store — never from a freshly forked empty one
+        that would disagree with the canonical install lifecycle."""
+        store = InMemoryExtensionStore()
+        container = _bare_container()
+        prewired = ExtensionInstallService(store, loader=UnwiredExtensionLoader())
+        container.extension_install_service = prewired
+
+        assert container.ensure_extension_install_service() is prewired
+        assert container.extension_install_store is store
+
+        health = container.ensure_extension_health_service()
+        assert health._install_store is store

@@ -216,6 +216,31 @@ class ExtensionObservation:
             raise ValueError("a failed observation must carry its classified ExtensionErrorRecord")
         if self.outcome is ObservationOutcome.SUCCESS and self.error is not None:
             raise ValueError("a successful observation cannot carry an error record")
+        if self.error is not None:
+            embedded = (
+                self.error.org_id,
+                self.error.workspace_id,
+                self.error.extension_id,
+                self.error.version,
+            )
+            own = (self.org_id, self.workspace_id, self.extension_id, self.version)
+            if embedded != own:
+                mismatched = [
+                    field
+                    for field, got, want in zip(
+                        ("org_id", "workspace_id", "extension_id", "version"),
+                        embedded,
+                        own,
+                        strict=True,
+                    )
+                    if got != want
+                ]
+                raise ValueError(
+                    "embedded error provenance does not match the observation's identity "
+                    f"(mismatched: {', '.join(mismatched)}); a failure may only embed "
+                    "the error recorded for the exact org/workspace/extension/version "
+                    "that was observed"
+                )
 
 
 # --------------------------------------------------------------------------
@@ -637,16 +662,23 @@ def _gate_reasons(
 
 
 def _subject(
-    record: ExtensionInstallRecord | None, active_record: ExtensionInstallRecord | None
+    record: ExtensionInstallRecord | None,
+    active_record: ExtensionInstallRecord | None,
+    identity: tuple[str, str] | None = None,
 ) -> tuple[str, str]:
-    """The (extension_id, version) a projection is about."""
-    extension_id = (
-        record.extension_id
-        if record is not None
-        else (active_record.extension_id if active_record else "")
-    )
-    version = record.version if record is not None else ""
-    return extension_id, version
+    """The (extension_id, version) a projection is about.
+
+    ``identity`` carries the requested identity for a record-less
+    projection: telemetry named a version the registry never installed,
+    and the NOT_INSTALLED verdict must keep that identity instead of
+    dropping it to an empty string.
+    """
+    if record is not None:
+        return record.extension_id, record.version
+    if identity is not None:
+        return identity
+    extension_id = active_record.extension_id if active_record else ""
+    return extension_id, ""
 
 
 def _is_superseded(
@@ -677,18 +709,21 @@ def project_operational_status(
     health: ExtensionHealth = ExtensionHealth.UNMEASURED,
     dependency_health: Mapping[str, ExtensionHealth] | None = None,
     operator_state: ExtensionOperatorState = ExtensionOperatorState.ENABLED,
+    identity: tuple[str, str] | None = None,
 ) -> ExtensionOperationalStatus:
     """Project one version's operational status from canonical evidence.
 
     ``record`` is the install record *of the version being projected*
-    (``None`` when telemetry names a version the registry never installed).
+    (``None`` when telemetry names a version the registry never installed;
+    pass the requested ``(extension_id, version)`` as ``identity`` so the
+    record-less NOT_INSTALLED projection stays attributable).
     ``active_record`` is the scope's current active install for the same
     extension id, which decides whether this version is superseded.
     ``installed_versions`` maps extension ids to their currently ACTIVE
     versions in the scope. All other arguments are the live evidence inputs
     documented on :class:`ExtensionOperationalStatus`.
     """
-    extension_id, version = _subject(record, active_record)
+    extension_id, version = _subject(record, active_record, identity)
 
     if record is None or record.state in TERMINAL_STATES:
         return _refusal_status(record, extension_id, version, health, operator_state)
@@ -1159,7 +1194,13 @@ class ExtensionHealthService:
                 else None
             )
         if target is None:
-            return None
+            # No install record — but if host telemetry names this identity,
+            # project it record-less as NOT_INSTALLED (staying attributable)
+            # rather than answering 404 for evidence we demonstrably hold.
+            ghost = await self._telemetry_version(scope, extension_id, version)
+            if ghost is None:
+                return None
+            return await self._project_uninstalled(scope, extension_id, ghost)
         return await self._project(scope, extension_id, target, active)
 
     async def statuses(self, scope: ExtensionScope) -> tuple[ExtensionOperationalStatus, ...]:
@@ -1175,6 +1216,7 @@ class ExtensionHealthService:
         for record in records:
             by_extension.setdefault(record.extension_id, []).append(record)
         projected: list[ExtensionOperationalStatus] = []
+        covered: set[tuple[str, str]] = set()
         for extension_id in sorted(by_extension):
             active = await self._install_store.active_record(scope, extension_id)
             target = active
@@ -1186,6 +1228,21 @@ class ExtensionHealthService:
             status = await self._project(scope, extension_id, target, active)
             if status is not None:
                 projected.append(status)
+                covered.add((status.extension_id, status.version))
+        # Telemetry-only identities: versions the host observed but the
+        # registry never installed must surface NOT_INSTALLED in the
+        # overview (and therefore the export) instead of vanishing.
+        ghosts: dict[tuple[str, str], None] = {}
+        for observation in await self._health_store.observations(scope):
+            identity = (observation.extension_id, observation.version)
+            if identity in covered or any(
+                record.extension_id == identity[0] and record.version == identity[1]
+                for record in records
+            ):
+                continue
+            ghosts.setdefault(identity)
+        for extension_id, version in sorted(ghosts):
+            projected.append(await self._project_uninstalled(scope, extension_id, version))
         return tuple(projected)
 
     async def version_status(
@@ -1200,8 +1257,63 @@ class ExtensionHealthService:
         active = await self._install_store.active_record(scope, extension_id)
         record = await self._install_store.latest_record(scope, extension_id, version)
         if record is None:
-            return None
+            if not await self._has_telemetry(scope, extension_id, version):
+                return None
+            return await self._project_uninstalled(scope, extension_id, version)
         return await self._project(scope, extension_id, record, active)
+
+    async def _has_telemetry(self, scope: ExtensionScope, extension_id: str, version: str) -> bool:
+        """Whether host telemetry recorded evidence for this identity."""
+        return bool(
+            await self._health_store.observations(scope, extension_id=extension_id, version=version)
+        )
+
+    async def _telemetry_version(
+        self,
+        scope: ExtensionScope,
+        extension_id: str,
+        version: str | None,
+    ) -> str | None:
+        """The version to project for an extension with no install record.
+
+        An explicitly requested version projects only when telemetry
+        actually recorded evidence for it; otherwise the newest version
+        with recorded evidence answers, so the extension surfaces from its
+        most recent observation rather than a 404.
+        """
+        if version is not None:
+            return version if await self._has_telemetry(scope, extension_id, version) else None
+        observations = await self._health_store.observations(scope, extension_id=extension_id)
+        if not observations:
+            return None
+        newest = max(observations, key=lambda observation: observation.at)
+        return newest.version
+
+    async def _project_uninstalled(
+        self,
+        scope: ExtensionScope,
+        extension_id: str,
+        version: str,
+    ) -> ExtensionOperationalStatus:
+        """Project a telemetry-only identity record-less (NOT_INSTALLED).
+
+        The requested identity is passed through so the projection stays
+        attributable — the version string the host reported is kept verbatim
+        even though no install record stands behind it.
+        """
+        observations = await self._health_store.observations(
+            scope, extension_id=extension_id, version=version
+        )
+        decisions = await self._health_store.decisions(scope)
+        return project_operational_status(
+            record=None,
+            active_record=None,
+            installed_versions=await self._install_store.installed_versions(scope),
+            platform_api_version=self._platform_api_version,
+            health=evaluate_health(observations),
+            operator_state=operator_state_for(decisions, extension_id),
+            identity=(extension_id, version),
+        )
 
     async def _project(
         self,

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +46
+  packages/maistro-core/tests: +48
   packages/maistro-server/tests: +12
 ---
 
@@ -18,12 +18,16 @@ the install store, and the operator HTTP views
 
 **+44 `packages/maistro-core/tests/extensions/`**:
 
-- `test_container_wiring.py` (+1) — the health facade is lazily built and
+- `test_container_wiring.py` (+2) — the health facade is lazily built and
   cached, and reads lifecycle evidence from the SAME install-store instance
   the install service owns (the fork-the-canonical-record regression is
-  pinned by identity, not by behavior).
+  pinned by identity, not by behavior); a host that prewires
+  `extension_install_service` over its own store without mirroring the
+  `extension_install_store` field gets the field backfilled from the
+  service and a health facade reading that same store (never a forked
+  empty one).
 
-- `test_health.py` (36) — each refusal path names its acceptance
+- `test_health.py` (37) — each refusal path names its acceptance
   criterion: installed-but-incompatible (platform API re-derived now, not
   the install-day verdict), unauthorized (terminal refusal), and unhealthy
   (non-dependency failure) extensions cannot report ready; an unmeasured
@@ -32,7 +36,12 @@ the install store, and the operator HTTP views
   ready — structurally distinct from the durable QUARANTINED/DISABLED
   operator holds; superseded versions stay attributable (`active=False`)
   and never report active; telemetry for a never-installed version projects
-  NOT_INSTALLED; a recoverable FAILED activation reports INSTALL_FAILING;
+  NOT_INSTALLED through the service's detail, overview, and export views
+  (with the requested identity kept verbatim; only an identity with no
+  recorded evidence at all answers None); a failed observation rejects an
+  embedded error whose org/workspace/extension/version provenance does not
+  match the observation's own identity; a recoverable FAILED activation
+  reports INSTALL_FAILING;
   liveness vs readiness are separate axes (dependency upgrade past the
   declared range leaves the extension live, not ready); the projection has
   no extension-supplied health input (introspected) and observations enter

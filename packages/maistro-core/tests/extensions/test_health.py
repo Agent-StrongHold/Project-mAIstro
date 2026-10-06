@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -439,6 +440,40 @@ async def test_observations_enter_only_through_the_host_seam() -> None:
         _observation("bad-success", outcome=ObservationOutcome.SUCCESS, error=_error("err-x"))
 
 
+async def test_failed_observation_rejects_mismatched_error_provenance() -> None:
+    """An embedded error must belong to the exact org/workspace/extension/
+    version the observation is about — otherwise the failure is counted
+    against one identity while the cause is filed under another, leaving the
+    affected extension's detail without its cause and another scope with a
+    phantom error."""
+    kwargs = {
+        "observation_id": "obs-mismatch",
+        "at": datetime(2026, 10, 1, tzinfo=UTC),
+        "org_id": ORG,
+        "workspace_id": WORKSPACE,
+        "extension_id": "acme.chart",
+        "version": "1.4.0",
+        "latency_ms": 1.0,
+        "outcome": ObservationOutcome.FAILURE,
+    }
+    mismatched: list[ExtensionErrorRecord] = [
+        _error("err-other-workspace", extension_id="acme.chart"),
+        _error("err-other-extension", extension_id="acme.notes"),
+        _error("err-other-version", version="2.0.0"),
+    ]
+    for error in mismatched:
+        error = replace(
+            error,
+            workspace_id="ws-other" if error is mismatched[0] else WORKSPACE,
+            org_id="org-other" if error is mismatched[1] else ORG,
+        )
+        with pytest.raises(ValueError, match="does not match the observation's identity"):
+            ExtensionObservation(error=error, **kwargs)
+
+    # The exact identity match is accepted.
+    ExtensionObservation(error=_error("err-match"), **kwargs)
+
+
 # --------------------------------------------------------------------------
 # Acceptance: errors preserve extension/version/dependency provenance
 # --------------------------------------------------------------------------
@@ -581,7 +616,9 @@ async def test_superseded_version_is_identifiable_and_never_active() -> None:
 async def test_telemetry_for_a_version_with_no_install_record_is_not_installed() -> None:
     """Acceptance: telemetry naming a version the registry never installed
     stays attributable but projects NOT_INSTALLED — never ready, never
-    active."""
+    active. The service (not just the pure projector) must return that
+    verdict for the detail, overview, and export views; only an identity
+    with no recorded evidence at all answers None."""
     health = InMemoryExtensionHealthStore()
     await health.append_observation(_observation("obs-ghost"))
     store = InMemoryExtensionStore()
@@ -593,12 +630,36 @@ async def test_telemetry_for_a_version_with_no_install_record_is_not_installed()
         installed_versions={},
         platform_api_version="1.0.0",
         health=ExtensionHealth.HEALTHY,
+        identity=("acme.chart", "1.4.0"),
     )
     assert status.summary is ExtensionOperationalState.NOT_INSTALLED
     assert status.ready is False
-    assert service is not None  # the service surfaces the same verdict below
-    assert await service.status(SCOPE, "acme.chart") is None
-    assert await service.status(SCOPE, "acme.chart", version="1.4.0") is None
+
+    # Detail views: the telemetry-backed identity surfaces NOT_INSTALLED
+    # with its requested identity kept verbatim.
+    for projection in (
+        await service.status(SCOPE, "acme.chart"),
+        await service.status(SCOPE, "acme.chart", version="1.4.0"),
+        await service.version_status(SCOPE, "acme.chart", "1.4.0"),
+    ):
+        assert projection is not None
+        assert projection.summary is ExtensionOperationalState.NOT_INSTALLED
+        assert (projection.extension_id, projection.version) == ("acme.chart", "1.4.0")
+        assert projection.installed is False
+        assert projection.ready is False
+        assert projection.live is False
+
+    # Overview and export enumerate the telemetry-only identity too.
+    overview = await service.statuses(SCOPE)
+    assert [(p.extension_id, p.version) for p in overview] == [("acme.chart", "1.4.0")]
+    assert overview[0].summary is ExtensionOperationalState.NOT_INSTALLED
+    exported = await service.export_telemetry(SCOPE)
+    assert [p.summary for p in exported.statuses] == [ExtensionOperationalState.NOT_INSTALLED]
+
+    # An extension with neither records nor telemetry still has no status.
+    assert await service.status(SCOPE, "acme.never") is None
+    assert await service.version_status(SCOPE, "acme.never", "1.4.0") is None
+    assert await service.statuses(SCOPE) == overview  # no fabricated rows
 
 
 async def test_pre_install_records_project_not_installed_without_fabricating_readiness() -> None:
