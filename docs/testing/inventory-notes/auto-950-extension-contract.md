@@ -479,3 +479,116 @@ packages/maistro-evolve`):
   `_dispatch_effect`); nested configuration values are snapshotted
   shallowly; `ExtensionContext.identity`/`.scope` slots are writable by
   assignment despite `__slots__`.
+
+## Validation battery (develop-sync round 4 at merge `6172837d8`, branch
+## `auto-950`)
+
+Fourth develop sync, completing an inherited in-progress merge and then
+merging current `origin/develop` (`df00785bb`) on top. Merge 1 (`93cee6b60`)
+finished the left-in-progress merge of `bc40b6cda` (M9-G1 #2013 effective
+authority, riding on M9-E2 #2007 connector/source SDK); merge 2
+(`6172837d8`) brought M9-H2 #2016, M9-C1 #1997 (extension contract
+versioning, `maistro.extensions.compat`) and M1-B1 #1325. Both merges
+resolved by union, no side-taking:
+
+- `extensions/__init__.py` (twice): import blocks and `__all__` unioned —
+  #950 context/lifecycle seams + #2013 effective-authority names + #1997
+  compat names, constants-prefix then ASCII order, 134 → 159 names; verified
+  programmatically that the union is exact (every name from both parents
+  present, none extra, all importable).
+- `_vulture_whitelist.py` (twice): both halves' explicit-reference imports
+  kept (context/effective_authority/host + compat block).
+- `docs/adr/ADR-INDEX.md`: develop's two new rows kept; **post-merge fix** —
+  the row for `ADR-100126-8c2d` had landed through both the context merge
+  and the conflict resolution; `check-adr-index.py` flagged the duplicate
+  and the tail copy was removed (sorted copy kept).
+
+Post-merge repairs, each with its gate re-run green:
+
+- `docs/architecture/CONVERGENCE-MATRIX.md`: the branch's five extension
+  modules in the skills family diluted that subsystem's unreachable share
+  20.7% (12/58) → 19.0% (12/63), crossing the `some`→`few` band boundary
+  (SPEC-082926-061d); the row's classification cell updated accordingly
+  (verified against a `--census` run on a detached `origin/develop`
+  worktree: exactly this one row differs, all other 52 rows byte-equal).
+- `quality/ac-state-notes/auto-950.json` re-banked via the gate's own
+  `--bank` path: **design_coverage 38.9049 → 43.8998** over 165 taken
+  decisions (88 at zero), against live migrated PG (alembic head `058`).
+  The standing floor shortfall is resolved in the opposite direction: the
+  merge brought develop's `auto-955.json` (43.2114) into the fold, and the
+  merged tree measures above it — the gate first failed with "unbanked
+  improvement", then passed exact after the bank. Mandate halves: 5
+  criteria added or newly claimed, 0 unproven; 0 new chain gaps.
+
+Executed at `74cdb35a2` (environment rebuilt to CI parity: `uv sync --locked
+--all-extras`, `uv pip install radon xenon vulture pyright interrogate
+pytest-timeout`, `uv pip install -e packages/maistro-evolve`): all exit 0
+unless stated.
+
+- `uv run ruff check .`; `ruff format --check .` (3097 files).
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py` (vulture-ratchet.yml:77, CI's exact
+  step) → exit 0: all ten ratchets flat vs base `df00785bb41b`
+  (citation-status 0 exceptions, enumerations 1 tolerated → 1 current,
+  promotion-surface 74=74, reachability 170/1340 = 170, shell-execution 3=3,
+  contract-markers 371=371, adr-status-language/lifecycle flat), 49 quality
+  JSON consumers with provenance.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0; **1332 = 1332**
+  reviewed identities → findings, `unclassified: 0`. **No ledger amendment
+  needed** — the merged tree's new modules arrived pre-whitelisted via the
+  union.
+- `uv run python scripts/check-citation-status-provenance.py`
+  (registry.yml:108, `RATCHET_BASE_REV=origin/develop`) → exit 0, 0
+  exceptions; `check_enumerations.py` → exit 0, no new gaps.
+- `uv run pytest packages/maistro-core/tests/extensions
+  packages/maistro-core/tests/connectors -q` → **565 passed** (this lane's
+  #950 suite beside develop's effective-authority and connector-SDK suites).
+- `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest
+  packages/maistro-core/tests -q` → **13718 passed, 936 skipped, 1 xfailed**.
+- `uv run mypy --strict packages/maistro-core/src` → Success, 751 files,
+  0 issues. Pyright (CI's exact form) → **21 = 21** baseline, exit 0.
+- xenon (CI's exact scope incl. ext-sdk, `-i third_party`) → 140 blocks ≤
+  145, 0 module-rank, 0 average violations. All 11 interrogate floors (CI's
+  exact `-f` args) → pass. `check-radon-baseline.py` → exit 0.
+- `uv run pytest formal/ --timeout=120 -q` (Pillar 2, CI's exact args) →
+  **663 passed, 1 skipped**.
+- `scripts/check-suite-inventory.py --suite packages/maistro-core/tests` →
+  ok: **14655 collected = recorded** (develop's connector/effective-authority
+  tests ride in the merged baseline; this lane's +30 delta unchanged — no
+  test added, removed, or renamed this round).
+- `scripts/check-ac-state.py --run-tests --ratchet --mandate origin/develop`
+  against live migrated PG → exit 0: 10 ceilings exact, 1 floor exact
+  (43.8998, banked above); acceptance + chain mandates clean.
+- Diff coverage (scoped combined reproduction: extensions+connectors suites
+  `--cov=maistro --cov-branch`, root `tests/test_verify_wheel_imports.py`
+  `--cov=scripts --cov-branch`, combined, `--base origin/develop`) → ok:
+  every measured touched file ≥ 90% lines / 80% branches. The only scripts
+  file in the diff, `verify-wheel-imports.py`, differs from develop by
+  comments only and is covered through its root test producer.
+- All 12 wheels build and import from a clean venv
+  (`verify-wheel-imports.py --dist … --python 3.12`, full `packages/*/`
+  build like ci.yml) → exit 0.
+- Architecture/consistency gates, CI's exact args where applicable:
+  `check-doc-links.py`, `check-adr-index.py`, `check-route-permissions.py`,
+  `check-principal-identity.py`, `check-frontend-typed-client.py`,
+  `vendor_ifeval.py --check`, `vendor_bfcl.py --check`,
+  `check-workspace-retirement.py`, `check-wiring-reads.py`,
+  `check-agent-store-writes.py`, `check-contract-markers.py`,
+  `check-backlog-consistency.py`, `check-convergence-matrix.py` (after the
+  row fix), `check-execution-lifecycles.py`, `check-model-egress.py`,
+  `check-foreign-harness-egress.py`, `check-security-inventory.py`,
+  `check-image-inventory.py`, `check-image-pins.py`,
+  `check-workflow-inventory.py`, `check-credential-authority.py`,
+  `check-m1-convergence-freeze.py --base origin/develop`,
+  `bump_version.py --check`, `check-release-consistency.py`,
+  `check-shipped-surface-truth.py` → all exit 0.
+- Acceptance evidence re-inspected against the issue text this round (not
+  inherited): AC-1 reference execution through a real `AttemptExecutionService`
+  with persisted canonical Invocation + correlated event provenance;
+  AC-2 context surface pinned by exact `dir()` set, banned-attribute scan
+  and `__slots__` (no `__dict__`); AC-3 undeclared/outside-Attempt/
+  cross-workspace effect refusals plus persisted invocation receipts;
+  AC-4 `service.cancel(attempt_id)` reaching the extension's cancellation
+  view with Attempt/NodeRun/Run settling CANCELLED; AC-5 conformance suite
+  AST-pins its own imports to the SDK only.
