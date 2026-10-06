@@ -16,6 +16,7 @@ from maistro.cli._extensions import (
     extensions_explain,
     extensions_history,
     extensions_lock,
+    extensions_preflight,
     extensions_show,
 )
 from maistro.container import Container
@@ -289,7 +290,16 @@ _VULTURE_WHITELIST = (
     InMemoryExtensionInstallStore.get_install,
     SqliteExtensionInstallStore.get_install,
     extensions_contract,
+    # The lock-state read seam (#957): the upgrade preflight consumes the
+    # whole installed set, not one extension's history. The CLI preflight
+    # command is its in-tree caller (typer dispatch, same posture as the
+    # other `maistro extensions` read commands); the library-level caller is
+    # the #957 test suite.
+    ExtensionInstallStore.all_installs,
+    InMemoryExtensionInstallStore.all_installs,
+    SqliteExtensionInstallStore.all_installs,
     extensions_history,
+    extensions_preflight,
     extensions_show,
     # Deterministic extension dependency resolution (M9-C2, #956). The two
     # `maistro extensions` lock commands are typer-dispatched like the read
