@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +48
+  packages/maistro-core/tests: +50
   packages/maistro-server/tests: +12
 ---
 
@@ -18,14 +18,18 @@ the install store, and the operator HTTP views
 
 **+44 `packages/maistro-core/tests/extensions/`**:
 
-- `test_container_wiring.py` (+2) — the health facade is lazily built and
+- `test_container_wiring.py` (+4) — the health facade is lazily built and
   cached, and reads lifecycle evidence from the SAME install-store instance
   the install service owns (the fork-the-canonical-record regression is
   pinned by identity, not by behavior); a host that prewires
   `extension_install_service` over its own store without mirroring the
   `extension_install_store` field gets the field backfilled from the
   service and a health facade reading that same store (never a forked
-  empty one).
+  empty one); and `create_container` itself selects the health store from
+  the configured backend — the SQLite twin whenever it owns a SQLite
+  connection (operator holds are durable-admission state and must survive
+  restart), the in-memory twin only for the deliberate `memory://`
+  configuration.
 
 - `test_health.py` (37) — each refusal path names its acceptance
   criterion: installed-but-incompatible (platform API re-derived now, not
