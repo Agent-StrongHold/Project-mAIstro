@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +68
+  packages/maistro-core/tests: +69
 ---
 # atomic-admission-b2
 
@@ -10,7 +10,7 @@ B2 of the #1845 admission-decode stack (#1893): the new
 `maistro.tasks.admission_codec` module turns forward-schema admission rows
 into exact #1851 immutable DTOs or typed fail-closed errors, and the new
 `packages/maistro-core/tests/tasks/test_admission_codec.py` pins that
-contract with 68 tests. Sixty-seven are pure unit tests over `Mapping` rows;
+contract with 69 tests. Sixty-eight are pure unit tests over `Mapping` rows;
 one is a PostgreSQL durability test gated on the required disposable database.
 At the original B2 leaf B1 (#1892) was not yet on the coordinated branch; the
 real-pool test was added only after B1 reached this branch.

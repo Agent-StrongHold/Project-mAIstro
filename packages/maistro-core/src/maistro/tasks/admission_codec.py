@@ -555,6 +555,10 @@ def _decode_legacy_record(
     optional legacy ``completed_at`` column is deliberately not read.
     """
     scope_key = header.scope_key
+    # ``request`` is the legacy row's only mandatory full-record column.
+    # Reading it by subscription below must not leak a raw ``KeyError`` when a
+    # malformed pre-forward schema row omits it.
+    _require_columns(row, ("request",), scope_key=scope_key)
 
     task_id = _legacy_evidence(row.get("task_id"), "task_id", scope_key)
     run_id = _legacy_evidence(row.get("run_id"), "run_id", scope_key)

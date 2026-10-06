@@ -437,6 +437,18 @@ def test_missing_v2_columns_is_unsupported_schema(column: str) -> None:
     assert excinfo.value.code is AdmissionDecodeCode.UNSUPPORTED_SCHEMA
 
 
+def test_missing_legacy_request_is_unsupported_schema() -> None:
+    row = _legacy_row()
+    header = decode_admission_header(row)
+    del row["request"]
+
+    with pytest.raises(AdmissionRowDecodeError) as excinfo:
+        decode_admission_record(row, header=header)
+
+    assert excinfo.value.code is AdmissionDecodeCode.UNSUPPORTED_SCHEMA
+    assert excinfo.value.scope_key == _SCOPE
+
+
 @pytest.mark.parametrize(
     ("column", "bad"),
     [
