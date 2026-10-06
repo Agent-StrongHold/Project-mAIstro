@@ -16,9 +16,7 @@ related:
   - maistro-engine#SPEC-193
   - maistro-engine#SPEC-195
   - maistro-engine#ADR-091
-contracts:
-  - boundary
-  - behavioral
+contracts: []
 tests: []
 layer: Agents
 owners:
@@ -218,7 +216,9 @@ Test-evidence disposition (#812): front matter cited
 `packages/maistro-core/tests/agents/test_ultra_think_tiers.py` — neither
 exists (the gateway app was never ported; no ultra-think implementation has
 landed in maistro-core). Those were planned tests, not proof; removed until
-they exist.
+they exist. Front matter declares no contracts for the same reason: a
+contract kind is a promise cross-checked against marker-carrying tests, so
+it is re-declared together with the tests that carry it.
 
 The tier taxonomy, diversity profiles, and slot-restore pattern are stable and should
 be ported verbatim. The cost controls and reviewer integration are new in this spec.

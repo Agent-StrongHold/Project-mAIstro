@@ -62,7 +62,7 @@ def test_dead_file_path_is_a_problem(tmp_path: Path) -> None:
     assert len(problems) == 1
     (p,) = problems
     assert p.source == "maistro-engine#SPEC-001"
-    assert p.file_portion == "packages/x/tests/test_gone.py"
+    assert p.entry == "packages/x/tests/test_gone.py"
     assert "does not exist" in p.reason
     assert p.render() == (
         "maistro-engine#SPEC-001.tests -> packages/x/tests/test_gone.py: "
@@ -73,7 +73,9 @@ def test_dead_file_path_is_a_problem(tmp_path: Path) -> None:
 def test_dead_directory_and_empty_portion_are_problems(tmp_path: Path) -> None:
     root = _make_tree(tmp_path)
     problems = check_test_paths([_fm(["packages/x/tests/gone/", "::test_orphan"])], root)
-    assert [p.file_portion for p in problems] == ["packages/x/tests/gone/", ""]
+    # Entries are quoted verbatim: a suite-directory citation and a bare node
+    # id are different failure shapes and must stay distinguishable.
+    assert [p.entry for p in problems] == ["packages/x/tests/gone/", "::test_orphan"]
     assert "empty file path" in problems[1].reason
 
 
@@ -83,7 +85,9 @@ def test_node_id_alone_cannot_resolve(tmp_path: Path) -> None:
     root = _make_tree(tmp_path)
     problems = check_test_paths([_fm(["packages/x/tests/test_gone.py::test_ok"])], root)
     assert len(problems) == 1
-    assert problems[0].file_portion == "packages/x/tests/test_gone.py"
+    # The failure is about the file portion: what the node id names is never
+    # reached, and file_portion_of recovers exactly the part that was checked.
+    assert file_portion_of(problems[0].entry) == "packages/x/tests/test_gone.py"
 
 
 def test_path_escaping_the_repository_root_is_a_problem(tmp_path: Path) -> None:

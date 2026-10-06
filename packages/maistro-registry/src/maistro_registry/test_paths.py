@@ -31,11 +31,15 @@ from maistro_registry.schema import FrontMatter
 
 @dataclass(frozen=True)
 class TestPathProblem:
-    """One `tests:` entry whose file portion does not resolve under `root`."""
+    """One `tests:` entry whose file portion does not resolve under `root`.
+
+    The whole entry is kept, node id and all: `render()` quotes what the
+    document actually wrote, and the file portion is recoverable from it with
+    :func:`file_portion_of` wherever a consumer needs the resolved part.
+    """
 
     source: str
     entry: str
-    file_portion: str
     reason: str
 
     def render(self) -> str:
@@ -79,7 +83,5 @@ def check_test_paths(front_matters: Iterable[FrontMatter], root: Path) -> list[T
             portion = file_portion_of(entry)
             reason = _resolution_failure(portion, root)
             if reason is not None:
-                problems.append(
-                    TestPathProblem(source=source, entry=entry, file_portion=portion, reason=reason)
-                )
+                problems.append(TestPathProblem(source=source, entry=entry, reason=reason))
     return problems

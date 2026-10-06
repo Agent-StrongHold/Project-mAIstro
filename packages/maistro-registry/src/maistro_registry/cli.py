@@ -103,6 +103,14 @@ def _print_result(result: ValidationResult, *, quiet_ok: bool) -> None:
     print(result.render())
 
 
+def _count_results(results: list[ValidationResult]) -> tuple[int, int, int, int]:
+    """Aggregate ``(files, errors, warnings, debts)`` over one lint run."""
+    n_errors = sum(1 for r in results if r.errors)
+    n_warnings = sum(1 for r in results if r.warnings)
+    n_debts = sum(len(r.debts) for r in results)
+    return len(results), n_errors, n_warnings, n_debts
+
+
 def _exit_status(
     results: list[ValidationResult],
     *,
@@ -110,10 +118,7 @@ def _exit_status(
     quiet_ok: bool,
     extra_errors: int = 0,
 ) -> int:
-    n_files = len(results)
-    n_errors = sum(1 for r in results if r.errors)
-    n_warnings = sum(1 for r in results if r.warnings)
-    n_debts = sum(len(r.debts) for r in results)
+    n_files, n_errors, n_warnings, n_debts = _count_results(results)
     n_clean = n_files - n_errors - n_warnings - sum(1 for r in results if r.debts)
 
     for r in results:

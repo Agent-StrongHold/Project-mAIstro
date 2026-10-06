@@ -17,9 +17,7 @@ related:
 supersedes: []
 blocks: []
 blocked-by: []
-contracts:
-  - behavioral
-  - boundary
+contracts: []
 tests: []
 layer: Ability
 owners:
@@ -124,9 +122,11 @@ canonical pipeline graph under `packages/maistro-core/src/maistro/builders/`
 (ADR-099), covered by `packages/maistro-core/tests/builders/`. The TUI, CLI,
 and turn-record scope of this spec was not carried into that landing, so
 none of the shipped builders tests prove this document's acceptance
-criteria. Front matter therefore cites no tests: the contracts above carry
-an explicit test-evidence debt (surfaced by registry lint) until this spec
-is re-scoped to the shipped runtime or superseded.
+criteria. Front matter therefore declares no contracts and cites no tests:
+a contract kind is a promise the contract-marker gate cross-checks against
+marker-carrying tests, and none of the shipped builders tests carry this
+document's claims. Contracts and tests return with the change that re-scopes
+this spec to the shipped runtime (or supersedes it) with its proving tests.
 
 ```
 packages/maistro-bootstrap/src/maistro_bootstrap/builders/

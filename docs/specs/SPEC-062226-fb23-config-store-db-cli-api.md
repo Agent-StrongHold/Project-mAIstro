@@ -16,9 +16,7 @@ related:
   - maistro-engine#ADR-073
   - maistro-engine#SPEC-062126-5d56
 tests: []
-contracts:
-  - boundary
-  - behavioral
+contracts: []
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -171,10 +169,11 @@ Test-evidence disposition (#812): neither cited test path ever existed —
 `packages/maistro-server/tests/test_config_routes.py` were named here as
 "(new)" before implementation and were never written; no ConfigStore DB
 table, CLI commands, or admin API endpoints from ADR-078 have landed under
-other names either. Front matter cites no tests, so this Accepted spec's
-contracts carry an explicit test-evidence debt (surfaced by registry lint)
-until the implementation lands with its proving tests. The list below is
-the planned evidence, not a claim of existing proof.
+other names either. Front matter therefore declares no contracts and cites
+no tests: a contract kind is a promise the contract-marker gate cross-checks
+against marker-carrying tests, and nothing here is implemented to carry one.
+Both come back with the implementation, in the change that lands its proving
+tests. The list below is the planned evidence, not a claim of existing proof.
 
 - `packages/maistro-core/tests/config/test_config_store.py` (new): get/set/export round-trip,
   cache invalidation on write, RBAC rejection, range/enum validation rejection, audit event
