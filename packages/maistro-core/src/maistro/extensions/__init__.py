@@ -1,7 +1,7 @@
 """Governed extension registry, activation flow, and dependency resolution
-(M9-B/M9-C, issues #952/#953/#956).
+(M9-B/M9-C/M9-H3, issues #952/#953/#956/#975).
 
-Public surface of the ``maistro.extensions`` package, in three layers:
+Public surface of the ``maistro.extensions`` package, in four layers:
 
 - **M9-B1 registry (issue #952)**: immutable install records with publisher
   identity, package digest/signature metadata, manifest snapshots, catalog
@@ -19,9 +19,16 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-H3 certification (issue #975)**: the pre-publication workflow —
+  package structure validation, static public-import and security scans,
+  conformance-suite orchestration, Ed25519 sealing of the report digest,
+  and truthful certification reports whose claims can only come from checks
+  that executed and passed (:mod:`maistro.extensions.certification`).
+  Certification is install-time *evidence* (a trust-claim input), never an
+  authorization by itself.
 
-No layer executes extension code: verification, evaluation, authorization
-and resolution all operate on bytes and declarations alone.
+No layer executes extension code: verification, evaluation, authorization,
+resolution and certification all operate on bytes and declarations alone.
 """
 
 from __future__ import annotations
@@ -31,6 +38,53 @@ from maistro.extensions.authority import (
     AuthorityDelta,
     compute_authority_delta,
     normalize_permission,
+)
+from maistro.extensions.certification import (
+    BUNDLE_FORMAT,
+    CERTIFICATION_FORMAT,
+    CERTIFIER_VERSION,
+    CONFORMANCE_CHECK_ID,
+    ENTRYPOINTS_CHECK_ID,
+    MANIFEST_PROFILE,
+    PUBLIC_IMPORTS_CHECK_ID,
+    PUBLICATION_PROFILE,
+    SEAL_FORMAT,
+    SECURITY_SCAN_CHECK_ID,
+    STRUCTURE_CHECK_ID,
+    CertificationCheck,
+    CertificationEnvironment,
+    CertificationError,
+    CertificationInvalid,
+    CertificationPackageMismatch,
+    CertificationProfile,
+    CertificationReport,
+    CertificationSeal,
+    CertificationSubject,
+    CheckOutcome,
+    CheckResult,
+    ConformanceCheck,
+    ConformanceOutcome,
+    ConformanceSuite,
+    DuplicateCheckError,
+    EntryPointPresenceCheck,
+    ExtensionBundle,
+    ImportPolicy,
+    PackageStructureCheck,
+    PublicImportCheck,
+    SecurityScanCheck,
+    bundle_digest,
+    certification_as_trust_claim,
+    certify,
+    detect_environment,
+    render_summary,
+    report_digest,
+    report_from_json,
+    report_to_json,
+    seal_from_json,
+    seal_to_json,
+    sign_certification,
+    verify_certification,
+    verify_certified_package,
 )
 from maistro.extensions.compatibility import (
     CompatibilityPolicy,
@@ -131,10 +185,21 @@ from maistro.extensions.types import (
 )
 
 __all__ = [
+    "BUNDLE_FORMAT",
+    "CERTIFICATION_FORMAT",
+    "CERTIFIER_VERSION",
+    "CONFORMANCE_CHECK_ID",
     "DIGEST_ALGORITHM",
+    "ENTRYPOINTS_CHECK_ID",
     "LOCK_FORMAT",
+    "MANIFEST_PROFILE",
+    "PUBLICATION_PROFILE",
+    "PUBLIC_IMPORTS_CHECK_ID",
     "ROOT_REQUEST_ORIGIN",
+    "SEAL_FORMAT",
+    "SECURITY_SCAN_CHECK_ID",
     "SELECTION_POLICY",
+    "STRUCTURE_CHECK_ID",
     "SUPPORTED_MANIFEST_VERSION",
     "TERMINAL_STATES",
     "TRANSITIONS",
@@ -144,10 +209,27 @@ __all__ = [
     "AuthorityBaseline",
     "AuthorityDelta",
     "CatalogEntry",
+    "CertificationCheck",
+    "CertificationEnvironment",
+    "CertificationError",
+    "CertificationInvalid",
+    "CertificationPackageMismatch",
+    "CertificationProfile",
+    "CertificationReport",
+    "CertificationSeal",
+    "CertificationSubject",
+    "CheckOutcome",
+    "CheckResult",
     "CompatibilityPolicy",
     "CompatibilityReport",
+    "ConformanceCheck",
+    "ConformanceOutcome",
+    "ConformanceSuite",
     "ConstraintRecord",
     "DependencyCycle",
+    "DuplicateCheckError",
+    "EntryPointPresenceCheck",
+    "ExtensionBundle",
     "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionDependency",
@@ -164,6 +246,7 @@ __all__ = [
     "ExtensionState",
     "ExtensionStore",
     "ExtensionTransition",
+    "ImportPolicy",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
     "InspectionConflict",
@@ -185,6 +268,8 @@ __all__ = [
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
+    "PackageStructureCheck",
+    "PublicImportCheck",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "RegistryProvenance",
@@ -192,6 +277,7 @@ __all__ = [
     "ResolutionConflict",
     "ResolutionError",
     "RootRequest",
+    "SecurityScanCheck",
     "SelectionExplanation",
     "SemVer",
     "SkippedOptional",
@@ -206,8 +292,12 @@ __all__ = [
     "UnwiredExtensionLoader",
     "VersionRange",
     "assert_snapshot_intact",
+    "bundle_digest",
     "canonical_install_payload",
+    "certification_as_trust_claim",
+    "certify",
     "compute_authority_delta",
+    "detect_environment",
     "diff_locks",
     "evaluate_compatibility",
     "evaluate_trust",
@@ -217,7 +307,16 @@ __all__ = [
     "materialize_lock",
     "normalize_permission",
     "parse_range",
+    "render_summary",
+    "report_digest",
+    "report_from_json",
+    "report_to_json",
     "resolve_lock",
+    "seal_from_json",
+    "seal_to_json",
     "sha256_hex",
+    "sign_certification",
+    "verify_certification",
+    "verify_certified_package",
     "verify_package_payload",
 ]
