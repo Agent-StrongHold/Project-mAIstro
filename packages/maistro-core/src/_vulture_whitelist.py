@@ -12,10 +12,12 @@ from maistro.a2a.external import ExternalAgentRegistry
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._extensions import (
+    extensions_certify,
     extensions_explain,
     extensions_history,
     extensions_lock,
     extensions_show,
+    extensions_verify_certification,
 )
 from maistro.container import Container
 from maistro.extensions.resolution import LockState
@@ -312,4 +314,11 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Pre-publication extension certification (M9-H3, #975). The
+    # `maistro extensions certify` / `verify-certification` commands are
+    # typer-dispatched like the lock commands above: their production caller
+    # is the command wiring, their consumers the CLI conformance suite
+    # (packages/maistro-core/tests/extensions/test_cli_certification.py).
+    extensions_certify,
+    extensions_verify_certification,
 )

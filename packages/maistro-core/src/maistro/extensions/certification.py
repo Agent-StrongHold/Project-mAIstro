@@ -707,10 +707,7 @@ def _dynamic_import_aliases(tree: ast.Module) -> frozenset[str]:
     """
     aliases: set[str] = set()
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and (node.module or "").split(".")[0] == "importlib"
-        ):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "importlib":
             aliases.update(
                 alias.asname
                 for alias in node.names

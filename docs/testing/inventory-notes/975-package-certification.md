@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +60
+  packages/maistro-core/tests: +63
 ---
 # 975-package-certification
 
@@ -46,3 +46,12 @@ One production bug surfaced on the way and is fixed here: the seal signed with
 `Encoding`/`PublicFormat` classes instead of their `Raw` members, so every
 `sign_certification` call raised `TypeError` — the first signing test caught
 it, which is the test-suite-as-acceptance-evidence case working as intended.
+
+Three tests join in the certification repair rounds (bundle binding and
+loader-alias resolution): one pins that `certify` refuses any declared check
+whose bound bundle digest differs from the bundle the report will describe
+(`UnboundCheckError`), and two pin that the CLI scans the sources extracted
+from the payload artifact itself — a sibling `src/` directory next to the
+`.zip` is ignored, and a non-zip payload has no sources to scan, so the
+public-import and security checks answer not-applicable instead of passing on
+nothing.

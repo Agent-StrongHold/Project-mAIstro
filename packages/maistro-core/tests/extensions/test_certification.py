@@ -33,10 +33,10 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from maistro.extensions import (
     CONFORMANCE_CHECK_ID,
-    SECURITY_SCAN_CHECK_ID,
-    STRUCTURE_CHECK_ID,
     MANIFEST_PROFILE,
     PUBLICATION_PROFILE,
+    SECURITY_SCAN_CHECK_ID,
+    STRUCTURE_CHECK_ID,
     CertificationEnvironment,
     CertificationInvalid,
     CertificationPackageMismatch,
@@ -56,8 +56,8 @@ from maistro.extensions import (
     PackageStructureCheck,
     PublicImportCheck,
     SecurityScanCheck,
-    UnboundCheckError,
     TrustPolicy,
+    UnboundCheckError,
     certification_as_trust_claim,
     certify,
     detect_environment,
@@ -708,10 +708,7 @@ def test_public_import_policy_flags_violations() -> None:
     dynamic = _import_scan('__import__("maistro._hidden")\n')
     assert dynamic.outcome is CheckOutcome.FAILED
 
-    aliased = _import_scan(
-        "from importlib import import_module as load\n"
-        'load("maistro._hidden")\n'
-    )
+    aliased = _import_scan('from importlib import import_module as load\nload("maistro._hidden")\n')
     assert aliased.outcome is CheckOutcome.FAILED
     assert "maistro._hidden" in aliased.detail
     # A name merely similar to the loader, or aliased from another module,
@@ -802,9 +799,7 @@ def test_security_scan_flags_dynamic_execution_only() -> None:
     assert _security_scan("handler = eval\n").outcome is CheckOutcome.PASSED
     assert _security_scan('__import__("json")\n').outcome is CheckOutcome.PASSED
     # Aliased re-bindings of the loader are tracked, not missed.
-    aliased = _security_scan(
-        "from importlib import import_module as load\nload(name)\n"
-    )
+    aliased = _security_scan("from importlib import import_module as load\nload(name)\n")
     assert aliased.outcome is CheckOutcome.FAILED
     assert "non-literal" in aliased.detail
 
