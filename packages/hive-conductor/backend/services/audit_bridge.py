@@ -111,7 +111,8 @@ def _sync_sqlite_audit_insert(container: Any, entry: CoreAuditEntry) -> None:
 
 
 def _sync_in_memory_audit_insert(audit_log: Any, entry: CoreAuditEntry) -> None:
-    audit_log._entries.append(entry)
+    # Keep row identity and pagination indexes atomic with the async writer.
+    audit_log.log_sync(entry)
 
 
 def write_core_audit_sync(entry: CoreAuditEntry) -> None:

@@ -102,6 +102,106 @@ async def test_maximum_floor_empty_and_malformed_cursor(audit):
             await audit.get_page(cursor=malformed)
 
 
+@pytest.mark.parametrize("corpus_size", [100, 10_000])
+async def test_memory_page_reads_only_bounded_records_for_every_filter_shape(corpus_size):
+    """Sparse filters and deep ties must seek, not inspect unrelated records."""
+    store = InMemoryAuditLog()
+    stamp = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(corpus_size):
+        await store.log(
+            AuditEntry(
+                timestamp=stamp,
+                org_id="org-a" if index % 2 else "other",
+                user_id="alice" if index % 3 else "bob",
+                boundary="tool" if index % 5 else "login",
+                verdict="denied" if index % 7 else "allowed",
+            )
+        )
+    records = store._entries
+
+    class ReadBudget(list):
+        reads = 0
+
+        def __getitem__(self, key):
+            self.reads += len(range(len(self))[key]) if isinstance(key, slice) else 1
+            assert self.reads <= 4, "page inspected more than limit + 1 records"
+            return super().__getitem__(key)
+
+        def __iter__(self):
+            for index in range(len(self)):
+                yield self[index]
+
+    store._entries = ReadBudget(records)
+    deep = base64.urlsafe_b64encode(
+        json.dumps([stamp.isoformat(), corpus_size // 2]).encode()
+    ).decode()
+    for actor, boundary, denied, cursor in product(
+        (None, "alice"), (None, "tool"), (None, False, True), (None, deep)
+    ):
+        expected = [
+            row_id
+            for row_id, entry in enumerate(records, start=1)
+            if entry.org_id == "org-a"
+            and (actor is None or entry.user_id == actor)
+            and (boundary is None or entry.boundary == boundary)
+            and (denied is None or (entry.verdict == "denied") == denied)
+            and (cursor is None or row_id < corpus_size // 2)
+        ][::-1]
+        store._entries.reads = 0
+        page = await store.get_page(
+            org_id="org-a",
+            user_id=actor,
+            boundary=boundary,
+            denied=denied,
+            cursor=cursor,
+            limit=3,
+        )
+        assert [row_id for row_id, _ in page.records] == expected[:3]
+        assert bool(page.next_cursor) == (len(expected) > 3)
+    store._entries.reads = 0
+    assert (await store.get_page(org_id="absent")).records == []
+    assert store._entries.reads == 0
+
+
+async def test_memory_out_of_order_appends_preserve_cursor_and_filter_indexes():
+    store = InMemoryAuditLog()
+    stamp = datetime(2026, 1, 1, tzinfo=UTC)
+    for day in (3, 1, 2):
+        await store.log(AuditEntry(timestamp=stamp + timedelta(days=day), user_id="alice"))
+    first = await store.get_page(user_id="alice", limit=1)
+    assert [row_id for row_id, _ in first.records] == [1]
+    await asyncio.gather(
+        store.log(AuditEntry(timestamp=stamp + timedelta(days=4), user_id="alice")),
+        store.log(AuditEntry(timestamp=stamp, user_id="alice")),
+        store.log(AuditEntry(timestamp=stamp, user_id="bob")),
+    )
+    rest = await store.get_page(user_id="alice", cursor=first.next_cursor)
+    assert [row_id for row_id, _ in rest.records] == [3, 2, 5]
+    assert rest.next_cursor is None
+    assert [row_id for row_id, _ in (await store.get_page(user_id="bob")).records] == [6]
+
+
+async def test_memory_sync_threads_and_async_writes_share_row_identity():
+    store = InMemoryAuditLog()
+    stamp = datetime(2026, 1, 1, tzinfo=UTC)
+
+    async def write(index):
+        entry = AuditEntry(timestamp=stamp, detail=str(index), user_id="alice")
+        if index % 2:
+            await asyncio.to_thread(store.log_sync, entry)
+        else:
+            await store.log(entry)
+
+    await asyncio.gather(*(write(index) for index in range(500)))
+    page = await store.get_page(user_id="alice", limit=200)
+    records = list(page.records)
+    while page.next_cursor:
+        page = await store.get_page(user_id="alice", limit=200, cursor=page.next_cursor)
+        records.extend(page.records)
+    assert [row_id for row_id, _ in records] == list(range(500, 0, -1))
+    assert {entry.detail for _, entry in records} == {str(index) for index in range(500)}
+
+
 async def test_sqlite_million_row_filter_shapes_and_deep_ties():
     """Deterministic VM-work bound on the actual canonical production query."""
     async with aiosqlite.connect(":memory:") as conn:

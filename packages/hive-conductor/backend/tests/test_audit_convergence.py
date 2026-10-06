@@ -275,6 +275,43 @@ async def test_core_detail_cannot_bypass_admin_scope_via_legacy_replica(
             assert denied.json() == response.json()
 
 
+async def test_sync_audit_bridge_is_visible_in_memory_pages_and_export(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync route writer must maintain the same indexes as async log()."""
+    import asyncio
+
+    from routes.audit import log_audit
+
+    from maistro.security.sentinel.audit import InMemoryAuditLog
+
+    audit_log = InMemoryAuditLog()
+    monkeypatch.setattr(booted, "audit_log", audit_log)
+    await _login(client, _ADMIN[1], _ADMIN[2])
+    await asyncio.to_thread(log_audit, "test-index", "sync-actor", detail={"marker": "sync-bridge"})
+    await audit_log.log(
+        AuditEntry(boundary="test-index", user_id="async-actor", detail="async-write")
+    )
+    response = await client.get("/v1/audit", params={"action": "test-index", "limit": 1})
+    assert response.status_code == 200, response.text
+    first = response.json()
+    assert first["entries"][0]["actor"] == "async-actor"
+    assert first["next_cursor"]
+    response = await client.get(
+        "/v1/audit",
+        params={"action": "test-index", "limit": 1, "cursor": first["next_cursor"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["entries"][0]["detail"] == {"marker": "sync-bridge"}
+    assert response.json()["next_cursor"] is None
+    exported = await client.get("/v1/audit/export", params={"actor": "sync-actor"})
+    assert exported.status_code == 200, exported.text
+    assert len(exported.text.splitlines()) == 1
+    assert "sync-bridge" in exported.text
+
+
 async def test_audit_route_reads_the_core_audit_log(
     client: httpx.AsyncClient, booted: Container
 ) -> None:
