@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -61,6 +62,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
 from maistro.credentials.types import CredentialRecord
+from maistro.extensions.attribution import ExtensionAttribution
 from maistro.providers.types import ModelMetadata, ModelTier
 
 if TYPE_CHECKING:
@@ -104,6 +106,11 @@ logger = logging.getLogger("maistro.capabilities.provider_adapters")
 #: refuses them at parse time; the conformance suite re-asserts the empty
 #: intersection so a foreign spec object cannot argue with the schema.
 _SECRET_FIELD_NAMES = frozenset({"api_key", "apikey", "secret", "token", "password"})
+
+#: Declared package digests must already be the digest form install records
+#: use. Shape-checked at registration so a malformed identity is refused at
+#: wiring time, never discovered while reading old evidence.
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _parse_adapter_base_url(url: str) -> SplitResult | None:
@@ -251,12 +258,27 @@ class ProviderAdapterSpec(BaseModel):
     #: canonical router (ADR-081226-6b46) and must never drag a secret outside
     #: credential resolution.
     health_path: str = ""
+    #: Extension package attribution (M9-I1, #976): the adapter package's
+    #: exact identity — strict semantic version, publisher, and the
+    #: package/manifest digests — as the out-of-tree package declares it.
+    #: All four are declared together or not at all (a partial identity looks
+    #: like traceability while naming no exact package); when declared, every
+    #: Binding wired through :func:`bootstrap_provider_adapters` snapshots
+    #: them, and adapter errors and call logs name them. The digests are the
+    #: package's declaration; the governed install store (M9-B1) is what
+    #: verifies bytes against digests, so recording them here couples the
+    #: adapter surface to that evidence without re-implementing it.
+    version: str = ""
+    publisher: str = ""
+    package_sha256: str = ""
+    manifest_sha256: str = ""
 
     @model_validator(mode="after")
     def _validate_spec(self) -> ProviderAdapterSpec:
         self._validate_identity()
         self._validate_transport()
         self._validate_models()
+        self._validate_attribution()
         if self.health_path and not self.health_path.startswith("/"):
             raise ValueError(f"adapter health_path must start with '/': {self.health_path!r}")
         return self
@@ -312,6 +334,64 @@ class ProviderAdapterSpec(BaseModel):
                     f"model={model.capabilities.model_dump()} "
                     f"adapter={self.capabilities.model_dump()}"
                 )
+
+    def _validate_attribution(self) -> None:
+        """Adapter package identity is all-or-nothing and shape-checked.
+
+        A partial identity (a version without a publisher, a digest without a
+        version) is refused at registration: evidence that names half an
+        identity is less attributable than evidence that names none, because
+        it looks complete. Declared digests must be the digest form install
+        records use, and the version must be the strict MAJOR.MINOR.PATCH the
+        extension contract pins — the same parser, so adapter versions and
+        extension versions cannot drift apart.
+        """
+
+        declared = (self.version, self.publisher, self.package_sha256, self.manifest_sha256)
+        if not any(value.strip() for value in declared):
+            return
+        labels = ("version", "publisher", "package_sha256", "manifest_sha256")
+        missing = [
+            label for value, label in zip(declared, labels, strict=True) if not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"adapter {self.adapter_id!r} declares partial package identity "
+                f"(missing: {missing}); declare version, publisher, package_sha256 "
+                "and manifest_sha256 together, or none of them"
+            )
+        from maistro.extensions.semver import InvalidSemanticVersion, SemVer
+
+        try:
+            SemVer.parse(self.version)
+        except InvalidSemanticVersion as exc:
+            raise ValueError(
+                f"adapter version {self.version!r} is not a strict MAJOR.MINOR.PATCH "
+                "version (the extension contract allows no pre-release, build "
+                "metadata, 'v' prefix, or partial forms)"
+            ) from exc
+        for value, label in (
+            (self.package_sha256, "package_sha256"),
+            (self.manifest_sha256, "manifest_sha256"),
+        ):
+            if not _SHA256_HEX_RE.fullmatch(value):
+                raise ValueError(f"adapter {label} must be sha256 hex, got {value!r}")
+
+    def extension_attribution(self) -> ExtensionAttribution | None:
+        """The declared package identity as canonical attribution evidence.
+
+        ``None`` when the package declares no identity: a legacy registration
+        stays valid, it simply cannot claim exact attribution.
+        """
+        if not self.version:
+            return None
+        return ExtensionAttribution(
+            extension_id=self.adapter_id,
+            version=self.version,
+            publisher=self.publisher,
+            package_sha256=self.package_sha256,
+            manifest_sha256=self.manifest_sha256,
+        )
 
     def to_model_metadata(self, model: AdapterModelSpec) -> ModelMetadata:
         """Map one declared model into canonical registry metadata."""
@@ -396,6 +476,16 @@ class AdapterGatewayProvider:
     @property
     def credential_provider(self) -> str:
         return self.spec.credential_provider
+
+    @property
+    def extension_attribution(self) -> ExtensionAttribution | None:
+        """The exact package identity behind this resolved adapter model.
+
+        ``None`` when the adapter package declares no identity (M9-I1, #976):
+        canonical evidence then reads as it always did, rather than carrying
+        a half-identity that looks attributable and is not.
+        """
+        return self.spec.extension_attribution()
 
 
 class ProviderAdapterCatalog:
@@ -1110,6 +1200,19 @@ async def bootstrap_provider_adapters(
             "policy_refs": declared.policy_refs,
             "config": {"adapter_id": declared.adapter_id},
         }
+        # Extension attribution (M9-I1, #976): the Binding snapshot — the
+        # durable evidence every Invocation records — names the exact adapter
+        # package that was wired, when the package declares its identity.
+        # Attribution lives under one dedicated config key (a version-tagged
+        # payload that decodes without the package installed), never in the
+        # correlation namespace, so evidence joins by provenance and the
+        # canonical caller identity stays the one authority on ordering.
+        attribution = spec.extension_attribution()
+        if attribution is not None:
+            values["config"] = {
+                "adapter_id": declared.adapter_id,
+                "extension_attribution": attribution.to_payload(),
+            }
         if existing is not None:
             values["created_at"] = existing.created_at
         binding = Binding.model_validate(values)

@@ -1,5 +1,5 @@
-"""Governed extension registry, activation flow, and dependency resolution
-(M9-B/M9-C, issues #952/#953/#956).
+"""Governed extension registry, activation flow, dependency resolution, and
+attribution evidence (M9-B/M9-C/M9-I, issues #952/#953/#956/#976).
 
 Public surface of the ``maistro.extensions`` package, in three layers:
 
@@ -19,13 +19,25 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-I1 attribution (issue #976)**: the version-tagged
+  :class:`ExtensionAttribution` evidence payload (``attribution``) — the
+  exact name/version/publisher/digest identity behind one effect, shaped for
+  canonical telemetry (Event provenance, log fields, Binding snapshots) and
+  decodable after the extension is upgraded or removed.
 
-No layer executes extension code: verification, evaluation, authorization
-and resolution all operate on bytes and declarations alone.
+No layer executes extension code: verification, evaluation, authorization,
+resolution and attribution all operate on bytes and declarations alone.
 """
 
 from __future__ import annotations
 
+from maistro.extensions.attribution import (
+    ATTRIBUTION_FORMAT,
+    ExtensionAttribution,
+    InvalidAttribution,
+    attribution_from_payload,
+    attribution_identity_key,
+)
 from maistro.extensions.authority import (
     AuthorityBaseline,
     AuthorityDelta,
@@ -131,6 +143,7 @@ from maistro.extensions.types import (
 )
 
 __all__ = [
+    "ATTRIBUTION_FORMAT",
     "DIGEST_ALGORITHM",
     "LOCK_FORMAT",
     "ROOT_REQUEST_ORIGIN",
@@ -148,6 +161,7 @@ __all__ = [
     "CompatibilityReport",
     "ConstraintRecord",
     "DependencyCycle",
+    "ExtensionAttribution",
     "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionDependency",
@@ -169,6 +183,7 @@ __all__ = [
     "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
+    "InvalidAttribution",
     "InvalidSemanticVersion",
     "InvalidTransition",
     "InvalidVersionRange",
@@ -206,6 +221,8 @@ __all__ = [
     "UnwiredExtensionLoader",
     "VersionRange",
     "assert_snapshot_intact",
+    "attribution_from_payload",
+    "attribution_identity_key",
     "canonical_install_payload",
     "compute_authority_delta",
     "diff_locks",
