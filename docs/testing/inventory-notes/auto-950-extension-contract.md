@@ -388,3 +388,94 @@ packages/maistro-evolve` — the same order as quality.yml's quality-gate job).
   test passes on that state (verified: 1 passed with the generated file moved
   aside). Run root-`tests/` before any local ac-state run, or move the
   generated report aside first.
+
+## Validation battery (develop-sync round 3 at merge `f056443b0`, branch
+## `auto-950`)
+
+Third develop sync: `origin/develop` moved to `1e640df17` (M9-J1 #2020
+extension catalog, M9-J3 #2017 discovery→observe flow, M9-C3 #2002 upgrade
+preflight, plus a first-line-waiver mutation round) — 4 commits, +6029/−3,
+touching this lane's exact package (`extensions/catalog_service.py`,
+`extensions/preflight.py`, `store.py`, `sqlite_store.py`, `__init__.py`,
+`_vulture_whitelist.py`, `container.py`, `cli/_extensions.py`,
+`maistro_server/api/catalog.py`). One conflict, resolved by union:
+`extensions/__init__.py` `__all__` — develop's `PreflightPolicy` /
+`PreflightReport` / `run_preflight` inserted in index order beside this
+lane's `ProgressReporter` / `ProgressSink` / `run_activation` /
+`run_deactivation` / `run_invocation`; both halves' import blocks had
+auto-merged cleanly. No test added, removed, or renamed this round.
+
+Executed at the merge commit `f056443b0` (environment rebuilt to CI parity
+first: `uv sync --locked --all-extras`, `uv pip install radon xenon vulture
+pyright interrogate pytest-timeout`, `uv pip install -e
+packages/maistro-evolve`):
+
+- `uv run ruff check .` → all checks pass; `ruff format --check .` → 3051
+  files already formatted.
+- `RATCHET_BASE_REV` default (`origin/develop` = `1e640df17`) `uv run python
+  scripts/check-ratchet-provenance.py` (vulture-ratchet.yml:77, CI's exact
+  step) → exit 0: all ten ratchets flat vs base `1e640df17c8a`
+  (citation-status 0 exceptions, enumerations 1 tolerated → 1 current,
+  promotion-surface 74=74, reachability 170=170, shell-execution 3=3,
+  contract-markers 371=371, adr-status-language/lifecycle flat, 49 consumers
+  with provenance). `check-citation-status-provenance.py` (registry.yml:108)
+  → exit 0. `check-shipped-surface-truth.py` → ok.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → exit 0; **1332 = 1332** reviewed identities →
+  findings. develop's new preflight/catalog code arrived pre-whitelisted
+  (`_vulture_whitelist.py` +10, merged cleanly); **no ledger amendment
+  needed or made**.
+- `uv run pytest packages/maistro-core/tests/extensions -q` → **383
+  passed** (this lane's 30 + develop's catalog/preflight/lifecycle-proof
+  suites, passing together on the merged `__init__` union).
+  `packages/maistro-server` catalog + extensions API + container-wiring →
+  31 passed.
+- `uv run mypy --strict packages/maistro-core/src` → Success, 741 files
+  (739 + develop's 2 new modules), 0 issues. Pyright (CI's exact form:
+  `--outputjson packages/maistro-core/src` + `check-pyright-report.py
+  --baseline 21 --exit-code <status>`) → **21 = 21**, exit 0.
+- xenon (CI's exact scope incl. `maistro-ext-sdk/src`, `-i third_party`) →
+  140 blocks ≤ 145 baseline, 0 module-rank, 0 average violations.
+  `check-radon-baseline.py` → 138 = 138, exit 0. All 12 interrogate floors
+  (quality.yml:1487-1507) → pass.
+- `uv run pytest formal/ --timeout=120 -q` (Pillar 2, CI's exact args) →
+  **663 passed, 1 skipped**.
+- `check-suite-inventory.py --suite packages/maistro-core/tests` → ok:
+  14425 collected = recorded (14339 + develop's 86; both lanes' delta notes
+  reconcile with no baseline edit this round).
+- Acceptance-state gate in CI's PR form (`check-ac-state.py --run-tests
+  --ratchet --mandate 1e640df17c8a7dda647afa64d6a97384a93dee78`): both
+  **mandate halves pass** — 5 criteria added or newly claimed, 0 unproven,
+  0 new chain gaps. The **only** failure line remains `design_coverage:
+  38.9049 falls below the floor of 43.2114`, folded from 30 notes at base
+  `1e640df17c8a`. The merged tree measures byte-identically to the
+  pre-merge round (164 taken decisions, 89 at zero) — the develop sync
+  neither helped nor hurt.
+- **Base re-measured first-hand this round** (not inherited from the prior
+  round's claim): `git worktree add --detach` at merge-base `a8258ee24`,
+  the gate's own recipe (`uv run --project <main tree> --locked
+  --all-extras python scripts/check-ac-state.py --run-tests`) → design
+  coverage **38.5301% over 163 taken decisions** — the develop base is
+  below the fold floor too, and below this branch (candidate +0.37pp).
+  `git diff HEAD..origin/develop -- quality/` after the sync shows only
+  this lane's own branch-owned `ac-state-notes/auto-950.json` difference:
+  **no re-bank or `ratchet-authorizations.json` grant has landed on develop
+  at `1e640df17` either**, so the two-merge rule still makes a branch-side
+  grant inert and the gate's fold-weakening guard still refuses editing the
+  inherited note. The remedy remains develop-side: re-bank the diluted
+  measurement there (`check-ac-state.py --run-tests --ratchet --bank`,
+  justified in that diff) or land a grant, then re-sync this branch.
+- Codex PR-review findings (reviewed at `5f5c230`, eight commits back)
+  re-checked against current production code: cross-workspace refusal
+  (`host.py` routed-dispatch `ScopeMismatch`), outside-Attempt refusal,
+  and declared-only composition filtering (`host.py` "keep only
+  descriptor-declared entries"), lifecycle scope-pairing
+  (`lifecycle.py::_require_scope` in the exported drivers), config
+  snapshot/detachment — all present. **Still open** (recorded, not repaired
+  this round — they are hardening beyond the banked AC set and do not move
+  the gate): extension provenance is recorded only after
+  `route.dispatch()` succeeds, so denied/failed effect attempts are not
+  attributed to the extension in the governed events (`host.py`
+  `_dispatch_effect`); nested configuration values are snapshotted
+  shallowly; `ExtensionContext.identity`/`.scope` slots are writable by
+  assignment despite `__slots__`.
