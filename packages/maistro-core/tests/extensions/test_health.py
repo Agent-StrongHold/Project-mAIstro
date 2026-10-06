@@ -772,6 +772,84 @@ def test_dependency_readiness_range_grammar_matches_install_rules() -> None:
     assert readiness_for("*", "9.9.9").ready is True
 
 
+async def test_service_gates_readiness_on_dependency_health() -> None:
+    """Acceptance: the service derives each declared dependency's health from
+    that dependency's own host-recorded evidence and passes it into the
+    projection — a failing provider marks an otherwise-clean dependent not
+    ready, even with a satisfying version range active."""
+    store = InMemoryExtensionStore()
+    await _install_active(store, extension_id="acme.provider", version="2.0.0")
+    await _install_active(
+        store,
+        extension_id="acme.chart",
+        dependencies=({"extension_id": "acme.provider", "range_spec": "^2.0.0"},),
+    )
+    health = InMemoryExtensionHealthStore()
+    await health.append_observation(
+        _observation(
+            "obs-provider",
+            outcome=ObservationOutcome.FAILURE,
+            extension_id="acme.provider",
+            version="2.0.0",
+            error=_error(
+                "err-provider",
+                kind=ExtensionErrorKind.EXTENSION,
+                extension_id="acme.provider",
+                version="2.0.0",
+                dependency=None,
+            ),
+        )
+    )
+    service = ExtensionHealthService(store, health)
+
+    status = await service.status(SCOPE, "acme.chart")
+
+    assert status is not None
+    assert status.ready is False
+    assert status.dependency_ready is False
+    assert status.summary is ExtensionOperationalState.DEGRADED
+    assert any(
+        "acme.provider" in failure and "unhealthy" in failure
+        for failure in status.dependency_failures
+    )
+
+
+async def test_service_dependency_health_reads_each_dependency_own_version() -> None:
+    """The dependency's health is evaluated at the version actually active —
+    a failure recorded against an older provider version does not condemn the
+    upgraded one."""
+    store = InMemoryExtensionStore()
+    await _install_active(store, extension_id="acme.provider", version="2.0.0")
+    await _install_active(
+        store,
+        extension_id="acme.chart",
+        dependencies=({"extension_id": "acme.provider", "range_spec": "^2.0.0"},),
+    )
+    health = InMemoryExtensionHealthStore()
+    await health.append_observation(
+        _observation(
+            "obs-old-provider",
+            outcome=ObservationOutcome.FAILURE,
+            extension_id="acme.provider",
+            version="1.0.0",
+            error=_error(
+                "err-old-provider",
+                kind=ExtensionErrorKind.EXTENSION,
+                extension_id="acme.provider",
+                version="1.0.0",
+                dependency=None,
+            ),
+        )
+    )
+    service = ExtensionHealthService(store, health)
+
+    status = await service.status(SCOPE, "acme.chart")
+
+    assert status is not None
+    assert status.dependency_ready is True
+    assert status.ready is True
+
+
 # --------------------------------------------------------------------------
 # Operator decisions
 # --------------------------------------------------------------------------

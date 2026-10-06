@@ -1212,7 +1212,9 @@ class ExtensionHealthService:
     ) -> ExtensionOperationalStatus:
         """Assemble the evidence inputs and project them for one record."""
         installed_versions = await self._install_store.installed_versions(scope)
-        observations = await self._health_store.observations(scope, extension_id=extension_id)
+        observations = await self._health_store.observations(
+            scope, extension_id=extension_id, version=record.version
+        )
         health = evaluate_health(observations)
         decisions = await self._health_store.decisions(scope)
         return project_operational_status(
@@ -1221,8 +1223,42 @@ class ExtensionHealthService:
             installed_versions=installed_versions,
             platform_api_version=self._platform_api_version,
             health=health,
+            dependency_health=await self._dependency_health(
+                scope, record.manifest, installed_versions
+            ),
             operator_state=operator_state_for(decisions, extension_id),
         )
+
+    async def _dependency_health(
+        self,
+        scope: ExtensionScope,
+        manifest: ExtensionManifest,
+        installed_versions: Mapping[str, str],
+    ) -> Mapping[str, ExtensionHealth] | None:
+        """Per-dependency health from each dependency's own evidence.
+
+        The mapping the readiness gate consumes: for every declared
+        dependency that is currently active, its active version's
+        host-recorded observations are evaluated with the same window and
+        rules as the extension's own health. ``None`` when the manifest
+        declares no dependencies, leaving the gate vacuous rather than
+        manufacturing an empty-health fiction. A dependency with no active
+        install is omitted: the missing-install failure line already covers
+        it, and there is no version of it to evaluate.
+        """
+        if not manifest.dependencies:
+            return None
+        health: dict[str, ExtensionHealth] = {}
+        for dependency in manifest.dependencies:
+            version = installed_versions.get(dependency.extension_id)
+            if version is None:
+                continue
+            health[dependency.extension_id] = evaluate_health(
+                await self._health_store.observations(
+                    scope, extension_id=dependency.extension_id, version=version
+                )
+            )
+        return health
 
     # -- telemetry views ---------------------------------------------------------
 

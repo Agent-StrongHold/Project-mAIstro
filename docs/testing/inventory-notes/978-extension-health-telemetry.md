@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +44
+  packages/maistro-core/tests: +46
   packages/maistro-server/tests: +12
 ---
 
@@ -23,7 +23,7 @@ the install store, and the operator HTTP views
   the install service owns (the fork-the-canonical-record regression is
   pinned by identity, not by behavior).
 
-- `test_health.py` (34) — each refusal path names its acceptance
+- `test_health.py` (36) — each refusal path names its acceptance
   criterion: installed-but-incompatible (platform API re-derived now, not
   the install-day verdict), unauthorized (terminal refusal), and unhealthy
   (non-dependency failure) extensions cannot report ready; an unmeasured
@@ -45,7 +45,12 @@ the install store, and the operator HTTP views
   boundary and the absent-data contract (no position, no alarm); digest
   absent-metrics are `None`, not zero; service views (unknown extension →
   no fabricated status; refused candidates surface UNAUTHORIZED; export
-  carries exactly what the views serve).
+  carries exactly what the views serve); and the service feeds the readiness
+  gate each declared dependency's OWN health — evaluated from that
+  dependency's active version's host-recorded evidence, so a failing
+  provider marks an otherwise-clean dependent not ready, while a failure
+  recorded against a superseded dependency version does not condemn the
+  upgraded one.
 - `test_health_store_conformance.py` (9) — the in-memory and SQLite twins
   agree on observation/error/decision reads under every filter (scope
   containment included), with `limit` selecting the newest rows; a failed
