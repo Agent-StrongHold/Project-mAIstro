@@ -454,3 +454,23 @@ reconciliation this merge records.
 Hosted CI on this merge head is not observable from this sandbox (no push,
 no GitHub mutation) — UNVERIFIED by policy; the required gates were proven
 locally with CI's argv as above.
+
+## Correction (repair round, post-merge)
+
+The vulture claim above was false at this merge head. Banking the
+`code_registry/types.py::trusted` row did **not** make
+`check-vulture-baseline.py` exit 0: the per-identity ratchet reads
+authorizations from the merge base, so candidate banking cannot self-authorize
+— the gate exited 1 at b25f0537 (`1342 reviewed identities -> 1343 findings`,
+reproduced by the repair round; see `404-trust-anchor-restore.md`, which also
+documents why the field itself could not simply be deleted). The row is now
+gone and the ledger is byte-identical to origin/develop's again, because the
+repair round restored develop's dropped trust anchor — a real in-tree use of
+the name `trusted` — rather than keeping the banked row.
+
+Re-verified at branch head 29e8a684f7a8 with CI's exact argv:
+`check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` exits 0 with `1336 reviewed identities ->
+1336 findings`, no banking involved; hosted `exact-debt-ledger` and
+`Quality gate (Pillars 1–4, 7, 8)` check runs concluded success on that same
+commit.

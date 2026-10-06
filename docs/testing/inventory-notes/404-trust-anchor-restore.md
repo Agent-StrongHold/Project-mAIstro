@@ -99,5 +99,17 @@ against the base fold, only a separately-landed grant in
 `quality/ratchet-authorizations.json` (ac-state section, empty at develop)
 can lower it — the two-merge rule — and corpus-wide coverage work is outside
 #404. Hosted CI's Quality-gate FAILURE at b25f0537 fired at the vulture step
-(before the ac-state step), which this round fixes; the ac-state step will
-still be red until the develop-side floor fall is banked/authorized upstream.
+(before the ac-state step), which this round fixes.
+
+**Correction (verification round, post-repair):** the prediction that "the
+ac-state step will still be red" did **not** hold. Hosted
+`Quality gate (Pillars 1–4, 7, 8)` concluded success on branch head
+29e8a684f7a8 (started 2026-10-06T00:17:37Z, completed 00:24:34Z), and that
+job contains the acceptance-state ratchet step (`quality.yml:1376-1389`). On
+PR candidates it runs `check-ac-state.py --run-tests --ratchet --mandate
+$MANDATE_BASE_SHA`: mandate mode measures the actual immutable base in a
+detached worktree and compares the candidate against it, so a candidate that
+preserves develop's own measured state (38.1507) passes. The plain
+`--ratchet` floor comparison against the notes-fold (38.1507 < 42.8609) is
+the conservative local/synthetic-caller path, not the hosted PR gate — the
+floor-fall authorization concern above remains accurate for that path only.
