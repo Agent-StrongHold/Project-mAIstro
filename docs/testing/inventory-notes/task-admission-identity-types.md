@@ -242,3 +242,20 @@ still reports only the intentionally inactive module, and ratchet provenance
 fails through that reachability debt. This staged leaf has no permitted repair
 for either trusted-base failure; parent integration must provide the real
 consumer before integration-head quality can pass.
+
+## 2026-10-06 independent CI-repair validation
+
+At `b9b1891a13760ee5afc810e5f2c6f76f1df9b69b`, the focused DTO suite passed
+77 tests and module mypy passed. The exact Vulture scan found 1,351 findings
+but exited 1 only because all nine reviewed declarative DTO identities are
+absent from trusted base `c560d4ccad82`; the candidate ledger already contains
+those identities, and trusted-base provenance correctly refuses to let that
+candidate amendment authorize itself. `check-reachability.py` exits 1 only for
+the intentionally inactive `maistro.runs.admission_identity`; the dispositions
+and promotion-surface gates pass. The full suite-inventory check matched all
+15 suites (26,808 unique node IDs), including 13,845 maistro-core tests. The
+provenance aggregate fails only at its reachability sub-gate for that same
+unwired module. No Vulture whitelist, reachability baseline/disposition,
+suppression, grant, or production import was added: each would violate this
+leaf's staging constraint. Parent integration must add the real consumer before
+integration-head quality can pass.
