@@ -170,6 +170,28 @@ def test_boxes_before_an_acceptance_heading_are_not_criteria(gate) -> None:
     assert [c.ticked for c in gate.acceptance_criteria(body)] == [True]
 
 
+def test_every_gfm_task_list_marker_form_registers(gate) -> None:
+    # GFM task lists allow ``+`` and ``*`` bullets and ordered ``1.``/``1)``
+    # markers, and items nest to any depth (review: every valid marker). An
+    # issue using any of these must still register its criteria.
+    body = (
+        "## Acceptance\n"
+        "1. [ ] required proof\n"
+        "    + [ ] nested plus bullet\n"
+        "\t2) [x] ordered paren marker\n"
+        "* [X] starred and ticked\n"
+        "+ [ ] top-level plus bullet\n"
+    )
+    criteria = gate.acceptance_criteria(body)
+    assert [(c.index, c.ticked) for c in criteria] == [
+        (1, False),
+        (2, False),
+        (3, True),
+        (4, True),
+        (5, False),
+    ]
+
+
 # --- claimed criteria -----------------------------------------------------------
 
 
