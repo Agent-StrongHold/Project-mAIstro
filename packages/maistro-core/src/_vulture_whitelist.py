@@ -11,6 +11,7 @@ from maistro import identity as identity_package
 from maistro.a2a.external import ExternalAgentRegistry
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.cli._extension_authoring import extension_new
 from maistro.cli._extensions import extensions_history, extensions_show
 from maistro.container import Container
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
@@ -280,6 +281,7 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.get_install,
     InMemoryExtensionInstallStore.get_install,
     SqliteExtensionInstallStore.get_install,
+    extension_new,
     extensions_history,
     extensions_show,
     # External Agent discovery (M9-D1, #958). The registry's lifecycle API
