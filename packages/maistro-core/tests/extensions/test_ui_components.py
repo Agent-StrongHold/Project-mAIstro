@@ -292,6 +292,46 @@ def test_mutating_action_must_name_its_governed_route_exactly() -> None:
         )
 
 
+def test_mutating_action_permissions_are_canonical_not_catalog_chosen() -> None:
+    """AC-2: the catalog cannot pick the authority protecting a mutation.
+
+    A governed route's required permissions are fixed by the platform: a
+    declaration must match them exactly, so an extension holding only a
+    low-authority token cannot bind cancel_run to that token and have the
+    extension-grant and principal checks bless the swap.
+    """
+    with pytest.raises(CatalogRejected, match="canonical permissions"):
+        _inspect(
+            components=[
+                _component(
+                    actions=[
+                        {
+                            "action": "cancel",
+                            "intent": "cancel_run",
+                            "permissions": ["notes.read"],
+                            "route": "POST /v1/runs/{run_id}/cancel",
+                        }
+                    ]
+                )
+            ]
+        )
+    with pytest.raises(CatalogRejected, match="canonical permissions"):
+        _inspect(
+            components=[
+                _component(
+                    actions=[
+                        {
+                            "action": "cancel",
+                            "intent": "cancel_run",
+                            "permissions": ["runs.cancel", "notes.read"],
+                            "route": "POST /v1/runs/{run_id}/cancel",
+                        }
+                    ]
+                )
+            ]
+        )
+
+
 def test_completion_is_not_expressible_as_a_ui_action() -> None:
     """AC-2: no intent or route exists that marks a Run/Goal complete."""
     with pytest.raises(CatalogRejected, match="unknown intent"):
@@ -360,14 +400,14 @@ async def test_hitl_dispatch_resolves_both_canonical_targets() -> None:
                     {
                         "action": "answer",
                         "intent": "answer_hitl",
-                        "permissions": ["runs.cancel"],
+                        "permissions": ["hitl.answer"],
                         "route": "POST /v1/hitl/{run_id}/{node_id}/answer",
                     }
                 ],
             )
         ]
     )
-    service = _service()
+    service = _service(extension_permissions=frozenset({"runs.cancel", "hitl.answer"}))
     service.register(manifest)
     call = await service.dispatch(
         scope=SCOPE,
@@ -394,14 +434,14 @@ async def test_start_task_seam_carries_no_canonical_params() -> None:
                     {
                         "action": "start",
                         "intent": "start_task",
-                        "permissions": ["runs.cancel"],
+                        "permissions": ["tasks.start"],
                         "route": "POST /v1/tasks",
                     }
                 ],
             )
         ]
     )
-    service = _service()
+    service = _service(extension_permissions=frozenset({"tasks.start"}))
     service.register(manifest)
     call = await service.dispatch(
         scope=SCOPE,
@@ -409,7 +449,7 @@ async def test_start_task_seam_carries_no_canonical_params() -> None:
         component_id="run_status_card",
         action="start",
         principal="dev",
-        principal_permissions=PRINCIPAL,
+        principal_permissions=frozenset({"tasks.start"}),
         canonical_state=None,
     )
     assert (call.method, call.path) == ("POST", "/v1/tasks")
@@ -477,6 +517,30 @@ async def test_missing_principal_permission_is_enforced_at_dispatch() -> None:
         )
 
 
+async def test_component_required_permissions_are_enforced_at_dispatch() -> None:
+    """AC-3: component-level required_permissions gate dispatch, not just render.
+
+    A principal holding every action permission but missing a component-level
+    requirement cannot name the component and action to obtain a governed call.
+    """
+    service = _service(
+        json.dumps(_manifest(components=[_component(required_permissions=["admin.everything"])]))
+        .encode()
+    )
+    rendered = await _render_one(service)
+    assert rendered.visible is False
+    with pytest.raises(ActionUnavailable, match="not visible to this principal"):
+        await service.dispatch(
+            scope=SCOPE,
+            extension_id=EXTENSION_ID,
+            component_id="run_status_card",
+            action="cancel",
+            principal="dev",
+            principal_permissions=PRINCIPAL,
+            canonical_state=STATE,
+        )
+
+
 async def test_extension_grant_bounds_declared_action_authority() -> None:
     """AC-3: the governed install grant bounds what actions may even ask.
 
@@ -531,7 +595,7 @@ async def test_unresolvable_canonical_target_is_unavailable() -> None:
                     {
                         "action": "answer",
                         "intent": "answer_hitl",
-                        "permissions": ["runs.cancel"],
+                        "permissions": ["hitl.answer"],
                         "route": "POST /v1/hitl/{run_id}/{node_id}/answer",
                         "precondition": "always",
                     }
@@ -539,7 +603,10 @@ async def test_unresolvable_canonical_target_is_unavailable() -> None:
             )
         ]
     )
-    service = _service(json.dumps(manifest).encode())
+    service = _service(
+        json.dumps(manifest).encode(),
+        extension_permissions=frozenset({"runs.cancel", "hitl.answer"}),
+    )
     # The run is projected, but the node_run half of the target is not.
     rendered = await service.render_component(
         scope=SCOPE,
@@ -652,6 +719,8 @@ def test_injection_vectors_are_rejected_at_inspection(vector: str) -> None:
         "blob:",
         "http://api.acme.example",
         "//api.acme.example",
+        "https://cdn.acme.example 'unsafe-inline'",
+        "https://a.acme.example,https://b.acme.example",
     ],
 )
 def test_unsafe_csp_tokens_are_rejected(token: str) -> None:
@@ -721,7 +790,10 @@ def test_open_url_inside_declared_origins_is_accepted() -> None:
 async def test_rendered_metadata_carries_the_header_ready_csp() -> None:
     """AC-5: the hosting client can sandbox the surface mechanically."""
     rendered = await _render_one(_service())
-    assert rendered.sandbox_csp == ("script-src 'self'; connect-src https://api.acme.example")
+    assert rendered.sandbox_csp == (
+        "script-src 'self'; style-src 'none'; img-src 'none'; "
+        "connect-src https://api.acme.example"
+    )
 
 
 # --------------------------------------------------------------------------

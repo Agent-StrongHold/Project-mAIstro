@@ -73,6 +73,7 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import SplitResult, urlsplit
 
@@ -253,11 +254,17 @@ class GovernedRoute:
     The table (:data:`GOVERNED_ROUTES`) is closed. Each entry names a real
     canonical API seam — the same routes the product's HTTP API serves — so
     a UI action is literally a governed server call, not a side channel.
+
+    ``required_permissions`` is canonical authority, not catalog-chosen
+    labeling: a mutating action must declare exactly this set, so a
+    component can never dress up a governed mutation in a permission the
+    operator never tied to it.
     """
 
     intent: str
     method: str
     path: str
+    required_permissions: tuple[str, ...]
     params: tuple[RouteParam, ...] = ()
 
     def resolved_path(self, canonical_state: Mapping[str, Any]) -> str | None:
@@ -281,17 +288,19 @@ class GovernedRoute:
 #: mutations a UI component can express. There is no completion route on
 #: purpose: Runs and Goals are completed by the canonical executor and
 #: reconciler, never by a client-rendered button.
-GOVERNED_ROUTES: Mapping[str, GovernedRoute] = {
+GOVERNED_ROUTES: Mapping[str, GovernedRoute] = MappingProxyType({
     "cancel_run": GovernedRoute(
         intent="cancel_run",
         method="POST",
         path="/v1/runs/{run_id}/cancel",
+        required_permissions=("runs.cancel",),
         params=(RouteParam(name="run_id", kind="run", field="run_id"),),
     ),
     "answer_hitl": GovernedRoute(
         intent="answer_hitl",
         method="POST",
         path="/v1/hitl/{run_id}/{node_id}/answer",
+        required_permissions=("hitl.answer",),
         params=(
             RouteParam(name="run_id", kind="run", field="run_id"),
             RouteParam(name="node_id", kind="node_run", field="node_id"),
@@ -301,6 +310,7 @@ GOVERNED_ROUTES: Mapping[str, GovernedRoute] = {
         intent="cancel_hitl",
         method="POST",
         path="/v1/hitl/{run_id}/{node_id}/cancel",
+        required_permissions=("hitl.cancel",),
         params=(
             RouteParam(name="run_id", kind="run", field="run_id"),
             RouteParam(name="node_id", kind="node_run", field="node_id"),
@@ -310,8 +320,9 @@ GOVERNED_ROUTES: Mapping[str, GovernedRoute] = {
         intent="start_task",
         method="POST",
         path="/v1/tasks",
+        required_permissions=("tasks.start",),
     ),
-}
+})
 
 #: Intents that mutate canonical state through a governed server seam. Every
 #: other declared intent is renderer-local and must not carry a route.
@@ -378,12 +389,20 @@ class SandboxPolicy:
     connect_src: tuple[str, ...] = ()
 
     def to_csp(self) -> str:
-        """The header-ready CSP string a hosting client enforces."""
+        """The header-ready CSP string a hosting client enforces.
+
+        Every declared directive is emitted. An empty directive becomes an
+        explicit ``'none'`` deny: omitting it would let the CSP fall through
+        to the (absent) ``default-src`` and leave that resource type
+        unrestricted, inverting the allowlist the component declared.
+        """
         parts: list[str] = []
         for directive in _SANDBOX_DIRECTIVES:
             tokens = getattr(self, directive)
             if tokens:
                 parts.append(f"{_CSP_DIRECTIVE_NAMES[directive]} " + " ".join(tokens))
+            else:
+                parts.append(f"{_CSP_DIRECTIVE_NAMES[directive]} 'none'")
         return "; ".join(parts)
 
     def allows_outbound_origin(self, target: str) -> bool:
@@ -454,6 +473,11 @@ def _url_origin(value: str) -> tuple[str, str, int] | None:
 
 def _validate_origin_token(token: str, directive: str) -> None:
     """Reject anything that is not an explicit, non-wildcard https origin."""
+    if re.search(r"[\s,;]", token):
+        raise CatalogRejected(
+            f"sandbox {directive} token {token!r} contains CSP source "
+            "delimiters; declare one explicit https://host[:port] origin per token"
+        )
     lowered = token.lower()
     if lowered in _UNSAFE_CSP_TOKENS or any(
         lowered.startswith(t) for t in ("data:", "blob:", "filesystem:")
@@ -883,13 +907,13 @@ def _parse_binding(raw: object, component_id: str, seen: set[str]) -> DataBindin
         raise _reject(f"component {component_id!r}: duplicate binding {name!r}")
     seen.add(name)
     kind = raw["kind"]
-    if kind not in SUPPORTED_STATE_KINDS:
+    if not isinstance(kind, str) or kind not in SUPPORTED_STATE_KINDS:
         raise _reject(
             f"component {component_id!r}: binding {name!r} references "
             f"{kind!r}, which is not canonical state; bindings may only "
             f"reference {sorted(SUPPORTED_STATE_KINDS)}"
         )
-    fields = _validate_binding_fields(raw["fields"], str(kind), name, component_id)
+    fields = _validate_binding_fields(raw["fields"], kind, name, component_id)
     return DataBinding(binding=name, kind=kind, fields=fields)
 
 
@@ -905,13 +929,20 @@ def _parse_mutating_action(
     precondition: str,
     component_id: str,
 ) -> UiAction:
-    """Validate one mutating action: governed seam exactly, authority named."""
-    if not permissions:
-        raise _reject(
-            f"component {component_id!r}: mutating action {name!r} must "
-            "declare the permissions it requires"
-        )
+    """Validate one mutating action: governed seam exactly, authority canonical.
+
+    The permission set protecting a governed mutation is fixed by the route,
+    not chosen by the catalog: the declaration must equal the seam's
+    ``required_permissions`` exactly, so a low-authority token can never be
+    swapped in to unlock a mutation the operator did not bind to it.
+    """
     governed = GOVERNED_ROUTES[intent]
+    if set(permissions) != set(governed.required_permissions):
+        raise _reject(
+            f"component {component_id!r}: mutating action {name!r} must declare "
+            f"exactly the canonical permissions for {intent!r} "
+            f"({list(governed.required_permissions)}), got {list(permissions)}"
+        )
     route = raw.get("route")
     if not isinstance(route, str) or route != _route_string(governed):
         raise _reject(
@@ -993,7 +1024,9 @@ def _validated_action_fields(
     seen.add(name)
 
     intent = raw["intent"]
-    if intent not in MUTATING_INTENTS and intent not in LOCAL_INTENTS:
+    if not isinstance(intent, str) or (
+        intent not in MUTATING_INTENTS and intent not in LOCAL_INTENTS
+    ):
         raise _reject(
             f"component {component_id!r}: action {name!r} declares unknown "
             f"intent {intent!r}; the governed vocabulary is "
@@ -1004,12 +1037,12 @@ def _validated_action_fields(
         raw.get("permissions", []), f"action {name!r} permissions"
     )
     precondition = raw.get("precondition", "always")
-    if precondition not in PRECONDITIONS:
+    if not isinstance(precondition, str) or precondition not in PRECONDITIONS:
         raise _reject(
             f"component {component_id!r}: action {name!r} declares unknown "
             f"precondition {precondition!r}; known: {sorted(PRECONDITIONS)}"
         )
-    return name, str(intent), permissions, str(precondition)
+    return name, intent, permissions, precondition
 
 
 def _parse_action(
@@ -1470,6 +1503,12 @@ class UiProjectionService:
             raise UnknownComponent(
                 f"catalog {manifest.catalog_id!r} declares no component {component_id!r}"
             )
+        if not _is_visible(declared, principal_permissions):
+            missing = sorted(set(declared.required_permissions) - principal_permissions)
+            raise ActionUnavailable(
+                f"component {component_id!r} is not visible to this principal: "
+                "missing permission: " + ", ".join(missing)
+            )
         declared_action = declared.action(action)
         if declared_action is None:
             raise UnknownAction(f"component {component_id!r} declares no action {action!r}")
@@ -1514,7 +1553,7 @@ class UiProjectionService:
             method=governed.method,
             path=resolved,
             arguments=client_arguments,
-            permissions_required=declared_action.permissions,
+            permissions_required=governed.required_permissions,
             principal=principal,
             provenance=_provenance_of(manifest, declared),
         )
