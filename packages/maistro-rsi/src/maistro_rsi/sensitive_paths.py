@@ -175,6 +175,16 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "maistro/capabilities/invocation.py",
     "maistro/capabilities/invocation_store.py",
     "maistro/capabilities/pg_invocation_store.py",
+    # The third-party provider adapter SDK (M9-E1, #961): it registers
+    # out-of-tree models into canonical routing, decides how the resolved
+    # credential is presented, feeds health signals into canonical
+    # availability, and pins the provider error taxonomy the transport
+    # raises. It sits on the promotion-path import closure (autorun -> quota
+    # -> capabilities -> llm_gateway -> provider_adapters), and it is the
+    # same class of surface as binding_store/credential_routing above: a
+    # candidate editing it edits what future model calls are allowed to
+    # reach, so its diffs escalate rather than ride a tolerance.
+    "maistro/capabilities/provider_adapters.py",
     # The DAG-synthesis substrate that lets an agent spawn further
     # sub-agents/DAGs: the recursion-depth cap and the two node kinds that
     # dispatch through it.
