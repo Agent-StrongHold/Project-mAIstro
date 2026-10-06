@@ -106,3 +106,19 @@ vulture per-identity scan (CI arguments: `packages/*/src --min-confidence 60
 --exclude '*/third_party/*'`) matches `quality/vulture-baseline.json` with
 zero added and zero stale identities; `scripts/check-reachability.py`
 reports the same 170-entry unreachable set as the baseline.
+
+## Develop-sync re-verification (post-merge round)
+
+The branch was synced with `origin/develop` (merges `2e772aaf9`, `4ab512f01`
+resolving the `extensions/__init__.py` `__all__` union and the
+`_vulture_whitelist.py` import union against develop's #956/#2002 work).
+Both files were resolved as mechanical sorted unions — no behavior change, no
+test change, so this note's inventory delta is unchanged. Re-run against the
+merged tree: extensions suite 398 passed (the 45 tests of this note among
+them), maistro-core 13505 passed, maistro-design/ext-sdk/server 1215 passed;
+ruff check/format clean; mypy 743 files clean; vulture (CI-exact arguments)
+1332=1332 with base read from the develop merge base; reachability 170 =
+baseline; suite inventory 16/16 suites match; radon 138=138; doc-links,
+backlog-consistency, route-permissions, principal-identity, wiring-reads,
+agent-store-writes, workspace-retirement, release-consistency, and
+credential-authority gates all exit 0.
