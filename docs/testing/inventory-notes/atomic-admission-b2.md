@@ -881,3 +881,48 @@ and `maistro.tasks.admission_codec` are absent from the trusted merge base
 pass. This branch cannot self-authorize the intentional unwired modules; the
 remaining campaign action is still to land the prepared reachability grant on
 develop and merge that base here.
+
+## Round 16 (develop sync + real-database durability executed, head `658aba47c604`)
+
+`origin/develop` moved to `3b8e090fe531` (M9-J1 extension catalog), so the
+47/1 divergence was resolved by merging `origin/develop` into `auto-1893`
+(automatic merge, no conflicts). Quality-ledger row counts were diffed after
+the merge per the multiset hazard: `ratchet-authorizations.json` 318 grant
+rows on both sides, vulture rules 15 on both sides, develop's tip touched no
+quality ledgers, and the branch's 2 banked reachability rows + 11 disposition
+rows survive intact.
+
+The previously UNVERIFIED real-database legs were executed on a disposable
+pgvector/pg17 container (`m1893-pg`, removed after the run):
+
+- `DATABASE_URL=... uv run alembic upgrade head` applied the full chain,
+  including `054 -> 055 Forward admission-generation representation on
+  task_idempotency (#1892)`.
+- Both admission suites with `MAISTRO_TEST_PG_DSN` and
+  `MAISTRO_TEST_DATABASE_URL` on the same migrated DB: **143 passed, 0
+  skipped** (the raw-vs-production two-pool durability test ran for real),
+  and re-run under `MAISTRO_REQUIRE_PG_LEGS=1` the durability test alone
+  reports PASSED (missing DSNs would fail, not skip).
+- Destructive migration evidence on a second disposable database in the same
+  server: `tests/migrations/test_migration_chain.py` plus
+  `tests/migrations/test_task_admission_generation_upgrade.py` -> **27
+  passed**, including the downgrade-refusal and legacy-only downgrade/upgrade
+  round-trip cases.
+- `tests/test_check_reachability.py` + `tests/test_reachability_baseline_identity.py`
+  -> 38 passed at the merged head.
+
+Post-merge revalidation: `ruff check .` and `ruff format --check .` clean;
+suite inventory 16/16 suites match (maistro-core/tests 14466 collected, the
++14 coming from develop's own catalog suites with their shipped notes);
+CI-exact vulture exit 0 at 1332 identities = 1332 findings (`unclassified: 0`,
+`never_allowlist: 0`) against merge base `3b8e090fe531`; shipped-surface truth
+complete; `RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` is
+now 10 of 12 ratchets OK with the merge base moved to develop's tip, failing
+only on the same two admission entries. Read-only probe of grant
+`3235229f5fed` confirms its `ratchet-authorizations.json` carries exactly the
+`maistro.runs.admission_identity` and `maistro.tasks.admission_codec`
+reachability grants (owner, issue #1893, CONNECT group
+`runs-root-admission-contracts`); the gate reads authorizations from
+`merge-base(RATCHET_BASE_REV, HEAD)`, so the grant must land on develop
+before a develop merge here can authorize them. No ledger, grant, or gate
+file was modified in this branch.
