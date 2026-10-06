@@ -254,6 +254,34 @@ def _plan_changes(
     return changes
 
 
+def _listable(
+    item: BacklogItem,
+    workspace_id: str,
+    *,
+    status: str | None,
+    tag: str | None,
+    parent_id: str | None,
+    roots_only: bool,
+) -> bool:
+    """Whether one stored item matches the list filter, evaluated per row.
+
+    Every optional filter must hold for the item to be listed; ``None`` (and
+    ``roots_only=False``) means "no opinion". Splitting the predicate out of
+    the comprehension keeps the reference store's one-pass filter readable
+    without growing a C block, and the row is still deep-copied by the caller
+    so no listed item aliases store state.
+    """
+    if item.workspace_id != workspace_id:
+        return False
+    if status is not None and item.status is not status:
+        return False
+    if tag is not None and tag not in item.tags:
+        return False
+    if parent_id is not None and item.parent_id != parent_id:
+        return False
+    return not roots_only or item.parent_id is None
+
+
 class InMemoryBacklogStore:
     """The reference. The other two stores are read against it."""
 
@@ -280,11 +308,14 @@ class InMemoryBacklogStore:
         found = [
             item.model_copy(deep=True)
             for item in self._items.values()
-            if item.workspace_id == workspace_id
-            and (status is None or item.status is status)
-            and (tag is None or tag in item.tags)
-            and (parent_id is None or item.parent_id == parent_id)
-            and (not roots_only or item.parent_id is None)
+            if _listable(
+                item,
+                workspace_id,
+                status=status,
+                tag=tag,
+                parent_id=parent_id,
+                roots_only=roots_only,
+            )
         ]
         found.sort(key=lambda item: (item.created_at, item.item_id))
         return found

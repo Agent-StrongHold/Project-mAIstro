@@ -46,8 +46,8 @@ from services import workspace_authority
 #: Machine-readable authority statement surfaced by the API and shown by the
 #: UI (#102). Before the cutover the UI is a preview surface over the
 #: canonical service, never a second authority; once the recorded authority
-#: cutover has run (quality/backlog-authority.json, written by
-#: scripts/backlog_cutover.py), the UI's edits land in the database that is
+#: cutover has run (quality/backlog-authority.json, written by the shipped
+#: `maistro backlog` CLI), the UI's edits land in the database that is
 #: now the work-source of record, and the flag reads true.
 UI_AUTHORITY: dict[str, Any] = {
     "canonical_service": "services.backlog",

@@ -62,51 +62,6 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1154",
       "reason": "Holds GraphRun, the ADR-062 Graph-domain traversal (phase machine, iteration budget, beam scoring). Its only src importer is maistro.testing.harness, the shipped test harness of ADR-065 / SPEC-224. The canonical durable executor in maistro.graph.durable_runs never imported it -- the two executors shared a name, not code -- so retiring run_graph in #1154 removes the single import edge that made this module reachable. Traversal semantics are still exercised by packages/maistro-core/tests/graph/; canonical execution coverage is separate and untouched."
-    },
-    "maistro.backlog": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.model": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.pg_store": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.sqlite_store": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.store": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.markdown_io": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#102",
-      "reason": "maistro.backlog.cutover and maistro.backlog.markdown_io are the #102 authority-cutover surface: the lossless root-BACKLOG.md importer/exporter, the append-only authority ledger and the recorded, reversible cutover it drives (scripts/backlog_cutover.py is the only writer of quality/backlog-authority.json). Behavior is pinned by packages/maistro-core/tests/backlog/ (migration losslessness byte-for-byte, cutover ledger, agent surface) and the Conductor flip suite; no process entry point imports the modules until the recorded cutover flips the Conductor service onto the DB store, which is exactly the transition #102 owns. quality/reachability-dispositions.json records the disposition with that named root; the entries leave the baseline when the flip lands."
-    },
-    "maistro.backlog.cutover": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#102",
-      "reason": "maistro.backlog.cutover and maistro.backlog.markdown_io are the #102 authority-cutover surface: the lossless root-BACKLOG.md importer/exporter, the append-only authority ledger and the recorded, reversible cutover it drives (scripts/backlog_cutover.py is the only writer of quality/backlog-authority.json). Behavior is pinned by packages/maistro-core/tests/backlog/ (migration losslessness byte-for-byte, cutover ledger, agent surface) and the Conductor flip suite; no process entry point imports the modules until the recorded cutover flips the Conductor service onto the DB store, which is exactly the transition #102 owns. quality/reachability-dispositions.json records the disposition with that named root; the entries leave the baseline when the flip lands."
-    },
-    "maistro.backlog.agent_surface": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#102",
-      "reason": "maistro.backlog.agent_surface is the #102 authorized ordinary-Workspace-Agent surface over the same DB-backed public service (list/select/claim/write with claim leases and fail-closed workspace authorization), pinned by packages/maistro-core/tests/backlog/test_agent_surface.py and the Conductor authority-gate suite. No in-repo process entry point imports it yet; the M5 RSI consumer (#50) is downstream by design. quality/reachability-dispositions.json records the disposition with that named root."
-    },
-    "@tool/backlog_cutover": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#102",
-      "reason": "scripts/backlog_cutover.py is the #102 operator tool: it imports root BACKLOG.md losslessly, verifies the migration proof (missing/duplicated/conflicting/unparseable rows by stable ID), records the authority-cutover revision in the append-only ledger and can reverse it during migration validation. As a repo tool it is rooted by the workflow that runs it (@tool/backlog_cutover) and is unreachable from production entry points by design; its contract is pinned by tests/test_backlog_authority_gate.py and the cutover suite."
     }
   },
   "vulture": {
@@ -903,26 +858,6 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1817",
       "reason": "Post-merge reconciliation, the same #1817 gap as the grant above: this block landed in the same commit with no radon grant. Decides whether a durable Run's active NodeRuns have gone quiet with no Attempt still holding them -- short-circuiting on no active NodeRuns, then per NodeRun checking for zero Attempts (stalled) or a live, unexpired lease (not stalled) before concluding every active NodeRun is abandoned. This grant authorizes this one complexity identity only, at its already-merged value."
-    },
-    "packages/maistro-core/src/maistro/backlog/agent_surface.py::AgentBacklogSurface.select@11": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#102",
-      "reason": "Deterministic claim selector for the ordinary Workspace Agent (#102 acceptance: an authorized agent lists/selects/claims against the same DB-backed service). Priority, rank, age, id tie-breaking, active-claim skipping and fail-closed dependency resolution are the reviewed behavior test_agent_surface.py pins; collapsing the branches would trade determinism guarantees for a lower scorecard. Post-merge carry for the #102 authority-cutover surface (issue #102): the block ships with maistro.backlog's reviewed implementation and is banked at its measured value in quality/radon-baseline.json in the same change. Grants are read from the merge base per the two-merge rule, so this grant takes effect when this merge lands; it authorizes this one complexity identity only, at its already-reviewed value."
-    },
-    "packages/maistro-core/src/maistro/backlog/cutover.py::export_authoritative@14": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#102",
-      "reason": "The post-cutover DB->Markdown generator (#102): replays the persisted token stream verbatim, appends database-created items exactly once in item-id order, and refuses an unimported document id. The branches are the determinism guarantee the cutover acceptance criterion (deterministic, reviewable export) is tested against. Post-merge carry for the #102 authority-cutover surface (issue #102): the block ships with maistro.backlog's reviewed implementation and is banked at its measured value in quality/radon-baseline.json in the same change. Grants are read from the merge base per the two-merge rule, so this grant takes effect when this merge lands; it authorizes this one complexity identity only, at its already-reviewed value."
-    },
-    "packages/maistro-core/src/maistro/backlog/markdown_io.py::parse_markdown@14": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#102",
-      "reason": "The single-pass canonical importer for the #102 DB import: one walk separates furniture from item bodies, preserves the token stream the export replays, and fails closed on unparsable headers and duplicate ids, as the migration proof requires. Splitting the pass would scatter the byte-for-byte round-trip invariants. Post-merge carry for the #102 authority-cutover surface (issue #102): the block ships with maistro.backlog's reviewed implementation and is banked at its measured value in quality/radon-baseline.json in the same change. Grants are read from the merge base per the two-merge rule, so this grant takes effect when this merge lands; it authorizes this one complexity identity only, at its already-reviewed value."
-    },
-    "packages/maistro-core/src/maistro/backlog/store.py::InMemoryBacklogStore.list_items@11": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#102",
-      "reason": "The reference store's composing list filter: every optional filter joins one pass so each returned row is a deep copy (callers cannot mutate store state through a listed item) under the (created_at, item_id) ordering the conformance suite pins. Post-merge carry for the #102 authority-cutover surface (issue #102): the block ships with maistro.backlog's reviewed implementation and is banked at its measured value in quality/radon-baseline.json in the same change. Grants are read from the merge base per the two-merge rule, so this grant takes effect when this merge lands; it authorizes this one complexity identity only, at its already-reviewed value."
     }
   },
   "contract-markers": {

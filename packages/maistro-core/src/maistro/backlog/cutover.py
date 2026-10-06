@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -479,6 +479,28 @@ async def export_document(
     return render_document(document.tokens, items)
 
 
+def _post_cutover_ids(items: Iterable[BacklogItem], known: set[str]) -> list[str]:
+    """Database-created items the token stream cannot know about, in id order.
+
+    Items created in the database after the cutover carry no origin marker
+    back into the file: they are appended under the generated heading exactly
+    once, in item-id order, so the generated file stays deterministic.
+    """
+    return sorted(
+        item.item_id for item in items if item.item_id not in known and item.origin is None
+    )
+
+
+def _with_appended(replay: list[tuple[str, str]], extra: Sequence[str]) -> list[tuple[str, str]]:
+    """Append DB-created item tokens, inserting the generated heading once."""
+    if extra and not any(
+        kind == FURNITURE and value.strip() == POST_CUTOVER_HEADING for kind, value in replay
+    ):
+        replay.extend(((FURNITURE, ""), (FURNITURE, POST_CUTOVER_HEADING), (FURNITURE, "")))
+    replay.extend((ITEM, item_id) for item_id in extra)
+    return replay
+
+
 async def export_authoritative(
     store: BacklogStore,
     document_state: DocumentState,
@@ -488,10 +510,9 @@ async def export_authoritative(
     """Generate the Markdown file from the database alone (post-cutover path).
 
     The persisted token stream replays furniture verbatim; items come from
-    the store in their recorded positions. Items created in the database
-    after the cutover — which the token stream cannot know about — are
-    appended under a generated heading, once and in item-id order, so the
-    generated file stays deterministic.
+    the store in their recorded positions, with database-created items
+    appended under a generated heading (once, in item-id order) — the
+    determinism the cutover acceptance is tested against.
     """
     tokens = await document_state.get_tokens(document_id)
     if tokens is None:
@@ -499,21 +520,8 @@ async def export_authoritative(
             f"cannot generate {document_id}: it has never been imported into the database"
         )
     known = {value for kind, value in tokens if kind == ITEM}
-    extra = sorted(
-        item.item_id
-        for item in await store.list_items(ROOT_WORKSPACE_ID)
-        if item.item_id not in known and item.origin is None
-    )
-    replay = list(tokens)
-    if extra:
-        heading_present = any(
-            kind == FURNITURE and value.strip() == POST_CUTOVER_HEADING for kind, value in replay
-        )
-        if not heading_present:
-            replay.append((FURNITURE, ""))
-            replay.append((FURNITURE, POST_CUTOVER_HEADING))
-            replay.append((FURNITURE, ""))
-        replay.extend((ITEM, item_id) for item_id in extra)
+    stored = await store.list_items(ROOT_WORKSPACE_ID)
+    replay = _with_appended(list(tokens), _post_cutover_ids(stored, known))
     items = await _fetch_items(store, [value for kind, value in replay if kind == ITEM])
     return render_document(replay, items)
 

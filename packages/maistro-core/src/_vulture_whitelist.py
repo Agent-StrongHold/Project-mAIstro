@@ -22,6 +22,10 @@ from maistro.backlog.sqlite_store import SqliteBacklogStore
 from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.cli._backlog import RoleChoice
+from maistro.cli._backlog import cutover as backlog_cutover_command
+from maistro.cli._backlog import import_cmd as backlog_import_command
+from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._extensions import extensions_history, extensions_show
 from maistro.container import Container
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
@@ -323,6 +327,16 @@ _VULTURE_WHITELIST = (
     SqliteExtensionInstallStore.get_install,
     extensions_history,
     extensions_show,
+    # The `maistro backlog` cutover lifecycle commands are invoked through
+    # typer dispatch (#102), the same surface the ledger's
+    # maistro-cli-command-surface rule classifies; the StrEnum members are
+    # typer's --role choices, consumed by option parsing.
+    backlog_import_command,
+    backlog_cutover_command,
+    backlog_revert_command,
+    RoleChoice.viewer,
+    RoleChoice.editor,
+    RoleChoice.owner,
     # External Agent discovery (M9-D1, #958). The registry's lifecycle API
     # ships first by design, the same contract-first posture as the M9-B1
     # store seams above: its in-tree consumers are the conformance suite

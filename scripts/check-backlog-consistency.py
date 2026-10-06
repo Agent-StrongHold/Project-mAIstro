@@ -273,7 +273,8 @@ def _dangling_item_references(text: str, defined: set[str]) -> list[str]:
 def _authority_record() -> dict[str, object]:
     """The committed authority projection for the root backlog (#102).
 
-    Written only by ``scripts/backlog_cutover.py``; a missing file means the
+    Written only by the shipped ``maistro backlog`` CLI (maistro.cli._backlog);
+    a missing file means the
     pre-cutover default — the hand-maintained Markdown file is canonical.
     When the record says ``db``, the file is generated documentation: it must
     carry the generated banner and match the recorded export digest, so a
@@ -299,7 +300,7 @@ def _authority_failures(text: str, record: Mapping[str, object]) -> list[str]:
         return [
             "BACKLOG.md is generated documentation under db authority but does not "
             "carry the generated banner; regenerate it with "
-            "`scripts/backlog_cutover.py generate` (direct edits are not authoritative)"
+            "`maistro backlog generate` (direct edits are not authoritative)"
         ]
     recorded = record.get("export_sha256")
     digest = hashlib.sha256(text.encode()).hexdigest()
@@ -307,7 +308,7 @@ def _authority_failures(text: str, record: Mapping[str, object]) -> list[str]:
         failures.append(
             "BACKLOG.md does not match the recorded database export (sha256 mismatch); "
             "direct edits to the generated backlog are not authoritative — regenerate "
-            "with `scripts/backlog_cutover.py generate` or revert authority first"
+            "with `maistro backlog generate` or revert authority first"
         )
     return failures
 

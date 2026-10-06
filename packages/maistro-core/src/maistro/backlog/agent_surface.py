@@ -110,24 +110,16 @@ class AgentBacklogSurface:
         it out on the claim instead of on interpretation.
         """
         candidates = await self.list_items(actor=actor, workspace_id=workspace_id)
-        open_items = [item for item in candidates if item.status == BacklogItemStatus.OPEN]
-        if not open_items:
-            return None
-        claimable: list[BacklogItem] = []
-        for item in open_items:
-            if await self._store.active_claim(item.item_id, at=at) is None:
-                claimable.append(item)
+        claimable = await self._claimable(
+            [item for item in candidates if item.status == BacklogItemStatus.OPEN], at=at
+        )
         if not claimable:
             return None
         best = min(
             claimable,
             key=lambda item: (item.priority, item.rank, item.created_at, item.item_id),
         )
-        unresolved: list[str] = []
-        for dep in best.dependencies:
-            dep_item = await self._store.get_item(dep)
-            if dep_item is not None and not status_is_terminal(dep_item.status):
-                unresolved.append(dep)
+        unresolved = await self._unresolved_dependencies(best)
         reason = "highest-priority open item"
         if unresolved:
             reason = (
@@ -136,6 +128,29 @@ class AgentBacklogSurface:
                 + ")"
             )
         return Selection(item=best, reason=reason)
+
+    async def _claimable(
+        self, items: list[BacklogItem], *, at: datetime | None
+    ) -> list[BacklogItem]:
+        """The given open items that hold no active claim, in the same order."""
+        claimable: list[BacklogItem] = []
+        for item in items:
+            if await self._store.active_claim(item.item_id, at=at) is None:
+                claimable.append(item)
+        return claimable
+
+    async def _unresolved_dependencies(self, item: BacklogItem) -> list[str]:
+        """Dependencies of ``item`` that are defined and still open.
+
+        An unresolved dependency is reported in the selection reason rather
+        than silently selecting a blocked item as if it were ready.
+        """
+        unresolved: list[str] = []
+        for dep in item.dependencies:
+            dep_item = await self._store.get_item(dep)
+            if dep_item is not None and not status_is_terminal(dep_item.status):
+                unresolved.append(dep)
+        return unresolved
 
     async def claim(
         self,

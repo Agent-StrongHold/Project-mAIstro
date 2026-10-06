@@ -602,31 +602,6 @@
         "maistro.graph.executor",
         "maistro.graph.run"
       ]
-    },
-    {
-      "id": "backlog-work-source",
-      "subsystem": "Shared contracts and config",
-      "disposition": "LIBRARY",
-      "rationale": "The #102 work-source substrate: the lossless BACKLOG.md importer/exporter, the canonical BacklogItem store (in-memory, SQLite, PostgreSQL), the append-only authority-cutover ledger and the agent list/select/claim/write surface. maistro-core is a published library (AGENTS.md) and these are its importable surfaces; no process entry point in this repository imports them yet \u2014 the Conductor backlog service (#99) still runs on its JSON store until the recorded cutover flips authority, and the RSI/agent-loop adoption is later M3-C epic work. The behavior is proven directly by packages/maistro-core/tests/backlog/ (migration losslessness, store conformance across all three backends, cutover and agent-surface suites), so the wiring cannot rot unnoticed even though the import graph cannot see it. These leave the baseline when a shipped process adopts the store post-cutover.",
-      "modules": [
-        "maistro.backlog",
-        "maistro.backlog.agent_surface",
-        "maistro.backlog.cutover",
-        "maistro.backlog.markdown_io",
-        "maistro.backlog.model",
-        "maistro.backlog.pg_store",
-        "maistro.backlog.sqlite_store",
-        "maistro.backlog.store"
-      ]
-    },
-    {
-      "id": "backlog-cutover-tooling",
-      "subsystem": "Repo tooling",
-      "disposition": "LIBRARY",
-      "rationale": "Operator-invoked cutover CLI (#102): records the explicit authority revision (markdown to database and back) in the append-only ledger and writes the quality/backlog-authority.json marker. It is run by the operator at the recorded cutover, not by a workflow step, and its flip semantics are exercised by tests/test_backlog_authority_gate.py, so unreachable-from-CI is its correct state.",
-      "modules": [
-        "@tool/backlog_cutover"
-      ]
     }
   ]
 }

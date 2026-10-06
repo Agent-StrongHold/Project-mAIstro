@@ -200,56 +200,78 @@ def parse_markdown(text: str) -> ParsedDocument:
     duplicate id — the same honesty the consistency gate applies to the file,
     applied to whatever text is about to become the authority.
     """
-    tokens: list[tuple[str, str]] = []
-    items: list[ParsedItem] = []
-    seen: set[str] = set()
-    section = ""
-    subsection: str | None = None
-    body_lines: list[str] | None = None
-    header: ParsedItem | None = None
-
+    scanner = _DocumentScanner()
     for line in text.splitlines():
         if _ITEM_LINE.match(line) is None:
-            if body_lines is not None:
-                body_lines.append(line)
-                continue
-            tokens.append((FURNITURE, line))
-            if line.startswith("## "):
-                section = line[3:].strip()
-                subsection = None
-            elif line.startswith("### "):
-                subsection = line[4:].strip()
-            continue
+            scanner.absorb(line)
+        else:
+            scanner.begin_item(line)
+    scanner.finish()
+    return ParsedDocument(tokens=tuple(scanner.tokens), items=tuple(scanner.items))
+
+
+class _DocumentScanner:
+    """The single pass over a backlog document: furniture and item headers.
+
+    One walk must keep the token stream byte-faithful — the deterministic
+    export replays it verbatim — and item bodies verbatim line by line.
+    Splitting the loop keeps those round-trip invariants readable without
+    growing a C block; the failure behavior (unparsable header, duplicate id)
+    is unchanged.
+    """
+
+    def __init__(self) -> None:
+        self.tokens: list[tuple[str, str]] = []
+        self.items: list[ParsedItem] = []
+        self._seen: set[str] = set()
+        self._section = ""
+        self._subsection: str | None = None
+        self._body_lines: list[str] | None = None
+        self._header: ParsedItem | None = None
+
+    def absorb(self, line: str) -> None:
+        """A non-item line: a body continuation or document furniture."""
+        if self._body_lines is not None:
+            self._body_lines.append(line)
+            return
+        self.tokens.append((FURNITURE, line))
+        if line.startswith("## "):
+            self._section = line[3:].strip()
+            self._subsection = None
+        elif line.startswith("### "):
+            self._subsection = line[4:].strip()
+
+    def begin_item(self, line: str) -> None:
+        """An item header line: finish the previous item, then start this one."""
         match = _ITEM.match(line)
         if match is None:
             raise MarkdownBacklogError(f"unparsable item header: {line[:80]}")
-        if body_lines is not None and header is not None:
-            items.append(_finish(header, body_lines))
+        if self._body_lines is not None and self._header is not None:
+            self.items.append(_finish(self._header, self._body_lines))
         item_id = f"{match.group('prefix')}-{match.group('number')}"
-        if item_id in seen:
+        if item_id in self._seen:
             raise MarkdownBacklogError(f"{item_id}: duplicate item id")
-        seen.add(item_id)
+        self._seen.add(item_id)
         status_word, gap_marker = _split_state(match.group("state"))
-        suffix = match.group("suffix")
-        body_lines = []
-        header = ParsedItem(
+        self._body_lines = []
+        self._header = ParsedItem(
             item_id=item_id,
             title=match.group("title"),
             status_word=status_word,
             gap_marker=gap_marker,
             milestone_text=(match.group("milestone") or "").strip() or None,
-            section=section,
-            subsection=subsection,
-            header_suffix=suffix,
+            section=self._section,
+            subsection=self._subsection,
+            header_suffix=match.group("suffix"),
             body=(),
             dependencies=(),
         )
-        tokens.append((ITEM, item_id))
+        self.tokens.append((ITEM, item_id))
 
-    if body_lines is not None and header is not None:
-        items.append(_finish(header, body_lines))
-
-    return ParsedDocument(tokens=tuple(tokens), items=tuple(items))
+    def finish(self) -> None:
+        """Flush the trailing item once the document ends."""
+        if self._body_lines is not None and self._header is not None:
+            self.items.append(_finish(self._header, self._body_lines))
 
 
 def _finish(header: ParsedItem, body_lines: list[str]) -> ParsedItem:

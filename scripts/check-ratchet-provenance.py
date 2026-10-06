@@ -114,20 +114,13 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "table the tree creates, so a prior-tree oracle would predate this tree's schema; "
         "a changed retention claim is the substantive change reviewers read"
     ),
-    ("backlog_cutover.py", "quality/backlog-authority.json"): (
-        "the authority marker is the operator-owned state this script exists to flip: it "
-        "reads the current authority to refuse an unsafe or lossy cutover and then records "
-        "the next append-only revision (#102). The marker changes only through this "
-        "operator act, never as silent PR bookkeeping, so a changed authority claim is the "
-        "substantive change reviewers read -- the durable-table-retention precedent"
-    ),
     ("check-backlog-consistency.py", "quality/backlog-authority.json"): (
         "the authority marker is the reviewed operator-owned declaration of which work "
         "source is authoritative (#102), not a prior-tree oracle: the gate reads it to "
         "decide whether hand-edited BACKLOG.md content is still permitted or must match "
-        "the database digest. The marker moves only via scripts/backlog_cutover.py, so "
-        "comparing it against the base revision would measure a cutover that has not "
-        "happened instead of the one this tree ships"
+        "the database digest. The marker moves only via the shipped `maistro backlog` "
+        "CLI (maistro.cli._backlog), so comparing it against the base revision would "
+        "measure a cutover that has not happened instead of the one this tree ships"
     ),
     ("check-shipped-surface-truth.py", "quality/shipped-surface-truth.json"): (
         "the shipped-surface matrix is the reviewed per-surface truth specification being "
