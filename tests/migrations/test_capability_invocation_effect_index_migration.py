@@ -33,7 +33,10 @@ develop sync — re-numbers to ``055`` on top of it. Develop's #55 effect-path
 sync then lands its ``043_invocation_quota_door`` (#1196/#718) on that
 ``055`` tip, and this sync's #1047 user-model tables — re-parented past
 develop's ``054`` and ``055`` as ``056`` in their own two collisions — revise
-the quota door, so the single linear head is the user-model revision.
+the quota door; #863's planner-stability revision — numbered ``052`` when
+written, re-parented onto each tip in the earlier collisions — follows the
+``056_user_model_facts`` tip as ``057``, so the single linear head is the
+planner-stability revision.
 """
 
 from __future__ import annotations
@@ -172,8 +175,8 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     directory = ScriptDirectory.from_config(config)
 
-    assert directory.get_heads() == ["056"]
-    walked = {item.revision for item in directory.walk_revisions("base", "056")}
+    assert directory.get_heads() == ["057"]
+    walked = {item.revision for item in directory.walk_revisions("base", "057")}
     # The claim chain this branch folded the #1194 corrections into, and every
     # develop collision the chronicle above records, must stay on the one
     # linear path to the head. Develop's #1756 learning-applicability
@@ -182,10 +185,12 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # `054_task_admission_generations` — itself re-parented onto this
     # chain's `053` tip at the previous develop sync — to `055`; the
     # develop #55 effect-path sync added `043_invocation_quota_door`
-    # (#1196/#718) on that tip; and this sync's #1047 user-model tables —
+    # (#1196/#718) on that tip; this sync's #1047 user-model tables —
     # re-parented past develop's `054` and `055` as `056` in their own
-    # two collisions — revise the quota door, so the single linear head
-    # is the user-model revision.
+    # two collisions — revise the quota door; and #863's planner-stability
+    # revision — numbered `052` when written, re-parented onto each tip in
+    # the earlier collisions — follows develop's `056_user_model_facts` tip
+    # as `057`, so the single linear head is the planner-stability revision.
     assert {
         "034_canonical_run_effect_claim",
         "034",
@@ -204,6 +209,7 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
         "055",
         "043_invocation_quota_door",
         "056",
+        "057",
     } <= walked
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —
