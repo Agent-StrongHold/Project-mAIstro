@@ -206,3 +206,59 @@ async def test_pre_gauntlet_database_upgrades_and_rows_read_as_never_validated(
     assert promoted is not None
     assert promoted.validation_run_ids == ["run-eval-9"]
     await conn.close()
+
+
+class _LosingSelectRowsConn:
+    """Answers writes through a real connection; SELECTs lose their row.
+
+    `promote_learning` re-reads the row it just promoted with a second
+    statement. On a shared database another writer can delete that row in
+    between; the store must answer None rather than crash or fabricate a
+    learning. The vanishing act cannot happen on a private in-memory
+    database, so the read half is intercepted to reach the defensive branch.
+    """
+
+    def __init__(self, real: aiosqlite.Connection) -> None:
+        self._real = real
+
+    async def execute(self, sql: str, parameters: object = ()) -> object:
+        cursor = await self._real.execute(sql, parameters)  # type: ignore[arg-type]
+        if sql.lstrip().upper().startswith("SELECT"):
+            return _VanishingCursor(cursor)
+        return cursor
+
+    async def commit(self) -> None:
+        await self._real.commit()
+
+
+class _VanishingCursor:
+    """The shape the store reads: real `description`, nothing to fetch."""
+
+    def __init__(self, cursor: aiosqlite.Cursor) -> None:
+        self.description = cursor.description
+        self.rowcount = cursor.rowcount
+
+    async def fetchone(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_promote_learning_returns_none_when_the_row_vanishes_before_the_read() -> None:
+    """A row deleted between the UPDATE and the re-read is a None, not a crash."""
+    conn = await aiosqlite.connect(":memory:")
+    base = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    await base.ensure_schema()
+    lid = await base.store(make_learning())
+
+    vanishing = SqliteLearningStore(
+        _LosingSelectRowsConn(conn),  # type: ignore[arg-type]
+        exposure_mode=MemoryExposureMode.AGENT_MANAGED,
+    )
+    try:
+        assert await vanishing.promote_learning(lid, org_id="") is None
+        # The UPDATE itself did land: the row was genuinely promoted before it
+        # vanished, so the None means "gone", not "no-op".
+        rows = await base.list_all()
+        assert [row.status for row in rows] == ["promoted"]
+    finally:
+        await conn.close()
