@@ -116,6 +116,7 @@ jobs:
           packages/maistro-evolve/src
           packages/maistro-rsi/src
           packages/maistro-design/src
+          packages/maistro-ext-harness/src
       # Neither of the two above resolves an import into a package that is not
       # installed in the checking environment, and hive-conductor never is: it
       # is a flat-layout app with no wheel. So `from
@@ -564,6 +565,9 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
+      # The extension host harness (#974): stdlib-only runtime, no services,
+      # so no env gates are needed — a third-party CI runs exactly this shape.
+      - run: uv run pytest packages/maistro-ext-harness/tests -v --tb=short
       - run: uv run pytest packages/maistro-ext-sdk/tests -v --tb=short
         env:
           REQUIRE_AUTH: "false"
