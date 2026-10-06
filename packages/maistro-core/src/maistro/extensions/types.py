@@ -514,6 +514,14 @@ class ExtensionInstallRecord:
     #: (already-active grants for this extension plus platform pre-approvals).
     authority_delta: tuple[str, ...] = ()
     artifact_sha256: str | None = None
+    #: The trust evidence that admitted this record at inspection. Kept on the
+    #: record (not shared service-wide) so authorization re-evaluates trust
+    #: against exactly the claim that passed inspection for this publisher.
+    trust_evidence: TrustClaim | None = None
+    #: The full SHA-256 ``decision_digest`` of the effective-authority decision
+    #: that froze the grant (or produced the denial) — the durable join key
+    #: audit trails reference, re-derivable from the recorded policy inputs.
+    decision_digest: str | None = None
     failure_reason: str | None = None
     requested_by: str = ""
     authorized_by: str | None = None
