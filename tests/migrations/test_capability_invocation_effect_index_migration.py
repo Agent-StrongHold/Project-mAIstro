@@ -84,18 +84,21 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # `056_user_model_facts`. Develop's quota-door revision (#1196/#718)
     # then claimed `055`'s child slot on develop as
     # `043_invocation_quota_door` — a third collision — so the quota door
-    # keeps develop's parent, and the branch-side revision that follows the
-    # deployed head is #863's planner-stability one: numbered `052` when
-    # written and re-parented onto the chain tip as `053`, `054`, and `056`
-    # in the earlier collisions, it re-parents onto develop's
-    # `056_user_model_facts` tip as `057` per the convention (the
+    # keeps develop's parent. Two branch-side revisions then followed the
+    # deployed head: develop's #863 planner-stability one, numbered `052`
+    # when written and re-parented onto the chain tip as `053`, `054`, and
+    # `056` in the earlier collisions, re-parented onto develop's
+    # `056_user_model_facts` tip as `057`; and this branch's #82 backlog work
+    # source — originally filed as `048`, re-parented through five prior
+    # collision rounds — which the 56332162c sync had attached after that
+    # `057` tip as `058`. The a8258ee24 sync then delivered develop's Gauntlet
+    # validation provenance (#118, M4-B2) onto the same `057` parent as
+    # `058_learning_validation_provenance`, colliding with the backlog
+    # revision the previous sync had parked there, so the backlog work source
+    # re-parented past that `058` tip as `059` per the convention (the
     # branch-side revision re-parents onto the incoming develop tip). The
-    # 56332162c sync then delivered develop's originals of every revision
-    # this branch had been carrying renumbered, dropping the branch-side
-    # duplicates and re-parenting the one genuinely-new branch revision
-    # left — #82's backlog work source — past the `057` tip as `058`, so
-    # the single linear head is `058`.
-    walked = {item.revision for item in directory.walk_revisions("base", "058")}
+    # single linear head is `059`.
+    walked = {item.revision for item in directory.walk_revisions("base", "059")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -113,7 +116,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "056" in walked
     assert "043_invocation_quota_door" in walked
     assert "057" in walked
-    assert directory.get_heads() == ["058"]
+    assert "058" in walked
+    assert "059" in walked
+    assert directory.get_heads() == ["059"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

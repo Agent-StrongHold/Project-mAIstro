@@ -132,6 +132,29 @@ def _stamped_version() -> str | None:
     return str(rows[0][0]) if rows else None
 
 
+def _chain_head() -> str:
+    """The single head of the migration chain, read from the version files.
+
+    Every develop collision re-parents this branch's revisions onto a new
+    chain tip, so a fixed literal in an assertion about "the head" is only
+    ever an artifact of whichever sync wrote it — it has rotted three times
+    already (043_invocation_quota_door, 055, 056). The invariant under test
+    is that the refused downgrade leaves the stamp AT HEAD, so the head is
+    resolved from the same scripts the upgrade above ran.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1, (
+        f"expected exactly one migration head, found {sorted(heads)}; "
+        "see tests/migrations/test_single_migration_head.py"
+    )
+    return heads[0]
+
+
 @pytest.fixture
 def empty_database():
     """Start each test from `base`, so one failure cannot cascade into the next."""
@@ -552,13 +575,13 @@ class TestTheDowngrade:
         # moves off whatever head it started from. The assertion tracks the
         # head, not a fixed literal — every develop collision re-parents the
         # chain tip, and the invariant under test is that the refused
-        # downgrade leaves the stamp AT HEAD. Develop's quota door
-        # (#1196/#718) landed on `055` as `043_invocation_quota_door` in this
-        # sync, and #1047's user-model tables re-parent past it as `056`; the
-        # branch-side #863 planner-stability revision re-parents onto that tip
-        # as `057`, and the sync re-parents this branch's #82 backlog work
-        # source past that `057` tip as `058`, so that is the head now.
-        assert _stamped_version() == "058"
+        # downgrade leaves the stamp AT HEAD. The literal drifted twice
+        # already (043_invocation_quota_door, 055, 056), and the a8258ee24
+        # sync moved it once more — develop's Gauntlet provenance (#118,
+        # M4-B2) landed on `057` as `058`, and this branch's #82 backlog work
+        # source re-parented past it as `059` — so the head is read from the
+        # same version files the upgrade above ran.
+        assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 

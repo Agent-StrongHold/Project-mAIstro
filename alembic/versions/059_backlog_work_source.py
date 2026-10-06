@@ -21,7 +21,10 @@ develop's originals of every revision this branch had been carrying renumbered
 ``055_task_admission_generations``, ``056_user_model_facts`` and
 ``057_run_store_planner_stability`` -- so the branch-side duplicates were dropped
 and this migration, the one genuinely-new branch revision left, re-attached
-after that ``057`` tip as ``058``.
+after that ``057`` tip as ``058``. The a8258ee24 sync then delivered develop's
+``058_learning_validation_provenance`` (Gauntlet validation provenance, M4-B2
+#118) onto the same ``057`` parent, colliding a fourth time, so this migration
+re-attached after that ``058`` tip as ``059`` -- keeping exactly one head.
 
 The DDL is guarded (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
 EXISTS`), matching the SQLite twin's `ensure_schema`
@@ -41,8 +44,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "058"
-down_revision = "057"
+revision = "059"
+down_revision = "058"
 branch_labels = None
 depends_on = None
 
