@@ -852,3 +852,32 @@ packages/maistro-core/tests/runs/test_root_admission_identity.py -q -x` ->
 `ruff format --check`, targeted mypy, CI-exact vulture, and the core suite
 inventory (`14070` nodes) pass. The trusted-base exact-debt-ledger remains
 red only on the already-recorded, in-branch-unfixable reachability grants.
+
+## Round 15 (current CI-repair revalidation, exact head `48ed2ed6b1d9`)
+
+The lane's required CI-repair command was re-executed before considering a
+vulture-ledger amendment:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> exit 0; 1336 reviewed
+  identities equal 1336 findings, with `unclassified: 0` and
+  `never_allowlist: 0`.
+
+There is no actual vulture debt to bank or eliminate, so
+`quality/vulture-baseline.json` remains untouched. Revalidation at this exact
+head: focused codec test -> 69 passed, 1 skipped (the DSN-gated real-pool
+leg); both admission suites -> 142 passed, 1 skipped; `ruff check .`,
+`ruff format --check .`, targeted mypy, `check-reachability.py`,
+`check-reachability-dispositions.py`, and core suite inventory (14070 nodes)
+all pass. The real asyncpg two-pool test remains explicitly **UNVERIFIED**:
+this worktree has no `MAISTRO_TEST_PG_DSN` or `MAISTRO_TEST_DATABASE_URL`, so
+its skip is not durability evidence.
+
+`RATCHET_BASE_REV=origin/develop uv run python
+scripts/check-ratchet-provenance.py` exits 1 only for the two known
+reachability/disposition provenance entries: `maistro.runs.admission_identity`
+and `maistro.tasks.admission_codec` are absent from the trusted merge base
+`56332162cf63` and have no already-landed authorization. All other ratchets
+pass. This branch cannot self-authorize the intentional unwired modules; the
+remaining campaign action is still to land the prepared reachability grant on
+develop and merge that base here.
