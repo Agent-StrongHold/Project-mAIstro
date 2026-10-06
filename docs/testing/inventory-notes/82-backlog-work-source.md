@@ -830,3 +830,24 @@ the lockfile bumps the gate prescribes (`multidict` 6.9.1 for
 CVE-2026-104874, `werkzeug` 3.1.9 for CVE-2026-102598; `pip_audit_gate.py`
 exit 0). The reachability residual is unchanged — see
 `auto-82-develop-sync-058-head.md` for the full round record.
+
+## Twelfth CI-repair addendum (a8258ee24 develop sync, backlog re-parents onto 058 as 059)
+
+The a8258ee24 sync delivered develop's `058_learning_validation_provenance`
+(Gauntlet audit trail, M4-B2 #118) onto the same `057` parent this migration
+had taken, colliding a fourth time; the backlog work source re-attached after
+that tip as `059_backlog_work_source` (`alembic heads` → single `059`;
+migration-chain + chain-tip + task-admission suites 32 passed on local PG18
+against a fresh database; `alembic upgrade head` walks 057 → 058 → 059). The
+vulture ledger resolved to the merged multiset and was then pruned by three
+rows (`personas/model.py::_require_non_blank_identity`,
+`workspaces/model.py::_normalize_timestamps`,
+`workspaces/model.py::_require_non_blank_identity`): the branch's banked
+`_vulture_whitelist.py` entries for the backlog model validators mark those
+names used tree-wide under vulture's name-matching semantics, so the merged
+tree's CI-exact scan is 1329 findings and `check-vulture-baseline.py` exits 0.
+The named supply-chain failure was re-proven green with CI's exact pipeline
+(`pip_audit_gate.py` exit 0, ecdsa PYSEC-2026-1325 triaged in ALLOWED).
+maistro-core: 13479 passed / 0 failed. The reachability residual is unchanged
+— develop still carries zero `maistro.backlog.*` authorization keys — see
+`auto-82-develop-sync-059-head.md` for the full round record.
