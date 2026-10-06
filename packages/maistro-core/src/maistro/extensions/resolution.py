@@ -62,6 +62,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
+
 from maistro.extensions.semver import (
     InvalidSemanticVersion,
     InvalidVersionRange,
@@ -79,7 +80,8 @@ from maistro.extensions.types import (
     identity_key,
     sha256_hex,
 )
-from maistro.extensions.manifest import ExtensionManifest
+
+#: Version tag of the lock serialization. Bumping it is a format change:
 #: ``from_json`` refuses anything else rather than guessing.
 LOCK_FORMAT = "maistro-extension-lock:v1"
 
@@ -168,30 +170,6 @@ class CatalogEntry:
     identity: PackageIdentity
     source: str
     catalog_snapshot_sha256: str
-    publisher_id: str
-    signature: str
-    manifest: ExtensionManifest | None = None
-    dependencies: tuple[ExtensionDependency, ...] = ()
-    identity: PackageIdentity
-    source: str
-    catalog_snapshot_sha256: str
-    publisher_id: str
-    signature: str
-    manifest: ExtensionManifest | None = None
-    dependencies: tuple[ExtensionDependency, ...] = ()
-    source: str
-    catalog_snapshot_sha256: str
-    publisher_id: str
-    signature: str
-    manifest: ExtensionManifest | None = None
-    dependencies: tuple[ExtensionDependency, ...] = ()
-    identity: PackageIdentity
-    source: str
-    catalog_snapshot_sha256: str
-    publisher_id: str
-    signature: str
-    manifest: ExtensionManifest | None = None
-    dependencies: tuple[ExtensionDependency, ...] = ()
     publisher_id: str
     signature: str
     dependencies: tuple[ExtensionDependency, ...] = ()

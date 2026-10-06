@@ -1,12 +1,20 @@
 """Private organizational extension catalog service (#979).
 
-The catalog service exposes a snapshot of available extensions for an
-organization, with search and metadata inspection. Catalogs are immutable
-snapshots; updates create new snapshots.
+Read-side surface over an organization's private catalog snapshot: listing,
+search/filter, per-extension version history, and per-version detail down to
+the inspected manifest snapshot. Every entry points at immutable bytes —
+the package and manifest SHA-256 digests travel with the identity, so what
+an operator inspects is digested and what an install later verifies is the
+same digest. Tampered artifacts therefore fail at install time even if the
+catalog itself was fooled.
 
-Each catalog entry points to an immutable artifact via package and manifest
-digests, ensuring tamper detection. The service does not grant runtime
-authority; that remains with the install service.
+The catalog is discovery and inspection only. Nothing here installs,
+activates, or grants runtime authority: the governed install lifecycle
+(#953) remains the only path from catalog metadata to running code, and it
+re-derives every authority decision from its own records. Because this
+service never consults the install store (and is never consulted by it), a
+catalog outage cannot disable already-installed pinned extensions — the two
+availability domains are structurally separate.
 """
 
 from __future__ import annotations
@@ -15,13 +23,20 @@ from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from maistro.extensions.resolution import CatalogEntry, ExtensionCatalog
-from maistro.extensions.manifest import ExtensionManifest
-from maistro.extensions.types import PackageIdentity
+from maistro.extensions.semver import SemVer
+from maistro.extensions.types import ExtensionManifest, PackageIdentity
 
 
 @runtime_checkable
 class CatalogStore(Protocol):
-    """Store for organizational extension catalog snapshots."""
+    """Store for an organization's catalog snapshot and inspected manifests.
+
+    The entry tuple is the snapshot resolution would run against; the
+    manifest map holds the per-identity inspected snapshots operators read
+    before deciding to download. A store that cannot serve a manifest for
+    some identity returns ``None`` — the entry's digest metadata stays
+    inspectable either way.
+    """
 
     async def get_catalog(self, org_id: str) -> ExtensionCatalog | None: ...
 
@@ -29,53 +44,57 @@ class CatalogStore(Protocol):
         self, org_id: str, entries: Sequence[tuple[CatalogEntry, ExtensionManifest]]
     ) -> None: ...
 
+    async def get_manifest(
+        self, org_id: str, identity: PackageIdentity
+    ) -> ExtensionManifest | None: ...
+
 
 class InMemoryCatalogStore:
-    """Simple in-memory catalog store per organization."""
+    """Process-lifetime catalog store, one snapshot per organization.
+
+    ``set_catalog`` replaces the whole snapshot: catalogs are immutable
+    revisions, and an update is a new revision, not a mutation.
+    """
 
     def __init__(self) -> None:
-        self._catalogs: dict[str, list[CatalogEntry]] = {}
+        self._catalogs: dict[str, ExtensionCatalog] = {}
         self._manifests: dict[str, dict[PackageIdentity, ExtensionManifest]] = {}
 
     async def get_catalog(self, org_id: str) -> ExtensionCatalog | None:
         """Get the current catalog snapshot for an organization."""
-        entries = self._catalogs.get(org_id)
-        if entries is None:
-            return None
-        return ExtensionCatalog(tuple(entries))
+        return self._catalogs.get(org_id)
 
     async def set_catalog(
         self, org_id: str, entries: Sequence[tuple[CatalogEntry, ExtensionManifest]]
     ) -> None:
-        """Update the catalog for an organization.
+        """Replace the catalog snapshot for an organization.
 
-        Args:
-            org_id: The organization identifier.
-            entries: A sequence of (catalog_entry, manifest) tuples.
+        The snapshot is frozen at call time: later mutation of the caller's
+        sequence cannot rewrite published history.
         """
-        catalog_entries: list[CatalogEntry] = []
-        manifest_map: dict[PackageIdentity, ExtensionManifest] = {}
-        for catalog_entry, manifest in entries:
-            catalog_entries.append(catalog_entry)
-            manifest_map[catalog_entry.identity] = manifest
-        self._catalogs[org_id] = catalog_entries
-        self._manifests[org_id] = manifest_map
+        pairs = list(entries)
+        self._catalogs[org_id] = ExtensionCatalog(tuple(entry for entry, _manifest in pairs))
+        self._manifests[org_id] = {entry.identity: manifest for entry, manifest in pairs}
 
-    def _get_manifest(
+    async def get_manifest(
         self, org_id: str, identity: PackageIdentity
     ) -> ExtensionManifest | None:
-        """Get the manifest for a given identity in the org's catalog.
-
-        Returns None if not available.
-        """
+        """The inspected manifest snapshot for one identity, if published."""
         return self._manifests.get(org_id, {}).get(identity)
 
 
 def _catalog_entry_to_dict(
-    entry: CatalogEntry, manifest: ExtensionManifest | None = None
+    entry: CatalogEntry, manifest: ExtensionManifest | None
 ) -> dict[str, object]:
-    """Convert a CatalogEntry and its manifest to a dictionary for API responses."""
-    result = {
+    """Render one catalog entry for the API and service surfaces.
+
+    Identity digests, source, publisher and signature are entry metadata and
+    always present. The manifest-dependent fields (API version, requested
+    permissions, entry points, artifact size and source digest) come from the
+    inspected manifest snapshot and are present only when it is available —
+    an operator never sees manifest claims that cannot be anchored to bytes.
+    """
+    result: dict[str, object] = {
         "extension_name": entry.identity.extension_name,
         "version": entry.identity.semantic_version,
         "package_sha256": entry.identity.package_sha256,
@@ -106,14 +125,6 @@ def _catalog_entry_to_dict(
                     }
                     for ep in manifest.entry_points
                 ],
-                "dependencies": [
-                    {
-                        "target": dep.target,
-                        "range": dep.range_text,
-                        "required": dep.required,
-                    }
-                    for dep in manifest.dependencies
-                ],
                 "artifact_sha256": manifest.artifact_sha256,
                 "artifact_size": manifest.artifact_size,
                 "source_sha256": manifest.source_sha256,
@@ -122,21 +133,50 @@ def _catalog_entry_to_dict(
     return result
 
 
+def _name_then_version(
+    pair: tuple[CatalogEntry, ExtensionManifest | None],
+) -> tuple[str, SemVer]:
+    """Listing order: extension name, then semantic version ascending."""
+    entry = pair[0]
+    return (entry.identity.extension_name, entry.version)
+
+
+def _version_descending(
+    pair: tuple[CatalogEntry, ExtensionManifest | None],
+) -> SemVer:
+    """Version-history order: newest release first."""
+    return pair[0].version
+
+
 class CatalogService:
-    """Service for accessing an organization's extension catalog."""
+    """Read-side catalog surface for one organization's private catalog.
+
+    Search and detail only: the service filters the snapshot, pairs entries
+    with their inspected manifests, and reports digest metadata verbatim. It
+    holds no install or activation authority and offers no way to acquire
+    any.
+    """
 
     def __init__(self, store: CatalogStore) -> None:
         self._store = store
 
     async def get_catalog(self, org_id: str) -> ExtensionCatalog | None:
-        """Get the current catalog snapshot for an organization."""
+        """The current catalog snapshot for an organization, if published."""
         return await self._store.get_catalog(org_id)
 
     async def set_catalog(
         self, org_id: str, entries: Sequence[tuple[CatalogEntry, ExtensionManifest]]
     ) -> None:
-        """Update the catalog for an organization."""
+        """Publish a new catalog snapshot for an organization."""
         await self._store.set_catalog(org_id, entries)
+
+    async def _with_manifests(
+        self, org_id: str, entries: Sequence[CatalogEntry]
+    ) -> list[tuple[CatalogEntry, ExtensionManifest | None]]:
+        """Pair each entry with its inspected manifest, when one is served."""
+        return [
+            (entry, await self._store.get_manifest(org_id, entry.identity)) for entry in entries
+        ]
 
     async def list_extensions(
         self,
@@ -145,143 +185,59 @@ class CatalogService:
         search: str | None = None,
         publisher_id: str | None = None,
     ) -> tuple[dict[str, object], ...]:
-        """List extensions in the catalog, optionally filtered.
+        """List catalog entries, optionally filtered, sorted for inspection.
 
-        Returns a tuple of extension metadata dictionaries, sorted by
-        extension name and then version.
+        ``search`` matches the extension name or publisher id
+        case-insensitively; ``publisher_id`` filters exactly. Ordering is
+        extension name then semantic version, so an operator reading the
+        list sees a stable, version-aware index rather than snapshot order.
         """
-        catalog = await self.get_catalog(org_id)
+        catalog = await self._store.get_catalog(org_id)
         if catalog is None:
             return ()
-
-        if isinstance(self._store, InMemoryCatalogStore):
-            store = self._store
-            # We'll build a list of (entry, manifest) tuples.
-            entry_manifest_pairs: list[tuple[CatalogEntry, ExtensionManifest]] = []
-            for entry in catalog.entries:
-                manifest = store._get_manifest(org_id, entry.identity)
-                entry_manifest_pairs.append((entry, manifest))
-            # We'll use these pairs for filtering and sorting.
-            # For filtering, we can use the entry's fields.
-            filtered_pairs: list[tuple[CatalogEntry, ExtensionManifest]] = []
-            for entry, manifest in entry_manifest_pairs:
-                if publisher_id is not None and entry.publisher_id != publisher_id:
-                    continue
-                if search is not None:
-                    search_lower = search.lower()
-                    if (
-                        search_lower not in entry.identity.extension_name.lower()
-                        and search_lower not in entry.publisher_id.lower()
-                    ):
-                        continue
-                filtered_pairs.append((entry, manifest))
-            # Sort by extension name, then version
-            def sort_key(pair: tuple[CatalogEntry, ExtensionManifest]) -> tuple[str, SemVer]:
-                from maistro.extensions.semver import SemVer
-
-                return (
-                    pair[0].identity.extension_name,
-                    SemVer.parse(pair[0].identity.semantic_version),
-                )
-            sorted_pairs = sorted(filtered_pairs, key=sort_key)
-            result: list[dict[str, object]] = []
-            for entry, manifest in sorted_pairs:
-                result.append(_catalog_entry_to_dict(entry, manifest))
-            return tuple(result)
-        else:
-            # If the store is not our in-memory store, we cannot provide
-            # manifest data. We'll return the catalog entry data without
-            # manifest information.
-            entries = catalog.entries
-            if publisher_id is not None:
-                entries = tuple(e for e in entries if e.publisher_id == publisher_id)
-            if search is not None:
-                search_lower = search.lower()
-                entries = tuple(
-                    e
-                    for e in entries
-                    if search_lower in e.identity.extension_name.lower()
-                    or search_lower in e.publisher_id.lower()
-                )
-            # Sort by extension name, then version (using SemVer for correct ordering)
-            def sort_key(e: CatalogEntry):
-                from maistro.extensions.semver import SemVer
-
-                return (
-                    e.identity.extension_name,
-                    SemVer.parse(e.identity.semantic_version),
-                )
-            sorted_entries = sorted(entries, key=sort_key)
-            result: list[dict[str, object]] = []
-            for entry in sorted_entries:
-                result.append(_catalog_entry_to_dict(entry, None))
-            return tuple(result)
+        entries = catalog.entries
+        if publisher_id is not None:
+            entries = tuple(entry for entry in entries if entry.publisher_id == publisher_id)
+        if search is not None:
+            needle = search.lower()
+            entries = tuple(
+                entry
+                for entry in entries
+                if needle in entry.identity.extension_name.lower()
+                or needle in entry.publisher_id.lower()
+            )
+        pairs = sorted(await self._with_manifests(org_id, entries), key=_name_then_version)
+        return tuple(_catalog_entry_to_dict(entry, manifest) for entry, manifest in pairs)
 
     async def get_extension_versions(
         self, org_id: str, extension_name: str
     ) -> tuple[dict[str, object], ...]:
-        """Get all versions of a specific extension in the catalog."""
-        catalog = await self.get_catalog(org_id)
+        """Every published version of one extension, newest first."""
+        catalog = await self._store.get_catalog(org_id)
         if catalog is None:
             return ()
-
-        if isinstance(self._store, InMemoryCatalogStore):
-            store = self._store
-            # Build a list of (entry, manifest) tuples for the given extension.
-            entry_manifest_pairs: list[tuple[CatalogEntry, ExtensionManifest]] = []
-            for entry in catalog.entries:
-                if entry.identity.extension_name == extension_name:
-                    manifest = store._get_manifest(org_id, entry.identity)
-                    entry_manifest_pairs.append((entry, manifest))
-            # Sort by version descending (newest first)
-            def version_sort_key(pair: tuple[CatalogEntry, ExtensionManifest]) -> SemVer:
-                from maistro.extensions.semver import SemVer
-
-                return SemVer.parse(pair[0].identity.semantic_version)
-            sorted_pairs = sorted(entry_manifest_pairs, key=version_sort_key, reverse=True)
-            result: list[dict[str, object]] = []
-            for entry, manifest in sorted_pairs:
-                result.append(_catalog_entry_to_dict(entry, manifest))
-            return tuple(result)
-        else:
-            entries = tuple(
-                e
-                for e in catalog.entries
-                if e.identity.extension_name == extension_name
-            )
-            # Sort by version descending (newest first)
-            def version_sort_key(e: CatalogEntry):
-                from maistro.extensions.semver import SemVer
-
-                return SemVer.parse(e.identity.semantic_version)
-            sorted_entries = sorted(entries, key=version_sort_key, reverse=True)
-            result: list[dict[str, object]] = []
-            for entry in sorted_entries:
-                result.append(_catalog_entry_to_dict(entry, None))
-            return tuple(result)
+        matches = [
+            entry for entry in catalog.entries if entry.identity.extension_name == extension_name
+        ]
+        pairs = sorted(
+            await self._with_manifests(org_id, matches),
+            key=_version_descending,
+            reverse=True,
+        )
+        return tuple(_catalog_entry_to_dict(entry, manifest) for entry, manifest in pairs)
 
     async def get_extension_version(
         self, org_id: str, extension_name: str, version: str
     ) -> dict[str, object] | None:
-        """Get metadata for a specific version of an extension."""
-        catalog = await self.get_catalog(org_id)
+        """Detail for exactly one published version, or ``None``."""
+        catalog = await self._store.get_catalog(org_id)
         if catalog is None:
             return None
-
-        if isinstance(self._store, InMemoryCatalogStore):
-            store = self._store
-            for entry in catalog.entries:
-                if (
-                    entry.identity.extension_name == extension_name
-                    and entry.identity.semantic_version == version
-                ):
-                    manifest = store._get_manifest(org_id, entry.identity)
-                    return _catalog_entry_to_dict(entry, manifest)
-        else:
-            for entry in catalog.entries:
-                if (
-                    entry.identity.extension_name == extension_name
-                    and entry.identity.semantic_version == version
-                ):
-                    return _catalog_entry_to_dict(entry, None)
+        for entry in catalog.entries:
+            if (
+                entry.identity.extension_name == extension_name
+                and entry.identity.semantic_version == version
+            ):
+                manifest = await self._store.get_manifest(org_id, entry.identity)
+                return _catalog_entry_to_dict(entry, manifest)
         return None

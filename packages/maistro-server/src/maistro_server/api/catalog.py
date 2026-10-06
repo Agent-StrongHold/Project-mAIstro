@@ -1,11 +1,23 @@
 """Private organizational extension catalog API (#979).
 
-Endpoints for discovering and inspecting extensions in a private catalog.
+Read-only discovery and inspection routes over the organization's private
+catalog: list with search/filter, per-extension version history, and
+per-version detail including the inspected manifest snapshot's requested
+permissions, entry points, and artifact digests.
+
+Every route is authenticated — reads included, because a private catalog's
+publisher relationships and permission surfaces are exactly what an
+anonymous caller must not enumerate. Org-level authorization is not checked
+here: org-only scopes are authenticated-principal-only until the B1/Stronghold
+tenancy substrate provides an org authority to check against — the same
+deliberate, stated limitation as the extensions router. Authorization to
+*run* anything is never granted by these routes; the governed install
+lifecycle (#953) remains the canonical host authority.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
@@ -23,61 +35,58 @@ def get_catalog_service(request: Request) -> CatalogService:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No catalog service is configured",
         )
-    return container.ensure_catalog_service()
+    return cast(CatalogService, container.ensure_catalog_service())
 
 
-def _actor(auth: RequireAuth) -> str:
-    """The authenticated principal is recorded for audit purposes."""
-    return auth.principal_id  # Assuming RequireAuth has a principal_id attribute
-
-
-@router.get("/{org_id}/extensions", response_model=list[dict])
+@router.get("/{org_id}/extensions", response_model=list[dict[str, object]])
 async def list_catalog_extensions(
     org_id: str,
     auth: RequireAuth,
     service: Annotated[CatalogService, Depends(get_catalog_service)],
-    search: Annotated[str | None, Query(description="Search term for extension name or publisher")] = None,
-    publisher_id: Annotated[str | None, Query(description="Filter by publisher ID")] = None,
-) -> list[dict]:
-    """List extensions in the catalog for an organization.
+    search: Annotated[
+        str | None, Query(description="Case-insensitive match on extension name or publisher")
+    ] = None,
+    publisher_id: Annotated[
+        str | None, Query(description="Exact-match filter on publisher ID")
+    ] = None,
+) -> list[dict[str, object]]:
+    """List extensions in the organization's catalog, newest-compatible view.
 
-    Optional search and filter parameters allow narrowing the list.
+    ``auth`` carries no role in the body: its dependency is what enforces
+    authentication on this read, per the module docstring's authorization
+    model.
     """
-    # TODO: Add authorization check for org_id? The auth should already be scoped.
-    # For now, we assume the authenticated principal is allowed to view the catalog for the org.
-    # In a real implementation, we would check that the principal is a member of the organization.
-    extensions = await service.list_extensions(
-        org_id, search=search, publisher_id=publisher_id
-    )
-    return extensions
+    return list(await service.list_extensions(org_id, search=search, publisher_id=publisher_id))
 
 
-@router.get("/{org_id}/extensions/{extension_name}", response_model=list[dict])
+@router.get("/{org_id}/extensions/{extension_name}", response_model=list[dict[str, object]])
 async def list_extension_versions(
     org_id: str,
     extension_name: str,
     auth: RequireAuth,
     service: Annotated[CatalogService, Depends(get_catalog_service)],
-) -> list[dict]:
-    """List all versions of a specific extension in the catalog."""
-    versions = await service.get_extension_versions(org_id, extension_name)
-    return versions
+) -> list[dict[str, object]]:
+    """Every published version of one extension, newest first."""
+    return list(await service.get_extension_versions(org_id, extension_name))
 
 
-@router.get("/{org_id}/extensions/{extension_name}/versions/{version}", response_model=dict)
+@router.get("/{org_id}/extensions/{extension_name}/versions/{version}")
 async def get_extension_version(
     org_id: str,
     extension_name: str,
     version: str,
     auth: RequireAuth,
     service: Annotated[CatalogService, Depends(get_catalog_service)],
-) -> dict:
-    """Get metadata for a specific version of an extension in the catalog."""
+) -> dict[str, object]:
+    """Inspect one published version's metadata before any download."""
     entry = await service.get_extension_version(org_id, extension_name, version)
     if entry is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Extension {extension_name} version {version} not found in catalog for organization {org_id}",
+            detail=(
+                f"Extension {extension_name} version {version} not found in "
+                f"catalog for organization {org_id}"
+            ),
         )
     return entry
 
