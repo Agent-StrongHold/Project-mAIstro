@@ -15,6 +15,10 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
   authorization.
+- **M9-C1 policy (issue #955, ``maistro.extensions.compat``)**: decides
+  whether an extension's declared contract, features, and deprecation posture
+  are compatible with this host — from metadata alone, before any code
+  import.
 - **M9-C2 resolution (issue #956)**: strict semantic-version ranges
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
@@ -26,8 +30,9 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   blocking extensions before the upgrade is applied. The target release is
   data, never imported code; nothing is activated.
 
-No layer executes extension code: verification, evaluation, authorization
-and resolution all operate on bytes and declarations alone.
+No layer executes extension code: verification, evaluation, authorization,
+resolution and contract negotiation all operate on bytes and declarations
+alone.
 """
 
 from __future__ import annotations
@@ -38,9 +43,36 @@ from maistro.extensions.authority import (
     compute_authority_delta,
     normalize_permission,
 )
+from maistro.extensions.compat import (
+    CONTRACT_VERSION,
+    FEATURE_DEPRECATED,
+    FEATURE_REMOVED,
+    FEATURE_STATUSES,
+    FEATURE_SUPPORTED,
+    HOST_FEATURES,
+    SUPPORTED_CONTRACT_MAJORS,
+    CompatError,
+    CompatibilityReport,
+    CompatMetadataError,
+    ContractRange,
+    ContractVersion,
+    Degradation,
+    DeprecationNotice,
+    ExtensionCompatMetadata,
+    FeatureStatus,
+    FeatureSupport,
+    HostContractMetadata,
+    IncompatibleContract,
+    Verdict,
+    ensure_compatible,
+    negotiate,
+    parse_compat_metadata,
+    parse_contract_range,
+    parse_contract_version,
+    parse_feature_status,
+)
 from maistro.extensions.compatibility import (
     CompatibilityPolicy,
-    CompatibilityReport,
     evaluate_compatibility,
 )
 from maistro.extensions.effective_authority import (
@@ -147,6 +179,12 @@ from maistro.extensions.store import (
     InMemoryExtensionStore,
 )
 from maistro.extensions.trust import TrustPolicy, TrustReport, evaluate_trust
+
+# NOTE: both `compat` (M9-C1 negotiation, #955) and `compatibility` (M9-B2
+# activation, #953) define a class named `CompatibilityReport`. The package
+# binds the M9-C1 negotiation report; the activation-layer report stays on
+# its module path (`maistro.extensions.compatibility.CompatibilityReport`),
+# which is how its in-tree consumers already import it.
 from maistro.extensions.types import (
     DIGEST_ALGORITHM,
     TERMINAL_STATES,
@@ -184,10 +222,17 @@ from maistro.extensions.types import (
 )
 
 __all__ = [
+    "CONTRACT_VERSION",
     "DIGEST_ALGORITHM",
+    "FEATURE_DEPRECATED",
+    "FEATURE_REMOVED",
+    "FEATURE_STATUSES",
+    "FEATURE_SUPPORTED",
+    "HOST_FEATURES",
     "LOCK_FORMAT",
     "ROOT_REQUEST_ORIGIN",
     "SELECTION_POLICY",
+    "SUPPORTED_CONTRACT_MAJORS",
     "SUPPORTED_MANIFEST_VERSION",
     "SUPPORTED_PACK_MANIFEST_VERSION",
     "TERMINAL_STATES",
@@ -199,15 +244,22 @@ __all__ = [
     "AuthorityDelta",
     "CallerAuthority",
     "CatalogEntry",
+    "CompatError",
+    "CompatMetadataError",
     "CompatibilityPolicy",
     "CompatibilityReport",
     "ConstraintRecord",
+    "ContractRange",
+    "ContractVersion",
+    "Degradation",
     "DependencyCycle",
+    "DeprecationNotice",
     "EffectiveAuthority",
     "ExtensionAuthorityEvidence",
     "ExtensionAuthorityInputs",
     "ExtensionCatalog",
     "ExtensionCodeLoader",
+    "ExtensionCompatMetadata",
     "ExtensionDependency",
     "ExtensionEntryPoint",
     "ExtensionIdentityConflict",
@@ -223,9 +275,13 @@ __all__ = [
     "ExtensionStatus",
     "ExtensionStore",
     "ExtensionTransition",
+    "FeatureStatus",
+    "FeatureSupport",
+    "HostContractMetadata",
     "HostExtensionPolicy",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
+    "IncompatibleContract",
     "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
@@ -287,6 +343,7 @@ __all__ = [
     "UnknownPublisher",
     "UnresolvableDependency",
     "UnwiredExtensionLoader",
+    "Verdict",
     "VersionRange",
     "WorkspaceExtensionPolicy",
     "assert_snapshot_intact",
@@ -294,6 +351,7 @@ __all__ = [
     "compute_authority_delta",
     "compute_effective_authority",
     "diff_locks",
+    "ensure_compatible",
     "evaluate_compatibility",
     "evaluate_pack_compatibility",
     "evaluate_trust",
@@ -306,8 +364,13 @@ __all__ = [
     "instantiate_rubric_asset",
     "manifest_snapshot",
     "materialize_lock",
+    "negotiate",
     "normalize_permission",
     "pack_extension_view",
+    "parse_compat_metadata",
+    "parse_contract_range",
+    "parse_contract_version",
+    "parse_feature_status",
     "parse_range",
     "resolve_lock",
     "resolve_publisher_trust",
