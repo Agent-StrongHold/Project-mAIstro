@@ -7,7 +7,7 @@ a library, not composition. So this file proves three claims:
 
 * **Backend selection** — `wire_goal_store` picks the durable twin over the
   SQLite pool the deployment already has, the PostgreSQL store over a pool
-  whose migration-056 tables exist, and refuses to answer an *unmigrated*
+  whose migration-058 tables exist, and refuses to answer an *unmigrated*
   PostgreSQL pool with an in-process store that merely looks the same (the
   split-backend defect the Workspace wiring documents). No database at all
   means the in-memory reference — loudly, since canonical Goals that die with
@@ -83,7 +83,7 @@ async def test_wire_goal_store_falls_back_to_memory_loudly(caplog) -> None:
 
 
 class _UnmigratedPool:
-    """A PostgreSQL pool whose schema predates migration 054.
+    """A PostgreSQL pool whose schema predates migration 058.
 
     `fetchval` answers the wiring's `to_regclass` probe with False, which is
     all the wiring may know about it.
@@ -108,7 +108,7 @@ async def test_wire_goal_store_refuses_an_unmigrated_pg_pool_as_memory(caplog) -
         store = await wire_goal_store(None, pg_pool=pool)
     assert isinstance(store, InMemoryGoalStore)
     assert pool.probes == [f"public.{table}" for table in GOAL_PG_TABLES], (
-        "every migration-054 table is probed, not just the first"
+        "every migration-058 table is probed, not just the first"
     )
     assert any("alembic upgrade head" in record.message for record in caplog.records)
 

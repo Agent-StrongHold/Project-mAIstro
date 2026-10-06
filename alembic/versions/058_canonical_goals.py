@@ -19,23 +19,25 @@ No execution state lives here: the canonical `Goal -> Graph -> Run ->
 NodeRun -> Attempt` spine keeps its own primitives, and a Run carries its
 Goal binding as payload provenance written once at admission (#1572).
 
-Numbered 056 directly after develop's `055_task_admission_generations`: this
-issue's first draft took 053 off develop's 052 head, then re-parented onto
-develop's `053_learning_lifecycle_columns` as 054; #1892's admission
-generations then claimed 054 off that same 053 head, this store re-parented
-onto it as 055, and the next develop sync claimed 055 again — #119's
-`054_learning_applicability_epistemics` took 054 and re-parented #1892 onto
-the new tip as `055_task_admission_generations`. That sync then brought
-develop's `043_invocation_quota_door` (#1196/#718) — itself re-parented onto
-whichever revision is develop's head at merge time — onto that same `055`
-parent, the one this store had already claimed as the tip. Per the chain's
-standing precedent the later-integrated revision re-parents onto the landed
-tip, never the reverse, so this store continues develop's quota-door
-revision. Renumbered and re-parented once more: one linear head, no
-duplicate revision ids.
+Numbered 058, continuing the integrated develop head. The installed base
+already carries two merged migration identities this store must not reuse:
+develop received the user-model tables as ``056_user_model_facts`` (#1951's
+merge ``c560d4c``) and planner stability as ``057_run_store_planner_stability``
+(#1914's merge ``4675101``). A database those trees migrated stands stamped at
+``056`` or ``057``; were this store to claim either id, ``upgrade head`` would
+treat the Goal DDL as already applied and silently skip it. The earlier drafts
+of this branch did exactly that renumber (Goals at ``056``, user-model moved
+to ``057``, planner to ``058``) and the 2026-10-06 clarification on #1572
+forbids it: merged identities keep their meaning and ancestry, and a new
+revision appends after the integrated develop head under a centrally
+coordinated, unused id. So this store restores develop's ``056``/``057``
+byte-for-byte and appends here as ``058`` — one linear head, no duplicate
+revision ids, and an installed base that upgrades forward without a stamp
+edit (`tests/migrations/test_goal_installed_base_upgrade.py` drives exactly
+that walk against real ``c560d4c``/``4675101`` databases).
 
-Revision ID: 056
-Revises: 043_invocation_quota_door
+Revision ID: 058
+Revises: 057 (057_run_store_planner_stability)
 Create Date: 2026-10-03
 """
 
@@ -43,8 +45,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "056"
-down_revision = "043_invocation_quota_door"
+revision = "058"
+down_revision = "057"
 branch_labels = None
 depends_on = None
 

@@ -29,7 +29,7 @@ The acceptance criteria this suite holds every backend to (issue #1572):
 
 The PostgreSQL leg needs a real migrated server and skips without one, and a
 skipped leg is untested rather than passing: `MAISTRO_REQUIRE_PG_LEGS` turns
-that skip into a failure in the jobs that own a server. Migration ``054``
+that skip into a failure in the jobs that own a server. Migration ``058``
 owns the PostgreSQL tables; the SQLite twin carries its own DDL, and
 `test_goal_schema_parity.py` holds the two descriptions to one spec.
 """

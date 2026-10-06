@@ -80,16 +80,12 @@ the lifecycle tip and #1892's forward admission-generation representation
 collided in turn, re-parenting onto it as `055`; develop's quota-door
 revision (#1196/#718) then claimed `055`'s child slot on develop and
 #1047's user-model tables landed past it as `056_user_model_facts`, so
-this revision followed them onto that tip as 057. This branch's Goal
-store (#1572) then landed `056_canonical_goals` on the same quota door,
-colliding with the user-model tables' id, and the merged chain renumbers
-the later-integrated revisions onto the landed tip: the user-model
-tables continue the Goal store as `057_user_model_facts` and this
-revision follows them as 058. One linear head, no duplicate revision
-ids.
+this revision follows them, re-parenting onto that
+`056_user_model_facts` tip as 057. One linear head, no duplicate
+revision ids.
 
-Revision ID: 058
-Revises: 057
+Revision ID: 057
+Revises: 056
 Create Date: 2026-10-04
 """
 
@@ -97,8 +93,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "058"
-down_revision = "057"
+revision = "057"
+down_revision = "056"
 branch_labels = None
 depends_on = None
 

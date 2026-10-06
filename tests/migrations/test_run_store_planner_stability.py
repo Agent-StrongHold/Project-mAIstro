@@ -20,7 +20,7 @@ The fix has three parts, each pinned here:
   constants derived from the model — the same shape `_ACTIVE_ROOT_COUNTS_SQL`
   already used), so the partial predicates 013/017 carry are provable in every
   plan mode;
-- the queue cursor reads `ix_canonical_runs_status_created` (migration 058) —
+- the queue cursor reads `ix_canonical_runs_status_created` (migration 057) —
   deliberately **unconditional**, so `status = $1` needs no predicate proof at
   all, and the index's trailing columns carry both the order and the keyset;
 - the status domains are CHECK-constrained to the model enums, so a new status
@@ -111,11 +111,11 @@ class TestTheShippedSqlIsLiteralShaped:
                 assert sql.count(f"'{status_value}'") == 1
 
     def test_the_status_listing_orders_by_the_indexed_expression(self) -> None:
-        """The queue cursor's order must be exactly what migration 058's index
+        """The queue cursor's order must be exactly what migration 057's index
         carries — `(status, payload->>'created_at', run_id)` — or the planner
         pays a Sort node the index cannot remove."""
         source = (
-            REPO_ROOT / "alembic" / "versions" / "058_run_store_planner_stability.py"
+            REPO_ROOT / "alembic" / "versions" / "057_run_store_planner_stability.py"
         ).read_text(encoding="utf-8")
         # No partial indexes in this revision at all: an unconditional
         # (status, created_at, run_id) index is provable under every plan mode,

@@ -9,12 +9,8 @@ admission-generation representation to ``055``, colliding a second time, so
 this revision re-parented onto that ``055_task_admission_generations`` as
 ``056``. Develop's quota-door revision (#1196/#718) then claimed the child
 slot under ``055`` on develop as ``043_invocation_quota_door`` — a third
-collision — so the previous sync re-parented past it, and this branch's
-canonical Goal store (#1572) took the same slot as ``056_canonical_goals``.
-Merging the two lines collides those ``056`` ids, so per the chain's
-convention — the later-integrated revision renumbers and re-parents onto the
-landed tip — this revision now continues the Goal store as ``057`` and the
-single linear head is ``057``.
+collision — so this sync re-parents past it: this revision now revises the
+quota door and the single linear head remains ``056``.
 
 The durable user model is a separate ``UserModelFact`` record type kept in
 PostgreSQL as the system of record (ADR-082226-5104 §§1, 5, 6); Ladybug may
@@ -35,8 +31,8 @@ All timestamps are ``TIMESTAMP WITH TIME ZONE``: fact validity windows are
 compared against aware UTC instants (SPEC-241 temporal semantics), and a
 naive local time on either side would silently shift them.
 
-Revision ID: 057
-Revises: 056
+Revision ID: 056
+Revises: 043_invocation_quota_door
 Create Date: 2026-10-04
 """
 
@@ -44,8 +40,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "057"
-down_revision = "056"
+revision = "056"
+down_revision = "043_invocation_quota_door"
 branch_labels = None
 depends_on = None
 

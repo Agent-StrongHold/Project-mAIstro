@@ -10,16 +10,14 @@ current chain tip so they do not reuse revision ids 033/035/036, which
 develop already assigned. Re-parented onto each new develop head as this
 branch has stayed open -- 046, then 047, 048, 050, 051, 052, 053, 054, now
 055: a migration must append after the deployed head, never fork beside
-it, or `alembic upgrade head` refuses with multiple heads. When develop's
-tip met #1572's `056_canonical_goals` -- both parented on 055 at merge
-time -- the Goal store re-parented onto this door, so the integrated
-chain continues from here through `056_canonical_goals`. The next sync
-brought develop's own continuations of this door -- #1047's user-model
-tables (``056`` on develop) and #863's planner-stability revision
-(``057`` there) -- colliding with the branch's landed ``056``; per the
-convention the later-integrated revision renumbers onto the landed tip,
-so the chain runs on through `057_user_model_facts` and
-`058_run_store_planner_stability`.
+it, or `alembic upgrade head` refuses with multiple heads. The Goal store
+(#1572) re-parented onto this door, and the next develop sync restored the
+merged identities this chain had collided with: #1047's user-model tables
+(``056_user_model_facts``) and #863's planner-stability revision
+(``057_run_store_planner_stability``) keep the ids develop already shipped
+(#1951's ``c560d4c``, #1914's ``4675101``), so installed databases stamped
+``056`` or ``057`` keep their meaning, and the Goal DDL appends after the
+integrated head as `058_canonical_goals`.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:

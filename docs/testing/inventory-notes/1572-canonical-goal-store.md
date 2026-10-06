@@ -314,3 +314,32 @@ chain tip the store's migration sits at:
   MinIO object-storage, and the hive e2e compose bring-up (Docker Desktop
   engine down in this environment); none of this round's diffs touch those
   paths, and round 4 recorded them green from this branch's content.
+
+## Round 6 — develop sync (7334621bf) and the migration-identity repair (2026-10-06 clarification)
+
+- **Develop sync completed and committed.** `origin/develop` at `7334621bf`
+  merged in-branch as `6cb5c729c`; worktree clean, merge-base == develop
+  base. The sync brought the merged identities this round's repair is about:
+  `056_user_model_facts` (#1951, merge `c560d4c`) and
+  `057_run_store_planner_stability` (#1914, merge `4675101`).
+- **The earlier merge resolution kept this branch's renumber** — Goals at
+  `056`, user-model moved to `057`, planner to `058` — exactly the
+  installed-base hazard the clarification added to the issue: a database
+  migrated by develop to `056` or `057` would treat the Goal DDL as already
+  applied and skip it. Fixed per the clarification:
+  - develop's `056_user_model_facts.py` and `057_run_store_planner_stability.py`
+    restored byte-for-byte (verified identical to the merge commits and to
+    `origin/develop`'s tip);
+  - the Goal DDL re-homed as `058_canonical_goals` (`revision = "058"`,
+    `down_revision = "057"`) — an unused id appended after the integrated
+    develop head, one linear head;
+  - every textual reference moved with it (`maistro.goals` docstrings, the
+    planner/status-lockstep/effect-index/chain tests, the SQLite parity
+    note), and `043_invocation_quota_door`'s chain narrative rewritten to
+    the restored identities.
+- **New installed-base suite** `tests/migrations/test_goal_installed_base_upgrade.py`
+  (+6 node IDs, own note `1572-goal-installed-base-upgrade.md`): graph-shape
+  identity, byte-identity against the real merge commits, the named
+  regression (user-model at `056`, no Goal tables), true snapshot-tree
+  upgrades from `c560d4c` and `4675101` with no stamp edit, and the durable
+  Goal composition driven on the upgraded schema.
