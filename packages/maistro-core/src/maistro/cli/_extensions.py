@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -210,6 +211,64 @@ def _print_preflight(report: PreflightReport) -> None:
         )
 
 
+def _meta_options(entries: Sequence[str], option: str) -> dict[str, str]:
+    """Turn repeated ``NAME=note`` option values into a mapping."""
+    return dict(_split_meta(entry, option) for entry in entries)
+
+
+def _preflight_enabled_set(all_disabled: bool, enabled: Sequence[str]) -> frozenset[str] | None:
+    """The operator's enabled lever as :func:`run_preflight` reads it.
+
+    An explicit ``--enabled`` set wins; ``--all-disabled`` is the empty set;
+    passing neither is the conservative default (every installed extension
+    treated as enabled).
+    """
+    if all_disabled:
+        return frozenset()
+    return frozenset(enabled) if enabled else None
+
+
+def _parse_preflight_inputs(
+    policy_name: str,
+    all_disabled: bool,
+    enabled: Sequence[str],
+    deprecated_capability: Sequence[str],
+    removed_capability: Sequence[str],
+) -> tuple[PreflightPolicy, dict[str, str], dict[str, str]]:
+    """Validate the CLI-only preflight inputs; exit non-zero on a bad one.
+
+    Typer hands the command raw repeatable options; the preflight takes
+    structured values. Parsing and contradiction checks live here so the
+    command body reads as the pipeline it is: validate → read → evaluate →
+    render → gate the exit.
+    """
+    if all_disabled and enabled:
+        console.print("[red]--all-disabled contradicts --enabled; pass one or the other.[/red]")
+        raise Exit(code=1)
+    try:
+        policy = PreflightPolicy.from_name(policy_name)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise Exit(code=1) from exc
+    return (
+        policy,
+        _meta_options(deprecated_capability, "deprecated-capability"),
+        _meta_options(removed_capability, "removed-capability"),
+    )
+
+
+def _render_preflight(report: PreflightReport, as_json: bool) -> None:
+    """Emit the canonical JSON or the operator report."""
+    if as_json:
+        # soft_wrap: the canonical JSON is one long token; rich would break it
+        # across lines and destroy byte-reproducibility for consumers.
+        # markup/highlight disabled: metadata is user-controlled, so sequences
+        # like "[red]...[/red]" in notes must pass through byte-for-byte.
+        console.print(report.canonical_json(), soft_wrap=True, markup=False, highlight=False)
+    else:
+        _print_preflight(report)
+
+
 @app.command("preflight")
 def extensions_preflight(
     db_path: Annotated[Path, Argument(help="Path to the extension install SQLite database.")],
@@ -283,22 +342,9 @@ def extensions_preflight(
     --policy strict the command exits non-zero while blocking extensions
     remain enabled — that exit is the gate an upgrade flow must honor.
     """
-    if all_disabled and enabled:
-        console.print("[red]--all-disabled contradicts --enabled; pass one or the other.[/red]")
-        raise Exit(code=1)
-    try:
-        policy = PreflightPolicy.from_name(policy_name)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise Exit(code=1) from exc
-    deprecated_map: dict[str, str] = {}
-    for entry in deprecated_capability:
-        name, replacement = _split_meta(entry, "deprecated-capability")
-        deprecated_map[name] = replacement
-    removed_map: dict[str, str] = {}
-    for entry in removed_capability:
-        name, note = _split_meta(entry, "removed-capability")
-        removed_map[name] = note
+    policy, deprecated_map, removed_map = _parse_preflight_inputs(
+        policy_name, all_disabled, enabled, deprecated_capability, removed_capability
+    )
     try:
         target = TargetHostContract(
             host_version=target_host,
@@ -320,15 +366,8 @@ def extensions_preflight(
         records,
         target,
         policy=policy,
-        enabled=frozenset() if all_disabled else (frozenset(enabled) if enabled else None),
+        enabled=_preflight_enabled_set(all_disabled, enabled),
     )
-    if as_json:
-        # soft_wrap: the canonical JSON is one long token; rich would break it
-        # across lines and destroy byte-reproducibility for consumers.
-        # markup/highlight disabled: metadata is user-controlled, so sequences
-        # like "[red]...[/red]" in notes must pass through byte-for-byte.
-        console.print(report.canonical_json(), soft_wrap=True, markup=False, highlight=False)
-    else:
-        _print_preflight(report)
+    _render_preflight(report, as_json)
     if not report.can_proceed:
         raise Exit(code=1)
