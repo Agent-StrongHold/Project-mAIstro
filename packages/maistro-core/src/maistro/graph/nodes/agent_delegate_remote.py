@@ -45,7 +45,7 @@ from maistro.a2a.delegation_context import (
     DelegationScopeExceeded,
     validate_goal_binding,
 )
-from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager, PeerTrust
+from maistro.a2a.guest_peers import GuestPeerManager, PeerTrust
 from maistro.a2a.normalize import (
     PROGRESS_HISTORY_KEY,
     CanonicalDelegationTruth,
@@ -176,6 +176,7 @@ class _PeerDelegationProvider:
     @property
     def trust_tier(self) -> str:
         return self.peer.trust_tier
+
 
 #: Node kind recorded for delegated work whose shape this instance does not
 #: know. Deliberately *not* `agent.delegate_remote`: a child snapshot naming
