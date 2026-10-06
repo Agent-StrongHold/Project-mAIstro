@@ -1944,6 +1944,46 @@
       "effect_owner": "Run admit + conductor routing (stream or full)"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/inspections",
+      "handler": "inspect_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates the durable install record and moves the governed state machine (INSPECTING to AWAITING_AUTHORIZATION or REJECTED) without importing extension code",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/authorization",
+      "handler": "decide_extension_authorization",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies the explicit operator decision, freezing granted permissions to the immutable snapshot on approval or denying terminally, with actor and reason recorded",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/installation",
+      "handler": "install_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "installs the bound artifact and activates it only after verification; a failed activation persists the truthful FAILED state with a reason instead of a partial install",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/expired-authorizations",
+      "handler": "sweep_expired_authorizations",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "abandons every authorization request whose decision window elapsed, durably keeping late approvals from activating",
+      "effect_owner": "extension install store expire_abandoned + transition audit trail"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/projects.py",
       "method": "DELETE",
       "route": "/{project_id}",
@@ -2032,6 +2072,46 @@
       "production_enabled": true,
       "reason": "submits the task to the durable queue",
       "effect_owner": "task queue submit -> canonical Run"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/{lineage_id}/correct",
+      "handler": "correct_fact",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "appends the owner's provenance-bearing correction revision through the one canonical user-model service",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.correct (UserModelFact revision append)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/{lineage_id}/mark-private",
+      "handler": "mark_fact_private",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "records the owner's shareability decision (reusable=false) as a new revision through the canonical service",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.mark_not_reusable (UserModelFact revision append)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "DELETE",
+      "route": "/{lineage_id}",
+      "handler": "forget_fact",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "tombstones the owner's fact through the canonical service; content purged, every held wording stays blocked",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.forget (UserModelFact tombstone)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/recall",
+      "handler": "recall_for_task",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "relevance-gated recall of the authenticated user's facts for one task; ranking input only, never an authorization",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.recall_for_task (read-only scoring)"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/webhooks.py",
