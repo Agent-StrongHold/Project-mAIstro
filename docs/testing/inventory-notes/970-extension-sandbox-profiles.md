@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +83
+  packages/maistro-core/tests: +86
 ---
 # 970-extension-sandbox-profiles
 
@@ -81,3 +81,15 @@ holes found while re-verifying the layer:
   `ExtensionSandboxStartFailure`: the sandbox was up, so extension code may
   have had side effects, and the message says so — a caller retrying on a
   start-failure contract would double-execute them.
+
+Review increments (+3, same issue), closing holes found while re-verifying:
+
+- a destroy that raises after a clean exec is not a silent success — the
+  outcome carries a `SANDBOX_TEARDOWN_FAILURE` violation attributed to the
+  extension id/version with the backend's error, and `succeeded` is false
+  (`test_a_failed_teardown_fails_the_outcome`);
+- the repeated-violation escalation counter lives outside the bounded
+  violation deque, so a small `capacity` can no longer silently suppress the
+  quarantine-candidate warning and one extension's eviction cannot re-arm
+  or disarm another's count (`test_escalation_count_is_independent_of_log_capacity`,
+  `test_one_extensions_eviction_does_not_re_escalate_another`).
