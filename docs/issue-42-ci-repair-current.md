@@ -1,5 +1,109 @@
 # Issue #42: current CI-repair checkpoint
 
+## CI `test` gate reproduction and develop sync (job 0716d16d)
+
+This section records the current round; later sections are prior-round evidence,
+not assumed to describe this head.
+
+- Frozen item: issue #42, branch/worktree `auto-42`; starting HEAD
+  `ff04dcbca193ccde6662aead4a2a538337307a94`, develop base
+  `d39a2e4ce3309d11871180f6645329300cb84e58`. Worktree initially clean.
+- Named gate failure: `test: failure`. No failing-step log was supplied, so the
+  entire CI `test` job (`.github/workflows/ci.yml`) was reproduced step by step
+  at the starting HEAD before changing anything.
+- Dispatch check-run evidence for `ff04dcbca` (run 37454897368): every
+  completed required check succeeded (`exact-debt-ledger`, `Supply chain
+  (pip-audit)`, `security`, `Quality gate`, three `coverage` jobs,
+  `postgres (pg17)`/`(pg18)`, `lint-and-type-check`, `formal-conformance`,
+  `docker-build`); the `test` job was `in_progress` with **no conclusion** at
+  capture time. The `gates-ran` failure status at 11:15:18Z is therefore not
+  attributable to any completed check on this head.
+- Full local reproduction of the `test` job at `ff04dcbca` (env
+  `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1`): bootstrap + turing + turing/backend +
+  design + ext-sdk + rsi + evolve batch **3,317 passed / 3 failed / 13
+  skipped**; root `tests/ --ignore=tests/tools/registry` **4,533 passed / 122
+  skipped**; full core **13,405 passed / 951 skipped / 1 xfailed**; full server
+  **525 passed / 9 skipped**; full canvas **464 passed / 75 skipped**;
+  hive backend **3,408 passed / 5 skipped**; one-process cross-suite step
+  **8,589 passed / 128 skipped**; hive frontend `npm ci`/`lint`/`build` and the
+  #1048 OpenAPI `types.gen.ts` diff **clean**; canvas frontend
+  `test:ci` (79 tests) / `lint` / `build` / `npm audit --audit-level=high`
+  (zero vulnerabilities) **passed**.
+- The only local failures are three `maistro-evolve` benchmark tests
+  (`test_sandbox_exec.py::TestRunFunctionChecksDocker`,
+  `test_swebench.py::TestRunSwebench` x2) that require a Docker daemon; the
+  daemon at the instructed socket is down in this environment and `dockerd` is
+  not installed locally. `git diff 3b8e090fe ff04dcbca -- packages/maistro-evolve
+  packages/maistro-rsi` is empty: the branch did not touch these suites, and
+  GitHub runners run Docker, so these are environment artifacts, not the gate
+  regression.
+- Root cause of the remaining `test` exposure: the branch was **1 commit behind
+  origin/develop** (`d39a2e4ce`, the #981 lifecycle-proof CI repair), and a
+  merge group tests the head merged with the develop tip, not the bare head.
+  Per the lane brief, resolved by `git merge origin/develop` — clean `ort`
+  merge, **no conflicts**, result `8abaee9c2f2a78410c721d63b923e887dd2a7915`.
+  The merge adds `scripts/extension_lifecycle_proof.py`, its conformance
+  rooting in `formal-conformance.yml`, the quality.yml coverage producer, and
+  `packages/maistro-core/tests/extensions/test_lifecycle_proof.py` (+11).
+- Post-merge quality-ledger safety per AGENTS.md: `git diff --numstat
+  origin/develop -- quality/` shows only this branch's own lane files
+  (`ac-state-notes/auto-42.json`, `shipped-surface-truth.json`); the shared
+  ledgers are identical to develop's, no row loss.
+- Gates re-run on the merge result: `uv run ruff check .` and
+  `ruff format --check .` pass; exact vulture gate
+  `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exits 0 at **1,332 reviewed identities = 1,332
+  findings** (no ledger amendment needed: nothing eliminated, nothing added);
+  `check-reachability.py` exits 0 (1,310 modules, 170 unreachable — matching
+  develop's recorded count, confirming the merged proof script is rooted);
+  `check-ratchet-provenance.py` exits 0 (0 lifecycle violations, 49 quality
+  JSON consumers dispositioned); `check-radon-baseline.py` exits 0
+  (138 = 138); `check-workflow-inventory.py` (26 workflows),
+  `check-required-checks.py` (33 PR checks) and
+  `check-workflow-write-safety.py` (26 workflows) all exit 0.
+- Suite inventory on the merge result: core **14,368 collected, matches
+  baseline + recorded deltas** (the merged `981-extension-lifecycle-proof.md`
+  note contributes the documented +11, so no baseline edit is required);
+  canvas and server inventories also match. No tests were added by this round,
+  so no new inventory note is needed.
+- Merged new tests executed: `pytest
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py` → **11
+  passed**; standalone `python scripts/extension_lifecycle_proof.py --out …` →
+  **PROVED: 10/10 stages, 42/42 checks**, exit 0. Driver's focused issue-42
+  set re-run post-merge → **684 passed / 124 skipped**.
+- Live PostgreSQL acceptance evidence (fresh per-round database
+  `auto42_0716d16d`, PostgreSQL 18, `alembic upgrade head` → revision 058,
+  dedicated login role with CREATEDB mirroring CI's superuser user): with
+  `MAISTRO_TEST_PG_DSN`/`MAISTRO_TEST_DATABASE_URL` set —
+  `capabilities/test_pg_invocation_contention.py` (the prior round's seven
+  claim/race/CAS tests) + `test_pg_invocation_store.py` +
+  `test_pg_approval_store.py` + server `test_task_restart_recovery.py` →
+  **33 passed, none skipped**; `tests/persistence` + `workspaces` +
+  `test_container_postgres.py` → **1,166 passed / 86 skipped** (one initial
+  failure was the missing CREATEDB grant in my scratch role, not a product
+  defect; green after the grant); full `tests/runs` +
+  `tests/graph/durable_runs` spine → **2,054 passed / 3 skipped** on live
+  PostgreSQL. This upgrades the prior rounds' "live PostgreSQL UNVERIFIED"
+  lease/recovery and Invocation-contention evidence to executed-green on this
+  head; it remains bounded evidence, not a proof of every physical path.
+- The historical acceptance table below still states its gaps accurately;
+  what changed this round is: the named CI `test` exposure is addressed by the
+  develop sync (merge-queue context), and live PostgreSQL durability,
+  contention, and restart-recovery evidence is now executed, not claimed.
+  Universal production-path coverage and active-chat process-death repair
+  remain open items for a reviewer with a longer horizon.
+
+Verdict this round: no product defect was found or fixed; the named `test`
+gate failure is not reproducible at the starting head (every completed step
+passes locally; the one in-progress check had no conclusion) and the
+merge-queue context gap (missing develop tip) is resolved by the committed
+merge. Local commit only; no push, no GitHub mutation.
+
+Checkpoint: `{checked: 2, done: 2, skipped: 0, errors: 0}` — (1) full CI
+`test`-job reproduction at the assigned head, (2) develop sync + post-merge
+gate battery + live-PG acceptance evidence. One environment limitation
+recorded (Docker daemon down; 3 evolve tests unverifiable locally).
+
 ## Revalidation at assigned HEAD 3fb0b2e2afe1 (job b7e5e805)
 
 This section records the current round; the earlier checkpoint below is retained
