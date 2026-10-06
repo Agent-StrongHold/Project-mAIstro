@@ -9,13 +9,8 @@ admission-generation representation to ``055``, colliding a second time, so
 this revision re-parented onto that ``055_task_admission_generations`` as
 ``056``. Develop's quota-door revision (#1196/#718) then claimed the child
 slot under ``055`` on develop as ``043_invocation_quota_door`` — a third
-collision — so this revision re-parented past it: it now revises the quota
-door. The develop sync that brought the door here renumbered the
-admission-generation representation to ``056`` ahead of this branch's
-backlog and learning revisions, colliding a fourth time with this
-revision's ``056``, so — landing second in that sync — it renumbers to
-``057`` on the same quota-door parent, and the single linear head is now
-``057``.
+collision — so this sync re-parents past it: this revision now revises the
+quota door and the single linear head remains ``056``.
 
 The durable user model is a separate ``UserModelFact`` record type kept in
 PostgreSQL as the system of record (ADR-082226-5104 §§1, 5, 6); Ladybug may
@@ -36,7 +31,7 @@ All timestamps are ``TIMESTAMP WITH TIME ZONE``: fact validity windows are
 compared against aware UTC instants (SPEC-241 temporal semantics), and a
 naive local time on either side would silently shift them.
 
-Revision ID: 057
+Revision ID: 056
 Revises: 043_invocation_quota_door
 Create Date: 2026-10-04
 """
@@ -45,7 +40,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "057"
+revision = "056"
 down_revision = "043_invocation_quota_door"
 branch_labels = None
 depends_on = None

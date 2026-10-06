@@ -1,19 +1,25 @@
 """Quota admission tables and canonical Invocation usage evidence.
 
 Revision ID: 043_invocation_quota_door
-Revises: 056
+Revises: 055
 Create Date: 2026-09-27
 
 The effect door's budget reservations (#1196) and the at-most-once provider
-usage evidence (#718) attach to the canonical Invocation. They follow the
-current chain tip so they do not reuse revision ids 033/035/036, which
-develop already assigned. Re-parented onto each new develop head as this
-branch has stayed open -- 046, then 047, 048, 050, 051, 052, 053, 054, 055,
-now 056 (the sync that brought develop's admission-generation revision
-here renumbered it from `055` to `056` ahead of this branch's backlog and
-learning revisions, so the door appends after it): a migration must
-append after the deployed head, never fork beside it, or
-`alembic upgrade head` refuses with multiple heads.
+usage evidence (#718) attach to the canonical Invocation. They do not reuse
+revision ids 033/035/036, which develop already assigned, and each sync
+re-parents whichever branch-side revision trails the chain onto the new
+tip -- 046, then 047, 048, 050, 051, 052, 053, 054, 055, 056, now 057,
+#863's planner-stability revision: a migration must append
+after the deployed head, never fork beside it, or `alembic upgrade head`
+refuses with multiple heads. On develop the quota door itself claimed
+`055`'s child slot, so the door keeps that parent here and #863's
+revision follows the `056_user_model_facts` tip as `057`. This sync
+(56332162c) delivered develop's originals of the branch's renumbered
+copies verbatim -- `053_learning_lifecycle_columns`,
+`054_learning_applicability_epistemics`, `055_task_admission_generations`,
+`056_user_model_facts` -- dropping the branch-side duplicates and
+re-parenting this branch's genuinely-new backlog work source (#82) past
+the `057` tip as `058`, keeping exactly one linear head.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:
@@ -39,7 +45,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "043_invocation_quota_door"
-down_revision = "056"
+down_revision = "055"
 branch_labels = None
 depends_on = None
 

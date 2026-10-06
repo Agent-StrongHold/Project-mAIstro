@@ -13,14 +13,8 @@ that).
 `created_at` already exists (migration 001) and is now written explicitly by
 the stores rather than left to the server default.
 
-Numbered ``053`` when written on the develop base whose chain tip was
-``052_learning_stage_ladder``; this branch's backlog work source (#82)
-already held ``053`` there, so per this chain's documented collision
-convention (see 052, 051 and 036) the revision re-parented onto that tip
-as ``054``. No duplicate ids.
-
-Revision ID: 054
-Revises: 053
+Revision ID: 053
+Revises: 052
 Create Date: 2026-10-01
 """
 
@@ -28,8 +22,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "054"
-down_revision = "053"
+revision = "053"
+down_revision = "052"
 branch_labels = None
 depends_on = None
 

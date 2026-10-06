@@ -552,13 +552,13 @@ class TestTheDowngrade:
         # moves off whatever head it started from. The assertion tracks the
         # head, not a fixed literal — every develop collision re-parents the
         # chain tip, and the invariant under test is that the refused
-        # downgrade leaves the stamp AT HEAD. #1362's quota door
-        # (#1196/#718) re-parented onto this branch's `056` admission
-        # revision in this sync, and #1047's user-model tables — which on
-        # develop had re-parented past the door as `056` — collide with that
-        # renumbered admission revision and land second as `057`, so that is
-        # the head now.
-        assert _stamped_version() == "057"
+        # downgrade leaves the stamp AT HEAD. Develop's quota door
+        # (#1196/#718) landed on `055` as `043_invocation_quota_door` in this
+        # sync, and #1047's user-model tables re-parent past it as `056`; the
+        # branch-side #863 planner-stability revision re-parents onto that tip
+        # as `057`, and the sync re-parents this branch's #82 backlog work
+        # source past that `057` tip as `058`, so that is the head now.
+        assert _stamped_version() == "058"
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 

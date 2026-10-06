@@ -15,7 +15,13 @@ the same move one more time; and when the a58656017 sync brought develop's
 knowledge-stage ladder -- numbered ``048`` when written, re-parented onto the
 same chain tip as ``052_learning_stage_ladder`` (M4-B1, ADR-103) -- it collided
 with the ``052`` this migration already held, so it re-attached after that tip
-as ``053``, keeping exactly one head.
+as ``053``, keeping exactly one head. The 56332162c sync then delivered
+develop's originals of every revision this branch had been carrying renumbered
+-- ``053_learning_lifecycle_columns``, ``054_learning_applicability_epistemics``,
+``055_task_admission_generations``, ``056_user_model_facts`` and
+``057_run_store_planner_stability`` -- so the branch-side duplicates were dropped
+and this migration, the one genuinely-new branch revision left, re-attached
+after that ``057`` tip as ``058``.
 
 The DDL is guarded (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
 EXISTS`), matching the SQLite twin's `ensure_schema`
@@ -35,8 +41,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "053"
-down_revision = "052"
+revision = "058"
+down_revision = "057"
 branch_labels = None
 depends_on = None
 

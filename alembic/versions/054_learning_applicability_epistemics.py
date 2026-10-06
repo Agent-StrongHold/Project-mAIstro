@@ -15,7 +15,7 @@ Column dispositions follow the record's own semantics:
   promotion treats that as a blocker; a `NOT NULL DEFAULT 0.0` would have made
   every legacy row read as measured-and-failing, and a 1.0 default as
   measured-and-perfect. Both fabricate evidence (the rule ADR-083026-a91e set
-  for metrics: absent is not zero). `054_learning_lifecycle_columns` landed
+  for metrics: absent is not zero). `053_learning_lifecycle_columns` landed
   this column first with `NOT NULL DEFAULT 0.5` — the develop-side WIP
   reading — so this migration drops the NOT NULL constraint to restore the
   modeled "never measured" state (rows written before the drop read back as
@@ -25,7 +25,7 @@ Column dispositions follow the record's own semantics:
   `epistemic_type` to `'empirical'` — the honest reading of every pre-M4-B row
   under the reconciled pipeline epistemics (ADR-100126-8c2d): a captured tool
   correction is empirical-by-construction and had no applicability recorded.
-  `054` already created `epistemic_type` with exactly that default, so the
+  `053` already created `epistemic_type` with exactly that default, so the
   `IF NOT EXISTS` guard makes this migration's own declaration a no-op twin
   of it.
   The DDL is spelled as raw SQL with `ADD COLUMN IF NOT EXISTS` (migration
@@ -43,8 +43,8 @@ Column dispositions follow the record's own semantics:
 The SQLite twin upgrades existing files in place (`ensure_schema`); this
 migration is the PostgreSQL half of the same shape.
 
-Revision ID: 055
-Revises: 054
+Revision ID: 054
+Revises: 053
 Create Date: 2026-10-01
 """
 
@@ -52,33 +52,29 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "055"
-down_revision = "054"
+revision = "054"
+down_revision = "053"
 branch_labels = None
 depends_on = None
 
-# Renumbered five times per the chain's standing collision convention (see
+# Renumbered four times per the chain's standing collision convention (see
 # 046's docstring): first from "048" on parent "047" when develop claimed that
 # id for `048_canvas_job_retry_backoff` on the same parent, then from "051" on
 # parent "050" when the auto-780 develop sync brought
 # `051_canonical_run_eval_scores` (#792) onto that same parent, then from
 # "052" on parent "051" when a develop sync brought
-# `052_learning_stage_ladder` (M4-B1, ADR-103) onto that same parent, then
-# from "053" on parent "052" when the M4-B5 develop sync (#1753) brought
-# `053_learning_lifecycle_columns` onto that same parent, and finally from
-# "054" on parent "053" when the auto-82 sync (issue #82, PR #1702) landed:
-# this branch's backlog work source (#82) had taken `053` on the `052` parent
-# first, so the learning-lifecycle columns re-parented onto that backlog tip
-# as `054_learning_lifecycle_columns` and this migration — landing second
-# once more — re-parents onto that tip as `055`. Each collision leaves two
-# revisions sharing one id and two heads — `alembic history` fails outright
-# on that shape. This migration now attaches after
-# `054_learning_lifecycle_columns`, keeping exactly one head.
+# `052_learning_stage_ladder` (M4-B1, ADR-103) onto that same parent, and
+# finally from "053" on parent "052" when the M4-B5 develop sync (#1753)
+# brought `053_learning_lifecycle_columns` onto that same parent. Each
+# collision leaves two revisions sharing one id and two heads — `alembic
+# history` fails outright on that shape. This migration now attaches after
+# develop's chain tip `053` (`learning_lifecycle_columns`), keeping exactly
+# one head.
 
 # Column DDL, in declaration order. The defaults are expression text (the cast
 # `'[]'::jsonb` is SQL, not a JSON value), matching what the SQLite twin's
 # in-place upgrade writes. `epistemic_type` and `confidence` are already on
-# the table (054 created them), so their IF NOT EXISTS adds no-op; the DROP
+# the table (053 created them), so their IF NOT EXISTS adds no-op; the DROP
 # NOT NULL below is this migration's real word on `confidence`.
 _DDL = (
     ("epistemic_type", "TEXT NOT NULL DEFAULT 'empirical'"),
@@ -102,15 +98,15 @@ def upgrade() -> None:
     # the modeled "never measured" state, and promotion treats it as a blocker.
     for name, ddl in _DDL:
         op.execute(f"ALTER TABLE learnings ADD COLUMN IF NOT EXISTS {name} {ddl}")
-    # 054 created `confidence` as NOT NULL DEFAULT 0.5; the record's own
+    # 053 created `confidence` as NOT NULL DEFAULT 0.5; the record's own
     # semantics need NULL = "never measured" (a promotion blocker), so the
     # constraint goes. Existing rows keep the 0.5 they were backfilled with —
     # the decode default reads them the same way — and the next unmeasured
     # write stores an honest NULL.
     op.execute("ALTER TABLE learnings ALTER COLUMN confidence DROP NOT NULL")
-    # 054 also left DEFAULT 0.5 on the column; an INSERT that omits confidence
+    # 053 also left DEFAULT 0.5 on the column; an INSERT that omits confidence
     # must store the honest NULL (never measured), not fabricate a measurement.
-    # Rows 054 backfilled keep their 0.5; only future omissions write NULL.
+    # Rows 053 backfilled keep their 0.5; only future omissions write NULL.
     op.execute("ALTER TABLE learnings ALTER COLUMN confidence DROP DEFAULT")
     # Promotion now asks "which rows may promote" across applicability and
     # confidence; this index serves the candidate scan the same way
@@ -123,9 +119,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_learnings_promotion_candidates")
-    # Restore 054's shape before dropping this migration's own columns: the
+    # Restore 053's shape before dropping this migration's own columns: the
     # NOT NULL it declared needs the modeled-NULL rows backfilled to the same
-    # default 054 backfilled with. 054 owns `epistemic_type` and `confidence`,
+    # default 053 backfilled with. 053 owns `epistemic_type` and `confidence`,
     # so they are not dropped here.
     op.execute("UPDATE learnings SET confidence = 0.5 WHERE confidence IS NULL")
     op.execute("ALTER TABLE learnings ALTER COLUMN confidence SET NOT NULL")
