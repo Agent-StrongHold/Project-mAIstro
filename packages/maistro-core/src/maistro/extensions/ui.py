@@ -1286,8 +1286,10 @@ def _provenance_of(
 class UiProjectionService:
     """Governed projection of canonical state for installed UI extensions.
 
-    One service holds the catalogs declared by active installs and answers
-    two questions, backed by the *same* availability evaluation:
+    One service holds the catalogs declared by active installs — keyed by
+    ``(scope, extension_id)`` so the same extension active in two scopes can
+    carry a different installed manifest and grant set per scope — and
+    answers two questions, backed by the *same* availability evaluation:
 
     - ``render`` — what a client may display (pure projection of the
       host-supplied canonical snapshot, with per-action availability and
@@ -1301,12 +1303,12 @@ class UiProjectionService:
 
     def __init__(
         self,
-        catalogs: Mapping[str, UiComponentManifest],
+        catalogs: Mapping[tuple[ExtensionScope, str], UiComponentManifest],
         *,
         extension_active: ExtensionActiveCheck,
-        extension_permissions: Mapping[str, frozenset[str]] | None = None,
+        extension_permissions: Mapping[tuple[ExtensionScope, str], frozenset[str]] | None = None,
     ) -> None:
-        for extension_id, manifest in catalogs.items():
+        for (_scope, extension_id), manifest in catalogs.items():
             if manifest.catalog_id != extension_id:
                 raise ValueError(
                     f"catalog {manifest.catalog_id!r} registered under "
@@ -1315,21 +1317,23 @@ class UiProjectionService:
                 )
         for manifest in catalogs.values():
             assert_ui_snapshot_intact(manifest)
-        self._catalogs: dict[str, UiComponentManifest] = dict(catalogs)
+        self._catalogs: dict[tuple[ExtensionScope, str], UiComponentManifest] = dict(catalogs)
         self._extension_active = extension_active
         self._extension_permissions = (
             dict(extension_permissions) if extension_permissions is not None else {}
         )
 
-    def register(self, manifest: UiComponentManifest) -> None:
-        """Register (or re-register) a catalog under its own extension id."""
+    def register(self, manifest: UiComponentManifest, *, scope: ExtensionScope) -> None:
+        """Register (or re-register) a catalog under (scope, extension id)."""
         assert_ui_snapshot_intact(manifest)
-        self._catalogs[manifest.catalog_id] = manifest
+        self._catalogs[(scope, manifest.catalog_id)] = manifest
 
     # -- reads ------------------------------------------------------------
 
-    def _require_catalog(self, extension_id: str) -> UiComponentManifest:
-        manifest = self._catalogs.get(extension_id)
+    def _require_catalog(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> UiComponentManifest:
+        manifest = self._catalogs.get((scope, extension_id))
         if manifest is None:
             raise UnknownCatalog(f"no UI component catalog for extension {extension_id!r}")
         assert_ui_snapshot_intact(manifest)
@@ -1351,10 +1355,10 @@ class UiProjectionService:
         same output, so a client reload re-projects from a fresh canonical
         read without altering anything.
         """
-        manifest = self._require_catalog(extension_id)
+        manifest = self._require_catalog(scope, extension_id)
         active = await self._extension_active(scope, extension_id)
         state = _total_state(canonical_state)
-        extension_grant = self._extension_permissions.get(extension_id, frozenset())
+        extension_grant = self._extension_permissions.get((scope, extension_id), frozenset())
         return tuple(
             self._render_component(
                 manifest,
@@ -1377,7 +1381,7 @@ class UiProjectionService:
         canonical_state: Mapping[str, Any] | None = None,
     ) -> RenderedComponent:
         """Project one component; :class:`UnknownComponent` if undeclared."""
-        manifest = self._require_catalog(extension_id)
+        manifest = self._require_catalog(scope, extension_id)
         declared = manifest.component(component_id)
         if declared is None:
             raise UnknownComponent(
@@ -1385,7 +1389,7 @@ class UiProjectionService:
             )
         active = await self._extension_active(scope, extension_id)
         state = _total_state(canonical_state)
-        extension_grant = self._extension_permissions.get(extension_id, frozenset())
+        extension_grant = self._extension_permissions.get((scope, extension_id), frozenset())
         return self._render_component(
             manifest,
             declared,
@@ -1505,7 +1509,7 @@ class UiProjectionService:
         """
         if not principal.strip():
             raise ValueError("principal is required: every dispatch is attributed")
-        manifest = self._require_catalog(extension_id)
+        manifest = self._require_catalog(scope, extension_id)
         declared = manifest.component(component_id)
         if declared is None:
             raise UnknownComponent(
@@ -1541,7 +1545,9 @@ class UiProjectionService:
         availability = self._availability(
             declared_action,
             active=active,
-            extension_grant=self._extension_permissions.get(extension_id, frozenset()),
+            extension_grant=self._extension_permissions.get(
+                (scope, extension_id), frozenset()
+            ),
             principal_permissions=principal_permissions,
             state=state,
         )

@@ -113,9 +113,9 @@ def _service(
 ) -> UiProjectionService:
     manifest = inspect_ui_manifest(manifest_bytes) if manifest_bytes is not None else _inspect()
     return UiProjectionService(
-        {EXTENSION_ID: manifest},
+        {(SCOPE, EXTENSION_ID): manifest},
         extension_active=active,
-        extension_permissions={EXTENSION_ID: extension_permissions}
+        extension_permissions={(SCOPE, EXTENSION_ID): extension_permissions}
         if extension_permissions is not None
         else {},
     )
@@ -409,7 +409,7 @@ async def test_hitl_dispatch_resolves_both_canonical_targets() -> None:
         ]
     )
     service = _service(extension_permissions=frozenset({"runs.cancel", "hitl.answer"}))
-    service.register(manifest)
+    service.register(manifest, scope=SCOPE)
     call = await service.dispatch(
         scope=SCOPE,
         extension_id=EXTENSION_ID,
@@ -443,7 +443,7 @@ async def test_start_task_seam_carries_no_canonical_params() -> None:
         ]
     )
     service = _service(extension_permissions=frozenset({"tasks.start"}))
-    service.register(manifest)
+    service.register(manifest, scope=SCOPE)
     call = await service.dispatch(
         scope=SCOPE,
         extension_id=EXTENSION_ID,
@@ -1030,7 +1030,7 @@ async def test_renderer_local_actions_dispatch_nothing() -> None:
         components=[_component(actions=[{"action": "reload", "intent": "refresh"}])]
     )
     service = _service()
-    service.register(manifest)
+    service.register(manifest, scope=SCOPE)
     with pytest.raises(ActionUnavailable, match="renderer-local"):
         await service.dispatch(
             scope=SCOPE,
@@ -1048,8 +1048,84 @@ def test_catalog_registers_only_under_its_own_extension_id() -> None:
     manifest = _inspect(catalog_id="other.dashboard")
     with pytest.raises(ValueError, match="only by the extension id"):
         UiProjectionService(
-            {EXTENSION_ID: manifest},
+            {(SCOPE, EXTENSION_ID): manifest},
             extension_active=_active,
+        )
+
+
+async def test_scoped_state_keeps_installs_isolated_per_scope() -> None:
+    """The same extension active in two scopes carries its own catalog and
+    grant per scope: a grant in the broad org scope must not make a mutating
+    action available in the narrower workspace scope, and provenance must
+    reflect the manifest actually installed in each scope."""
+    org_manifest = _inspect(
+        version="2.0.0",
+        components=[
+            _component(
+                actions=[
+                    {
+                        "action": "cancel",
+                        "intent": "cancel_run",
+                        "permissions": ["runs.cancel"],
+                        "route": "POST /v1/dag-runs/{run_id}/cancel",
+                    }
+                ],
+            )
+        ],
+    )
+    ws_manifest = _inspect(
+        version="1.0.0",
+        components=[
+            _component(
+                actions=[
+                    {
+                        "action": "cancel",
+                        "intent": "cancel_run",
+                        "permissions": ["runs.cancel"],
+                        "route": "POST /v1/dag-runs/{run_id}/cancel",
+                    }
+                ],
+            )
+        ],
+    )
+    org_scope = ExtensionScope(org_id="org-1")
+    service = UiProjectionService(
+        {(org_scope, EXTENSION_ID): org_manifest, (SCOPE, EXTENSION_ID): ws_manifest},
+        extension_active=_active,
+        extension_permissions={(org_scope, EXTENSION_ID): frozenset({"runs.cancel"})},
+    )
+
+    org_render = await service.render_component(
+        scope=org_scope,
+        extension_id=EXTENSION_ID,
+        component_id="run_status_card",
+        principal_permissions=PRINCIPAL,
+        canonical_state=STATE,
+    )
+    ws_render = await service.render_component(
+        scope=SCOPE,
+        extension_id=EXTENSION_ID,
+        component_id="run_status_card",
+        principal_permissions=PRINCIPAL,
+    )
+    assert org_render.provenance.version == "2.0.0"
+    assert ws_render.provenance.version == "1.0.0"
+    cancel = lambda rendered: next(  # noqa: E731
+        a for a in rendered.actions if a.action == "cancel"
+    )
+    # Granted in the org scope…
+    assert cancel(org_render).available is True
+    # …but the workspace-scoped install carries no such grant.
+    assert cancel(ws_render).available is False
+    with pytest.raises(ActionUnavailable, match="grant does not cover"):
+        await service.dispatch(
+            scope=SCOPE,
+            extension_id=EXTENSION_ID,
+            component_id="run_status_card",
+            action="cancel",
+            principal="dev",
+            principal_permissions=PRINCIPAL,
+            canonical_state=STATE,
         )
 
 
