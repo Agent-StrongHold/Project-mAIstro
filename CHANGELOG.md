@@ -129,6 +129,28 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Pending HITL discovery is fair instead of filtering after a bounded PAUSED
+  prefix (#1109).** `GET /v1/hitl/pending` used to page the generic PAUSED
+  listing and filter each page in memory, so `limit` bounded a PAUSED *prefix*
+  rather than human work: a run of machine-only pauses longer than one
+  request's inspection ceiling hid the human pause behind it from every
+  request, each one rereading the same prefix and returning the same empty
+  answer. The canonical continuation now carries a pause-kind projection
+  (`has_hitl_pause`, maintained beside the deadline projection #1056 uses) on
+  every backend — in-memory, SQLite, PostgreSQL (migration 059) — and the
+  door pages `list_hitl_paused`, which reads it: human eligibility is decided
+  by the store before any page is cut, so no prefix, however long, can stand
+  between a person and their work. The projection is an index, not a second
+  HITL queue: the durable pause entry stays the source of truth and every
+  disclosed record is revalidated against it, with Workspace and Project
+  scope still applied from canonical state before disclosure. Deadline-less
+  human pauses — invisible to the deadline index — are discoverable, answered
+  work leaves the projection on the next read, and repeated requests (and
+  restarts) cannot make a pending item vanish by consuming a scan position.
+  The Workspace Attention projection, which had duplicated the same
+  filter-after-prefix walk against the route's private constants, now walks
+  the same canonical `pending_hitl_records` contract.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was

@@ -21,17 +21,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from routes.hitl import (
-    _MAX_PENDING_SCAN_RECORDS,
-    _PENDING_SCAN_PAGE_SIZE,
-    PendingHumanWork,
-    _pending_items,
-)
+from routes.hitl import PendingHumanWork, _pending_items
 
-from maistro.graph.durable_runs import HitlAuthorization, HitlSettlementError, cursor_time
+from maistro.graph.durable_runs import (
+    MAX_PENDING_SCAN_RECORDS,
+    HitlAuthorization,
+    HitlSettlementError,
+    pending_hitl_records,
+)
 from maistro.graph.durable_runs.hitl import hitl_deadline, settlement_time
 from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_APPROVAL, PAUSE_AWAITING_HUMAN_REVIEW
-from maistro.runs.model import RunStatus
 from services.dag_run_inspection import list_visible_runs
 from services.dag_run_store import MAX_RUNS
 from services.workspace_authority import hitl_membership_mutation_lock, is_member
@@ -86,9 +85,15 @@ async def _paused_records(
 ) -> tuple[list[tuple[Any, PendingHumanWork]], bool]:
     """Human pauses in one Workspace, walked the way `/v1/hitl/pending` walks them.
 
-    Same keyset cursor, page size, and record ceiling, and the same per-record
-    revalidation against live membership before a payload is disclosed. The
-    second value says whether the record ceiling stopped the walk early.
+    The same canonical walk (`pending_hitl_records`, #1109): the store's
+    pause-kind projection decides human eligibility before any page is cut,
+    and each item-carrying record is revalidated against live membership
+    before its payload is disclosed. Workspace-wide (no Project named), the
+    walk still cannot hide this Workspace's work behind another tenant's —
+    the Workspace filter binds at the assembled canonical record — but a very
+    large multi-tenant projection can spend the inspection ceiling on foreign
+    rows, which is what the second value reports: the record ceiling stopped
+    the walk early, so a later read may find more.
     """
     from services.dag_agents import get_run_store
 
@@ -99,25 +104,18 @@ async def _paused_records(
         membership_check=is_member,
         membership_mutation_lock=hitl_membership_mutation_lock(),
     )
+    scan = await pending_hitl_records(
+        store,
+        authorization=authorization,
+        workspace_id=workspace_id,
+        project_id=None,
+        limit=MAX_PENDING_SCAN_RECORDS,
+    )
     found: list[tuple[Any, PendingHumanWork]] = []
-    cursor: tuple[str, str] | None = None
-    inspected = 0
-    while inspected < _MAX_PENDING_SCAN_RECORDS:
-        records = await store.list_by_status(
-            RunStatus.PAUSED,
-            limit=min(_PENDING_SCAN_PAGE_SIZE, _MAX_PENDING_SCAN_RECORDS - inspected),
-            workspace_id=workspace_id,
-            after=cursor,
-        )
-        if not records:
-            return found, False
-        inspected += len(records)
-        for record in records:
-            pending = _pending_items(record)
-            if pending and await authorization.permits(record.run.workspace_id):
-                found.extend((record, item) for item in pending)
-        cursor = (cursor_time(records[-1].run.created_at), records[-1].run_id)
-    return found, True
+    for record in scan.records:
+        for item in _pending_items(record):
+            found.append((record, item))
+    return found, not scan.exhausted
 
 
 def _deadline(record: Any, node_id: str) -> datetime | None:

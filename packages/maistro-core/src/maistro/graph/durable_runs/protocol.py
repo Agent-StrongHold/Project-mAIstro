@@ -64,6 +64,32 @@ class DurableRunStore(Protocol):
         """Return due paused Runs visible to the effective principal."""
         ...
 
+    async def list_hitl_paused(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> list[DurableRunRecord]:
+        """Paused Runs whose durable frontier holds a human pause (#1109).
+
+        Eligibility is queryable before ``limit``: the pause-kind projection
+        answers "is any active node waiting on a person" from indexed state,
+        so machine-only PAUSED Runs never occupy a page that human work behind
+        them needs. It is a projection, not a second queue — each returned
+        record is assembled from canonical state and revalidated against it;
+        the pause entry, not the index, remains the source of truth.
+
+        ``after`` is the same ``(created_at_iso, run_id)`` keyset cursor
+        ``list_by_status`` uses. ``workspace_id`` is applied from the
+        canonical Run; on stores whose index cannot carry Workspace scope it
+        filters the assembled page, so callers paging across many Workspaces
+        should pair it with a ``project_id`` (a Project belongs to exactly one
+        Workspace) to keep the page's keyset over eligible rows only.
+        """
+        ...
+
     async def list_for_project(
         self, project_id: str, *, limit: int = 25
     ) -> list[DurableRunRecord]: ...

@@ -45,6 +45,7 @@ from .fair_scan import (
 from .hitl import (
     HitlAuthorization,
     earliest_hitl_deadline,
+    record_has_hitl_pause,
     require_hitl_authorization,
     settlement_time,
 )
@@ -808,6 +809,45 @@ class CanonicalDurableRunStore:
             run_ids = [run.run_id for run in runs]
         records = await self._assemble_all(run_ids)
         return [record for record in records if record.run.status is status]
+
+    async def list_hitl_paused(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> list[DurableRunRecord]:
+        """Paused Runs holding a human pause, oldest-created-first (#1109).
+
+        Pages the pause-kind projection so human eligibility is decided before
+        the limit: a prefix of machine-only PAUSED Runs, however long, costs
+        this query nothing. The index is a projection, so each candidate is
+        still revalidated below against the assembled canonical record — a
+        stale row whose Run has moved on contributes no item and costs only
+        its place in the page.
+
+        ``workspace_id`` is canonical Run scope (#1240). The continuation
+        index cannot carry it, so it is enforced on the assembled records; a
+        caller paging Workspaces passes ``project_id`` too — a Project belongs
+        to exactly one Workspace — so the keyset itself runs over eligible
+        rows only and no foreign-page rows consume the limit.
+        """
+        if limit <= 0:
+            return []
+        run_ids = await self._continuations.list_hitl_paused_run_ids(
+            limit=limit,
+            project_id=project_id,
+            after=after,
+        )
+        records = await self._assemble_all(run_ids)
+        return [
+            record
+            for record in records
+            if record.run.status is RunStatus.PAUSED
+            and record_has_hitl_pause(record)
+            and (workspace_id is None or record.run.workspace_id == workspace_id)
+        ]
 
     async def list_due(
         self,
