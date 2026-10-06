@@ -196,19 +196,50 @@ def test_every_gfm_task_list_marker_form_registers(gate) -> None:
 
 
 def test_claim_on_a_closing_line_is_harvested(gate) -> None:
-    claims = gate.claimed_criteria("Closes #76 AC-2\nfixes #56 (AC-3)", [76, 56])
+    claims = gate.claimed_criteria("Closes #76 AC-2\nfixes #56 (AC-3)", [76, 56], REPO)
     assert claims == {76: {2}, 56: {3}}
 
 
 def test_claim_in_ac_first_order_is_harvested(gate) -> None:
-    assert gate.claimed_criteria("Resolves #76 — proves AC-4", [76]) == {76: {4}}
+    assert gate.claimed_criteria("Resolves #76 — proves AC-4", [76], REPO) == {76: {4}}
 
 
 def test_progress_language_is_not_a_claim(gate) -> None:
     # Non-closing language must stay usable for slices (#1141 AC-6): a line
     # that closes nothing claims nothing, whatever AC ids it mentions.
     body = "Part of #76 AC-2 still failing. Refs #56 AC-1."
-    assert gate.claimed_criteria(body, [76, 56]) == {}
+    assert gate.claimed_criteria(body, [76, 56], REPO) == {}
+
+
+def test_cross_repo_claim_with_a_shared_number_claims_nothing(gate) -> None:
+    # ``other/repo#76`` shares local #76's number, but its AC-9 claim is not
+    # evidence about this repository's #76 (review: correlate by repository
+    # and number together, never by number alone).
+    body = "Closes #76\nFixes other/repo#76 AC-9"
+    assert gate.claimed_criteria(body, [76], REPO) == {}
+
+
+def test_cross_repo_claim_on_the_closing_line_itself_claims_nothing(gate) -> None:
+    # The local keyword keeps #76 closeable, but the foreign qualifier must
+    # keep its AC-9 claim from landing on the same-numbered local target.
+    body = "Closes #76 and fixes other/repo#76 AC-9"
+    assert gate.claimed_criteria(body, [76], REPO) == {}
+
+
+def test_cross_repo_url_closing_reference_claims_nothing(gate) -> None:
+    body = "Fixes https://github.com/other/repo/issues/76 AC-9"
+    assert gate.claimed_criteria(body, [76], REPO) == {}
+
+
+def test_foreign_claim_does_not_shadow_a_local_claim(gate) -> None:
+    # The local claim survives; only the foreign qualifier's AC id is dropped.
+    body = "Closes #76 AC-2, mirroring other/repo#76 AC-9"
+    assert gate.claimed_criteria(body, [76], REPO) == {76: {2}}
+
+
+def test_local_reference_written_with_the_full_repo_name_still_claims(gate) -> None:
+    body = f"Fixes {REPO}#76 AC-2"
+    assert gate.claimed_criteria(body, [76], REPO) == {76: {2}}
 
 
 # --- the refusals ---------------------------------------------------------------

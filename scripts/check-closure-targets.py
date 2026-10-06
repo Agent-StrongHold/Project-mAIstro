@@ -106,10 +106,14 @@ _BARE_SECTION = re.compile(r"^\s{0,3}[A-Za-z][\w '/-]{0,40}:\s*$")
 _CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\[(?P<box>[ xX])\]\s*(?P<text>\S.*)$")
 
 # ``Closes #76 AC-2`` / ``fixes #56 (AC-3)``: a criterion claimed on the same
-# line as the keyword. Both orders, with or without the hyphen.
+# line as the keyword. Both orders, with or without the hyphen. The number may
+# carry a cross-repo qualifier (``other/repo#76 AC-9``); capturing it lets the
+# claim stay with the repository it names instead of being correlated into a
+# same-numbered local target (review: keep foreign AC claims out of local
+# targets).
 _CLAIMED_AC = re.compile(
-    r"(?P<number>\d+)[^\n#]{0,80}?\bAC-?(?P<ac>\d+)\b"
-    r"|\bAC-?(?P<ac2>\d+)\b[^\n#]{0,80}#(?P<number2>\d+)",
+    r"(?:(?P<repo>[\w.-]+/[\w.-]+))?#?(?P<number>\d+)[^\n#]{0,80}?\bAC-?(?P<ac>\d+)\b"
+    r"|\bAC-?(?P<ac2>\d+)\b[^\n#]{0,80}#(?:(?P<repo2>[\w.-]+/[\w.-]+))?(?P<number2>\d+)",
     re.IGNORECASE,
 )
 
@@ -181,21 +185,34 @@ def acceptance_criteria(body: str) -> list[Criterion]:
     return criteria
 
 
-def claimed_criteria(pr_text: str, numbers: list[int]) -> dict[int, set[int]]:
+def _names_this_repo(other: str | None, repo: str) -> bool:
+    """A bare ``#N`` or an ``owner/repo`` qualifier naming ``repo`` is local."""
+    return other is None or other.lower() == repo.lower()
+
+
+def claimed_criteria(pr_text: str, numbers: list[int], repo: str) -> dict[int, set[int]]:
     """Acceptance-criterion ids each *closing* target claims on its own line.
 
     Only lines that would actually close ``#N`` count as claiming its criteria:
     ``Part of #76 AC-2 still failing`` is progress language and must not be
-    read as a closure claim.
+    read as a closure claim. Correlation is by repository and number together:
+    a cross-repo reference (``other/repo#76 AC-9``) claims nothing here even
+    when its number matches a local target (review: keep foreign AC claims out
+    of local targets).
     """
     claims: dict[int, set[int]] = {}
     for line in pr_text.splitlines():
         closed_here = {
-            int(m.group("number") or m.group("url_number")) for m in _CLOSING.finditer(line)
+            int(m.group("number") or m.group("url_number"))
+            for m in _CLOSING.finditer(line)
+            if _names_this_repo(m.group("repo") or m.group("url_repo"), repo)
         } & set(numbers)
         if not closed_here:
             continue
         for match in _CLAIMED_AC.finditer(line):
+            other = match.group("repo") or match.group("repo2")
+            if not _names_this_repo(other, repo):
+                continue
             number_text = match.group("number") or match.group("number2")
             ac_text = match.group("ac") or match.group("ac2")
             number = int(number_text)
@@ -325,7 +342,7 @@ def evaluate_targets(
     Returns None when a target cannot be looked up: with no verdict possible
     the caller fails closed rather than on the reported problems.
     """
-    claims = claimed_criteria(body, numbers)
+    claims = claimed_criteria(body, numbers, repo)
     problems: list[str] = []
     skipped: list[int] = []
     for number in numbers:
