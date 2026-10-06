@@ -38,6 +38,11 @@ reconciliation, not a count ratchet. Executed inventory gates agree: core
 A2A/delegation/extensions suite passes 635 tests. Exact vulture scan passes
 1,332 reviewed identities, zero unclassified; no ledger edits are justified.
 
-Validation and final gate outcomes are recorded in the issue-42 repair report
-for job 387420793df94683812cb2ceefa0deb5. Incoming merge tests/notes for #956/#959
+Fault injection outside the tree proved both regressions: caching an empty
+receipt fails the recovered task-ID assertion; dropping the stable effect scope
+leaves the original Invocation RUNNING and creates a second row on fresh-NodeRun
+recovery. Without injection, all three new/parameterized cases pass.
+
+Validation and final gate outcomes are recorded in
+`docs/issue-42-repair-387420.md` for job 387420793df94683812cb2ceefa0deb5. Incoming merge tests/notes for #956/#959
 are preserved, not counted again by this +2 delta.
