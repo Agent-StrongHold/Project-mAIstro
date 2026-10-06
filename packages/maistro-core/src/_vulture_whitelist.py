@@ -45,6 +45,7 @@ from maistro.ontology.rubric import (
     RubricSemantic,
 )
 from maistro.projects.rubric_store import RubricStore
+from maistro.runs.admission_identity import AdmissionAssessment
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
@@ -341,4 +342,17 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Root-admission identity vocabulary (M1, #1851). The issue mandates the
+    # exact AdmissionAssessment member set as the prospective C2 classifier's
+    # contract values; they do not replace the live `_AssessmentKind` values,
+    # and the leaf is deliberately unwired — the consuming classifier is the
+    # parent #1845 integration, so no scanned production call site names the
+    # members by construction. PENDING rides on an unrelated in-tree token;
+    # the other five are named here explicitly, the same
+    # contract-ships-first posture as the seams above.
+    AdmissionAssessment.MISMATCH,
+    AdmissionAssessment.REPLAYED,
+    AdmissionAssessment.TAKEOVER,
+    AdmissionAssessment.REPLACE_EXPIRED,
+    AdmissionAssessment.LEGACY_UNRESOLVED,
 )

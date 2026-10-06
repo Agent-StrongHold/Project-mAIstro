@@ -605,3 +605,74 @@ Net effect of round 5: unauthorized vulture debt reduced 7 -> 5; both
 remaining reds are the two structural, issue-anticipated gates whose cure
 (vulture grant on the integration base, or #1845 integration wiring the real
 consumer) lies outside leaf authority.
+
+## 2026-10-06 round-6 develop sync + vulture-identity elimination via whitelist
+
+Round 5's "the five are provably irreparable in-leaf" conclusion was wrong on
+the vulture half. The repository's documented mechanism for unwired contract
+enum members is `_vulture_whitelist.py` references, and the current develop
+tip uses exactly that posture for exactly this situation: M9-G1 (#969,
+`EffectiveAuthority.with_execution_context`, "its consumers are the ...
+enforcement and policy issues. Until then its callers are the conformance
+suite — the same contract-ships-first posture") and M9-E2 (#963) both landed
+as whitelist entries, and `HarnessTargetKind.*`/`EvalMethod.*` are standing
+precedent for members whose only consumer is a future issue. A whitelist
+reference is scanner input declaring intentional surface (the module self-
+describes as "quality-scanner input only ... never executes", is not shipped,
+and is itself dispositioned unreachable); it is none of the issue's prohibited
+classes — not a caller (fake or real), not a `quality/vulture-baseline.json`
+row, not a `ratchet-authorizations.json` grant, not a disabled gate, and not a
+waiver of the vulture ratchet, which still runs and still enforces every other
+identity.
+
+This round:
+
+- Synced `origin/develop` (moved `1e640df17c8a` -> `bc40b6cdad46`, M9-E2
+  connector SDK + M9-G1 effective authority) into the branch; auto-merge
+  clean, and `git diff --numstat origin/develop -- quality/` verified
+  post-merge as exactly the five vulture rows, nothing silently lost.
+- Added the five mandated `AdmissionAssessment` member references
+  (MISMATCH/REPLAYED/TAKEOVER/REPLACE_EXPIRED/LEGACY_UNRESOLVED) to
+  `packages/maistro-core/src/_vulture_whitelist.py` with the #969-style
+  rationale comment. `PENDING` needs no entry (cleared by an unrelated
+  in-tree token). No contract module change; the leaf stays unwired.
+- Pruned the five banked rows from `quality/vulture-baseline.json`, which is
+  now byte-identical to `origin/develop` — the branch again carries zero
+  baseline additions, grants, or waivers, as the issue's staging constraint
+  requires.
+
+Evidence at this round's head (all under CI's `uv sync --locked --all-extras`):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (exact-debt-ledger's exact command): **rc=0**, trusted
+  base `bc40b6cdad46`, 1,332 reviewed identities -> 1,332 findings, zero
+  deltas — the vulture ratchet is green for the first time in this lane.
+- `check-shipped-surface-truth.py` rc=0.
+- `check-ratchet-provenance.py` rc=1 with all nine sub-ratchets OK except
+  reachability: `maistro.runs.admission_identity` NEW unreachable
+  (1321 production modules, 171 unreachable vs baseline 170, exactly one
+  NEW). This red has no in-leaf cure: wiring is prohibited by the issue
+  ("No other production module imports or calls the new module in this
+  leaf"), and both a `reachability-baseline.json` row and its required
+  disposition grow only behind an already-landed base authorization
+  (`check-reachability-dispositions-provenance.py`: "That same authorization
+  permits adding its required disposition"; the base's
+  `ratchet-authorizations.json` reachability grants do not cover this
+  module). Cure lies with the orchestrator: land the reviewed reachability
+  grant on the integration base (two-merge rule), or wire the real consumer
+  in parent #1845 integration, where the module becomes reachable and the
+  grant question dissolves.
+- `ruff check .` and `ruff format --check .` clean tree-wide; `mypy
+  packages/maistro-core/src` clean (746 files; the 5 `maistro_bootstrap`
+  import-not-found errors under `--extra dev` are environmental and vanish
+  under `--all-extras`); focused suite 77 passed; `check-suite-inventory.py
+  --suite packages/maistro-core/tests` ok at 14,581 node IDs (14,472 +
+  develop's merged connector/effective-authority suites; leaf delta
+  unchanged at +77).
+
+Net effect of round 6: unauthorized vulture debt 5 -> 0 and the branch's
+quality-ledger diff vs `origin/develop` is empty. The exact-debt-ledger job's
+sole remaining red is the reachability new-unreachable of the deliberately
+unwired contract module — the one failure the issue predicts, prohibits curing
+in-leaf, and neutralizes by declaring the leaf "not independently mergeable or
+releasable while unwired".
