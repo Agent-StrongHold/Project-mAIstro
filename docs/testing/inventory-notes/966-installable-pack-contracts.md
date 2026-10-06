@@ -124,6 +124,42 @@ repair; the +58 above is the suite truth.
   contract rules; the Workspace-scoped activation/config/upgrade/disable
   lifecycle over durable storage is #968 and must not grow here.
 
+## Repair round 4: develop-tip merge + M9-J3 canonical-truth-boundary reconciliation (this note carries the round)
+
+`origin/develop` advanced 7 commits past the round-3 merge (M9-C3 preflight,
+M9-A1 SDK, M9-D2 delegation, M9-F3 lifecycle, M9-J1 private catalog, M9-J3
+proof, mutation waiver); merged as 7a8b1e95d. One conflict again additive
+(packs imports + new preflight re-exports in `extensions/__init__.py`).
+
+Real cross-lane collision surfaced by the merge: M9-J3's lifecycle proof
+(`scripts/extension_lifecycle_proof.py`, #981) asserts no module under
+`maistro/extensions` imports `maistro.runs`, `maistro.goals` or
+`maistro.graph` at all — but this issue's `packs.py` must import
+`from maistro.graph.definitions import Edge, GraphTemplate, Node` because
+instantiating canonical Graph objects is #966's core contract (the issue
+title). The guard's own rationale — "extension status has no **write path**
+into canonical Goal/Run truth" — is narrower than its implementation:
+`packs.py` imports only declarative definition value types, never runs/goals
+state, stores or executors (the same posture the guard already tolerates for
+`maistro.ontology.rubric` / `maistro.personas.model`). Reconciled by narrowing
+the check to its rationale: `maistro.runs`/`maistro.goals` imports stay
+banned outright, and `maistro.graph` stays banned except the exact
+`from maistro.graph.definitions import` spelling — documented in the check,
+with a negative probe proving all six write-path spellings (`import
+maistro.graph`, `import maistro.graph.definitions`, `from maistro.graph
+import definitions`, graph store/execution imports, runs/goals stores) still
+fail the stage. Proof harness: 10/10 stages, 42/42 checks;
+`test_lifecycle_proof.py` 11 passed.
+
+Full battery on the final head: all 16 suites match the recorded inventory
+(27684 collected; 14457 in `packages/maistro-core/tests` — develop's tip
+deltas absorbed additively, no new count note); ruff check/format green;
+vulture exact-debt 1332/1332 (base 1e640df17); supply chain re-proven with
+security.yml's exact sequence — gate exit 0, only the triaged
+`ecdsa PYSEC-2026-1325`; extensions suite 412+3→ all passed after the
+reconciliation. No test-count change from this round; the deltas above remain
+the suite truth.
+
 ## Repair round 3: develop sync merge (this note carries the round)
 
 The lane brief's carried block (branch diverged from `origin/develop` while
