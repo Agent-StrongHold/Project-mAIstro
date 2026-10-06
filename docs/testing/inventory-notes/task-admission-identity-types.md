@@ -316,3 +316,16 @@ skipped, 1 xfailed), and full suite inventory matched 14,322 core test IDs
 (the existing `+77` delta). `check-reachability.py` and the provenance
 aggregate remain blocked solely by the intentionally unwired
 `maistro.runs.admission_identity`; dispositions and promotion-surface pass.
+
+## 2026-10-06 final local verification
+
+At `74e9615351ccfd0c3c48d4c49c7fcce0938960de`, the focused DTO suite passed
+77 tests; focused Ruff check/format and module mypy passed; and the core
+inventory exactly matched 14,322 test IDs (`+77`). The exact Vulture scan
+reported no candidate-ledger delta and exactly seven reviewed DTO identities,
+but correctly failed because trusted base `626683154ce9` predates them.
+`check-reachability.py` reported only the intentionally inactive
+`maistro.runs.admission_identity`; dispositions and promotion-surface passed,
+and the provenance aggregate failed only at that same reachability gate. This
+leaf has no permitted runtime consumer, reachability ledger/disposition,
+suppression, or grant; parent integration remains the required next step.
