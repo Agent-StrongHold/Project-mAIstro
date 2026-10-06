@@ -4,7 +4,8 @@ inventory-delta:
 ---
 
 Issue #963 (M9-E2) adds the connector/source SDK — `maistro.connectors` — with the
-canonical sync engine, scope/secret enforcement, and the shared conformance suite.
+canonical sync engine, scope/secret enforcement, and the shared conformance suite
+(ADR-100526-be49).
 
 `packages/maistro-core/tests/connectors/` (+64 total) covers the six acceptance
 criteria. `test_sdk_public_surface.py` (+14) drives an external-style connector that

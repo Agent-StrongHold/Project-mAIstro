@@ -69,7 +69,7 @@ def _single_page_connector(
 async def test_out_of_tree_connector_ingests_through_public_sdk_only():
     """AC1: public SDK surface is the entire integration, end to end.
 
-    The marked contract (ADR-104, boundary): ``maistro.connectors`` is the
+    The marked contract (ADR-100526-be49, boundary): ``maistro.connectors`` is the
     whole integration an out-of-tree connector writes against — this test's
     connector imports nothing else and drives a full ingest.
     """

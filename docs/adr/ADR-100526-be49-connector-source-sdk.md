@@ -1,5 +1,5 @@
 ---
-id: ADR-104
+id: ADR-100526-be49
 title: "Connector/source SDK — out-of-tree ingestion with canonical provenance and incremental sync"
 repo: maistro-engine
 kind: adr
@@ -13,7 +13,7 @@ substrate:
 implements: []
 related:
   - maistro-engine#SPEC-185
-  - maistro-engine#ADR-103
+  - maistro-engine#ADR-104
 supersedes: []
 blocks: []
 blocked-by: []
@@ -33,7 +33,7 @@ history:
     date: 2026-10-05
 ---
 
-# ADR-104: Connector/source SDK — out-of-tree ingestion with canonical provenance and incremental sync
+# ADR-100526-be49: Connector/source SDK — out-of-tree ingestion with canonical provenance and incremental sync
 
 ## Context
 
