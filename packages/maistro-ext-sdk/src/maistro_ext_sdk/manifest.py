@@ -34,7 +34,7 @@ least authority by default.
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,6 +57,7 @@ __all__ = [
     "FilesystemAuthority",
     "NetworkAuthority",
     "SecretRequirement",
+    "semantic_json_schema_constraints",
     "validate_manifest",
 ]
 
@@ -436,6 +437,82 @@ def _validate_least_authority(manifest: ExtensionManifest) -> None:
         )
 
 
+def _validate_filesystem_mode_pairing(manifest: ExtensionManifest) -> None:
+    """Declared ``filesystem.mode`` and declared filesystem capability must agree.
+
+    A mode that reads without the ``filesystem.read`` capability — or writes
+    without ``filesystem.write`` — claims authority through the back door:
+    the requirement block would let the extension do what the capability
+    block never declared. The mismatch in the other direction is the same
+    inconsistency mirrored: a capability whose mode cannot exercise it is a
+    declaration no host can grant as written. Only meaningful once paths are
+    declared — an untouched default block (no paths, mode ``read``) seeks no
+    filesystem authority and stays valid.
+    """
+    if not manifest.filesystem.paths:
+        return
+    caps = set(manifest.capabilities)
+    mode = manifest.filesystem.mode
+    read_capable = mode in ("read", "read-write")
+    write_capable = mode in ("write", "read-write")
+    if read_capable and "filesystem.read" not in caps:
+        raise AuthorityError(
+            f"filesystem mode '{mode}' allows reads but the 'filesystem.read' "
+            f"capability is not declared: declare it or narrow the mode"
+        )
+    if write_capable and "filesystem.write" not in caps:
+        raise AuthorityError(
+            f"filesystem mode '{mode}' allows writes but the 'filesystem.write' "
+            f"capability is not declared: declare it or narrow the mode"
+        )
+    if "filesystem.read" in caps and not read_capable:
+        raise AuthorityError(
+            f"capability 'filesystem.read' declared but 'filesystem.mode' is "
+            f"'{mode}', which cannot read"
+        )
+    if "filesystem.write" in caps and not write_capable:
+        raise AuthorityError(
+            f"capability 'filesystem.write' declared but 'filesystem.mode' is "
+            f"'{mode}', which cannot write"
+        )
+
+
+def semantic_json_schema_constraints() -> dict[str, Any]:
+    """JSON Schema fragments for the semantic rules enforced in code here.
+
+    The published schema must not understate the contract: a manifest that
+    :func:`validate_manifest` rejects should fail a pure JSON Schema check
+    too, so a host validating out-of-process sees the same closed authority
+    vocabulary and the same identity shapes. Keyed by pointer path into the
+    emitted schema (``$defs`` for nested models, ``properties`` for the
+    manifest's own fields); ``public_json_schema`` splices the fragments in.
+    Enumerations and patterns come straight from the constants and compiled
+    regexes above, so the schema and the validation pipeline cannot drift.
+
+    Deliberately absent: the ``contract`` range grammar (semantic, not a
+    single regex) and ``family``/``filesystem.mode`` (already ``enum``s —
+    pydantic derives them from their ``Literal`` types).
+    """
+    return {
+        "properties/id": {"pattern": _EXTENSION_ID_RE.pattern},
+        "properties/publisher": {"pattern": _PUBLISHER_RE.pattern},
+        "properties/version": {"pattern": _SEMVER_RE.pattern},
+        "properties/capabilities/items": {"enum": sorted(CAPABILITIES)},
+        "properties/effects/items": {"enum": sorted(EFFECTS)},
+        "properties/optional_features/items": {"enum": sorted(OPTIONAL_FEATURES)},
+        "$defs/DataAuthority/properties/scopes/items": {"enum": sorted(DATA_SCOPES)},
+        "$defs/NetworkAuthority/properties/allow/items": {"pattern": _HOST_RE.pattern},
+        "$defs/NetworkAuthority/properties/allowed_ports/items": {
+            "minimum": 1,
+            "maximum": 65535,
+        },
+        "$defs/FilesystemAuthority/properties/paths/items": {"pattern": _ABSOLUTE_PATH_RE.pattern},
+        "$defs/SecretRequirement/properties/name": {"pattern": _SECRET_NAME_RE.pattern},
+        "$defs/EntrypointMetadata/properties/module": {"pattern": _MODULE_PATH_RE.pattern},
+        "$defs/EntrypointMetadata/properties/object": {"pattern": _IDENTIFIER_RE.pattern},
+    }
+
+
 def _validate_contract_field(manifest: ExtensionManifest) -> None:
     """The contract range must be well-formed *and* cover this SDK's version.
 
@@ -461,12 +538,12 @@ def validate_manifest(manifest: ExtensionManifest) -> ExtensionManifest:
     """Apply the full manifest contract to an already-shaped model.
 
     Identity rules, the closed authority vocabulary, least-authority
-    cross-checks (both directions), contract-range well-formedness, and the
-    dependency rules. Returns the same manifest; raises
-    ``ExtensionManifestError`` (usually ``AuthorityError``) naming the
-    offending declaration. This is the function every parse entry point
-    applies; it is public so a host that hand-builds a model can enforce the
-    identical contract.
+    cross-checks (both directions, mode and capability included),
+    contract-range well-formedness, and the dependency rules. Returns the
+    same manifest; raises ``ExtensionManifestError`` (usually
+    ``AuthorityError``) naming the offending declaration. This is the
+    function every parse entry point applies; it is public so a host that
+    hand-builds a model can enforce the identical contract.
     """
     try:
         _validate_extension_id(manifest.id, manifest.publisher)
@@ -487,6 +564,7 @@ def validate_manifest(manifest: ExtensionManifest) -> ExtensionManifest:
         _validate_authority_vocabulary(manifest)
         _validate_requirement_shapes(manifest)
         _validate_least_authority(manifest)
+        _validate_filesystem_mode_pairing(manifest)
     except ExtensionManifestError:
         raise
     except ValueError as exc:

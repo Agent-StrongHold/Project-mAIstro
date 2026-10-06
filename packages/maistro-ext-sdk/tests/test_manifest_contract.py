@@ -368,6 +368,54 @@ class TestLeastAuthorityBothWays:
         manifest = manifest_from_dict(manifest_dict)
         assert set(manifest.capabilities) == {"network.outbound", "filesystem.read", "secrets.read"}
 
+    @pytest.mark.parametrize(
+        ("capabilities", "mode", "offending"),
+        [
+            # mode reads/writes past what the capability block declared.
+            (["filesystem.read"], "write", "filesystem.write"),
+            (["filesystem.write"], "read", "filesystem.read"),
+            # ...and the mirror: a capability the declared mode cannot exercise.
+            (["filesystem.read", "filesystem.write"], "read", "filesystem.write"),
+            (["filesystem.read", "filesystem.write"], "write", "filesystem.read"),
+        ],
+        ids=[
+            "write-mode-without-write-capability",
+            "read-mode-without-read-capability",
+            "write-capability-with-read-mode",
+            "read-capability-with-write-mode",
+        ],
+    )
+    def test_filesystem_mode_and_capability_mismatch_fails(
+        self, manifest_dict: dict, capabilities: list[str], mode: str, offending: str
+    ) -> None:
+        """Mode and capability must tell one story, in both directions: a
+        requirement block that can do what the capability block never declared
+        is back-door authority, and a capability the mode cannot exercise is
+        ungrantable as written."""
+        manifest_dict.pop("network")
+        manifest_dict["capabilities"] = capabilities
+        manifest_dict["filesystem"] = {"paths": ["/srv/data"], "mode": mode}
+        with pytest.raises(ExtensionManifestError, match=offending):
+            manifest_from_dict(manifest_dict)
+
+    @pytest.mark.parametrize(
+        ("capabilities", "mode"),
+        [
+            (["filesystem.read"], "read"),
+            (["filesystem.write"], "write"),
+            (["filesystem.read", "filesystem.write"], "read-write"),
+        ],
+        ids=["read", "write", "read-write"],
+    )
+    def test_matching_mode_and_capability_passes(
+        self, manifest_dict: dict, capabilities: list[str], mode: str
+    ) -> None:
+        manifest_dict.pop("network")
+        manifest_dict["capabilities"] = capabilities
+        manifest_dict["filesystem"] = {"paths": ["/srv/data"], "mode": mode}
+        manifest = manifest_from_dict(manifest_dict)
+        assert manifest.filesystem.mode == mode
+
 
 class TestPublicJsonSchema:
     @pytest.mark.contract("boundary")
@@ -394,6 +442,53 @@ class TestPublicJsonSchema:
         schema = public_json_schema()
         major = parse_contract_version(EXTENSION_CONTRACT_VERSION).major
         assert schema["$id"].endswith(f"extension-manifest-v{major}.json")
+
+    def test_schema_encodes_closed_authority_vocabularies(self) -> None:
+        """The published schema must not understate the contract: the closed
+        vocabularies and lexical shapes the pipeline enforces appear in the
+        schema as enums and patterns, straight from the same constants."""
+        from maistro_ext_sdk.manifest import (
+            CAPABILITIES,
+            DATA_SCOPES,
+            EFFECTS,
+            OPTIONAL_FEATURES,
+            semantic_json_schema_constraints,
+        )
+
+        schema = public_json_schema()
+        assert schema["properties"]["capabilities"]["items"]["enum"] == sorted(CAPABILITIES)
+        assert schema["properties"]["effects"]["items"]["enum"] == sorted(EFFECTS)
+        assert schema["properties"]["optional_features"]["items"]["enum"] == sorted(
+            OPTIONAL_FEATURES
+        )
+        scopes = schema["$defs"]["DataAuthority"]["properties"]["scopes"]["items"]
+        assert scopes["enum"] == sorted(DATA_SCOPES)
+        # family and filesystem.mode were already enums (Literal-derived).
+        assert "enum" in schema["properties"]["family"]
+        assert "enum" in schema["$defs"]["FilesystemAuthority"]["properties"]["mode"]
+        # every declared pointer actually resolves — a stale pointer must fail
+        # loudly here, not silently leave the schema unconstrained.
+        for pointer in semantic_json_schema_constraints():
+            node = schema
+            for key in pointer.split("/"):
+                node = node[key]
+            assert node  # the fragment landed somewhere non-empty
+
+    def test_out_of_process_validator_agrees_with_the_sdk(self, manifest_dict: dict) -> None:
+        """A manifest the SDK rejects on vocabulary must fail a pure JSON
+        Schema check too — the schema is a public contract, not a brochure."""
+        jsonschema = pytest.importorskip("jsonschema")
+        schema = public_json_schema()
+        # The base manifest validates out-of-process exactly as it does in the
+        # SDK. The instance is the manifest's JSON form — a JSON Schema speaks
+        # JSON documents, and model_dump() would leak Python tuples.
+        manifest = manifest_from_dict(manifest_dict)
+        instance = json.loads(manifest.model_dump_json())
+        assert jsonschema.validate(instance, schema) is None
+        # ...and the vocabulary smuggle the old shape-only schema allowed now fails.
+        smuggled = manifest_dict | {"capabilities": ["host.kernel"]}
+        with pytest.raises(jsonschema.ValidationError, match=r"host\.kernel"):
+            jsonschema.validate(json.loads(json.dumps(smuggled)), schema)
 
 
 class TestErrorTypeContract:

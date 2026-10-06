@@ -22,6 +22,7 @@ from maistro_ext_sdk.manifest import (
     ExtensionManifest,
     ExtensionManifestError,
     reject_unknown_fields,
+    semantic_json_schema_constraints,
     validate_manifest,
 )
 
@@ -271,6 +272,34 @@ def _resolve_entrypoint_file(root: Path, module: str) -> Path | None:
     return module_file if module_file.is_file() else None
 
 
+def _merge_fragment(target: dict[str, Any], fragment: dict[str, Any]) -> None:
+    """Deep-merge ``fragment`` into ``target`` without discarding sibling keys."""
+    for key, value in fragment.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _merge_fragment(target[key], value)
+        else:
+            target[key] = value
+
+
+def _apply_semantic_constraints(schema: dict[str, Any]) -> None:
+    """Splice the manifest module's semantic fragments into the emitted schema.
+
+    ``model_json_schema()`` can only describe shape — the closed authority
+    vocabularies are ``str`` fields by design, their membership checked in
+    :func:`~maistro_ext_sdk.manifest.validate_manifest`. Splicing the enum
+    and pattern fragments in afterwards closes the gap the other direction:
+    a manifest an external validator passes cannot be one this SDK rejects
+    on vocabulary or lexical shape. A pointer that does not resolve means
+    pydantic's emission shape changed; failing loudly here (KeyError) is the
+    test-visible signal, not a silently unconstrained schema.
+    """
+    for pointer, fragment in semantic_json_schema_constraints().items():
+        node: dict[str, Any] = schema
+        for key in pointer.split("/"):
+            node = node[key]
+        _merge_fragment(node, fragment)
+
+
 def public_json_schema() -> dict[str, Any]:
     """The manifest schema as a JSON Schema document.
 
@@ -278,9 +307,12 @@ def public_json_schema() -> dict[str, Any]:
     a manifest against it with any JSON Schema implementation, without this
     SDK installed. ``model_json_schema()`` already emits ``additionalProperties:
     false`` for the forbidding models, so the strictness above is visible to
-    non-Python validators too.
+    non-Python validators too, and :func:`~maistro_ext_sdk.manifest.semantic_json_schema_constraints`
+    folds the closed authority vocabularies and identity patterns in, so the
+    schema encodes what the pipeline enforces rather than only what it shapes.
     """
     schema = ExtensionManifest.model_json_schema()
+    _apply_semantic_constraints(schema)
     schema["$id"] = (
         f"https://maistro.dev/schemas/ext-sdk/extension-manifest-v"
         f"{parse_contract_version(EXTENSION_CONTRACT_VERSION).major}.json"
