@@ -81,6 +81,18 @@ dev = [
     # (scripts/check-reference-extension.py), which builds the wheel into a
     # venv holding none of this repository.
     "reference-greeter",
+    # The reference gallery's four extension packages (#980), installed the
+    # same way as reference-greeter above: workspace membership + these lines
+    # put them in the root dev env so their suites collect. The boundary is
+    # unchanged — the gallery's own namespace policy plus the same two gates
+    # police what they may import, and the isolation fixture proves they
+    # build and test with nothing but their own wheels. Installation through
+    # the catalog/registry lifecycle (their actual distribution path) is
+    # proven by tests/test_reference_gallery.py, not by this editable wiring.
+    "gallery-weather-connector",
+    "gallery-unit-skill",
+    "gallery-model-adapter",
+    "gallery-renderer-pack",
     # A real in-process S3 server for the archive conformance suite
     # (ADR-082226-f436). Not a boto3 patch: the tests go over HTTP, because
     # #122 found six PostgreSQL defects that client-level mocking could not see.
@@ -380,7 +392,11 @@ ignore_missing_imports = true
 # wiring, not a license to import product internals (the namespace policy and
 # its gates still apply, and the isolation fixture still proves the extension
 # builds and tests with nothing but its own wheel).
-members = ["packages/*", "extensions/reference-greeter"]
+members = [
+    "packages/*",
+    "extensions/reference-greeter",
+    "extensions/reference-gallery/packages/*",
+]
 
 # Workspace-root sources are inherited by every member, so a member depending on
 # e.g. maistro-core gets the local checkout rather than an index lookup for a
@@ -409,3 +425,12 @@ hive-conductor = { workspace = true }
 # names. Not a product package — the extension namespace policy
 # (extensions/namespace-policy.json) governs what it may import.
 reference-greeter = { workspace = true }
+# The reference gallery's extension packages (#980): workspace members
+# outside packages/, named here because uv requires a source entry for every
+# member a root dependency names. Not product packages — the gallery's own
+# namespace policy (extensions/reference-gallery/namespace-policy.json)
+# governs what they may import.
+gallery-weather-connector = { workspace = true }
+gallery-unit-skill = { workspace = true }
+gallery-model-adapter = { workspace = true }
+gallery-renderer-pack = { workspace = true }

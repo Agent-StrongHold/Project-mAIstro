@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gallery-renderer-pack"
+version = "1.0.0"
+description = "Reference gallery renderer/UI pack extension (M9-J2): pure display renderers over read-only product projections"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gallery_renderer_pack"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"manifest.json" = "gallery_renderer_pack/manifest.json"
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib --strict-markers"
+testpaths = ["tests"]

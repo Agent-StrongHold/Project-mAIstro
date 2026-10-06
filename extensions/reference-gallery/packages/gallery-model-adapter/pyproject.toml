@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gallery-model-adapter"
+version = "1.0.0"
+description = "Reference gallery provider adapter extension (M9-J2): a declarative model adapter registered through the canonical provider-adapter SDK seam"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+# Self-contained by design: the adapter ships its spec as plain data and its
+# normalization hooks as pure functions. The product-side SDK
+# (maistro.capabilities.provider_adapters) validates and registers that data
+# at wiring time; the adapter package itself imports none of it.
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gallery_model_adapter"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"manifest.json" = "gallery_model_adapter/manifest.json"
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib --strict-markers"
+testpaths = ["tests"]

@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Reference gallery policy (#980, M9-J2).",
+    "",
+    "The gallery is the out-of-tree reference extension REPOSITORY: a",
+    "third-party-shaped, multi-package project that consumes the same M9",
+    "conformance tooling the first-party reference extension does. Its shape",
+    "is the proof the issue asks for: the reusable gates",
+    "(scripts/check-extension-imports.py, scripts/check-reference-extension.py)",
+    "run unmodified against this policy via --policy, which is how CI checks",
+    "an external-style repository spanning several extension families.",
+    "",
+    "Namespace lists mirror the product-side policy",
+    "(extensions/namespace-policy.json) because the product is the same",
+    "repository from the gallery's point of view: an extension may import the",
+    "public extension SDK roots and nothing else first-party. If the two",
+    "policies ever disagree, that disagreement is the bug.",
+    "",
+    "extension_trees points at the gallery's packages/ directory only. The",
+    "gallery root itself (README, tools/, keys/, this file) is repository",
+    "furniture, not an extension package, so a bare directory glob over the",
+    "gallery would misclassify it. Trees are declared explicitly here rather",
+    "than globbed for exactly that reason.",
+    "",
+    "required_artifacts is empty on purpose: the gallery distributes through",
+    "the extension catalog (tools/publish.py), which carries each package's",
+    "manifest as a sidecar document whose artifact claim describes the built",
+    "wheel. A manifest that declared the digest of the very wheel it rides in",
+    "could never exist, so catalog-first distribution is the honest shape",
+    "here. The first-party reference extension keeps its discover-in-wheel",
+    "artifact under the product-side policy."
+  ],
+  "policy_version": "1.0.0",
+  "public_sdk_namespaces": [
+    "maistro_ext_sdk"
+  ],
+  "product_private_namespaces": [
+    "maistro",
+    "maistro_bootstrap",
+    "maistro_canvas",
+    "maistro_design",
+    "maistro_evolve",
+    "maistro_registry",
+    "maistro_rsi",
+    "maistro_server",
+    "maistro_turing"
+  ],
+  "extension_trees": [
+    "extensions/reference-gallery/packages/*"
+  ],
+  "test_only_namespaces": [
+    "pytest"
+  ],
+  "required_artifacts": []
+}
