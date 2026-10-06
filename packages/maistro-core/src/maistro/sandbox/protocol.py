@@ -57,6 +57,10 @@ class SandboxConfig:
     max_processes: int = 128
     network: bool = False
     writable_paths: list[str] = field(default_factory=list)
+    #: Host paths bound read-only into the sandbox, beyond the backend's
+    #: standard system binds. Mounts, never copies: the workload reads the
+    #: host files in place, and cannot write them.
+    read_paths: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     min_isolation: IsolationTier = "container"
     #: The egress grant this sandbox runs under. Default-deny (#77), and

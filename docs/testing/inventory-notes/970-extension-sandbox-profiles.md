@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +76
+  packages/maistro-core/tests: +83
 ---
 # 970-extension-sandbox-profiles
 
@@ -54,3 +54,30 @@ fail-closed runner, and attributable violation evidence. Seventy node IDs in
   execution config (#1328), so on hosts that cannot reproduce the profile's
   PID ceiling the tier is honestly evidenced as unavailable and the suite
   skips with a module-import log line — never silent cover.
+
+Follow-up increment (+7), same issue — closing the read-path and grant-source
+holes found while re-verifying the layer:
+
+- `filesystem.read` is sandbox-scoped authority, not host-mediated: a new
+  `FILESYSTEM_READ_PERMISSION` elevates the risk tier (never eligible for the
+  trusted in-process tier — in process there is no boundary to scope a host
+  read with), and a granted read mounts exactly the policy's
+  `readable_host_paths` via `SandboxConfig.read_paths` → bwrap `--ro-bind`
+  (read in place, never writable). Three selection tests pin the grant↔mount
+  intersection plus the config plumbing; one bubblewrap argv test pins the
+  ro-bind without needing a namespace on this host.
+- Grant-source intersection: `select_isolation_profile` now intersects
+  `granted` with the manifest's declared permissions before any rule fires —
+  a grant token the manifest never declared (mismatched preview/record, a
+  replayed install record against a newer manifest) is dropped with a
+  warning, so an install record can never widen authority past the
+  declaration. Two parametrized cases pin undeclared `network.outbound` and
+  `filesystem.write` grants collapsing to deny/no-paths.
+- Runner teardown is cancellation-safe: the `finally` destroy is shielded,
+  because `CancelledError` is a `BaseException` the old `except Exception`
+  path skipped, leaking the sandbox child and its selector registration —
+  proven by a hanging backend plus `task.cancel()`.
+- `ExtensionSandboxExecutionFailure` is deliberately no longer a subclass of
+  `ExtensionSandboxStartFailure`: the sandbox was up, so extension code may
+  have had side effects, and the message says so — a caller retrying on a
+  start-failure contract would double-execute them.

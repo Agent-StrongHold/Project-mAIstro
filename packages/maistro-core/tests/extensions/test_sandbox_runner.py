@@ -11,6 +11,7 @@ That is the conformance suite's job (``test_sandbox_conformance.py``).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -208,10 +209,39 @@ class TestStartupFailsClosed:
     async def test_exec_failure_destroys_and_raises_typed_failure(self) -> None:
         backend = _ExplodingExecBackend()
         runner = _runner(backend)
-        with pytest.raises(ExtensionSandboxExecutionFailure):
+        with pytest.raises(ExtensionSandboxExecutionFailure) as excinfo:
             await runner.exec(_profile(), ["echo", "hi"])
         # the failed sandbox did not leak: destroy ran despite the exec error
         assert backend.calls
+        assert backend.calls[-1][0] == "destroy"
+        assert list(backend._instances) == []
+        # not a startup failure: the sandbox was up, so the message must not
+        # claim extension code never ran (a caller retrying on that basis
+        # would rerun code whose side effects already happened)
+        assert not isinstance(excinfo.value, ExtensionSandboxStartFailure)
+        assert "did not run" not in str(excinfo.value)
+        assert "may already have run" in str(excinfo.value)
+
+    async def test_cancellation_mid_exec_still_destroys(self) -> None:
+        """CancelledError is a BaseException, not an ``except Exception``
+        match — without a cancellation-safe teardown a cancel arriving while
+        exec() is suspended skips destroy and leaves the sandbox child and its
+        registration behind."""
+
+        class _HangingExecBackend(_StubBackend):
+            async def exec(
+                self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
+            ) -> ExecResult:
+                await asyncio.Event().wait()  # cancelled by the test, never returns
+
+        backend = _HangingExecBackend()
+        runner = _runner(backend)
+        task = asyncio.create_task(runner.exec(_profile(), ["echo", "hi"]))
+        await asyncio.sleep(0)  # let spawn+exec start
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # teardown still ran despite cancellation, and nothing leaked
         assert backend.calls[-1][0] == "destroy"
         assert list(backend._instances) == []
 

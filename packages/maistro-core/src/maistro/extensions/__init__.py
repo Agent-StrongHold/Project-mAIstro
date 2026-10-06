@@ -34,6 +34,7 @@ from maistro.extensions.compatibility import (
 )
 from maistro.extensions.isolation import (
     DEFAULT_MIN_TIER,
+    FILESYSTEM_READ_PERMISSION,
     FILESYSTEM_WRITE_PERMISSION,
     NETWORK_OUTBOUND_PERMISSION,
     REAL_ISOLATION_TIERS,
@@ -117,6 +118,7 @@ from maistro.extensions.types import (
 __all__ = [
     "DEFAULT_MIN_TIER",
     "DIGEST_ALGORITHM",
+    "FILESYSTEM_READ_PERMISSION",
     "FILESYSTEM_WRITE_PERMISSION",
     "NETWORK_OUTBOUND_PERMISSION",
     "REAL_ISOLATION_TIERS",

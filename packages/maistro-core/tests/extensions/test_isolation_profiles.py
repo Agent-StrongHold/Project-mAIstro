@@ -85,6 +85,10 @@ class TestRiskTier:
     def test_network_outbound_is_elevated(self) -> None:
         assert risk_tier_for(("network.outbound",)) is ExtensionRiskTier.ELEVATED
 
+    def test_filesystem_read_is_elevated(self) -> None:
+        """Read authority is sandbox-enforced too: scoped paths need a boundary."""
+        assert risk_tier_for(("filesystem.read",)) is ExtensionRiskTier.ELEVATED
+
     def test_filesystem_write_is_elevated(self) -> None:
         assert risk_tier_for(("filesystem.write",)) is ExtensionRiskTier.ELEVATED
 
@@ -125,6 +129,23 @@ class TestEgressIntersection:
         )
         assert profile.egress.mode is EgressMode.DENY
         assert profile.egress.allow == ()
+
+    @pytest.mark.parametrize("granted", [("network.outbound",), ("filesystem.write",)])
+    def test_a_grant_past_the_declaration_is_dropped_not_honored(
+        self, granted: tuple[str, ...]
+    ) -> None:
+        """A mismatched record granting authority the manifest never declared
+        (preview vs. install divergence) cannot widen the profile: the grant
+        is intersected with the declaration before any egress/path rule."""
+        profile = select_isolation_profile(
+            _manifest(),  # type: ignore[arg-type]
+            granted=granted,
+            trust=TRUSTED,
+            policy=scoped_policy(),
+        )
+        assert profile.egress.mode is EgressMode.DENY
+        assert profile.egress.allow == ()
+        assert profile.writable_paths == ()
 
     def test_declared_network_gets_the_policy_allowlist_not_the_open_internet(self) -> None:
         profile = select_isolation_profile(
@@ -186,14 +207,28 @@ class TestFilesystemIntersection:
         assert profile.writable_paths == ("/srv/exports", "/var/data")
 
     def test_filesystem_read_does_not_widen_the_sandbox(self) -> None:
-        """Reads are host-mediated authority; they never add writable mounts."""
+        """Reads never add writable mounts — they get the policy's read-only
+        mounts instead, and only when declared."""
         profile = select_isolation_profile(
             _manifest(("filesystem.read",)),  # type: ignore[arg-type]
             granted=("filesystem.read",),
             trust=TRUSTED,
-            policy=scoped_policy(writable_host_paths=("/srv/exports",)),
+            policy=scoped_policy(
+                writable_host_paths=("/srv/exports",),
+                readable_host_paths=("/srv/exports", "/var/ro"),
+            ),
         )
         assert profile.writable_paths == ()
+        assert profile.readable_paths == ("/srv/exports", "/var/ro")
+
+    def test_filesystem_read_without_the_grant_gets_no_read_mounts(self) -> None:
+        profile = select_isolation_profile(
+            _manifest(("workspace.read",)),  # type: ignore[arg-type]
+            granted=("workspace.read",),
+            trust=TRUSTED,
+            policy=scoped_policy(readable_host_paths=("/srv/exports",)),
+        )
+        assert profile.readable_paths == ()
 
 
 class TestInProcessTier:
@@ -246,9 +281,15 @@ class TestInProcessTier:
         assert profile.in_process is False
 
     def test_elevated_risk_is_never_eligible_in_process(self) -> None:
-        """Network and filesystem authority is exactly what the sandbox exists
-        to contain, so no policy combination runs it inside the host."""
-        for granted in (("network.outbound",), ("filesystem.write",)):
+        """Network and filesystem authority (read and write) is exactly what
+        the sandbox exists to contain, so no policy combination runs it
+        inside the host — in process there is no boundary to scope those
+        paths or that egress with."""
+        for granted in (
+            ("network.outbound",),
+            ("filesystem.write",),
+            ("filesystem.read",),
+        ):
             profile = select_isolation_profile(
                 _manifest(granted),  # type: ignore[arg-type]
                 granted=granted,
@@ -359,6 +400,17 @@ class TestCeilings:
             policy=scoped_policy(writable_host_paths=("/srv/exports",)),
         )
         assert build_sandbox_config(profile).writable_paths == ["/srv/exports"]
+
+    def test_readable_paths_flow_into_the_config(self) -> None:
+        profile = select_isolation_profile(
+            _manifest(("filesystem.read",)),  # type: ignore[arg-type]
+            granted=("filesystem.read",),
+            trust=TRUSTED,
+            policy=scoped_policy(readable_host_paths=("/srv/exports", "/var/ro")),
+        )
+        config = build_sandbox_config(profile)
+        assert config.read_paths == ["/srv/exports", "/var/ro"]
+        assert config.writable_paths == []
 
 
 class TestExecutionModeFloors:

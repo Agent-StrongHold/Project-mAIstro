@@ -39,6 +39,8 @@ boundary an execution mode demands, and this module never selects below them.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
 import logging
 import signal
@@ -74,6 +76,12 @@ NETWORK_OUTBOUND_PERMISSION = "network.outbound"
 #: The permission token that requests writable filesystem authority. Without
 #: it the sandbox's only writable surface is its own ephemeral workspace.
 FILESYSTEM_WRITE_PERMISSION = "filesystem.write"
+
+#: The permission token that requests read access to host paths beyond the
+#: sandbox's own workspace. Sandbox-scoped like every filesystem authority
+#: (ADR-093): it forces the sandboxed tier and mounts exactly the policy's
+#: declared paths, read-only.
+FILESYSTEM_READ_PERMISSION = "filesystem.read"
 
 #: Tiers a sandboxed extension profile may demand, strongest first. The fake
 #: tier is deliberately absent: it provides no isolation and must never carry
@@ -120,8 +128,24 @@ class ExtensionSandboxStartFailure(ExtensionIsolationError):
         self.reason = reason
 
 
-class ExtensionSandboxExecutionFailure(ExtensionSandboxStartFailure):
-    """The sandbox started but the backend failed before a result existed."""
+class ExtensionSandboxExecutionFailure(ExtensionIsolationError):
+    """The sandbox started but the backend failed before a result existed.
+
+    Deliberately **not** a subclass of :class:`ExtensionSandboxStartFailure`:
+    startup had already succeeded, so extension code may have run and had
+    side effects inside the sandbox. The message never claims otherwise —
+    a caller must not treat this failure as safe to retry merely because
+    the type resembles a startup failure.
+    """
+
+    def __init__(self, extension_id: str, version: str, reason: str) -> None:
+        super().__init__(
+            f"sandbox execution failed for {extension_id} {version}: {reason} "
+            "(mid-execution; extension code may already have run)"
+        )
+        self.extension_id = extension_id
+        self.version = version
+        self.reason = reason
 
 
 class ExtensionRiskTier(StrEnum):
@@ -135,7 +159,7 @@ class ExtensionRiskTier(StrEnum):
     #: Reads mediated by the host only. Eligible for the trusted in-process
     #: tier when policy and trust allow.
     STANDARD = "standard"
-    #: Declares network egress or writable filesystem authority — the two
+    #: Declares network egress or sandbox-scoped filesystem authority — the
     #: grants a sandbox boundary exists to contain. Never eligible in process.
     ELEVATED = "elevated"
 
@@ -178,6 +202,10 @@ class ExtensionSandboxPolicy:
     #: extension that did not declare ``filesystem.write`` gets none of
     #: these; an extension that did gets exactly these and nothing more.
     writable_host_paths: tuple[str, ...] = ()
+    #: Host paths a ``filesystem.read`` extension may mount read-only. Same
+    #: intersection rule as the writable set: granted ``filesystem.read``
+    #: gets exactly these paths, read-only; no grant, none at all.
+    readable_host_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.min_tier not in REAL_ISOLATION_TIERS:
@@ -232,6 +260,8 @@ class ExtensionIsolationProfile:
     max_file_mb: int
     #: Host paths mounted writable beyond the sandbox's own workspace.
     writable_paths: tuple[str, ...]
+    #: Host paths mounted read-only beyond the backend's standard binds.
+    readable_paths: tuple[str, ...]
     #: The selection inputs, recorded as evidence: which authorities were
     #: granted, what was denied as undeclared, and why the tier was chosen.
     selection_reason: str
@@ -265,8 +295,19 @@ class ExtensionIsolationProfile:
 
 
 def risk_tier_for(granted: Sequence[str]) -> ExtensionRiskTier:
-    """Derive the risk tier from the granted permission set."""
-    sandbox_enforced = {NETWORK_OUTBOUND_PERMISSION, FILESYSTEM_WRITE_PERMISSION}
+    """Derive the risk tier from the granted permission set.
+
+    Every filesystem permission is sandbox-enforced authority — read and
+    write alike (ADR-093 / the capabilities contract in
+    ``docs/extensions/capabilities.md``) — so either excludes the trusted
+    in-process tier: in process there is no boundary to scope those paths
+    with, and a host read would be arbitrary rather than sandbox-scoped.
+    """
+    sandbox_enforced = {
+        NETWORK_OUTBOUND_PERMISSION,
+        FILESYSTEM_READ_PERMISSION,
+        FILESYSTEM_WRITE_PERMISSION,
+    }
     if sandbox_enforced & set(granted):
         return ExtensionRiskTier.ELEVATED
     return ExtensionRiskTier.STANDARD
@@ -294,6 +335,7 @@ def _in_process_profile(
         timeout_s=0,
         max_file_mb=0,
         writable_paths=(),
+        readable_paths=(),
         selection_reason=(
             f"trusted in-process tier: explicit operator policy for publisher "
             f"{manifest.publisher!r}, risk={risk.value} (no sandbox-enforced "
@@ -309,12 +351,14 @@ def _sandboxed_profile(
     policy: ExtensionSandboxPolicy,
     mode: ExecutionMode | None,
     network_granted: bool,
+    fs_read_granted: bool,
     fs_write_granted: bool,
     risk: ExtensionRiskTier,
 ) -> ExtensionIsolationProfile:
     """The sandboxed tier: the policy's ceilings, narrowed by the grant."""
     egress = policy.egress if network_granted else DENY_ALL
     writable_paths = policy.writable_host_paths if fs_write_granted else ()
+    readable_paths = policy.readable_host_paths if fs_read_granted else ()
     granted_view = ", ".join(granted_tokens) if granted_tokens else "none"
     return ExtensionIsolationProfile(
         extension_id=manifest.extension_id,
@@ -331,11 +375,14 @@ def _sandboxed_profile(
         timeout_s=policy.max_timeout_s,
         max_file_mb=policy.max_file_mb,
         writable_paths=writable_paths,
+        readable_paths=readable_paths,
         selection_reason=(
             f"sandboxed at {policy.min_tier}; risk={risk.value}; granted=[{granted_view}]; "
             f"egress={'policy allowlist' if network_granted else 'undeclared — denied'}; "
             f"writable_host_paths={len(writable_paths)} "
-            f"({'filesystem.write granted' if fs_write_granted else 'undeclared — none'})"
+            f"({'filesystem.write granted' if fs_write_granted else 'undeclared — none'}); "
+            f"readable_host_paths={len(readable_paths)} "
+            f"({'filesystem.read granted' if fs_read_granted else 'undeclared — none'})"
         ),
     )
 
@@ -355,16 +402,38 @@ def select_isolation_profile(
     pre-grant preview. ``trust`` is the registry's trust evaluation; a
     failed one has no profile at all.
 
-    The two intersection rules that make undeclared access impossible:
+    The intersection rules that make undeclared access impossible:
 
     - network egress exists only if the grant declares
       :data:`NETWORK_OUTBOUND_PERMISSION` **and** the policy's ceiling
       allows it — the ceiling's scoped allowlist is what the sandbox gets;
     - writable host paths exist only if the grant declares
       :data:`FILESYSTEM_WRITE_PERMISSION`, and then exactly
-      :attr:`ExtensionSandboxPolicy.writable_host_paths`.
+      :attr:`ExtensionSandboxPolicy.writable_host_paths`;
+    - read-only host paths exist only if the grant declares
+      :data:`FILESYSTEM_READ_PERMISSION`, and then exactly
+      :attr:`ExtensionSandboxPolicy.readable_host_paths`. Both filesystem
+      permissions are sandbox-enforced authority: they select the sandboxed
+      tier and are never eligible in process.
+
+    A third rule guards the grant source itself: ``granted`` is intersected
+    with the manifest's declared permissions before any of the checks above.
+    A grant token the manifest never declared (a mismatched preview/record,
+    a replayed install record against a newer manifest) is dropped with a
+    warning, so a record can never widen authority past the declaration —
+    undeclared means denied, whatever the record says.
     """
     tokens = tuple(normalize_permission(token) for token in granted)
+    declared = {normalize_permission(token) for token in manifest.permissions}
+    undeclared = sorted({token for token in tokens if token not in declared})
+    if undeclared:
+        logger.warning(
+            "%s %s: dropping granted permissions the manifest never declared: %s",
+            manifest.extension_id,
+            manifest.version,
+            ", ".join(undeclared),
+        )
+        tokens = tuple(token for token in tokens if token in declared)
 
     if not trust.trusted:
         raise ExtensionIsolationRefused(
@@ -374,6 +443,7 @@ def select_isolation_profile(
 
     network_granted = NETWORK_OUTBOUND_PERMISSION in tokens
     fs_write_granted = FILESYSTEM_WRITE_PERMISSION in tokens
+    fs_read_granted = FILESYSTEM_READ_PERMISSION in tokens
     risk = risk_tier_for(tokens)
 
     in_process_eligible = (
@@ -390,6 +460,7 @@ def select_isolation_profile(
         policy=policy,
         mode=mode,
         network_granted=network_granted,
+        fs_read_granted=fs_read_granted,
         fs_write_granted=fs_write_granted,
         risk=risk,
     )
@@ -430,6 +501,7 @@ def build_sandbox_config(
         ),
         network=profile.egress.grants_network,
         writable_paths=list(profile.writable_paths),
+        read_paths=list(profile.readable_paths),
         env=dict(env or {}),
         min_isolation=profile.min_tier,
         egress=profile.egress,
@@ -563,7 +635,10 @@ class ExtensionSandboxRunner:
     The runner owns the fail-closed path. Selection or spawn failure raises
     :class:`ExtensionSandboxStartFailure` and records a
     :data:`ViolationKind.SANDBOX_START_FAILURE` violation; there is no
-    weaker-tier retry and no in-process fallback. The in-process tier is
+    weaker-tier retry and no in-process fallback. A backend that fails
+    *after* the sandbox is up raises the separate
+    :class:`ExtensionSandboxExecutionFailure` instead, whose contract does
+    not assert that extension code never ran. The in-process tier is
     reachable only through :meth:`run_in_process` with a profile that was
     *selected* as in-process.
     """
@@ -629,7 +704,6 @@ class ExtensionSandboxRunner:
         try:
             result = await backend.exec(instance, list(command), timeout_s=config.timeout_s)
         except Exception as exc:
-            await self._destroy_quietly(backend, instance)
             self._record(
                 profile,
                 ViolationKind.SANDBOX_FAILURE,
@@ -641,7 +715,13 @@ class ExtensionSandboxRunner:
                 profile.version,
                 f"backend {type(backend).__name__} failed mid-execution: {exc}",
             ) from exc
-        await self._destroy_quietly(backend, instance)
+        finally:
+            # Teardown must be cancellation-safe: CancelledError is a
+            # BaseException, so an ``except Exception`` path skips cleanup and
+            # leaves the sandbox child running. Shielded so a second cancel
+            # delivered mid-teardown cannot abandon it either.
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(self._destroy_quietly(backend, instance))
 
         violations = self._classify_limits(profile, instance, result)
         outcome = ExtensionSandboxOutcome(
@@ -748,8 +828,13 @@ class ExtensionSandboxRunner:
         violations: list[ExtensionSandboxViolation] = []
         if result.timed_out:
             violations.append(self._limit_violation(profile, instance, "wall-clock timeout"))
-        if result.exit_code < 0:
-            sig = -result.exit_code
+        # Signal death arrives in either convention: negative (the subprocess
+        # wait convention, when the harness sees the process itself die) or
+        # wrapped as 128+signal (the shell convention, when a wrapper like
+        # bwrap relays its child's death — #970 conformance expects the
+        # wrapped form from the real backend). Normalize before matching.
+        sig = -result.exit_code if result.exit_code < 0 else result.exit_code - 128
+        if sig > 0:
             meaning = _LIMIT_SIGNALS.get(sig)
             if meaning is not None:
                 violations.append(self._limit_violation(profile, instance, meaning))
