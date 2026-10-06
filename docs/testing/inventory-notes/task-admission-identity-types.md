@@ -275,3 +275,19 @@ whitelist reference, reachability baseline/disposition, or grant was added.
 The remaining exact-debt failures require the separately scoped parent
 integration to supply a real consumer or a prior trusted-base authorization;
 this leaf cannot do either without violating its staging constraint.
+
+## 2026-10-06 current validation
+
+At `585f308378816f2860e67f75a737e06c7a5c724e`, the focused DTO suite passed
+77 tests; focused Ruff check/format and module mypy passed; repository-wide
+Ruff check/format passed; and the core suite inventory matched 13,845 node IDs
+(`+77`). The exact Vulture gate still fails only because its trusted base
+`c560d4ccad82` lacks the nine candidate-ledger DTO identities. The ledger
+contains all nine reviewed identities, but the gate correctly refuses a
+candidate ledger as trusted-base authorization. `check-reachability.py` reports
+only the deliberately inactive `maistro.runs.admission_identity`; dispositions
+and promotion-surface pass, while ratchet provenance fails only through that
+unreachable module. A production-source search confirms no other production
+module imports or calls the DTOs and no reachability baseline, disposition,
+grant, export, or Vulture whitelist was introduced. Parent integration remains
+required for mergeable exact-head quality.
