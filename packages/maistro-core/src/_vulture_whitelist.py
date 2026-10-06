@@ -8,6 +8,7 @@ Invocation execution API.
 """
 
 from maistro import identity as identity_package
+from maistro.a2a.external import ExternalAgentRegistry
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._extensions import extensions_history, extensions_show
@@ -304,4 +305,18 @@ _VULTURE_WHITELIST = (
     SqliteExtensionInstallStore.get_install,
     extensions_history,
     extensions_show,
+    # External Agent discovery (M9-D1, #958). The registry's lifecycle API
+    # ships first by design, the same contract-first posture as the M9-B1
+    # store seams above: its in-tree consumers are the conformance suite
+    # (packages/maistro-core/tests/a2a/test_external_agents.py), and the
+    # caller that binds external delegation to canonical Runs is M9-D2
+    # (#959). `refresh` is the only mutation path for changed descriptor
+    # bytes (policy-evaluated broadening, `refresh_descriptor`); `report_availability` records
+    # health-probe evidence; `eligible_specialists` is the read the
+    # delegation binder will filter through. Until #959 lands, no scanned
+    # production call site names them — by construction, since discovery is
+    # deliberately decoupled from invocation.
+    ExternalAgentRegistry.refresh_descriptor,
+    ExternalAgentRegistry.report_availability,
+    ExternalAgentRegistry.eligible_specialists,
 )
