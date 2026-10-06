@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +38
+  packages/maistro-core/tests: +45
 ---
 # 969-extension-effective-authority
 
-Thirty-eight tests in a new suite,
+Forty-five tests in
 `packages/maistro-core/tests/extensions/test_effective_authority.py`, for the
 M9-G1 canonical effective-authority calculation (#969): extension authority as
 the intersection of manifest request, publisher trust, host policy, caller
@@ -42,6 +42,32 @@ when wired, `authorize` freezes the grant to the intersection, denies
 outright when the intersection is empty, and records the digest and per-
 permission denial reasons in the audited transition trail.
 
+Review follow-ups on PR #2013 (commit `b093336`) extended both the code and
+this suite by seven tests:
+
+* package-level blockers deny even when the manifest requests nothing
+  (`permissions: []` no longer reaches AUTHORIZED through the
+  `granted_none && requested_permissions` gap), with the degenerate path
+  pinned end-to-end incl. the loader seam never running;
+* the UNTRUSTED tier is an unconditional blocker even on a
+  contradictorily-constructed `PublisherTrust(tier=UNTRUSTED, trusted=True)`;
+* authorization binds to the trust evidence persisted on the record at
+  inspection (`ExtensionInstallRecord.trust_evidence`), not a
+  service-wide claim, and untrusted evidence is rejected at inspection;
+* an empty intersection caused by ceilings (no blockers) records the
+  per-permission denial reasons on the trail;
+* a wired `WorkspaceExtensionPolicy` whose `scope` does not cover the
+  record's scope is not an applicable ceiling: authorization is denied
+  before any authority is computed (`record.decision_digest` stays unset);
+* the decision digest fingerprints the full authority context (trust
+  verdict/tier, host/tier/family ceilings, caller principal + delegation,
+  Workspace scope/enablement/ceiling), so equal permission projections from
+  different callers, Workspaces, tiers, or unused allowances never share an
+  evidence identity;
+* the full 64-hex `decision_digest` is persisted on the install record for
+  both authorized and denied outcomes — the durable join key, not just a
+  prefix in transition prose.
+
 ## Per-criterion mapping (issue #969 acceptance)
 
 * **never broader than any ceiling** — `TestNeverBroaderThanAnyCeiling`:
@@ -72,10 +98,10 @@ permission denial reasons in the audited transition trail.
 
 ## Verification run against this change
 
-`uv run pytest packages/maistro-core/tests/extensions -q` → 191 passed;
+`uv run pytest packages/maistro-core/tests/extensions -q` → 198 passed;
 `uv run pytest packages/maistro-server/tests/api/test_extensions_api.py -q`
 → 16 passed; `uv run ruff check .` and `uv run ruff format --check .` clean;
-`uv run mypy packages/maistro-core/src/maistro/extensions` clean; the
+`uv run mypy packages/maistro-core/src` clean; the
 vulture per-identity scan (CI arguments: `packages/*/src --min-confidence 60
 --exclude '*/third_party/*'`) matches `quality/vulture-baseline.json` with
 zero added and zero stale identities; `scripts/check-reachability.py`

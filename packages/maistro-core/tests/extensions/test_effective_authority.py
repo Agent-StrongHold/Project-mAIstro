@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -37,7 +38,11 @@ from maistro.extensions import (
 )
 from maistro.extensions.effective_authority import PublisherTrust, TrustTier
 from maistro.extensions.manifest import inspect_manifest
-from maistro.extensions.service import LoadedExtension, UnwiredExtensionLoader
+from maistro.extensions.service import (
+    InvalidTransition,
+    LoadedExtension,
+    UnwiredExtensionLoader,
+)
 from maistro.extensions.types import TrustClaim
 
 PAYLOAD = b"effective-authority-payload"
@@ -266,6 +271,17 @@ class TestDelegationCappedFromBothDirections:
         assert authority.blockers
         assert all("not trusted" in b for b in authority.blockers)
 
+    def test_untrusted_tier_denies_even_if_contradictorily_marked_trusted(self) -> None:
+        # PublisherTrust is publicly constructible; trusted=True paired with
+        # the UNTRUSTED tier must still be an unconditional package blocker.
+        authority = _authority(
+            trust=PublisherTrust(tier=TrustTier.UNTRUSTED, trusted=True),
+            host=_host(tiers={TrustTier.UNTRUSTED: ("storage.workspace",)}),
+        )
+        assert authority.effective == ()
+        assert authority.blockers
+        assert all("not trusted" in b for b in authority.blockers)
+
 
 # --------------------------------------------------------------------------
 # Deny-by-default behavior, including the trust/enablement blockers
@@ -379,6 +395,48 @@ class TestStableInspectable:
         for variant in variants:
             assert variant.decision_digest != base.decision_digest
         assert _authority().decision_digest == base.decision_digest
+
+    def test_digest_tracks_the_authority_context(self) -> None:
+        # Review follow-up (#969): two decisions with the same permission
+        # projection but different authority inputs are different decisions.
+        # Caller principal, Workspace scope, trust tier (at equivalent
+        # ceilings), and even unused policy allowances all change the digest,
+        # so cross-caller/cross-Workspace decisions never share an evidence
+        # identity.
+        base = _authority()
+        assert base.effective == ("network.http", "storage.workspace")
+        variants = [
+            # Same delegation, different delegating principal:
+            _authority(
+                caller=CallerAuthority(
+                    principal_id="agent-8",
+                    delegated_permissions=frozenset(("network.http", "storage.workspace")),
+                )
+            ),
+            # Same enablement and ceiling, different Workspace scope:
+            _authority(
+                workspace=WorkspaceExtensionPolicy(
+                    scope=ExtensionScope(org_id="org-1"),
+                    enabled_extensions=frozenset({MANIFEST_ID}),
+                    permission_ceiling=frozenset(("network.http", "storage.workspace")),
+                )
+            ),
+            # Different trust tier at equivalent ceilings:
+            _authority(
+                trust=_trusted(TrustTier.VERIFIED),
+                host=_host(
+                    tiers={
+                        TrustTier.VERIFIED: ("network.http", "storage.workspace"),
+                        TrustTier.UNVERIFIED: ("network.http", "storage.workspace"),
+                    }
+                ),
+            ),
+            # A widened host allowance the manifest never uses:
+            _authority(host=_host(ceiling=("network.http", "storage.workspace", "extra.cap"))),
+        ]
+        for variant in variants:
+            assert variant.effective == base.effective  # same projection...
+            assert variant.decision_digest != base.decision_digest  # ...different decision
 
     def test_digest_anchors_the_manifest_bytes(self) -> None:
         authority = _authority()
@@ -638,15 +696,18 @@ class TestServiceIntegration:
         assert "effective authority is empty" in transitions[-1].reason
         assert "not enabled" in transitions[-1].reason
 
-    async def test_untrusted_evidence_at_authorize_denies(self) -> None:
+    async def test_empty_intersection_from_ceilings_records_denial_reasons(self) -> None:
+        # Review follow-up (#969): a trusted, enabled package whose host
+        # ceiling admits nothing also lands in the empty-intersection branch,
+        # but there ``blockers`` is empty — the trail must fall back to the
+        # per-permission denials so the audit record still explains why.
         from maistro.extensions.effective_authority import ExtensionAuthorityInputs
 
         inputs = ExtensionAuthorityInputs(
-            # Evidence names a publisher the allowlist never trusted:
-            trust_claim=TrustClaim(publisher_id="mallory", signature_present=False),
-            tier_of={},
-            default_tier=TrustTier.VERIFIED,
-            host=_host(),
+            trust_claim=TrustClaim(publisher_id="acme", signature_present=False),
+            tier_of={"acme": TrustTier.VERIFIED},
+            default_tier=TrustTier.UNVERIFIED,
+            host=_host(ceiling=()),
             caller=_caller(),
             workspace=_workspace(),
         )
@@ -661,7 +722,231 @@ class TestServiceIntegration:
         )
         assert denied.state.value == "denied"
         transitions = await service.transitions(record.install_id, scope=SCOPE)
-        assert "not trusted" in transitions[-1].reason
+        reason = transitions[-1].reason
+        assert "effective authority is empty" in reason
+        assert "denials: network.http" in reason
+        assert "denials:" in reason and "storage.workspace" in reason
+        assert "host policy ceiling excludes it" in reason
+
+    async def test_empty_permissions_manifest_with_blocker_denies(self) -> None:
+        # Degenerate path (#969 review): a disabled extension whose manifest
+        # requests no permissions at all. There are no per-permission denials
+        # to explain, but the package-level Workspace blocker still denies —
+        # the record must never become AUTHORIZED, and install must never
+        # reach the loader.
+        from maistro.extensions.effective_authority import ExtensionAuthorityInputs
+
+        class SpyLoader:
+            def __init__(self) -> None:
+                self.records = []
+
+            async def load(self, record, payload):  # type: ignore[no-untyped-def]
+                self.records.append(record)
+                return _loaded(record)
+
+        spy = SpyLoader()
+        inputs = ExtensionAuthorityInputs(
+            trust_claim=TrustClaim(publisher_id="acme", signature_present=False),
+            tier_of={"acme": TrustTier.VERIFIED},
+            default_tier=TrustTier.UNVERIFIED,
+            host=_host(),
+            caller=_caller(),
+            workspace=_workspace(enabled=None),
+        )
+        trust_policy = TrustPolicy(trusted_publishers=frozenset({"acme"}), require_signature=False)
+        service = ExtensionInstallService(
+            InMemoryExtensionStore(),
+            loader=spy,
+            trust_policy=trust_policy,
+            authority_inputs=inputs,
+            install_id_factory=lambda: "install-88",
+        )
+        package = ExtensionPackage(manifest_bytes=_manifest_bytes(permissions=()), payload=PAYLOAD)
+        record = await service.inspect(
+            actor="operator",
+            scope=SCOPE,
+            package=package,
+            trust_evidence=TrustClaim(publisher_id="acme", signature_present=False),
+        )
+        assert record.requested_permissions == ()
+        denied = await service.authorize(
+            record.install_id,
+            actor="operator",
+            scope=SCOPE,
+            approve=True,
+            reason="operator approves",
+        )
+        assert denied.state.value == "denied"
+        transitions = await service.transitions(record.install_id, scope=SCOPE)
+        assert "effective authority is empty" in transitions[-1].reason
+        assert "not enabled" in transitions[-1].reason
+        with pytest.raises(InvalidTransition):
+            await service.install(record.install_id, actor="operator", scope=SCOPE, payload=PAYLOAD)
+        assert spy.records == []  # the loader — the code-execution seam — never ran
+
+    async def test_authorize_binds_to_the_inspected_evidence(self) -> None:
+        """Authorization re-evaluates the record's own trust evidence (#975).
+
+        A deployment-wide claim for a different publisher must not poison the
+        decision: the record stands on the evidence that admitted it at
+        inspection, so services handling several publishers decide each
+        install on its own evidence.
+        """
+        from maistro.extensions.effective_authority import ExtensionAuthorityInputs
+
+        inputs = ExtensionAuthorityInputs(
+            # The service-level claim names a different publisher than the
+            # evidence the record was inspected with:
+            trust_claim=TrustClaim(publisher_id="mallory", signature_present=False),
+            tier_of={},
+            default_tier=TrustTier.UNVERIFIED,
+            host=_host(),
+            caller=_caller(),
+            workspace=_workspace(),
+        )
+        service = _make_service(authority_inputs=inputs)
+        record = await _inspected(service)  # inspected with valid acme evidence
+        assert record.trust_evidence is not None
+        assert record.trust_evidence.publisher_id == "acme"
+        authorized = await service.authorize(
+            record.install_id,
+            actor="operator",
+            scope=SCOPE,
+            approve=True,
+            reason="operator approves",
+        )
+        assert authorized.state.value == "authorized"
+
+    async def test_authorize_denies_when_the_wired_policy_covers_a_different_scope(self) -> None:
+        # Review follow-up (#969): the Workspace layer is only applicable to
+        # its own scope. A service holding records from several orgs must not
+        # authorize one org's record under another org's enablement/ceiling:
+        # a mismatched policy is not an applicable ceiling, so the request is
+        # denied before any authority is computed.
+        from maistro.extensions.effective_authority import ExtensionAuthorityInputs
+
+        class SpyLoader:
+            def __init__(self) -> None:
+                self.records = []
+
+            async def load(self, record, payload):  # type: ignore[no-untyped-def]
+                self.records.append(record)
+                return _loaded(record)
+
+        spy = SpyLoader()
+        inputs = ExtensionAuthorityInputs(
+            trust_claim=TrustClaim(publisher_id="acme", signature_present=False),
+            tier_of={"acme": TrustTier.VERIFIED},
+            default_tier=TrustTier.UNVERIFIED,
+            host=_host(),
+            caller=_caller(),
+            # A fully-permissive policy — but for a different org:
+            workspace=WorkspaceExtensionPolicy(
+                scope=ExtensionScope(org_id="org-2"),
+                enabled_extensions=frozenset({MANIFEST_ID}),
+                permission_ceiling=frozenset(("network.http", "storage.workspace")),
+            ),
+        )
+        trust_policy = TrustPolicy(trusted_publishers=frozenset({"acme"}), require_signature=False)
+        service = ExtensionInstallService(
+            InMemoryExtensionStore(),
+            loader=spy,
+            trust_policy=trust_policy,
+            authority_inputs=inputs,
+            install_id_factory=lambda: "install-99",
+        )
+        record = await _inspected(service)  # record lives in SCOPE (org-1/ws-9)
+        denied = await service.authorize(
+            record.install_id,
+            actor="operator",
+            scope=SCOPE,
+            approve=True,
+            reason="operator approves",
+        )
+        assert denied.state.value == "denied"
+        assert denied.granted_permissions == ()
+        assert denied.decision_digest is None  # no decision was computed
+        transitions = await service.transitions(record.install_id, scope=SCOPE)
+        reason = transitions[-1].reason
+        assert "no Workspace extension policy covers org:org-1/workspace:ws-9" in reason
+        assert "org:org-2" in reason
+        assert spy.records == []  # the loader — the code-execution seam — never ran
+
+    async def test_authorize_persists_the_full_decision_digest(self) -> None:
+        # Review follow-up (#969): the record must carry the full 64-hex
+        # decision digest — the durable join key — not just a prefix embedded
+        # in transition prose, and the persisted digest must be exactly the
+        # canonical decision re-derived from the recorded inputs.
+        from maistro.extensions.effective_authority import (
+            ExtensionAuthorityInputs,
+            compute_effective_authority,
+            resolve_publisher_trust,
+        )
+
+        inputs = ExtensionAuthorityInputs(
+            trust_claim=TrustClaim(publisher_id="acme", signature_present=False),
+            tier_of={"acme": TrustTier.VERIFIED},
+            default_tier=TrustTier.UNVERIFIED,
+            host=_host(tiers={TrustTier.VERIFIED: ("network.http",)}),
+            caller=_caller(),
+            workspace=_workspace(),
+        )
+        trust_policy = TrustPolicy(trusted_publishers=frozenset({"acme"}), require_signature=False)
+        service = _make_service(authority_inputs=inputs)
+        record = await _inspected(service)
+        authorized = await service.authorize(
+            record.install_id,
+            actor="operator",
+            scope=SCOPE,
+            approve=True,
+            reason="operator approves",
+        )
+        assert authorized.decision_digest is not None
+        assert len(authorized.decision_digest) == 64
+        expected = compute_effective_authority(
+            record.manifest,
+            trust=resolve_publisher_trust(
+                record.manifest,
+                record.trust_evidence,
+                trust_policy,
+                tier_of=inputs.tier_of,
+                default_tier=inputs.default_tier,
+            ),
+            host=inputs.host,
+            caller=inputs.caller,
+            workspace=inputs.workspace,
+        )
+        assert authorized.decision_digest == expected.decision_digest
+
+        # A denial is a decision too: its digest is persisted as evidence.
+        denied_inputs = replace(inputs, workspace=_workspace(enabled=None))
+        denied_service = _make_service(authority_inputs=denied_inputs)
+        denied = await _inspected(denied_service)
+        denied_record = await denied_service.authorize(
+            denied.install_id,
+            actor="operator",
+            scope=SCOPE,
+            approve=True,
+            reason="operator approves",
+        )
+        assert denied_record.state.value == "denied"
+        assert denied_record.decision_digest is not None
+        assert len(denied_record.decision_digest) == 64
+
+    async def test_untrusted_evidence_is_rejected_at_inspection(self) -> None:
+        # Evidence naming a publisher the allowlist never trusted never
+        # reaches authorization: inspection rejects it outright.
+        service = _make_service()
+        package = ExtensionPackage(manifest_bytes=_manifest_bytes(), payload=PAYLOAD)
+        record = await service.inspect(
+            actor="operator",
+            scope=SCOPE,
+            package=package,
+            trust_evidence=TrustClaim(publisher_id="mallory", signature_present=False),
+        )
+        assert record.state.value == "rejected"
+        transitions = await service.transitions(record.install_id, scope=SCOPE)
+        assert "mallory" in transitions[-1].reason
 
     async def test_without_inputs_the_grant_freezes_to_the_request(self) -> None:
         # The #953 contract stays intact when no authority inputs are wired.

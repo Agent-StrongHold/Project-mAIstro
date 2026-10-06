@@ -332,9 +332,16 @@ def _resolve_ceilings(
 def _package_blockers(
     *, manifest: ExtensionManifest, trust: PublisherTrust, workspace: WorkspaceExtensionPolicy
 ) -> tuple[str, ...]:
-    """Package-level blockers: each denies every requested permission."""
+    """Package-level blockers: each denies every requested permission.
+
+    The UNTRUSTED tier denies unconditionally, independent of ``trusted``:
+    :class:`PublisherTrust` is publicly constructible, so the two fields
+    could otherwise be combined into a contradictory
+    ``trusted=True``/``UNTRUSTED`` value that a per-tier ceiling would
+    grant. An untrusted publisher holds nothing.
+    """
     blockers: list[str] = []
-    if not trust.trusted:
+    if not trust.trusted or trust.tier is TrustTier.UNTRUSTED:
         detail = "; ".join(trust.failures) if trust.failures else "trust evaluation failed"
         blockers.append(f"publisher {manifest.publisher!r} is not trusted: {detail}")
     if manifest.extension_id not in workspace.enabled_extensions:
@@ -378,8 +385,22 @@ def _canonical_decision_payload(
     effective: tuple[str, ...],
     denials: tuple[PermissionDenial, ...],
     blockers: tuple[str, ...],
+    trust: PublisherTrust,
+    host: HostExtensionPolicy,
+    caller: CallerAuthority,
+    workspace: WorkspaceExtensionPolicy,
 ) -> bytes:
-    """The exact bytes a decision digest is taken over."""
+    """The exact bytes a decision digest is taken over.
+
+    Besides the decision itself (projection, denials, blockers, package
+    identity), the payload carries a canonical fingerprint of every layer
+    input — trust verdict and tier, host/tier/family ceilings, caller
+    principal and delegation, Workspace scope, enablement, and ceiling. Two
+    decisions are therefore digest-identical only when computed from the
+    same authority context, not merely from the same permission projection
+    (cross-caller, cross-Workspace, and unused-allowance differences all
+    change the digest).
+    """
     payload = {
         "blockers": list(blockers),
         "denials": [
@@ -391,6 +412,30 @@ def _canonical_decision_payload(
         "publisher": publisher,
         "requested": list(requested),
         "version": version,
+        "context": {
+            "trust": {"tier": trust.tier.value, "trusted": trust.trusted},
+            "host": {
+                "ceiling": sorted(host.ceiling),
+                "tier_ceilings": {
+                    tier.value: sorted(perms)
+                    for tier, perms in sorted(
+                        host.tier_ceilings.items(), key=lambda item: item[0].value
+                    )
+                },
+                "family_ceilings": {
+                    family: sorted(perms) for family, perms in sorted(host.family_ceilings.items())
+                },
+            },
+            "caller": {
+                "principal": caller.principal_id,
+                "delegated": sorted(caller.delegated_permissions),
+            },
+            "workspace": {
+                "scope": workspace.scope.describe,
+                "enabled": sorted(workspace.enabled_extensions),
+                "ceiling": sorted(workspace.permission_ceiling),
+            },
+        },
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
@@ -445,6 +490,10 @@ def compute_effective_authority(
             effective=frozen_effective,
             denials=tuple(denials),
             blockers=tuple(blockers),
+            trust=trust,
+            host=host,
+            caller=caller,
+            workspace=workspace,
         )
     ).hexdigest()
 
