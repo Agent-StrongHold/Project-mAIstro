@@ -588,9 +588,18 @@ def test_a_bare_filename_resolves_recursively(gate):
     assert findings.unresolved_paths == []
 
 
+@pytest.mark.timeout(120)
 def test_the_shipped_document_passes(gate):
     """The gate is only worth wiring into CI if the document it guards is
     currently in the state it demands."""
+    # Whole-repository census (SECURITY.md's counted claims are re-measured over
+    # every package source), and under the coverage gate's `--source=scripts`
+    # producer every line of the gate script is traced. Measured 13s bare and
+    # 21s pinned to one CPU under that tracing, against the suite's 30s default:
+    # the coverage-gate combine step red once on exactly this test on a loaded
+    # runner, then passed twice unchanged. Same shape as the cross-package and
+    # execution-lifecycle scans, so the margin is stated rather than left to be
+    # rediscovered as an intermittent red.
     assert gate.main() == 0
 
 

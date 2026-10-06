@@ -582,6 +582,22 @@ class SqliteRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         return model_of_json(Run, row[0])
 
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # Same expression-index pattern as the schedule-occurrence claim above:
+        # the task admitter's provenance lives inside the payload JSON, and
+        # json_extract reads it without every admitter owning columns.
+        row = await self._fetchone(
+            """
+            SELECT payload FROM canonical_runs
+            WHERE json_extract(payload, '$.provenance.task_id') = ?
+            LIMIT 1
+            """,
+            (task_id,),
+        )
+        if row is None:
+            return None
+        return model_of_json(Run, row[0])
+
     async def _require_locked_parent_scope(
         self,
         graph: Graph,
