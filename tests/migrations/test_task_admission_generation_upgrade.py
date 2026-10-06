@@ -575,7 +575,10 @@ class TestTheDowngrade:
         # moves off whatever head it started from. The assertion tracks the
         # head, not a fixed literal — every develop collision re-parents the
         # chain tip, and the invariant under test is that the refused
-        # downgrade leaves the stamp AT HEAD.
+        # downgrade leaves the stamp AT HEAD. The literal drifted twice
+        # already (043_invocation_quota_door, 055, 056, and this branch's
+        # Gauntlet revision moved the head again), so the head is now read
+        # from the same version files the upgrade above ran.
         assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()

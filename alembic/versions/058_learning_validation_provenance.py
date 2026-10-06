@@ -17,11 +17,11 @@ columns`): they are the transition's actor and instant, shared with the
 Gauntlet's audit trail, so this revision adds only what is exclusively the
 Gauntlet's — the evaluator build, the evaluation Runs, the frozen content.
 
-Revision ID: 057
-Revises: 056
+Revision ID: 058
+Revises: 057
 Create Date: 2026-10-01
 
-Renumbered four times during develop integrations. First 048 -> 051: while
+Renumbered five times during develop integrations. First 048 -> 051: while
 this branch was open, develop's `048_canvas_job_retry_backoff` (#398) claimed
 the numeric slot (and `049_canonical_run_eval_scores` #792 and
 `050_design_creative_briefs` #774 chained onto it), which left the tree with
@@ -40,9 +40,12 @@ keeping exactly one linear head 053. Then 053 -> 054: develop's M4-B5
 (`054_learning_applicability_epistemics`, M4-B3), `055`
 (`055_task_admission_generations`), `043_invocation_quota_door` on 055, and
 `056` (`056_user_model_facts`) on the quota door, so this revision re-parents
-onto develop's tip `056` as `057_learning_validation_provenance`, keeping
+onto develop's tip `056`. Then 057 -> 058: develop's #863
+(`057_run_store_planner_stability`) claimed the `057` slot on the same `056`
+parent while this revision was open, so this revision re-parents onto that
+planner-stability tip as `058_learning_validation_provenance`, keeping
 exactly one linear head. A string-suffixed id like
-`057_learning_validation_provenance` remains rejected: it exceeds alembic's
+`058_learning_validation_provenance` remains rejected: it exceeds alembic's
 32-character `alembic_version.version_num` limit (see
 041_quota_invocation_evidence).
 """
@@ -51,8 +54,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "057"
-down_revision = "056"
+revision = "058"
+down_revision = "057"
 branch_labels = None
 depends_on = None
 
