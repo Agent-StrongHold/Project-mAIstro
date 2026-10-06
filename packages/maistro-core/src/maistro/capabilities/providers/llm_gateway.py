@@ -321,41 +321,26 @@ async def execute_model_chat(
     adapter_provider: AdapterGatewayProvider | None = None
     if isinstance(provider, AdapterGatewayProvider):
         adapter_provider = provider
-    elif not isinstance(provider, LlmGatewayProvider):
+        preflight = _adapter_preflight(adapter_provider, request, endpoint)
+    elif isinstance(provider, LlmGatewayProvider):
+        preflight = _gateway_preflight(provider, request, endpoint)
+    else:
         raise TypeError(f"model-chat Invocation resolved a non-gateway provider: {provider!r}")
 
-    if adapter_provider is not None:
-        spec = adapter_provider.spec
-        url_base: object = spec.base_url.rstrip("/")
-        timeout_s: float = spec.timeout_s
-        payload: dict[str, object] = adapter_provider.adapter.normalize_request(
-            adapter_provider.name, request
-        )
-        api_key = endpoint.api_key
-        headers = _adapter_request_headers(spec, api_key=api_key)
-        params = _adapter_query_params(spec, api_key=api_key)
-    else:
-        assert isinstance(provider, LlmGatewayProvider)
-        url_base = endpoint._base
-        timeout_s = endpoint.timeout_s
-        payload = _chat_payload(provider, request)
-        headers = endpoint.authorization_header()
-        params = None
-
     try:
-        async with shared_client(timeout=timeout_s) as client:
+        async with shared_client(timeout=preflight.timeout_s) as client:
             # params only crosses when an adapter declared query-style auth, so
             # a caller-side double of the HTTP client with a strict post()
             # signature sees exactly the gateway-era call shape. The splat (not
             # a plain params= kwarg) is what keeps that shape; mypy cannot fold
             # a heterogeneous splat into httpx's positional signature.
             query_kwargs: dict[str, dict[str, str]] = (
-                {"params": params} if params is not None else {}
+                {"params": preflight.params} if preflight.params is not None else {}
             )
             response = await client.post(
-                f"{url_base}/chat/completions",
-                headers=headers,
-                json=payload,
+                f"{preflight.url_base}/chat/completions",
+                headers=preflight.headers,
+                json=preflight.payload,
                 **query_kwargs,  # type: ignore[arg-type]
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
@@ -369,6 +354,78 @@ async def execute_model_chat(
         body = _json_body(response)
         return adapter_provider.adapter.normalize_response(body)
     return _checked_body(response)
+
+
+class _ModelCallPreflight:
+    """Everything the one governed POST needs before it is issued.
+
+    Built by :func:`_adapter_preflight` or :func:`_gateway_preflight`; the
+    transport itself stays a single code path for both provider kinds.
+    """
+
+    __slots__ = ("headers", "params", "payload", "timeout_s", "url_base")
+
+    def __init__(
+        self,
+        *,
+        url_base: str,
+        timeout_s: float,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        params: dict[str, str] | None,
+    ) -> None:
+        self.url_base = url_base
+        self.timeout_s = timeout_s
+        self.payload = payload
+        self.headers = headers
+        self.params = params
+
+
+def _adapter_preflight(
+    adapter_provider: Any,
+    request: ModelChatRequest,
+    endpoint: GatewayEndpoint,
+) -> _ModelCallPreflight:
+    """Resolve one adapter-backed call's destination, payload, and auth.
+
+    Pre-effect adapter code: a normalizer that refuses this particular runtime
+    input has not yet caused any external effect, so the refusal must read as
+    not-applied (safe to reconcile and retry) rather than UNKNOWN — the same
+    rule as the unreachable-endpoint branch in :func:`execute_model_chat`.
+    """
+
+    spec = adapter_provider.spec
+    try:
+        payload = adapter_provider.adapter.normalize_request(adapter_provider.name, request)
+    except Exception as exc:
+        raise EffectNotApplied(
+            f"adapter {spec.adapter_id!r} refused the request before any HTTP "
+            f"effect occurred: {type(exc).__name__}: {exc}"
+        ) from exc
+    api_key = endpoint.api_key
+    return _ModelCallPreflight(
+        url_base=spec.base_url.rstrip("/"),
+        timeout_s=spec.timeout_s,
+        payload=payload,
+        headers=_adapter_request_headers(spec, api_key=api_key),
+        params=_adapter_query_params(spec, api_key=api_key),
+    )
+
+
+def _gateway_preflight(
+    provider: LlmGatewayProvider,
+    request: ModelChatRequest,
+    endpoint: GatewayEndpoint,
+) -> _ModelCallPreflight:
+    """Resolve the shipped-gateway call's destination, payload, and auth."""
+
+    return _ModelCallPreflight(
+        url_base=endpoint._base,
+        timeout_s=endpoint.timeout_s,
+        payload=_chat_payload(provider, request),
+        headers=endpoint.authorization_header(),
+        params=None,
+    )
 
 
 def _json_body(response: Any) -> dict[str, object]:

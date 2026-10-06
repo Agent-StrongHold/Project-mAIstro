@@ -570,7 +570,6 @@
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused attribute '_self_id'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'chat_bind'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'chat_port'",
-        "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'litellm_base_url'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'litellm_virtual_key'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'pools_config_path'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'use_fake_provider'",

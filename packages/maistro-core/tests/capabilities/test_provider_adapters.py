@@ -142,11 +142,14 @@ class AcmeAdapter(ReferenceChatAdapter):
             return None
 
     def error_kind_for(self, status: int) -> str:
+        # Pinned to canonical classification (see ``_PINNED_ERROR_STATUSES``):
+        # a third party classifies within the taxonomy, it cannot contradict
+        # what the canonical resilience classifier does with the status.
         if status in (401, 403):
             return AdapterErrorKind.AUTH
         if status == 429:
             return AdapterErrorKind.RATE_LIMITED
-        if status >= 500 or status in (408, 409):
+        if status >= 500:
             return AdapterErrorKind.RETRYABLE
         return AdapterErrorKind.PERMANENT
 
@@ -582,8 +585,10 @@ async def test_adapter_never_sees_the_secret_and_payload_carries_none(
     )
 
     # the hook received no credential argument at all: one registration
-    # conformance probe plus the one governed call, both secret-free
+    # conformance probe per declared model plus the one governed call, all
+    # secret-free
     assert [p["messages"] for p in seen_payloads] == [
+        [{"role": "user", "content": "conformance"}],
         [{"role": "user", "content": "conformance"}],
         [{"role": "user", "content": "h"}],
     ]
@@ -983,8 +988,8 @@ async def test_unhealthy_probe_refuses_canonical_selection(
         "maistro.capabilities.providers.llm_gateway.probe_adapter_health", unhealthy
     )
     catalog, store = await _catalog_with(AcmeAdapter(_spec(health_path="/healthz")))
-    await catalog.probe_all()
-    assert catalog.unhealthy_adapters() == ("acme.models",)
+    await catalog.probe_adapter("acme.models")
+    assert not catalog.is_healthy("acme.models")
     resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
     resolved = await resolver(_binding())
     assert isinstance(resolved, Unavailable)
@@ -1002,10 +1007,10 @@ async def test_recovery_probe_restores_canonical_selection(
     monkeypatch.setattr("maistro.capabilities.providers.llm_gateway.probe_adapter_health", flapping)
     catalog, store = await _catalog_with(AcmeAdapter(_spec(health_path="/healthz")))
     catalog.set_availability_sync(registry_availability_sync(store))
-    await catalog.probe_all()
+    await catalog.probe_adapter("acme.models")
     assert not catalog.is_healthy("acme.models")
     assert not store.is_available("acme-mini")  # excluded from routing up front
-    await catalog.probe_all()
+    await catalog.probe_adapter("acme.models")
     assert catalog.is_healthy("acme.models")
     assert store.is_available("acme-mini")  # recovery restores routing
     resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
@@ -1044,7 +1049,7 @@ async def test_unpinned_routing_falls_through_unhealthy_adapter(
         )
     )
     catalog.set_availability_sync(registry_availability_sync(store))
-    await catalog.probe_all()
+    await catalog.probe_adapter("acme.models")
     assert not store.is_available("acme-mini")
     resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
     resolved = await resolver(_binding(provider_name=""))
@@ -1054,8 +1059,8 @@ async def test_unpinned_routing_falls_through_unhealthy_adapter(
 
 async def test_adapter_without_a_declared_probe_is_never_marked_unhealthy() -> None:
     catalog, store = await _catalog_with(AcmeAdapter(_spec()))
-    await catalog.probe_all()
-    assert catalog.unhealthy_adapters() == ()
+    await catalog.probe_adapter("acme.models")
+    assert catalog.is_healthy("acme.models")
     resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
     assert isinstance(await resolver(_binding()), AdapterGatewayProvider)
 
@@ -1155,7 +1160,7 @@ def test_adapter_config_refuses_a_blank_credential_reference(blank: str) -> None
 
     from pydantic import ValidationError
 
-    with pytest.raises(ValidationError, match="credential refs cannot be empty"):
+    with pytest.raises(ValidationError, match="adapter wiring refs cannot contain empty"):
         _adapter_config(credential_refs=("acme-primary", blank))
 
 
@@ -1341,3 +1346,323 @@ async def test_bootstrap_self_registers_the_builtin_reference_adapter() -> None:
     )
     assert catalog.registered_ids() == ("maistro.reference",)
     assert (await store.get_model("reference-chat")).provider == "maistro.reference"
+
+
+# --- Repair round: declared-URL honesty, taxonomy pins, scoped probes --------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://",  # no host: a prefix check passes, httpx would not
+        "https://",  # ditto
+        "api.acme.example/v1",  # not absolute http(s)
+        "https://user:secret@api.acme.example",  # credential material in the URL
+        "http://[::1",  # unparseable IPv6
+    ],
+)
+def test_spec_refuses_malformed_or_userinfo_base_urls(url: str) -> None:
+    """A real parse, not a prefix check; userinfo is secret material."""
+
+    with pytest.raises(ValueError, match="base_url"):
+        _spec(base_url=url)
+
+
+@pytest.mark.contract("behavioral")
+async def test_registration_refuses_a_non_json_serializable_payload() -> None:
+    """Conformance must use the transport's encoder rules, not a lenient one.
+
+    ``json=`` on the shared client serializes with the standard encoder; an
+    adapter whose payload carries a ``Decimal`` passes a ``default=str``
+    conformance probe and then fails before its first real HTTP request.
+    """
+
+    from decimal import Decimal
+
+    class DecimalPayload(AcmeAdapter):
+        def normalize_request(self, model: str, request: Any) -> dict[str, object]:
+            payload = super().normalize_request(model, request)
+            if model == "acme-big":
+                payload["weight"] = Decimal("0.5")
+            return payload
+
+    report = run_adapter_conformance(DecimalPayload(_spec()))
+    failed = [check for check in report.checks if check.name == "request_normalization"]
+    assert failed and not failed[0].passed
+    assert "acme-big" in failed[0].detail
+
+    catalog = ProviderAdapterCatalog()
+    with pytest.raises(AdapterRegistrationError, match="request_normalization"):
+        await register_adapter_models(catalog, InMemoryProviderRegistry(), DecimalPayload(_spec()))
+    assert catalog.registered_ids() == ()  # nothing recorded on refusal
+
+
+@pytest.mark.contract("behavioral")
+async def test_registration_refuses_an_adapter_failing_on_a_later_model() -> None:
+    """Conformance exercises every declared model, not only ``models[0]``.
+
+    Registration publishes every model, so a model-specific normalizer bug
+    must fail registration for that model instead of surfacing on its first
+    production request.
+    """
+
+    class Selective(AcmeAdapter):
+        def normalize_request(self, model: str, request: Any) -> dict[str, object]:
+            if model == "acme-big":
+                raise RuntimeError("big model needs a payload this adapter cannot build")
+            return super().normalize_request(model, request)
+
+    catalog = ProviderAdapterCatalog()
+    with pytest.raises(AdapterRegistrationError, match="request_normalization"):
+        await register_adapter_models(catalog, InMemoryProviderRegistry(), Selective(_spec()))
+    assert catalog.registered_ids() == ()
+
+
+def test_conformance_refuses_a_taxonomy_contradicting_canonical_classification() -> None:
+    """A provider may classify within the taxonomy, never against it.
+
+    Canonical resilience treats HTTP 500 as retryable; an adapter declaring
+    it permanent would be advertising an override of canonical policy the
+    adapter seam does not have.
+    """
+
+    class Overriding(AcmeAdapter):
+        def error_kind_for(self, status: int) -> str:
+            if status == 500:
+                return AdapterErrorKind.PERMANENT
+            return super().error_kind_for(status)
+
+    report = run_adapter_conformance(Overriding(_spec()))
+    failed = [check for check in report.checks if check.name == "error_taxonomy"]
+    assert failed and not failed[0].passed
+    assert "500" in failed[0].detail
+
+
+def test_reference_error_taxonomy_matches_canonical_classification() -> None:
+    from maistro.capabilities.provider_adapters import _PINNED_ERROR_STATUSES
+
+    adapter = ReferenceChatAdapter(reference_adapter_spec())
+    for status, kind in _PINNED_ERROR_STATUSES:
+        assert adapter.error_kind_for(status) == kind, status
+
+
+def test_reference_payload_omits_an_unset_temperature() -> None:
+    """``None`` leaves sampling to the Provider (same rule as the gateway)."""
+
+    adapter = ReferenceChatAdapter(reference_adapter_spec())
+    unset = adapter.normalize_request(
+        "reference-chat",
+        ModelChatRequest(
+            model="reference-chat",
+            messages=[{"role": "user", "content": "h"}],
+            temperature=None,
+        ),
+    )
+    assert "temperature" not in unset
+    set_explicitly = adapter.normalize_request(
+        "reference-chat",
+        ModelChatRequest(
+            model="reference-chat",
+            messages=[{"role": "user", "content": "h"}],
+            temperature=0.2,
+        ),
+    )
+    assert set_explicitly["temperature"] == 0.2
+
+
+async def test_reference_model_declares_the_adapters_tools_and_structured_output() -> None:
+    """Resolution enforces model-level flags, so the reference model must
+    restate the adapter's declaration or refuse the requests it supports."""
+
+    spec = reference_adapter_spec()
+    assert spec.models[0].capabilities.tools is True
+    assert spec.models[0].capabilities.structured_output is True
+
+    catalog, store = await _catalog_with(ReferenceChatAdapter(spec))
+    resolver = resolve_model_chat_provider(store, CostAwareRouter(store), adapters=catalog)
+    resolved = await resolver(
+        _binding(
+            provider_name="reference-chat",
+            config={"adapter_id": "maistro.reference"},
+        )
+    )
+    assert isinstance(resolved, AdapterGatewayProvider)
+    assert resolved.capabilities.tools is True
+    assert resolved.capabilities.structured_output is True
+
+
+async def test_bootstrap_registers_the_reference_adapter_at_the_deployment_url() -> None:
+    """The reference adapter honors ``AgentConfig.litellm_url`` like the
+    shipped gateway path, instead of always dialing the Compose hostname."""
+
+    catalog = ProviderAdapterCatalog()
+    store = InMemoryProviderRegistry()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    shim = _ConfigShim([_adapter_config(adapter_id="maistro.reference", binding_id="binding-ref")])
+    shim.litellm_url = "http://gateway.internal:8080"
+    await bootstrap_provider_adapters(shim, effects, store, catalog)
+
+    registered = catalog.registered("maistro.reference")
+    assert registered is not None
+    assert registered.spec.base_url == "http://gateway.internal:8080"
+
+
+async def test_boot_probe_covers_only_the_configured_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``probe_health_at_boot`` on one entry probes that adapter only."""
+
+    probed: list[str] = []
+
+    async def tracking(adapter: Any) -> bool:
+        probed.append(adapter.spec.adapter_id)
+        return True
+
+    monkeypatch.setattr("maistro.capabilities.providers.llm_gateway.probe_adapter_health", tracking)
+    catalog, store = await _catalog_with(AcmeAdapter(_spec(health_path="/healthz")))
+    await register_adapter_models(
+        catalog,
+        store,
+        AcmeAdapter(
+            _spec(
+                adapter_id="beta.models",
+                credential_provider="beta",
+                credential_ref="beta-primary",
+                health_path="/healthz",
+                models=(
+                    {
+                        "name": "beta-mini",
+                        "cost_per_1k_input": 0.1,
+                        "cost_per_1k_output": 0.4,
+                        "latency_p50_ms": 150,
+                        "tier": "fast",
+                    },
+                ),
+            )
+        ),
+    )
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    await bootstrap_provider_adapters(
+        _ConfigShim([_adapter_config(probe_health_at_boot=True)]), effects, store, catalog
+    )
+    assert probed == ["acme.models"]  # beta.models was never asked for a probe
+
+
+async def test_probe_adapter_for_an_unknown_id_reads_healthy() -> None:
+    catalog = ProviderAdapterCatalog()
+    assert await catalog.probe_adapter("nobody.models") is True
+    assert catalog.is_healthy("nobody.models") is True
+
+
+async def test_bootstrap_scopes_the_binding_to_the_declared_node_and_policies() -> None:
+    """``node_id``/``policy_refs`` mirror ModelBindingConfig: an adapter
+    credential can be scoped to one node with operator-chosen policies."""
+
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()))
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    loaded = await bootstrap_provider_adapters(
+        _ConfigShim([_adapter_config(node_id="summarize", policy_refs=("policy/egress-default",))]),
+        effects,
+        store,
+        catalog,
+    )
+    assert loaded[0].node_id == "summarize"
+    assert loaded[0].policy_refs == ("policy/egress-default",)
+
+
+def test_adapter_config_refuses_a_blank_policy_reference() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="adapter wiring refs cannot contain empty"):
+        _adapter_config(policy_refs=("policy/ok", "  "))
+
+
+async def test_bootstrap_allows_the_configured_adapter_origin() -> None:
+    """The operator-named endpoint joins the outbound policy's origins.
+
+    Without this, a private (RFC1918/loopback/in-cluster) adapter origin is
+    refused by the SSRF guard on every call while the equally private
+    ``litellm_url`` sails through.
+    """
+
+    from maistro.security.outbound import current_outbound_policy
+
+    # A distinct origin so the before-assert cannot depend on test order:
+    # bootstrap is not the only test that seeds the process-global policy.
+    catalog, store = await _catalog_with(
+        AcmeAdapter(_spec(base_url="https://private.acme.internal"))
+    )
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    before = current_outbound_policy()
+    assert not before.allows("https://private.acme.internal/chat/completions")
+    await bootstrap_provider_adapters(_ConfigShim([_adapter_config()]), effects, store, catalog)
+    assert current_outbound_policy().allows("https://private.acme.internal/chat/completions")
+
+
+async def test_pre_effect_normalization_refusal_records_not_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A normalizer refusing a runtime input has caused no external effect,
+    so the refusal must read as not-applied (safe to reconcile and retry),
+    never UNKNOWN."""
+
+    from maistro.capabilities.invocation import EffectNotApplied
+
+    class Refusing(AcmeAdapter):
+        def normalize_request(self, model: str, request: Any) -> dict[str, object]:
+            # Conformance's probe message passes; this particular runtime
+            # input is the one the adapter refuses.
+            if any("refuse-me" in str(message.get("content", "")) for message in request.messages):
+                raise ValueError("unsupported input shape")
+            return super().normalize_request(model, request)
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(Refusing(_spec()))
+    effects = _effects()
+
+    with pytest.raises(EffectNotApplied, match="before any HTTP"):
+        await _egress(effects, catalog, store).complete(
+            binding=_binding(),
+            run_id="r2",
+            node_run_id="nr2",
+            attempt_id="a2",
+            effect_key="test:acme-refused",
+            request=ModelChatRequest(
+                model="acme-mini", messages=[{"role": "user", "content": "refuse-me"}]
+            ),
+        )
+    assert captured.requests == []  # nothing crossed the transport
+
+
+async def test_create_container_accepts_a_host_registered_adapter_catalog() -> None:
+    """The production composition root accepts an out-of-tree catalog.
+
+    A host that registered third-party adapters on its own catalog hands it
+    to ``create_container``; a configured entry against that id resolves
+    instead of failing with an empty-catalog ConfigError.
+    """
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    catalog = ProviderAdapterCatalog()
+    await register_adapter_models(catalog, InMemoryProviderRegistry(), AcmeAdapter(_spec()))
+    config = AgentConfig(
+        router_api_key="test-key",
+        provider_adapters=[_adapter_config().model_dump()],
+    )
+    container = await create_container(config, provider_adapter_catalog=catalog)
+    try:
+        resolved = await container.capability_effects.bindings.resolve(
+            "binding-acme",
+            workspace_id="ws1",
+            project_id="p1",
+            node_id="summarize",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+        assert resolved.provider_name == ""
+        assert resolved.config == {"adapter_id": "acme.models"}
+    finally:
+        await container.aclose()
+        reset_default_adapter_catalog()

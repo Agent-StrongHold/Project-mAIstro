@@ -88,22 +88,49 @@ that is the whole integration. Four rules hold the line:
 4. **Explicit capability failure, shared conformance.** Capabilities default
    to undeclared; a tools/structured-output request against an undeclared
    capability resolves as typed unavailable before any HTTP. Registration runs
-   `run_adapter_conformance` — declaration honesty, normalization shapes,
-   usage reporting, the pinned error taxonomy (401/403 → auth, 429 →
-   rate-limited), health normalization, no-secret-surface — and refuses a
-   nonconforming adapter before any model enters routing. The built-in
-   `ReferenceChatAdapter` registers through the identical seam, so built-in and
-   external providers pass the same suite where contracts overlap.
+   `run_adapter_conformance` — declaration honesty, normalization shapes for
+   *every* declared model under the transport's strict JSON encoder, usage
+   reporting, the pinned error taxonomy (auth statuses → auth, 429 →
+   rate-limited, 5xx → retryable, every other 4xx → permanent — always
+   agreeing with canonical classification), health normalization,
+   no-secret-surface — and refuses a nonconforming adapter before any model
+   enters routing. The built-in `ReferenceChatAdapter` registers through the
+   identical seam, so built-in and external providers pass the same suite
+   where contracts overlap.
 
 Operator wiring mirrors model-binding bootstrap: `bootstrap_provider_adapters`
 reads `AgentConfig.provider_adapters`, self-registers the built-in reference
-adapter on demand, requires every other id to be pre-registered by the host,
-provisions credentials into the scoped pool, and loads one `model.chat` Binding
-per entry. A registered adapter authorizes nothing by itself. Adapter health
-probes (unauthenticated by declaration) are recorded on the catalog and read
-inside canonical provider resolution, so an adapter that failed its probe
-resolves as unavailable until recovery — provider-level signal, canonical
-refusal, no second circuit breaker.
+adapter on demand (at the deployment's configured `litellm_url`, with the
+Compose-internal hostname as the default), requires every other id to be
+pre-registered by the host — `create_container` accepts the host's
+pre-populated catalog through `provider_adapter_catalog`, the seam an
+out-of-tree package's registration flows through — provisions credentials
+into the scoped pool, seeds the operator-named endpoint origin into the
+outbound policy (additive, exactly like `litellm_url`), and loads one
+`model.chat` Binding per entry carrying the entry's `node_id`/`policy_refs`
+scoping exactly as `ModelBindingConfig` does. Boot-time health probing is per
+entry: `probe_health_at_boot` on one entry probes that adapter only, never
+the other registered adapters. A registered adapter authorizes nothing by
+itself. Adapter health probes (unauthenticated by declaration) are recorded
+on the catalog and read inside canonical provider resolution, so an adapter
+that failed its probe resolves as unavailable until recovery — provider-level
+signal, canonical refusal, no second circuit breaker.
+
+The error taxonomy is pinned to canonical classification: every status the
+resilience classifier reads (4xx auth/permanent, 429 rate-limited, 5xx
+retryable) must map to the kind the classifier will infer from that status,
+so an adapter can classify within the taxonomy but never contradict
+canonical retry/cooldown policy — a declaration that would flip "HTTP 500 is
+permanent" fails registration conformance. Pre-effect adapter code (request
+normalization) that refuses a runtime input raises `EffectNotApplied` — no
+external effect occurred — instead of leaving the Invocation UNKNOWN. The
+spec's `base_url` is validated as a real absolute http(s) URL with a host and
+refused if it carries userinfo: credential material never rides the spec.
+
+The SDK module sits on the promotion-path import closure and is classified
+on the containment surface (`maistro_rsi/sensitive_paths.py`): it decides
+what future model calls may reach, so its diffs escalate to adversarial
+review rather than riding a tolerance.
 
 ## Consequences
 

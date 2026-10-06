@@ -54,6 +54,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -103,6 +104,26 @@ logger = logging.getLogger("maistro.capabilities.provider_adapters")
 #: refuses them at parse time; the conformance suite re-asserts the empty
 #: intersection so a foreign spec object cannot argue with the schema.
 _SECRET_FIELD_NAMES = frozenset({"api_key", "apikey", "secret", "token", "password"})
+
+
+def _parse_adapter_base_url(url: str) -> SplitResult | None:
+    """Parse ``url`` as an absolute http(s) URL with a host, or ``None``.
+
+    A real parse rather than a prefix check: ``http://`` with no host and
+    IPv6 garbage both pass a prefix check and only fail later inside the
+    transport, at the first request. ``None`` is the refusal answer so the
+    validator can raise with the offending value attached.
+    """
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https"):
+        return None
+    if not parts.hostname:
+        return None
+    return parts
 
 
 class AdapterRegistrationError(RuntimeError):
@@ -251,8 +272,17 @@ class ProviderAdapterSpec(BaseModel):
                 raise ValueError(f"adapter {label} must be a non-empty string")
 
     def _validate_transport(self) -> None:
-        if not self.base_url.lower().startswith(("http://", "https://")):
-            raise ValueError(f"adapter base_url must be an http(s) URL: {self.base_url!r}")
+        parsed = _parse_adapter_base_url(self.base_url)
+        if parsed is None:
+            raise ValueError(
+                f"adapter base_url must be an absolute http(s) URL with a host: {self.base_url!r}"
+            )
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError(
+                "adapter base_url must not carry userinfo; credential material belongs "
+                "to the canonical credential authority, never the adapter spec: "
+                f"{self.base_url!r}"
+            )
         if self.protocol != _PROTOCOL_NAME:
             raise ValueError(
                 f"adapter protocol {self.protocol!r} is not supported by this SDK; the "
@@ -473,23 +503,25 @@ class ProviderAdapterCatalog:
             metadata=metadata,
         )
 
-    async def probe_all(self) -> dict[str, bool]:
-        """Probe every adapter that declares a health path.
+    async def probe_adapter(self, adapter_id: str) -> bool:
+        """Probe exactly one registered adapter and record the result.
 
-        Results are recorded via :meth:`note_health` and returned; an adapter
-        without a declared probe is absent from the result and its recorded
-        health never changes.
+        Boot-time probing is per entry: an operator who set
+        ``probe_health_at_boot`` on one adapter configuration asked to probe
+        *that* adapter, not to fire unrequested boot-time network calls at
+        every other registered adapter. An unknown id or an adapter without a
+        declared probe changes nothing and reads healthy (absence of signal is
+        optimistic by the same rule as :meth:`is_healthy`).
         """
 
         from maistro.capabilities.providers.llm_gateway import probe_adapter_health
 
-        results: dict[str, bool] = {}
-        for adapter_id, adapter in self._adapters.items():
-            if not adapter.spec.health_path:
-                continue
-            results[adapter_id] = await probe_adapter_health(adapter)
-            self.note_health(adapter_id, results[adapter_id])
-        return results
+        adapter = self._adapters.get(adapter_id)
+        if adapter is None or not adapter.spec.health_path:
+            return True
+        healthy = await probe_adapter_health(adapter)
+        self.note_health(adapter_id, healthy)
+        return healthy
 
     def set_availability_sync(self, sync: Callable[[str, bool], None]) -> None:
         """Fan recorded health out to canonical availability per model.
@@ -537,11 +569,6 @@ class ProviderAdapterCatalog:
         """
 
         return self._unhealthy.get(adapter_id, True)
-
-    def unhealthy_adapters(self) -> tuple[str, ...]:
-        """Adapters whose latest probe failed."""
-
-        return tuple(sorted(self._unhealthy))
 
 
 async def register_adapter_models(
@@ -628,16 +655,33 @@ _PROBE_RESPONSE: dict[str, object] = {
     "usage": {"prompt_tokens": 7, "completion_tokens": 3},
 }
 
-#: Statuses the shared error-taxonomy contract pins. Where the canonical
-#: resilience classifier's behavior depends on the canonical exception type an
-#: adapter's kind selects, the mapping must agree; classification of every
-#: other status inside the taxonomy is the adapter's documented freedom.
+#: Statuses the shared error-taxonomy contract pins. Every status the
+#: canonical resilience classifier reads is pinned to the kind that matches
+#: what :func:`maistro.resilience.classifier.classify_error` will do with the
+#: HTTP status carried on the raised canonical exception: auth statuses raise
+#: ``LlmAuthError``, 429 raises rate-limited, 5xx is retryable, and every other
+#: 4xx is permanent. An adapter therefore *cannot* declare a taxonomy that
+#: contradicts canonical classification — the declared kind always agrees,
+#: by construction, with the cooldown/block/fallback decision the classifier
+#: makes — because an adapter that could flip "HTTP 500 is permanent" or
+#: "HTTP 400 is retryable" would be overriding canonical resilience policy,
+#: which the adapter seam explicitly cannot do (#961 acceptance: a provider
+#: cannot bypass canonical policy).
 _PINNED_ERROR_STATUSES: tuple[tuple[int, str], ...] = (
+    (400, AdapterErrorKind.PERMANENT),
     (401, AdapterErrorKind.AUTH),
+    (402, AdapterErrorKind.PERMANENT),
     (403, AdapterErrorKind.AUTH),
+    (404, AdapterErrorKind.PERMANENT),
+    (408, AdapterErrorKind.PERMANENT),
+    (409, AdapterErrorKind.PERMANENT),
     (429, AdapterErrorKind.RATE_LIMITED),
+    (500, AdapterErrorKind.RETRYABLE),
+    (502, AdapterErrorKind.RETRYABLE),
+    (503, AdapterErrorKind.RETRYABLE),
+    (504, AdapterErrorKind.RETRYABLE),
 )
-_EXERCISED_ERROR_STATUSES = (400, 401, 402, 403, 404, 408, 409, 429, 500, 502, 503, 504)
+_EXERCISED_ERROR_STATUSES = tuple(status for status, _ in _PINNED_ERROR_STATUSES)
 
 
 def run_adapter_conformance(adapter: ProviderAdapter) -> AdapterConformanceReport:
@@ -688,24 +732,30 @@ def _check_no_secret_surface(adapter: ProviderAdapter) -> ConformanceCheck:
 def _check_request_normalization(adapter: ProviderAdapter) -> ConformanceCheck:
     from maistro.capabilities.providers.llm_gateway import ModelChatRequest
 
-    model_name = adapter.spec.models[0].name
-    request = ModelChatRequest(model=model_name, messages=[dict(m) for m in _PROBE_MESSAGES])
-    try:
-        payload = adapter.normalize_request(model_name, request)
-        json.dumps(payload, default=str)
-    except Exception as exc:
-        return ConformanceCheck(
-            name="request_normalization",
-            passed=False,
-            detail=f"raised {type(exc).__name__}: {exc}",
-        )
-    shaped = isinstance(payload, dict) and payload.get("model") == model_name
+    failures: list[str] = []
+    # Every declared model, not just the first: registration publishes every
+    # model, so a model-specific normalizer bug must fail registration for
+    # that model instead of surfacing on its first production request. The
+    # JSON check is strict (no ``default=str``): the transport serializes with
+    # ``json=`` and its standard encoder, so a payload carrying ``Decimal``,
+    # ``bytes``, or a custom object must be refused here, where the adapter
+    # author sees it, rather than at the first HTTP call.
+    for model in adapter.spec.models:
+        request = ModelChatRequest(model=model.name, messages=[dict(m) for m in _PROBE_MESSAGES])
+        try:
+            payload = adapter.normalize_request(model.name, request)
+            json.dumps(payload)
+        except Exception as exc:
+            failures.append(f"{model.name}: raised {type(exc).__name__}: {exc}")
+            continue
+        shaped = isinstance(payload, dict) and payload.get("model") == model.name
+        if not shaped:
+            failures.append(f"{model.name}: payload is not a JSON object naming the model")
     return ConformanceCheck(
         name="request_normalization",
-        passed=shaped,
-        detail="normalized payload is a JSON object naming the model"
-        if shaped
-        else f"payload {payload!r} is not a JSON object naming the model",
+        passed=not failures,
+        detail="; ".join(failures)
+        or "every declared model normalizes to a JSON-serializable object naming itself",
     )
 
 
@@ -799,9 +849,12 @@ class ReferenceChatAdapter:
         payload: dict[str, object] = {
             "model": model,
             "messages": [dict(message) for message in request.messages],
-            "temperature": request.temperature,
             "stream": False,
         }
+        # ``None`` preserves callers which intentionally leave sampling to the
+        # Provider (same rule as the gateway payload builder).
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
         if request.tools:
@@ -828,11 +881,13 @@ class ReferenceChatAdapter:
             return None
 
     def error_kind_for(self, status: int) -> str:
+        # Pinned to canonical classification (see ``_PINNED_ERROR_STATUSES``):
+        # 5xx is retryable, everything else non-auth/non-429 is permanent.
         if status in (401, 403):
             return AdapterErrorKind.AUTH
         if status == 429:
             return AdapterErrorKind.RATE_LIMITED
-        if status >= 500 or status in (408, 409):
+        if status >= 500:
             return AdapterErrorKind.RETRYABLE
         return AdapterErrorKind.PERMANENT
 
@@ -840,15 +895,21 @@ class ReferenceChatAdapter:
         return payload.get("status") in (None, "ok", "healthy")
 
 
-def reference_adapter_spec() -> ProviderAdapterSpec:
-    """The built-in reference adapter's spec, ready to register."""
+def reference_adapter_spec(  # devskim: ignore DS137138 until 2027-12-31
+    base_url: str = "http://litellm:4000",
+) -> ProviderAdapterSpec:
+    """The built-in reference adapter's spec, ready to register.
+
+    ``base_url`` defaults to the Compose-internal service hostname (TLS
+    terminates at the gateway) and is overridden per deployment with
+    ``AgentConfig.litellm_url`` — the same field the shipped gateway path
+    reads — when bootstrap self-registers the reference adapter.
+    """
 
     return ProviderAdapterSpec(
         adapter_id=REFERENCE_ADAPTER_ID,
         display_name="MAIstro reference chat adapter",
-        # Compose-internal service hostname; TLS terminates at the gateway and
-        # operators override base_url per deployment via the adapter catalog.
-        base_url="http://litellm:4000",  # devskim: ignore DS137138 until 2027-12-31
+        base_url=base_url,
         credential_provider="litellm",
         credential_ref="litellm-gateway",
         capabilities=AdapterCapabilities(tools=True, structured_output=True),
@@ -859,6 +920,12 @@ def reference_adapter_spec() -> ProviderAdapterSpec:
                 cost_per_1k_output=1.5,
                 latency_p50_ms=900,
                 tier="balanced",
+                # Model-level flags must restate the adapter's declaration:
+                # resolution enforces the *model* flags, so leaving these at
+                # the all-False default would refuse the very tools and
+                # structured-output requests the reference normalizer (and
+                # its adapter-level declaration) support.
+                capabilities=AdapterCapabilities(tools=True, structured_output=True),
             ),
         ),
     )
@@ -976,7 +1043,13 @@ async def bootstrap_provider_adapters(
     :func:`maistro.capabilities.model_binding_bootstrap.bootstrap_model_bindings`:
     an entry with no ``adapter_key`` still loads its Binding, but every call
     through it refuses at credential acquisition until an operator provisions
-    one. A declared pin must name a model the adapter declares, and a
+    one. ``node_id`` and ``policy_refs`` scope the loaded Binding exactly as
+    ``ModelBindingConfig`` scopes a model Binding: an adapter credential
+    intended for one graph node need not authorize every node in the project.
+    The entry's operator-named endpoint origin joins the outbound policy
+    (additive, like every other configured endpoint), and ``probe_health_at_boot``
+    probes this entry's adapter only. A declared pin must name a model the
+    adapter declares, and a
     ``credential_refs`` override may only restate the adapter's own reference —
     there is no production surface that registers any other reference, so
     allowing one would authorize a Binding that can never acquire a credential.
@@ -993,11 +1066,29 @@ async def bootstrap_provider_adapters(
     catalog.set_availability_sync(registry_availability_sync(registry))
     loaded: list[Binding] = []
     for declared in config.provider_adapters:
-        adapter = await _entry_adapter(catalog, registry, declared)
+        adapter = await _entry_adapter(
+            catalog,
+            registry,
+            declared,
+            # Defensive like ``configured_endpoints``: both settings shapes
+            # carry the field, a narrower shim may not, and the Compose
+            # default is the honest fallback either way.
+            litellm_base_url=str(getattr(config, "litellm_url", "") or ""),
+        )
         spec = adapter.spec
         workspace_id = declared.workspace_id.strip() or config.workspace_id
         credential_refs = _entry_credential_refs(declared, spec)
         _provision_entry_credential(effects, declared, spec, workspace_id)
+        # The operator named this endpoint in deployment configuration, so it
+        # joins the outbound policy's configured origins — additive, exactly
+        # like the gateway/ntfy endpoints wired from settings. Without this, a
+        # private (RFC1918/loopback/in-cluster) adapter origin would be
+        # refused by the SSRF guard on every call while the equally private
+        # ``litellm_url`` sails through: the allowance follows operator
+        # declaration, not network topology.
+        from maistro.security.outbound import configure_outbound_policy
+
+        configure_outbound_policy(spec.base_url)
         # Rows before probe: the availability sync can only mark models the
         # registry already knows.
         await _entry_registry_rows(catalog, registry, declared, adapter)
@@ -1013,8 +1104,10 @@ async def bootstrap_provider_adapters(
             "project_id": declared.project_id,
             "capability": MODEL_CHAT_CAPABILITY,
             "provider_name": declared.provider_name,
+            "node_id": declared.node_id,
             "disabled": declared.disabled,
             "credential_refs": credential_refs,
+            "policy_refs": declared.policy_refs,
             "config": {"adapter_id": declared.adapter_id},
         }
         if existing is not None:
@@ -1028,6 +1121,8 @@ async def _entry_adapter(
     catalog: ProviderAdapterCatalog,
     registry: InMemoryProviderRegistry,
     declared: AdapterInstanceConfig,
+    *,
+    litellm_base_url: str = "",
 ) -> ProviderAdapter:
     """Resolve one configured entry's adapter, self-registering the reference."""
 
@@ -1037,7 +1132,14 @@ async def _entry_adapter(
     if adapter is not None:
         return adapter
     if declared.adapter_id == REFERENCE_ADAPTER_ID:
-        reference = ReferenceChatAdapter(reference_adapter_spec())
+        # The deployment's configured gateway URL wins over the Compose-internal
+        # default, so a deployment whose LiteLLM is not reachable as
+        # ``litellm:4000`` routes the reference adapter to the same endpoint
+        # every ordinary gateway call uses.
+        base_url = (
+            litellm_base_url.strip() or "http://litellm:4000"
+        )  # devskim: ignore DS137138 until 2027-12-31
+        reference = ReferenceChatAdapter(reference_adapter_spec(base_url))
         await register_adapter_models(catalog, registry, reference)
         return reference
     raise ConfigError(
@@ -1109,17 +1211,16 @@ async def _probe_entry_health(
     catalog: ProviderAdapterCatalog,
     declared: AdapterInstanceConfig,
 ) -> None:
-    """Run the operator-requested boot probe and log what failed."""
+    """Run the operator-requested boot probe for this entry only, and log a miss."""
 
     if not declared.probe_health_at_boot:
         return
-    await catalog.probe_all()
-    failed = catalog.unhealthy_adapters()
-    if failed:
+    healthy = await catalog.probe_adapter(declared.adapter_id)
+    if not healthy:
         logger.warning(
-            "provider adapters failed their boot health probe: %s; their models refuse "
+            "provider adapter %r failed its boot health probe; its models refuse "
             "canonical selection until a probe recovers",
-            failed,
+            declared.adapter_id,
         )
 
 

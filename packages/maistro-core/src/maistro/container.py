@@ -135,6 +135,7 @@ if TYPE_CHECKING:
         SecretResolver,
         StateStore,
     )
+    from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.capabilities.registry import CapabilityRegistry
     from maistro.events.bus import EventBus
     from maistro.events.consumer_cursor import ConsumerCursorStore
@@ -2122,6 +2123,7 @@ async def create_container(
     effect_context: CapabilityEffectContext | None = None,
     capability_bindings: Iterable[Binding] = (),
     capability_credentials: CredentialRouter | None = None,
+    provider_adapter_catalog: ProviderAdapterCatalog | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -2163,6 +2165,13 @@ async def create_container(
     Workspace provisioning seam for retained external-effect nodes. They never
     accept secret values in Graph input; omitted provisioning leaves the
     canonical Binding authority empty and therefore fails closed.
+
+    `provider_adapter_catalog` is the out-of-tree provider seam (M9-E1, #961):
+    a host that registered third-party adapters through
+    `register_adapter_models` on its own catalog hands that catalog here, and
+    every `AgentConfig.provider_adapters` entry wired against those ids
+    resolves. Omitted, the container composes a fresh catalog (reference
+    adapter only) — the pre-SDK behavior.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -2546,7 +2555,13 @@ async def create_container(
         configure_default_adapter_catalog,
     )
 
-    adapter_catalog = ProviderAdapterCatalog()
+    # A host-supplied catalog carries its already-registered out-of-tree
+    # adapters; a fresh one self-registers only the reference adapter.
+    adapter_catalog = (
+        provider_adapter_catalog
+        if provider_adapter_catalog is not None
+        else ProviderAdapterCatalog()
+    )
     await bootstrap_provider_adapters(
         config, capability_effects, provider_registry, adapter_catalog
     )

@@ -34,15 +34,23 @@ or placeholder-only section.
   edit. Adapters hold no HTTP client: the approved model-egress module
   transports them over its one governed POST, injecting the scoped credential
   per the adapter's declared auth style (bearer/header/query); the spec refuses
-  secret-shaped fields, so secrets resolve only through the canonical
-  credential authority. Usage, errors (401/403 → auth, 429 → rate-limited),
+  secret-shaped fields and userinfo-bearing base URLs, so secrets resolve only
+  through the canonical credential authority. Usage, errors (the taxonomy is
+  pinned to canonical classification: auth statuses → auth, 429 →
+  rate-limited, 5xx → retryable, every other 4xx → permanent),
   and streaming declarations map to canonical interfaces; undeclared
   capabilities (tools, structured output) refuse explicitly before any HTTP;
   health probes feed canonical selection instead of a second circuit breaker.
-  Registration runs a shared conformance suite that both the built-in
-  reference adapter and external adapters must pass. Operators wire adapters
-  via `AgentConfig.provider_adapters` (one `model.chat` Binding per entry;
-  configuring an adapter authorizes nothing by itself). See ADR-104.
+  Registration runs a shared conformance suite (every declared model, under
+  the transport's strict JSON encoder) that both the built-in
+  reference adapter and external adapters must pass; a pre-effect
+  normalization refusal records as not-applied, never UNKNOWN. Operators wire
+  adapters via `AgentConfig.provider_adapters` — one `model.chat` Binding per
+  entry with `node_id`/`policy_refs` scoping, the entry's endpoint seeded
+  into the outbound policy, boot probes per entry, the reference adapter
+  honoring `litellm_url`, and `create_container` accepting a host-registered
+  catalog through `provider_adapter_catalog`; configuring an adapter
+  authorizes nothing by itself). See ADR-104.
 
 - **The extension SDK boundary is enforced and a reference extension ships outside the
   core tree (#951).** `extensions/namespace-policy.json` declares the public

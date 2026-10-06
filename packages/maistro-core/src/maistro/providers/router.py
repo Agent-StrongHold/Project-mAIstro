@@ -45,6 +45,24 @@ class CostAwareRouter:
             raise NoEligibleModelError(budget)
 
         candidates.sort(key=lambda m: m.latency_p50_ms)
+        selected = await self._first_available_in_chains(candidates, budget, scope)
+        if selected is None:
+            raise NoEligibleModelError(budget, detail=f"all eligible models unavailable: {budget}")
+        return selected
+
+    async def _first_available_in_chains(
+        self,
+        candidates: list[ModelMetadata],
+        budget: RouterBudget,
+        scope: Collection[str] | None,
+    ) -> ModelMetadata | None:
+        """Walk each candidate's fallback chain for the first selectable model.
+
+        Every chain member is considered once across candidates; scope is a
+        constraint at this stage too, so a fallback outside the declared
+        adapter's models cannot be elected by a scoped selection.
+        """
+
         tried: set[str] = set()
         for candidate in candidates:
             for model in await self.fallback_chain(candidate.name):
@@ -57,7 +75,7 @@ class CostAwareRouter:
                     and self._registry.is_available(model.name)
                 ):
                     return model
-        raise NoEligibleModelError(budget, detail=f"all eligible models unavailable: {budget}")
+        return None
 
     async def select_embedding(self, input_size_tokens: int) -> EmbeddingModelMetadata:
         """Pick the cheapest available embedding model that fits the input size."""

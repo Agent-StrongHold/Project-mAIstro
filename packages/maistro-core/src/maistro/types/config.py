@@ -205,10 +205,15 @@ class AdapterInstanceConfig(BaseModel):
     binding_id: str
     project_id: str
     workspace_id: str = ""
+    #: Node scoping mirrors ``ModelBindingConfig``: an adapter credential
+    #: intended for one graph node can be scoped to it instead of authorizing
+    #: every node in the project that can name the binding id.
+    node_id: str = ""
     provider_name: str = ""
     disabled: bool = False
     adapter_key: str = ""
     credential_refs: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
     probe_health_at_boot: bool = False
 
     @field_validator("adapter_id", "binding_id", "project_id")
@@ -218,11 +223,11 @@ class AdapterInstanceConfig(BaseModel):
             raise ValueError("adapter wiring identity/scope fields must be non-empty")
         return value
 
-    @field_validator("credential_refs")
+    @field_validator("credential_refs", "policy_refs")
     @classmethod
     def _reject_empty_adapter_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if any(not ref.strip() for ref in value):
-            raise ValueError("adapter wiring credential refs cannot be empty")
+            raise ValueError("adapter wiring refs cannot contain empty values")
         return value
 
 
