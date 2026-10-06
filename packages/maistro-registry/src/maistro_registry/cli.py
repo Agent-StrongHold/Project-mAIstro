@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,33 +31,8 @@ from maistro_registry.linker import (
 )
 from maistro_registry.schema import FrontMatter
 from maistro_registry.validator import ValidationResult, validate_file
-
-# Walked file patterns. Order is for determinism, not precedence.
-_WALK_PATTERNS: tuple[str, ...] = (
-    "docs/adr/ADR-*.md",
-    "docs/specs/**/*.md",
-)
-
-
-def _walk(root: Path) -> Iterable[Path]:
-    seen: set[Path] = set()
-    for pattern in _WALK_PATTERNS:
-        for p in root.glob(pattern):
-            # Skip scaffolding templates (e.g. ADR-000-template.md): they carry
-            # placeholder ids/dates by design and are not real registry records.
-            # Match the "-template.md" suffix precisely — a substring check on
-            # "template" would wrongly skip real records like
-            # ADR-033-templates-and-copier-workflow.md.
-            if p.name.endswith("-template.md"):
-                continue
-            # Skip index/readme docs: they are navigation aids, not registry
-            # records (the inventory is derived per ADR-031 §5), so they carry
-            # no front-matter by design.
-            if p.name in ("README.md", "ADR-INDEX.md"):
-                continue
-            if p.suffix == ".md" and p.is_file() and p not in seen:
-                seen.add(p)
-                yield p
+from maistro_registry.walk import declared_ids
+from maistro_registry.walk import walk_repo as _walk
 
 
 @dataclass(frozen=True)
@@ -171,7 +145,12 @@ def cmd_lint(args: argparse.Namespace) -> int:
     for c in cycles:
         print(f"  CYCLE: {c.render()}")
 
-    resolver = FilesystemResolver(engine_root=root)
+    # The resolver consumes the id index this command already validated —
+    # the same registry walk, never a second (filename-based) authority (#814).
+    resolver = FilesystemResolver(
+        engine_root=root,
+        declared_id_index=declared_ids(loaded.results),
+    )
     link_results: list[LinkResult] = check_links(valid_fms, resolver)
     dangling = [lr for lr in link_results if not lr.resolved]
     for lr in dangling:
