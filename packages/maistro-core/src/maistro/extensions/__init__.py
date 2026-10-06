@@ -23,6 +23,12 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-C3 preflight (issue #957)**: host-upgrade compatibility preflight —
+  :func:`run_preflight` evaluates the installed lock state against a target
+  host contract (:class:`TargetHostContract`) built from public manifest
+  metadata only, naming compatible, deprecated, migration-required and
+  blocking extensions before the upgrade is applied. The target release is
+  data, never imported code; nothing is activated.
 
 No layer executes extension code: verification, evaluation, authorization,
 resolution and contract negotiation all operate on bytes and declarations
@@ -75,6 +81,13 @@ from maistro.extensions.manifest import (
     inspect_manifest,
     sha256_hex,
     verify_package_payload,
+)
+from maistro.extensions.preflight import (
+    ExtensionStatus,
+    PreflightPolicy,
+    PreflightReport,
+    TargetHostContract,
+    run_preflight,
 )
 from maistro.extensions.resolution import (
     LOCK_FORMAT,
@@ -214,6 +227,7 @@ __all__ = [
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
+    "ExtensionStatus",
     "ExtensionStore",
     "ExtensionTransition",
     "FeatureStatus",
@@ -241,6 +255,8 @@ __all__ = [
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
+    "PreflightPolicy",
+    "PreflightReport",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "RegistryProvenance",
@@ -252,6 +268,7 @@ __all__ = [
     "SemVer",
     "SkippedOptional",
     "SqliteExtensionInstallStore",
+    "TargetHostContract",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
@@ -281,6 +298,7 @@ __all__ = [
     "parse_feature_status",
     "parse_range",
     "resolve_lock",
+    "run_preflight",
     "sha256_hex",
     "verify_package_payload",
 ]
