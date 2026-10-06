@@ -96,8 +96,9 @@ def _load_walk_validation(root: Path) -> WalkValidation | int:
 
 
 def _print_result(result: ValidationResult, *, quiet_ok: bool) -> None:
-    # Debts are surfaced states, not failures; --quiet promises failures only.
-    if quiet_ok and result.ok and not result.warnings and not result.debts:
+    # Debts never affect the exit status, and --quiet promises failures only;
+    # the stderr summary still reports the aggregate debt count.
+    if quiet_ok and result.ok and not result.warnings:
         return
     print(result.render())
 
