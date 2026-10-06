@@ -1,16 +1,7 @@
-"""Authenticated principal for maistro-server HTTP APIs."""
+"""Authenticated principal for maistro-server HTTP APIs (P0.1 / AC-P1)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from maistro.identity import Principal
 
-
-@dataclass(frozen=True)
-class AuthenticatedPrincipal:
-    user_id: str
-    token: str
-    roles: frozenset[str]
-
-    @property
-    def is_admin(self) -> bool:
-        return "admin" in self.roles
+__all__ = ["Principal"]

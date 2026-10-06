@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import type { Skill } from "../api/entities";
+import { skillParameters } from "../api/entities";
 import { apiGet, apiPatch } from "../lib/api";
 import { Hex, PageHeader, useToast } from "../components/shared";
-
-type Skill = {
-  id: string; name: string; description: string; version: string; category: string;
-  author: string; enabled: boolean; usage_count: number; avg_latency_ms: number;
-  success_rate: number; tags: string[];
-  parameters: { name: string; type: string; required: boolean }[];
-};
 
 export default function Skills() {
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -47,7 +42,7 @@ export default function Skills() {
             </div>
             <div style={{ display: "flex", gap: 4, marginTop: 5 }}>
               <Hex variant="accent">{s.category}</Hex>
-              {s.tags.map((t) => <Hex key={t} variant="muted">{t}</Hex>)}
+              {(s.tags ?? []).map((t) => <Hex key={t} variant="muted">{t}</Hex>)}
             </div>
           </div>
         ))}
@@ -71,7 +66,7 @@ export default function Skills() {
               { label: "USAGE", val: `${sel.usage_count}x` },
               { label: "AVG LATENCY", val: `${Math.round(sel.avg_latency_ms)}ms` },
               { label: "SUCCESS RATE", val: `${(sel.success_rate * 100).toFixed(0)}%` },
-              { label: "PARAMS", val: `${sel.parameters.length}` },
+              { label: "PARAMS", val: `${skillParameters(sel).length}` },
             ].map((s) => (
               <div key={s.label} style={{ textAlign: "center", padding: "8px 6px", border: "1.3px solid var(--rule)", borderRadius: 5 }}>
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{s.label}</div>
@@ -87,14 +82,14 @@ export default function Skills() {
             </div>
           </div>
 
-          {sel.parameters.length > 0 && (
+          {skillParameters(sel).length > 0 && (
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>PARAMETERS</div>
               <div className="card" style={{ padding: 0 }}>
                 <table className="table">
                   <thead><tr><th>Name</th><th>Type</th><th>Required</th></tr></thead>
                   <tbody>
-                    {sel.parameters.map((p) => (
+                    {skillParameters(sel).map((p) => (
                       <tr key={p.name}>
                         <td style={{ color: "var(--accent)" }}>{p.name}</td>
                         <td style={{ color: "var(--pencil)" }}>{p.type}</td>
@@ -111,7 +106,7 @@ export default function Skills() {
             <Hex variant="muted">id: {sel.id}</Hex>
             <Hex variant="muted">author: {sel.author}</Hex>
             <Hex variant="accent">{sel.category}</Hex>
-            {sel.tags.map((t) => <Hex key={t} variant="muted">{t}</Hex>)}
+            {(sel.tags ?? []).map((t) => <Hex key={t} variant="muted">{t}</Hex>)}
           </div>
         </div>
       )}

@@ -187,11 +187,11 @@ class TestPostSetupRegistrationIsClosed:
         """Bootstrap belongs to the one-shot setup state alone: even a forced
         `open` record is inert while no account exists (#313 AC)."""
         import stores
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from services import registration_policy as rp
         from services.model_store import ModelStore
 
-        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
         rp.set_mode("open", actor="admin:test")
 
         decision = rp.evaluate_registration(None)
@@ -202,11 +202,11 @@ class TestPostSetupRegistrationIsClosed:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import stores
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from services import registration_policy as rp
         from services.model_store import ModelStore
 
-        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
         token = rp.issue_invitation(actor="admin:test")["token"]
 
         decision = rp.evaluate_registration(token)
@@ -568,7 +568,7 @@ class TestInvitations:
 
         import stores
         from main import app
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from routes import auth as auth_routes
         from services import registration_policy as rp
         from services import username_registry
@@ -592,7 +592,7 @@ class TestInvitations:
             other_id = str(uuid4())
             real_create_users(
                 [
-                    HiveUser(
+                    HiveAccount(
                         id=other_id,
                         username=users[0].username,
                         password_hash="sha256$reconciled$other",
@@ -676,7 +676,7 @@ class TestInvitations:
 
     def test_independent_process_writers_publish_one_username(self, tmp_path: pathlib.Path) -> None:
         """The SQLite uniqueness claim survives separate application processes (#1248)."""
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
 
         from maistro.state import PersistedStore, State
 
@@ -686,10 +686,10 @@ class TestInvitations:
         persisted.initialize()
         from services.model_store import ModelStore
 
-        users = ModelStore("users", HiveUser, persisted=persisted, unique_fields=("username",))
+        users = ModelStore("users", HiveAccount, persisted=persisted, unique_fields=("username",))
         assert users.put_if_unique(
             "existing-user",
-            HiveUser(
+            HiveAccount(
                 id="existing-user",
                 username="existing-user",
                 password_hash="test-hash",
@@ -721,7 +721,7 @@ class TestInvitations:
         state = State(db_path)
         persisted = PersistedStore(state)
         persisted.initialize()
-        users = persisted.list_all("users", HiveUser)
+        users = persisted.list_all("users", HiveAccount)
         state.close()
         usernames = [user.username for user in users]
         assert usernames.count("existing-user") == 1
@@ -876,11 +876,11 @@ class TestFirstSetupIsOneShot:
     @staticmethod
     def _fresh_instance(monkeypatch: pytest.MonkeyPatch) -> None:
         import stores
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from routes import setup as setup_routes
         from services.model_store import JsonStore, ModelStore
 
-        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
         # The claim index is process-global like the users store; isolate it
         # with the same lifetime as the users store so this class's usernames
         # (firstadmin, racer-*, ...) cannot leave active claims that a later
@@ -1021,12 +1021,12 @@ class TestSetupGuardEdges:
         the app would test the fixture rather than the handler.
         """
         import stores
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from routes import setup as setup_routes
         from services.model_store import ModelStore
 
         monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
-        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
 
     @staticmethod
     def _full_body() -> dict:
@@ -1187,7 +1187,7 @@ class TestSetupGuardEdges:
         as the claim is that passing it once, outside, proves nothing about
         the state by the time the insert would run."""
         import stores
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from routes import setup as setup_routes
         from routes.setup import complete_setup
         from services.model_store import ModelStore
@@ -1198,7 +1198,7 @@ class TestSetupGuardEdges:
             "_is_setup_complete",
             lambda: next(guard_results, True),
         )
-        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
 
         with pytest.raises(HTTPException) as exc_info:
             complete_setup(self._full_body())
@@ -1244,7 +1244,7 @@ class TestPersistedSetupIsOneShot:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
         import stores
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from routes import setup as setup_routes
         from services.model_store import JsonStore, ModelStore
 
@@ -1253,7 +1253,7 @@ class TestPersistedSetupIsOneShot:
         state = State(db_path=tmp_path / "one-shot.db")
         persisted = PersistedStore(state)
         persisted.initialize()
-        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
         kv_sessions = JsonStore("sessions", persisted=persisted)
         kv_sessions.initialize()
         # Restored by hand rather than monkeypatch: the module autouse fixture
@@ -1306,7 +1306,7 @@ class TestLostSetupMarkerCannotReopenBootstrap:
     ) -> None:
         """A marker fault after account writes must fail closed across restart."""
         import stores
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from routes import setup as setup_routes
         from services.model_store import JsonStore, ModelStore
 
@@ -1321,7 +1321,7 @@ class TestLostSetupMarkerCannotReopenBootstrap:
             state = State(db_path=db)
             persisted = PersistedStore(state)
             persisted.initialize()
-            first_users = ModelStore("users", HiveUser, persisted=persisted)
+            first_users = ModelStore("users", HiveAccount, persisted=persisted)
             first_users.initialize()
             first_sessions = JsonStore("sessions", persisted=persisted)
             first_sessions.initialize()
@@ -1357,7 +1357,7 @@ class TestLostSetupMarkerCannotReopenBootstrap:
             restarted_state = State(db_path=db)
             restarted = PersistedStore(restarted_state)
             restarted.initialize()
-            restarted_users = ModelStore("users", HiveUser, persisted=restarted)
+            restarted_users = ModelStore("users", HiveAccount, persisted=restarted)
             restarted_users.initialize()
             restarted_sessions = JsonStore("sessions", persisted=restarted)
             restarted_sessions.initialize()

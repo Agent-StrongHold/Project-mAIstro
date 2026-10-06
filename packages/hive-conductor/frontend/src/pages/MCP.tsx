@@ -1,32 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
+import type { MCPServer, MCPTool } from "../api/entities";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 const ROVO_MCP_URL = "https://mcp.atlassian.com/v1/mcp/authv2";
 
-type Server = {
-  id: string; name: string; description: string; url: string;
-  status: string; tools_count: number; last_ping: string | null;
-  version: string | null; capabilities: string[];
-};
-
-type Tool = {
-  id: string; server_id: string; name: string; description: string;
-  input_schema: Record<string, unknown>; category: string | null;
-};
-
 export default function MCP() {
   const toast = useToast();
-  const [servers, setServers] = useState<Server[]>([]);
-  const [tools, setTools] = useState<Tool[]>([]);
-  const [sel, setSel] = useState<Server | null>(null);
+  const [servers, setServers] = useState<MCPServer[]>([]);
+  const [tools, setTools] = useState<MCPTool[]>([]);
+  const [sel, setSel] = useState<MCPServer | null>(null);
   const [tab, setTab] = useState<"servers" | "tools">("servers");
   const [adding, setAdding] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Server | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<MCPServer | null>(null);
   const [form, setForm] = useState({ name: "", description: "", url: "" });
 
   const load = useCallback(async () => {
     try {
-      const [s, t] = await Promise.all([apiGet<Server[]>("/v1/mcp/servers"), apiGet<Tool[]>("/v1/mcp/tools")]);
+      const [s, t] = await Promise.all([apiGet<MCPServer[]>("/v1/mcp/servers"), apiGet<MCPTool[]>("/v1/mcp/tools")]);
       setServers(s);
       setTools(t);
     } catch { /* */ }
@@ -36,7 +26,7 @@ export default function MCP() {
   async function addServer() {
     if (!form.name.trim() || !form.url.trim()) return;
     try {
-      await apiPost<Server>("/v1/mcp/servers", form);
+      await apiPost<MCPServer>("/v1/mcp/servers", form);
       setAdding(false);
       setForm({ name: "", description: "", url: "" });
       await load();
@@ -167,11 +157,11 @@ export default function MCP() {
                       <StatCard label="Last Ping" value={s.last_ping ? new Date(s.last_ping).toLocaleTimeString() : "never"} />
                       <StatCard label="Tools" value={`${s.tools_count}`} />
                     </div>
-                    {s.capabilities.length > 0 && (
+                    {(s.capabilities ?? []).length > 0 && (
                       <div style={{ marginBottom: 8 }}>
                         <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {s.capabilities.map((c) => <Hex key={c}>{c}</Hex>)}
+                          {(s.capabilities ?? []).map((c) => <Hex key={c}>{c}</Hex>)}
                         </div>
                       </div>
                     )}

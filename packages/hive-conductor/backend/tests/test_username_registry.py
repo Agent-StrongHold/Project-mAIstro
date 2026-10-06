@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from models.schemas import HiveUser
+from models.schemas import HiveAccount
 from services.model_store import JsonStore, ModelStore
 from services.username_registry import (
     CLAIM_SCHEMA_VERSION,
@@ -21,8 +21,8 @@ from services.username_registry import (
 )
 
 
-def _user(user_id: str, username: str) -> HiveUser:
-    return HiveUser(
+def _user(user_id: str, username: str) -> HiveAccount:
+    return HiveAccount(
         id=user_id,
         username=username,
         password_hash="unused",
@@ -44,7 +44,7 @@ def test_many_case_variants_have_one_winner_on_shared_persistence(tmp_path) -> N
         store.initialize()
     registries = [
         UsernameRegistry(
-            ModelStore("users", HiveUser, persisted=store),
+            ModelStore("users", HiveAccount, persisted=store),
             JsonStore("username_claims", persisted=store),
         )
         for store in persisted
@@ -80,7 +80,7 @@ def test_many_case_variants_have_one_winner_on_shared_persistence(tmp_path) -> N
     assert all(not thread.is_alive() for thread in threads)
     assert sum(outcomes) == 1
 
-    reopened = ModelStore("users", HiveUser, persisted=persisted[0])
+    reopened = ModelStore("users", HiveAccount, persisted=persisted[0])
     reopened.initialize()
     assert len(reopened) == 1
     assert len(persisted[0].list_all_raw("username_claims")) == 1
@@ -99,7 +99,7 @@ def test_allocator_calls_storage_atomic_claim_seam(tmp_path) -> None:
     atomic = Mock(wraps=persisted.put_raw_with_unique_claims)
     persisted.put_raw_with_unique_claims = atomic
     registry = UsernameRegistry(
-        ModelStore("users", HiveUser, persisted=persisted),
+        ModelStore("users", HiveAccount, persisted=persisted),
         JsonStore("username_claims", persisted=persisted),
     )
     registry.create_users([_user("atomic", "Alice")])
@@ -116,7 +116,7 @@ def test_registry_rollback_releases_claim_and_account_together(tmp_path) -> None
     state = State(tmp_path / "rollback-registry.db")
     persisted = PersistedStore(state)
     persisted.initialize()
-    users = ModelStore("users", HiveUser, persisted=persisted)
+    users = ModelStore("users", HiveAccount, persisted=persisted)
     claims = JsonStore("username_claims", persisted=persisted)
     registry = UsernameRegistry(users, claims)
     account = _user("rollback", "RetryName")
@@ -175,11 +175,11 @@ def test_scan_then_write_mutation_loses_the_race() -> None:
     == 1` assertion would fail exactly the way this demonstration shows.
     """
 
-    users = ModelStore("users", HiveUser)
+    users = ModelStore("users", HiveAccount)
     claims = JsonStore("username_claims")
     barrier = threading.Barrier(8)
 
-    def mutated_scan_then_write(user: HiveUser) -> None:
+    def mutated_scan_then_write(user: HiveAccount) -> None:
         key = f"username:{user.username.strip().casefold()}"
         if key in claims:
             raise UsernameTakenError("username is already taken")
@@ -220,7 +220,7 @@ def test_scan_then_write_mutation_loses_the_race() -> None:
 
 
 def test_historical_duplicate_is_quarantined_not_winner_selected() -> None:
-    users = ModelStore("users", HiveUser)
+    users = ModelStore("users", HiveAccount)
     claims = JsonStore("username_claims")
     users["b"] = _user("b", "Alice")
     users["a"] = _user("a", "alice")
@@ -250,7 +250,7 @@ def test_durable_loser_at_the_atomic_layer_is_refused(tmp_path) -> None:
     persisted = PersistedStore(state)
     persisted.initialize()
     # The name is free when this writer checks — no claim exists yet.
-    users = ModelStore("users", HiveUser, persisted=persisted)
+    users = ModelStore("users", HiveAccount, persisted=persisted)
     claims = JsonStore("username_claims", persisted=persisted)
     registry = UsernameRegistry(users, claims)
     real_atomic = persisted.put_raw_with_unique_claims
@@ -286,7 +286,7 @@ def test_corrupt_durable_claim_is_occupied_and_fails_closed(tmp_path) -> None:
     persisted.put_raw("username_claims", "username:broken", "{not json")
     state.flush()
     registry = UsernameRegistry(
-        ModelStore("users", HiveUser, persisted=persisted),
+        ModelStore("users", HiveAccount, persisted=persisted),
         JsonStore("username_claims", persisted=persisted),
     )
 
@@ -300,7 +300,7 @@ def test_corrupt_durable_claim_is_occupied_and_fails_closed(tmp_path) -> None:
 
 def test_resolve_refuses_claims_that_do_not_name_the_account() -> None:
     """Only an active, schema-valid, name-matching claim resolves a user."""
-    users = ModelStore("users", HiveUser)
+    users = ModelStore("users", HiveAccount)
     claims = JsonStore("username_claims")
     registry = UsernameRegistry(users, claims)
 
@@ -340,7 +340,7 @@ def test_stale_durable_claim_fails_closed_for_operator_repair(tmp_path) -> None:
     persisted = PersistedStore(state)
     persisted.initialize()
     registry = UsernameRegistry(
-        ModelStore("users", HiveUser, persisted=persisted),
+        ModelStore("users", HiveAccount, persisted=persisted),
         JsonStore("username_claims", persisted=persisted),
     )
     registry.create_users([_user("vanished", "Lingering")])
@@ -348,7 +348,7 @@ def test_stale_durable_claim_fails_closed_for_operator_repair(tmp_path) -> None:
     state.flush()
 
     fresh = UsernameRegistry(
-        ModelStore("users", HiveUser, persisted=persisted),
+        ModelStore("users", HiveAccount, persisted=persisted),
         JsonStore("username_claims", persisted=persisted),
     )
     with pytest.raises(UsernameTakenError, match="operator repair"):
@@ -358,7 +358,7 @@ def test_stale_durable_claim_fails_closed_for_operator_repair(tmp_path) -> None:
 
 
 def test_migrate_legacy_claims_leaves_existing_claims_untouched() -> None:
-    users = ModelStore("users", HiveUser)
+    users = ModelStore("users", HiveAccount)
     claims = JsonStore("username_claims")
     users["a"] = _user("a", "Alice")
     claims["username:alice"] = {"handwritten": True}
@@ -370,7 +370,7 @@ def test_migrate_legacy_claims_leaves_existing_claims_untouched() -> None:
 
 
 def test_migrate_or_index_one_quarantines_legacy_duplicates() -> None:
-    users = ModelStore("users", HiveUser)
+    users = ModelStore("users", HiveAccount)
     claims = JsonStore("username_claims")
     users["b"] = _user("b", "Zara")
     users["a"] = _user("a", "zara")
@@ -401,7 +401,7 @@ def test_persistence_without_atomic_claims_refuses_allocation() -> None:
 
     backend = LegacyBackend()
     registry = UsernameRegistry(
-        ModelStore("users", HiveUser, persisted=backend),
+        ModelStore("users", HiveAccount, persisted=backend),
         JsonStore("username_claims", persisted=backend),
     )
 
@@ -416,7 +416,7 @@ def test_rollback_needs_the_atomic_delete_boundary(tmp_path, monkeypatch) -> Non
     persisted = PersistedStore(state)
     persisted.initialize()
     registry = UsernameRegistry(
-        ModelStore("users", HiveUser, persisted=persisted),
+        ModelStore("users", HiveAccount, persisted=persisted),
         JsonStore("username_claims", persisted=persisted),
     )
     account = _user("keeper", "Boundary")
@@ -437,7 +437,7 @@ def test_rollback_refuses_when_the_claim_moved_to_another_owner(tmp_path) -> Non
     persisted = PersistedStore(state)
     persisted.initialize()
     registry = UsernameRegistry(
-        ModelStore("users", HiveUser, persisted=persisted),
+        ModelStore("users", HiveAccount, persisted=persisted),
         JsonStore("username_claims", persisted=persisted),
     )
     account = _user("owner", "ShiftName")
@@ -456,13 +456,13 @@ def test_rollback_refuses_when_the_claim_moved_to_another_owner(tmp_path) -> Non
 
 
 def test_empty_rollback_is_a_no_op() -> None:
-    registry = UsernameRegistry(ModelStore("users", HiveUser), JsonStore("username_claims"))
+    registry = UsernameRegistry(ModelStore("users", HiveAccount), JsonStore("username_claims"))
     registry.rollback_users([])
 
 
 def test_memory_write_batch_refuses_a_claim_that_appeared_in_its_window() -> None:
     """The memory path's own critical-section check inside `_write_batch`."""
-    registry = UsernameRegistry(ModelStore("users", HiveUser), JsonStore("username_claims"))
+    registry = UsernameRegistry(ModelStore("users", HiveAccount), JsonStore("username_claims"))
     registry._claims._data["username:popped"] = {"status": "active"}
 
     with pytest.raises(UsernameTakenError):
@@ -474,7 +474,7 @@ def test_memory_write_batch_refuses_a_claim_that_appeared_in_its_window() -> Non
 
 
 def test_memory_rollback_verifies_claim_ownership_and_accounts() -> None:
-    registry = UsernameRegistry(ModelStore("users", HiveUser), JsonStore("username_claims"))
+    registry = UsernameRegistry(ModelStore("users", HiveAccount), JsonStore("username_claims"))
     account = _user("m1", "Milo")
 
     # The claim names somebody else: not this rollback's pair.
@@ -489,7 +489,7 @@ def test_memory_rollback_verifies_claim_ownership_and_accounts() -> None:
 
 
 def test_create_users_requires_a_batch_and_distinct_names() -> None:
-    registry = UsernameRegistry(ModelStore("users", HiveUser), JsonStore("username_claims"))
+    registry = UsernameRegistry(ModelStore("users", HiveAccount), JsonStore("username_claims"))
 
     with pytest.raises(ValueError, match="at least one user"):
         registry.create_users([])
@@ -505,7 +505,7 @@ def test_create_users_blocks_an_unindexed_legacy_row() -> None:
     path must index it too: registering that name must be refused, not
     silently mint a second account behind the same username.
     """
-    users = ModelStore("users", HiveUser)
+    users = ModelStore("users", HiveAccount)
     claims = JsonStore("username_claims")
     users["legacy-1"] = _user("legacy-1", "TestUser")
     registry = UsernameRegistry(users, claims)
@@ -524,7 +524,7 @@ def test_create_users_blocks_an_unindexed_legacy_row() -> None:
 
 def test_create_users_fails_closed_on_unindexed_legacy_duplicates() -> None:
     """A quarantined historical duplicate blocks its name for allocation."""
-    users = ModelStore("users", HiveUser)
+    users = ModelStore("users", HiveAccount)
     claims = JsonStore("username_claims")
     users["legacy-a"] = _user("legacy-a", "Zara")
     users["legacy-b"] = _user("legacy-b", "zara")

@@ -114,7 +114,7 @@ class _Policy:
 
 
 @dataclass
-class _SubsystemIdentity:
+class _SubsystemCredential:
     role: str
     public_key: str
 
@@ -391,5 +391,5 @@ class PrivilegeGuard:
             return True
         return action not in _ADMIN_TOOLS
 
-    def identity_for_subsystem(self, subsystem: str) -> _SubsystemIdentity:
-        return _SubsystemIdentity(role="user", public_key=self._user_key)
+    def identity_for_subsystem(self, subsystem: str) -> _SubsystemCredential:
+        return _SubsystemCredential(role="user", public_key=self._user_key)

@@ -187,12 +187,10 @@ def test_an_unverifiable_delegation_envelope_is_refused(
     from fastapi import HTTPException
 
     from maistro_server.api.delegation import resolve_delegated_identity
-    from maistro_server.api.principal import AuthenticatedPrincipal
+    from maistro_server.api.principal import Principal
 
     monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
-    principal = AuthenticatedPrincipal(
-        user_id="conductor", token="service-secret", roles=frozenset({"user"})
-    )
+    principal = Principal(user_id="conductor", roles=frozenset({"user"}))
 
     for envelope in (
         "not-an-envelope",
