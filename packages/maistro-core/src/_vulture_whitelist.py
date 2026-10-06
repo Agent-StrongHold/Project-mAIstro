@@ -11,8 +11,14 @@ from maistro import identity as identity_package
 from maistro.a2a.external import ExternalAgentRegistry
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
-from maistro.cli._extensions import extensions_history, extensions_show
+from maistro.cli._extensions import (
+    extensions_explain,
+    extensions_history,
+    extensions_lock,
+    extensions_show,
+)
 from maistro.container import Container
+from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
@@ -24,6 +30,7 @@ from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
 from maistro.identity.principal import Principal
 from maistro.memory.learnings.approval import LearningApprovalGate
+from maistro.memory.learnings.gauntlet import ChainedGauntlet, IndependentTrialsGauntlet
 from maistro.memory.learnings.lifecycle import InMemoryLearningLifecycle
 from maistro.memory.working.protocol import WorkingMemoryStats
 from maistro.ontology.rubric import (
@@ -194,6 +201,14 @@ _VULTURE_WHITELIST = (
     # variable above rather than a class-object reference, which would not
     # typecheck.
     latest_by_dimension,
+    # The Gauntlet seam (M4-B2, #118): IndependentTrialsGauntlet and
+    # ChainedGauntlet are constructed by the embedding host (or tests) and
+    # injected into LearningPromoter(gauntlet=...); no scanned call site in
+    # `packages/*/src` instantiates them, the same intentionally-external
+    # posture as CampaignSelector above. TrialSpec's type vocabulary lives on
+    # TrialResult, which the evaluator protocol returns.
+    IndependentTrialsGauntlet,
+    ChainedGauntlet,
     # Learning promotion approval gate (ported from Stronghold). The promoter's
     # gated flow (LearningPromoter._check_with_gate) queues approvals and
     # consumes get_approved_ids()/mark_promoted; the admin verbs themselves are
@@ -305,6 +320,16 @@ _VULTURE_WHITELIST = (
     SqliteExtensionInstallStore.get_install,
     extensions_history,
     extensions_show,
+    # Deterministic extension dependency resolution (M9-C2, #956). The two
+    # `maistro extensions` lock commands are typer-dispatched like the read
+    # commands above. `identity_keys` is the restart-equality seam the #953
+    # install flow asserts against (lock identity set == installed record
+    # set); until that flow lands its callers are the resolution suites in
+    # packages/maistro-core/tests/extensions/ — the same
+    # contract-ships-first posture as the store seams above.
+    extensions_lock,
+    extensions_explain,
+    LockState.identity_keys,
     # External Agent discovery (M9-D1, #958). The registry's lifecycle API
     # ships first by design, the same contract-first posture as the M9-B1
     # store seams above: its in-tree consumers are the conformance suite
