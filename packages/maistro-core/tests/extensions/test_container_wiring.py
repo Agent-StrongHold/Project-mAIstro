@@ -55,3 +55,15 @@ class TestContainerWiring:
         container.extension_install_store = store
         service = container.ensure_extension_install_service()
         assert service._store is store
+
+    def test_health_service_shares_the_install_store(self) -> None:
+        """The operational-view facade (#978) reads lifecycle evidence from
+        the SAME store instance the install service owns — never a copy that
+        could drift from the canonical record of activation."""
+        container = _bare_container()
+        assert container.extension_health_service is None
+        install = container.ensure_extension_install_service()
+        health = container.ensure_extension_health_service()
+        assert health is container.ensure_extension_health_service()
+        assert health._install_store is install._store
+        assert isinstance(health._install_store, InMemoryExtensionStore)

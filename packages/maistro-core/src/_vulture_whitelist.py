@@ -18,7 +18,13 @@ from maistro.cli._extensions import (
     extensions_show,
 )
 from maistro.container import Container
+from maistro.extensions.health import (
+    ExtensionHealthService,
+    ExtensionHealthStore,
+    InMemoryExtensionHealthStore,
+)
 from maistro.extensions.resolution import LockState
+from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
@@ -298,6 +304,19 @@ _VULTURE_WHITELIST = (
     extensions_lock,
     extensions_explain,
     LockState.identity_keys,
+    # Extension operational evidence (M9-I3, #978). `record_observation` is
+    # the HOST's invocation seam — health evidence is canonical precisely
+    # because extensions cannot reach it; the invocation hosts that call it
+    # land with the M9-E connector/adapter and M9-G sandbox runs. The store
+    # twins' `append_error` records standalone classified failures (loader,
+    # policy, platform) that are not tied to one invocation; its in-tree
+    # consumers are the conformance suite
+    # (packages/maistro-core/tests/extensions/). Same
+    # contract-ships-first posture as the M9-B1/M9-C2 seams above.
+    ExtensionHealthService.record_observation,
+    ExtensionHealthStore.append_error,
+    InMemoryExtensionHealthStore.append_error,
+    SqliteExtensionHealthStore.append_error,
     # External Agent discovery (M9-D1, #958). The registry's lifecycle API
     # ships first by design, the same contract-first posture as the M9-B1
     # store seams above: its in-tree consumers are the conformance suite

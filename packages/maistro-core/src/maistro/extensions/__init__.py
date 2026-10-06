@@ -19,6 +19,12 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-I3 operational views (issue #978)**: the truthful health projection
+  (``health``) — error taxonomy with provenance, host-recorded invocation
+  evidence, durable operator enable/disable/quarantine state, per-version
+  usage digests with ranking and SLO error-budget inputs, and the durable
+  health store (``sqlite_health_store``) that makes projected health survive
+  a restart.
 
 No layer executes extension code: verification, evaluation, authorization
 and resolution all operate on bytes and declarations alone.
@@ -36,6 +42,37 @@ from maistro.extensions.compatibility import (
     CompatibilityPolicy,
     CompatibilityReport,
     evaluate_compatibility,
+)
+from maistro.extensions.health import (
+    HEALTH_WINDOW,
+    HEALTHY_STATES,
+    DependencyReadiness,
+    ExtensionErrorKind,
+    ExtensionErrorRecord,
+    ExtensionHealth,
+    ExtensionHealthService,
+    ExtensionHealthStore,
+    ExtensionObservation,
+    ExtensionOperationalState,
+    ExtensionOperationalStatus,
+    ExtensionOperatorAction,
+    ExtensionOperatorState,
+    ExtensionUsageDigest,
+    InMemoryExtensionHealthStore,
+    ObservationOutcome,
+    OperatorDecision,
+    RankingMetric,
+    SloPosition,
+    TelemetryExport,
+    dependency_readiness,
+    digest_observations,
+    evaluate_health,
+    latest_decision,
+    operator_state_for,
+    project_operational_status,
+    rank_digests,
+    slo_position,
+    state_for_action,
 )
 from maistro.extensions.manifest import (
     SUPPORTED_MANIFEST_VERSION,
@@ -84,6 +121,7 @@ from maistro.extensions.service import (
     LoadedExtension,
     UnwiredExtensionLoader,
 )
+from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     TRUST_POLICY,
@@ -132,6 +170,8 @@ from maistro.extensions.types import (
 
 __all__ = [
     "DIGEST_ALGORITHM",
+    "HEALTHY_STATES",
+    "HEALTH_WINDOW",
     "LOCK_FORMAT",
     "ROOT_REQUEST_ORIGIN",
     "SELECTION_POLICY",
@@ -148,22 +188,35 @@ __all__ = [
     "CompatibilityReport",
     "ConstraintRecord",
     "DependencyCycle",
+    "DependencyReadiness",
     "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionDependency",
     "ExtensionEntryPoint",
+    "ExtensionErrorKind",
+    "ExtensionErrorRecord",
+    "ExtensionHealth",
+    "ExtensionHealthService",
+    "ExtensionHealthStore",
     "ExtensionIdentityConflict",
     "ExtensionInstallRecord",
     "ExtensionInstallService",
     "ExtensionInstallStore",
     "ExtensionLifecycleError",
     "ExtensionManifest",
+    "ExtensionObservation",
+    "ExtensionOperationalState",
+    "ExtensionOperationalStatus",
+    "ExtensionOperatorAction",
+    "ExtensionOperatorState",
     "ExtensionPackage",
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
     "ExtensionStore",
     "ExtensionTransition",
+    "ExtensionUsageDigest",
+    "InMemoryExtensionHealthStore",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
     "InspectionConflict",
@@ -182,11 +235,14 @@ __all__ = [
     "ManifestRejected",
     "ManifestSnapshot",
     "MissingLockArtifacts",
+    "ObservationOutcome",
+    "OperatorDecision",
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
     "PublisherIdentity",
     "PublisherKeyConflict",
+    "RankingMetric",
     "RegistryProvenance",
     "RejectedCandidate",
     "ResolutionConflict",
@@ -195,7 +251,10 @@ __all__ = [
     "SelectionExplanation",
     "SemVer",
     "SkippedOptional",
+    "SloPosition",
+    "SqliteExtensionHealthStore",
     "SqliteExtensionInstallStore",
+    "TelemetryExport",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
@@ -208,16 +267,25 @@ __all__ = [
     "assert_snapshot_intact",
     "canonical_install_payload",
     "compute_authority_delta",
+    "dependency_readiness",
     "diff_locks",
+    "digest_observations",
     "evaluate_compatibility",
+    "evaluate_health",
     "evaluate_trust",
     "identity_key",
     "inspect_manifest",
+    "latest_decision",
     "manifest_snapshot",
     "materialize_lock",
     "normalize_permission",
+    "operator_state_for",
     "parse_range",
+    "project_operational_status",
+    "rank_digests",
     "resolve_lock",
     "sha256_hex",
+    "slo_position",
+    "state_for_action",
     "verify_package_payload",
 ]

@@ -1984,6 +1984,16 @@
       "effect_owner": "extension install store expire_abandoned + transition audit trail"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/health/{extension_id}/operator",
+      "handler": "decide_extension_operator_state",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies the durable operator admission decision (enable/disable/quarantine/release) with the authenticated actor and a required reason; append-only evidence whose newest row is the restart-surviving runtime state",
+      "effect_owner": "extension health store (operator decisions) + health projections"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/projects.py",
       "method": "DELETE",
       "route": "/{project_id}",

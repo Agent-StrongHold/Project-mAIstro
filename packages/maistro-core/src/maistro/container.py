@@ -143,6 +143,7 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.store import InMemoryExtensionStore
     from maistro.graph.harness import HarnessAdapter
@@ -480,6 +481,11 @@ class Container:
     # this is a records-and-authority store, never an execution authority.
     extension_install_store: InMemoryExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Extension operational views (#978, M9-I3): health evidence, operator
+    # decisions, and the projection facade over the SAME install store —
+    # never a second lifecycle authority, only a read/projection layer.
+    extension_health_store: InMemoryExtensionHealthStore | None = None
+    extension_health_service: ExtensionHealthService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -2044,12 +2050,36 @@ class Container:
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
 
+        if self.extension_install_store is None:
+            self.extension_install_store = InMemoryExtensionStore()
         if self.extension_install_service is None:
             self.extension_install_service = ExtensionInstallService(
-                self.extension_install_store or InMemoryExtensionStore(),
+                self.extension_install_store,
                 loader=UnwiredExtensionLoader(),
             )
         return self.extension_install_service
+
+    def ensure_extension_health_service(self) -> ExtensionHealthService:
+        """Return the extension operational-view facade (#978, M9-I3).
+
+        Built over the same install-store instance the install-lifecycle
+        service uses, so health projections read the one canonical record of
+        activation. Deployments that persist health evidence replace
+        ``extension_health_store`` with the SQLite twin before first use.
+        """
+        from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+        from maistro.extensions.store import InMemoryExtensionStore
+
+        # Ensure the lifecycle side exists first so both services share the
+        # one store instance; building them independently could fork the
+        # canonical record into two drifting copies.
+        self.ensure_extension_install_service()
+        if self.extension_health_service is None:
+            self.extension_health_service = ExtensionHealthService(
+                self.extension_install_store or InMemoryExtensionStore(),
+                self.extension_health_store or InMemoryExtensionHealthStore(),
+            )
+        return self.extension_health_service
 
 
 def _wire_schedule_admission(
