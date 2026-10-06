@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +58
+  packages/maistro-core/tests: +62
 ---
 
 # 966 — Installable domain-pack contracts over canonical objects (M9-F1)
@@ -9,7 +9,8 @@ Adds `packages/maistro-core/src/maistro/extensions/packs.py` (the pack
 manifest subtype, version-addressable asset inventory, instantiation rules,
 and the `InstallablePackRegistry` side-by-side install/disable surface) and
 `packages/maistro-core/tests/extensions/test_pack_contracts.py` (+58 collected
-node IDs; the extensions suite goes 153 → 211), plus the four registry verbs
+node IDs; the extensions suite goes 153 → 215, +62 with the review-fix
+regressions below), plus the four registry verbs
 whose only in-tree consumers are this suite whitelisted in
 `packages/maistro-core/src/_vulture_whitelist.py` with the
 contract-ships-first rationale (the production driver is M9-F3, #968). No
@@ -66,9 +67,9 @@ canonical model, store, or gate changes; `quality/*.json` is untouched.
   veto naming a non-dimension) surfaced as typed
   `PackManifestRejected`.
 
-## Review-fix regression tests (+4 over the initial +54)
+## Review-fix regression tests (+8 over the initial +54)
 
-Four Codex-review findings were fixed with one pinned regression each:
+Five Codex-review findings were fixed with one pinned regression each:
 
 - `test_manifest_snapshot_is_deep_frozen` — the inspected manifest snapshot
   is deep-frozen (nested mappings/arrays included, rubric scales as frozen
@@ -84,6 +85,12 @@ Four Codex-review findings were fixed with one pinned regression each:
   colliding with an active extension identity is refused before any record
   is written, so dependency resolution can never retarget to a different
   provider (addbdecde).
+- `test_boolean_envelope_version_is_rejected[True]`/`[False]` plus two new
+  `test_unknown_manifest_versions_fail_closed[True]`/`[False]` param cases —
+  the JSON literals `true`/`false` cannot satisfy `manifest_version: 1`
+  through Python's `bool == int` equality (`True == 1`); both the plain
+  extension and domain-pack envelope parsers reject non-`int` versions
+  explicitly (7273429a4).
 - (no test: `637856737` fixed `_active_versions()` to aggregate per id with
   `_semver_key` — installs out of semver order now expose the same
   highest-active version to dependency resolution that unpinned lookups
@@ -116,3 +123,17 @@ repair; the +58 above is the suite truth.
 - `InstallablePackRegistry` is the in-memory reference authority for the
   contract rules; the Workspace-scoped activation/config/upgrade/disable
   lifecycle over durable storage is #968 and must not grow here.
+
+## Repair round 2: boolean manifest_version (this note carries the round)
+
+The prior round's NEEDS-DEEP-REVIEW blocker (`packs.py:901` accepted a JSON
+boolean `manifest_version` because `True == 1`) is fixed by 7273429a4 in both
+parsers (`manifest.py` envelope + `packs.py` pack envelope) with the four
+collected node IDs above (2 new pack tests, 2 new manifest-matrix param
+cases); probe-confirmed that `True`/`False` are rejected as
+`unsupported manifest_version` while valid int-1 manifests still parse on
+both paths. The supply-chain repair above was re-proven green on this head
+with CI's exact sequence (`uv pip freeze --exclude-editable`,
+`pip-audit --strict --format=json`, `scripts/pip_audit_gate.py`): only the
+triaged `ecdsa PYSEC-2026-1325` remains, gate exit 0. No other test-count
+change; +62 is the suite truth.
