@@ -410,3 +410,48 @@ the stale artifact before trusting that check.
 
 Parent #1845 integration remains the only path to green exact-head quality;
 this leaf stays unmerged per its staging constraint.
+
+## 2026-10-06 CI repair round 2: trusted-base authorization proven inert in-leaf
+
+Re-ran every `exact-debt-ledger` job step at `bf2ee3549aaa` and re-tested the
+remaining repair hypothesis empirically:
+
+- `check-ratchet-provenance.py` rc=1 — solely via its reachability sub-gate
+  (`check-reachability-provenance.py`: `maistro.runs.admission_identity` is a
+  NEW unreachable module absent from trusted base `1e640df17c8a` and not
+  previously authorized).
+- `check-shipped-surface-truth.py` rc=0.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 — candidate bookkeeping stays exact (no unbanked,
+  stale, or unclassified findings; the seven rows are already banked and
+  sorted); the sole failure is again trusted-base authorization of the seven
+  reviewed retained identities.
+- **Empirical two-merge proof:** seven well-formed grants for exactly the
+  flagged identities were appended to the branch's
+  `quality/ratchet-authorizations.json` and the gate re-run. It still exited 1
+  with the identical "New Vulture debt is not authorized by the trusted base"
+  message, because `ratchet_provenance.load_authorizations` reads grants from
+  the merge base, not the branch. The file was restored immediately; the tree
+  shows no residue. A branch-side grant cannot turn this gate green, and the
+  issue forbids self-grants in any case.
+- `origin/develop` re-fetched 2026-10-06 (this round): still `1e640df17` —
+  its `vulture` grant section contains no admission-identity entry and its
+  `vulture-baseline.json` has zero `admission_identity` rows, so no merge can
+  pick up an external authorization today.
+- All four issue-named integration-head gates re-run: vulture rc=1 and
+  reachability rc=1 (both structural, as above);
+  `check-reachability-dispositions.py` rc=0 and `check-promotion-surface.py`
+  rc=0. The three baseline-identity root-suite self-checks fail exactly as
+  recorded in round 1 (3 failed, 35 passed in their files).
+- Focused suite re-run: 77 passed; ruff check/format and module mypy clean.
+
+Every in-leaf avenue is exhausted: wiring, baseline entries, dispositions,
+grants, and threshold changes are each forbidden by the issue text, and the
+grant route is additionally inert per the two-merge rule (demonstrated
+above). The seven flagged identities are issue-mandated contract members
+(five `AdmissionAssessment` values plus the envelope's `receipt_snapshot` /
+`provenance_snapshot` fields), so none is genuinely dead removable code.
+Resolving the residual gate failure requires a decision outside this
+worktree: land the reviewed grant on the integration base first (two merges),
+or supply the real runtime consumer via the #1845 integration branch and
+retarget the leaf's PR accordingly.
