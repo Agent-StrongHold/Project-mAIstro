@@ -276,6 +276,17 @@ The remaining exact-debt failures require the separately scoped parent
 integration to supply a real consumer or a prior trusted-base authorization;
 this leaf cannot do either without violating its staging constraint.
 
+## 2026-10-06 final repair validation
+
+At `8f6956f23625463e8635d4a2ec0d7ce7579cfd91`, the focused DTO suite passed
+77 tests; the complete `packages/maistro-core/tests` suite passed 12,906 tests
+(938 skipped, 1 xfailed); focused and repository-wide Ruff checks/format checks
+passed; module mypy passed; and the suite inventory matched all 15 suites,
+including 13,845 core tests (`+77`). The exact Vulture gate remains blocked by
+nine DTO identities absent from trusted base `c560d4ccad82`, while reachability
+and ratchet provenance remain blocked solely by the intentionally unwired
+`maistro.runs.admission_identity`; dispositions and promotion-surface pass.
+
 ## 2026-10-06 current validation
 
 At `585f308378816f2860e67f75a737e06c7a5c724e`, the focused DTO suite passed
