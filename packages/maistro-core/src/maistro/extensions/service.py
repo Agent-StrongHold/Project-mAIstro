@@ -10,6 +10,10 @@ One service owns every transition. The contract, in order:
 2. ``authorize`` applies an explicit operator/organization decision. Denial
    (or expiry) is terminal and leaves nothing active; approval freezes the
    granted permission set to exactly what the immutable snapshot declares.
+   When the deployment supplies :class:`ExtensionAuthorityInputs` (#969),
+   the freeze is instead the effective authority — the intersection of
+   manifest, publisher trust, host policy, caller delegation and Workspace
+   policy — and an empty intersection denies despite operator approval.
 3. ``install`` re-verifies the presented payload against the digest bound at
    inspection, runs the host loader — the only code-execution seam, reachable
    only after authorization — and swaps the scope's active pointer once, after
@@ -32,6 +36,11 @@ from typing import Protocol
 
 from maistro.extensions.authority import AuthorityBaseline, compute_authority_delta
 from maistro.extensions.compatibility import CompatibilityPolicy, evaluate_compatibility
+from maistro.extensions.effective_authority import (
+    ExtensionAuthorityInputs,
+    compute_effective_authority,
+    resolve_publisher_trust,
+)
 from maistro.extensions.manifest import (
     assert_snapshot_intact,
     inspect_manifest,
@@ -124,6 +133,7 @@ class ExtensionInstallService:
         platform_api_version: str = "1.0.0",
         pre_approved_permissions: frozenset[str] = frozenset(),
         authorization_ttl: timedelta = timedelta(minutes=15),
+        authority_inputs: ExtensionAuthorityInputs | None = None,
         clock: Callable[[], datetime] = _utc_now,
         install_id_factory: Callable[[], str] | None = None,
     ) -> None:
@@ -133,6 +143,7 @@ class ExtensionInstallService:
         self._platform_api_version = platform_api_version
         self._pre_approved = pre_approved_permissions
         self._ttl = authorization_ttl
+        self._authority_inputs = authority_inputs
         self._clock = clock
         self._install_id_factory = install_id_factory or (lambda: uuid.uuid4().hex)
         self._locks: dict[str, asyncio.Lock] = {}
@@ -231,6 +242,7 @@ class ExtensionInstallService:
             requested_permissions=manifest.permissions,
             artifact_sha256=manifest.artifact_sha256,
             requested_by=actor,
+            trust_evidence=trust_evidence,
             created_at=now,
             updated_at=now,
         )
@@ -351,6 +363,16 @@ class ExtensionInstallService:
         # The grant is frozen from the immutable snapshot, never from a
         # mutable copy: verify the bytes still hash to the inspected digest.
         assert_snapshot_intact(record.manifest)
+
+        # #969: when the deployment supplies authority inputs, the grant is
+        # frozen to the effective authority — the intersection of manifest,
+        # publisher trust, host policy, caller delegation and Workspace
+        # policy — never to the request alone.
+        if self._authority_inputs is not None:
+            return await self._authorize_with_effective_authority(
+                record, actor=actor, reason=reason, now=now
+            )
+
         return await self._transition(
             record,
             ExtensionState.AUTHORIZED,
@@ -361,6 +383,112 @@ class ExtensionInstallService:
                 r,
                 granted_permissions=r.requested_permissions,
                 authorized_by=actor,
+            ),
+        )
+
+    async def _authorize_with_effective_authority(
+        self,
+        record: ExtensionInstallRecord,
+        *,
+        actor: str,
+        reason: str,
+        now: datetime,
+    ) -> ExtensionInstallRecord:
+        """Freeze the grant to the #969 effective-authority intersection.
+
+        Operator approval cannot create authority the ceilings disallow: an
+        empty intersection is a denial, and a partial one grants only the
+        admitted subset, with every refusal explained on the transition
+        trail alongside the decision digest.
+        """
+        inputs = self._authority_inputs
+        assert inputs is not None  # the only caller checks this
+        # The Workspace layer is only applicable to its own scope. A service
+        # may hold records from several orgs/Workspaces; applying one scope's
+        # enablement and ceiling to another's record would authorize an
+        # extension in a scope whose policy never admitted it. A policy that
+        # does not cover the record's scope is not an applicable ceiling, so
+        # the request is denied before any authority is computed.
+        record_scope = ExtensionScope(org_id=record.org_id, workspace_id=record.workspace_id)
+        if inputs.workspace.scope != record_scope:
+            return await self._transition(
+                record,
+                ExtensionState.DENIED,
+                actor=actor,
+                reason="denied: no Workspace extension policy covers "
+                f"{record_scope.describe}; the wired policy is scoped to "
+                f"{inputs.workspace.scope.describe} and a mismatched policy "
+                "cannot authorize this record",
+                now=now,
+            )
+        # Authorization re-evaluates trust against the evidence that admitted
+        # *this* record at inspection, not the service-wide claim: when the
+        # service handles packages from several publishers, each install must
+        # stand on its own evidence. Records created before evidence was
+        # persisted fall back to the deployment-wide claim.
+        evidence = (
+            record.trust_evidence if record.trust_evidence is not None else inputs.trust_claim
+        )
+        publisher_trust = resolve_publisher_trust(
+            record.manifest,
+            evidence,
+            self._trust_policy,
+            tier_of=inputs.tier_of,
+            default_tier=inputs.default_tier,
+        )
+        authority = compute_effective_authority(
+            record.manifest,
+            trust=publisher_trust,
+            host=inputs.host,
+            caller=inputs.caller,
+            workspace=inputs.workspace,
+        )
+        detail = (
+            f"manifest {authority.manifest_sha256[:12]}…; decision "
+            f"{authority.decision_digest[:12]}…"
+        )
+        # A package-level blocker (untrusted publisher; not enabled in the
+        # Workspace) denies outright — including the degenerate manifest that
+        # requests no permissions at all, where there are no per-permission
+        # denials to explain but the extension still must not be authorized.
+        if authority.granted_none:
+            # Blockers alone cannot explain a trusted, enabled package that a
+            # host/caller ceiling empties out: surface the per-permission
+            # denials too, so the trail always says why authorization failed.
+            denial_summary = "; ".join(
+                f"{denial.permission} ({'; '.join(denial.reasons)})" for denial in authority.denials
+            )
+            return await self._transition(
+                record,
+                ExtensionState.DENIED,
+                actor=actor,
+                reason="denied: effective authority is empty; operator approval cannot "
+                f"create authority policy disallows ({detail}; blockers: "
+                f"{'; '.join(authority.blockers)}; denials: {denial_summary})",
+                now=now,
+                mutate=lambda r: replace(r, decision_digest=authority.decision_digest),
+            )
+        outcome = (
+            "authorized with effective authority: granted "
+            f"{len(authority.effective)} of {len(authority.requested)} requested "
+            f"permission(s), reason: {reason} ({detail})"
+        )
+        if not authority.granted_all:
+            denial_summary = "; ".join(
+                f"{denial.permission} ({'; '.join(denial.reasons)})" for denial in authority.denials
+            )
+            outcome += f"; denied: {denial_summary}"
+        return await self._transition(
+            record,
+            ExtensionState.AUTHORIZED,
+            actor=actor,
+            reason=outcome,
+            now=now,
+            mutate=lambda r: replace(
+                r,
+                granted_permissions=authority.effective,
+                authorized_by=actor,
+                decision_digest=authority.decision_digest,
             ),
         )
 
