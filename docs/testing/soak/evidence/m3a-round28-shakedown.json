@@ -1,0 +1,317 @@
+{
+  "duplicate_evidence": {
+    "runs_sharing_one_task_run_identity": "0"
+  },
+  "exactly_once_schedule_claim": {
+    "admission_failures": [],
+    "due_at": "2026-10-06T20:00:00+00:00",
+    "duplicate_claims_reported": 1,
+    "occurrences_with_multiple_runs": 0,
+    "occurrences_with_runs": 1,
+    "ok": true,
+    "probe_run_cleanup": {
+      "attempted": true,
+      "run_id": "388888f14ca84ab68e3b6f665201dbe0",
+      "terminal_status": "cancelled"
+    },
+    "processes": [
+      {
+        "already_fired": [
+          "2026-10-06 20:00:00+00:00"
+        ],
+        "failures": [],
+        "run_ids": [],
+        "schedule_id": "soak-claim-soak-claim-7c17f41fea7b",
+        "skipped": []
+      },
+      {
+        "already_fired": [],
+        "failures": [],
+        "run_ids": [
+          "388888f14ca84ab68e3b6f665201dbe0"
+        ],
+        "schedule_id": "soak-claim-soak-claim-7c17f41fea7b",
+        "skipped": []
+      }
+    ],
+    "runs_created_for_occurrence": 1,
+    "workspace": "soak-claim-7c17f41fea7b"
+  },
+  "exactly_once_tasks": {
+    "cause": "ok",
+    "concurrent_submissions": 12,
+    "delivered": 12,
+    "distinct_run_ids": [
+      "4de995359c6d4e7eb1811439fdbbdd81"
+    ],
+    "duplicate_run_ids": 11,
+    "ok": true,
+    "statuses": [
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202
+    ]
+  },
+  "final_runs_by_status": "cancelled=1 completed=2258",
+  "finished_at": "2026-10-06T20:20:40.410366+00:00",
+  "hashes": {
+    "generated_at": "2026-10-06T20:11:17.223734+00:00",
+    "git_clean": false,
+    "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "git_head": "5b0398e7bdc439a8ed1aa2367a23b551bbd417b7",
+    "git_status_sha256": "0c4ad4fc173ef0921776b9c6821b1e9518f457d0f99cdb0aee7afd651018ab5b",
+    "host_gateway_ipv4": "192.168.8.198",
+    "nginx_conf_sha256": "8e4d447a0fc3d82086eaebdd9516ce4d3f6303305c2f67f096e8e067f87aa3ad",
+    "nginx_rendered_conf_sha256": "86291c53ab2a81fdac9e89bc4d5902bd2049039047bd0cd527e24116b19467e1",
+    "postgres_image": "pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11",
+    "python": "3.12.14",
+    "soak_env_sha256": "23d0de45e003eebcaad258486bca366d18216194c28af514e926a8b3a71b4244",
+    "version": "0.9.0"
+  },
+  "issue": "860",
+  "kill_restart": {
+    "drain_5xx": 0,
+    "drain_conn_errors": 0,
+    "drain_seconds": 1.0,
+    "drained": true,
+    "escalated": false,
+    "exit_code": 143,
+    "killed_at": "2026-10-06T20:13:49.608236+00:00",
+    "rejoined": true,
+    "restarted_at": "2026-10-06T20:13:55.632228+00:00",
+    "scheduled": true,
+    "signal": "SIGTERM",
+    "window_seconds": 6.02,
+    "window_status_counts": {
+      "200": 445,
+      "202": 16,
+      "401": 32,
+      "404": 75
+    },
+    "window_task_status_counts": {
+      "202": 16
+    }
+  },
+  "nonterminal_run_items": "",
+  "nonterminal_runs": "0",
+  "profile": "M3-A multi-replica load/concurrency soak",
+  "rate_limit": {
+    "direct_replicas": {
+      "http://127.0.0.1:18201": {
+        "authenticated": {
+          "authenticated": true,
+          "concurrency": 16,
+          "ratelimit_headers": {
+            "x-ratelimit-limit": "3000",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "0"
+          },
+          "requests": 800,
+          "retry_after": "0",
+          "status_counts": {
+            "200": 200,
+            "429": 600
+          },
+          "target": "http://127.0.0.1:18201"
+        },
+        "unauthenticated": {
+          "authenticated": false,
+          "concurrency": 16,
+          "ratelimit_headers": {
+            "x-ratelimit-limit": "3000",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "59"
+          },
+          "requests": 800,
+          "retry_after": "59",
+          "status_counts": {
+            "401": 200,
+            "429": 600
+          },
+          "target": "http://127.0.0.1:18201"
+        }
+      },
+      "http://127.0.0.1:18202": {
+        "authenticated": {
+          "authenticated": true,
+          "concurrency": 16,
+          "ratelimit_headers": {
+            "x-ratelimit-limit": "3000",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "0"
+          },
+          "requests": 800,
+          "retry_after": "0",
+          "status_counts": {
+            "200": 255,
+            "429": 545
+          },
+          "target": "http://127.0.0.1:18202"
+        },
+        "unauthenticated": {
+          "authenticated": false,
+          "concurrency": 16,
+          "ratelimit_headers": {
+            "x-ratelimit-limit": "3000",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "59"
+          },
+          "requests": 800,
+          "retry_after": "59",
+          "status_counts": {
+            "401": 230,
+            "429": 570
+          },
+          "target": "http://127.0.0.1:18202"
+        }
+      }
+    },
+    "enforced_everywhere": true,
+    "enforcement_scope": "process-local; aggregate budget is replica count times limit",
+    "probe_below_burst": false,
+    "probe_requests": 800,
+    "rate_limit_burst": 100,
+    "through_lb_authenticated": {
+      "authenticated": true,
+      "concurrency": 16,
+      "ratelimit_headers": {
+        "x-ratelimit-limit": "3000",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "0"
+      },
+      "requests": 800,
+      "retry_after": "0",
+      "status_counts": {
+        "200": 368,
+        "429": 432
+      },
+      "target": "http://127.0.0.1:18080"
+    },
+    "through_lb_unauthenticated": {
+      "authenticated": false,
+      "concurrency": 16,
+      "ratelimit_headers": {
+        "x-ratelimit-limit": "3000",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "0"
+      },
+      "requests": 800,
+      "retry_after": "0",
+      "status_counts": {
+        "401": 348,
+        "429": 452
+      },
+      "target": "http://127.0.0.1:18080"
+    }
+  },
+  "replica_boot_seconds": 2.6,
+  "requested_sustain_seconds": 420,
+  "started_at": "2026-10-06T20:11:16.643817+00:00",
+  "sustain_seconds": 420.07,
+  "thresholds": {
+    "checks": {
+      "exact_rc_artifact": {
+        "ok": false,
+        "reason": "not the exact production Compose image and configuration",
+        "topology": "host-uvicorn-preflight"
+      },
+      "exactly_once_schedule_occurrence": true,
+      "exactly_once_task_admission": true,
+      "fd_growth": {
+        "replica_1": {
+          "first": 30,
+          "last": 36,
+          "max": 43
+        },
+        "replica_2": {
+          "first": 29,
+          "last": 36,
+          "max": 40
+        }
+      },
+      "graceful_drain": {
+        "drain_5xx": 0,
+        "drain_conn_errors": 0,
+        "drain_seconds": 1.0,
+        "drained": true,
+        "escalated": false,
+        "ok": true,
+        "required": true,
+        "signal": "SIGTERM"
+      },
+      "lb_failover_bounded": {
+        "budget": 4320.0,
+        "note": "5xx + conn errors only during the measured kill/rejoin window must stay within the passive-health budget",
+        "observed_5xx_and_conn_errors": 0,
+        "observed_window_seconds": 6.02,
+        "ok": true,
+        "upper_bound_kill_window": 27.0
+      },
+      "nonterminal_runs_after_settle": {
+        "count": 0,
+        "items": "",
+        "ok": true
+      },
+      "rate_limit_enforced": true,
+      "replica_2_rejoined": true,
+      "rss_growth": {
+        "replica_1": {
+          "first_kb": 182596,
+          "growth_pct": 8.2,
+          "last_kb": 197588,
+          "max_kb": 197600
+        },
+        "replica_2": {
+          "first_kb": 182688,
+          "growth_pct": 7.0,
+          "last_kb": 195476,
+          "max_kb": 195492
+        }
+      },
+      "sustain_duration": {
+        "minimum_seconds": 14400,
+        "observed_seconds": 420.07,
+        "ok": false
+      },
+      "task_admission_availability": {
+        "accepted_202_outside_kill_window": 2241,
+        "available_outside_kill_window": 2241,
+        "backpressured_429_outside_kill_window": 0,
+        "ok": true,
+        "ratio": 1.0,
+        "submissions_outside_kill_window": 2241
+      }
+    },
+    "kind_counts": {
+      "health_live": 11128,
+      "health_ready": 25178,
+      "metrics_unauth": 2828,
+      "run_get": 5489,
+      "task_submit": 2257
+    },
+    "p95_latency_ms": {
+      "health_live": 15.85,
+      "health_ready": 48.38,
+      "metrics_unauth": 16.5,
+      "run_get": 21.2,
+      "task_submit": 63.64
+    },
+    "requests_total": 46880,
+    "status_counts": {
+      "200": 36306,
+      "202": 2257,
+      "401": 2828,
+      "404": 5489
+    },
+    "task_admission_ratio": 1.0
+  }
+}
