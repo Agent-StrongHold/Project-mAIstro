@@ -1492,3 +1492,54 @@ two named in round 13: a base-landed authorization followed by the banking
 rebase, or the #1845 integration consumer that wires both modules and prunes
 the entries on arrival. The stack stays unmerged by design; implementation and
 test readiness stand proven at 74bc299f094d.
+
+## CI-repair round 19 (2026-10-06, head 6747d4a63347 = the dispatched exact
+## head, i.e. 74bc299f094d with develop's four grantless M9 WIP commits merged
+## in): focused validation re-executed at the merged head; four-mutation
+## battery re-derived with line-level formulations (50/14/10/22); amendment
+## empty 19th round; blocker unchanged
+
+Prior attempt died on a provider timeout after its five driver checks had all
+passed at this exact head (uv sync, whole-tree ruff check, whole-tree format
+check, both leaf suites 204 passed, suite inventory ok). This round
+independently re-executed the acceptance evidence at 6747d4a63347:
+
+- **Focused suites green**: `test_admission_generation_assessment.py` 131/131;
+  `test_root_admission_identity.py` + `test_idempotency.py` 112/112 (combined
+  243; C1 + this suite alone = 204, matching the driver's check-3 log). The
+  driver's whole-tree `ruff check .` / `ruff format --check .` re-confirmed
+  clean this round; `mypy` on `admission_generation.py` clean.
+- **Suite inventory**: `check-suite-inventory.py` (all 16 suites) ok — 27826
+  collected node IDs, 0 duplicates, matching the recorded inventory; the
+  `inventory-delta` front-matter (+131) equals actual collection.
+- **Four-mutation battery re-derived at this head**, each mutation applied as
+  an exact decision-row replacement from a `cp` backup and the module restored
+  byte-identical after each run (`git status` clean between runs; an earlier
+  mutation harness that dropped a trailing comma was itself detected — it
+  produced a collection error instead of test failures — and discarded):
+  swap TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease row before binding (last
+  three rows rotated) -> 14 failed; legacy row answering REPLAYED -> 10
+  failed; mismatch row before expiry without an expiry exception -> 22
+  failed. The failing sets are the semantically right ones (m1 kills the
+  takeover/expiry-boundary tests, m2 the binding-wins tests, m3 the
+  legacy-unresolved tests, m4 the expiry-wins tests). The m2 count differs
+  from round 17's 8 only because this round rotated all three tail rows
+  rather than swapping two; every formulation kills its mutation.
+- **exact-debt-ledger re-derived**: vulture with CI's exact arguments
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) exit 0 —
+  1332 reviewed identities -> 1332 findings; the prescribed ledger amendment
+  is empty for the 19th consecutive round. `check-reachability.py` exit 1
+  with exactly the two leaf modules NEWLY UNREACHABLE
+  (`maistro.runs.admission_identity`, `maistro.tasks.admission_generation`);
+  `check-reachability-dispositions.py` OK; `check-promotion-surface.py` ok.
+  Structural constraints re-verified by grep: no production module imports
+  `admission_generation`; the module imports only `re`, `Callable`, and the
+  three C1 names; `tasks/__init__.py`, `runs/__init__.py`, `idempotency.py`,
+  `queue.py`, and all of `quality/` are byte-identical to the base.
+
+The blocker statement is unchanged and remains the sanctioned two-module
+reachability delta: candidate-side rows cannot authorize themselves, and this
+leaf's scope forbids grants, baseline rows, dispositions, fake callers, and
+production wiring. Retirement stays with the base-landed-authorization or the
+#1845 integration consumer. The stack stays unmerged by design; implementation
+and test readiness stand proven at 6747d4a63347.
