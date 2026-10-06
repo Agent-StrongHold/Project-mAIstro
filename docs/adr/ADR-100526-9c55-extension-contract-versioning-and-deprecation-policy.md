@@ -157,6 +157,28 @@ completes with Python's import machinery disabled (test-enforced).
   metadata rather than trusting a validator it cannot see. Convergence into
   one shared parser is follow-up work once both lanes are co-installed.
 
+## Acceptance criteria
+
+Declared at acceptance (#955), bound to tests that already prove them in
+`packages/maistro-core/tests/extensions/test_compat.py` — the criteria
+describe the decision, they do not extend it.
+
+- [x] **AC-1** The host decides compatibility from manifest/SDK metadata
+  alone: negotiation completes with the import machinery disabled, before any
+  extension code import.
+- [x] **AC-2** An optional feature the host cannot provide degrades
+  explicitly — it is absent from the granted set and named in the report's
+  degradations — and an incompatible verdict is never softened into support.
+- [x] **AC-3** An unsupported major, and a same-major range miss, fail with
+  an actionable reason naming the declared range, the host's version, and the
+  missed boundary; a deprecation past its removal major fails the same way.
+- [x] **AC-4** A deprecated feature carries a machine-readable status and a
+  documented removal target — a future major plus migration prose — in host
+  metadata and in every negotiation report that names it.
+- [x] **AC-5** Compatibility never reads an application patch version or a
+  private module path: the only version in the model is the contract version,
+  and reasons/notices never name module paths.
+
 ## Evidence
 
 - Negotiation and policy behavior:

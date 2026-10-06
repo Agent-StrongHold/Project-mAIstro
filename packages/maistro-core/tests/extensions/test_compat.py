@@ -89,6 +89,7 @@ def make_extension(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-5")
 def test_host_contract_version_is_independent_of_any_package_or_app_version() -> None:
     """The contract version is a literal policy constant, not derived."""
     assert CONTRACT_VERSION.count(".") == 2
@@ -335,6 +336,7 @@ def test_host_may_implement_a_feature_the_contract_formalizes_later() -> None:
     assert "1.9.0" in report.degradations[0].reason and "1.4.0" in report.degradations[0].reason
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-4")
 def test_deprecated_feature_requires_removal_target_and_migration() -> None:
     with pytest.raises(CompatError, match="documented removal target"):
         feature("old", FEATURE_DEPRECATED, migration="use 'new'")
@@ -402,6 +404,7 @@ def test_negotiate_compatible_happy_path() -> None:
     assert report.supported_features == ("streaming", "scheduled")
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-3")
 def test_negotiate_major_mismatch_is_incompatible_with_actionable_reason() -> None:
     host = make_host()
     report = negotiate(host, make_extension(contract=">=2.0.0,<3.0.0", required=("streaming",)))
@@ -417,6 +420,7 @@ def test_negotiate_major_mismatch_is_incompatible_with_actionable_reason() -> No
     assert report.degradations == ()
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-3")
 def test_negotiate_same_major_window_miss_is_incompatible_and_actionable() -> None:
     host = make_host(version="1.4.0")
     report = negotiate(host, make_extension(contract=">=1.9.0,<2.0.0"))
@@ -471,6 +475,7 @@ def test_negotiate_required_feature_newer_than_host_is_incompatible() -> None:
     assert "'widgets'" in reason and "1.9.0" in reason and "1.4.0" in reason
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-2")
 def test_negotiate_optional_feature_unknown_degrades_explicitly() -> None:
     host = make_host()
     report = negotiate(host, make_extension(optional=("teleport",)))
@@ -488,6 +493,7 @@ def test_negotiate_optional_feature_unknown_degrades_explicitly() -> None:
     assert "teleport" not in report.supported_features
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-2")
 def test_negotiate_optional_feature_removed_degrades_with_record() -> None:
     host = make_host(
         version="2.1.0",
@@ -502,6 +508,7 @@ def test_negotiate_optional_feature_removed_degrades_with_record() -> None:
     assert report.supported_features == ()
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-4")
 def test_negotiate_deprecated_feature_negotiates_with_notice_and_removal_target() -> None:
     host = make_host(
         features=(
@@ -566,6 +573,7 @@ def test_incompatible_verdict_beats_degraded() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-1")
 def test_negotiation_never_imports_anything() -> None:
     """Compatibility is decidable with the import machinery disabled.
 
@@ -591,6 +599,7 @@ def test_negotiation_never_imports_anything() -> None:
     assert report.deprecations[0].feature == "old"
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-5")
 def test_compatibility_is_independent_of_application_patch_version() -> None:
     """Two hosts on the same contract decide identically.
 
@@ -617,11 +626,13 @@ def test_compatibility_is_independent_of_application_patch_version() -> None:
         assert report_a.deprecations == report_b.deprecations
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-5")
 def test_host_metadata_has_no_application_version_field() -> None:
     field_names = {f.name for f in HostContractMetadata.__dataclass_fields__.values()}
     assert field_names == {"contract_version", "supported_majors", "features"}
 
 
+@pytest.mark.ac("ADR-100526-9c55/AC-5")
 def test_reports_never_leak_private_module_paths() -> None:
     """Reasons and notices name versions and features, never module paths."""
     host = make_host(
