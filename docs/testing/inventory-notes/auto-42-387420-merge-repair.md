@@ -30,6 +30,14 @@ ADRs 1f7c/a66b/f383/b36a remain authoritative: persist Attempt before Runtime;
 Runtime identity is Attempt ID, stores own lease/fence authority. b36a extends
 f383 with liveness-based reclaim; no competing execution or authorization path.
 
+The remaining develop merge (a8258ee24) conflicted only in the inventory
+baseline: retain the branch's compacted counts/folded notes and add develop's
+new SDK suite at zero, whose incoming notes supply its count. This is conflict
+reconciliation, not a count ratchet. Executed inventory gates agree: core
+14,336; server 525; canvas 519; design 573; extension SDK 118. The focused
+A2A/delegation/extensions suite passes 635 tests. Exact vulture scan passes
+1,332 reviewed identities, zero unclassified; no ledger edits are justified.
+
 Validation and final gate outcomes are recorded in the issue-42 repair report
 for job 387420793df94683812cb2ceefa0deb5. Incoming merge tests/notes for #956/#959
 are preserved, not counted again by this +2 delta.
