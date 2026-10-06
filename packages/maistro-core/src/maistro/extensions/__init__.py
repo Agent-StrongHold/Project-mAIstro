@@ -19,9 +19,16 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-I2 metering (issue #977)**: usage attribution and Workspace/org quota
+  enforcement at the extension seam (``metering``) — physical usage recorded
+  once against canonical Invocation ids, nested delegation lineage, atomic
+  reservation/refund/correction semantics, and aggregation by Workspace,
+  extension, publisher, capability and time window. Attribution only: the
+  canonical provider totals stay with ``maistro.quota``.
 
-No layer executes extension code: verification, evaluation, authorization
-and resolution all operate on bytes and declarations alone.
+No layer executes extension code: verification, evaluation, authorization,
+resolution and metering all operate on declarations, identity and amounts
+alone.
 """
 
 from __future__ import annotations
@@ -43,6 +50,21 @@ from maistro.extensions.manifest import (
     inspect_manifest,
     sha256_hex,
     verify_package_payload,
+)
+from maistro.extensions.metering import (
+    AttributionDimension,
+    ExtensionMeter,
+    ExtensionMeteringError,
+    ExtensionQuotaBalance,
+    ExtensionQuotaConflict,
+    ExtensionQuotaDenied,
+    ExtensionQuotaLedger,
+    ExtensionQuotaPolicy,
+    ExtensionQuotaRequest,
+    ExtensionUsageAmounts,
+    ExtensionUsageConflict,
+    ExtensionUsageEvent,
+    UsageTotals,
 )
 from maistro.extensions.resolution import (
     LOCK_FORMAT,
@@ -141,6 +163,7 @@ __all__ = [
     "TRUST_POLICY",
     "ActivationCallback",
     "ArtifactMismatch",
+    "AttributionDimension",
     "AuthorityBaseline",
     "AuthorityDelta",
     "CatalogEntry",
@@ -158,12 +181,23 @@ __all__ = [
     "ExtensionInstallStore",
     "ExtensionLifecycleError",
     "ExtensionManifest",
+    "ExtensionMeter",
+    "ExtensionMeteringError",
     "ExtensionPackage",
+    "ExtensionQuotaBalance",
+    "ExtensionQuotaConflict",
+    "ExtensionQuotaDenied",
+    "ExtensionQuotaLedger",
+    "ExtensionQuotaPolicy",
+    "ExtensionQuotaRequest",
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
     "ExtensionStore",
     "ExtensionTransition",
+    "ExtensionUsageAmounts",
+    "ExtensionUsageConflict",
+    "ExtensionUsageEvent",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
     "InspectionConflict",
@@ -204,6 +238,7 @@ __all__ = [
     "UnknownPublisher",
     "UnresolvableDependency",
     "UnwiredExtensionLoader",
+    "UsageTotals",
     "VersionRange",
     "assert_snapshot_intact",
     "canonical_install_payload",
