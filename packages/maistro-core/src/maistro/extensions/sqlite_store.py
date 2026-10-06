@@ -229,6 +229,15 @@ class SqliteExtensionInstallStore:
                     return record
             return None
 
+    async def all_installs(self) -> list[InstallRecord]:
+        """Every install record across every extension, oldest first per name."""
+        async with self._lock:
+            cursor = await self._conn.execute(
+                "SELECT payload FROM extension_installs ORDER BY extension_name, installed_at, payload"
+            )
+            rows = await cursor.fetchall()
+            return [record_from_json(str(row[0])) for row in rows]
+
     async def _publishers_in_lock(self) -> dict[str, PublisherIdentity]:
         """Every pinned publisher identity, keyed by id (caller holds the lock)."""
         cursor = await self._conn.execute("SELECT payload FROM extension_publishers")
