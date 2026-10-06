@@ -10,6 +10,12 @@ lands with #953, and these records outlive it either way.
 (#957): which installed extensions are compatible, deprecated,
 migration-required, or blocking — before the upgrade is applied, without
 activating the new host version, from public contract metadata only.
+
+The `lock` and `explain` commands (M9-C2, #956) read a resolved lock file —
+the reproducible output of dependency resolution: which extension versions are
+pinned, from which source, and why each one and its version were selected.
+They are likewise read-only: a lock file is evidence about a decision already
+made, and these commands never rewrite it.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from maistro.extensions.preflight import (
     TargetHostContract,
     run_preflight,
 )
+from maistro.extensions.resolution import LockFormatError, LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -90,6 +97,86 @@ def _print_history(records: list[InstallRecord]) -> None:
             "verified" if record.evidence.verified else "unverified",
         )
     console.print(table)
+
+
+def _load_lock(lock_path: Path) -> LockState:
+    """Read and validate a lock file; exit non-zero on any refusal."""
+    try:
+        raw = lock_path.read_text()
+    except OSError as exc:
+        console.print(f"[red]Cannot read {lock_path}: {exc}[/red]")
+        raise Exit(code=1) from exc
+    try:
+        return LockState.from_json(raw)
+    except LockFormatError as exc:
+        console.print(f"[red]{lock_path} is not a valid extension lock: {exc}[/red]")
+        raise Exit(code=1) from exc
+
+
+@app.command("lock")
+def extensions_lock(
+    lock_path: Annotated[Path, Argument(help="Path to the resolved extension lock file (JSON).")],
+) -> None:
+    """Summarize a resolved lock: one row per pinned extension version."""
+    lock = _load_lock(lock_path)
+    if not lock.entries:
+        console.print("Nothing locked.")
+        return
+    table = Table("extension", "version", "kind", "package", "source")
+    for entry in lock.entries:
+        table.add_row(
+            entry.extension_name,
+            entry.semantic_version,
+            str(entry.kind),
+            _short_digest(entry.package_sha256),
+            entry.source,
+        )
+    console.print(table)
+    console.print(f"lock digest: sha256:{lock.lock_digest()} ({len(lock.entries)} entries)")
+
+
+@app.command("explain")
+def extensions_explain(
+    lock_path: Annotated[Path, Argument(help="Path to the resolved extension lock file (JSON).")],
+    extension_name: Annotated[str, Argument(help="Extension to explain.")],
+) -> None:
+    """Explain why an extension and its exact version are in the lock."""
+    lock = _load_lock(lock_path)
+    explanation = lock.explain(extension_name)
+    if explanation is None:
+        console.print(f"[red]{extension_name} is not in the lock ({lock_path}).[/red]")
+        raise Exit(code=1)
+    entry = explanation.entry
+    console.print(f"[bold]{entry.extension_name}@{entry.semantic_version}[/bold] ({entry.kind})")
+    console.print(f"  present because: {explanation.present_because}")
+    console.print(f"  package:         sha256:{entry.package_sha256}")
+    console.print(f"  manifest:        sha256:{entry.manifest_sha256}")
+    console.print(f"  source:          {entry.source}")
+    console.print(f"  publisher:       {entry.publisher_id}")
+    if entry.required_by:
+        console.print(f"  required by:     {', '.join(entry.required_by)}")
+    if entry.optional_for:
+        console.print(f"  optional for:    {', '.join(entry.optional_for)}")
+    console.print("  constraints:")
+    for constraint in explanation.constraints:
+        polarity = "" if constraint.required else " (optional)"
+        console.print(f"    - '{constraint.range_text}' — {constraint.origin}{polarity}")
+    console.print(f"  policy:          {explanation.policy}")
+    if explanation.rejected:
+        console.print("  rejected candidates:")
+        for candidate in explanation.rejected:
+            console.print(
+                f"    - {candidate.semantic_version} "
+                f"(sha256:{candidate.package_sha256[:12]}…): {candidate.reason}"
+            )
+    for skip in explanation.skipped_optional:
+        if skip.requirer == extension_name:
+            console.print(f"  skipped optional: {skip.target} '{skip.range_text}' — {skip.reason}")
+        else:
+            console.print(
+                f"  skipped optional on this: {skip.requirer} wanted "
+                f"'{skip.range_text}' — {skip.reason}"
+            )
 
 
 @app.command("history")
