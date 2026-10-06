@@ -550,6 +550,12 @@ async def _claim_one(dsn: str, workspace: str, due_at_text: str | None = None) -
             graph_template_id="soak-claim-template",
             overlap_policy=OverlapPolicy.ALLOW,
             catchup_window_seconds=6 * 3600,
+            # Canonical Run creation validates actor_principal_id
+            # (maistro.runs.model), so a schedule without one fails
+            # admission with "actor_principal_id is required" — the
+            # exactly-once phase errored on every occurrence until this
+            # was supplied, same wiring as the pg admission tests.
+            actor_principal_id="soak-claim-actor",
             created_at=now - timedelta(days=1),
             # Exactly one due occurrence by construction: the pinned :00
             # instant, never more than an hour old, with the cursor just

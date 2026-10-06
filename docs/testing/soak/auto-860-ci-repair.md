@@ -208,3 +208,109 @@ passing unit/ASGI/static checks.
 Progress: checked 1 issue; done 0 acceptance-complete issues; skipped 0 issues;
 validation-command errors 0; blocked 1. This locally committed handoff records
 partial progress, not completion of #860.
+
+## Revalidation and production-artifact round: job 3bea1dffd22d46ed9b0c9ec86ef197af
+
+Frozen scope: #860 only; starting HEAD `ad9b17cb9d25b4fab82799f6cc206a23e323234c`
+(verified), develop base `3b8e090fe5316bb9c4f28a3ba6b66d24a4d53401`. The supplied
+job directory again contained no `check-*.log` files; every deterministic check
+was re-executed fresh. Docker is reachable in this environment (rootless daemon
+socket `unix:///run/user/1000/docker.sock`; the default `/var/run/docker.sock`
+is stale), which every prior round's "no RC artifact establishable here"
+conclusion failed to try.
+
+### What this round executed that no prior round did
+
+The exact production artifact `deploy/docker-compose.prod.yml` was brought up
+from the assigned head (compose project `m3a860`): nginx 1.27 LB on
+127.0.0.1:18080 -> two maistro-server replicas built from `ad9b17cb9` (image ids
+in evidence) -> pgvector pg17 primary + streaming hot standby + redis 7. `docker
+compose config` renders fine when the documented `.env` inputs are supplied —
+the prior "interpolation fails on LITELLM_API_KEY" blocker was an unsupplied
+environment, not a defect. Replication is genuinely streaming
+(`pg_stat_replication` = walreceiver/streaming/async; replica in recovery).
+Identity evidence: `docs/testing/soak/evidence/m3a-round7-prodstack-identity.json`.
+
+### Genuine defect found and repaired
+
+`scripts/soak/run_soak.py` built its claim-probe Schedule without
+`actor_principal_id`; canonical Run creation validates it
+(`packages/maistro-core/src/maistro/runs/model.py:321`), so the promotion gate
+`exactly_once_schedule_occurrence` failed admission on every occurrence against
+current code — observed live (`failures: ["actor_principal_id is required"]`)
+before the fix. Repair: supply the `soak-claim-actor` fixture principal, same
+wiring as `packages/maistro-core/tests/scheduling/test_pg_admission.py:56`. No
+gate weakened; the phase becomes executable again. No tests added, no inventory
+delta (`check-suite-inventory.py` re-run: match).
+
+### Production-artifact evidence recorded this round
+
+- Exactly-once task admission through the LB: 12 concurrent identical
+  submissions -> 12x202, exactly 1 distinct run_id
+  (`m3a-round7-prodstack-quick-probes.json`).
+- Rate limiting on the artifact: per-process enforcement confirmed (60 rpm /
+  burst 10 per replica — `security/resource_policy.py:16-17`); one ip-identity
+  exhausted replica 1's burst then obtained a fresh 10-pass allowance on replica
+  2 ~0.25 s later; principal through the LB got 20 passes = 10+10 across the
+  replica limiters; 429s carry Retry-After and X-RateLimit-Remaining: 0;
+  /metrics gated 401 for unauthenticated AND authenticated callers. The
+  aggregate allowance provably scales with replica selection — the issue's
+  "cannot be bypassed by replica selection" criterion is NOT met by the
+  documented per-process design and needs an owner decision (shared-store
+  budget), not a silent change.
+- Sustained round A (30 rps documented mix, production-untuned): records the
+  profile-vs-artifact mismatch (authenticated share 429-walled at baseline
+  limits), the deliberate readiness-503 degraded semantics with an open LLM
+  circuit (`api/health.py:228-247`, #365/#1567), and the full degraded
+  execution path: admission 202 -> claim -> Attempt -> provider failure ->
+  circuit opens after 5 failures/60 s -> task terminalized `failed`.
+- Sustained round B (production-limit-aware profile, corrected client):
+  2755 requests / 360 s, zero transport errors; 177/177 admissions with
+  receipts; replica 2 SIGTERM-drain restarted at t=144 (3.5 s) with seamless LB
+  failover and rejoin by t<=150; after a 90 s settle every admitted run_id
+  appears exactly once in `canonical_runs` (0 duplicate rows), all terminal,
+  whole spine 661 rows 0 non-terminal; RSS/FD/process counts flat; PG sessions
+  12-13, no waiting locks; replication intact.
+- Exactly-once schedule occurrence on the artifact: two OS processes raced
+  `admit_due` for one pinned occurrence — same-container and cross-physical-
+  replica forms — exactly 1 Run created, loser reported `already_fired`
+  (`m3a-round7-prodstack-schedule-occurrence-race.json`).
+
+### Gates re-run at the post-repair head
+
+`uv run ruff check .` PASS; `uv run ruff format --check .` PASS (3003 files);
+`git diff --check 3b8e090f...HEAD` PASS; exact vulture command PASS (1336
+reviewed identities = 1336 findings, no amendment needed); `uv run pytest
+tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q`
+PASS (60 tests); `check-suite-inventory.py --suite
+packages/maistro-server/tests` PASS; `check-backlog-consistency.py` PASS.
+
+### Acceptance disposition after this round
+
+Advanced from UNVERIFIED to production-artifact evidence: two deployed
+replicas exercised; kill/restart drain/failover/recovery with zero
+loss/duplication (360 s window); exactly-once task admission and schedule
+occurrence (incl. cross-replica fencing); per-process rate-limit behavior and
+its replica-selection bypass, now demonstrated on the artifact rather than only
+ASGI fixtures; PG/latency/RSS/FD telemetry with recorded values; streaming
+replication; no leak signal within the window. Still unmet and NOT resolvable
+by this worker: (1) promotion requires >=4 h on a frozen, selected immutable RC
+artifact — this round's images are locally built from the head, windows are
+360 s, and the harness's `exact_rc_artifact`/`sustain_duration` gates correctly
+still fail; (2) successful tool/model calls are impossible here (no provider
+keys in the environment's gateway), so representative successful-workload
+classes, multi-user/Workspace spread, Graph fan-out, Canvas and background Goal
+reconciliation remain unproven; (3) the replica-selection rate-limit criterion
+conflicts with the documented per-process design and needs an owner/ADR
+decision; (4) filing findings upstream is prohibited to this worker (no GitHub
+mutations).
+
+**Verdict: BLOCKED for promotion acceptance; this round's repairs and evidence
+are complete and committed.** Another CI-repair round on this tree cannot
+advance acceptance; the next step is operational (freeze the RC artifact and
+run the >=4 h instrumented soak with a working model gateway) plus one design
+decision (shared rate-limit budget vs per-process semantics for the
+replica-selection criterion).
+
+Progress: checked 1 issue; harness repairs done 1; production-artifact evidence
+rounds 4; skipped 0; validation-command errors 0; promotion-blocked 1.
