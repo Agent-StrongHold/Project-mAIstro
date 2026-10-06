@@ -87,6 +87,11 @@ _ACCEPTANCE_HEADING = re.compile(
     re.IGNORECASE,
 )
 _ANY_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+\S")
+# A bare ``Label:`` paragraph (``Tasks:``, ``Notes:``) is the plain-paragraph
+# counterpart of a heading: it ends an open record, so a checkbox under
+# ``Tasks:`` stays a task instead of registering as an acceptance criterion.
+# Trailing text after the colon keeps prose like ``plan: see doc`` out.
+_BARE_SECTION = re.compile(r"^\s{0,3}[A-Za-z][\w '/-]{0,40}:\s*$")
 _CHECKBOX = re.compile(r"^\s{0,3}[-*]\s+\[(?P<box>[ xX])\]\s*(?P<text>\S.*)$")
 
 # ``Closes #76 AC-2`` / ``fixes #56 (AC-3)``: a criterion claimed on the same
@@ -150,7 +155,7 @@ def acceptance_criteria(body: str) -> list[Criterion]:
             continue
         if not in_record:
             continue
-        if _ANY_HEADING.match(line):
+        if _ANY_HEADING.match(line) or _BARE_SECTION.match(line):
             in_record = False
             continue
         checkbox = _CHECKBOX.match(line)

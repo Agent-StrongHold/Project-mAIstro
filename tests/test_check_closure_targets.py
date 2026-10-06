@@ -134,6 +134,26 @@ def test_acceptance_heading_variants_open_the_record(gate) -> None:
         assert [c.index for c in gate.acceptance_criteria(body)] == [1], heading
 
 
+def test_bare_section_label_closes_the_record(gate) -> None:
+    # A bare "Acceptance:" opens the record, so the bare "Tasks:" that
+    # follows must end it: an unchecked task there is not an acceptance
+    # criterion and must not block closure (review: bare section boundaries).
+    body = (
+        "Acceptance:\n"
+        "- [x] one real backend is registered\n"
+        "\n"
+        "Tasks:\n"
+        "- [ ] wire the runbook\n"
+    )
+    criteria = gate.acceptance_criteria(body)
+    assert [(c.index, c.ticked) for c in criteria] == [(1, True)]
+
+
+def test_prose_line_ending_in_a_colon_does_not_close_the_record(gate) -> None:
+    body = "Acceptance:\nplan: register backends in one pass\n- [ ] real box\n"
+    assert [c.ticked for c in gate.acceptance_criteria(body)] == [False]
+
+
 def test_prose_bullets_under_acceptance_register_nothing(gate) -> None:
     # #62 carries prose acceptance bullets ("Acceptance:"), not a checkbox
     # record; they are intent, not a machine-checkable closeout record.
