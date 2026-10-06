@@ -20,6 +20,7 @@ from maistro.backlog.sqlite_store import SqliteBacklogStore
 from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
     extensions_explain,
     extensions_history,
@@ -376,6 +377,15 @@ _VULTURE_WHITELIST = (
     extensions_lock,
     extensions_explain,
     LockState.identity_keys,
+    # Connector/source SDK (M9-E2, #963). The Typer callbacks are dispatched
+    # by registration, and the protocol members below are the public SDK
+    # surface out-of-tree connectors implement and call — the same
+    # consumed-outside-this-scan posture the core-public-api-surface ledger
+    # rule records. SyncEngine.query_items routing keeps query_items called in
+    # src; the rest of the SDK surface (dataclass fields, store/protocol
+    # members) is exercised by the engine and the shared conformance suite.
+    connectors_verify,
+    connectors_describe,
     # External Agent discovery (M9-D1, #958). The registry's lifecycle API
     # ships first by design, the same contract-first posture as the M9-B1
     # store seams above: its in-tree consumers are the conformance suite

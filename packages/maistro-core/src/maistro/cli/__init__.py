@@ -11,6 +11,7 @@ Subcommands:
     maistro security         Rotate the credential master key, revoke sessions
     maistro archive          Read durable graph runs from before the convergence
     maistro extensions       Inspect durable extension install records
+    maistro connectors       Verify a connector against the shared conformance suite
     maistro sandbox          Report the isolation this host can provide
 
 Config via env: MAISTRO_API_URL (default http://127.0.0.1:8101),
@@ -31,6 +32,7 @@ app = Typer(
 from maistro.cli._approvals import app as _approvals_app  # noqa: E402
 from maistro.cli._archive import app as _archive_app  # noqa: E402
 from maistro.cli._builders import app as _builders_app  # noqa: E402
+from maistro.cli._connectors import app as _connectors_app  # noqa: E402
 from maistro.cli._eval_workspace import app as _eval_workspace_app  # noqa: E402
 from maistro.cli._extensions import app as _extensions_app  # noqa: E402
 from maistro.cli._fixtures import app as _fixtures_app  # noqa: E402
@@ -50,6 +52,7 @@ app.add_typer(_fixtures_app, name="fixtures")
 app.add_typer(_security_app, name="security")
 app.add_typer(_archive_app, name="archive")
 app.add_typer(_extensions_app, name="extensions")
+app.add_typer(_connectors_app, name="connectors")
 app.add_typer(_sandbox_app, name="sandbox")
 app.add_typer(_eval_workspace_app, name="eval-workspace")
 app.add_typer(_repair_app, name="repair")
