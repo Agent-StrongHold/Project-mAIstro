@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +54
+  packages/maistro-core/tests: +58
 ---
 
 # 966 — Installable domain-pack contracts over canonical objects (M9-F1)
@@ -8,8 +8,8 @@ inventory-delta:
 Adds `packages/maistro-core/src/maistro/extensions/packs.py` (the pack
 manifest subtype, version-addressable asset inventory, instantiation rules,
 and the `InstallablePackRegistry` side-by-side install/disable surface) and
-`packages/maistro-core/tests/extensions/test_pack_contracts.py` (+54 collected
-node IDs; the extensions suite goes 153 → 207), plus the four registry verbs
+`packages/maistro-core/tests/extensions/test_pack_contracts.py` (+58 collected
+node IDs; the extensions suite goes 153 → 211), plus the four registry verbs
 whose only in-tree consumers are this suite whitelisted in
 `packages/maistro-core/src/_vulture_whitelist.py` with the
 contract-ships-first rationale (the production driver is M9-F3, #968). No
@@ -65,6 +65,44 @@ canonical model, store, or gate changes; `quality/*.json` is untouched.
   payload strictness, and canonical-model refusals (inverted numeric scale,
   veto naming a non-dimension) surfaced as typed
   `PackManifestRejected`.
+
+## Review-fix regression tests (+4 over the initial +54)
+
+Four Codex-review findings were fixed with one pinned regression each:
+
+- `test_manifest_snapshot_is_deep_frozen` — the inspected manifest snapshot
+  is deep-frozen (nested mappings/arrays included, rubric scales as frozen
+  primitives), so a consumer cannot mutate an asset away from the bytes
+  `source_sha256` anchors (3909069d9).
+- `test_evidence_required_must_be_a_json_boolean` — a truthy string like
+  `"false"` cannot invert rubric evidence requirements through Python
+  truthiness (87f246b1d).
+- `test_caller_rubric_bindings_are_revalidated` — caller-supplied
+  `revision`/`goal_revision` are revalidated through `RubricSemantic.model_validate`
+  because `model_copy(update=...)` skips constraint checks (f6e046b69).
+- `test_pack_id_occupied_by_an_active_extension_is_rejected` — a pack id
+  colliding with an active extension identity is refused before any record
+  is written, so dependency resolution can never retarget to a different
+  provider (addbdecde).
+- (no test: `637856737` fixed `_active_versions()` to aggregate per id with
+  `_semver_key` — installs out of semver order now expose the same
+  highest-active version to dependency resolution that unpinned lookups
+  resolve to; behavior covered by `TestCompatibilityThroughM9Machinery`.)
+
+## CI repair: supply-chain lock refresh (this note carries the round)
+
+The merge queue failed `Supply chain (pip-audit)` on advisories that postdate
+the lock, unrelated to this branch's diff (no dependency files touched by the
+feature): `multidict==6.7.1 CVE-2026-104874` (fixed 6.9.1) and
+`werkzeug==3.1.8 CVE-2026-102598` (fixed 3.1.9), both transitive (aiohttp /
+flask). Repaired per the gate's own prescription by upgrading the lock
+(`uv lock --upgrade-package multidict --upgrade-package werkzeug`; uv.lock
+diff touches only those two stanzas) and re-proved locally with CI's exact
+sequence (`uv sync --locked`, `uv pip install pip-audit`, freeze, `pip-audit
+--strict --format=json`, `scripts/pip_audit_gate.py`): green, with only the
+triaged `ecdsa PYSEC-2026-1325` remaining, plus
+`scripts/check-dependency-namespaces.py` green. No test-count change from the
+repair; the +58 above is the suite truth.
 
 ## Naming notes future lanes should not undo
 
