@@ -1,6 +1,7 @@
-"""Governed extension registry and activation flow (M9-B, issues #952/#953).
+"""Governed extension registry, activation flow, and dependency resolution
+(M9-B/M9-C, issues #952/#953/#956).
 
-Public surface of the ``maistro.extensions`` package, in two layers:
+Public surface of the ``maistro.extensions`` package, in three layers:
 
 - **M9-B1 registry (issue #952)**: immutable install records with publisher
   identity, package digest/signature metadata, manifest snapshots, catalog
@@ -14,9 +15,13 @@ Public surface of the ``maistro.extensions`` package, in two layers:
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
   authorization.
+- **M9-C2 resolution (issue #956)**: strict semantic-version ranges
+  (``semver``), a deterministic resolver producing a reproducible
+  :class:`LockState` (``resolution``), and lock-driven reinstall through the
+  install store (:func:`materialize_lock`).
 
-Neither layer executes extension code: verification, evaluation and
-authorization all operate on bytes and declarations alone.
+No layer executes extension code: verification, evaluation, authorization
+and resolution all operate on bytes and declarations alone.
 """
 
 from __future__ import annotations
@@ -62,6 +67,40 @@ from maistro.extensions.manifest import (
     sha256_hex,
     verify_package_payload,
 )
+from maistro.extensions.resolution import (
+    LOCK_FORMAT,
+    ROOT_REQUEST_ORIGIN,
+    SELECTION_POLICY,
+    CatalogEntry,
+    ConstraintRecord,
+    DependencyCycle,
+    ExtensionCatalog,
+    ExtensionDependency,
+    LockArtifacts,
+    LockDiff,
+    LockEntry,
+    LockFormatError,
+    LockKind,
+    LockState,
+    MissingLockArtifacts,
+    RejectedCandidate,
+    ResolutionConflict,
+    ResolutionError,
+    RootRequest,
+    SelectionExplanation,
+    SkippedOptional,
+    UnresolvableDependency,
+    diff_locks,
+    materialize_lock,
+    resolve_lock,
+)
+from maistro.extensions.semver import (
+    InvalidSemanticVersion,
+    InvalidVersionRange,
+    SemVer,
+    VersionRange,
+    parse_range,
+)
 from maistro.extensions.service import (
     ExtensionCodeLoader,
     ExtensionInstallService,
@@ -83,7 +122,6 @@ from maistro.extensions.types import (
     TERMINAL_STATES,
     TRANSITIONS,
     ArtifactMismatch,
-    ExtensionDependency,
     ExtensionEntryPoint,
     ExtensionIdentityConflict,
     ExtensionInstallRecord,
@@ -118,10 +156,6 @@ from maistro.extensions.types import (
 __all__ = [
     "DEFAULT_MIN_TIER",
     "DIGEST_ALGORITHM",
-    "FILESYSTEM_READ_PERMISSION",
-    "FILESYSTEM_WRITE_PERMISSION",
-    "NETWORK_OUTBOUND_PERMISSION",
-    "REAL_ISOLATION_TIERS",
     "SUPPORTED_MANIFEST_VERSION",
     "TERMINAL_STATES",
     "TRANSITIONS",
@@ -130,8 +164,12 @@ __all__ = [
     "ArtifactMismatch",
     "AuthorityBaseline",
     "AuthorityDelta",
+    "CatalogEntry",
     "CompatibilityPolicy",
     "CompatibilityReport",
+    "ConstraintRecord",
+    "DependencyCycle",
+    "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionDependency",
     "ExtensionEntryPoint",
@@ -163,17 +201,25 @@ __all__ = [
     "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
+    "InvalidSemanticVersion",
     "InvalidTransition",
+    "InvalidVersionRange",
     "LoadedExtension",
+    "LockArtifacts",
+    "LockDiff",
+    "LockEntry",
+    "LockFormatError",
+    "LockKind",
+    "LockState",
     "ManifestRejected",
     "ManifestSnapshot",
+    "MissingLockArtifacts",
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "RegistryProvenance",
-    "SandboxViolationLog",
     "SqliteExtensionInstallStore",
     "TrustClaim",
     "TrustEvidence",
@@ -181,20 +227,41 @@ __all__ = [
     "TrustReport",
     "UnknownInstall",
     "UnknownPublisher",
+    "UnresolvableDependency",
     "UnwiredExtensionLoader",
-    "ViolationKind",
     "assert_snapshot_intact",
     "build_sandbox_config",
     "canonical_install_payload",
     "compute_authority_delta",
+    "diff_locks",
     "evaluate_compatibility",
     "evaluate_trust",
     "identity_key",
     "inspect_manifest",
     "manifest_snapshot",
+    "materialize_lock",
     "normalize_permission",
-    "risk_tier_for",
-    "select_isolation_profile",
     "sha256_hex",
     "verify_package_payload",
+    "REAL_ISOLATION_TIERS",
+    "risk_tier_for",
+    "FILESYSTEM_WRITE_PERMISSION",
+    "ViolationKind",
+    "SandboxViolationLog",
+    "FILESYSTEM_READ_PERMISSION",
+    "select_isolation_profile",
+    "NETWORK_OUTBOUND_PERMISSION",
+    "resolve_lock",
+    "parse_range",
+    "SELECTION_POLICY",
+    "ROOT_REQUEST_ORIGIN",
+    "LOCK_FORMAT",
+    "ResolutionError",
+    "ResolutionConflict",
+    "SemVer",
+    "SkippedOptional",
+    "VersionRange",
+    "RootRequest",
+    "SelectionExplanation",
+    "RejectedCandidate",
 ]
