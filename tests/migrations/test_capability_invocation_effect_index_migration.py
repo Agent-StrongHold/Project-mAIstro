@@ -83,11 +83,15 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # second time there and re-parented onto that `055` as
     # `056_user_model_facts`. Develop's quota-door revision (#1196/#718)
     # then claimed `055`'s child slot on develop as
-    # `043_invocation_quota_door` — a third collision — so per the
-    # convention (the branch-side revision re-parents onto the incoming
-    # develop tip) `056` now revises the quota door and the single linear
-    # head is still `056`.
-    walked = {item.revision for item in directory.walk_revisions("base", "056")}
+    # `043_invocation_quota_door` — a third collision — so the quota door
+    # keeps develop's parent, and the branch-side revision that follows the
+    # deployed head is #863's planner-stability one: numbered `052` when
+    # written and re-parented onto the chain tip as `053`, `054`, and `056`
+    # in the earlier collisions, it re-parents onto develop's
+    # `056_user_model_facts` tip as `057` per the convention (the
+    # branch-side revision re-parents onto the incoming develop tip), so the
+    # single linear head is `057`.
+    walked = {item.revision for item in directory.walk_revisions("base", "057")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -104,7 +108,7 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "055" in walked
     assert "056" in walked
     assert "043_invocation_quota_door" in walked
-    assert directory.get_heads() == ["056"]
+    assert directory.get_heads() == ["057"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
