@@ -38,6 +38,7 @@ from maistro.extensions.ui import (
 )
 from maistro.graph.definitions import Graph
 from maistro.runs.model import (
+    TERMINAL_RUN_STATUSES,
     Attempt,
     AttemptStatus,
     GraphSnapshot,
@@ -582,6 +583,22 @@ async def test_terminal_run_status_fails_the_cancellable_precondition() -> None:
             principal_permissions=PRINCIPAL,
             canonical_state=state,
         )
+
+
+def test_cancellable_vocabulary_matches_canonical_run_lifecycle() -> None:
+    """The projection-local cancellable set cannot drift from canonical truth.
+
+    The extension layer holds no import path into canonical execution truth
+    (the #981 lifecycle-proof boundary), so ``ui.py`` carries the cancellable
+    statuses as a literal vocabulary instead of an import edge. This pin is
+    the anti-drift mechanism in its place: exact set equality against the
+    canonical model means a RunStatus change fails here until the same
+    reviewed core change updates both sides.
+    """
+    assert (
+        frozenset(status.value for status in RunStatus if status not in TERMINAL_RUN_STATUSES)
+        == ui_module._CANCELLABLE_RUN_STATUSES
+    )
 
 
 async def test_unresolvable_canonical_target_is_unavailable() -> None:

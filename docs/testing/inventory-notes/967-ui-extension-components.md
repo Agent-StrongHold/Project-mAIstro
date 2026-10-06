@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +72
+  packages/maistro-core/tests: +73
 ---
 # 967 — Governed UI/A2UI extension components projecting canonical state (M9-F2)
 
@@ -87,3 +87,21 @@ here so the ledger matches the reachable tree (collected: 72, not 66):
 - Two more `test_unsafe_csp_tokens_are_rejected` cases (10 → 12): a CSP value
   smuggling `'unsafe-inline'` through `connect_src`, and a comma-joined
   multi-origin `connect_src` (header-injection smuggling) is refused.
+
+## Develop-sync repair round (+1)
+
+The develop merge brought the #981 lifecycle-proof boundary
+(`stage_canonical_truth_untouched`): no module under `maistro/extensions/`
+may hold an import line into `maistro.runs` / `maistro.goals` /
+`maistro.graph`. `ui.py` imported the canonical status vocabulary to derive
+`_CANCELLABLE_RUN_STATUSES`, tripping that check. The repair keeps both
+contracts: the cancellable set becomes a projection-local literal (the
+module's established pattern — `BINDABLE_FIELDS` and `GOVERNED_ROUTES` are
+already closed literal tables), and anti-drift moves from an import edge to
+the test suite:
+
+- `test_cancellable_vocabulary_matches_canonical_run_lifecycle` — exact set
+  equality between `ui_module._CANCELLABLE_RUN_STATUSES` and
+  `{status.value for status in RunStatus} - TERMINAL_RUN_STATUSES` from
+  `maistro.runs.model`; a canonical RunStatus change fails here until the
+  same reviewed core change updates both sides.

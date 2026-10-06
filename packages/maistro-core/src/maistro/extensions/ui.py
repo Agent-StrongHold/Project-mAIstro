@@ -74,12 +74,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import SplitResult, urlsplit
 
 from maistro.extensions.manifest import SEMVER_RE, sha256_hex
 from maistro.extensions.types import ExtensionScope
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
 __all__ = [
     "BINDABLE_FIELDS",
@@ -172,11 +171,17 @@ BINDABLE_FIELDS: Mapping[str, tuple[str, ...]] = {
 }
 
 #: Run status values (as strings) from which a Run can still be cancelled —
-#: everything outside the canonical terminal set. Derived from
-#: ``maistro.runs.model`` so this vocabulary cannot drift from the canonical
-#: execution lifecycle.
+#: everything outside the canonical terminal set. Projection-local literal
+#: vocabulary, mirroring ``maistro.runs.model`` (RunStatus minus
+#: ``TERMINAL_RUN_STATUSES`` = created, queued, running, waiting, paused).
+#: The extension layer holds no import path into canonical execution truth
+#: (the #981 lifecycle-proof boundary), so anti-drift is enforced by the test
+#: suite instead of an import edge:
+#: ``test_cancellable_vocabulary_matches_canonical_run_lifecycle`` pins this
+#: set to the canonical model, so a new RunStatus lands here only after a
+#: reviewed core change updates both sides.
 _CANCELLABLE_RUN_STATUSES: frozenset[str] = frozenset(
-    status.value for status in RunStatus if status not in TERMINAL_RUN_STATUSES
+    {"created", "queued", "running", "waiting", "paused"}
 )
 
 
@@ -924,7 +929,7 @@ def _parse_binding(raw: object, component_id: str, seen: set[str]) -> DataBindin
             f"reference {sorted(SUPPORTED_STATE_KINDS)}"
         )
     fields = _validate_binding_fields(raw["fields"], kind, name, component_id)
-    return DataBinding(binding=name, kind=kind, fields=fields)
+    return DataBinding(binding=name, kind=cast(CanonicalStateKind, kind), fields=fields)
 
 
 def _route_string(route: GovernedRoute) -> str:
