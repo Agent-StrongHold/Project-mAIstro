@@ -719,3 +719,60 @@ cure (develop-side reachability grant, or real-consumer wiring in parent
 #1845 integration) is an orchestrator decision outside this leaf's
 authorization. Escalated as NEEDS-DEEP-REVIEW per the issue's instruction to
 report implementation/test readiness plus the explicit merge blocker.
+
+## 2026-10-06 round-8 revalidation after develop sync to df00785bb
+
+Develop advanced `bc40b6cda` -> `df00785bb` (M1-B1 run routing #1325, M9-C1
+extension contract versioning #1997, M9-H2 SDK host harness #2016). Merged
+`origin/develop` into `auto-1851` at `28902b9ce66f564f91390a14859dcd4af323598c`
+(auto-merge clean; working tree clean).
+
+Develop-sync scope audit: `git grep -l admission_identity origin/develop --
+packages/` matches nothing, and `git diff bc40b6cda..origin/develop --
+scripts/check-reachability.py quality/` only adds `maistro_ext_harness`
+STATIC/DYNAMIC roots (#974) plus unrelated ac-state notes — none of the three
+new commits lands a runtime consumer, a reachability grant, or a baseline row
+for `maistro.runs.admission_identity`. The M1-B1 migration test
+`test_task_admission_generation_upgrade.py` concerns the live admission
+row's generation-column upgrade, not this DTO module. The merge therefore
+cannot and does not change the blocker's diagnosis.
+
+Evidence at `28902b9ce` (base `df00785bb41b`, `uv sync --locked --extra dev`):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (exact-debt-ledger's exact argv): rc=0, 1332 reviewed ->
+  1332 findings, zero deltas. The named gate's vulture half stays cured.
+- `check-shipped-surface-truth.py`: rc=0.
+- `check-ratchet-provenance.py`: rc=1 via the reachability sub-ratchet only
+  (`maistro.runs.admission_identity`: NEW unreachable absent from trusted
+  base, not previously authorized; 170 -> 171 of 1,336 modules). The other
+  nine sub-ratchets — adr-status-language, citation-status,
+  promotion-surface, reachability-dispositions, shell-execution,
+  contract-markers, enumerations, lifecycle — all OK.
+- `check-reachability.py`: rc=1 with exactly the one issue-predicted NEW
+  unreachable module (exit code re-measured unpiped this round; earlier
+  piped invocations can mask rc).
+- `check-reachability-dispositions.py` rc=0 (49 groups, 170 modules);
+  `check-promotion-surface.py` rc=0.
+- `quality/` is byte-identical to `origin/develop` post-merge
+  (`git diff --numstat origin/develop -- quality/` empty) — the branch still
+  carries zero ledger edits, grants, or waivers.
+- Focused: `pytest .../test_root_admission_identity.py -q` 77 passed; ruff
+  check / format --check tree-wide clean (3,092 files); module mypy clean;
+  scoped `check-suite-inventory.py --suite packages/maistro-core/tests` ok at
+  14,581 node IDs with the leaf delta unchanged at +77.
+- Security-signature prerequisite re-spot-checked at the merged head:
+  `store_boundary.require_admitted_actor(actor_principal_id: str | None)` and
+  the `actor_principal_id: str | None = None` create/claim guards are intact.
+
+Round-8 verdict: unchanged in substance. The leaf is implementation- and
+test-complete; the sole exact-debt-ledger failure is the reachability
+new-unreachable that the issue text predicts and forbids curing in-leaf ("Do
+not add keep-alive imports, dead branches, dummy callers, package re-exports,
+artificial framework/CLI registration, suppressions, allowlist/baseline
+entries, or grants to make this leaf independently green"; "No other
+production module imports or calls the new module in this leaf"). Cure belongs
+to the parent #1845 integration (runtime consumer + wiring) or an
+orchestrator sequencing decision. Reported per the issue's directive:
+implementation/test readiness plus the explicit merge blocker; stack left
+unmerged. Escalated as NEEDS-DEEP-REVIEW.
