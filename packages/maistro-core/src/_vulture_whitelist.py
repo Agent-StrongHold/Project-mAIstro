@@ -34,12 +34,16 @@ from maistro.ontology.rubric import (
     RubricScale,
     RubricSemantic,
 )
+from maistro.persistence.pg_audit import PgAuditLog
+from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.projects.rubric_store import RubricStore
+from maistro.protocols.memory import AuditLog
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
+from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -101,6 +105,14 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
+    # Audit cursor reads (#358) are called through AuditLog by Hive's
+    # backend/services/audit_bridge.py::page_core_audit_entries. That real
+    # consumer lies outside the packages/*/src scan. Preserve the protocol
+    # and all three Container-bound adapters, not a list-and-slice fallback.
+    AuditLog.get_page,
+    PgAuditLog.get_page,
+    SqliteAuditLog.get_page,
+    InMemoryAuditLog.get_page,
     # Workspace work campaigns (#103, SPEC-092626-1831). Pydantic invokes the
     # validators; the Actor-valued fields are serialization surface written
     # through model_dump_json and read by consumers outside this scan (the
