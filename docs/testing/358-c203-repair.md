@@ -62,3 +62,87 @@ chain, and admission-upgrade migration files: **12 passed, 28 PostgreSQL skips**
 `git diff --check`: PASS.
 Explicit RATCHET_BASE_REV still resolves the old merge base until the existing
 merge is committed; gate will be rerun after recording the merge.
+
+## Final validation and disposition
+
+Merge repair committed as `0df6da31789d`. New regression test was also run in
+an isolated temporary directory against the starting commit's migration body:
+it fails `assert '057' == '058'`, as expected. No candidate files were reverted
+or temporarily replaced. The passing candidate checks above are not vacuous.
+
+Fresh validation (all long-running commands allowed 1,200 seconds):
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_audit_convergence.py packages/hive-conductor/backend/tests/test_audit_pagination.py packages/hive-conductor/backend/tests/test_audit_routes.py packages/hive-conductor/backend/tests/test_noop_route_contracts.py -x -q -s`:
+  **77 passed**. Legacy SQLite million-row index build 11.159s, initial page
+  0.0008s, scoped page 0.0005s, maximum query work <2,800 VM instructions.
+- `uv run pytest packages/maistro-core/tests/persistence/test_audit_pages.py packages/maistro-core/tests/workspaces/test_store_boundary_scope_conformance.py -x -q -s`:
+  **45 passed, 4 PostgreSQL skips**. Canonical SQLite million-row load 10.143s,
+  maximum query work 3,400 VM instructions.
+- `uv run python scripts/check-suite-inventory.py --suite tests/ --suite packages/hive-conductor/backend/tests --suite packages/maistro-core/tests --suite packages/hive-conductor/tests/e2e`:
+  **PASS** (4,733 / 3,455 / 13,939 / 23 tests respectively; no duplicate evidence).
+- `node --test tests/ci/integration-scope.test.cjs`: **12 passed**. These unit
+  tests validate the aggregator, not the missing specialized producer results.
+- `npm --prefix packages/hive-conductor/frontend run build`: **PASS** (both
+  TypeScript projects and Vite). No browser runtime acceptance claim.
+- Exact `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` after merge:
+  **FAIL** against the correct base `56332162cf63`: 1,336 trusted identities,
+  1,340 current findings. Four get_page identities lack trusted-base approval.
+  They already appear exactly once in the candidate ledger at lines
+  997/1006/1068/1170. The production caller is
+  `backend/services/audit_bridge.py:186`, outside this scan's packages/*/src
+  roots. Retaining them is necessary; removing the methods breaks the route.
+  The merge preserves all incoming ledger rows. No additional evidence-backed
+  ledger amendment exists; duplicate rows would be wrong and candidate edits
+  cannot authorize themselves. No grants/whitelist/gates changed.
+- `uv run python scripts/check-integration-scope.py --event-name pull_request`:
+  **FAIL** with nine missing producer results (docker-build, durable-events,
+  hive-conductor-e2e, hive-conductor-e2e-ui, object storage (MinIO), postgres
+  (pg17), postgres (pg18), strike-ladder, wheel-imports). No producer success
+  invented and no remote CI/GitHub mutation attempted.
+- Instrumented production `services.audit_query.page_entries(limit=1)` with a
+  counting mapping: 100 entries -> 100 visited; 10,000 -> 10,000 visited.
+  `_sorted_ascending` at line 402 still snapshots the full reachable memory
+  corpus. This is an actual remaining acceptance failure, not a scanner guess.
+
+### Acceptance matrix
+
+| Criterion | Executed evidence / remaining gap |
+| --- | --- |
+| Bounded backend cursor, stable ordering, maximum page | 77 backend + 45 core tests pass. Includes same-timestamp ties, concurrent inserts, maximum/floor limits and malformed/empty pages. |
+| Authorization/scope before DB pagination | SQLite query and route tests pass; canonical decision reads retain ADR-073 admin gate before I/O. PostgreSQL runtime UNVERIFIED (4 skipped cases). |
+| Incremental frontend and virtualization | Routed AuditLog source uses 100-row pages and viewport slicing; TypeScript/Vite build passes. Browser runtime UNVERIFIED. |
+| Filters/export/retention without whole corpus in browser | Filtered, scoped, lazy export tests pass; frontend uses a direct download, not a blob accumulator. Retention honestly reports `corpus_purge: none`; purge lifecycle remains UNVERIFIED, owned by #325. |
+| Representative large-dataset query/index measurements | Both million-row SQLite tests executed with deterministic VM work bounds above. PostgreSQL million-row and live migration execution UNVERIFIED (Docker unavailable). |
+| Concurrent inserts/cursor stability/scope/max/empty/million-row tests | Focused suites execute all named cases for SQLite/memory; PostgreSQL cases explicitly skipped. |
+| Initial page cost independent of corpus size | Durable SQLite query work bounded. NOT MET for reachable memory fallback: counting probe visits every entry. |
+| Bounded browser memory/DOM | Source caps retained entries at 500 and virtualizes visible rows; browser runtime/heap bounds UNVERIFIED. |
+
+### Changed files and handoff
+
+Manual repair paths:
+- `alembic/versions/057_audit_cursor_indexes.py` renamed/reparented to
+  `alembic/versions/058_audit_cursor_indexes.py`.
+- `tests/migrations/test_capability_invocation_effect_index_migration.py`.
+- `tests/migrations/test_task_admission_generation_upgrade.py` (conflict resolved,
+  original-head rollback invariant preserved).
+- `tests/migrations/test_migration_chain.py`.
+- `tests/migrations/test_audit_cursor_indexes.py` (new).
+- `docs/testing/inventory-notes/358-c203-migration.md` (new, +2).
+- This report.
+
+Other changes in the merge commit are the preserved incoming exact develop
+snapshot, not unrelated manual repairs. No competing store, scheduler, event or
+authorization authority introduced; accepted ADR-081226-69ee preserved.
+
+**BLOCKED, partial repair completed.** The merge/syntax/revision collision is
+fixed and committed, but this is not integration approval. Next owner needs
+trusted-base authorization for the four retained public API findings, actual
+same-candidate specialized CI producer evidence, PostgreSQL/browser validation,
+and a mutation-aware bounded memory-query design. Do not substitute a length
+cache (same-size replacement makes it stale) or weaken security/E2E expectations.
+Logs for this execution are `/tmp/358-c203-*.log`; initial salvage patches are
+beside the worktree. Final report is committed locally; no push or GitHub actions.
+
+Progress: checked 1, done 0 (issue acceptance incomplete), skipped 0, errors 2
+(named gate blockers); next: the explicit prerequisites and remaining acceptance
+failure above. No additional items started.
