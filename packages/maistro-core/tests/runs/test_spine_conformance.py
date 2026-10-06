@@ -24,6 +24,7 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
+from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     StaleLeaseRenewal,
@@ -182,6 +183,95 @@ async def test_provenance_and_actor_survive(spine: Any) -> None:
     assert reloaded is not None
     assert reloaded.actor_principal_id == "user-1"
     assert reloaded.provenance == {"admission_source": "task_queue", "task_id": "t-1"}
+
+
+async def test_a_task_receipt_finds_its_run_and_only_that_run(spine: Any) -> None:
+    """The #1176 discovery lookup, conformed across backends: the Run whose
+    provenance names the receipt is findable — the handle a retry resolves an
+    ambiguous admission through — and a receipt no Run names is None, the
+    answer that makes a takeover provably duplicate-free."""
+    store, workspace, project_id = spine
+    named = await store.create_run(
+        _graph(workspace, project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={"admission_source": "task_queue", "task_id": "receipt-1"},
+    )
+    # A neighbor the scan passes over without matching.
+    await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+
+    found = await store.find_run_by_task_receipt("receipt-1")
+
+    assert found is not None
+    assert found.run_id == named.run_id
+    assert found.provenance == {"admission_source": "task_queue", "task_id": "receipt-1"}
+    assert await store.find_run_by_task_receipt("no-such-receipt") is None
+
+
+async def test_the_postgres_receipt_lookup_uses_the_task_provenance_path() -> None:
+    """The publish coverage worker has no PostgreSQL, so assert its actual SQL.
+
+    The three-store conformance test above exercises this through a live
+    PostgreSQL pool when available. This boundary double keeps the same
+    task-receipt discovery query verified in the no-database coverage job:
+    returning the matched canonical Run, then no Run for an absent receipt.
+    """
+    from maistro.runs.model import GraphSnapshot, Run
+    from maistro.runs.pg_store import PgRunStore
+
+    graph = _graph("workspace", "project")
+    expected = Run(
+        workspace_id="workspace",
+        project_id="project",
+        graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={"task_id": "receipt-1"},
+    )
+
+    class _Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+            self.rows: list[dict[str, object] | None] = [
+                {
+                    "run_id": expected.run_id,
+                    "payload": expected.model_dump(mode="json"),
+                    "archive_key": None,
+                },
+                None,
+            ]
+
+        async def fetchrow(self, sql: str, *params: object) -> dict[str, object] | None:
+            self.calls.append((sql, params))
+            return self.rows.pop(0)
+
+    class _Acquire:
+        def __init__(self, connection: _Connection) -> None:
+            self._connection = connection
+
+        async def __aenter__(self) -> _Connection:
+            return self._connection
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _Pool:
+        def __init__(self, connection: _Connection) -> None:
+            self._connection = connection
+
+        def acquire(self) -> _Acquire:
+            return _Acquire(self._connection)
+
+    connection = _Connection()
+    store = PgRunStore(_Pool(connection), project_store=InMemoryProjectScopeStore())  # type: ignore[arg-type]
+
+    found = await store.find_run_by_task_receipt("receipt-1")
+    absent = await store.find_run_by_task_receipt("no-such-receipt")
+
+    assert found is not None and found.run_id == expected.run_id
+    assert absent is None
+    assert [params for _sql, params in connection.calls] == [("receipt-1",), ("no-such-receipt",)]
+    assert all("payload->'provenance'->>'task_id' = $1" in sql for sql, _params in connection.calls)
 
 
 async def test_an_unknown_run_is_none_not_an_error(spine: Any) -> None:
