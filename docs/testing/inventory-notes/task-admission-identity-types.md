@@ -501,3 +501,53 @@ and exact, and no in-leaf edit can authorize trusted-base debt. Parent #1845
 integration (real consumer) or a develop-side reviewed grant remains the only
 path to a green `exact-debt-ledger`; per the issue's staging constraint this
 leaf is reported ready-but-blocked and left unmerged.
+
+## 2026-10-06 round-4 independent revalidation
+
+Fresh-head check at `2f4d9e1a6d1d5bc92fc7bff5b4bd4333abb646a7` after
+re-fetching `origin/develop` (still `1e640df17c8a7dda647afa64d6a97384a93dee78`:
+61 vulture grants on that base, none for `admission_identity`; zero admission
+rows in its baseline — the external prerequisite has not moved):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 reproduced with the sole failure again being
+  trusted-base authorization of exactly the seven banked identities; the
+  candidate ledger itself is exact (1,332 trusted rows -> 1,339 findings, 0
+  unbanked/stale/unclassified).
+- Root-suite self-checks across the six vulture/reachability test files:
+  `tests/test_check_vulture_baseline.py` green (the round-1 sort repair
+  holds), and the same three reachability baseline==tree self-checks red (3
+  failed, 73 passed) — unsatisfiable while the committed baseline
+  intentionally omits the deliberately unwired module.
+- `check-reachability.py` rc=1 with exactly one NEW unreachable
+  (`maistro.runs.admission_identity`); `check-ratchet-provenance.py` rc=1
+  solely through the reachability provenance sub-gate; every other Quality
+  gate script re-ran green this round (radon, doc-links, enumerations,
+  workspace-retirement, route-permissions, principal-identity,
+  frontend-typed-client, reachability-dispositions, security-inventory,
+  contract-markers, convergence-matrix, wiring-reads, agent-store-writes,
+  shipped-surface-truth, credential-authority, model-egress,
+  execution-lifecycles, promotion-surface, bump-version,
+  release-consistency).
+- Focused battery unchanged and green: DTO suite 77 passed; `ruff check .`,
+  `ruff format --check .`, module `mypy` clean; full
+  `check-suite-inventory.py` ok (16 suites, 27,699 unique node IDs, no
+  duplicate evidence) with the +77 delta unchanged.
+- `mypy --strict packages/maistro-core/src` reports only five pre-existing
+  `import-not-found` errors for `maistro_bootstrap.*` in `cli/_install.py`
+  and `cli/_builders_tui.py` — files this branch never touches — an artifact
+  of the local `--extra dev` env versus CI's `--all-extras`; no error names
+  anything this branch adds.
+- Staging-constraint compliance re-measured: `git diff --numstat
+  origin/develop -- quality/` is exactly the seven sorted
+  `vulture-baseline.json` rows and nothing else — no reachability-baseline
+  entry, no ratchet grant, no waiver.
+
+Conclusion after four independent rounds: nothing further is repairable
+inside the leaf. The named CI failures at `c5e6440b8b7e` decompose into (a)
+the ledger-sort defect, fixed at this head and proven by green self-checks,
+and (b) the two structural gate reds (vulture trusted-base authorization,
+reachability new-unreachable) that the issue itself predicts and prohibits
+curing in-leaf. Resolution stays with the orchestrator: land the reviewed
+vulture grant on the integration base first (two-merge rule), or absorb the
+leaf into parent #1845 integration where the real consumer retires the debt.
