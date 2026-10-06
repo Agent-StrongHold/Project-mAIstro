@@ -22,3 +22,10 @@ is short of a process-kill harness and skips when `MAISTRO_TEST_PG_DSN` is not
 set. Docker is unavailable in this worker, so neither that required live proof
 nor the workflow's `coverage-postgres` producer can be independently executed
 here.
+
+## Executed validation at `2f6d56e31`
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` passed: 1,332 reviewed identities, 1,332 findings, zero unclassified and zero never-allowlisted.
+- The focused task admission/idempotency/API seam passed: 125 passed, 1 skipped.
+- `uv run ruff check .` and `uv run ruff format --check .` passed.
+- `MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py -q -x` collected two tests and skipped both because no DSN was configured. `DOCKER_HOST=unix:///var/run/docker.sock docker info --format '{{.ServerVersion}}'` failed because the daemon was unreachable.
