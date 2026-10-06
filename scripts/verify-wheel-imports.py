@@ -63,6 +63,10 @@ CORE_PUBLIC_SURFACE = [
     "maistro.builders",
     "maistro.capabilities",
     "maistro.classifier",
+    # Connector/source SDK (ADR-100526-be49, #963): the public surface out-of-tree
+    # connectors import. Pure-library surface; httpx is a base dependency, so
+    # the bare tier asserts it imports.
+    "maistro.connectors",
     "maistro.conduit",
     "maistro.container",
     "maistro.credentials",
@@ -234,6 +238,11 @@ PACKAGES = [
     Package("maistro-registry", "maistro_registry"),
     Package("maistro-rsi", "maistro_rsi"),
     Package("maistro-bootstrap", "maistro_bootstrap", widest_extra="builders"),
+    # The extension host harness (#974). The whole point of the package is
+    # third-party CI installability, so its wheel importing clean with zero
+    # declared dependencies IS the acceptance surface — stdlib-only is not a
+    # detail here, it is the promise.
+    Package("maistro-ext-harness", "maistro_ext_harness"),
 ]
 
 # Distributions that are BUILT by the CI loop but not import-verified here. Both
