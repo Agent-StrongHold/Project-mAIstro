@@ -1,0 +1,82 @@
+---
+inventory-delta:
+  packages/maistro-core/tests: +38
+---
+# 969-extension-effective-authority
+
+Thirty-eight tests in a new suite,
+`packages/maistro-core/tests/extensions/test_effective_authority.py`, for the
+M9-G1 canonical effective-authority calculation (#969): extension authority as
+the intersection of manifest request, publisher trust, host policy, caller
+delegation, and Workspace policy. No existing test moved, was removed, or was
+reparametrised; the 153 pre-existing tests in
+`packages/maistro-core/tests/extensions/` pass unchanged, as do the 16
+`packages/maistro-server/tests/api/test_extensions_api.py` tests against the
+wired install service.
+
+## What the new module is
+
+`maistro.extensions.effective_authority` computes, as a pure function:
+
+```text
+effective = manifest.requested
+          ∩ host.ceiling ∩ host.tier_ceilings[trust.tier]
+          ∩ host.family_ceilings[family]        (when the family is mapped)
+          ∩ caller.delegated_permissions
+          ∩ workspace.permission_ceiling
+          minus package blockers                 (untrusted publisher;
+                                                  extension not enabled)
+```
+
+Deny-by-default throughout: an absent ceiling is an empty ceiling, empty
+grants nothing, and every layer must admit a permission for it to be
+effective. A manifest omission is structurally unrecoverable — the requested
+universe is exactly the manifest's declared permissions, and no layer carries
+ambient/default access. Results are digest-anchored (`decision_digest`, a
+SHA-256 over the canonical decision payload) so the same inputs always
+re-derive the same answer, policy changes are forward-looking only, and
+`with_execution_context` pins a result to Run/NodeRun/Attempt ids (the same
+canonical execution identity `InvocationPolicyContext` uses) without mutating
+it. `ExtensionInstallService` accepts optional `ExtensionAuthorityInputs`;
+when wired, `authorize` freezes the grant to the intersection, denies
+outright when the intersection is empty, and records the digest and per-
+permission denial reasons in the audited transition trail.
+
+## Per-criterion mapping (issue #969 acceptance)
+
+* **never broader than any ceiling** — `TestNeverBroaderThanAnyCeiling`:
+  one cap test per layer plus a combined-subset test.
+* **manifest omission cannot be recovered** — `TestManifestOmission`, with
+  every policy layer deliberately configured to allow more than the
+  manifest; a hypothesis property re-checks the ambient case
+  (`test_effective_never_exceeds_the_intersection`).
+* **delegation capped in both directions** —
+  `TestDelegationCappedFromBothDirections` and the untrusted-package
+  variant no caller or Workspace can rescue.
+* **stable, inspectable, linked to Run evidence** — `TestStableInspectable`:
+  equality and digest stability, digest sensitivity to every layer,
+  manifest-byte anchoring, and the evidence link carrying run identity
+  without changing the digest.
+* **policy changes affect new operations only** —
+  `TestPolicyChangeIsForwardLooking`: recorded evidence survives a policy
+  change bit-for-bit while recomputation reflects the new policy.
+* **differential/property tests, deny-by-default** — `TestProperties`
+  (hypothesis: subset-of-intersection, per-layer monotonicity, empty-caller
+  deny-by-default, blocker dominance) and `TestDenyByDefault` /
+  `TestResolvePublisherTrust` (missing tier ceiling, untrusted publisher,
+  disabled extension, malformed policy tokens fail closed).
+* **service integration** — `TestServiceIntegration`: the grant freezes to
+  the intersection, the loader seam receives the intersected record, an
+  empty intersection denies despite operator approval, and the #953
+  no-inputs contract is preserved.
+
+## Verification run against this change
+
+`uv run pytest packages/maistro-core/tests/extensions -q` → 191 passed;
+`uv run pytest packages/maistro-server/tests/api/test_extensions_api.py -q`
+→ 16 passed; `uv run ruff check .` and `uv run ruff format --check .` clean;
+`uv run mypy packages/maistro-core/src/maistro/extensions` clean; the
+vulture per-identity scan (CI arguments: `packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) matches `quality/vulture-baseline.json` with
+zero added and zero stale identities; `scripts/check-reachability.py`
+reports the same 170-entry unreachable set as the baseline.
