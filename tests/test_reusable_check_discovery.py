@@ -57,8 +57,9 @@ def callee(discovery, **changes):
     return write_workflow(discovery, "reusable.yml", document)
 
 
-def test_composes_caller_and_callee_names(discovery):
-    caller(discovery)
+@pytest.mark.parametrize("prefix", [".", "$"])
+def test_composes_caller_and_callee_names(discovery, prefix):
+    caller(discovery, uses=f"{prefix}/.github/workflows/reusable.yml")
     callee(discovery)
     assert discovery.collect() == [("Caller", "Quality / lint / Lint", "every PR")]
 
@@ -104,6 +105,11 @@ def test_unresolved_name_input_fails_closed(discovery):
         "./.github/workflows/../x.yml",
         "./.github/workflows/x.yml@main",
         "./.github/workflows/x.txt",
+        "$/reusable.yml",
+        "$/.github/workflows/subdir/x.yml",
+        "$/.github/workflows/../x.yml",
+        "$/.github/workflows/x.yml@main",
+        "$/.github/workflows/x.txt",
     ],
 )
 def test_unsupported_or_external_path_fails_closed(discovery, uses):
@@ -118,8 +124,9 @@ def test_missing_callee_fails_closed(discovery):
         discovery.collect()
 
 
-def test_symlink_cannot_escape_the_workflow_directory(discovery):
-    caller(discovery)
+@pytest.mark.parametrize("prefix", [".", "$"])
+def test_symlink_cannot_escape_the_workflow_directory(discovery, prefix):
+    caller(discovery, uses=f"{prefix}/.github/workflows/reusable.yml")
     outside = discovery.REPO_ROOT / "outside.yml"
     outside.write_text("on: workflow_call\njobs: {check: {name: Hidden}}\n")
     (discovery.WORKFLOW_DIR / "reusable.yml").symlink_to(outside)
@@ -196,9 +203,23 @@ def test_reusable_caller_matrix_is_not_silently_collapsed(discovery):
         discovery.collect()
 
 
-def test_caller_base_scope_is_preserved(discovery):
-    caller(discovery, **{"if": "github.base_ref == 'main'"})
+@pytest.mark.parametrize(
+    "condition", [False, True, None, "", "github.base_ref == 'main'", "${{ inputs.enabled }}"]
+)
+def test_conditional_reusable_caller_does_not_invent_composed_checks(discovery, condition):
+    caller(discovery, **{"if": condition})
     callee(discovery)
+    with pytest.raises(discovery.ContractError, match="conditional reusable caller"):
+        discovery.collect()
+
+
+def test_caller_workflow_base_scope_is_preserved(discovery):
+    path = caller(discovery)
+    document = yaml.safe_load(path.read_text())
+    document["on"]["pull_request"] = {"branches": ["main"]}
+    path.write_text(yaml.safe_dump(document))
+    callee(discovery)
+    assert discovery.collect() == [("Caller", "Quality / lint / Lint", "base `main`")]
     assert discovery.base_coupled(discovery.collect()) == {("Caller", "Quality / lint / Lint")}
 
 
@@ -339,3 +360,18 @@ def test_different_callers_bind_their_own_inputs(discovery):
         ("Caller", "Quality / lint / Lint", "every PR"),
         ("Second", "Second caller / Different", "every PR"),
     ]
+
+
+@pytest.mark.parametrize("as_list", [False, True])
+@pytest.mark.parametrize("transitive", [False, True])
+def test_reusable_caller_skipped_by_dependency_cannot_invent_names(discovery, as_list, transitive):
+    dependency = "bridge" if transitive else "precheck"
+    path = caller(discovery, needs=[dependency] if as_list else dependency)
+    document = yaml.safe_load(path.read_text())
+    document["jobs"]["precheck"] = {"name": "Precheck", "if": False}
+    if transitive:
+        document["jobs"]["bridge"] = {"name": "Bridge", "needs": "precheck"}
+    path.write_text(yaml.safe_dump(document))
+    callee(discovery)
+    with pytest.raises(discovery.ContractError, match="dependent reusable caller"):
+        discovery.collect()

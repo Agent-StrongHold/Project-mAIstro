@@ -82,14 +82,18 @@ class ContractError(RuntimeError):
 
 
 class _ActionsSafeLoader(yaml.SafeLoader):
-    """Keep Actions input identifiers literal with YAML 1.2 boolean rules.
+    """Keep Actions identifiers and date-shaped names literal.
 
     Copy the resolver lists: changing PyYAML's shared SafeLoader would alter
     unrelated callers in the root test process. Safe constructors are retained.
     """
 
     yaml_implicit_resolvers: ClassVar[dict] = {
-        key: [(tag, pattern) for tag, pattern in rules if tag != "tag:yaml.org,2002:bool"]
+        key: [
+            (tag, pattern)
+            for tag, pattern in rules
+            if tag not in {"tag:yaml.org,2002:bool", "tag:yaml.org,2002:timestamp"}
+        ]
         for key, rules in yaml.SafeLoader.yaml_implicit_resolvers.items()
     }
 
@@ -237,7 +241,7 @@ def _workflow_files() -> list[Path]:
 
 
 _INPUT_EXPRESSION_RE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
-_LOCAL_WORKFLOW_RE = re.compile(r"\./\.github/workflows/[^/@\\]+\.ya?ml\Z")
+_LOCAL_WORKFLOW_RE = re.compile(r"[.$]/\.github/workflows/[^/@\\]+\.ya?ml\Z")
 
 
 def _load_reusable_workflow(uses: str) -> dict:
@@ -308,12 +312,17 @@ def _reusable_check_names(job_id: str, job: dict) -> list[str]:
     """Recover #1357's caller / callee names without migrating any producers.
 
     This bounded implementation supports the original single-level local
-    callers with literal string name inputs. Matrix, nested and conditional
-    callee jobs are refused rather than reported under guessed names or scope.
+    callers with literal string name inputs. Conditional/dependent/matrix callers and
+    nested, matrix or conditional callee jobs are refused rather than reported
+    under guessed names or scope.
     Other workflow-policy consumers must support a topology before it ships.
     """
     if "strategy" in job:
         raise ContractError("reusable caller matrices are not supported by this contract")
+    if "if" in job:
+        raise ContractError("conditional reusable caller jobs are not supported by this contract")
+    if "needs" in job:
+        raise ContractError("dependent reusable caller jobs are not supported by this contract")
     caller_name = _literal_check_name(job.get("name", job_id))
     uses = str(job.get("uses", ""))
     callee = _load_reusable_workflow(uses)

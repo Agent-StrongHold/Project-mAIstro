@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import importlib.util
 from pathlib import Path
 
@@ -97,10 +98,11 @@ def test_duplicate_names_across_jobs_in_one_workflow_fail(gate, direct):
 
 
 def test_actions_loader_does_not_change_global_pyyaml_behavior(gate):
-    before = yaml.safe_load("on: yes\n")
+    text = "on: yes\ndate: 2026-10-07\n"
+    before = yaml.safe_load(text)
     _pair(gate, value="value")
     gate.collect()
-    assert yaml.safe_load("on: yes\n") == before == {True: True}
+    assert yaml.safe_load(text) == before == {True: True, "date": datetime.date(2026, 10, 7)}
 
 
 def test_safe_loader_still_refuses_python_object_construction(gate):
@@ -158,3 +160,25 @@ def test_implicit_string_default_is_not_guessed_for_other_declarations(gate, def
     path.write_text(text)
     with pytest.raises(gate.ContractError, match="unresolved input"):
         gate.collect()
+
+
+@pytest.mark.parametrize("value", ["2026-10-07", "2026-10-07T12:34:56Z"])
+@pytest.mark.parametrize("default", [False, True])
+def test_date_shaped_literal_input_is_preserved_as_text(gate, value, default):
+    _pair(gate, value=value, default=default)
+    assert gate.collect() == [("Caller", f"Quality / Test{value}", "every PR")]
+
+
+@pytest.mark.parametrize("value", ["2026-10-07", "2026-10-07T12:34:56Z"])
+def test_date_shaped_literal_callee_name_is_preserved(gate, value):
+    _pair(gate)
+    path = gate.WORKFLOW_DIR / "reusable.yml"
+    path.write_text(path.read_text().replace("Test${{ inputs.suffix }}", value))
+    assert gate.collect() == [("Caller", f"Quality / {value}", "every PR")]
+
+
+def test_date_shaped_literal_caller_name_is_preserved(gate):
+    _pair(gate)
+    path = gate.WORKFLOW_DIR / "caller.yml"
+    path.write_text(path.read_text().replace("name: Quality", "name: 2026-10-07"))
+    assert gate.collect() == [("Caller", "2026-10-07 / Test", "every PR")]
