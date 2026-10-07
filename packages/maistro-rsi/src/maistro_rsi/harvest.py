@@ -185,15 +185,19 @@ def _unevidenced_lines(patches: list[PromotedPatch]) -> list[str]:
 
 def _state_rank(state: str) -> int:
     """Reporting precedence when promotions disagree: not_run (0) and failed
-    (1) outrank passed (2) — a group PR must surface the worst recorded
-    evidence, and an absent state ranks lowest (gets replaced)."""
+    (1) outrank unavailable (2), which outranks passed (3) — a group PR must
+    surface the worst recorded evidence, and a gate that never executed for
+    one shipped patch must not read as passed for the whole group (#820).
+    An absent/unknown state ranks lowest (gets replaced)."""
     if state == GateState.NOT_RUN.value:
         return 0
     if state == GateState.FAILED.value:
         return 1
-    if state == GateState.PASSED.value:
+    if state == GateState.UNAVAILABLE.value:
         return 2
-    return 3
+    if state == GateState.PASSED.value:
+        return 3
+    return 4
 
 
 def _provenance_suffix(ev: dict[str, object]) -> str:

@@ -528,6 +528,46 @@ class TestPrBodyTruthfulness:
         body = pr_body("a.py", patches)
         assert "- ruff_clean: NOT RUN — blocking" in body
 
+    def test_unavailable_outlives_passed_across_the_group(self) -> None:
+        """A gate recorded passed on one promotion but unavailable (never
+        executed) on another must not render as passed for the group — the
+        group PR ships both patches, so the unexecuted state survives."""
+        evidence_pass = {
+            "tests_pin_behavior": _evidence(
+                "tests_pin_behavior",
+                state=GateState.PASSED,
+                passed=True,
+                provenance={"tool_version": "1", "exit_status": 0},
+            )
+        }
+        evidence_unavailable = {
+            "tests_pin_behavior": _evidence(
+                "tests_pin_behavior",
+                state=GateState.UNAVAILABLE,
+                passed=False,
+                reason="probe measured nothing",
+            )
+        }
+        patches = [
+            PromotedPatch(
+                patch_file="0001.patch",
+                file="a.py",
+                subject="s1",
+                gates={"tests_pin_behavior": True},
+                gate_evidence=evidence_pass,
+            ),
+            PromotedPatch(
+                patch_file="0002.patch",
+                file="a.py",
+                subject="s2",
+                gates={"tests_pin_behavior": False},
+                gate_evidence=evidence_unavailable,
+            ),
+        ]
+        body = pr_body("a.py", patches)
+        assert "- tests_pin_behavior: unavailable — not executed" in body
+        assert "- tests_pin_behavior: passed" not in body
+
     def test_mixed_group_marks_unevidenced_promotions_unverified(self) -> None:
         """A group mixing an evidenced promotion with a legacy row (neither
         ``gates`` nor ``gate_evidence``) names the legacy patch unverified —
