@@ -382,7 +382,7 @@ def _parse_snapshot(row: Mapping[str, object], column: str, scope_key: str) -> C
         ) from None
     try:
         return CanonicalJsonObject(value)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise AdmissionRowDecodeError(
             f"{column} is not exactly one canonical JSON object",
             code=AdmissionDecodeCode.INVALID_SNAPSHOT,
@@ -635,14 +635,14 @@ def _decode_legacy_record(
 def _legacy_evidence(value: object, column: str, scope_key: str) -> str | None:
     """Read one optional legacy evidence column, or fail partial — never guess.
 
-    ``None`` means absent. Anything present that is not a nonempty string is
-    unreadable evidence: the row can be neither trusted as unbound nor
+    ``None`` means absent. Anything present that is not a nonempty string
+    equal to its own strip() is unreadable evidence: the row can be neither trusted as unbound nor
     canonicalized as bound, which is exactly a ``partial_legacy_binding``
     disposition and nothing more.
     """
     if value is None:
         return None
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value or value != value.strip():
         raise AdmissionRowDecodeError(
             f"legacy {column} evidence is unreadable",
             code=AdmissionDecodeCode.PARTIAL_LEGACY_BINDING,

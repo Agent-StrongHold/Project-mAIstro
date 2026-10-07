@@ -304,6 +304,26 @@ def test_invalid_and_duplicate_json_is_rejected(broken: str) -> None:
         assert broken not in str(error)
 
 
+@pytest.mark.parametrize(
+    ("version", "column"),
+    [(1, "request"), (2, "request"), (2, "receipt_snapshot"), (2, "provenance_snapshot")],
+)
+def test_excessive_snapshot_nesting_is_a_safe_typed_failure(version: int, column: str) -> None:
+    row = _legacy_row() if version == 1 else _v2_row()
+    row[column] = '{"private-snapshot":' + "[" * 10000 + "0" + "]" * 10000 + "}"
+    header = decode_admission_header(row)
+
+    with pytest.raises(AdmissionRowDecodeError) as excinfo:
+        decode_admission_record(row, header=header)
+
+    error = excinfo.value
+    assert error.code is AdmissionDecodeCode.INVALID_SNAPSHOT
+    assert error.scope_key == _SCOPE
+    assert error.__cause__ is None and error.__suppress_context__ is True
+    assert "private-snapshot" not in str(error)
+    assert decode_admission_header(row) == header
+
+
 def test_text_snapshots_reject_predecoded_values() -> None:
     # This is the value-level half of the real-pool contrast below: snapshots
     # are TEXT, so a value which a JSON codec had decoded must not be silently
@@ -611,6 +631,24 @@ def test_legacy_bound_pair_without_receipt_is_partial_never_fabricated() -> None
 def test_legacy_unreadable_evidence_is_partial(evidence: dict[str, object]) -> None:
     error = _code_of(_legacy_row(**evidence))
     assert error.code is AdmissionDecodeCode.PARTIAL_LEGACY_BINDING
+
+
+@pytest.mark.parametrize("column", ["task_id", "run_id", "receipt_id"])
+@pytest.mark.parametrize("bad", ["   ", "\t\n", " padded", "padded "])
+def test_legacy_bound_evidence_rejects_whitespace_without_normalizing(
+    column: str, bad: str
+) -> None:
+    row = _legacy_row(task_id="task-1", run_id="run-1", receipt_id="rcpt-1")
+    row[column] = bad
+    header = decode_admission_header(row)
+
+    error = _code_of(row)
+
+    assert error.code is AdmissionDecodeCode.PARTIAL_LEGACY_BINDING
+    assert error.scope_key == _SCOPE
+    assert "padded" not in str(error)
+    assert row[column] == bad  # no trimming into an invented valid identity
+    assert decode_admission_header(row) == header
 
 
 def test_legacy_scalar_inversion_is_invalid_header_not_a_record() -> None:
