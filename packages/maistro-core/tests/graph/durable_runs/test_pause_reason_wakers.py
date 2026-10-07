@@ -186,18 +186,16 @@ PAUSE_REASON_WAKERS: dict[str, tuple[Waker, ...]] = {
     # asserts only the waker architecture: reachable, canonical-API, accepted
     # parked status, and a drain for the QUEUED Run it leaves behind.
     PAUSE_AWAITING_REMOTE_DELEGATION: _HUMAN_WAKERS,
+    PAUSE_AWAITING_HARNESS: _TIMER_WAKERS,
     PAUSE_WAITING_ON_JIRA_SUBTASKS: _TIMER_WAKERS,
     PAUSE_AWAITING_DELEGATION_RECONCILIATION: _TIMER_WAKERS,
 }
 
-#: Known gaps: answer-gated reasons that park WAITING, which no production
-#: path delivers an answer to. Removing an entry is how #1192 closes.
-#: `awaiting_remote_delegation` left this ledger when #147 made the delegation
-#: pause human-owned and answered (see the map above); `awaiting_harness`
-#: remains the open gap.
-UNWOKEN: dict[str, str] = {
-    PAUSE_AWAITING_HARNESS: "#1192",
-}
+#: The harness reason now uses the existing registered-DAG timer with a
+#: configured adapter and canonical receipt. This structural mapping does not
+#: claim that old rows without a resume instant have been backfilled, or that
+#: approval-required profiles have the separately owned approval/expiry bridge.
+UNWOKEN: dict[str, str] = {}
 
 
 # -- checks ------------------------------------------------------------------
@@ -576,9 +574,9 @@ def test_every_ledgered_gap_cites_its_issue() -> None:
 
 
 def test_a_reason_without_a_waker_or_ledger_entry_fails() -> None:
-    ledger = {k: v for k, v in UNWOKEN.items() if k != PAUSE_AWAITING_HARNESS}
+    wakers = {k: v for k, v in PAUSE_REASON_WAKERS.items() if k != PAUSE_AWAITING_HARNESS}
 
-    problems = coverage_problems(PAUSE_RESUME_CONDITIONS, PAUSE_REASON_WAKERS, ledger)
+    problems = coverage_problems(PAUSE_RESUME_CONDITIONS, wakers, UNWOKEN)
 
     assert problems == [
         f"{PAUSE_AWAITING_HARNESS}: no reachable production waker and not in the UNWOKEN ledger"
@@ -600,9 +598,9 @@ def test_a_deleted_waker_entry_fails() -> None:
 
 
 def test_a_ledgered_reason_that_gains_a_waker_fails() -> None:
-    wakers = {**PAUSE_REASON_WAKERS, PAUSE_AWAITING_HARNESS: _TIMER_WAKERS}
+    ledger = {**UNWOKEN, PAUSE_AWAITING_HARNESS: "#1192"}
 
-    problems = coverage_problems(PAUSE_RESUME_CONDITIONS, wakers, UNWOKEN)
+    problems = coverage_problems(PAUSE_RESUME_CONDITIONS, PAUSE_REASON_WAKERS, ledger)
 
     assert f"{PAUSE_AWAITING_HARNESS}: has a waker, so remove it from the UNWOKEN ledger" in (
         problems
