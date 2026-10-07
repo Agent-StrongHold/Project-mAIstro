@@ -42,14 +42,22 @@ expected to report the module as a new unreachable production module; no
 reachability baseline, disposition, grant, fake caller, suppression, or waiver
 is present in this leaf.
 
-The explicit CI-repair instruction for this lane conflicts with the issue's
-ordinary no-ledger rule only for Vulture: it requires the reviewed
-per-identity `quality/vulture-baseline.json` entries for the nine unavoidable
-`pydantic-declarative-field` findings. Those entries bank the actual scanner
-output but cannot authorize new trusted-base debt; `check-vulture-baseline.py`
-therefore remains blocked on the pre-existing two-merge provenance rule until
-a separately reviewed authorization lands on develop or the parent wiring makes
-the module reachable.
+The five `AdmissionAssessment` enum identities the scan exposes
+(MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED at
+`admission_identity.py:515-520`; PENDING is masked by an unrelated in-tree
+token) are reviewed-retained contract surface, not removable debt: the issue
+mandates the exact member set and prohibits any runtime consumer in this
+leaf. Neither cure is available in-leaf. Banking them in the candidate
+`quality/vulture-baseline.json` cannot change any gate outcome —
+`ratchet_provenance.load_authorizations` reads grants from the merge base
+only, develop at `1df433bf5ece` carries none for `admission_identity`, and
+the gate itself replies "land a reviewed grant first" — and would be the
+baseline addition the issue's staging constraint forbids. Scanner-input
+references for them in `_vulture_whitelist.py` were attempted in round 6 and
+ruled a prohibited suppression by the round-12 verification, then removed
+(see below). The vulture and reachability reds below are therefore the
+issue-predicted, in-leaf-uncurable state, reported as the explicit merge
+blocker per the issue's directive.
 
 Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
 `aec772d4c3d01000ba83958431b859cf1bb3ac56`.
@@ -1009,3 +1017,77 @@ parent #1845 integration must supply the reviewed runtime consumer and
 wiring, or the orchestrator must land a base-side reachability authorization
 first. This leaf stays unmerged per its staging constraint; handoff only, no
 integration approval.
+
+## 2026-10-07 round-12 repair: prohibited whitelist references removed
+
+The lane verification (prior job `dcc574f8`) ruled round 6's
+`_vulture_whitelist.py` references a violation of the issue's staging
+constraint — "Do not add keep-alive imports, dead branches, dummy callers,
+package re-exports, artificial framework/CLI registration, suppressions,
+allowlist/baseline entries, or grants to make this leaf independently green"
+— regardless of the develop-side #969/#963 precedent round 6 relied on. That
+ruling is accepted: a whitelist entry whose sole purpose is to mute this
+leaf's scanner identities is exactly an allowlist entry for the leaf, and the
+preceding "Staging result" no-suppression claim was false while the entries
+stood (the drift the verification flagged).
+
+This round, at dispatch head `33740064902b` (develop base `1df433bf5ece`):
+
+- Removed the `from maistro.runs.admission_identity import
+  AdmissionAssessment` import and the five member references
+  (MISMATCH/REPLAYED/TAKEOVER/REPLACE_EXPIRED/LEGACY_UNRESOLVED) from
+  `packages/maistro-core/src/_vulture_whitelist.py`, restoring the file to
+  its `origin/develop` content. No module, test, ledger, grant, disposition,
+  or wiring file changed. The "Staging result" no-suppression claim is
+  literally true again.
+- The lane brief's vulture-ledger amendment authorization was evaluated
+  against this round's evidence and **not** exercised: with no
+  `admission_identity` grant in the merge base, candidate banking is provably
+  inert (`check-vulture-baseline.py` still exits 1, now with both an
+  unauthorized-trusted and an unbanked-candidate delta), and it would add the
+  baseline rows the issue prohibits. `quality/` stays byte-identical to
+  `origin/develop` (`git diff --numstat origin/develop -- quality/` empty).
+- Recorded honest gate state of the exact-debt-ledger job steps at the
+  repaired tree (`RATCHET_BASE_REV=origin/develop`):
+  - `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+    '*/third_party/*'`: **rc=1** — 1,332 reviewed identities -> 1,337
+    findings; exactly the five NEW `pydantic-declarative-field` identities
+    `admission_identity.py:515/516/518/519/520` (MISMATCH, REPLAYED, TAKEOVER,
+    REPLACE_EXPIRED, LEGACY_UNRESOLVED), reported both as unauthorized
+    trusted-base debt ("land a reviewed grant first") and unbanked candidate
+    bookkeeping; 0 unclassified, 0 never-allowlist.
+  - `check-ratchet-provenance.py`: **rc=1** via `check-reachability-provenance.py`
+    only — `maistro.runs.admission_identity` NEW unreachable (170 -> 171 of
+    1,342); the shell-execution, contract-markers, enumerations, and lifecycle
+    sub-ratchets re-ran OK.
+  - `check-shipped-surface-truth.py`: rc=0.
+- Issue-required integration-head commands: `check-reachability.py` **rc=1**
+  with exactly one NEWLY UNREACHABLE module (`maistro.runs.admission_identity`);
+  `check-reachability-dispositions.py` rc=0 (49 groups / 170 modules);
+  `check-promotion-surface.py` rc=0 (74 tolerated modules, none new).
+- Focused acceptance, all green: `pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q` 77
+  passed; `ruff check .` and `ruff format --check .` clean tree-wide (3,103
+  files); module `mypy` clean; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok at 14,736 node IDs with the leaf delta
+  unchanged at +77.
+- Scope containment re-proven: the only tree references to the module are the
+  module and its focused test file; `maistro/runs/__init__.py` does not export
+  it; `quality/` diff vs `origin/develop` is empty; the #1841 signatures
+  (`require_admitted_actor(actor_principal_id: str | None) -> str` at
+  `store_boundary.py:56`, `get_run(*, principal_id=...)` at `store.py:495`,
+  create/claim `actor_principal_id` guards at `store.py:465/521`) are intact.
+
+Round-12 verdict: the flagged prohibition violations are removed and the
+leaf's own acceptance criteria remain fully proven. Both exact-debt-ledger
+reds are restored to their honest, issue-predicted form — five unauthorized
+vulture identities and one NEW unreachable module — and neither has a
+legitimate in-leaf cure: wiring is prohibited by leaf scope, and both
+ratchets accept new debt only behind authorizations that must pre-exist on
+the integration base (two-merge rule; develop `1df433bf5ece` carries none).
+Resolution is an orchestrator decision: land the reviewed vulture +
+reachability grants on the integration base, or make the module reachable in
+the parent #1845 integration, where both reds dissolve. Per the issue's
+directive the stack stays unmerged and this note reports implementation/test
+readiness plus the explicit merge blocker; handoff only, no integration
+approval.
