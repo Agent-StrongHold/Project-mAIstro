@@ -1353,3 +1353,108 @@ campaign-level and out of worker authority (no push permitted); in-branch
 alternatives are forbidden by the issue ("no baseline/grant/gate
 modifications to make an unwired slice green"). No code, test, or `quality/`
 file was modified this round beyond the develop sync merge and this note.
+
+## CI-repair round 22 (L1893, preserved develop-sync conflict resolved; sync to
+## b0912ce59 + 9bd1a93ee + 83c7788d6 — M3-C5 backlog cutover #1707, M9-E3
+## tool/Skill contracts #2005, cancellation truth #2032/#2031, TOCTOU fence,
+## admitter cancel-compat #2034, SvgDonut #2035), head `56c93b866a15`
+
+The round opened on the preserved blocked state: a mid-merge worktree
+(`MERGE_HEAD=b0912ce59`, the backlog authority-cutover merge) with one
+unmerged path, `quality/reachability-baseline.json` (`<<<<<<<`/`=======`/
+`>>>>>>>` at lines 3-7). That conflict was also the driver's `check-4.log`
+failure: the graph/nodes suites
+(`test_container_node_composition`, `test_node_composition`,
+`test_production_registration_universe`) read the baseline file at collection
+time, so the conflict markers surfaced as `json.decoder.JSONDecodeError:
+Expecting property name enclosed in double quotes: line 3 column 1 (char
+1350)` — 3 collection errors, not inventory drift.
+
+Resolution (conflict resolved in place, never discarded):
+
+- The `unreachable` array had auto-merged to the exact set union of both
+  parents (172 = 172 ∪ 170, verified programmatically, no duplicates, no
+  losses). The only textual conflict was the `_generated_from` stamp; both
+  surviving values and develop's own green stamp are the same informational
+  string (`1302 production modules`), which the gate does not validate — the
+  row set is the gated contract, and it matches the scan exactly
+  (171 scanned = 171 banked after develop's own M9-E3 pruning of
+  `maistro.tools.reversibility`).
+- Merge 1 committed: `20e823208` (b0912ce59). Merge 2: `f54d19c59`
+  (origin/develop `9bd1a93ee`, the lane's named base, clean). Merge 3:
+  `56c93b866` (origin/develop advanced again mid-round to `83c7788d6`,
+  clean).
+- Post-merge ledger integrity per AGENTS.md: `git diff --numstat
+  origin/develop -- quality/` shows exactly the branch's two banking files
+  (2+/0- baseline rows, 11+/0- disposition lines); develop-only baseline rows
+  = ∅; no duplicate rows (multiset rule respected); the removed
+  `maistro.tools.reversibility` baseline row + its vulture identity +
+  disposition rationale move are develop's own reviewed M9-E3 edits
+  (fdc61aa2c), auto-merged faithfully.
+
+Battery re-executed at `56c93b866a15` (trusted base resolves to `83c7788d6`,
+the new merge base):
+
+- `uv run ruff check .` -> All checks passed. `uv run ruff format --check .`
+  -> 3136 files already formatted.
+- Full collection (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest
+  packages/maistro-core/tests --collect-only -q`) -> **15049 tests collected,
+  0 errors** — the driver's 3 collection errors are gone at the identical
+  command. `packages/maistro-core/tests/graph/nodes` -> 508 passed (the three
+  previously-erroring files now import and run).
+- Focused admission suites pure: 142 passed, 1 skipped. With PG legs enforced
+  (`MAISTRO_REQUIRE_PG_LEGS=1`) on the same disposable migrated database
+  (`maistro_b2_1893` at `127.0.0.1:5432`, migrated 058 -> 059 -> 060 through
+  the real chain immediately before the run — the merge added the #82/#102
+  backlog migrations; `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL`
+  both targeting it): **143 passed, 0 skipped** — the raw-pool vs
+  production-pool TEXT snapshot identity proof re-executed at the new head.
+- `packages/maistro-core/tests/runs` + `packages/maistro-core/tests/tasks`
+  -> 1742 passed, 271 skipped (develop's #2034/#2031/#2032 attempts/tasks
+  content included, no regressions).
+- mypy on the two admission src paths -> Success, no issues in 2 source
+  files.
+- CI-exact debt-ledger legs: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> 1328 reviewed
+  identities = 1328 findings, exit 0 (count moved 1332 -> 1328 with
+  develop's M9-E3 content; nothing unbanked). `check-reachability.py` ->
+  1357 production modules, 171 unreachable, exit 0. `check-reachability-
+  dispositions.py` -> 50 groups cover all 171 (149 CONNECT / 20 LIBRARY /
+  2 RETIRE), exit 0. `check-backlog-consistency.py` -> exit 0.
+  `check-suite-inventory.py` -> ok: 17 suites match the recorded inventory
+  (28517 unique identities, 0 duplicates); this round adds no tests; the
+  `inventory-delta:` front-matter is unchanged.
+- `RATCHET_BASE_REV=origin/develop scripts/check-ratchet-provenance.py` ->
+  exit 1, unchanged in shape against base `83c7788d6`: exactly the two
+  reachability provenance sub-gates fail on `maistro.runs.admission_identity`
+  + `maistro.tasks.admission_codec` (NEW vs trusted base, "not covered by an
+  already-landed reachability authorization"); every other sub-ratchet OK
+  (vulture, promotion-surface 270, contract-markers 358, enumerations,
+  lifecycle, shell, adr-status-language, citation-status).
+- Two-merge repair PROVEN locally without any ref or remote mutation: a
+  dangling commit `982da3f0b` was constructed by plumbing
+  (`git hash-object`/`git mktree`/`git commit-tree`) as develop's tree plus
+  the prepared grant blob (`3235229f5fed`), then merged into a detached
+  scratch worktree of this branch (`/tmp/sim-wt-1893`, merge `dd65125b5`).
+  Running the full gate there with `RATCHET_BASE_REV=982da3f0b` ->
+  **exit 0**: reachability sub-gate "171 unreachable module(s), no
+  candidate-approved expansion", dispositions sub-gate "new debt uses prior
+  reachability authorization", inventory "50 quality JSON consumer(s) have
+  explicit provenance". This is the post-two-merge state exactly (grant
+  landed on develop, then merged here; content delta limited to
+  `quality/ratchet-authorizations.json`), so the eighth develop-state
+  re-proof of the round-17/18 finding is now a constructive proof, not just
+  a negative one. The grant itself must still land on develop first —
+  campaign-level, out of worker authority (no push permitted); in-branch
+  alternatives remain forbidden by the issue ("no baseline/grant/gate
+  modifications to make an unwired slice green").
+
+Round-22 conclusion: identical to rounds 4-21, now proven against the
+eighth successive develop state at `56c93b866a15`, with the preserved
+sync-conflict block resolved in place and the driver's collection failure
+repaired and re-proven. All B2 acceptance evidence is green; the only red
+remains the exact-debt-ledger reachability provenance pair, which is now
+proven (not merely argued) to clear via the two-merge sequence: land
+`3235229f5fed` on develop, merge origin/develop here. No code, test, or
+`quality/` file was modified this round beyond the develop-sync merges and
+this note.
