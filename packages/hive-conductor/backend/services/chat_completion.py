@@ -1514,6 +1514,106 @@ async def _tool_list_workflows(
     }
 
 
+async def _canonical_run_was_cancelled(canonical_run_id: str) -> bool:
+    """Whether the canonical spine recorded this Run as CANCELLED.
+
+    The projection mirrors canonical truth or says nothing; when the spine is
+    unreachable there is nothing to mirror, so the answer is no (#1332).
+    """
+    try:
+        from maistro.runs.model import RunStatus
+        from services.engine import get_engine
+
+        run_store = get_engine().run_store
+        if run_store is None:
+            return False
+        run = await run_store.get_run(canonical_run_id)
+    except Exception:
+        return False
+    return run is not None and run.status is RunStatus.CANCELLED
+
+
+class _ChatDagRunScoreAdapter:
+    """The run shape the eval judge scores a chat-launched DAG through."""
+
+    def __init__(self, exec_id: str, dag_id: str, result: dict[str, Any]):
+        self.run_id = exec_id
+        self.dag_id = dag_id
+        self.project_id = ""
+        self.status = "completed"
+        self.node_records = []
+        for nid, nr in result.get("node_results", {}).items():
+
+            class _NR:
+                pass
+
+            n = _NR()
+            n.node_id = nid
+            n.kind = nr.get("role", "llm")
+            n.phase = "completed"
+            n.latency_ms = nr.get("latency_ms", 0)
+            n.tokens_in = nr.get("tokens_in", 0)
+            n.tokens_out = nr.get("tokens_out", 0)
+            n.error_code = None
+            n.error_message = None
+            n.response_preview = nr.get("response", "")[:500]
+            self.node_records.append(n)
+
+
+async def _eval_judge_score(exec_id: str, dag_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Score a chat-launched DAG through the eval judge.
+
+    The scorer is commentary on a run, not part of it: its failure has the
+    same standing as a failed history write and must not change the outcome
+    the caller sees.
+    """
+    try:
+        from services.eval_judge import score_run
+
+        return await score_run(_ChatDagRunScoreAdapter(exec_id, dag_id, result))
+    except Exception as e:
+        return {"score": 0, "error": str(e)[:100]}
+
+
+def _chat_dag_output_preview(result: dict[str, Any]) -> dict[str, str]:
+    """The first few node responses, at the preview length the tool serves."""
+    return {
+        nid: nr.get("response", "")[:200]
+        for nid, nr in list(result.get("node_results", {}).items())[:3]
+    }
+
+
+async def _cancellation_answer(
+    cancelled: asyncio.CancelledError, exec_id: str, dag_id: str
+) -> dict[str, Any]:
+    """The turn's answer when the canonical spine cancelled this DAG run.
+
+    `RunExecutionService.cancel_run` fences the canonical Run CANCELLED, stops
+    its Attempts, and the durable walk persists that truth and re-raises the
+    cancellation into this awaiter (#1332). The same exception also arrives
+    when THIS task is torn down (a chat disconnect) with the canonical Run
+    untouched, so an answer -- and the cancelled row it stamps -- follows only
+    a cancellation the spine actually recorded; otherwise the original
+    cancellation is re-raised, as asyncio's contract requires.
+    """
+    if asyncio.current_task().cancelling():
+        raise cancelled
+    from services.dag_run_store import get_dag_run_store
+
+    record = get_dag_run_store().get_run(exec_id) or {}
+    canonical_run_id = str(record.get("canonical_run_id") or "")
+    if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
+        raise cancelled
+    with contextlib.suppress(Exception):
+        await get_dag_run_store().finish_run(exec_id, status="cancelled")
+    return {
+        "run_id": exec_id,
+        "dag_id": dag_id,
+        "status": "cancelled",
+        "cancelled": True,
+    }
+
+
 async def _tool_run_workflow(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
@@ -1554,7 +1654,16 @@ async def _tool_run_workflow(
             workspace_id=workspace_id,
             project_id=project_id,
         )
-        result = await execute_dag(dag_data, scope=scope)
+
+        async def _record_admission(canonical_run_id: str) -> None:
+            # Persist the projection -> canonical Run correlation at canonical
+            # admission, not after execution settles (#1332). The canonical
+            # executor awaits this before any physical node work, so a live
+            # Recent Runs entry cancels through the exact canonical Run while
+            # the DAG is still running instead of 404-ing the projection id.
+            await store.record_canonical_run(exec_id, canonical_run_id=canonical_run_id)
+
+        result = await execute_dag(dag_data, scope=scope, on_admitted=_record_admission)
         executed = True
 
         # Store events
@@ -1568,37 +1677,7 @@ async def _tool_run_workflow(
             )
 
         # Trigger eval-judge
-        score_result = {}
-        try:
-            from services.eval_judge import score_run
-
-            class _Adapter:
-                def __init__(self):
-                    self.run_id = exec_id
-                    self.dag_id = dag_id
-                    self.project_id = ""
-                    self.status = "completed"
-                    self.node_records = []
-                    for nid, nr in result.get("node_results", {}).items():
-
-                        class _NR:
-                            pass
-
-                        n = _NR()
-                        n.node_id = nid
-                        n.kind = nr.get("role", "llm")
-                        n.phase = "completed"
-                        n.latency_ms = nr.get("latency_ms", 0)
-                        n.tokens_in = nr.get("tokens_in", 0)
-                        n.tokens_out = nr.get("tokens_out", 0)
-                        n.error_code = None
-                        n.error_message = None
-                        n.response_preview = nr.get("response", "")[:500]
-                        self.node_records.append(n)
-
-            score_result = await score_run(_Adapter())
-        except Exception as e:
-            score_result = {"score": 0, "error": str(e)[:100]}
+        score_result = await _eval_judge_score(exec_id, dag_id, result)
 
         # This producer called `start_run` and never finished it, so a run
         # launched from chat sat at `running` for the life of the process --
@@ -1617,11 +1696,14 @@ async def _tool_run_workflow(
             "score": score_result.get("score", 0),
             "rationale": score_result.get("rationale", ""),
             "topology_proposal": score_result.get("topology_proposal"),
-            "output_preview": {
-                nid: nr.get("response", "")[:200]
-                for nid, nr in list(result.get("node_results", {}).items())[:3]
-            },
+            "output_preview": _chat_dag_output_preview(result),
         }
+    except asyncio.CancelledError as cancelled:
+        # Cancellation that works (#1332): the durable walk re-raises the
+        # canonical cancel fence into this awaiter; `_cancellation_answer`
+        # answers only a cancellation the spine actually recorded -- never a
+        # task teardown, which it re-raises unchanged.
+        return await _cancellation_answer(cancelled, exec_id, dag_id)
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
