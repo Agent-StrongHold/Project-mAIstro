@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +164,23 @@ class TestRequiredToolFailClosed:
             assert "exit 2" in gate.reason
             assert gate.detail["cause"] == "execution error (exit 2)"
 
+    def test_unreadable_bandit_output_is_failed_not_clean(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ruff leg pins this rule already; bandit's must hold equally: a
+        tool that ran but emitted unparseable JSON is recorded FAILED with its
+        provenance — never as a completed high-severity sweep."""
+        repo = _candidate_repo(tmp_path / "r")
+        _stub_run_lint_tool(monkeypatch, {"bandit": _proc(stdout="<<truncated>>", returncode=0)})
+        gates = _lint_gates(repo, ["calc.py"])
+        bandit = next(g for g in gates if g.name == "no_bandit_high")
+        assert bandit.passed is False
+        assert bandit.resolved_state() is GateState.FAILED
+        assert "unreadable" in bandit.reason
+        # The executed-but-unparseable run still carries its provenance.
+        assert bandit.detail["exit_status"] == 0
+        assert str(bandit.detail["output_digest"]).startswith("sha256:")
+
     def test_no_source_files_still_runs_no_gates(self, tmp_path: Path) -> None:
         assert _lint_gates(tmp_path, []) == []
 
@@ -190,6 +208,40 @@ class TestRequiredToolFailClosed:
         assert "[UNAVAILABLE] optional_probe" in sc.explain()
         assert sc.gates_passed is True
         assert sc.accepted is True
+
+
+# ---------------------------------------------------------------------------
+# The real runner's non-execution legs (#304)
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzerRunnerNonExecution:
+    """The causes the fail-closed gates rely on — ``missing``, ``timeout``
+    and ``error`` — are produced here by genuine subprocess failures, not by
+    stubbing ``_run_lint_tool`` itself: the classification of a real missing,
+    wedged or unspawnable analyzer must stay tied to real behavior."""
+
+    def test_unimportable_tool_reports_missing(self, tmp_path: Path) -> None:
+        proc, cause = candidate_fitness._run_lint_tool(
+            [sys.executable, "-m", "definitely_not_a_module_451"], tmp_path
+        )
+        assert proc is None
+        assert cause == "missing"
+
+    def test_wedged_tool_reports_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(candidate_fitness, "_LINT_TIMEOUT", 1)
+        proc, cause = candidate_fitness._run_lint_tool(
+            [sys.executable, "-c", "import time; time.sleep(5)"], tmp_path
+        )
+        assert proc is None
+        assert cause == "timeout"
+
+    def test_unspawnable_binary_reports_error(self, tmp_path: Path) -> None:
+        proc, cause = candidate_fitness._run_lint_tool(["definitely-not-a-binary-451"], tmp_path)
+        assert proc is None
+        assert cause == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +308,28 @@ class TestExecutedGateProvenance:
         assert candidate_fitness._output_digest(noisy) == (
             "sha256:" + hashlib.sha256(framed).hexdigest()
         )
+
+    def test_absent_tool_version_is_none_not_invented(self) -> None:
+        """A dist that is not installed must record an honest None — the
+        required-gate path surfaces it as not_run anyway — while an installed
+        one records its real version."""
+        assert candidate_fitness._tool_version("definitely-not-a-dist-451") is None
+        version = candidate_fitness._tool_version("pytest")
+        assert isinstance(version, str) and version
+
+    def test_candidate_sha_of_broken_contexts_is_none_not_invented(self, tmp_path: Path) -> None:
+        """Provenance pins a SHA only where one exists: a real worktree pins
+        its HEAD; a directory where git cannot even spawn pins None (spawn
+        failure); a non-worktree pins None (nonzero exit)."""
+        repo = _candidate_repo(tmp_path / "r")
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True
+        ).stdout.strip()
+        assert candidate_fitness._candidate_sha(repo) == sha
+        assert candidate_fitness._candidate_sha(tmp_path / "no-such-dir") is None
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert candidate_fitness._candidate_sha(plain) is None
 
 
 # ---------------------------------------------------------------------------
