@@ -1,8 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +40
+  packages/maistro-rsi/tests: +41
 ---
-# 918 M8-A: TLA+/Apalache-equivalent model-checking harness (+40)
+# 918 M8-A: TLA+/Apalache-equivalent model-checking harness (+41)
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
@@ -13,12 +13,12 @@ toolchain exists in this repo's deterministic CI and none was run, so the resear
 record (`docs/research/918-concurrency-model-checking-tla-apalache.md`) registers
 WATCH and this change adds the technique's mechanics as one self-contained test
 module in `packages/maistro-rsi/tests/`
-(`test_m8a_tlaplus_model_checking_research.py`, +40 node IDs, replacing a prior
+(`test_m8a_tlaplus_model_checking_research.py`, +41 node IDs, replacing a prior
 docstring-only stub that collected zero tests).
 
 The module is deliberately test-side and imports no maistro module (AST-checked): it
 is research evidence, not product code (M8 guardrails 1-2), so no vulture/reachability
-identity changes. The 40 checks validate, on hand-checked fixtures: the explicit-state
+identity changes. The 41 checks validate, on hand-checked fixtures: the explicit-state
 checker's mechanics (exact 9-state grid exploration, determinism, shortest
 counterexample traces with hand-checked labels, violation at an initial state with an
 empty path, honest `truncated` flag when the state budget stops exploration — never
@@ -38,3 +38,9 @@ hand-checked 7-state single-ticker space, the two-ticker race staying at one Run
 both documented defect shapes rediscovered when each guard is dropped, with
 hand-checked trace labels). The evidence-only contract itself (advisory marker, WATCH
 disposition constant, no maistro imports) is asserted so it cannot silently rot.
+The 41st check pins the bounded-exploration honesty at the admission edge: a single
+high-fanout expansion may yield more successors than the remaining budget has room
+for, so `_reach`/`check_safety` re-check `max_states` per successor — admission stops
+at the limit (a fanout-19 expansion with budget 2 explores exactly 2 states) instead
+of overshooting and reporting the overshoot as a complete exploration. Without the
+per-successor check the same test explores 19 states and fails.

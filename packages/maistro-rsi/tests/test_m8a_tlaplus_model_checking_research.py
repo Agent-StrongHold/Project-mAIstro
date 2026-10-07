@@ -183,6 +183,9 @@ def _reach(
             break
         current = queue.popleft()
         for label, successor in _successors(current, actions):
+            if max_states is not None and len(parents) >= max_states:
+                truncated = True
+                break
             if successor in parents:
                 continue
             parents[successor] = (current, label)
@@ -223,6 +226,13 @@ def check_safety(
             break
         current = queue.popleft()
         for label, successor in _successors(current, actions):
+            if max_states is not None and len(parents) >= max_states:
+                # Budget exhausted with frontier remaining: what we did not
+                # explore could violate the invariant, so incompleteness is
+                # recorded. Checked per successor: one expansion may yield
+                # more states than the budget has room for.
+                truncated = True
+                break
             if successor in parents:
                 continue
             parents[successor] = (current, label)
@@ -359,6 +369,7 @@ def _find_bad_cycle(
     end at the cycle's entry state so ``path + cycle`` is a replayable lasso.
     ``bad`` must be sorted and ``succ``/``edge_label`` deterministic for
     reproducible counterexamples."""
+    bad_set = frozenset(bad)  # constant-time successor membership; keep sorted list for roots
     color: dict[State, int] = {}  # 1 = gray (on stack), 2 = black (done)
     for root in bad:
         if color.get(root) == 2:
@@ -373,7 +384,7 @@ def _find_bad_cycle(
                 nodes.pop()
                 iters.pop()
                 continue
-            if nxt not in bad:
+            if nxt not in bad_set:
                 continue
             seen = color.get(nxt)
             if seen is None:
@@ -798,6 +809,23 @@ def test_state_budget_truncates_honestly() -> None:
     assert result.explored == 3
     assert result.truncated is True
     assert result.violation is None  # inconclusive — never a pass
+
+
+def test_budget_holds_within_a_single_high_fanout_expansion() -> None:
+    """One expansion of a high-fanout state may yield more successors than the
+    budget has room for; admission must stop at the limit, not overshoot."""
+
+    def fanout(state: State) -> list[tuple[str, State]]:
+        return [(f"to_{n}", (f"s{n}",)) for n in range(19)]
+
+    initials, actions = (("s0",),), (fanout,)
+    parents, truncated = _reach(initials, actions, max_states=2)
+    assert len(parents) == 2
+    assert truncated is True
+    result = check_safety(initials, actions, lambda s: True, max_states=2)
+    assert result.explored == 2
+    assert result.truncated is True
+    assert result.violation is None
 
 
 def test_generous_budget_completes() -> None:
