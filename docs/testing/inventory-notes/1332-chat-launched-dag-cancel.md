@@ -146,3 +146,36 @@ patch and reversed immediately (worktree verified clean after each):
 develop's only branch-new commit (`b0912ce59`, #1707 BACKLOG migration) shares
 no file with this branch's diff, so the queued merge-queue integration has no
 conflict surface.
+
+## Repair round (2026-10-07, head `d20e5be72` -> merge `009871585`)
+
+Develop moved again after the last round (`9bd1a93ee` #2031/#1335 TOCTOU guard,
+`83c7788d6` #2034 legacy-admitter cancel, `75810d0df` #2033 RichTooltip e2e,
+and `b1f17b8d6` — the PR #2029 squash, whose #1332 content is byte-identical
+to this branch's). All proofs re-executed at `d20e5be72`, then the branch was
+reconciled with the queue head by merging `origin/develop` (`b1f17b8d6`) —
+clean, zero conflicts — and the merged tree re-proven at `009871585`:
+
+- `test_chat_launched_dag_cancel.py` 15 passed; `test_canonical_execution_store.py`
+  24 passed; adjacent hive suites (cancel route, durability, store, scope,
+  canonical runner, canonical lifecycle) 139 passed; the develop-merged
+  suites (`test_attempt_execution.py`, `test_svg_accessible_names.py`)
+  pass with the #1332 suites (74 combined);
+- full `packages/hive-conductor/backend/tests`: 3432 passed, 6 skipped (fixed
+  ordering); full `packages/maistro-core/tests`: 13936 passed, 965 skipped,
+  1 xfailed (fixed ordering);
+- `scripts/check-suite-inventory.py`: ok, 17 suites match the recorded
+  inventory; `scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (vulture-ratchet.yml's
+  exact invocation): exit 0, 1328 reviewed identities;
+- `ruff check` clean, `ruff format --check` clean.
+
+One observation recorded for the next driver, not a #1332 defect:
+`test_property_substrate.py::test_property_marked_field_is_immediately_locked`
+(untouched by this branch; last modified long before it) failed once under a
+random pytest ordering seed and passed in isolation, immediately after the
+#1332 suite, and in the full suite under fixed ordering — an order-dependent
+flake outside this issue's files. After the merge, `git diff origin/develop
+HEAD` is empty: the branch tree is identical to the queue head, so the
+merge-queue integration has zero content delta and the GH006 re-queue has no
+conflict or content surface.
