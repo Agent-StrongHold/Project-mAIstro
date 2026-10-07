@@ -21,6 +21,7 @@ from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
 from routes import (
     agents,
+    api_docs,
     attention,
     audit,
     auth,
@@ -291,7 +292,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> Respo
 
 def create_app() -> FastAPI:
     configure_logging()
-    app = FastAPI(title="Hive Conductor", version="0.9.0", lifespan=lifespan)
+    # docs_url=None retires FastAPI's default docs page, which loads Swagger UI
+    # from jsdelivr and inlines its bootstrap script — both refused by the
+    # enforced CSP, leaving a blank page full of violations (#1425).
+    # routes/api_docs serves the reference from vendored first-party assets
+    # under the unchanged policy instead; `/redoc` keeps FastAPI's default.
+    app = FastAPI(title="Hive Conductor", version="0.9.0", lifespan=lifespan, docs_url=None)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_settings().cors_origins,
@@ -359,6 +365,9 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
     app.include_router(health.router)
+    # The API reference and its vendored assets (#1425). Public like FastAPI's
+    # default /docs was: AuthMiddleware gates only /v1/ and names /docs public.
+    app.include_router(api_docs.router)
     app.include_router(auth.router, prefix="/v1/auth")
     app.include_router(credentials.router, prefix="/v1/credentials")
     app.include_router(install.router, prefix="/v1/install")
