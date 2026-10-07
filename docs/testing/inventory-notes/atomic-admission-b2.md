@@ -46,14 +46,13 @@ PostgreSQL leg as durability proof.
   evidence is unbound; one-sided pairs, receipt-only rows, unreadable
   evidence, and bound-pairs-without-receipt are all `partial_legacy_binding`
   — a receipt is never fabricated to make a row fit.
-- The v2 mapping always emits `task_id` as NULL: the #1851 DTO is
-  task-agnostic by design, and the binding statement owns that bookkeeping.
-  `test_v2_round_trip_preserves_all_snapshot_bytes` pins the resulting
-  encode→decode→encode identity. A v2 bound row must additionally have
-  `task_id == receipt_id`: although the DTO intentionally omits task queue
-  bookkeeping, the codec validates that immutable storage invariant before it
-  drops the column, so corrupt storage cannot be re-described as a valid
-  canonical binding.
+- **Corrected by the binding repair:** a bound v2 mapping emits
+  `task_id == binding.receipt_id`; only an unbound mapping emits NULL for both
+  binding columns. The earlier encoder/decoder round-trip agreed on an invalid
+  Run-only shape that migration 055 rejects. Both one-sided pairs now fail
+  `invalid_v2_record`. See
+  [the repair evidence](atomic-admission-b2-binding-repair.md) for independent
+  storage assertions and actual pre-fix PostgreSQL constraint failures.
 - Error messages never quote snapshot bytes or owner tokens, and parsing
   chains are suppressed (`__suppress_context__` asserted).
 

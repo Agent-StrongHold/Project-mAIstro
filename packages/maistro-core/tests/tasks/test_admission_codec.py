@@ -18,6 +18,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -123,8 +124,16 @@ def _code_of(row: dict[str, object]) -> AdmissionRowDecodeError:
 # --- the ten prospective contracts -----------------------------------------
 
 
-def test_v2_round_trip_preserves_all_snapshot_bytes() -> None:
-    row = _v2_row(binding=AdmissionBinding(run_id="run-1", receipt_id="rcpt-1"))
+@pytest.mark.parametrize("state", ["unbound", "bound", "acknowledged"])
+def test_v2_round_trip_preserves_all_snapshot_bytes(state: str) -> None:
+    binding = None if state == "unbound" else AdmissionBinding("run-1", "rcpt-1")
+    acknowledged_at = _CREATED_US + 5 if state == "acknowledged" else None
+    row = _v2_row(binding=binding, acknowledged_at_us=acknowledged_at)
+    # Assert the storage contract independently of encode/decode agreement:
+    # migration 055 requires both binding columns, with task_id = receipt_id.
+    assert row["task_id"] == ("rcpt-1" if binding is not None else None)
+    assert row["run_id"] == ("run-1" if binding is not None else None)
+    assert row["acknowledged_at"] == acknowledged_at
     record = decode_admission_record(row, header=decode_admission_header(row))
     reencoded = encode_admission_record(record)
 
@@ -138,7 +147,8 @@ def test_v2_round_trip_preserves_all_snapshot_bytes() -> None:
     assert "request" in reencoded and "request_snapshot" not in reencoded
     reparsed = json.loads(reencoded["request"])
     assert reparsed["program_context"]["readings"][1] == {"__maistro_non_finite__": "nan"}
-    assert record.format_version == 2 and record.admitted
+    assert record.format_version == 2
+    assert record.admitted is (binding is not None)
 
 
 def test_owner_token_is_hex_at_storage_only() -> None:
@@ -315,8 +325,11 @@ def test_text_snapshots_reject_predecoded_values() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["unbound", "bound", "acknowledged"])
 async def test_raw_and_production_pool_codecs_read_identical_text_snapshots(
     pg_pool: Any,
+    state: str,
+    record_property: Callable[[str, object], None],
 ) -> None:
     """Read one migrated admission row through raw and production asyncpg pools.
 
@@ -349,16 +362,25 @@ async def test_raw_and_production_pool_codecs_read_identical_text_snapshots(
     scope_key = hashlib.sha256(f"admission-codec-{uuid.uuid4().hex}".encode()).hexdigest()
     try:
         async with pg_pool.acquire() as production_conn, raw_pool.acquire() as raw_conn:
-            production_identity = await production_conn.fetchrow(
-                "SELECT current_database(), inet_server_addr()::text, inet_server_port()"
+            identity_sql = (
+                "SELECT current_database(), inet_server_addr()::text, "
+                "inet_server_port(), pg_backend_pid()"
             )
-            raw_identity = await raw_conn.fetchrow(
-                "SELECT current_database(), inet_server_addr()::text, inet_server_port()"
-            )
+            production_identity = await production_conn.fetchrow(identity_sql)
+            raw_identity = await raw_conn.fetchrow(identity_sql)
         assert production_identity is not None and raw_identity is not None
-        assert tuple(production_identity) == tuple(raw_identity)
+        assert tuple(production_identity)[:3] == tuple(raw_identity)[:3]
+        assert production_identity[3] != raw_identity[3]
+        record_property("production_session", tuple(production_identity))
+        record_property("raw_session", tuple(raw_identity))
 
-        encoded = encode_admission_record(_v2_record(scope_key=scope_key))
+        binding = None if state == "unbound" else AdmissionBinding("run-1", "rcpt-1")
+        record = _v2_record(
+            scope_key=scope_key,
+            binding=binding,
+            acknowledged_at_us=_CREATED_US + 5 if state == "acknowledged" else None,
+        )
+        encoded = encode_admission_record(record)
         columns = tuple(encoded)
         placeholders = ", ".join(f"${index}" for index in range(1, len(columns) + 1))
         async with pg_pool.acquire() as production_conn:
@@ -375,6 +397,11 @@ async def test_raw_and_production_pool_codecs_read_identical_text_snapshots(
                 f"SELECT {', '.join(columns)} FROM task_idempotency WHERE scope_key = $1",
                 scope_key,
             )
+            row_count = await raw_conn.fetchval(
+                "SELECT count(*) FROM task_idempotency WHERE scope_key = $1", scope_key
+            )
+            assert row_count == 1
+            record_property("persisted_admission_rows", row_count)
 
         assert production_row is not None and raw_row is not None
         production_mapping = dict(production_row)
@@ -383,6 +410,7 @@ async def test_raw_and_production_pool_codecs_read_identical_text_snapshots(
         for row in (production_mapping, raw_mapping):
             decoded = decode_admission_record(row, header=decode_admission_header(row))
             assert isinstance(decoded, AdmissionRecordV2)
+            assert decoded == record
             assert decoded.envelope.request_snapshot.text == _REQUEST_TEXT
             assert encode_admission_record(decoded) == encoded
     finally:
@@ -505,6 +533,13 @@ def test_v2_identity_columns_must_be_strings(column: str) -> None:
 def test_v2_task_without_run_is_corruption_not_unbound() -> None:
     error = _code_of(_v2_row(row_overrides={"task_id": "task-1"}))
     assert error.code is AdmissionDecodeCode.INVALID_V2_RECORD
+
+
+def test_v2_run_without_task_is_corruption_not_a_binding() -> None:
+    row = _v2_row(row_overrides={"run_id": "run-1", "task_id": None})
+    error = _code_of(row)
+    assert error.code is AdmissionDecodeCode.INVALID_V2_RECORD
+    assert error.scope_key == _SCOPE
 
 
 def test_v2_bound_task_must_match_its_immutable_receipt_identity() -> None:

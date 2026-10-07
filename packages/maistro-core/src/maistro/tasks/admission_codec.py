@@ -42,11 +42,10 @@ receipt, so it is ``partial_legacy_binding``, like a one-sided pair and a
 receipt-only compatibility row. Neither-set with no receipt evidence is
 plainly unbound. The optional legacy ``completed_at`` column is read by
 nothing here: it is legacy evidence, never admission authority. For v2 rows
-the atomic binding write makes task-without-run corruption
-(``invalid_v2_record``); ``task_id`` itself is queue bookkeeping the
-task-agnostic DTO deliberately cannot express, so :func:`encode_admission_record`
-always emits it as ``NULL`` — the binding statement owns it, this mapping
-never reconstructs it.
+both binding columns must be absent or present together, and a bound
+``task_id`` must equal the immutable ``receipt_id`` (migration 055).
+The task-agnostic DTO needs no separate bookkeeping identity: encoding uses
+the existing binding's receipt identity, never a newly inferred identifier.
 
 No SQL mutation, no HTTP mapping, no queue change: this module reads
 ``Mapping`` rows and returns mappings. Nothing in production consumes it yet —
@@ -262,8 +261,8 @@ def encode_admission_record(record: AdmissionRecordV2) -> dict[str, object]:
     Every value is a bound scalar: snapshots go out as their canonical TEXT,
     UUIDs as lowercase ``.hex`` (the owner token becomes ``claim_token`` — hex
     at storage only, nowhere else), timestamps as the legacy-named columns.
-    ``task_id`` is always ``NULL``: the task-agnostic DTO cannot express it,
-    and the binding statement — not this mapping — owns that bookkeeping.
+    The forward schema represents a binding as ``task_id = receipt_id`` plus
+    ``run_id``; both columns are NULL for an unbound record.
     """
     if not isinstance(record, AdmissionRecordV2):
         raise TypeError(f"expected AdmissionRecordV2, not {type(record).__name__}")
@@ -287,7 +286,7 @@ def encode_admission_record(record: AdmissionRecordV2) -> dict[str, object]:
         "request": envelope.request_snapshot.text,
         "receipt_snapshot": envelope.receipt_snapshot.text,
         "provenance_snapshot": envelope.provenance_snapshot.text,
-        "task_id": None,
+        "task_id": binding.receipt_id if binding is not None else None,
         "run_id": binding.run_id if binding is not None else None,
         "acknowledged_at": record.acknowledged_at_us,
     }
@@ -439,9 +438,9 @@ def _v2_binding(
 ) -> AdmissionBinding | None:
     """The optional v2 binding, present exactly when ``run_id`` is stored.
 
-    The v2 binding write is one statement setting both columns, so a task
-    announced without its Run is corruption (``invalid_v2_record``), never an
-    unbound row. The forward-table constraint also binds ``task_id`` to this
+    The v2 binding write is one statement setting both columns, so either
+    one-sided pair is corruption (``invalid_v2_record``), never a binding or
+    an unbound row. The forward-table constraint also binds ``task_id`` to this
     row's immutable receipt identity. The DTO deliberately does not carry the
     queue bookkeeping identifier, but decoding must validate it before
     dropping it so corrupt storage cannot be silently re-described as a valid
@@ -449,16 +448,16 @@ def _v2_binding(
     """
     raw_task_id = row["task_id"]
     raw_run_id = row["run_id"]
+    if (raw_task_id is None) != (raw_run_id is None):
+        raise AdmissionRowDecodeError(
+            "task_id and run_id must both be present or both NULL for v2",
+            code=AdmissionDecodeCode.INVALID_V2_RECORD,
+            scope_key=scope_key,
+        ) from None
     if raw_task_id is not None:
         if not isinstance(raw_task_id, str):
             raise AdmissionRowDecodeError(
                 "task_id must be TEXT or NULL",
-                code=AdmissionDecodeCode.INVALID_V2_RECORD,
-                scope_key=scope_key,
-            ) from None
-        if raw_run_id is None:
-            raise AdmissionRowDecodeError(
-                "task_id announced without run_id violates the v2 binding write",
                 code=AdmissionDecodeCode.INVALID_V2_RECORD,
                 scope_key=scope_key,
             ) from None
