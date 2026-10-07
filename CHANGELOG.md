@@ -129,6 +129,17 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A full Recent Runs page no longer waits on one serialized canonical Run
+  read per row (#1333).** Conductor's Recent Runs list overlays canonical
+  lifecycle truth through one batched, Workspace-scoped reader call, but the
+  reader resolved the page's per-Run lookups with a sequential `await` per id:
+  at the supported page cap of 100 and a durable PostgreSQL/SQLite store, one
+  dashboard request still serialized up to 100 `get_run` round trips on an
+  endpoint built to be polled. `ScopedRunReader.get_runs` now overlaps the
+  page's independent lookups (bounded, 16 in flight) while keeping the scoped
+  decisions exactly once per Workspace/Project, so the visible-Runs answer and
+  its refusal semantics are unchanged; a page resolves in a few overlapping
+  waves instead of one wait per row.
 - **Chat admission compensation is conditional on the unchanged, unstarted Run (#338).**
   A QUEUED or RUNNING write that commits but loses its response is compensated
   before the existing retryable refusal, without dispatching the turn. The
@@ -1121,6 +1132,20 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Schedules and MCP work from the keyboard alone (#370, partial).** The
+  Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
+  schedule's enable toggle is a labelled switch, so a keyboard user can enable
+  or disable a schedule; cron presets are toggle buttons; and an MCP server
+  expands through a disclosure button, with its remove button a separate
+  control. For pointer users, an MCP server now expands or collapses only
+  from its header row, not from its details area or the card's padding.
+- **The Agent's dashboard-widget edit no longer overwrites a concurrent UI save (#1048).**
+  `create_dashboard_widget` now saves against the revision it read; on a conflict it
+  re-reads and re-applies the insertion once (via the pure
+  `dashboard_layouts.with_widget`), and on a second conflict reports `created: false`
+  instead of erasing the `PUT /v1/dashboard/layout` that landed in between. Partial: the rest
+  of #1048 (Workspace-scoped Home, pinned regions, projections) remains.
+
 - **Turing's synchronous bridge no longer blocks the event loop (#397).**
   The provider bridge used to answer event-loop callers by blocking on an
   unbounded `Future.result()`, so one stuck LLM call froze every coroutine on
@@ -2089,6 +2114,12 @@ or placeholder-only section.
   application role cannot create tables, and ADR-086 carries a dated
   amendment recording the cursor's ownership, lease, fencing and gap
   semantics.
+
+- **Canvas retry-budget recovery regression coverage (#1550).** Exercise
+  repeated simulated pre-stage worker losses through the real executor,
+  canonical adapter and runner, including claim refusal, fenced reaper
+  terminalization and a fresh-job dispatch control. The existing retry and
+  lease-ownership behavior is unchanged.
 
 ## [1.0.0] - TBD
 
