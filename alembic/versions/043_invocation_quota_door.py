@@ -19,7 +19,10 @@ copies verbatim -- `053_learning_lifecycle_columns`,
 `054_learning_applicability_epistemics`, `055_task_admission_generations`,
 `056_user_model_facts` -- dropping the branch-side duplicates and
 re-parenting this branch's genuinely-new backlog work source (#82) past
-the `057` tip as `058`, keeping exactly one linear head.
+the `057` tip as `058` -- since re-parented again, first onto develop's
+`058_learning_validation_provenance` as `059_backlog_work_source`, then
+with its authority-cutover ledger `060_backlog_authority_cutover` on top,
+keeping exactly one linear head.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:

@@ -4,11 +4,14 @@
 **Owners:** #1046 (Adaptive Workspace), #804 (Persistent Workspace Agent), #53 (Conductor onto Conduit + canonical Runs), #65 (Workspace-centric inspection), #82 (Workspace backlog)
 **Companion policy:** [M1-CONVERGENCE-FREEZE.md](M1-CONVERGENCE-FREEZE.md) · [CONVERGENCE-MATRIX.md](CONVERGENCE-MATRIX.md) · [KNOWN-GAPS.md](../../KNOWN-GAPS.md) · [BACKLOG.md](../../BACKLOG.md) `[conductor-402]`–`[conductor-413]`
 
-**Update (develop sync, 2026-10-02):** the P0.1/P0.2 enforcement artifacts named below
+**Update (develop sync, 2026-10-07):** the P0.1/P0.2 enforcement artifacts named below
 (`scripts/check-principal-identity.py`, `scripts/check-route-permissions.py`, their baseline
-ledgers, and `tests/fitness/test_principal_identity.py`) were reverted on develop (#1769,
-reverting 430139cb7). Those plan items are back to not-started on the develop line; the
-sections below remain the design intent, not a record of landed enforcement.
+ledgers, and the principal-identity fitness test, now at
+`packages/maistro-core/tests/fitness/test_principal_identity.py`) were briefly reverted on
+develop (#1769, reverting 430139cb7) and have since re-landed there (#1805, commit
+41663c63b — cutover S1.1/S1.2), which this branch's merge base carries. Both scripts and
+the fitness test pass at this head, so the sections below are again a record of landed
+enforcement on the develop line, not merely design intent.
 
 ## Why this document exists
 

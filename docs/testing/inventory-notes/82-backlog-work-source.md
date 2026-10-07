@@ -985,7 +985,7 @@ below.
   already exists": the test pins a fixed item id and the durable row from the
   previous run survives — the fresh-database-per-run shape every prior
   addendum and CI's fresh service already encode, not a regression of this
-  merge.) hive-conductor `test_backlog_routes.py` **42 passed**; server
+  merge.) hive-conductor `test_backlog_routes.py` **36 passed**; server
   backlog-history API **6 passed**.
 - **Merge fallout battery, all green at this head** (`RATCHET_BASE_REV=
   origin/develop` where applicable): `ruff check .` clean; `ruff format
@@ -1004,3 +1004,51 @@ below.
   procedure applies. The driver's `check-*.log` files referenced by the brief
   were absent from the job directory; every deterministic check cited here
   was re-executed locally at this head instead.
+
+## Fifteenth verification addendum (c8240a7c review round: three documentation regressions and one count conflation repaired)
+
+Review at the develop-sync merge `c8240a7c` confirmed every code, test,
+migration, and ledger claim of the fourteenth addendum — the deltas below are
+documentation-only, each traced to a verifier finding against the tree at this
+head. No test was added or removed; the suites' collected counts are unchanged.
+
+- **`SPEC-100126-5445-learning-epistemics.md` validation paragraph restored to
+  the merge-base truth:** a branch merge had rewritten it to name
+  `055_learning_applicability_epistemics` plus "this branch's
+  `053_backlog_work_source` / `054_learning_lifecycle_columns`" — identities
+  that exist nowhere at this head (`055` is
+  `055_task_admission_generations`; the epistemics DDL is and remains
+  `054_learning_applicability_epistemics`, matching the assertion text this
+  branch already fixed in `tests/migrations/test_learning_applicability_migration.py:113`;
+  the backlog revisions ride past develop's learning chain as
+  `059_backlog_work_source` / `060_backlog_authority_cutover`). Rewritten to
+  those identities.
+- **`WORKSPACE-CUTOVER-PLAN.md` convergence note un-staled:** the branch-added
+  note said the P0.1/P0.2 enforcement artifacts "were reverted on develop
+  (#1769) … back to not-started on the develop line", but develop re-landed
+  them in this branch's merge base (`41663c63b`, #1805, cutover S1.1/S1.2).
+  Re-proven live at this head: `scripts/check-principal-identity.py` exit 0
+  ("ok: 4 tolerated … none new"), `scripts/check-route-permissions.py` exit 0
+  ("ok: 40 declared, 0 tolerated undeclared"), and
+  `packages/maistro-core/tests/fitness/test_principal_identity.py` **1 passed**
+  (the test moved from the note's old root-`tests/fitness/` path; the note now
+  names the current path). Rewritten to record the revert-then-re-land.
+- **`alembic/versions/043_invocation_quota_door.py` docstring synced:** it
+  ended with the backlog work source "past the `057` tip as `058`" — true of
+  the `56332162c` sync it narrates, but `058` is develop's
+  `058_learning_validation_provenance` at this head and the backlog revisions
+  are `059`/`060`. The narrative now records both re-parentings, matching the
+  chain the fourteenth addendum proved (`… 058 → 059 → 060`, single head).
+- **`test_backlog_routes.py` count corrected from 42 to 36:** re-executed at
+  this head — **36 collected, 36 passed** (every earlier round in this file
+  records 36; the 42 was a conflation with the separately-listed 6-test
+  server backlog-history suite, re-run at this head as **6 passed**). The
+  claiming commit message (`823ea54ad`) is history and is left as-is.
+- **Supply chain (pip-audit) re-proven with CI's exact commands:** the
+  `security.yml` job was green at this head on CI (check run completed
+  success, 2026-10-07); locally, `uv pip freeze --exclude-editable` +
+  `pip-audit --strict --format=json` reports exactly the 2x
+  `ecdsa PYSEC-2026-1325` pair triaged in `scripts/pip_audit_gate.py`'s
+  `ALLOWED`, and the gate **exits 0** ("pip-audit OK (1 known, all triaged in
+  ALLOWED); direct-dependency usage OK: 11 packages, 62 runtime dependencies,
+  4 reviewed dispositions").

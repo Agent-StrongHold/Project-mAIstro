@@ -107,8 +107,9 @@ AC-1/AC-2/AC-6 in `test_applicability.py`, AC-3/AC-4/AC-5 in
 paragraph once named was removed — its front-matter citation was
 dispositioned with it when cited test paths were made to resolve, #812), and the
 twin-parity machine checks in `test_learning_contract.py`. The PostgreSQL DDL
-half is migration `055_learning_applicability_epistemics` (single linear head,
-see the chain test; renumbered past develop's `052_learning_stage_ladder` and
-this branch's `053_backlog_work_source` / `054_learning_lifecycle_columns`, all
-of which the develop syncs brought onto the same parent); the SQLite twin
+half is migration `054_learning_applicability_epistemics` (single linear head,
+see the chain test; renumbered past develop's `052_learning_stage_ladder` /
+`053_learning_lifecycle_columns`, while #82's backlog work source rides past
+develop's learning revisions as `059_backlog_work_source` /
+`060_backlog_authority_cutover`); the SQLite twin
 upgrades in place.
