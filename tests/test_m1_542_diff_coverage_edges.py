@@ -217,7 +217,11 @@ def test_model_egress_main_covers_provenance_and_candidate_drift(
     assert module._modules({"modules": "bad"}) == set()
 
     inventory.write_text(json.dumps({"modules": ["stale"]}), encoding="utf-8")
-    monkeypatch.setattr(module, "discover", lambda: {"new"})
+    monkeypatch.setattr(
+        module,
+        "discover_sites",
+        lambda: {"new": module.EgressFinding("new", "new", ())},
+    )
     monkeypatch.setattr(module, "_provenance", lambda: _prov(resolve_error="bad base"))
     assert module.main() == 1
 
