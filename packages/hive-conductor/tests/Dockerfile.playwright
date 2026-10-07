@@ -34,6 +34,11 @@ COPY frontend/src/pages/Dashboard.tsx /tests/frontend/src/pages/Dashboard.tsx
 COPY frontend/src/lib/widgetCapabilities.ts /tests/frontend/src/lib/widgetCapabilities.ts
 COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/SetupChecklist.tsx
 COPY frontend/src/components/TemplatePicker.tsx /tests/frontend/src/components/TemplatePicker.tsx
+# #1414's toggle spec mounts the real shared.tsx Toggle (the component has no
+# routed consumer to drive); it imports only react, so this is the only
+# frontend file the harness needs.
+COPY frontend/src/components/shared.tsx /tests/frontend/src/components/shared.tsx
+COPY frontend/src/components/RichTooltip.tsx /tests/frontend/src/components/RichTooltip.tsx
 COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
 COPY frontend/src/lib/debug.ts /tests/frontend/src/lib/debug.ts
 CMD ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]
