@@ -102,10 +102,6 @@ def _named_row(cursor: sqlite3.Cursor) -> Row | None:
     return rows[0] if rows else None
 
 
-#: Shared with the canonical Invocation quota so both ledgers speak one
-#: vocabulary of units.
-Unit = QuotaUnit
-
 #: A dimension of :meth:`ExtensionMeter.breakdown`.
 AttributionDimension = Literal["workspace", "extension", "publisher", "capability", "provider"]
 
@@ -363,7 +359,7 @@ class ExtensionQuotaPolicy:
 
     policy_id: str
     org_id: str
-    unit: Unit
+    unit: QuotaUnit
     limit: int
     period_start: int
     period_end: int
@@ -473,7 +469,7 @@ class ExtensionQuotaRequest:
         """The facts a retry must repeat verbatim for idempotent admission."""
         return asdict(self)
 
-    def bound(self, unit: Unit) -> int | None:
+    def bound(self, unit: QuotaUnit) -> int | None:
         """The caller-supplied upper bound for ``unit``, if any.
 
         ``requests`` is always bounded: one reservation is one request.

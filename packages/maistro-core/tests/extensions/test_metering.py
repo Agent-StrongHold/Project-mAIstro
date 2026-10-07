@@ -623,3 +623,255 @@ async def test_two_os_processes_cannot_race_same_remaining_budget(
                 process.terminate()
                 process.join()
         queue.close()
+
+
+# ---------------------------------------------------------------------------
+# Ledger configuration refusals (AC: quotas are enforced server-side — a
+# malformed policy or misconfigured ledger never half-registers)
+# ---------------------------------------------------------------------------
+
+
+def test_quota_policy_construction_refuses_invalid_configuration() -> None:
+    """A policy that cannot be honored is refused at declaration time, not at
+    admission time: every field pair that would make a limit meaningless
+    (unknown unit, reserve above limit, empty or inverted billing period,
+    half-specified rate limiting, a rate limit that refuses every call) is a
+    construction error."""
+    with pytest.raises(ValueError, match="unknown quota unit"):
+        policy(unit="bits")
+    with pytest.raises(ValueError, match="invalid reserve or billing period"):
+        policy(reserve=101)
+    with pytest.raises(ValueError, match="invalid reserve or billing period"):
+        policy(period_start=10_000, period_end=10_000)
+    with pytest.raises(ValueError, match="rate limiting needs both"):
+        policy(rate_limit=5)
+    with pytest.raises(ValueError, match="rate limiting needs both"):
+        policy(rate_window_s=60)
+    with pytest.raises(ValueError, match="rate_limit of zero refuses every call"):
+        policy(rate_limit=0, rate_window_s=60)
+
+
+def test_ledger_refuses_memory_or_blank_database_paths() -> None:
+    """Quota and usage ledgers are shared, durable state: ``:memory:`` would
+    give every process its own private budget and silently void server-side
+    enforcement, so an explicit shared file is mandatory."""
+    with pytest.raises(ValueError, match="explicit shared SQLite file"):
+        ExtensionQuotaLedger(":memory:")
+    with pytest.raises(ValueError, match="explicit shared SQLite file"):
+        ExtensionMeter("   ")
+
+
+async def test_register_policy_is_idempotent_but_identity_is_immutable(
+    quota: ExtensionQuotaLedger,
+) -> None:
+    """Re-declaring a policy verbatim is a no-op (operators retry); changing a
+    registered policy's facts under the same identity conflicts, because a new
+    limit needs a new ``policy_id`` to stay auditable."""
+    await quota.register_policy(policy("p", limit=100))
+    await quota.register_policy(policy("p", limit=100))  # verbatim re-declaration
+    with pytest.raises(ExtensionQuotaConflict, match="policy identity is immutable"):
+        await quota.register_policy(policy("p", limit=200))
+
+
+async def test_policy_balance_of_unknown_policy_names_it(
+    quota: ExtensionQuotaLedger,
+) -> None:
+    with pytest.raises(KeyError, match="no-such-policy"):
+        await quota.policy_balance("no-such-policy")
+
+
+async def test_non_finite_admission_clock_is_refused(tmp_path: Path) -> None:
+    """Admission samples the clock after taking the write lock; a broken clock
+    must refuse admission rather than reserve against a nonsense timestamp."""
+    path = tmp_path / "metering.sqlite"
+    quota = ExtensionQuotaLedger(path, clock=lambda: CLOCK)
+    await quota.ensure_schema()
+    await quota.register_policy(policy())
+    broken = ExtensionQuotaLedger(path, clock=lambda: float("nan"))
+    await broken.ensure_schema()
+    with pytest.raises(ValueError, match="invalid admission clock"):
+        await broken.reserve(request("res-clock"))
+    assert (await quota.policy_balance("workspace-tokens")).held == 0
+
+
+# ---------------------------------------------------------------------------
+# Policy scope and period gating (AC: usage queries and enforcement aggregate
+# by scope — a policy only governs the scope and window it declares)
+# ---------------------------------------------------------------------------
+
+
+async def test_policy_scope_and_period_gate_applicability(tmp_path: Path) -> None:
+    now = [CLOCK]
+    quota = ExtensionQuotaLedger(tmp_path / "metering.sqlite", clock=lambda: now[0])
+    await quota.ensure_schema()
+    await quota.register_policy(policy("scoped", limit=100, workspace_id="workspace-a"))
+
+    # A different Workspace matches no applicable policy: refused by the gap
+    # rule, never silently admitted without governance.
+    with pytest.raises(ExtensionQuotaDenied, match="missing applicable quota policy"):
+        await quota.reserve(request("res-other-ws", workspace_id="workspace-b"))
+
+    # The period is half-open: at ``period_end`` the same policy stops
+    # applying, so post-period admissions are refused, not charged to the
+    # closed period.
+    now[0] = 10_000.0
+    with pytest.raises(ExtensionQuotaDenied, match="missing applicable quota policy"):
+        await quota.reserve(request("res-after-window"))
+    assert (await quota.policy_balance("scoped")).held == 0
+
+
+# ---------------------------------------------------------------------------
+# Non-token quota units settle in their own unit (AC: provider/tool spend
+# attribution — micro_usd and request budgets are first-class, not token
+# proxies)
+# ---------------------------------------------------------------------------
+
+
+async def test_micro_usd_and_request_policies_settle_in_their_own_unit(
+    quota: ExtensionQuotaLedger,
+) -> None:
+    await quota.register_policy(
+        policy("usd", unit="micro_usd", limit=1_000, capability="model.spend")
+    )
+    await quota.reserve(request("res-usd", tokens=None, micro_usd=400, capability="model.spend"))
+    await quota.commit("res-usd", ExtensionUsageAmounts(tokens=0, micro_usd=400, requests=1))
+    assert (await quota.policy_balance("usd")).spent == 400
+
+    # ``requests`` is always bounded (one reservation is one request), so a
+    # request policy admits without any caller-supplied upper bound.
+    await quota.register_policy(
+        policy("reqs", unit="requests", limit=10, capability="model.invoke")
+    )
+    await quota.reserve(request("res-reqs", tokens=None, micro_usd=None, capability="model.invoke"))
+    await quota.commit("res-reqs", ExtensionUsageAmounts(tokens=0, micro_usd=0, requests=1))
+    assert (await quota.policy_balance("reqs")).spent == 1
+
+
+# ---------------------------------------------------------------------------
+# Terminal-state guards (AC: rollback/refund semantics and provider-reported
+# corrections cannot contradict committed facts)
+# ---------------------------------------------------------------------------
+
+
+async def test_denied_reservations_carry_no_provider_outcome(
+    quota: ExtensionQuotaLedger,
+) -> None:
+    """A reservation that was refused never dispatched work, so it has no
+    measured usage to settle — settling one would fabricate spend evidence."""
+    await quota.register_policy(policy(limit=100))
+    await quota.reserve(request("res-hold", tokens=100))
+    with pytest.raises(ExtensionQuotaDenied, match="quota exhausted"):
+        await quota.reserve(request("res-refused", tokens=1))
+    with pytest.raises(ExtensionQuotaConflict, match="denied reservation has no provider outcome"):
+        await quota.commit("res-refused", ExtensionUsageAmounts(tokens=1))
+
+
+async def test_commit_replay_is_idempotent_but_changed_amounts_conflict(
+    quota: ExtensionQuotaLedger,
+) -> None:
+    """Settlement is idempotent on verbatim retry (the caller may crash after
+    the provider call and retry), but different amounts under the same
+    reservation identity are two contradictory facts about one execution."""
+    await quota.register_policy(policy(limit=100))
+    await quota.reserve(request("res-a", tokens=60))
+    await quota.commit("res-a", ExtensionUsageAmounts(tokens=60))
+    await quota.commit("res-a", ExtensionUsageAmounts(tokens=60))  # identical replay
+    assert (await quota.policy_balance("workspace-tokens")).spent == 60
+    with pytest.raises(ExtensionQuotaConflict, match="settlement identity was reused"):
+        await quota.commit("res-a", ExtensionUsageAmounts(tokens=61))
+
+
+async def test_settled_reservations_cannot_be_released(
+    quota: ExtensionQuotaLedger,
+) -> None:
+    """Refunding executed work would un-charge spend the ledger already
+    reported; a settled reservation is past the refundable stage."""
+    await quota.register_policy(policy())
+    await quota.reserve(request("res-a"))
+    await quota.commit("res-a", ExtensionUsageAmounts(tokens=60))
+    with pytest.raises(ExtensionQuotaConflict, match="settled reservation cannot be released"):
+        await quota.release("res-a")
+
+
+async def test_corrections_apply_only_to_settled_reservations(
+    quota: ExtensionQuotaLedger,
+) -> None:
+    """Provider-reported corrections revise measured usage; a held reservation
+    has no measured usage yet, and revision zero is the canonical settlement
+    itself, never a correction."""
+    await quota.register_policy(policy())
+    await quota.reserve(request("res-a"))
+    with pytest.raises(ValueError, match="revision zero is reserved"):
+        await quota.correct(
+            "res-a",
+            revision=0,
+            evidence_id="evg-zero",
+            amounts=ExtensionUsageAmounts(tokens=1),
+        )
+    with pytest.raises(
+        ExtensionQuotaConflict,
+        match="only settled reservations carry measured usage to correct",
+    ):
+        await quota.correct(
+            "res-a",
+            revision=1,
+            evidence_id="evg-1",
+            amounts=ExtensionUsageAmounts(tokens=1),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Aggregation scope (AC: usage queries aggregate by Workspace, extension,
+# publisher, capability and time window — including across every org)
+# ---------------------------------------------------------------------------
+
+
+async def test_totals_without_org_filter_aggregate_every_org(
+    meter: ExtensionMeter,
+) -> None:
+    await meter.record(event("evt-a", org_id="org-a"))
+    await meter.record(event("evt-b", org_id="org-b"))
+    every_org = await meter.totals()
+    org_a = await meter.totals(org_id="org-a")
+    assert every_org.events == 2
+    assert every_org.input_tokens == org_a.input_tokens * 2
+    assert every_org.micro_usd == org_a.micro_usd * 2
+    org_filtered = await meter.totals(org_id="org-b")
+    assert org_filtered.events == 1
+
+
+# ---------------------------------------------------------------------------
+# Cancellation during admission (AC: concurrent enforcement — a cancelled
+# caller must not lose or duplicate its hold)
+# ---------------------------------------------------------------------------
+
+
+async def test_cancelled_admission_propagates_after_the_transaction_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling a caller that awaits admission propagates cancellation only
+    after the in-flight SQLite transaction finishes — never mid-transaction —
+    so the reservation is either fully taken or not taken. The identical retry
+    is then an idempotent no-op: the hold is neither lost nor doubled."""
+    path = tmp_path / "metering.sqlite"
+    quota = ExtensionQuotaLedger(path, clock=lambda: CLOCK)
+    await quota.ensure_schema()
+    await quota.register_policy(policy())
+
+    release = asyncio.Event()
+
+    async def gated_to_thread(fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+        await release.wait()
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr("maistro.extensions.metering.asyncio.to_thread", gated_to_thread)
+    task = asyncio.create_task(quota.reserve(request("res-cancel")))
+    await asyncio.sleep(0)  # park the admission inside the gated hand-off
+    task.cancel()
+    release.set()  # the transaction always completes
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The completed transaction stands: an identical retry holds nothing more.
+    await quota.reserve(request("res-cancel"))
+    assert (await quota.policy_balance("workspace-tokens")).held == 60
