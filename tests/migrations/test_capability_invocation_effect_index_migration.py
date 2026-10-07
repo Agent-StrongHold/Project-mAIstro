@@ -61,8 +61,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) continues the chain after this
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
-    # that; #398's `048_canvas_job_retry_backoff` continues it, and #780's
-    # `049_design_artifact_versions` continues that; #774's
+    # that; #398's `048_canvas_job_retry_backoff` continues it after `047`,
+    # `049_design_artifact_versions` (#780) continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
     # #780 claimed them — continues after that; and #792's eval-score
     # evidence, which had taken `049` on this branch while develop's
@@ -70,14 +70,33 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # re-parents onto that `050` as `051_canonical_run_eval_scores`. Develop's
     # knowledge-stage ladder (M4-B1, ADR-103) then claimed `052` on the same
     # chain tip as `052_learning_stage_ladder`, and develop's
-    # learning-lifecycle columns (M4-B, ADR-100126-8c2d) continue that as
-    # `053`. This branch's `043_invocation_quota_door` (#1196/#718) is
-    # re-parented onto whichever of them is develop's head at merge time --
-    # 046, then 047, 048, 050, 051, 052, now 053 -- so the single linear head
-    # is that quota-door revision.
-    walked = {
-        item.revision for item in directory.walk_revisions("base", "043_invocation_quota_door")
-    }
+    # learning-lifecycle columns (M4-B, ADR-100126-8c2d) continued that as
+    # `053_learning_lifecycle_columns`. Develop's own learning applicability
+    # migration (M4-B3, #119) then claimed `054` on that tip as
+    # `054_learning_applicability_epistemics`, and develop's forward
+    # admission-generation representation (#1892) — originally `053`,
+    # already renumbered to `054` once before this branch last synced —
+    # collided with it and re-parents onto that tip as
+    # `055_task_admission_generations`. This branch's
+    # `043_invocation_quota_door` (#1196/#718) is re-parented onto whichever
+    # of them is develop's head at merge time -- 046, then 047, 048, 050,
+    # 051, 052, 053, 054, now 055. #1047's user-model tables then landed on
+    # develop's trunk as `056_user_model_facts` on that same quota-door
+    # parent, and #863's planner-stability revision — numbered `052` when
+    # written and re-parented onto the chain tip as `053`, `054`, and `056`
+    # in develop's earlier collisions — landed on top of it as
+    # `057_run_store_planner_stability`; this branch's Gauntlet provenance
+    # (#118, M4-B2) — `053` through six collision renumberings, most
+    # recently past develop's `053_learning_lifecycle_columns` — re-parented
+    # onto that planner-stability tip as `058_learning_validation_provenance`
+    # on develop. So the backlog work-source migration (#98) — renumbered
+    # `048` -> `052` -> `054` -> `058` as each develop revision landed — and
+    # the authority-cutover ledger (#102), `049` -> `053` -> `055` -> `059`,
+    # re-parent past the incoming develop tip (a landed trunk migration
+    # never moves): the pair took `058`/`059` in the previous sync and
+    # renumbers to `059`/`060` now that develop's Gauntlet provenance ledger
+    # claimed `058` — the single linear head is `060`.
+    walked = {item.revision for item in directory.walk_revisions("base", "060")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -90,7 +109,15 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "051" in walked
     assert "052" in walked
     assert "053" in walked
-    assert directory.get_heads() == ["043_invocation_quota_door"]
+    assert "054" in walked
+    assert "055" in walked
+    assert "043_invocation_quota_door" in walked
+    assert "056" in walked
+    assert "057" in walked
+    assert "058" in walked
+    assert "059" in walked
+    assert "060" in walked
+    assert directory.get_heads() == ["060"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

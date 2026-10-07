@@ -15,12 +15,16 @@ here is "compute a vector on write, use it on read".
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from maistro.memory.exposure import Actor
+from maistro.memory.learnings.evidence import DEFAULT_MIN_PROMOTION_CONFIDENCE
 from maistro.memory.vectors import require_matching_dimension
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.persistence.pg_learnings import PgLearningStore
     from maistro.protocols.embeddings import EmbeddingClient
@@ -148,9 +152,42 @@ class DurableHybridLearningStore:
         return await self._store.produced_by(run_id, org_id=org_id)
 
     async def check_auto_promotions(
-        self, threshold: int = 5, *, org_id: str = ""
+        self,
+        threshold: int = 5,
+        *,
+        org_id: str = "",
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
     ) -> list[Learning]:
-        return await self._store.check_auto_promotions(threshold, org_id=org_id)
+        return await self._store.check_auto_promotions(
+            threshold, org_id=org_id, min_confidence=min_confidence
+        )
+
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Delegate: a promotion is the wrapped store's transaction to run (M4-B2).
+
+        This wrapper adds embeddings, not promotion policy, so the Gauntlet's
+        validation provenance is written by `PgLearningStore.promote_learning`
+        under the same scope rules as every other write here.
+        """
+        return await self._store.promote_learning(
+            learning_id,
+            org_id=org_id,
+            validated_by=validated_by,
+            evaluator_version=evaluator_version,
+            validated_at=validated_at,
+            validation_run_ids=validation_run_ids,
+            validation_content_hash=validation_content_hash,
+        )
 
     async def get_promoted(
         self,

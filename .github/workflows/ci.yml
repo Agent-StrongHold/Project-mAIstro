@@ -116,6 +116,7 @@ jobs:
           packages/maistro-evolve/src
           packages/maistro-rsi/src
           packages/maistro-design/src
+          packages/maistro-ext-harness/src
       # Neither of the two above resolves an import into a package that is not
       # installed in the checking environment, and hive-conductor never is: it
       # is a flat-layout app with no wheel. So `from
@@ -127,6 +128,22 @@ jobs:
       # with an import-time side effect runs here.
       - name: Cross-package imports name modules and attributes that exist
         run: python3 scripts/check-cross-package-imports.py
+      # The same boundary one audience further out (#951). Extension packages
+      # are third-party-shaped: they may import the public extension SDK and
+      # their own declared dependencies, never the product's private modules,
+      # never a repo-relative root, never a sys.path repair. Static, against
+      # the namespace policy the SDK epic publishes, so an import inside a
+      # function or a TYPE_CHECKING block is still caught.
+      - name: Extension packages import only the public SDK
+        run: python3 scripts/check-extension-imports.py
+      # The physical half of the same claim (#951): build each extension as a
+      # wheel, install it plus pytest into a fresh venv, prove the product's
+      # own modules are unimportable there, and run its tests with that
+      # interpreter. A fresh venv holds none of this repository, so a pass
+      # here is the executed proof that an extension needs no repo-relative
+      # import to build or test.
+      - name: Reference extension builds and tests in a clean environment
+        run: python3 scripts/check-reference-extension.py
       # The same question one seam further out. That one asks whether an import
       # names something that exists; this asks whether the path the frontend
       # fetches reaches a route the backend registers. `fetch` does not reject
@@ -237,9 +254,15 @@ jobs:
       # #56 was an epic closed by one PR's `Closes` keyword: the PR delivered
       # a slice, the keyword closed the whole thing, and every acceptance
       # criterion it never touched read as done. An issue titled [EPIC],
-      # [MILESTONE] or [INITIATIVE], or one with sub-issues, closes by hand
-      # once check-ac-state reports every criterion reachable (cutover S0.2).
-      - name: No PR closes an epic by keyword
+      # [MILESTONE] or [INITIATIVE], or one with open direct children, closes
+      # by explicit reviewed action once check-ac-state reports every
+      # criterion reachable (cutover S0.2). And #76 was closed completed by a
+      # keyword while its own acceptance record still had every box unticked:
+      # a leaf with a registered acceptance record closes only when the record
+      # shows every criterion proven -- never because the PR diff is green
+      # (#1141). The verdict reads the PR body and the GitHub issue state
+      # only; the candidate controls neither.
+      - name: No PR closes an epic or an issue with unproven acceptance by keyword
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/check-closure-targets.py
@@ -537,6 +560,13 @@ jobs:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
       - run: uv run pytest packages/maistro-design/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      # The extension host harness (#974): stdlib-only runtime, no services,
+      # so no env gates are needed — a third-party CI runs exactly this shape.
+      - run: uv run pytest packages/maistro-ext-harness/tests -v --tb=short
+      - run: uv run pytest packages/maistro-ext-sdk/tests -v --tb=short
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"

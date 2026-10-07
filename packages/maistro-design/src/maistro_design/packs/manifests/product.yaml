@@ -2,6 +2,9 @@
 # One of three packs of the same loop — never a product identity. Canvas is
 # an execute backend binding here (visuals), alongside Builders.
 pack_id: product
+# Pack release version (M9-F3, #968): the identity Workspace activations
+# are recorded against; bump it when the manifest's defaults change.
+version: 1.0.0
 name: Product Pack
 summary: >-
   Positioning, audience, and an artifact plan explored before produce; copy,

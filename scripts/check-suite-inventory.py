@@ -135,6 +135,9 @@ RECIPES: dict[str, Recipe] = {
     "packages/maistro-server/tests": Recipe(args=[]),
     "packages/maistro-turing/tests": Recipe(args=[]),
     "packages/maistro-design/tests": Recipe(args=[]),
+    # The public extension SDK (#949): no maistro imports, no services, no DB —
+    # the plain uv workspace env collects it.
+    "packages/maistro-ext-sdk/tests": Recipe(args=[]),
     "packages/maistro-bootstrap/tests": Recipe(args=[]),
     "packages/maistro-canvas/tests": Recipe(args=[]),
     "packages/maistro-turing/backend/tests": Recipe(args=[]),
@@ -142,6 +145,23 @@ RECIPES: dict[str, Recipe] = {
     # at run time). The inventory records what the tree *contains*; which
     # workflow executes which part is documented in SUITE-INVENTORY.md.
     "tests/": Recipe(args=[]),
+    # The reference extension's own suite (#951). Not in the root testpaths —
+    # the clean-environment proof is the isolation fixture's, which runs these
+    # tests in a venv holding only the built wheel. But the suite IS part of
+    # this repository's test surface, and the root dev env installs the
+    # extension editable (root `dev` extra), so plain collection sees it: a
+    # vanishing or unimportable extension suite is inventory drift like any
+    # other. Collection needs no PYTHONPATH — the package is a workspace
+    # member installed by `uv sync --extra dev`, and the boundary gate
+    # (scripts/check-extension-imports.py) keeps it free of repo-relative
+    # repair that could make collection checkout-dependent.
+    "extensions/reference-greeter/tests": Recipe(args=[]),
+    # The extension host harness's own suite (#974). A packages/ workspace
+    # member installed by the root `dev` extra (like reference-greeter), so
+    # plain collection sees it with no PYTHONPATH repair: its runtime is
+    # stdlib-only and its conftest works under the root --import-mode=importlib
+    # config without sys.path rescue.
+    "packages/maistro-ext-harness/tests": Recipe(args=[]),
     # formal/ ships its own pytest config whose `addopts = "-v --tb=short"`
     # arithmetically cancels the CLI `-q` (net verbosity 0), so a plain
     # collection prints the tree format instead of node-ID lines. Clearing

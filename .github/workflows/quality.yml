@@ -369,9 +369,27 @@ jobs:
       # its suite joins this producer by that same rule: elsewhere its
       # PostgreSQL legs skip and the store scores as untested code.
       #
+      # `memory/user_model` joins for that same reason (#1047):
+      # PostgresUserModelStore is PG-only, needs the migrated chain's
+      # user-model tables (056 after two develop-collision re-parents; 054
+      # when written), and without a producer here the diff gate scores the
+      # new store as untested code while its conformance cases pass in the
+      # `postgres` job.
+      #
       # The claim-driven `task_idempotency` purge (#325) is one file, not the
       # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
-      # race, are the only ones under `tasks` that need a server.
+      # race, are the only ones under `tasks` that need a server. The atomic
+      # task-admission proof joins it: its one-commit Run/binding test cannot
+      # run in the no-service producer, so excluding it would score the new PG
+      # seam from fake-pool paths only.
+      #
+      # `backlog` joins by that same rule (#102): `backlog/pg_store.py` is a
+      # PostgreSQL store whose conformance and cutover suites are parametrised
+      # over memory/sqlite/postgres and gate the PostgreSQL leg on
+      # MAISTRO_TEST_PG_DSN. Without a producer here the leg skipped and the
+      # diff gate scored the new store's 238 changed lines at 25.6% while the
+      # same arcs passed against a real server in the `postgres` job — the
+      # exact shape #231 documented for scheduling.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -386,8 +404,21 @@ jobs:
             packages/maistro-core/tests/workspaces \
             packages/maistro-core/tests/scheduling \
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
+            packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py \
             packages/maistro-core/tests/security/test_elevation_durable.py \
+            packages/maistro-core/tests/memory/user_model \
             packages/maistro-core/tests/quota -v --tb=short
+          # The backlog suite runs as its own invocation, not appended to the
+          # list above (#102). Its `test_backlog_stores_import_no_rsi` pins the
+          # #82 exit condition — importing the work-source substrate must not
+          # import RSI — by asserting on `sys.modules`, which is process-global:
+          # one shared pytest process with the container-wiring suites ahead of
+          # it reads as a violation no import of its own caused. Same shape as
+          # the structlog pollution that split the publish-set producers into
+          # per-package invocations in the first place.
+          uv run coverage run --append --branch \
+            --source=packages/maistro-core/src/maistro \
+            -m pytest packages/maistro-core/tests/backlog -v --tb=short
           # `tests/quota` is here for the same reason the canvas lane below is:
           # test_pg_invocation_quota_boundary.py gates all three of its tests on
           # MAISTRO_TEST_PG_DSN and skips without it, so in `coverage (no
@@ -574,8 +605,33 @@ jobs:
           # without naming that file here the module's changed lines measure
           # 0% in this producer and the diff-coverage gate fails on tests
           # that exist and pass but were never pointed at this --source.
+          # The same holds for the #813 walk/disposition logic in
+          # maistro_registry.cli: its tests live in the root suite's
+          # tests/tools/registry/test_cli.py, and the root producer measures
+          # --source=scripts only, so cli.py's changed lines scored 0% here
+          # until that file was named in this producer's pytest args too.
+          # Same shape as #812 (merged from develop): the CLI's
+          # cited-test-path lint and the validator's test-evidence debts are
+          # exercised by root tests under tests/tools/registry/ (this
+          # package's own suite has no cli or validator cases), so those two
+          # files are named here or the changed lines measure 0% and the
+          # diff-coverage gate rejects the commit.
           uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
-            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py --timeout=30 -q
+            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py \
+              tests/tools/registry/test_cli.py tests/tools/registry/test_validator.py --timeout=30 -q
+          # The extension host harness (#974) joins the measured set: it is
+          # the code third-party CI executes, so an unmeasured change there
+          # would be indistinguishable from a tested one. Its suite needs no
+          # services (stdlib-only runtime), so this producer cannot flake on
+          # infrastructure the job does not have.
+          uv run coverage run --append --branch --source=packages/maistro-ext-harness/src/maistro_ext_harness \
+            -m pytest packages/maistro-ext-harness/tests --timeout=30 -q
+          # maistro-ext-sdk joins the measured set with #949: the manifest
+          # contract an external author codes against is exactly the tree
+          # where an uncovered bug bites hardest, and nothing else runs its
+          # suite under coverage.
+          uv run coverage run --append --branch --source=packages/maistro-ext-sdk/src/maistro_ext_sdk \
+            -m pytest packages/maistro-ext-sdk/tests --timeout=30 -q
           # hive-conductor's pytest-bdd is declared in that workspace member's
           # OWN `dev` extra, and `--all-extras` includes every optional
           # dependency of the ROOT project only — not of each member. So the
@@ -606,8 +662,15 @@ jobs:
           #
           # Its PostgreSQL-dependent legs skip in this job, which has no server.
           # That is fine for this --source: no gate script needs a database.
+          #
+          # The #981 lifecycle-proof test is named here for the same reason
+          # tests/test_check_citation_status.py is named in the registry
+          # producer above: the suite that exercises a measured scripts/ file
+          # lives in a package suite this producer would otherwise never run,
+          # so the file's changed lines would measure 0% and the diff-coverage
+          # gate would fail on evidence that exists and passes.
           uv run coverage run --append --branch --source=scripts \
-            -m pytest tests/ --timeout=30 -q
+            -m pytest tests/ packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=30 -q
           uv run coverage xml -o coverage.xml
 
       # ----- Pillar 1b: diff coverage (the lines this candidate added) -----
@@ -905,6 +968,7 @@ jobs:
             -i third_party \
             packages/maistro-bootstrap/src packages/maistro-canvas/src \
             packages/maistro-core/src packages/maistro-design/src \
+            packages/maistro-ext-sdk/src \
             packages/maistro-evolve/src packages/maistro-registry/src \
             packages/maistro-rsi/src packages/maistro-server/src \
             packages/maistro-turing/src > xenon.log 2>&1 || true # the exit code is re-derived from xenon.log below

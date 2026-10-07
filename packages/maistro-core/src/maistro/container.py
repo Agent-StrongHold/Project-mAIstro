@@ -135,6 +135,7 @@ if TYPE_CHECKING:
         SecretResolver,
         StateStore,
     )
+    from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.capabilities.registry import CapabilityRegistry
     from maistro.events.bus import EventBus
     from maistro.events.consumer_cursor import ConsumerCursorStore
@@ -142,6 +143,9 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+    from maistro.extensions.service import ExtensionInstallService
+    from maistro.extensions.store import InMemoryExtensionStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -391,6 +395,12 @@ class Container:
     # application populated. Absence of a registered Binding stays a hard
     # refusal; wiring the context grants nothing on its own.
     capability_effects: CapabilityEffectContext = None  # type: ignore[assignment]  # wired in create_container
+    # Registered provider-adapter packages (M9-E1, #961): the catalog this
+    # container composed and published as the process default. Held so close()
+    # withdraws exactly this container's catalog (identity-checked), the way
+    # capability_effects is released; adapters add destinations to the one
+    # governed egress, never a second process-wide authority.
+    provider_adapter_catalog: Any = None
     # Shared quota usage log for any node/hook that needs one (e.g.
     # RsiQuotaPaceTriggerNode via build_node_resolver). Defaults to the
     # process-wide singleton (quota/usage_log.py) so this container and any
@@ -466,6 +476,15 @@ class Container:
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
     durable_event_cursor: int = 0
+    # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
+    # in-memory records until the B1 signing/identity substrate (#952) lands;
+    # this is a records-and-authority store, never an execution authority.
+    extension_install_store: InMemoryExtensionStore | None = None
+    extension_install_service: ExtensionInstallService | None = None
+    # Private organizational extension catalog (#979). In-memory catalog per
+    # organization until a durable backend is configured.
+    catalog_store: InMemoryCatalogStore | None = None
+    catalog_service: CatalogService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -538,6 +557,10 @@ class Container:
         # that is already going down.
         self.closed = True
         release_default_effect_context(self.capability_effects)
+        if self.provider_adapter_catalog is not None:
+            from maistro.capabilities.provider_adapters import release_default_adapter_catalog
+
+            release_default_adapter_catalog(self.provider_adapter_catalog)
         if self.working_log is not None:
             # Release the working-memory graphs the container took (#301):
             # they are process-local caches over the durable observation log,
@@ -2013,6 +2036,41 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_install_service(self) -> ExtensionInstallService:
+        """Return the governed extension install lifecycle service (#953).
+
+        Lazily built over the process-lifetime in-memory store. The activation
+        loader is deliberately unwired at this layer: a deployment without an
+        activation substrate can inspect and decide, but installation fails
+        closed with a clear error instead of improvising code execution. Hosts
+        that own activation replace ``extension_install_service`` with one
+        built over their own loader.
+        """
+        from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
+        from maistro.extensions.store import InMemoryExtensionStore
+
+        if self.extension_install_service is None:
+            self.extension_install_service = ExtensionInstallService(
+                self.extension_install_store or InMemoryExtensionStore(),
+                loader=UnwiredExtensionLoader(),
+            )
+        return self.extension_install_service
+
+    def ensure_catalog_service(self) -> CatalogService:
+        """Return the private organizational extension catalog service (#979).
+
+        Lazily built over the process-lifetime in-memory store. The store is
+        cached back onto the container so callers that bypass the service see
+        the same snapshot the API serves.
+        """
+        from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+
+        if self.catalog_service is None:
+            store = self.catalog_store or InMemoryCatalogStore()
+            self.catalog_store = store
+            self.catalog_service = CatalogService(store)
+        return self.catalog_service
+
 
 def _wire_schedule_admission(
     run_store: RunStore,
@@ -2085,6 +2143,7 @@ async def create_container(
     effect_context: CapabilityEffectContext | None = None,
     capability_bindings: Iterable[Binding] = (),
     capability_credentials: CredentialRouter | None = None,
+    provider_adapter_catalog: ProviderAdapterCatalog | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -2126,6 +2185,13 @@ async def create_container(
     Workspace provisioning seam for retained external-effect nodes. They never
     accept secret values in Graph input; omitted provisioning leaves the
     canonical Binding authority empty and therefore fails closed.
+
+    `provider_adapter_catalog` is the out-of-tree provider seam (M9-E1, #961):
+    a host that registered third-party adapters through
+    `register_adapter_models` on its own catalog hands that catalog here, and
+    every `AgentConfig.provider_adapters` entry wired against those ids
+    resolves. Omitted, the container composes a fresh catalog (reference
+    adapter only) — the pre-SDK behavior.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -2495,6 +2561,31 @@ async def create_container(
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
+    # Registered provider-adapter packages (M9-E1, #961) join the same door:
+    # each configured entry registers its models into the canonical registry
+    # (so the cost-aware router selects them without a core routing edit),
+    # provisions its operator-supplied credential into the scoped pool, and
+    # loads its own model.chat Binding. The catalog publishes as the process
+    # default so every governed model egress — agents, graph nodes, server —
+    # resolves adapter models without a second wiring path; an unconfigured
+    # deployment keeps the gateway-only behavior exactly as before.
+    from maistro.capabilities.provider_adapters import (
+        ProviderAdapterCatalog,
+        bootstrap_provider_adapters,
+        configure_default_adapter_catalog,
+    )
+
+    # A host-supplied catalog carries its already-registered out-of-tree
+    # adapters; a fresh one self-registers only the reference adapter.
+    adapter_catalog = (
+        provider_adapter_catalog
+        if provider_adapter_catalog is not None
+        else ProviderAdapterCatalog()
+    )
+    await bootstrap_provider_adapters(
+        config, capability_effects, provider_registry, adapter_catalog
+    )
+    configure_default_adapter_catalog(adapter_catalog)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2585,6 +2676,7 @@ async def create_container(
         harness_adapters=wired_harness_adapters,
         spawn_harness_node=spawn_harness_node,
         capability_effects=capability_effects,
+        provider_adapter_catalog=adapter_catalog,
         golden_record_store=golden_record_store,
         skill_registry=skill_registry,
         policy_attachment_store=policy_attachment_store,

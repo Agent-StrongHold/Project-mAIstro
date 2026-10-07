@@ -49,6 +49,8 @@ from maistro.runs import InMemoryRunStore, RunStatus
 from maistro.runs.store import RunIntegrityError
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
+from ._delegation_governance import delegation_effects, guest_peers_with_hub
+
 
 async def _spine(
     *, workspace_id: str = "workspace-1"
@@ -776,12 +778,42 @@ class TestCrossInstanceDelegationFilesAChildRun:
         task_id: str = "remote-1",
     ) -> GuestPeerManager:
         guest_peers = GuestPeerManager()
+        guest_peers.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
         guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
             return_value=DelegationResult(
-                task_id=task_id, peer_name="hub", status=status, error=error
+                task_id=task_id,
+                peer_name="hub",
+                status=status,
+                error=error,
+                peer_url="http://hub" if status == "submitted" else "",
             )
         )
         return guest_peers
+
+    async def _governed(
+        self,
+        store: InMemoryRunStore,
+        project_id: str,
+        peers: GuestPeerManager,
+    ) -> AgentDelegateRemoteNode:
+        """The node with the issue #959 wiring: run store, Binding, effects."""
+        effects = await delegation_effects(workspace_id="workspace-1", project_id=project_id)
+        return AgentDelegateRemoteNode(guest_peers=peers, run_store=store, effect_context=effects)
+
+    @staticmethod
+    def _inputs() -> dict[str, Any]:
+        return {
+            "from_agent": "planner",
+            "task": "research X",
+            "peer_name": "hub",
+            "binding_id": "binding-hub",
+        }
+
+    @staticmethod
+    def _attempt_ctx(run_id: str, node_run_id: str) -> NodeContext:
+        return _ctx(run_id=run_id, node_run_id=node_run_id).model_copy(
+            update={"attempt_id": "attempt-1", "workspace_id": "workspace-1"}
+        )
 
     async def test_a_cross_instance_delegation_creates_a_child_of_the_delegating_node_run(
         self,
@@ -793,10 +825,10 @@ class TestCrossInstanceDelegationFilesAChildRun:
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
-        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        node = await self._governed(store, project.project_id, self._peers())
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         assert result.status == "paused"
@@ -826,13 +858,12 @@ class TestCrossInstanceDelegationFilesAChildRun:
             return httpx.Response(200, json={"task_id": "http-remote-1"})
 
         set_test_transport(httpx.MockTransport(handler))
-        peers = GuestPeerManager()
-        peers.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
-        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+        peers = guest_peers_with_hub()
+        node = await self._governed(store, project.project_id, peers)
 
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         assert result.status == "paused"
@@ -853,15 +884,15 @@ class TestCrossInstanceDelegationFilesAChildRun:
             actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
-        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        node = await self._governed(store, project.project_id, self._peers())
         first = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
         child_run_id = first.metadata["run_id"]
 
         await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            self._inputs(),
             _ctx(
                 run_id=parent.run_id,
                 node_run_id=parent_node_run.node_run_id,
@@ -899,10 +930,10 @@ class TestCrossInstanceDelegationFilesAChildRun:
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
-        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        node = await self._governed(store, project.project_id, self._peers())
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         child = await store.get_run(result.metadata["run_id"])
@@ -925,12 +956,12 @@ class TestCrossInstanceDelegationFilesAChildRun:
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
-        node = AgentDelegateRemoteNode(
-            guest_peers=self._peers(status="rejected", error="peer not found"), run_store=store
+        node = await self._governed(
+            store, project.project_id, self._peers(status="rejected", error="peer not found")
         )
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         assert result.status == "completed"
@@ -953,10 +984,10 @@ class TestCrossInstanceDelegationFilesAChildRun:
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
-        node = AgentDelegateRemoteNode(guest_peers=self._peers(task_id=""), run_store=store)
+        node = await self._governed(store, project.project_id, self._peers(task_id=""))
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         assert result.status == "paused"

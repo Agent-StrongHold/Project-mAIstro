@@ -197,3 +197,39 @@ All five test bodies, recovery assertions, production stores and skip rules
 are unchanged. Local rerun: 10 passed, five PostgreSQL skips; actual PostgreSQL
 execution remains pending the corrected head's CI. No production code,
 assertion relaxation, schema workaround or additional test count is introduced.
+
+## 2026-10-07 develop refresh (supersedes the dependency-stack hold)
+
+The prerequisites #1362 and #1946 have merged. The integration refresh starts
+with current develop `b78637f52be33c53d49aca1aa5738e3ab820aad3` and reapplies
+only the bounded prerequisite-to-`5db9d9e02653d76308c96331df2412ece186edd2`
+residual. This preserves current canonical contracts and avoids resurrecting
+obsolete changes from the squashed dependency stack. The resulting source/test
+patches are unchanged; only both adjacent changelog entries are retained.
+All `quality/` ledgers are byte-identical to develop. The formerly necessary
+Vulture pruning is already present there and is not repeated.
+
+Fresh local verification of this integrated tree:
+
+- Graph durable/node and durable-approval selection: **1,281 passed, 47 skipped**.
+  Five skips are the harness PostgreSQL oracles; no PostgreSQL service is
+  configured in this local environment.
+- Affected Hive resolver and registered-DAG recovery selection: **26 passed**.
+- Independent harness-node validation: **108 passed**; independent source review
+  found no blocking defect in this bounded residual.
+- Exact-base diff coverage: all four changed measured source files meet the
+  unchanged **90% line / 80% branch-arc** floors.
+- Repository Ruff and format checks, strict Core mypy (766 source files),
+  Radon, exact Vulture, release consistency and candidate diff checks pass.
+- Inventory: **15,174 Core / 3,443 Hive backend**; all 17 suites match the
+  recorded inventory (28,664 unique identities, no duplicate evidence).
+
+These are fresh local results, not a fresh full-suite or remote-CI claim.
+The October 5 PostgreSQL/full-suite results above remain historical evidence;
+required checks and all five PostgreSQL cases must pass on the refreshed
+published head before the normal merge queue is enabled.
+
+Landing this residual does not close #1192 or #1373, activate an adapter, or
+resolve the separately owned production approval bridge (#55), approval-expiry
+cadence (#62), historical unarmed WAITING-row disposition, OS-process-kill proof,
+or restart-safe built-in adapter/admission profile.

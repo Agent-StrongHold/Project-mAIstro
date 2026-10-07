@@ -1,3 +1,11 @@
+# #1892's admission-generation fixture constants: GENERATION_ID and
+# OWNER_TOKEN are synthetic lowercase 32-hex literals a test inserts to
+# exercise the task_idempotency v2 CHECK's identity contract. The value is
+# fixture data, not a credential — it never authenticates anything and the
+# file is a migration-contract test. Recorded here rather than splitting the
+# literal, which would obscure the exact shape the CHECK admits.
+5f506736b9f2e57616ef1fcb0fab087a5e125d91:tests/migrations/test_task_admission_generation_upgrade.py:generic-api-key:46
+aee4e0845b0cdd71e2f9aa19bc46fd5fde8cd7ad:tests/migrations/test_task_admission_generation_upgrade.py:generic-api-key:46
 48f4d12b3834aaac520b80cb9d366d719722a526:packages/maistro-core/tests/agents/auditor/test_checks.py:aws-access-token:238
 2ee85e34ffbc8c32a458f992cb500c13d4252d77:packages/maistro-core/tests/code_registry/test_registry.py:generic-api-key:15
 ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test_parser.py:generic-api-key:193

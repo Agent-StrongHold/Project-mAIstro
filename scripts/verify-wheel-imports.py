@@ -60,13 +60,30 @@ CORE_PUBLIC_SURFACE = [
     # is absent, rather than failing at import.
     "maistro.archive",
     "maistro.auth",
+    # The #102 work-source substrate: lossless Markdown import/export, the
+    # canonical BacklogItem store, the authority-cutover ledger and the agent
+    # surface. Published library surface for downstream products; no process
+    # entry point in this repository imports it until the recorded cutover.
+    "maistro.backlog",
     "maistro.builders",
     "maistro.capabilities",
     "maistro.classifier",
+    # Connector/source SDK (ADR-100526-be49, #963): the public surface out-of-tree
+    # connectors import. Pure-library surface; httpx is a base dependency, so
+    # the bare tier asserts it imports.
+    "maistro.connectors",
     "maistro.conduit",
     "maistro.container",
     "maistro.credentials",
     "maistro.events",
+    # M9 extension surface, importable from a bare install by design:
+    # - the context/lifecycle SDK (#950, ADR-104) resolves without optional
+    #   credentials, so the enumeration ratchet's core-surface check sees it
+    #   covered here rather than as a gap;
+    # - the governed registry persistence (#939/#952, SPEC-952) is a
+    #   pure-library surface — `cryptography` is a declared dependency and
+    #   aiosqlite is TYPE_CHECKING-only — and the bare tier asserts that.
+    "maistro.extensions",
     "maistro.graph",
     "maistro.http",
     "maistro.memory",
@@ -105,6 +122,10 @@ CORE_PUBLIC_SURFACE = [
     # maistro.identity), and anything here that needs an extra belongs there
     # with a written reason instead.
     "maistro.code_registry",
+    # Governed extension install lifecycle (#953, M9-B2): inspect → authorize
+    # → install without pre-authorization code execution. Pure-library
+    # surface, no extras required.
+    "maistro.extensions",
     "maistro.codebase",
     "maistro.collaboration",
     "maistro.config",
@@ -173,6 +194,9 @@ ESSENTIAL_FILES = ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.js
 PACKAGES = [
     Package("maistro-core", "maistro", CORE_PUBLIC_SURFACE, widest_extra="all"),
     Package("maistro-canvas", "maistro_canvas", widest_extra="export"),
+    # The extension SDK (#949) is in the release publish set: standalone,
+    # pydantic-only, and the whole product surface an external author touches.
+    Package("maistro-ext-sdk", "maistro_ext_sdk"),
     Package("maistro-server", "maistro_server"),
     Package("maistro-turing", "maistro_turing"),
     Package(
@@ -221,6 +245,11 @@ PACKAGES = [
     Package("maistro-registry", "maistro_registry"),
     Package("maistro-rsi", "maistro_rsi"),
     Package("maistro-bootstrap", "maistro_bootstrap", widest_extra="builders"),
+    # The extension host harness (#974). The whole point of the package is
+    # third-party CI installability, so its wheel importing clean with zero
+    # declared dependencies IS the acceptance surface — stdlib-only is not a
+    # detail here, it is the promise.
+    Package("maistro-ext-harness", "maistro_ext_harness"),
 ]
 
 # Distributions that are BUILT by the CI loop but not import-verified here. Both
