@@ -24,6 +24,7 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
+from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     StaleLeaseRenewal,
@@ -182,6 +183,95 @@ async def test_provenance_and_actor_survive(spine: Any) -> None:
     assert reloaded is not None
     assert reloaded.actor_principal_id == "user-1"
     assert reloaded.provenance == {"admission_source": "task_queue", "task_id": "t-1"}
+
+
+async def test_a_task_receipt_finds_its_run_and_only_that_run(spine: Any) -> None:
+    """The #1176 discovery lookup, conformed across backends: the Run whose
+    provenance names the receipt is findable — the handle a retry resolves an
+    ambiguous admission through — and a receipt no Run names is None, the
+    answer that makes a takeover provably duplicate-free."""
+    store, workspace, project_id = spine
+    named = await store.create_run(
+        _graph(workspace, project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={"admission_source": "task_queue", "task_id": "receipt-1"},
+    )
+    # A neighbor the scan passes over without matching.
+    await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+
+    found = await store.find_run_by_task_receipt("receipt-1")
+
+    assert found is not None
+    assert found.run_id == named.run_id
+    assert found.provenance == {"admission_source": "task_queue", "task_id": "receipt-1"}
+    assert await store.find_run_by_task_receipt("no-such-receipt") is None
+
+
+async def test_the_postgres_receipt_lookup_uses_the_task_provenance_path() -> None:
+    """The publish coverage worker has no PostgreSQL, so assert its actual SQL.
+
+    The three-store conformance test above exercises this through a live
+    PostgreSQL pool when available. This boundary double keeps the same
+    task-receipt discovery query verified in the no-database coverage job:
+    returning the matched canonical Run, then no Run for an absent receipt.
+    """
+    from maistro.runs.model import GraphSnapshot, Run
+    from maistro.runs.pg_store import PgRunStore
+
+    graph = _graph("workspace", "project")
+    expected = Run(
+        workspace_id="workspace",
+        project_id="project",
+        graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={"task_id": "receipt-1"},
+    )
+
+    class _Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+            self.rows: list[dict[str, object] | None] = [
+                {
+                    "run_id": expected.run_id,
+                    "payload": expected.model_dump(mode="json"),
+                    "archive_key": None,
+                },
+                None,
+            ]
+
+        async def fetchrow(self, sql: str, *params: object) -> dict[str, object] | None:
+            self.calls.append((sql, params))
+            return self.rows.pop(0)
+
+    class _Acquire:
+        def __init__(self, connection: _Connection) -> None:
+            self._connection = connection
+
+        async def __aenter__(self) -> _Connection:
+            return self._connection
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _Pool:
+        def __init__(self, connection: _Connection) -> None:
+            self._connection = connection
+
+        def acquire(self) -> _Acquire:
+            return _Acquire(self._connection)
+
+    connection = _Connection()
+    store = PgRunStore(_Pool(connection), project_store=InMemoryProjectScopeStore())  # type: ignore[arg-type]
+
+    found = await store.find_run_by_task_receipt("receipt-1")
+    absent = await store.find_run_by_task_receipt("no-such-receipt")
+
+    assert found is not None and found.run_id == expected.run_id
+    assert absent is None
+    assert [params for _sql, params in connection.calls] == [("receipt-1",), ("no-such-receipt",)]
+    assert all("payload->'provenance'->>'task_id' = $1" in sql for sql, _params in connection.calls)
 
 
 async def test_an_unknown_run_is_none_not_an_error(spine: Any) -> None:
@@ -403,6 +493,92 @@ async def test_transitioning_an_unknown_attempt_raises(spine: Any) -> None:
 
     with pytest.raises(AttemptNotFound):
         await store.transition_attempt("no-such-attempt", AttemptStatus.RUNNING)
+
+
+async def test_an_unknown_attempt_is_not_found_even_for_a_completed_target(
+    spine: Any,
+) -> None:
+    """An unknown attempt is not-found for every target, COMPLETED included (#1335).
+
+    The pg store's terminal-Run guard resolves the attempt's spine before it
+    looks at any parent status, so the COMPLETED target asks its first question
+    about an attempt that does not exist -- and must still answer not-found,
+    not fail some later way. On memory and sqlite the attempt lookup raises
+    before the guard; on postgres the guard's spine query is what raises.
+    """
+    store, _workspace, _project_id = spine
+
+    with pytest.raises(AttemptNotFound):
+        await store.transition_attempt("no-such-attempt", AttemptStatus.COMPLETED, result={})
+
+
+@pytest.mark.parametrize("terminal", [RunStatus.CANCELLED, RunStatus.FAILED, RunStatus.TIMED_OUT])
+async def test_a_completed_attempt_is_refused_under_a_terminal_run(
+    spine: Any, terminal: Any
+) -> None:
+    """No COMPLETED Attempt may be recorded under a terminal Run (#1335).
+
+    The executor's Run fence reads the Run, then writes the Attempt -- two
+    awaits a cancellation can walk between. The Attempt-level transition
+    table cannot see the parent Run, so each store re-checks it inside the
+    same write lock / transaction that writes the Attempt and refuses here:
+    the stale success of a provider that lost the race never reaches the
+    durable record at all, instead of landing as a COMPLETED row the
+    reconcile path then has to detect.
+
+    Only COMPLETED is refused. The same Attempt's CANCELLED edge must stay
+    open under the terminal Run -- that is how a run-level cancel and crash
+    reclamation settle the Attempts they find -- so the test pins both sides
+    of the rule on the same record.
+    """
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    await store.transition_run(node_run.run_id, RunStatus.QUEUED)
+    await store.transition_run(node_run.run_id, RunStatus.RUNNING)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    await store.transition_run(node_run.run_id, terminal)
+
+    with pytest.raises(InvalidLifecycleTransition, match="terminal Run"):
+        await store.transition_attempt(
+            attempt.attempt_id, AttemptStatus.COMPLETED, result={"stale": True}
+        )
+
+    # The refusal is a refusal, not a write that followed the raise: the
+    # Attempt is exactly where it was, still owing its disposition.
+    persisted = await store.get_attempt(attempt.attempt_id)
+    assert persisted is not None
+    assert persisted.status is AttemptStatus.RUNNING
+    assert persisted.result is None
+
+    # The cancelled side of the rule stays open on the same record: the
+    # run-level cancel path settles open Attempts after the Run landed, and
+    # a CANCELLED Attempt under a terminal Run is the honest record.
+    cancelled = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.CANCELLED, error="settled by the Run"
+    )
+    assert cancelled.status is AttemptStatus.CANCELLED
+
+
+async def test_a_completed_attempt_still_writes_under_a_live_run(spine: Any) -> None:
+    """The #1335 guard refuses stale success, not success (#1335)."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    await store.transition_run(node_run.run_id, RunStatus.QUEUED)
+    await store.transition_run(node_run.run_id, RunStatus.RUNNING)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+    terminal = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
+    )
+
+    assert terminal.status is AttemptStatus.COMPLETED
+    assert terminal.result == {"answer": "ok"}
 
 
 # ── ordinals ──────────────────────────────────────────────────────

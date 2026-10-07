@@ -116,6 +116,7 @@ jobs:
           packages/maistro-evolve/src
           packages/maistro-rsi/src
           packages/maistro-design/src
+          packages/maistro-ext-harness/src
       # Neither of the two above resolves an import into a package that is not
       # installed in the checking environment, and hive-conductor never is: it
       # is a flat-layout app with no wheel. So `from
@@ -253,9 +254,15 @@ jobs:
       # #56 was an epic closed by one PR's `Closes` keyword: the PR delivered
       # a slice, the keyword closed the whole thing, and every acceptance
       # criterion it never touched read as done. An issue titled [EPIC],
-      # [MILESTONE] or [INITIATIVE], or one with sub-issues, closes by hand
-      # once check-ac-state reports every criterion reachable (cutover S0.2).
-      - name: No PR closes an epic by keyword
+      # [MILESTONE] or [INITIATIVE], or one with open direct children, closes
+      # by explicit reviewed action once check-ac-state reports every
+      # criterion reachable (cutover S0.2). And #76 was closed completed by a
+      # keyword while its own acceptance record still had every box unticked:
+      # a leaf with a registered acceptance record closes only when the record
+      # shows every criterion proven -- never because the PR diff is green
+      # (#1141). The verdict reads the PR body and the GitHub issue state
+      # only; the candidate controls neither.
+      - name: No PR closes an epic or an issue with unproven acceptance by keyword
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/check-closure-targets.py
@@ -556,6 +563,9 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
+      # The extension host harness (#974): stdlib-only runtime, no services,
+      # so no env gates are needed — a third-party CI runs exactly this shape.
+      - run: uv run pytest packages/maistro-ext-harness/tests -v --tb=short
       - run: uv run pytest packages/maistro-ext-sdk/tests -v --tb=short
         env:
           REQUIRE_AUTH: "false"

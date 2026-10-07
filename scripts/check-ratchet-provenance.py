@@ -114,6 +114,14 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "table the tree creates, so a prior-tree oracle would predate this tree's schema; "
         "a changed retention claim is the substantive change reviewers read"
     ),
+    ("check-backlog-consistency.py", "quality/backlog-authority.json"): (
+        "the authority marker is the reviewed operator-owned declaration of which work "
+        "source is authoritative (#102), not a prior-tree oracle: the gate reads it to "
+        "decide whether hand-edited BACKLOG.md content is still permitted or must match "
+        "the database digest. The marker moves only via the shipped `maistro backlog` "
+        "CLI (maistro.cli._backlog), so comparing it against the base revision would "
+        "measure a cutover that has not happened instead of the one this tree ships"
+    ),
     ("check-shipped-surface-truth.py", "quality/shipped-surface-truth.json"): (
         "the shipped-surface matrix is the reviewed per-surface truth specification being "
         "changed: every discovered route must carry an exact disposition, so comparing "

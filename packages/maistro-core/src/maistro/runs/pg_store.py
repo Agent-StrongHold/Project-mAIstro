@@ -49,6 +49,7 @@ from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -806,6 +807,20 @@ class PgRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         return Run.model_validate(payload)
 
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # payload is JSONB (005), so the task admitter's provenance is a path
+        # expression. Cold-archived Runs (payload moved to the archive) are
+        # outside this search: they are hours past any retry window.
+        payload = await self._payload(
+            """
+            SELECT run_id, payload, archive_key FROM canonical_runs
+            WHERE payload->'provenance'->>'task_id' = $1
+            LIMIT 1
+            """,
+            task_id,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
     async def _require_locked_parent_scope(
         self,
         # PoolConnectionProxy at the one call site; `Any` like every other
@@ -1358,6 +1373,40 @@ class PgRunStore:
         fencing_token: str | None = None,
     ) -> Attempt:
         async with self._pool.acquire() as conn, conn.transaction():
+            if target is AttemptStatus.COMPLETED:
+                # #1335: the executor's Run fence is check-then-act across two
+                # awaits, so the stale success of a provider that lost a cancel
+                # used to land COMPLETED under a terminal Run. This store-side
+                # guard re-reads the parent inside the same transaction that
+                # writes the Attempt, under a lock a concurrent `transition_run`
+                # also needs -- so the status it sees cannot move underneath
+                # it. The lock is taken parent-first (Run before Attempt, the
+                # order `transition_run` and `repair_attempt_result` use,
+                # #1888): Attempt-first would let a repair holding the Run row
+                # wait on this Attempt while this transaction waited on that
+                # Run. Only the COMPLETED path pays for the extra lock; the
+                # other targets stay legal under a terminal Run, because a
+                # run-level cancel and the reclaim path record CANCELLED (and
+                # siblings record true FAILURES) after the Run terminalized.
+                run_row = await conn.fetchrow(
+                    """SELECT r.status AS status
+                         FROM canonical_attempts a
+                         JOIN canonical_node_runs n ON n.node_run_id = a.node_run_id
+                         JOIN canonical_runs r ON r.run_id = n.run_id
+                        WHERE a.attempt_id = $1
+                        FOR SHARE OF r""",
+                    attempt_id,
+                )
+                if run_row is None:
+                    # One statement, not two: an attempt whose spine vanished
+                    # (delete_run under its own lock) and an attempt that never
+                    # existed both answer not-found here, so there is no
+                    # between-the-reads state to reason about -- and every
+                    # branch of the guard is reachable from a conformance test.
+                    # The failure names the target, not a parent it never had:
+                    # the same answer the stores give an unknown attempt.
+                    raise AttemptNotFound(attempt_id)
+                refuse_completion_under_terminal_run(RunStatus(run_row["status"]), attempt_id)
             attempt = Attempt.model_validate(
                 await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
             )

@@ -50,7 +50,7 @@ or placeholder-only section.
   into the outbound policy, boot probes per entry, the reference adapter
   honoring `litellm_url`, and `create_container` accepting a host-registered
   catalog through `provider_adapter_catalog`; configuring an adapter
-  authorizes nothing by itself). See ADR-104.
+  authorizes nothing by itself). See ADR-105.
 
 - **The extension SDK boundary is enforced and a reference extension ships outside the
   core tree (#951).** `extensions/namespace-policy.json` declares the public

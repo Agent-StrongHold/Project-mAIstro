@@ -5974,6 +5974,8 @@ export interface components {
              * @default 0
              */
             progress: number;
+            /** Run Id */
+            run_id?: string | null;
             /** Started At */
             started_at?: string | null;
             /**
