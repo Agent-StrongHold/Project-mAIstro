@@ -190,6 +190,7 @@ async def container(monkeypatch: pytest.MonkeyPatch) -> Any:
         a2a_delegator=None,
         guest_peers=None,
         capability_effects=new_in_memory_effect_context(),
+        harness_adapters={},
         provider_registry=providers,
         llm_router=CostAwareRouter(providers),
         project_id=root.project_id,
@@ -524,3 +525,93 @@ async def test_the_cadence_runs_both_registered_halves_and_survives_one_raising(
 async def _observed(calls: list[str], expected: list[str]) -> None:
     while calls[: len(expected)] != expected:
         await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_registered_harness_completion_uses_the_production_timer_and_fresh_resolver(
+    container: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shipped cadence can consume the configured adapter's remote result."""
+    from services.registered_dag_recovery import wake_due_registered_dag_runs
+
+    import maistro.capabilities.invocation as invocation
+    import maistro.graph.durable_runs.attempt_executor as attempts
+    import maistro.graph.durable_runs.recovery as recovery
+    import maistro.graph.nodes.agent_spawn_harness as harness_node
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import binding_scope_policy
+    from maistro.graph.harness import HarnessHandle, HarnessResult
+
+    moment = [datetime.now(UTC)]
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return moment[0].astimezone(tz) if tz is not None else moment[0].replace(tzinfo=None)
+
+    for module in (invocation, attempts, recovery):
+        monkeypatch.setattr(module, "datetime", FixedDateTime)
+    monkeypatch.setattr(harness_node, "now_utc", lambda: moment[0])
+    calls = {"dispatch": 0, "poll": 0}
+
+    class Adapter:
+        async def dispatch(self, request):
+            calls["dispatch"] += 1
+            return HarnessHandle(handle_id="registered-handle", harness_type="proof")
+
+        async def poll(self, handle):
+            calls["poll"] += 1
+            return HarnessResult(handle_id=handle.handle_id, success=True, output="registered done")
+
+        async def cancel(self, handle):
+            raise AssertionError("no remote cancellation requested")
+
+    container.harness_adapters = {"proof": Adapter()}
+    container.capability_effects = container.capability_effects.with_policy_evaluator(
+        binding_scope_policy
+    )
+    await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="registered-harness-binding",
+            workspace_id="ws-rdr",
+            project_id=container.project_id,
+            node_id="",
+            capability="harness_runner",
+            provider_name="proof",
+        )
+    )
+    descriptor = _descriptor("rdr-harness-timer", "agent.spawn_harness")
+    descriptor["nodes"][0]["inputs"] = {
+        "harness_type": "proof",
+        "task": "registered work",
+        "timeout_seconds": 60,
+        "binding_id": "registered-harness-binding",
+    }
+    registry = get_registry()
+    registry.register(descriptor)
+    try:
+        _graph, parked = await run_registered_dag(
+            "rdr-harness-timer",
+            workspace_id="ws-rdr",
+            project_id=container.project_id,
+            provenance=_SCHEDULE,
+            user_id="test-user",
+        )
+        assert parked.status is RunStatus.WAITING, (
+            parked.run.error,
+            [row.error for row in parked.node_runs],
+        )
+        assert parked.resume_at == moment[0] + timedelta(seconds=10)
+        assert calls == {"dispatch": 1, "poll": 0}
+        moment[0] += timedelta(seconds=10)
+        assert await wake_due_registered_dag_runs() == 1
+        completed = await container.graph_run_store.get(parked.run_id)
+        assert completed is not None and completed.status is RunStatus.COMPLETED
+        assert calls == {"dispatch": 1, "poll": 1}
+        assert len(completed.node_runs) == 2
+        assert all(row.status is RunStatus.COMPLETED for row in completed.node_runs)
+        harness_id = next(n.node_id for n in _graph.nodes if n.node_type == "agent.spawn_harness")
+        harness_row = next(row for row in completed.node_runs if row.node_id == harness_id)
+        assert harness_row.result["output"] == "registered done"
+    finally:
+        registry.deregister("rdr-harness-timer")
