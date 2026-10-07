@@ -219,11 +219,16 @@ def _provenance_suffix(ev: dict[str, object]) -> str:
 
 def _project_gates(entry: dict[str, object]) -> dict[str, bool]:
     """The row's recorded name→boolean verdict map, defaulting empty when the
-    manifest row predates gate recording."""
+    manifest row predates gate recording.
+
+    Fail closed: only a genuine JSON boolean counts as a verdict. Any other
+    serialized value (e.g. the string ``"false"``, which Python truthiness
+    would score as passed) projects to False so the gate renders as failed,
+    never as passed (#451 review)."""
     raw = entry.get("gates")
     if not isinstance(raw, dict):
         return {}
-    return {str(k): bool(v) for k, v in raw.items()}
+    return {str(k): v if isinstance(v, bool) else False for k, v in raw.items()}
 
 
 def _project_gate_evidence(entry: dict[str, object]) -> dict[str, dict[str, object]] | None:

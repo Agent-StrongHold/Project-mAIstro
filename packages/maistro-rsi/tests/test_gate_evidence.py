@@ -249,9 +249,7 @@ class TestExecutedGateProvenance:
         import hashlib
 
         clean = subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
-        noisy = subprocess.CompletedProcess(
-            [], 0, stdout="[]", stderr="warning: config ignored\n"
-        )
+        noisy = subprocess.CompletedProcess([], 0, stdout="[]", stderr="warning: config ignored\n")
         assert candidate_fitness._output_digest(clean) != candidate_fitness._output_digest(noisy)
         out, err = b"[]", b"warning: config ignored\n"
         framed = b"stdout:%d:" % len(out) + out + b"stderr:%d:" % len(err) + err
@@ -461,6 +459,40 @@ class TestPromotionEvidenceChain:
         assert patches[0].gates == {"ruff_clean": True}
         assert patches[0].gate_evidence is not None
         assert patches[0].gate_evidence["ruff_clean"]["state"] == "passed"
+
+    def test_non_boolean_gate_verdict_fails_closed(self, tmp_path: Path) -> None:
+        """A non-boolean serialized verdict (e.g. the string ``\"false\"``)
+        must not score as passed via Python truthiness — it fails closed."""
+        (tmp_path / "manifest.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "patch_file": "0001.patch",
+                        "file": "a.py",
+                        "subject": "s1",
+                        "gates": {
+                            "tests_pass": "false",
+                            "ruff_clean": 0,
+                            "mypy_clean": True,
+                            "bandit_clean": False,
+                        },
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        patches = manifest_records(
+            json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+        )
+        assert patches[0].gates == {
+            "tests_pass": False,
+            "ruff_clean": False,
+            "mypy_clean": True,
+            "bandit_clean": False,
+        }
+        body = pr_body("a.py", patches)
+        assert "- tests_pass: FAILED" in body
+        assert "- mypy_clean: passed" in body
 
 
 class TestPrBodyTruthfulness:
