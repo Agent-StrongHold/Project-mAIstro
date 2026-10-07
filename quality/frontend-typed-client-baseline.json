@@ -2,8 +2,8 @@
   "_comment": "Raw fetch and hand-typed frontend entity debt for Workspace cutover P0.3 (#1048). Judged against the trusted merge base; a fixed entry must be deleted here.",
   "metric_definition_version": "1",
   "summary": {
-    "hand_typed": 139,
-    "raw_fetch": 60
+    "hand_typed": 138,
+    "raw_fetch": 59
   },
   "tolerated": {
     "hand_typed::packages/hive-conductor/frontend/src/components/ErrorBoundary.tsx:3:Props": "local interface/type in pages/ or components/",
@@ -110,7 +110,6 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/MessageBoard.tsx:27:UnreadCount": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:10:MissionPriority": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:12:Mission": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:37:AgentOption": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:39:ThreadMsg": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:63:FilterTab": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:9:MissionStatus": "local interface/type in pages/ or components/",
@@ -192,7 +191,6 @@
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Login.tsx:122": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Login.tsx:62": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Login.tsx:83": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/Missions.tsx:180": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Profile.tsx:15": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Profile.tsx:20": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Profile.tsx:27": "bare fetch outside src/lib/",
