@@ -70,6 +70,20 @@ from maistro_server.api.auth import resolve_token_principal
 from maistro_server.api.route_table import iter_effective_routes
 
 
+def _pre_auth_client_key(request: Request) -> str:
+    """The bounded pre-auth bucket: the connecting client's address.
+
+    A bounded identity no attacker-controlled header content can rotate;
+    also the unconditional bucket of the auth-disabled development
+    configuration (#1101). The value is an internal rate-limit bucket key
+    (never rendered to clients), so it is constructed via ``str.join``
+    rather than an f-string.
+    """
+    client = request.client
+    ip = client.host if client else "unknown"
+    return ":".join(("ip", ip))
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Per-client rate limiting via the shared sliding-window limiter."""
 
@@ -118,9 +132,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # budgeting a delegation requires an authenticated service
             # principal to verify against, and inventing one would rebuild
             # exactly the synthetic bucket this branch removes.
-            client = request.client
-            ip = client.host if client else "unknown"
-            return ":".join(("ip", ip))
+            return _pre_auth_client_key(request)
 
         auth = request.headers.get("authorization", "")
         scheme, _, token = auth.partition(" ")
@@ -141,9 +153,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         return ":".join(("delegated-principal", context.originating_principal))
                 return ":".join(("principal", principal.user_id))
 
-        client = request.client
-        ip = client.host if client else "unknown"
-        return ":".join(("ip", ip))
+        return _pre_auth_client_key(request)
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Skip rate limiting for health endpoints
