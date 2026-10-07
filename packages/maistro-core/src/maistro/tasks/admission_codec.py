@@ -376,6 +376,8 @@ def _parse_snapshot(row: Mapping[str, object], column: str, scope_key: str) -> C
     Its float-based normalization must also preserve the original decimal
     values, including nested evidence: compare exact numbers before accepting
     the snapshot, never silently pair rounded data with the old fingerprint.
+    Canonical text must remain UTF-8 encodable: escaped lone surrogates can be
+    stored as TEXT but must not decode into unusable snapshot strings.
     The underlying parse exception is suppressed, never exposed.
     """
     value = row[column]
@@ -387,6 +389,7 @@ def _parse_snapshot(row: Mapping[str, object], column: str, scope_key: str) -> C
         ) from None
     try:
         snapshot = CanonicalJsonObject(value)
+        snapshot.text.encode("utf-8")
         if json.loads(value, parse_float=Decimal) != json.loads(snapshot.text, parse_float=Decimal):
             raise ValueError("snapshot normalization changed numeric evidence")
         return snapshot

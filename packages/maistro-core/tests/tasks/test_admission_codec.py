@@ -354,6 +354,59 @@ def test_lossy_snapshot_numbers_are_safe_typed_failures(
     assert decode_admission_header(row) == header
 
 
+@pytest.mark.parametrize(
+    ("version", "column"),
+    [(1, "request"), (2, "request"), (2, "receipt_snapshot"), (2, "provenance_snapshot")],
+)
+@pytest.mark.parametrize(
+    "original",
+    [
+        r'{"private-value":"\ud800"}',
+        r'{"private-value":"\udfff"}',
+        r'{"program_context":{"\ud800":"private-value"}}',
+        r'{"program_context":["private-value","\udfff"]}',
+    ],
+)
+def test_non_utf8_snapshot_is_a_safe_typed_failure(
+    version: int, column: str, original: str
+) -> None:
+    # Escaped surrogates are valid PostgreSQL TEXT bytes. Inject those bytes
+    # directly: constructing the DTO first would conceal the storage boundary.
+    original.encode("utf-8")
+    row = _legacy_row() if version == 1 else _v2_row()
+    row[column] = original
+    header = decode_admission_header(row)
+
+    with pytest.raises(AdmissionRowDecodeError) as excinfo:
+        decode_admission_record(row, header=header)
+
+    error = excinfo.value
+    assert error.code is AdmissionDecodeCode.INVALID_SNAPSHOT
+    assert error.scope_key == _SCOPE
+    assert error.__cause__ is None and error.__suppress_context__ is True
+    assert "private-value" not in str(error)
+    assert row[column] == original
+    assert decode_admission_header(row) == header
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        r'{"program_context":{"value":"\ud83d\ude80"}}',
+        r'{"program_context":{"\ud83d\ude80":"value"}}',
+        r'{"program_context":{"value":"\\ud800"}}',
+        '{"program_context":{"value":"café 🚀"}}',
+    ],
+)
+def test_valid_unicode_snapshot_preserves_evidence(original: str) -> None:
+    row = _v2_row(row_overrides={"request": original})
+    encoded = encode_admission_record(_decode_full(row))
+
+    assert json.loads(encoded["request"]) == json.loads(original)
+    assert encoded["request"].encode("utf-8").decode("utf-8") == encoded["request"]
+    assert encoded["fingerprint"] == row["fingerprint"]
+
+
 @pytest.mark.parametrize("number", ["0.1", "1.2300e2", "9007199254740993", "5e-324"])
 def test_exact_snapshot_numbers_survive_normalization(number: str) -> None:
     from decimal import Decimal
@@ -479,6 +532,37 @@ async def test_raw_and_production_pool_codecs_read_identical_text_snapshots(
             assert decoded == record
             assert decoded.envelope.request_snapshot.text == _REQUEST_TEXT
             assert encode_admission_record(decoded) == encoded
+
+        # PostgreSQL TEXT accepts an escaped surrogate. Neither pool may
+        # turn that corrupt JSON evidence into an unusable immutable snapshot.
+        corrupt_text = r'{"private-value":"\ud800"}'
+        for column in ("request", "receipt_snapshot", "provenance_snapshot"):
+            async with pg_pool.acquire() as production_conn:
+                await production_conn.execute(
+                    f"UPDATE task_idempotency SET {column} = $1 WHERE scope_key = $2",
+                    corrupt_text,
+                    scope_key,
+                )
+            for pool in (pg_pool, raw_pool):
+                async with pool.acquire() as conn:
+                    corrupt_row = await conn.fetchrow(
+                        f"SELECT {', '.join(columns)} FROM task_idempotency WHERE scope_key = $1",
+                        scope_key,
+                    )
+                assert corrupt_row is not None and corrupt_row[column] == corrupt_text
+                header = decode_admission_header(corrupt_row)
+                with pytest.raises(AdmissionRowDecodeError) as excinfo:
+                    decode_admission_record(corrupt_row, header=header)
+                assert excinfo.value.code is AdmissionDecodeCode.INVALID_SNAPSHOT
+                assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
+                assert "private-value" not in str(excinfo.value)
+                assert header.fingerprint == record.envelope.fingerprint
+            async with pg_pool.acquire() as production_conn:
+                await production_conn.execute(
+                    f"UPDATE task_idempotency SET {column} = $1 WHERE scope_key = $2",
+                    encoded[column],
+                    scope_key,
+                )
     finally:
         async with pg_pool.acquire() as production_conn:
             await production_conn.execute(
