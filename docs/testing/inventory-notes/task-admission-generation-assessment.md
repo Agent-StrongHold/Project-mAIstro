@@ -1606,3 +1606,67 @@ note, nothing else).
   sequence stays the base-landed authorization or the #1845 integration
   consumer.
 
+
+## Round 20 — exact-debt-ledger CI-repair round at dispatched head 8ca328234496
+
+Scope: the round was dispatched as CI gate repair for `exact-debt-ledger` and to
+resolve the prior round's NEEDS-DEEP-REVIEW block. All evidence below was
+re-executed fresh at HEAD `8ca3282344962cbf1975b11e7ab540a53258e5d0` (develop
+base `e1b13dcd15dedd`, merge base `b78637f52be3`); no source file changed.
+
+- **Sanctioned vulture amendment is EMPTY.** With CI's exact arguments
+  (`uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`) the gate exits 0:
+  1328 reviewed identities -> 1328 findings, `unclassified: 0`,
+  `never_allowlist: 0`. No unbanked identity exists to fix or bank, so
+  `quality/vulture-baseline.json` is deliberately not edited.
+- **exact-debt-ledger red is one step, and it is the designed blocker.** The
+  job's other steps pass (`check-shipped-surface-truth.py` exit 0;
+  `check-vulture-baseline.py` exit 0). `check-ratchet-provenance.py` runs 9
+  sub-ratchets: 8 OK, sole FAIL is reachability —
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`
+  are NEW unreachable (171 vs trusted 169), "absent from trusted base and not
+  previously authorized". `load_authorizations` reads grants from the merge
+  base, and `e1b13dcd15dedd:quality/ratchet-authorizations.json` contains 0
+  rows for either module, so no edit on this branch can authorize them (the
+  two-merge rule). Issue #1852 forbids baseline rows, grants, and fake wiring
+  for this leaf; round 14 already removed the prohibited candidate rows
+  (34e0559b7). Conclusion re-proven, not assumed: the red is the leaf's
+  explicit merge blocker; the unblock lives in the #1845 integration consumer
+  or a base-landed authorization.
+- **Full root suite** `tests/`: 4667 passed / 4 failed / 128 skipped. Three
+  failures are the sanctioned two-module delta
+  (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py` x2). The fourth
+  (`test_branch_independence_repository.py::
+  test_every_quality_json_state_surface_is_classified_once`) is a LOCAL
+  ARTIFACT of this worktree only: `quality/ac-state.json` is an untracked
+  file generated here by `scripts/check-ac-state.py` (absent from HEAD,
+  origin/develop, and the merge-base trees), and the identical script +
+  registry pass in a clean `b78637f52be3` checkout where the file does not
+  exist. CI checkouts cannot see it. This corrects round 19's "all 4 the same
+  two-module delta" claim: it is 3 + 1 local artifact.
+- **Mutation battery re-executed** in a throwaway `git worktree` at HEAD
+  (assigned tree never modified), full focused suite each time, source
+  restored from `git show HEAD:` between runs: swap TAKEOVER/REPLACE_EXPIRED
+  -> 50 failed; lease row above binding -> 14 failed; LEGACY_UNRESOLVED row
+  deleted (legacy treated as v2) -> 10 failed; mismatch above expiry -> 22
+  failed; unmutated -> 132 passed.
+- **Focused and issue-required commands**: classifier suite 132 passed;
+  classifier + `test_root_admission_identity.py` + `test_idempotency.py`
+  272 passed; mypy clean; ruff check + format clean on the leaf pair;
+  `check-reachability-dispositions.py` OK; `check-promotion-surface.py` OK;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok at 15275
+  collected identities (the +132 delta still matches the front-matter).
+- **Stack hygiene re-checked**: `packages/maistro-core/src/maistro/tasks/
+  __init__.py`, `runs/__init__.py`, and `tasks/idempotency.py` contain no
+  reference to either new module; no admission row was added to
+  `quality/reachability-baseline.json` or `quality/ratchet-authorizations.json`;
+  PR #1941 remains open with no closure keyword (only "Refs #1852").
+- **Verdict-relevant statement**: implementation and test readiness are proven
+  at this head; the exact-debt-ledger/Quality/test reds are the single
+  sanctioned two-module reachability delta; integration approval remains with
+  the separately reviewed #1845/C3 change. Coverage gate (publish-set floor +
+  whole-integration-diff diff coverage) was not re-executed locally this round
+  (requires the postgres producer set); the leaf's own files remain covered by
+  the suites above, and prior rounds measured leaf diff coverage at 100%/97%.
