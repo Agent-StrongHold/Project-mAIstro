@@ -402,6 +402,26 @@ def _report_status(report: CertificationReport) -> tuple[bool, tuple[str, ...]]:
     return _evaluate(report.results, report.required_checks)
 
 
+def _subject_from(bundle: ExtensionBundle, parsed: _ParsedManifest) -> CertificationSubject:
+    """The report's subject: identity when the manifest parsed, digests regardless.
+
+    A manifest that cannot parse still yields a truthful subject — the
+    digests record exactly what was presented, and the identity fields say
+    unknown rather than inventing values the bytes do not support.
+    """
+    manifest = parsed.manifest
+    return CertificationSubject(
+        extension_id=manifest.extension_id if manifest else "",
+        version=manifest.version if manifest else "",
+        publisher=manifest.publisher if manifest else "",
+        api_version=manifest.api_version if manifest else "",
+        manifest_sha256=sha256_hex(bundle.manifest_bytes),
+        artifact_sha256=sha256_hex(bundle.payload),
+        artifact_size=len(bundle.payload),
+        package_sha256=bundle.digest(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Built-in checks
 # ---------------------------------------------------------------------------
@@ -947,18 +967,7 @@ def certify(
 
     results = tuple(check.run() for check in checks)
     certified, refusals = _evaluate(results, profile.required_checks)
-    parsed = _parse_for_certification(bundle.manifest_bytes)
-    manifest = parsed.manifest
-    subject = CertificationSubject(
-        extension_id=manifest.extension_id if manifest else "",
-        version=manifest.version if manifest else "",
-        publisher=manifest.publisher if manifest else "",
-        api_version=manifest.api_version if manifest else "",
-        manifest_sha256=sha256_hex(bundle.manifest_bytes),
-        artifact_sha256=sha256_hex(bundle.payload),
-        artifact_size=len(bundle.payload),
-        package_sha256=bundle.digest(),
-    )
+    subject = _subject_from(bundle, _parse_for_certification(bundle.manifest_bytes))
     report = CertificationReport(
         format_version=CERTIFICATION_FORMAT,
         profile=profile.name,
