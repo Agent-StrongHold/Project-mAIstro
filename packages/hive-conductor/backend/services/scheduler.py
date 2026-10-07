@@ -5,8 +5,8 @@ Hive process delegates the complete evaluate -> occurrence claim -> Run admit
 -> cursor advance transaction to ``ScheduleRunAdmitter`` — for recurring
 ticks and manual ``POST /v1/schedules/{id}/run`` fires alike — then ticks
 the canonical consumer for the admitted Runs.  The historical in-process
-path remains only as a compatibility fallback for standalone/demo contexts
-that have no core Container; it is not the production authority.
+definition/cursor adapter remains readable for compatibility. Without a core
+Container its Graph call refuses; it cannot create a standalone execution (#1113).
 """
 
 from __future__ import annotations
@@ -77,8 +77,9 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
     ``GraphTemplate`` resolution, occurrence claim, and cursor transaction the
     recurring loop uses — so a manual fire and a scheduled fire of one schedule are
     indistinguishable in Run history apart from their provenance.  The
-    compatibility path below remains only for processes with no core Container
-    at all; a Container that is missing one of its admission collaborators
+    compatibility definition path below remains for processes with no core
+    Container, but cannot execute new Graph work (#1113). A Container missing
+    one of its admission collaborators
     raises :class:`ScheduleAdmissionUnavailable` instead of degrading.
 
     ``fire_id`` is the fire's occurrence identity (#1120): an opaque,

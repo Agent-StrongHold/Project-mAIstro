@@ -356,3 +356,42 @@ def _isolate_vault_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "_vault_paths",
         lambda: (str(tmp_path / "secrets.age"), str(tmp_path / "admin.key")),
     )
+
+
+@pytest.fixture
+def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
+    """Explicit canonical in-memory owners for hermetic Graph execution tests.
+
+    Test fixtures may use in-memory canonical stores. Product code must never
+    silently create a separate document-shaped lifecycle when the bridge is absent.
+    """
+    from types import SimpleNamespace
+
+    from services import workspace_authority
+    from services.engine import get_engine
+
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+    from maistro.runs.store import InMemoryRunStore
+
+    projects = workspace_authority.canonical_store_for_tests().project_store
+    project = asyncio.run(projects.create_root("test-workspace"))
+    runs = InMemoryRunStore(project_store=projects)
+    providers = InMemoryProviderRegistry()
+    container = SimpleNamespace(
+        run_store=runs,
+        graph_run_store=CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore()),
+        project_scope_store=projects,
+        project_id=project.project_id,
+        workspace_id=project.workspace_id,
+        a2a_delegator=None,
+        guest_peers=None,
+        event_bus=None,
+        capability_effects=new_in_memory_effect_context(),
+        provider_registry=providers,
+        llm_router=CostAwareRouter(providers),
+    )
+    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=container))
+    return container

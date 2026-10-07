@@ -191,6 +191,14 @@ def _set_allow_stub_llm(monkeypatch: pytest.MonkeyPatch, allowed: bool) -> None:
     monkeypatch.setattr(config, "get_settings", lambda: _S())
 
 
+@pytest.fixture
+def graph_admission_spine(canonical_graph_spine):
+    """Give legacy-model transport tests a canonical lifecycle, with model I/O
+    still owned by this module's loopback fake gateway fixture."""
+    canonical_graph_spine.capability_effects = None
+    return canonical_graph_spine
+
+
 def _workspace(client: Any, name: str) -> str:
     response = client.post("/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": name})
     assert response.status_code == 201, response.text
@@ -216,6 +224,7 @@ def _dag(client: Any, name: str, description: str) -> dict[str, Any]:
 # --- Leg 1: authenticated run end to end -------------------------------------
 
 
+@pytest.mark.usefixtures("graph_admission_spine")
 def test_authenticated_dag_run_executes_a_real_model_call_end_to_end(
     admin_client: Any, gateway_env: _RecordingGateway
 ) -> None:
@@ -281,6 +290,7 @@ def test_authenticated_dag_run_executes_a_real_model_call_end_to_end(
         assert attempt.node_run_id in {node_run.node_run_id for node_run in record.node_runs}
 
 
+@pytest.mark.usefixtures("graph_admission_spine")
 def test_dag_run_without_a_gateway_refuses_instead_of_fake_success(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -302,6 +312,7 @@ def test_dag_run_without_a_gateway_refuses_instead_of_fake_success(
         assert node["success"] is False, node
 
 
+@pytest.mark.usefixtures("graph_admission_spine")
 def test_stub_opt_in_payloads_are_labelled_so_nothing_mistakes_them_for_results(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

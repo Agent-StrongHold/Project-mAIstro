@@ -140,7 +140,7 @@ def governed_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAISTRO_LLM_API_KEY", "test-gateway-key")
 
 
-def _install_container(monkeypatch: pytest.MonkeyPatch, tracker: _RecordingTracker) -> Any:
+def _install_container(monkeypatch: pytest.MonkeyPatch, tracker: _RecordingTracker, spine) -> Any:
     """Wire `canonical_dag_runner._container` to a Container stand-in.
 
     Returns (container, usage_log, invocation_store): the same authorities the
@@ -167,19 +167,22 @@ def _install_container(monkeypatch: pytest.MonkeyPatch, tracker: _RecordingTrack
         capability_effects=effects,
         provider_registry=_model_registry(),
         llm_router=SimpleNamespace(),
-        run_store=None,
+        run_store=spine.run_store,
+        graph_run_store=spine.graph_run_store,
     )
     monkeypatch.setattr(runner, "_container", lambda: container)
     return container, usage_log, effects.invocation_store
 
 
-def _scope() -> DagExecutionScope:
-    return DagExecutionScope(workspace_id="ws-quota", project_id="proj-quota", user_id="quota-user")
+def _scope(spine) -> DagExecutionScope:
+    return DagExecutionScope(
+        workspace_id=spine.workspace_id, project_id=spine.project_id, user_id="quota-user"
+    )
 
 
 @pytest.mark.asyncio
 async def test_dag_node_model_call_records_invocation_quota_evidence(
-    monkeypatch: pytest.MonkeyPatch, governed_env: None
+    monkeypatch: pytest.MonkeyPatch, governed_env: None, canonical_graph_spine
 ) -> None:
     """A governed DAG model call moves the quota ledger with full identity.
 
@@ -191,7 +194,9 @@ async def test_dag_node_model_call_records_invocation_quota_evidence(
     from services.canonical_dag_runner import execute_dag
 
     tracker = _RecordingTracker()
-    _container, usage_log, _invocation_store = _install_container(monkeypatch, tracker)
+    _container, usage_log, _invocation_store = _install_container(
+        monkeypatch, tracker, canonical_graph_spine
+    )
     _FakeGatewayClient.response_body = _gateway_body(
         usage={"prompt_tokens": 13, "completion_tokens": 7}
     )
@@ -199,7 +204,7 @@ async def test_dag_node_model_call_records_invocation_quota_evidence(
 
     with pytest.MonkeyPatch.context() as http_patch:
         http_patch.setattr(httpx, "AsyncClient", _FakeGatewayClient)
-        result = await execute_dag(_dag(), scope=_scope())
+        result = await execute_dag(_dag(), scope=_scope(canonical_graph_spine))
 
     assert result["status"] == "completed", result
     node = result["node_results"]["n1"]
@@ -232,7 +237,7 @@ async def test_dag_node_model_call_records_invocation_quota_evidence(
 
 @pytest.mark.asyncio
 async def test_dag_node_without_provider_usage_records_unreported_evidence(
-    monkeypatch: pytest.MonkeyPatch, governed_env: None
+    monkeypatch: pytest.MonkeyPatch, governed_env: None, canonical_graph_spine
 ) -> None:
     """A gateway that omits usage yields an unreported marker, not a zero.
 
@@ -243,13 +248,13 @@ async def test_dag_node_without_provider_usage_records_unreported_evidence(
     from services.canonical_dag_runner import execute_dag
 
     tracker = _RecordingTracker()
-    _container, usage_log, _store = _install_container(monkeypatch, tracker)
+    _container, usage_log, _store = _install_container(monkeypatch, tracker, canonical_graph_spine)
     _FakeGatewayClient.response_body = _gateway_body(usage=None)
     _FakeGatewayClient.seen = []
 
     with pytest.MonkeyPatch.context() as http_patch:
         http_patch.setattr(httpx, "AsyncClient", _FakeGatewayClient)
-        result = await execute_dag(_dag(), scope=_scope())
+        result = await execute_dag(_dag(), scope=_scope(canonical_graph_spine))
 
     assert result["status"] == "completed", result
     (event,) = usage_log.events_for(_NODE_MODEL)
@@ -315,10 +320,11 @@ def test_dag_node_runtime_refuses_partial_composition(monkeypatch: pytest.Monkey
 @pytest.mark.asyncio
 async def test_dag_node_without_effect_authority_falls_back_and_records_nothing(
     monkeypatch: pytest.MonkeyPatch,
+    canonical_graph_spine,
 ) -> None:
-    """No canonical authority: the compatibility builder runs, ledger silent.
+    """A hermetic compatibility builder does not invent Invocation evidence.
 
-    The fallback exists for standalone execution and direct construction, and
+    The injected builder remains available to canonical-spine fixtures, and
     it must be visible as exactly that: the call happens through the injected
     builder, and no Invocation or quota evidence is manufactured for it.
     """
@@ -331,12 +337,21 @@ async def test_dag_node_without_effect_authority_falls_back_and_records_nothing(
 
         return call
 
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_container",
+        lambda: SimpleNamespace(
+            run_store=canonical_graph_spine.run_store,
+            graph_run_store=canonical_graph_spine.graph_run_store,
+        ),
+    )
     _FakeGatewayClient.seen = []
 
     with pytest.MonkeyPatch.context() as http_patch:
         http_patch.setattr(httpx, "AsyncClient", _FakeGatewayClient)
-        result = await execute_dag(_dag(), scope=_scope(), llm_builder=_fake_builder)
+        result = await execute_dag(
+            _dag(), scope=_scope(canonical_graph_spine), llm_builder=_fake_builder
+        )
 
     assert result["status"] == "completed", result
     assert result["node_results"]["n1"]["response"] == "ok:legacy"
