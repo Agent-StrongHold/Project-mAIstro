@@ -7,10 +7,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from maistro_evolve.mutation_probe import (
     MutationProbe,
     probe_diff_mutations,
 )
+from maistro_rsi.contained_validation import ContainmentUnavailable
 
 # combine(a, b) == a * b + 1 — three mutable sites on the return line:
 # Mult->Add, Add->Sub, and the constant 1->2.
@@ -91,6 +94,36 @@ def test_max_mutants_caps_the_run(tmp_path: Path) -> None:
         cwd, {"source.py": _RETURN_LINE}, selectors, timeout=60, max_mutants=1
     )
     assert probe.total == 1
+
+
+def test_containment_failure_propagates(tmp_path: Path) -> None:
+    # A contained read that fails (Docker gone, exec timeout) raises
+    # ContainmentUnavailable — a RuntimeError. It must propagate, not be
+    # swallowed into an empty plan: an empty plan reports the probe as
+    # "unavailable" (skipped), letting an unevaluated candidate pass.
+    class _BrokenRunner:
+        def read_text(self, rel: str) -> str:
+            raise ContainmentUnavailable("docker daemon unreachable")
+
+        def write_text(self, rel: str, content: str) -> None:  # pragma: no cover
+            raise AssertionError("never reached")
+
+        def run_tests(
+            self, selectors: list[str], *, timeout: int
+        ) -> tuple[int, str]:  # pragma: no cover
+            raise AssertionError("never reached")
+
+    cwd, selectors = _write(tmp_path, _SOURCE, "def test_noop():\n    assert True\n")
+    with pytest.raises(ContainmentUnavailable):
+        probe_diff_mutations(cwd, {"source.py": _RETURN_LINE}, selectors, runner=_BrokenRunner())
+
+
+def test_missing_host_file_is_still_skipped(tmp_path: Path) -> None:
+    # Ordinary missing-file handling is preserved: the file is dropped from
+    # the plan and the probe reports unavailable (nothing to measure).
+    cwd, selectors = _write(tmp_path, _SOURCE, "def test_noop():\n    assert True\n")
+    probe = probe_diff_mutations(cwd, {"gone.py": _RETURN_LINE}, selectors)
+    assert not probe.available
 
 
 def test_score_rounds_and_summary_reads() -> None:

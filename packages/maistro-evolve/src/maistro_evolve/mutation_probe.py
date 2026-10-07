@@ -257,7 +257,10 @@ def _build_plan(
             break
         try:
             source = read_text(root / rel)
-        except (OSError, RuntimeError):
+        except OSError:
+            # A missing/unreadable host file is skipped; a containment failure
+            # (ContainmentUnavailable, a RuntimeError) deliberately propagates —
+            # an empty plan must never read as "nothing to measure".
             continue
         for lineno, mutant in _mutants(source, lines):
             if mutant == source:
