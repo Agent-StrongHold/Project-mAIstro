@@ -105,7 +105,8 @@ class CrashPoint:
     def armed(self) -> str | None:
         return self._armed
 
-    def __getattr__(self, name: str) -> Any:
+    def _forward(self, name: str) -> Any:
+        """The interception wrapper for one store method, honoring arming."""
         operation = getattr(self._inner, name)
         armed = self._armed
         if armed is None or name != self._failpoints[armed].method:
@@ -125,13 +126,28 @@ class CrashPoint:
 
         return call
 
+    def __getattr__(self, name: str) -> Any:
+        return self._forward(name)
+
+    async def claim(self, *args: Any, **kwargs: Any) -> Any:
+        """Forward `claim` explicitly, through the same interception.
+
+        Runtime-checkable protocols test attributes with
+        `inspect.getattr_static`, which `__getattr__` does not answer --
+        forwarding `claim` only dynamically would make a wrapped store fail
+        the `EffectClaimStore` check and push `InvocationExecutionService`
+        onto its `create` fallback, so the admission seam would no longer
+        exercise the atomic claiming path it exists to crash.
+        """
+        return await self._forward("claim")(*args, **kwargs)
+
 
 class StatusJournal:
     """Ordered status observations, and the terminal-regression oracle.
 
     Wrap a store and every `transition_run` / `transition_node_run` /
-    `transition_attempt` / invocation `save` records `(entity, status)` in
-    call order. `regressions()` then answers one question over the whole
+    `transition_attempt` / invocation `claim` or `save` records
+    `(entity, status)` in call order. `regressions()` then answers one question over the whole
     timeline: was any entity ever observed non-terminal after it had already
     been observed terminal?
     """
@@ -191,6 +207,15 @@ class JournalingStore:
     async def transition_attempt(self, attempt_id: str, status: Any, **kwargs: Any) -> Any:
         landed = await self._inner.transition_attempt(attempt_id, status, **kwargs)
         self._journal.record("attempt", attempt_id, str(getattr(status, "value", status)))
+        return landed
+
+    async def claim(self, invocation: Any) -> Any:
+        landed = await self._inner.claim(invocation)
+        self._journal.record(
+            "invocation",
+            landed.invocation_id,
+            str(getattr(landed.status, "value", landed.status)),
+        )
         return landed
 
     async def save(self, invocation: Any) -> Any:

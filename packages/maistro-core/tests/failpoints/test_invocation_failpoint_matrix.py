@@ -112,7 +112,9 @@ def _wiring(seam: str, mode: str) -> _Wiring:
     Seams, named against `InvocationExecutionService.invoke`'s write sequence:
 
     admission
-        The ledger `create` that records the admitted effect. `before` = the
+        The ledger `claim` that records the admitted effect -- the atomic
+        `EffectClaimStore` path `_admit_effect` takes when the wrapped store
+        still satisfies the protocol. `before` = the
         process dies before the row exists; `after` = a CREATED row is durable
         but dispatch never started.
     running_persistence
@@ -131,7 +133,7 @@ def _wiring(seam: str, mode: str) -> _Wiring:
     crash = CrashPoint(
         JournalingStore(ledger, journal),
         [
-            Failpoint("admission", "create", before=(mode == "before")),
+            Failpoint("admission", "claim", before=(mode == "before")),
             Failpoint(
                 "running_persistence",
                 "save",

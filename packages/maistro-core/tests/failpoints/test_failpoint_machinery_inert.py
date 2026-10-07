@@ -13,13 +13,20 @@ cannot ship enabled or alter production semantics". Three guards hold it:
 
 from __future__ import annotations
 
+import ast
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
-from maistro.capabilities.invocation import InMemoryInvocationStore, Invocation, InvocationStatus
+from maistro.capabilities.invocation import (
+    EffectClaimStore,
+    InMemoryInvocationStore,
+    Invocation,
+    InvocationStatus,
+)
 
 from ._failpoints import CrashPoint, CrashSimulated, EffectLedger, Failpoint, StatusJournal
 
@@ -123,6 +130,31 @@ async def test_a_predicate_rejecting_call_does_not_spend_the_failpoint() -> None
     assert wrapped.fired == [("terminal_commit", "before")]
 
 
+async def test_a_wrapped_store_keeps_its_claim_protocol() -> None:
+    """An explicit `claim` forwarding keeps the wrapped store an EffectClaimStore.
+
+    Runtime-checkable protocols inspect attributes statically
+    (`inspect.getattr_static`), which `__getattr__` never answers: without the
+    explicit method, `InvocationExecutionService` would drop a wrapped store
+    onto its `create` fallback and the admission seam would crash the wrong
+    write. The explicit `claim` rides the same interception machinery.
+    """
+    ledger = InMemoryInvocationStore()
+    wrapped = CrashPoint(ledger, [Failpoint("admission", "claim", before=True)])
+    assert isinstance(wrapped, EffectClaimStore)
+
+    # Disarmed, the claim reaches the real ledger write and the row exists.
+    landed = await wrapped.claim(_invocation())
+    assert landed.invocation_id == "invocation-1"
+    assert wrapped.fired == []
+
+    # Armed, it intercepts exactly like any `__getattr__`-forwarded method.
+    wrapped.arm("admission")
+    with pytest.raises(CrashSimulated):
+        await wrapped.claim(_invocation(effect_key="write:2"))
+    assert wrapped.fired == [("admission", "before")]
+
+
 def test_the_status_journal_detects_a_terminal_regression() -> None:
     """The regression oracle catches a terminal state coming back to life."""
     journal = StatusJournal()
@@ -143,13 +175,30 @@ async def test_the_effect_ledger_is_the_remote_ground_truth() -> None:
     assert ledger.count("e-3") == 0
 
 
+def _imported_module_names(path: Path) -> Iterator[str]:
+    """Yield the dotted module names a file actually imports -- prose ignored."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            yield node.module
+
+
+def _is_lab_import(module_name: str) -> bool:
+    """True only for imports whose module path names the test-only lab."""
+    segments = module_name.split(".")
+    return "failpoints" in segments or "_failpoints" in segments
+
+
 def test_no_production_module_imports_the_failpoint_lab() -> None:
     """The lab is test-tree code: no wheel can ship it, enabled or otherwise."""
     assert _SRC_ROOTS, "the packages/*/src scan must see the source tree"
     offenders: list[str] = []
     for root in _SRC_ROOTS:
         for path in root.rglob("*.py"):
-            text = path.read_text(encoding="utf-8", errors="replace")
-            if "failpoint" in text:
-                offenders.append(str(path))
-    assert offenders == [], f"production modules reference the failpoint lab: {offenders}"
+            for module_name in _imported_module_names(path):
+                if _is_lab_import(module_name):
+                    offenders.append(f"{path}: imports {module_name}")
+    assert offenders == [], f"production modules import the failpoint lab: {offenders}"

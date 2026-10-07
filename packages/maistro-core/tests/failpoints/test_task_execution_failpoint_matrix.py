@@ -33,7 +33,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import maistro.tasks.queue as queue_mod
 from maistro.agents.types import CodeOutput, ConductorOutput
+from maistro.memory.store import TaskRecord
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.consumer_claim import ClaimingInMemoryRunStore
 from maistro.runs.model import (
@@ -71,6 +73,44 @@ def _ok() -> ConductorOutput:
         final_answer="done",
         code=CodeOutput(description="generated", files_changed=["a.py"]),
     )
+
+
+class _DurableReceiptSession:
+    """A stand-in TaskRecord session: the durable receipt tier (ADR-018).
+
+    The matrix's in-memory tier cannot answer the #849 question -- a receipt
+    recovered into a restarted bare queue exists only as the durable row the
+    reconciliation writes -- so these cells give the queue one.
+    """
+
+    def __init__(self, rows: dict[str, TaskRecord]) -> None:
+        self._rows = rows
+
+    async def __aenter__(self) -> _DurableReceiptSession:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def merge(self, record: TaskRecord) -> TaskRecord:
+        self._rows[record.id] = record
+        return record
+
+    async def commit(self) -> None:
+        return None
+
+    async def get(self, model: type, record_id: str) -> TaskRecord | None:
+        return self._rows.get(record_id)
+
+
+def _durable_receipt_tier(monkeypatch: pytest.MonkeyPatch) -> dict[str, TaskRecord]:
+    rows: dict[str, TaskRecord] = {}
+    monkeypatch.setattr(
+        queue_mod,
+        "get_async_session_factory",
+        lambda: lambda: _DurableReceiptSession(rows),
+    )
+    return rows
 
 
 class _Work:
@@ -120,9 +160,9 @@ class _Wiring:
     async def submit(self) -> TaskCreate:
         """Admit one task through the queue's canonical admitter."""
         root = await self.projects.create_root(_WORKSPACE)
-        journaled = JournalingStore(self.durable, self.journal)
+        self.journaled = JournalingStore(self.durable, self.journal)
         self.crash = CrashPoint(
-            journaled,
+            self.journaled,
             [
                 Failpoint("claim", "claim_consumer_run", before=self._seam_modes["claim"]),
                 Failpoint(
@@ -165,11 +205,14 @@ async def _recovery_tick(store: object, run_id: str, *, now: datetime) -> int:
     reclaimed Attempt through the lifecycle reconciler, then settlement replay
     for terminal Attempts a crash interrupted. Driving the same two canonical
     seams on the scenario's known Run keeps the prototype free of a second
-    recovery authority.
+    recovery authority. The unwrap only verifies what the journaling wrapper
+    wraps; the reconciler stays on the wrapper itself, so every transition
+    recovery lands reaches the whole-timeline no-regression oracle.
     """
-    assert isinstance(store, ClaimingInMemoryRunStore)
+    inner = getattr(store, "_inner", store)
+    assert isinstance(inner, ClaimingInMemoryRunStore)
     touched = 0
-    reconciler = AttemptLifecycleReconciler(store)
+    reconciler = AttemptLifecycleReconciler(store)  # type: ignore[arg-type]
     for attempt in await store.reclaim_expired_attempts(now=now):
         await reconciler.reconcile(attempt)
         touched += 1
@@ -196,10 +239,13 @@ async def _recover_and_finish(
     """
     run_id = task.run_id or ""
     wiring.work.disarm()
-    await _recovery_tick(wiring.durable, run_id, now=datetime.now(UTC) + _RESTART_DELAY)
+    # Recovery writes through the journaled store too: the terminal/parked
+    # statuses the recovery tick lands must reach the whole-timeline
+    # no-regression oracle, not only the dispatch-seam writes.
+    await _recovery_tick(wiring.journaled, run_id, now=datetime.now(UTC) + _RESTART_DELAY)
     restarted = TaskQueue()
     if strategy == "restart":
-        await restarted.recover(wiring.durable)
+        await restarted.recover(wiring.journaled)
     run = await wiring.durable.get_run(run_id)
     assert run is not None
     if run.status not in TERMINAL_RUN_STATUSES:
@@ -211,9 +257,9 @@ async def _recover_and_finish(
             # A parked Run resumes through the dispatch seam's retry path.
             await wiring.dispatch().execute(run_id, await wiring.request(task), wiring.work)
     if strategy == "same_process":
-        await wiring.queue.recover(wiring.durable)
+        await wiring.queue.recover(wiring.journaled)
         return wiring.queue
-    await restarted.recover(wiring.durable)
+    await restarted.recover(wiring.journaled)
     return restarted
 
 
@@ -339,8 +385,9 @@ async def test_attempt_terminal_commit_is_replayed_not_rerun(mode: str) -> None:
 
 
 @pytest.mark.parametrize("mode", ["before", "after"])
-async def test_run_terminal_commit_seam(mode: str) -> None:
+async def test_run_terminal_commit_seam(mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Crash at the Run's settlement, and receipt reconciliation after it."""
+    receipts = _durable_receipt_tier(monkeypatch)
     wiring = _Wiring(run_commit_before=(mode == "before"))
     task = await wiring.submit()
     wiring.crash.arm("run_terminal_commit")
@@ -357,4 +404,9 @@ async def test_run_terminal_commit_seam(mode: str) -> None:
     node_runs = await wiring.durable.list_node_runs(task.run_id or "")
     (node_run,) = node_runs
     assert node_run.accepted_outcome is not None
+    # The fire-and-forget receipt write died with the process, so the receipt
+    # lives on no in-process queue: recovery projects it from the terminal Run
+    # onto the durable row (#849) -- the product surface this cell must hold.
+    receipt = receipts.get(task.task_id)
+    assert receipt is not None and receipt.status == "completed"
     _assert_no_regression(wiring)
