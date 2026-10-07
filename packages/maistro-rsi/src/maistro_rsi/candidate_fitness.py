@@ -31,7 +31,7 @@ import structlog
 
 from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.assertion_strength import score_assertions
-from maistro_evolve.code_quality import score_path
+from maistro_evolve.code_quality import ToolRunner, score_path
 from maistro_evolve.coverage_gate import (
     coverage_gate,
     coverage_signal,
@@ -123,7 +123,9 @@ def _signal_routing(contained: ContainedEvaluation | None) -> _SignalRouting:
     """Where each executing signal runs (#614): the host process tree, or the
     one sandbox the evaluation opened. The routing decision is made ONCE, here,
     so `evaluate_candidate` reads as measurement intake and no signal can grow
-    a host-side fallback of its own."""
+    a host-side fallback of its own — the code-quality tool runner included:
+    `score_path` shells out to ruff/bandit/mypy/pylint/radon, so those
+    launches are bound to the sandbox too, never the host."""
     if contained is None:
         return _HOST_ROUTING
     return _SignalRouting(
@@ -131,6 +133,7 @@ def _signal_routing(contained: ContainedEvaluation | None) -> _SignalRouting:
         interpreter=CONTAINED_PYTHON,
         coverage_execute=contained.run_argv_streams,
         lint_execute=contained.run_argv_streams,
+        quality_run_tool=_contained_quality_tool(contained),
         probe_executor=_ContainedProbeExecutor(contained),
         mutation_runner=contained,
         collect_execute=contained.run_argv_streams,
@@ -150,9 +153,36 @@ class _SignalRouting:
     probe_executor: ProbeExecutor | None = None
     mutation_runner: MutationRunner | None = None
     collect_execute: Callable[[list[str]], tuple[int, str, str]] | None = None
+    # The runner code_quality's score_path uses to launch ruff/bandit/mypy/
+    # pylint/radon. None = the host default (credential-boundary env); a
+    # contained evaluation binds it to the sandbox (#614).
+    quality_run_tool: ToolRunner | None = None
 
 
 _HOST_ROUTING = _SignalRouting()
+
+
+def _contained_quality_tool(contained: ContainedEvaluation) -> ToolRunner:
+    """``maistro_evolve.code_quality``'s tool runner bound to the evaluation
+    sandbox (#614). Same contract as the host default — ``(stdout,
+    available)`` with available=False when the image lacks the tool — but the
+    ruff/bandit/mypy/pylint/radon processes run inside the sandbox, under the
+    image's own environment, and only their report streams cross back as
+    data. Without this channel `score_path` would launch those tools on the
+    host against candidate-authored files — exactly the leak containment
+    exists to close."""
+
+    def run(args: list[str], *, timeout: int = 120) -> tuple[str, bool]:
+        # A non-zero exit is an ordinary result (bandit exits 1 on findings);
+        # only a tool the image lacks is "missing", so its weight renormalises.
+        _code, out, err = contained.run_argv_streams(
+            [CONTAINED_PYTHON, "-m", *args], timeout=timeout
+        )
+        if "No module named" in err:
+            return "", False
+        return out, True
+
+    return run
 
 
 class _ContainedProbeExecutor:
@@ -1055,11 +1085,13 @@ def _lint_gates(
     return gates
 
 
-def _mean_quality(cwd: Path, src_files: list[str]) -> tuple[float | None, str]:
+def _mean_quality(
+    cwd: Path, src_files: list[str], run_tool: ToolRunner | None = None
+) -> tuple[float | None, str]:
     composites = []
     for f in src_files:
         if (cwd / f).is_file():
-            composites.append(score_path(cwd / f).composite)
+            composites.append(score_path(cwd / f, run_tool=run_tool).composite)
     if not composites:
         return None, ""
     mean = sum(composites) / len(composites)
@@ -1120,7 +1152,14 @@ def _mean_quality_at_base(cwd: Path, baseline_ref: str, src_files: list[str]) ->
     ``baseline_ref`` — the left side of the refactor contract's quality delta.
     Files absent on baseline contribute nothing (a new file has no baseline
     quality to improve upon). Returns None when no baseline version of any
-    changed file could be read: the refactor contract then fails closed."""
+    changed file could be read: the refactor contract then fails closed.
+
+    Deliberately host-side even under containment (#614): the analyzed bytes
+    are the pinned BASE revision's, written by the harness into a bare temp
+    directory. Nothing candidate-authored is parsed there and no candidate
+    config file can ride along, so the tools only ever read harness-written
+    data — and they run behind the credential-boundary env, never ambient
+    inheritance."""
     composites: list[float] = []
     for i, rel in enumerate(src_files):
         base = subprocess.run(
@@ -1380,9 +1419,11 @@ def evaluate_candidate(
     cwd = Path(candidate_dir)
     # The containment routing decision (#614), made once: when a sandbox was
     # handed in, every executing signal below routes through it and none may
-    # fall back to the host. The AST/file-content analysis that only PARSES
-    # candidate bytes (syntax check, quality/assertion scores, doc regression,
-    # inventory diffing) stays a host-side computation over data either way.
+    # fall back to the host. The analysis that only PARSES candidate bytes
+    # (syntax check, assertion scores, doc regression, inventory diffing)
+    # stays a host-side computation over data either way; the code-quality
+    # tools shell out, so their runner crosses the boundary too
+    # (``routing.quality_run_tool``).
     routing = _signal_routing(contained)
     run_tests = routing.test_run
     src = [f for f in changed_files if f.endswith(".py") and not _is_test(f)]
@@ -1426,7 +1467,7 @@ def evaluate_candidate(
         interpreter=routing.interpreter,
         execute=routing.coverage_execute,
     )
-    cq, cq_detail = _mean_quality(cwd, src)
+    cq, cq_detail = _mean_quality(cwd, src, run_tool=routing.quality_run_tool)
     astr, astr_detail = _mean_assertion(cwd, tests)
     tdd, fail_first = _resolve_tdd_evidence(
         cwd,

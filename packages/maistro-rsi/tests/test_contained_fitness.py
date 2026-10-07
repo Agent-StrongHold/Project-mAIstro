@@ -232,7 +232,13 @@ def forbid_host_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
     def _refuse(*_a: Any, **_kw: Any) -> Any:
         raise AssertionError("a fitness signal attempted to run on the host")
 
-    for mod in (candidate_fitness, __import__("maistro_rsi.fail_first", fromlist=["x"])):
+    import maistro_evolve.code_quality as code_quality
+
+    for mod in (
+        candidate_fitness,
+        __import__("maistro_rsi.fail_first", fromlist=["x"]),
+        code_quality,
+    ):
         monkeypatch.setattr(mod.subprocess, "run", _refuse)
 
 
@@ -365,6 +371,61 @@ class TestEvaluateCandidateRoutesThroughTheSandbox:
             )
 
         assert next((g for g in scorecard.gates if g.name == "ruff_clean"), None) is None
+
+    def test_the_quality_tools_run_in_the_sandbox_not_on_the_host(
+        self, sandbox_factory: list[_FakeSandbox], tmp_path: Path, forbid_host_subprocess: None
+    ) -> None:
+        """`_mean_quality` -> `score_path` shells out to ruff/bandit/mypy/
+        pylint/radon; under containment those launches cross the boundary too:
+        they run inside the sandbox (absolute candidate paths, the image's
+        interpreter) and only the parsed report comes back. A host launch —
+        the leak this pins — would trip `forbid_host_subprocess` via
+        maistro_evolve.code_quality's own subprocess module."""
+        fake = _FakeSandbox(tmp_path)
+        (tmp_path / "mod.py").write_text("x: int = 1\n", encoding="utf-8")
+        fake.responses["ruff"] = (1, json.dumps([{"filename": "mod.py"}]), "")
+
+        with _contained(tmp_path, fake) as contained:
+            scorecard = candidate_fitness.evaluate_candidate(
+                tmp_path,
+                ["mod.py"],
+                test_command="python -m pytest -q",
+                test_argv=("python", "-m", "pytest", "-q"),
+                contained=contained,
+            )
+
+        quality_runs = [a for a in fake.stream_argv if "ruff" in a]
+        assert quality_runs, "the quality tools never ran in the sandbox"
+        # The quality channel scores the changed source by ABSOLUTE path (the
+        # lint gates use the relative one), proving `score_path` went contained.
+        assert any(str(tmp_path / "mod.py") in tok for argv in quality_runs for tok in argv)
+        quality = next(s for s in scorecard.scores if s.name == "code_quality")
+        # One parsed ruff violation crosses the boundary and pulls the
+        # composite below clean (ruff scores 0.5; the rest of the image's
+        # tools report clean).
+        assert 0.0 < quality.score < 1.0
+
+    def test_a_missing_quality_tool_in_the_image_renormalises_not_fails(
+        self, sandbox_factory: list[_FakeSandbox], tmp_path: Path, forbid_host_subprocess: None
+    ) -> None:
+        """Same parity as the lint gates: an image without radon drops that
+        measure from the composite (weights renormalise) instead of scoring 0
+        or refusing the evaluation."""
+        fake = _FakeSandbox(tmp_path)
+        (tmp_path / "mod.py").write_text("x: int = 1\n", encoding="utf-8")
+        fake.responses["radon"] = (1, "", "No module named radon")
+
+        with _contained(tmp_path, fake) as contained:
+            scorecard = candidate_fitness.evaluate_candidate(
+                tmp_path,
+                ["mod.py"],
+                test_command="python -m pytest -q",
+                test_argv=("python", "-m", "pytest", "-q"),
+                contained=contained,
+            )
+
+        quality = next(s for s in scorecard.scores if s.name == "code_quality")
+        assert 0.0 < quality.score <= 1.0  # composite still computed, renormalised
 
     def test_the_mutation_probe_writes_mutants_into_the_sandbox(
         self, sandbox_factory: list[_FakeSandbox], tmp_path: Path, forbid_host_subprocess: None

@@ -26,8 +26,19 @@ import statistics
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from maistro_evolve._candidate_env import candidate_env
+
+#: How one static tool is launched: ``(["ruff", ...], timeout=...) ->
+#: (stdout, available)`` — ``available=False`` when the tool isn't installed,
+#: so the caller can drop it instead of scoring it 0. The host default is
+#: `_run_tool`; `score_path`'s ``run_tool`` parameter binds the launches to a
+#: different execution channel (the RSI fitness evaluation routes them through
+#: its sandbox so the tools run under container isolation, #614).
+ToolRunner = Callable[..., tuple[str, bool]]  # (tool argv, timeout) -> (stdout, available)
 
 
 @dataclass(frozen=True)
@@ -88,13 +99,18 @@ class CodeQualityScore:
 
 def _run_tool(args: list[str], *, timeout: int = 120) -> tuple[str, bool]:
     """Run ``python -m <args>``; return (stdout, available). available=False when
-    the tool isn't installed, so callers can drop it instead of scoring it 0."""
+    the tool isn't installed, so callers can drop it instead of scoring it 0.
+
+    The subprocess runs behind the candidate credential boundary (#78), never
+    the ambient host environment: these tools parse candidate-authored bytes,
+    so they get exactly the environment unattended candidate exec gets."""
     try:
         proc = subprocess.run(
             [sys.executable, "-m", *args],
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=candidate_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return "", False
@@ -103,8 +119,8 @@ def _run_tool(args: list[str], *, timeout: int = 120) -> tuple[str, bool]:
     return proc.stdout, True
 
 
-def _ruff(path: Path) -> tuple[float | None, int]:
-    out, ok = _run_tool(["ruff", "check", "--output-format", "json", str(path)])
+def _ruff(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, int]:
+    out, ok = run_tool(["ruff", "check", "--output-format", "json", str(path)])
     if not ok:
         return None, 0
     try:
@@ -114,8 +130,8 @@ def _ruff(path: Path) -> tuple[float | None, int]:
     return 1.0 / (1.0 + violations), violations
 
 
-def _bandit(path: Path) -> tuple[float | None, int]:
-    out, ok = _run_tool(["bandit", "-f", "json", "-q", str(path)])
+def _bandit(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, int]:
+    out, ok = run_tool(["bandit", "-f", "json", "-q", str(path)])
     if not ok:
         return None, 0
     try:
@@ -127,13 +143,13 @@ def _bandit(path: Path) -> tuple[float | None, int]:
     return 1.0 / (1.0 + weighted), len(results)
 
 
-def _mypy(path: Path) -> tuple[float | None, int]:
+def _mypy(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, int]:
     # --ignore-missing-imports: don't penalise a snippet for deps it can't
     #   resolve; we're scoring the code's own type-consistency.
     # --config-file os.devnull: ignore the repo's pyproject mypy config (its
     #   pydantic plugin etc.), which would otherwise fail to import in a bare
     #   scoring env and looks like "tool missing".
-    out, ok = _run_tool(
+    out, ok = run_tool(
         [
             "mypy",
             "--ignore-missing-imports",
@@ -150,9 +166,9 @@ def _mypy(path: Path) -> tuple[float | None, int]:
     return 1.0 / (1.0 + errors), errors
 
 
-def _radon(path: Path) -> tuple[float | None, float | None, float, float]:
-    cc_out, cc_ok = _run_tool(["radon", "cc", "-j", str(path)])
-    mi_out, mi_ok = _run_tool(["radon", "mi", "-j", str(path)])
+def _radon(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, float | None, float, float]:
+    cc_out, cc_ok = run_tool(["radon", "cc", "-j", str(path)])
+    mi_out, mi_ok = run_tool(["radon", "mi", "-j", str(path)])
     avg_cc = 0.0
     cc_score: float | None = None
     if cc_ok:
@@ -177,11 +193,11 @@ def _radon(path: Path) -> tuple[float | None, float | None, float, float]:
     return cc_score, mi_score, round(avg_cc, 2), round(mi_raw, 2)
 
 
-def _pylint(path: Path) -> tuple[float | None, float]:
+def _pylint(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, float]:
     # pylint's global rating is continuous (0..10) and folds in dozens of checks,
     # so it spreads clean code that ruff/bandit call "perfect". Disable import
     # resolution noise so a snippet isn't scored on unresolved deps.
-    out, ok = _run_tool(
+    out, ok = run_tool(
         ["pylint", str(path), "--score=y", "--disable=import-error,no-name-in-module"]
     )
     if not ok:
@@ -193,8 +209,8 @@ def _pylint(path: Path) -> tuple[float | None, float]:
     return max(0.0, rating / 10.0), rating
 
 
-def _docstring_coverage(path: Path) -> tuple[float | None, float]:
-    out, ok = _run_tool(["interrogate", str(path)])
+def _docstring_coverage(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, float]:
+    out, ok = run_tool(["interrogate", str(path)])
     if not ok:
         return None, 0.0
     m = re.search(r"actual: ([\d.]+)%", out)
@@ -204,10 +220,10 @@ def _docstring_coverage(path: Path) -> tuple[float | None, float]:
     return pct / 100.0, pct
 
 
-def _halstead(path: Path) -> tuple[float | None, float]:
+def _halstead(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, float]:
     # Halstead Difficulty (D = h1/2 * N2/h2): how hard the code is to understand
     # from its operator/operand structure. Lower is better; continuous.
-    out, ok = _run_tool(["radon", "hal", str(path), "-j"])
+    out, ok = run_tool(["radon", "hal", str(path), "-j"])
     if not ok:
         return None, 0.0
     try:
@@ -271,10 +287,10 @@ def _duplication(path: Path) -> tuple[float | None, float]:
     return 1.0 - frac, round(frac * 100, 1)
 
 
-def _dead_code(path: Path) -> tuple[float | None, int]:
+def _dead_code(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, int]:
     # vulture finds unused code. It over-reports protocol-mandated unused params
     # (self-documenting sandbox/exc_info), so this is a soft signal, not a gate.
-    out, ok = _run_tool(["vulture", str(path), "--min-confidence", "80"])
+    out, ok = run_tool(["vulture", str(path), "--min-confidence", "80"])
     if not ok:
         return None, 0
     n = sum(1 for line in out.splitlines() if "unused" in line)
@@ -295,10 +311,10 @@ def _cognitive(path: Path) -> tuple[float | None, float]:
     return 1.0 / (1.0 + avg / 15.0), round(avg, 1)
 
 
-def _semgrep(path: Path) -> tuple[float | None, int]:
+def _semgrep(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, int]:
     # Deeper security/bug rules than bandit. Optional: needs semgrep installed
     # (+ a ruleset); any failure degrades to "missing" rather than blocking.
-    out, ok = _run_tool(
+    out, ok = run_tool(
         ["semgrep", "--config", "auto", "--json", "--quiet", "--timeout", "30", str(path)],
         timeout=90,
     )
@@ -311,22 +327,36 @@ def _semgrep(path: Path) -> tuple[float | None, int]:
     return 1.0 / (1.0 + len(findings)), len(findings)
 
 
-def score_path(path: str | Path, weights: QualityWeights | None = None) -> CodeQualityScore:
-    """Score one file (or a directory tree) for code quality in 0..1."""
+def score_path(
+    path: str | Path,
+    weights: QualityWeights | None = None,
+    *,
+    run_tool: ToolRunner | None = None,
+) -> CodeQualityScore:
+    """Score one file (or a directory tree) for code quality in 0..1.
+
+    ``run_tool`` binds every tool launch to an execution channel (#614): the
+    default `_run_tool` runs ``python -m <tool>`` on this host behind the
+    candidate credential boundary; a caller measuring candidate-authored code
+    under container isolation passes a runner that executes the same argv
+    inside its sandbox, so the ruff/bandit/mypy/pylint/radon processes run
+    where the candidate's edits live and only their reports cross back as
+    data."""
     weights = weights or QualityWeights()
+    tool = run_tool or _run_tool
     p = Path(path)
-    ruff_s, ruff_v = _ruff(p)
-    bandit_s, bandit_n = _bandit(p)
-    mypy_s, mypy_e = _mypy(p)
-    pylint_s, pylint_r = _pylint(p)
-    doc_s, doc_pct = _docstring_coverage(p)
-    hal_s, hal_d = _halstead(p)
+    ruff_s, ruff_v = _ruff(p, run_tool=tool)
+    bandit_s, bandit_n = _bandit(p, run_tool=tool)
+    mypy_s, mypy_e = _mypy(p, run_tool=tool)
+    pylint_s, pylint_r = _pylint(p, run_tool=tool)
+    doc_s, doc_pct = _docstring_coverage(p, run_tool=tool)
+    hal_s, hal_d = _halstead(p, run_tool=tool)
     tc_s, tc_pct = _type_coverage(p)
     dup_s, dup_pct = _duplication(p)
-    dead_s, dead_n = _dead_code(p)
+    dead_s, dead_n = _dead_code(p, run_tool=tool)
     cog_s, cog_avg = _cognitive(p)
-    sem_s, sem_n = _semgrep(p)
-    cc_s, mi_s, avg_cc, mi_raw = _radon(p)
+    sem_s, sem_n = _semgrep(p, run_tool=tool)
+    cc_s, mi_s, avg_cc, mi_raw = _radon(p, run_tool=tool)
 
     parts: list[tuple[float, float]] = []  # (score, weight)
     missing: list[str] = []
