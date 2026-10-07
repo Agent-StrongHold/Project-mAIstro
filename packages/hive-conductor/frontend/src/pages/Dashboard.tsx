@@ -59,8 +59,17 @@ async function saveTabs(tabs: Tab[], activeIdx: number): Promise<string | null> 
     return "the dashboard was not saved: the server could not be reached";
   }
 }
-function useServerTabs(tabs: Tab[], setTabs: (t: Tab[]) => void, setActiveIdx: (i: number) => void, onSaveError: (e: string | null) => void) {
+// The one named read behind the dashboard's first paint (#1421): while it is
+// in flight the widget grid shows a sized skeleton instead of the default
+// layout, so the server's own widgets replace the placeholder without the
+// default cards having ever been on screen. A failed read settles into the
+// defaults (the long-standing recovery state) rather than a permanent
+// skeleton — a dashboard that cannot reach its layout endpoint must still
+// render. The status is a plain "loading" | "ready" union, kept inline so
+// no new local type is introduced.
+function useServerTabs(tabs: Tab[], setTabs: (t: Tab[]) => void, setActiveIdx: (i: number) => void, onSaveError: (e: string | null) => void): "loading" | "ready" {
   const initialized = useRef(false);
+  const [layoutStatus, setLayoutStatus] = useState<"loading" | "ready">("loading");
   useEffect(() => {
     fetch("/v1/dashboard/layout", { credentials: "same-origin" })
       .then(r => r.ok ? r.json() : null)
@@ -86,9 +95,11 @@ function useServerTabs(tabs: Tab[], setTabs: (t: Tab[]) => void, setActiveIdx: (
           saveTabs(tabs, 0).then(onSaveError);
           initialized.current = true;
         }
+        setLayoutStatus("ready");
       })
-      .catch(() => {});
+      .catch(() => setLayoutStatus("ready"));
   }, []);
+  return layoutStatus;
 }
 
 // ─── Data ───────────────────────────────────────────────────────────────────
@@ -412,10 +423,19 @@ function provenanceText(env: KpiEnvelope): string {
 
 function FetchStateLine({ status }: { status: string }) {
   if (status === "loading") {
+    // #1421: the pending KPI reserves the geometry its measured value will
+    // occupy — value line, sub line, provenance footer — instead of a text
+    // sentence, so the number lands without the card collapsing and
+    // re-expanding. The shapes are decorative; `aria-busy` on the body is
+    // the one pending state, cleared on every terminal outcome below.
     return (
-      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", opacity: 0.6 }} aria-busy="true">
-        <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--pencil)", lineHeight: 1 }}>…</div>
-        <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6 }}>Loading metrics…</div>
+      <div data-testid="kpi-loading" aria-busy="true" style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", gap: 8 }}>
+        <div aria-hidden="true" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="skeleton" style={{ height: "2.2rem", width: "55%" }} />
+          <div className="skeleton" style={{ height: 14, width: "80%" }} />
+          <div className="skeleton" style={{ height: 12, width: "65%" }} />
+        </div>
+        <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 2 }}>Loading metrics…</div>
       </div>
     );
   }
@@ -1346,6 +1366,39 @@ function AddWidget({ onAdd }: { onAdd: (type: string, size: Widget["size"], conf
 
 // ─── Dashboard Page ─────────────────────────────────────────────────────────
 
+/** Placeholder for the widget grid while the saved layout is in flight
+ * (#1421). Mirrors the default layout's footprint — a row of KPI tiles,
+ * then the wide agent panel and the smaller chart cards — so the resolved
+ * grid replaces it without the page collapsing and re-expanding. The
+ * shapes carry no fake labels or numbers; the container's `aria-busy` plus
+ * its status text is the one pending announcement, and it clears on every
+ * terminal outcome (resolved, or settled into the defaults). */
+function DashboardGridSkeleton() {
+  const span = { "1": "span 1", "2": "span 2", "3": "span 3", "6": "1 / -1" };
+  const tiles: { size: "1" | "2" | "3" | "6"; height: number }[] = [
+    { size: "1", height: 118 }, { size: "1", height: 118 }, { size: "1", height: 118 },
+    { size: "1", height: 118 }, { size: "1", height: 118 }, { size: "1", height: 118 },
+    { size: "6", height: 190 },
+    { size: "3", height: 170 }, { size: "1", height: 170 }, { size: "2", height: 170 },
+  ];
+  return (
+    <div data-testid="dashboard-skeleton" role="status" aria-busy="true" aria-label="Loading dashboard" style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: "0.6rem" }}>
+      {tiles.map((t, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          style={{ gridColumn: span[t.size], height: t.height, background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 16, padding: "0.8rem", display: "flex", flexDirection: "column", gap: 10 }}
+        >
+          <div className="skeleton" style={{ height: 12, width: "45%" }} />
+          <div className="skeleton" style={{ height: 24, width: "60%" }} />
+          <div className="skeleton" style={{ height: 12, width: "80%" }} />
+          <div className="skeleton" style={{ flex: 1, width: "100%" }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [tabs, setTabs] = useState<Tab[]>(DEFAULT_TABS);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -1361,7 +1414,7 @@ export default function Dashboard() {
   const persist = useCallback((next: Tab[], idx: number) => {
     saveTabs(next, idx).then(setSaveError);
   }, []);
-  useServerTabs(tabs, setTabs, setActiveIdx, setSaveError);
+  const layoutStatus = useServerTabs(tabs, setTabs, setActiveIdx, setSaveError);
 
   const widgets = tabs[activeIdx]?.widgets || [];
 
@@ -1480,14 +1533,18 @@ export default function Dashboard() {
         {editing && <button onClick={addTab} style={{ padding: "4px 8px", border: "none", background: "transparent", color: C.muted, fontSize: "var(--text-floor)", cursor: "pointer" }}>+ Tab</button>}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: "0.6rem" }}>
-        {widgets.map(w => (
-          <WidgetCard key={w.id} widget={w} agents={agents} metrics={metricsData} metricsStatus={metricsStatus} editing={editing}
-            onRemove={() => removeWidget(w.id)}
-            onUpdate={(updated) => updateWidget(w.id, updated)} />
-        ))}
-        {editing && <AddWidget onAdd={addWidget} />}
-      </div>
+      {layoutStatus === "loading" ? (
+        <DashboardGridSkeleton />
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: "0.6rem" }}>
+          {widgets.map(w => (
+            <WidgetCard key={w.id} widget={w} agents={agents} metrics={metricsData} metricsStatus={metricsStatus} editing={editing}
+              onRemove={() => removeWidget(w.id)}
+              onUpdate={(updated) => updateWidget(w.id, updated)} />
+          ))}
+          {editing && <AddWidget onAdd={addWidget} />}
+        </div>
+      )}
       {showTemplates && <TemplatePicker onClose={() => setShowTemplates(false)} onSelect={(id) => {
         fetch(`/v1/dashboard/demos/${id}`, { credentials: "same-origin" })
           .then(r => r.json()).then(d => {

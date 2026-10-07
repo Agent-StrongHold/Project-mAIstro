@@ -22,7 +22,9 @@ export function WorkspaceTabs() {
     selectWorkspace,
     createWorkspace,
     archiveWorkspace,
+    refresh,
     ready,
+    status,
   } = useWorkspaces();
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -30,6 +32,10 @@ export function WorkspaceTabs() {
   const [name, setName] = useState("");
   const [personaTemplates, setPersonaTemplates] = useState<PersonaTemplateOption[]>([]);
   const [personaTemplateId, setPersonaTemplateId] = useState("");
+  // The persona picker's own read (#1421): while it is in flight the picker
+  // shows sized placeholder rows instead of "No personas available", which
+  // would read as an answer the request has not given yet.
+  const [templatesPending, setTemplatesPending] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,6 +51,9 @@ export function WorkspaceTabs() {
       } catch {
         // Picker degrades to empty; the create form still works if the
         // caller falls back to a known id, but there's nothing to select.
+        if (!cancelled) setPersonaTemplates([]);
+      } finally {
+        if (!cancelled) setTemplatesPending(false);
       }
     })();
     return () => {
@@ -52,7 +61,43 @@ export function WorkspaceTabs() {
     };
   }, [creating]);
 
-  if (!ready) return null;
+  // GET /v1/workspaces is still in flight (#1421): a sized placeholder strip
+  // stands in for the tabs — the previous `null` collapsed the toolbar row
+  // and then popped it open. The shapes are decorative; the region's
+  // `aria-busy` plus its status label is the one pending announcement.
+  if (!ready) {
+    return (
+      <div className="workspace-tabs-wrap">
+        <div
+          data-testid="workspace-tabs-skeleton"
+          role="status"
+          aria-busy="true"
+          aria-label="Loading workspaces"
+          className="workspace-tabs"
+        >
+          {[0, 1, 2].map((i) => (
+            <div key={i} aria-hidden="true" className="skeleton workspace-tab-skeleton" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // A failed or refused read terminates into this recovery state, not into
+  // the "no workspaces yet" empty state — an unreachable list is not an
+  // empty account (#1421). Retry re-runs the same read.
+  if (status === "error") {
+    return (
+      <div className="workspace-tabs-wrap">
+        <span role="alert" className="workspace-tab-error">
+          Couldn&#39;t load your workspaces. Check your connection and try again.
+          <button type="button" onClick={() => void refresh()}>
+            Retry
+          </button>
+        </span>
+      </div>
+    );
+  }
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
@@ -114,25 +159,38 @@ export function WorkspaceTabs() {
           it one keyboard-operable group. */}
       <fieldset className="workspace-persona-picker" disabled={busy}>
         <legend>Persona</legend>
-        {personaTemplates.length === 0 && (
-          <span className="workspace-persona-none">No personas available</span>
+        {templatesPending ? (
+          <div data-testid="persona-skeleton" aria-busy="true">
+            <div aria-hidden="true" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {[0, 1].map((i) => (
+                <div key={i} className="skeleton workspace-persona-skeleton-row" />
+              ))}
+            </div>
+            <span className="workspace-persona-none">Loading personas&#8230;</span>
+          </div>
+        ) : (
+          <>
+            {personaTemplates.length === 0 && (
+              <span className="workspace-persona-none">No personas available</span>
+            )}
+            {personaTemplates.map((p) => (
+              <label
+                key={p.id}
+                className={`workspace-persona-option${p.id === personaTemplateId ? " selected" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="persona_template"
+                  value={p.id}
+                  checked={p.id === personaTemplateId}
+                  onChange={() => setPersonaTemplateId(p.id)}
+                />
+                <span className="workspace-persona-name">{p.display_name}</span>
+                <span className="workspace-persona-tagline">{p.tagline}</span>
+              </label>
+            ))}
+          </>
         )}
-        {personaTemplates.map((p) => (
-          <label
-            key={p.id}
-            className={`workspace-persona-option${p.id === personaTemplateId ? " selected" : ""}`}
-          >
-            <input
-              type="radio"
-              name="persona_template"
-              value={p.id}
-              checked={p.id === personaTemplateId}
-              onChange={() => setPersonaTemplateId(p.id)}
-            />
-            <span className="workspace-persona-name">{p.display_name}</span>
-            <span className="workspace-persona-tagline">{p.tagline}</span>
-          </label>
-        ))}
       </fieldset>
       <div className="workspace-tab-new-actions">
         <button type="submit" disabled={busy || !name.trim() || !personaTemplateId}>
@@ -195,7 +253,13 @@ export function WorkspaceTabs() {
         <button
           type="button"
           className="workspace-tab workspace-tab-add"
-          onClick={() => setCreating((v) => !v)}
+          onClick={() => {
+            // Opening the form is what starts the persona read, so the
+            // pending flag flips here rather than inside the read effect
+            // (which may not set state synchronously).
+            if (!creating) setTemplatesPending(true);
+            setCreating((v) => !v);
+          }}
           aria-label="New workspace"
           aria-expanded={creating}
           title="New workspace"

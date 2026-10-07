@@ -6,7 +6,7 @@
 // Non-authoritative until cutover (#102): this surface edits through the
 // canonical service only, and says so in the banner below.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPatch, fallbackMessage, ApiError } from "../lib/api";
 import { Hex, PageHeader, Modal, useToast } from "../components/shared";
 
@@ -99,10 +99,101 @@ function toForm(item: BacklogItem): EditForm {
   };
 }
 
+/** Board placeholders while the initial read is in flight (#1421). The four
+ * status column headers are the board's fixed structure, like the page
+ * heading; the placeholder cards are decorative and carry no item titles. */
+function BacklogBoardSkeleton() {
+  return (
+    <div
+      data-testid="backlog-skeleton"
+      role="status"
+      aria-busy="true"
+      aria-label="Loading backlog"
+      style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(160px, 1fr))", gap: 10 }}
+    >
+      {STATUSES.map((status) => (
+        <div key={status}>
+          <div style={{ ...monoStyle, color: "var(--pencil)", fontWeight: 600, marginBottom: 6, textTransform: "uppercase" }}>
+            {status}
+          </div>
+          <div aria-hidden="true" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {[0, 1].map((i) => (
+              <div key={i} className="card" style={{ padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="skeleton" style={{ height: 14, width: "85%" }} />
+                <div className="skeleton" style={{ height: 10, width: "60%" }} />
+                <div className="skeleton" style={{ height: 10, width: "40%" }} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** List placeholders for the same pending read, in list view (#1421). */
+function BacklogListSkeleton() {
+  return (
+    <div data-testid="backlog-skeleton" role="status" aria-busy="true" aria-label="Loading backlog" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className="card" style={{ display: "flex", gap: 10, padding: 8 }}>
+          <div aria-hidden="true" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <div className="skeleton" style={{ width: 22, height: 14 }} />
+            <div className="skeleton" style={{ width: 22, height: 14 }} />
+          </div>
+          <div aria-hidden="true" style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
+            <div className="skeleton" style={{ height: 14, width: "55%" }} />
+            <div className="skeleton" style={{ height: 10, width: "80%" }} />
+            <div className="skeleton" style={{ height: 10, width: "35%" }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Detail-modal placeholders while the opened item's read is in flight
+ * (#1421), matching the resolved modal's meta chips, two-column blocks and
+ * edit form so nothing collapses when the real content arrives. */
+function BacklogDetailSkeleton() {
+  return (
+    <div data-testid="backlog-detail-skeleton" role="status" aria-busy="true" aria-label="Loading item" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div aria-hidden="true" style={{ display: "flex", gap: 6 }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="skeleton" style={{ height: 18, width: 64, borderRadius: 9 }} />
+        ))}
+      </div>
+      <div aria-hidden="true" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="skeleton" style={{ height: 12, width: `${90 - i * 15}%` }} />
+          ))}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="skeleton" style={{ height: 12, width: `${85 - i * 12}%` }} />
+          ))}
+        </div>
+      </div>
+      <div aria-hidden="true" style={{ borderTop: "1px solid var(--rule)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div className="skeleton" style={{ height: 26, width: "100%" }} />
+        <div className="skeleton" style={{ height: 26, width: "70%" }} />
+      </div>
+      <div style={{ fontSize: 12, color: "var(--pencil)" }}>Loading item&#8230;</div>
+    </div>
+  );
+}
+
 export default function Backlog() {
   const toast = useToast();
   const [items, setItems] = useState<BacklogItem[]>([]);
   const [authority, setAuthority] = useState<Authority | null>(null);
+  // The initial board read (#1421): `loading` is the request in flight (the
+  // board shows sized placeholders, never the "empty" columns, which would
+  // read as an answer the request has not given), `error` a failed or
+  // refused read (banner + retry), `ready` a settled answer — populated or
+  // genuinely empty.
+  const [loadStatus, setLoadStatus] = useState<"loading" | "ready" | "error">("loading");
   const [view, setView] = useState<"board" | "list">("board");
   const [showArchived, setShowArchived] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -123,10 +214,21 @@ export default function Backlog() {
       );
       setItems(body.items);
       setAuthority(body.authority);
+      setLoadStatus("ready");
     } catch (err) {
+      // A failed retry (or post-action refresh) keeps the error banner when
+      // the board never loaded, and otherwise keeps the loaded board rather
+      // than blanking it (#1421); the toast still names the failure.
+      setLoadStatus((current) => (current === "loading" ? "error" : current));
       toast(fallbackMessage(err instanceof ApiError ? err.status : 0), "error");
     }
   }, [toast]);
+
+  // Only the newest opened detail may commit (#1421). Opening item B while
+  // item A's read is in flight used to let A's late response overwrite the
+  // modal with the wrong item; the sequence number drops the stale answer.
+  const detailSeq = useRef(0);
+  const detailUnmounted = useRef(false);
 
   // Initial fetch. Inline IIFE (the WorkspaceContext idiom): async work in an
   // effect with an unmount guard, rather than calling the named `load`
@@ -142,25 +244,37 @@ export default function Backlog() {
         if (cancelled) return;
         setItems(body.items);
         setAuthority(body.authority);
+        setLoadStatus("ready");
       } catch {
-        // The banner-less empty board is the degraded state; a refresh via
-        // the load path reports the transport error when the user acts.
+        if (cancelled) return;
+        // The banner + retry is the degraded state; a refresh via the load
+        // path reports the transport error when the user acts. An
+        // unreachable board must not render as four "empty" columns (#1421).
+        setLoadStatus("error");
       }
     })();
     return () => {
       cancelled = true;
+      detailUnmounted.current = true;
     };
   }, []);
 
   const openDetail = useCallback(
     async (id: string) => {
+      const seq = ++detailSeq.current;
       setConflict(null);
       setDetailId(id);
+      // Whatever the modal showed for a previously opened item must not
+      // stand in for this one while its read is in flight (#1421).
+      setDetail(null);
+      setForm(null);
       try {
         const d = await apiGet<BacklogDetail>(`/v1/backlog/${id}`);
+        if (seq !== detailSeq.current || detailUnmounted.current) return;
         setDetail(d);
         setForm(toForm(d.item));
       } catch {
+        if (seq !== detailSeq.current || detailUnmounted.current) return;
         toast("Couldn't load that item", "error");
         setDetailId(null);
       }
@@ -371,7 +485,13 @@ export default function Backlog() {
     <div>
       <PageHeader
         title="Backlog"
-        subtitle={`${visible.filter((i) => !i.archived).length} items — board, list and detail editing without touching Markdown or YAML`}
+        subtitle={
+          loadStatus === "loading"
+            ? "loading items\u2026"
+            : loadStatus === "error"
+              ? "couldn't load the backlog"
+              : `${visible.filter((i) => !i.archived).length} items — board, list and detail editing without touching Markdown or YAML`
+        }
         actions={
           <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setCreating(true)}>
             + item
@@ -430,73 +550,94 @@ export default function Backlog() {
         </label>
       </div>
 
-      {view === "board" && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(160px, 1fr))", gap: 10 }}>
-          {STATUSES.map((status) => (
-            <div key={status}>
-              <div style={{ ...monoStyle, color: "var(--pencil)", fontWeight: 600, marginBottom: 6, textTransform: "uppercase" }}>
-                {status} <span style={{ opacity: 0.6 }}>({byStatus(status).length})</span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {byStatus(status).map((it) => (
-                  <div key={it.id} className="card" style={{ padding: 8, opacity: it.archived ? 0.55 : 1, borderLeft: it.pinned ? "3px solid var(--accent)" : undefined }}>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600, cursor: "pointer" }} onClick={() => void openDetail(it.id)}>
-                      {it.title}
-                    </div>
-                    {it.blocked_reason && <div style={{ ...monoStyle, color: "var(--danger)", marginTop: 2 }}>blocked: {it.blocked_reason}</div>}
-                    {it.paused && it.paused_reason && <div style={{ ...monoStyle, color: "var(--warn)", marginTop: 2 }}>paused: {it.paused_reason}</div>}
-                    {cardMeta(it)}
-                    {cardActions(it)}
-                  </div>
-                ))}
-                {byStatus(status).length === 0 && (
-                  <div style={{ ...monoStyle, color: "var(--pencil)", opacity: 0.6, padding: "8px 4px" }}>empty</div>
-                )}
-              </div>
-            </div>
-          ))}
+      {loadStatus === "loading" ? (
+        view === "board" ? (
+          <BacklogBoardSkeleton />
+        ) : (
+          <BacklogListSkeleton />
+        )
+      ) : loadStatus === "error" ? (
+        <div
+          role="alert"
+          data-testid="backlog-load-error"
+          style={{ border: "1px solid var(--danger)", padding: "8px 10px", ...monoStyle, color: "var(--danger)", display: "flex", gap: 10, alignItems: "center" }}
+        >
+          <span>The backlog couldn&#39;t be loaded. Check your connection and try again.</span>
+          <button className="btn" style={{ fontSize: 11, padding: "1px 8px" }} onClick={() => void load()}>
+            Retry
+          </button>
         </div>
-      )}
-
-      {view === "list" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {visible
-            .slice()
-            .sort((a, b) => a.priority - b.priority || a.rank - b.rank)
-            .map((it) => (
-              <div key={it.id} className="card" style={{ display: "flex", alignItems: "flex-start", gap: 10, opacity: it.archived ? 0.55 : 1 }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <button className="btn" style={{ fontSize: 10, padding: "0 5px" }} title="move up" onClick={() => void moveSibling(it, -1)}>
-                    ↑
-                  </button>
-                  <button className="btn" style={{ fontSize: 10, padding: "0 5px" }} title="move down" onClick={() => void moveSibling(it, 1)}>
-                    ↓
-                  </button>
+      ) : (
+        <>
+          {view === "board" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(160px, 1fr))", gap: 10 }}>
+            {STATUSES.map((status) => (
+              <div key={status}>
+                <div style={{ ...monoStyle, color: "var(--pencil)", fontWeight: 600, marginBottom: 6, textTransform: "uppercase" }}>
+                  {status} <span style={{ opacity: 0.6 }}>({byStatus(status).length})</span>
                 </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-                    <span style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600, cursor: "pointer" }} onClick={() => void openDetail(it.id)}>
-                      {it.title}
-                    </span>
-                    <span style={{ ...monoStyle, color: "var(--pencil)" }}>{it.status}</span>
-                    <span style={{ ...monoStyle, color: "var(--pencil)", opacity: 0.7 }}>v{it.version}</span>
-                  </div>
-                  {it.description && <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "2px 0" }}>{it.description}</div>}
-                  {cardMeta(it)}
-                  {cardActions(it)}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {byStatus(status).map((it) => (
+                    <div key={it.id} className="card" style={{ padding: 8, opacity: it.archived ? 0.55 : 1, borderLeft: it.pinned ? "3px solid var(--accent)" : undefined }}>
+                      <div style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600, cursor: "pointer" }} onClick={() => void openDetail(it.id)}>
+                        {it.title}
+                      </div>
+                      {it.blocked_reason && <div style={{ ...monoStyle, color: "var(--danger)", marginTop: 2 }}>blocked: {it.blocked_reason}</div>}
+                      {it.paused && it.paused_reason && <div style={{ ...monoStyle, color: "var(--warn)", marginTop: 2 }}>paused: {it.paused_reason}</div>}
+                      {cardMeta(it)}
+                      {cardActions(it)}
+                    </div>
+                  ))}
+                  {byStatus(status).length === 0 && (
+                    <div style={{ ...monoStyle, color: "var(--pencil)", opacity: 0.6, padding: "8px 4px" }}>empty</div>
+                  )}
                 </div>
               </div>
             ))}
-          {visible.length === 0 && !creating && (
-            <div style={{ fontFamily: "var(--hand)", fontSize: 16, color: "var(--pencil)", padding: 20 }}>
-              backlog is empty — create the first item
-            </div>
-          )}
-        </div>
+          </div>
+        )}
+
+        {view === "list" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {visible
+              .slice()
+              .sort((a, b) => a.priority - b.priority || a.rank - b.rank)
+              .map((it) => (
+                <div key={it.id} className="card" style={{ display: "flex", alignItems: "flex-start", gap: 10, opacity: it.archived ? 0.55 : 1 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <button className="btn" style={{ fontSize: 10, padding: "0 5px" }} title="move up" onClick={() => void moveSibling(it, -1)}>
+                      ↑
+                    </button>
+                    <button className="btn" style={{ fontSize: 10, padding: "0 5px" }} title="move down" onClick={() => void moveSibling(it, 1)}>
+                      ↓
+                    </button>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                      <span style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600, cursor: "pointer" }} onClick={() => void openDetail(it.id)}>
+                        {it.title}
+                      </span>
+                      <span style={{ ...monoStyle, color: "var(--pencil)" }}>{it.status}</span>
+                      <span style={{ ...monoStyle, color: "var(--pencil)", opacity: 0.7 }}>v{it.version}</span>
+                    </div>
+                    {it.description && <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "2px 0" }}>{it.description}</div>}
+                    {cardMeta(it)}
+                    {cardActions(it)}
+                  </div>
+                </div>
+              ))}
+            {visible.length === 0 && !creating && (
+              <div style={{ fontFamily: "var(--hand)", fontSize: 16, color: "var(--pencil)", padding: 20 }}>
+                backlog is empty — create the first item
+              </div>
+            )}
+          </div>
+        )}
+        </>
       )}
 
       <Modal open={detailId !== null} onClose={() => { setDetailId(null); setConflict(null); }} title={detail?.item.title ?? "Backlog item"} wide>
-        {detail && (
+        {detail ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {conflict && (
               <div style={{ border: "1px solid var(--danger)", padding: 8, ...monoStyle, color: "var(--danger)" }}>
@@ -649,6 +790,8 @@ export default function Backlog() {
               )}
             </div>
           </div>
+        ) : (
+          <BacklogDetailSkeleton />
         )}
       </Modal>
 

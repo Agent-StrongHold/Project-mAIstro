@@ -31,9 +31,14 @@ COPY frontend/src/lib/deckSanitizer.ts /tests/frontend/src/lib/deckSanitizer.ts
 COPY frontend/src/lib/deckTemplates.ts /tests/frontend/src/lib/deckTemplates.ts
 COPY frontend/src/lib/ids.ts /tests/frontend/src/lib/ids.ts
 COPY frontend/src/pages/Dashboard.tsx /tests/frontend/src/pages/Dashboard.tsx
+COPY frontend/src/pages/Backlog.tsx /tests/frontend/src/pages/Backlog.tsx
 COPY frontend/src/lib/widgetCapabilities.ts /tests/frontend/src/lib/widgetCapabilities.ts
 COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/SetupChecklist.tsx
 COPY frontend/src/components/TemplatePicker.tsx /tests/frontend/src/components/TemplatePicker.tsx
+COPY frontend/src/components/WorkspaceTabs.tsx /tests/frontend/src/components/WorkspaceTabs.tsx
+COPY frontend/src/components/shared.tsx /tests/frontend/src/components/shared.tsx
+COPY frontend/src/context/WorkspaceContext.tsx /tests/frontend/src/context/WorkspaceContext.tsx
 COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
+COPY frontend/src/lib/appearance.ts /tests/frontend/src/lib/appearance.ts
 COPY frontend/src/lib/debug.ts /tests/frontend/src/lib/debug.ts
 CMD ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]
