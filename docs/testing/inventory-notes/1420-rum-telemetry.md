@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +21
+  packages/hive-conductor/tests/e2e: +0
 ---
 
 # 1420 — RUM collector contract tests
@@ -69,6 +70,58 @@ tested by `tests/e2e/rum-telemetry.spec.ts`, which is Playwright, not
 pytest-collected — this suite's collected count is unaffected by it. No other
 suite moved: no existing tests were edited, and the only production-code
 edits adjacent to tests are the new route/store/settings fields above.
+
+## Client-side off-switches (repair round, 2026-10-07)
+
+Acceptance check 4's client half had no test: nothing ran a build with
+collection off, a sampled-out session, a rejecting collector or a page
+without `PerformanceObserver`. `tests/e2e/rum-client-off-switches.spec.ts`
+now pins each against the shipped `lib/rum.ts` itself, bundled per scenario
+into an ephemeral page (the reporter is a per-page-load singleton whose env
+is baked at build time, so a fresh bundle is the only fresh instance):
+
+- a build with `VITE_RUM_ENABLED=false` — and a plain-esbuild bundle where
+  `import.meta.env` is absent entirely, the defensive `?? {}` path — never
+  constructs a reporter: reported events buffer nothing, the pagehide flush
+  sends nothing;
+- `VITE_RUM_SAMPLE_RATE=0` (the deterministic sampled-out rate) behaves
+  identically;
+- three consecutive rejected sends trip the breaker: each failed batch is
+  spliced before the send so nothing is retried (POST count moves only when
+  the page pushes again), the reporter goes permanently silent after the
+  third rejection — further events and a pagehide boundary produce no
+  request — and the page renders on throughout;
+- the buffer is bounded: 30 reported events ship exactly one batch of
+  `MAX_BATCH_EVENTS` (conservation pinned against the pending count), and
+  the raw agent id and query string feeding those events appear nowhere in
+  the wire bytes;
+- a page with `PerformanceObserver` stubbed out still initializes, ships the
+  documented `load` fallback (finite, non-negative) and never emits LCP or a
+  page error.
+
+The spec imports `lib/rumSchema.ts` from Node and bundles `lib/rum.ts` at
+scenario build time, so `tests/Dockerfile.playwright` now COPYs both files —
+previously `rum-telemetry.spec.ts`'s Node-side import of `rumSchema` failed
+collection in the built image ("Cannot find module
+../../frontend/src/lib/rumSchema"), which is what the
+`hive-conductor-e2e-ui` red at ff943dc was. Both suites are Playwright, so
+the e2e suite's pytest-collected count is unchanged: the `+0` delta above is
+explicit, not an omission.
+
+Executed evidence (this worktree, image rebuilt from the fixed head): the
+compose-built `e2e-tests` image runs `npx playwright test --list` clean —
+153 tests in 31 files, rum-client-off-switches' five scenarios collected —
+the five scenarios pass in that image with `--retries=0` (5 passed, 6.8 s),
+and the full `hive-conductor-e2e-ui` compose run (live hive service built
+with `VITE_RUM_ENABLED=true` + `RUM_INGEST_ENABLED=true`, all 31 spec files)
+finishes **153 passed** in 3.0 m — the same command ci.yml's job runs, with
+rum-telemetry.spec.ts's live path included, no source mounts. Harness note
+for reviewers: the reporter reads env through one `(import.meta).env ?? {}`
+variable, so the scenarios bake the whole `import.meta.env` object via
+esbuild `define` — per-key defines never reach the module (the first draft's
+did, every scenario silently ran disabled, and the two send-nothing tests
+passed for the wrong reason; the object-define form is what makes the
+enabled scenarios actually collect).
 
 ## Independent verification (this worktree, 2026-10-07)
 
