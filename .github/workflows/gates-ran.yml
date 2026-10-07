@@ -164,9 +164,14 @@ jobs:
                 per_page: 100,
               },
             );
+            // Keep both endpoints of a rename so classification sees the
+            // source path too, matching the --no-renames diff consumers.
+            const paths = files.flatMap(file =>
+              file.previous_filename ? [file.previous_filename, file.filename] : [file.filename],
+            );
             fs.writeFileSync(
               'changed-files.json',
-              JSON.stringify({ measured: true, files: files.map(file => file.filename) }),
+              JSON.stringify({ measured: true, files: paths }),
             );
             core.info(`${files.length} changed file(s) on PR #${number}`);
 
