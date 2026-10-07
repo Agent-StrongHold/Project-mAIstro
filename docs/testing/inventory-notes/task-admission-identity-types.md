@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +77
+  packages/maistro-core/tests: +79
 ---
 
 # #1851 root-admission identity types
@@ -1152,3 +1152,102 @@ unreachable module, both curable only by the orchestrator (a reviewed
 grant pair landed on the integration base ahead of the merge, or real
 consumer wiring in the parent #1845 integration). Handoff only, no
 integration approval.
+
+## 2026-10-07 round-14 CI-repair: develop sync, four-job failure attribution, coverage completion
+
+Round-14 resolved the NEEDS-DEEP-REVIEW block with evidence, not edits to
+gates: every one of the four red CI jobs at dispatch head `bf41612d4d3a`
+traces to the single structural fact the issue designs in (the inactive
+module is unreachable and its enum surface unused), and the round adds no
+baseline entry, grant, suppression, or caller to evade that.
+
+- **Develop sync.** `origin/develop` had advanced four commits past the
+  branch's merge base `b0912ce590d5` (#2024 ADR-registry WIP, #2005 M9-E3
+  tool-contract publication, #2032 cancellation-shutdown fix, #2031
+  attempt-TOCTOU WIP). Merged `origin/develop` (`9bd1a93eefc4`) into
+  `auto-1851`; clean merge, commit `11bcd0e09ba0`. Ledger integrity verified
+  against the merge-base multiset: base 1,329 rows; branch side +5 (the
+  round-13 sanctioned admission rows), develop side −1
+  (`tools/reversibility.py::unused variable 'INTERNAL'`, pruned by #2005 as
+  its contract publication made the member used); merged ledger 1,333 rows
+  with both sides' deltas preserved and
+  `git diff --numstat origin/develop -- quality/` reduced to exactly the
+  five admission rows.
+- **CI failure attribution (read-only log inspection of run
+  37565147700/37565147716/37565147718).** `exact-debt-ledger`: failed in its
+  vulture and reachability-provenance steps — the two issue-predicted reds.
+  `Quality gate (Pillars 1–4, 7, 8)`: its only failing step was the vulture
+  per-identity ledger step, same five identities; every earlier step
+  (ruff, radon, xenon, version/release/doc-link, route/principal,
+  enumerations, workspace retirement) exited 0 and later pillars never ran.
+  `test`: the maistro-core step passed (13,927 passed, 924 skipped, 1
+  xfailed) and every other package step passed; the failing step was the
+  root `tests/` suite with exactly three failures, all reachability
+  self-checks over the absent baseline entry
+  (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `::test_the_baseline_is_exactly_the_unreachable_set`).
+  `Coverage gate (publish-set floor + diff coverage)`: the publish-set
+  floor **passed** and `admission_identity.py` diff coverage measured 98%
+  (245 stmts, 1 missed line 139); the job failed only when the combine
+  step's embedded root suite hit the same three reachability self-checks
+  and printed `::error New unreachable modules: maistro.runs.admission_identity`.
+  All four jobs therefore share one root cause; none is an independent
+  defect of this leaf.
+- **Gate matrix at merged head `11bcd0e09ba0` (trusted base `9bd1a93eefc4`).**
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 on exactly the five NEW enum identities;
+  `check-ratchet-provenance.py` rc=1 solely through its reachability
+  sub-gate (`maistro.runs.admission_identity` NEW unreachable 169→170 of
+  1,356); `check-shipped-surface-truth.py` rc=0; `check-reachability.py`
+  rc=1 with exactly that one NEWLY UNREACHABLE module;
+  `check-reachability-dispositions.py` rc=0 (49 groups / 169 modules);
+  `check-promotion-surface.py` rc=0; `ruff check .` and
+  `ruff format --check .` clean; module `mypy` clean; full
+  `packages/maistro-core/tests` suite 14,012 passed / 965 skipped / 1
+  xfailed; full `check-suite-inventory.py` ok (17 suites match); full
+  `check-suite-inventory.py --suite packages/maistro-core/tests` collected
+  14,876 node IDs, expected = baseline + Σ deltas, ok; `check-test-duplicates.py`
+  ok (1,500 unique files).
+- **Coverage completion (evidence-backed, not cosmetic).** CI's own coverage
+  report named `admission_identity.py:139` as the module's only missed
+  statement — the success path of the `_parse_finite_float` hook, whose
+  rejection paths were tested but whose finite passthrough never was — and
+  the local branch report showed three untaken guard fallthroughs: the
+  accept direction of `Claimed`, `Pending`, and `AlreadyBound` was never
+  constructed by the suite. Added two tests to the focused file:
+  `test_canonical_json_preserves_finite_floats_the_rejection_hook_must_not_fire_on`
+  and `test_valid_claimed_pending_and_already_bound_variants_construct`.
+  The module now measures **100% line and branch coverage** (245 stmts, 82
+  branches, 0 partial); the focused suite collects and passes 79 cases, so
+  this note's delta moves +77 → +79. No production file changed.
+- **Independent contract re-verification.** An 86-assertion behavioral
+  script in a fresh interpreter re-proved the module contract: exact 21-name
+  `__all__`; canonicalization, duplicate-key/non-finite/non-object
+  rejection and non-retention; frozen+slots on every record; the fencing
+  conjunction including the equal-role and differing-role cases;
+  `owner_token` absent from both reprs while `generation_id` stays
+  printable; variant accept/reject symmetry; acknowledgement, legacy
+  unclamped-lease, int64/bool/hex64/trim/UUID-string/nil rules;
+  `RootAdmissionResult` run-id agreement and bool-ness; exact enum pairs;
+  empty variants without truthiness overrides. All passed. In a clean
+  interpreter `maistro.runs` does not expose `admission_identity`, its
+  `__all__` does not name it, and no production module imports it.
+- **#1841 security signature revalidated at the merged head:**
+  `store_boundary.py:56 require_admitted_actor(actor_principal_id: str |
+  None) -> str`; `store.py:496 get_run(..., principal_id: str | None =
+  None)`; `create_run`/`claim_run_by_effect` retain `actor_principal_id:
+  str | None = None` (`store.py:466/522/848/1262`); `model.py:300` stores
+  and validates `actor_principal_id`. Unchanged by the develop merge.
+
+Round-14 verdict: the four red jobs are attributed with CI-log evidence to
+the single issue-designed blocker — five unauthorized vulture identities and
+one NEW unreachable module — and the branch is now current with develop,
+ledger-integrity-checked, and coverage-complete on the leaf module. The
+structural reds have no legitimate in-leaf cure (wiring is prohibited by
+leaf scope; both ratchets require authorizations that must pre-exist on the
+integration base). Resolution remains an orchestrator decision: land the
+reviewed vulture + reachability grant pair on the integration base, or make
+the module reachable in the parent #1845 integration, where every one of the
+four reds dissolves simultaneously. Per the issue's directive the stack
+stays unmerged; handoff only, no integration approval.

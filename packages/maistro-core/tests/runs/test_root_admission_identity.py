@@ -222,6 +222,15 @@ def test_canonical_json_rejects_non_string_constructor_input(bad_input: object) 
         CanonicalJsonObject(text=bad_input)  # type: ignore[arg-type]
 
 
+def test_canonical_json_preserves_finite_floats_the_rejection_hook_must_not_fire_on() -> None:
+    # ``_parse_finite_float`` exists to reject values that overflow to inf
+    # ("1e999"); ordinary finite floats must canonicalize through the same
+    # hook untouched, and the compact canonical form round-trips.
+    canonical = CanonicalJsonObject(text='{ "ratio" : 1.5, "tiny": 2e-3 }')
+    assert canonical.text == '{"ratio":1.5,"tiny":0.002}'
+    assert json.loads(canonical.text) == {"ratio": 1.5, "tiny": 0.002}
+
+
 def test_canonical_json_preserves_valid_escaped_lone_surrogates() -> None:
     # The constructor's sole representation rule is json.dumps(...,
     # ensure_ascii=False); storage-boundary encoding policy is outside this DTO.
@@ -351,6 +360,28 @@ def test_generation_and_owner_are_not_compared_to_each_other() -> None:
     # A ticket whose owner token equals the record's generation id does not
     # own the lease: the owner role is checked against the owner role only.
     assert distinct_record.owns(_ticket(owner_token=_GENERATION)) is False
+
+
+# --- variant accept paths -----------------------------------------------------
+
+
+def test_valid_claimed_pending_and_already_bound_variants_construct() -> None:
+    # The accept direction of the variant guards: each constructor admits the
+    # exact combination its rejection table refuses, and exposes its payload.
+    ticket = _ticket()
+    record = _record()
+    claimed = Claimed(ticket=ticket, record=record)
+    assert claimed.ticket is ticket
+    assert claimed.record is record
+    assert claimed.record.owns(ticket) is True
+
+    pending = Pending(record=record)
+    assert pending.record is record
+    assert pending.record.binding is None
+
+    binding = _binding()
+    already = AlreadyBound(binding=binding)
+    assert already.binding is binding
 
 
 # --- binding and acknowledgement --------------------------------------------
