@@ -525,7 +525,11 @@ def test_model_egress_main_covers_missing_success_and_unauthorized_paths(
     assert module.main() == 1
 
     inventory.write_text(json.dumps({"modules": ["m"]}), encoding="utf-8")
-    monkeypatch.setattr(module, "discover", lambda: {"m"})
+    monkeypatch.setattr(
+        module,
+        "discover_sites",
+        lambda: {"m": module.EgressFinding("m", "m", ())},
+    )
     monkeypatch.setattr(module.check_direct_effects, "main", lambda _argv: 0)
     monkeypatch.setattr(module, "_provenance", lambda: _provenance({"modules": ["m"]}))
     assert module.main() == 0
