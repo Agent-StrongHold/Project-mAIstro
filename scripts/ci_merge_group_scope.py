@@ -43,9 +43,11 @@ _GLOBAL = {
     "uv.lock",
     "conftest.py",
     ".github/workflows/ci.yml",
+    ".github/workflows/integration-scope.yml",
     ".github/actions/setup-uv/action.yml",
     "scripts/ci_base_revision.py",
     "scripts/ci_merge_group_scope.py",
+    "scripts/check-integration-scope.py",
 }
 
 
